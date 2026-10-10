@@ -1,4 +1,4 @@
-"""No raw exception escapes the public API on a wrong-typed argument.
+"""No raw exception escapes the public API on a wrong argument.
 
 Every finding this file guards was found the same way: call a public entry point with
 a value a caller plausibly writes, and look at what comes back. The failures were not
@@ -26,9 +26,10 @@ argument added with no check a failure here rather than a silence.
   it is raised at the boundary with a message that names the problem, and a
   wrong-typed positional raising ``TypeError`` is what a Python caller expects.
 * ``ValueError`` for an empty string as a **source** or ``dest``: ``Path("")`` is
-  ``Path(".")``, so it would otherwise name the current directory. The sweep has an
-  empty-string row for every path argument and accepts ``ValueError`` only when its
-  message says the path is empty.
+  ``Path(".")``, so it would otherwise name the current directory. Every path
+  argument must have an empty-string row (:func:`test_every_path_argument_has_an_empty_row`),
+  and the sweep accepts ``ValueError`` only on such a row and only when its message
+  says the path is empty.
 * ``KeyError`` for an unknown member name (``archive-reading`` specifies it), plus
   ``io.UnsupportedOperation`` for an unsupported ``seek`` and ``ValueError`` for I/O
   on a closed stream — neither of which this file exercises.
@@ -69,9 +70,9 @@ from archivey.detection_cost import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 
-# TypeError, and ValueError for an empty path, are permitted only for the arguments
-# named here; see the module docstring.
-_TYPE_ERROR_OK = frozenset({"source", "dest"})
+# The path arguments. Only these may raise TypeError for a wrong type, or ValueError
+# for an empty string, and each must have an empty-string row; see the module docstring.
+_PATH_ARGUMENTS = frozenset({"source", "dest"})
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +99,9 @@ def archive(tmp_path: Path) -> Path:
 class _Case(NamedTuple):
     """One (entry point, argument, wrong value) probe.
 
+    The wrong value is wrongly typed or wrongly valued: whatever a caller plausibly
+    writes that the entry point must refuse.
+
     ``entry`` is the name as :func:`_public_surface` and :data:`_NOT_SWEPT` spell it,
     and it is what the inventory matches on. Keying by argument name alone was not
     enough: a ``limits`` row on ``extract`` made ``extract_all(limits=…)`` look swept,
@@ -105,16 +109,25 @@ class _Case(NamedTuple):
 
     ``argument`` also decides whether a bare ``TypeError`` is allowed, so a row added
     with an unfamiliar name gets the strict treatment by default.
+
+    ``empty_path`` marks a row that passes an empty string as a path, alone or inside
+    a volume list. Only such a row may answer with the empty-path ``ValueError``.
+    :func:`_case` sets it from the value, so no label or list has to agree with it.
     """
 
     entry: str
     argument: str
     label: str
     call: Callable[[], Any]
+    empty_path: bool
 
 
-def _is_empty_path_row(case: _Case) -> bool:
-    return case.argument in _TYPE_ERROR_OK and "''" in case.label
+def _is_empty_path(argument: str, bad: Any) -> bool:
+    if argument not in _PATH_ARGUMENTS:
+        return False
+    if isinstance(bad, list):
+        return any(isinstance(item, str) and item == "" for item in bad)
+    return isinstance(bad, str) and bad == ""
 
 
 def _case(
@@ -125,11 +138,17 @@ def _case(
     *,
     label: str | None = None,
 ) -> _Case:
-    return _Case(entry, argument, label or f"{entry}({argument}={bad!r})", call)
+    return _Case(
+        entry,
+        argument,
+        label or f"{entry}({argument}={bad!r})",
+        call,
+        _is_empty_path(argument, bad),
+    )
 
 
 def _cases(archive: Path, dest: Path) -> list[_Case]:
-    """Every wrong-typed public argument, as a probe the sweep can run."""
+    """Every public argument, with each wrong value a caller plausibly writes."""
     d = iter(range(10_000))
 
     def out() -> Path:
@@ -539,13 +558,14 @@ def _with_config(archive: Path, dest: Path, **field: Any) -> Any:
 
 
 def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
-    """Every wrong-typed public argument fails inside the error contract."""
+    """Every wrong public argument fails inside the error contract."""
     dest = tmp_path / "out"
     dest.mkdir()
 
     offenders: list[str] = []
-    for _entry, argument, label, call in _cases(archive, dest):
-        lenient = argument in _TYPE_ERROR_OK
+    for case in _cases(archive, dest):
+        label, call = case.label, case.call
+        lenient = case.argument in _PATH_ARGUMENTS
         try:
             call()
         except ArchiveyUsageError:
@@ -563,7 +583,7 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
             if not lenient:
                 offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
         except ValueError as exc:
-            if not (lenient and "empty path" in str(exc)):
+            if not (case.empty_path and "empty path" in str(exc)):
                 offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — the point is to catch everything
             offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
@@ -684,6 +704,26 @@ def test_every_public_argument_is_swept(archive: Path, tmp_path: Path) -> None:
     )
 
 
+def test_every_path_argument_has_an_empty_row(archive: Path, tmp_path: Path) -> None:
+    """Every swept path argument also has an empty-string row.
+
+    :func:`test_every_public_argument_is_swept` keys on (entry, argument), so a path
+    argument with only a wrong-type row satisfies it. This derives the empty-string
+    requirement from the rows themselves, so a new path argument added without that
+    row fails here.
+    """
+    dest = tmp_path / "covered"
+    dest.mkdir()
+    cases = _cases(archive, dest)
+    path_rows = {(c.entry, c.argument) for c in cases if c.argument in _PATH_ARGUMENTS}
+    empty_rows = {(c.entry, c.argument) for c in cases if c.empty_path}
+
+    missing = sorted(path_rows - empty_rows)
+    assert not missing, "path arguments with no empty-string row:\n" + "\n".join(
+        f"{entry}({argument}=…)" for entry, argument in missing
+    )
+
+
 def test_not_swept_entries_are_all_live(archive: Path, tmp_path: Path) -> None:
     """:data:`_NOT_SWEPT` does not outlive the arguments it excuses.
 
@@ -734,7 +774,8 @@ def test_no_usage_error_message_names_a_private_attribute(
     dest.mkdir()
 
     leaks: list[str] = []
-    for _entry, _argument, label, call in _cases(archive, dest):
+    for case in _cases(archive, dest):
+        label, call = case.label, case.call
         try:
             call()
         except Exception as exc:  # noqa: BLE001 — inspecting whatever comes back
@@ -854,13 +895,8 @@ def test_empty_string_path_is_refused(
     (cwd / "precious.txt").write_text("keep")
     monkeypatch.chdir(cwd)
 
-    rows = [case for case in _cases(archive, dest) if _is_empty_path_row(case)]
-    assert {case.entry for case in rows} == {
-        "open_archive",
-        "open_stream",
-        "detect_format",
-        "extract_all",
-    }
+    rows = [case for case in _cases(archive, dest) if case.empty_path]
+    assert rows
     for case in rows:
         with pytest.raises(ValueError, match="empty path"):
             case.call()

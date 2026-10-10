@@ -511,13 +511,12 @@ The arguments covered:
 | Entry point | Arguments |
 | --- | --- |
 | `open_archive()`, `open_stream()`, `detect_format()` | `config` |
-| `ArchiveyConfig(...)` | `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
 | `open_archive()` | `encoding`, `password` |
 | `ArchiveReader.extract_all()` | `limits`, `on_progress` |
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
-| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references` |
+| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
 | `DetectionBudget(...)` | every field |
 
@@ -600,9 +599,8 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2` |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
 | `DiagnosticPolicy(...)` | `default`, and the keys and values of `overrides` |
-| `ArchiveyConfig(...)` | `detection_budget` (a `DetectionBudget` passes through unconverted) |
 
 A member SHALL be reachable by its `value`, by its member **name**, in any case, and
 with `-` and `_` used interchangeably, so the dash spelling the CLI's `--help`
