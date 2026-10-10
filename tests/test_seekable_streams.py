@@ -549,6 +549,61 @@ def test_xz_open_archive_with_a_huge_declared_index_stays_small(
     assert traced_peak(listing) < 16 << 20
 
 
+def test_xz_index_scan_reads_each_small_index_once() -> None:
+    """An index within one chunk is read once and reused by the CRC check and both walks.
+
+    Per stream the scan pays a padding check, the footer, the index and the header: four
+    reads and four seeks. Each extra pass over the index from the file would add one of
+    each per stream, which on a remote source is a round trip per stream.
+    """
+
+    class _CountCalls(io.BytesIO):
+        reads = 0
+        seeks = 0
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            self.reads += 1
+            return super().read(n)
+
+        def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+            self.seeks += 1
+            return super().seek(offset, whence)
+
+    streams = 200
+    blob = b"".join(lzma.compress(b"x" * 100) for _ in range(streams))
+    source = _CountCalls(blob)
+    blocks = _read_xz_index_backwards(source, len(blob))
+    assert len(blocks) == streams
+    assert source.reads <= 4 * streams + 2
+    assert source.seeks <= 4 * streams + 2
+
+
+@pytest.mark.parametrize("chunk", [1, 3, 7])
+def test_xz_index_walk_across_chunk_boundaries_matches_one_read(
+    chunk: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An index read a few bytes at a time gives the same blocks as one read.
+
+    Record sizes with one- to three-byte integers put chunk boundaries inside them, and
+    the stream header is read between the two walks over each index, so every chunk
+    read has to move the source back to where the index continues.
+    """
+    import archivey.internal.streams.codecs.xz_decoder as xz_mod
+
+    rng = random.Random(694)
+    blob = b"".join(
+        _xz_stream_from_records(
+            [(rng.randrange(1, 1 << 17), rng.randrange(0, 1 << 20)) for _ in range(n)]
+        )
+        for n in (300, 1, 57)
+    )
+    expected = _read_xz_index_backwards(io.BytesIO(blob), len(blob))
+    monkeypatch.setattr(xz_mod, "_INDEX_READ_CHUNK", chunk)
+    got = _read_xz_index_backwards(io.BytesIO(blob), len(blob))
+    assert len(got) == 358
+    assert got == expected
+
+
 @pytest.mark.parametrize(
     ("data", "expected"),
     [
