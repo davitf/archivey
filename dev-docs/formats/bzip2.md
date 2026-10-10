@@ -2,7 +2,7 @@
 
 Current maintainer truth for bzip2 (`.bz2`) as a single-file format and as a coder inside
 TAR, ZIP and 7z. Two backends decode it: the standard library's `bz2`, always available,
-and the bzip2 decoder bundled in the optional `rapidgzip` package, which runs in this
+and the bzip2 decoder bundled in the optional `rapidgzip` package, which runs in a child
 process and gives random access. What bzip2 shares with the other codecs, the one-member
 reader, the seek table and the truncation contract, is on [`single-file.md`](single-file.md).
 Registers keep the status; this page states the behaviour and links the row.
@@ -340,8 +340,9 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   [`threat-model.md`](../threat-model.md) O5, O11
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §bzip2
-- Code: `internal/streams/codecs.py` (`Bzip2Codec`, `_Bzip2EmptyStreamCheck`,
-  `_bound_rapidgzip_source`), `internal/streams/rapidgzip_child.py`
-  (`RapidgzipChildStream`), `internal/streams/rapidgzip_worker.py`
+- Code: `internal/streams/codecs/bzip2_codec.py` (`Bzip2Codec`, `_Bzip2EmptyStreamCheck`),
+  `rapidgzip_select.py` (`_bound_rapidgzip_source`, `_open_rapidgzip`),
+  `internal/streams/rapidgzip_child.py` (`RapidgzipChildStream`),
+  `internal/streams/rapidgzip_worker.py`
 - Handbook: [`single-file.md`](single-file.md) · [`gzip.md`](gzip.md) (the DEFLATE side of
   `rapidgzip`) · [`tar.md`](tar.md) (`.tar.bz2`)

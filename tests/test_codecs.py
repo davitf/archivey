@@ -1971,11 +1971,13 @@ def _make_gzip_check_stream(inner, path):
     independent handle.
     """
     from archivey.internal.config import DEFAULT_STREAM_CONFIG
-    from archivey.internal.streams.codecs import (
+    from archivey.internal.streams.codecs.gzip_codec import (
         _gzip_isize_and_length,
         _GzipTruncationCheckStream,
-        _SourceViews,
         _stdlib_gzip,
+    )
+    from archivey.internal.streams.codecs.stdlib_takeover import (
+        _SourceViews,
         _StdlibOnAcceleratorError,
     )
 
@@ -2045,7 +2047,7 @@ def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> No
     path.write_bytes(gzip.compress(payload))
 
     monkeypatch.setattr(
-        codecs_module,
+        codecs_module.gzip_codec,
         "GzipDecompressorStream",
         lambda source, **_kwargs: NonSeekableBytesIO(payload),
     )
@@ -2390,11 +2392,11 @@ def _assert_hint_is_installable(message: str) -> None:
 @pytest.mark.parametrize(
     ("codec", "absent_global"),
     [
-        (Codec.PPMD, "_pyppmd"),
-        (Codec.DEFLATE64, "_inflate64"),
-        (Codec.BROTLI, "_brotli"),
-        (Codec.LZ4, "_lz4_frame"),
-        (Codec.ZSTD, "_zstd"),
+        (Codec.PPMD, "pyppmd"),
+        (Codec.DEFLATE64, "inflate64"),
+        (Codec.BROTLI, "brotli"),
+        (Codec.LZ4, "lz4_frame"),
+        (Codec.ZSTD, "zstd"),
     ],
 )
 def test_absent_codec_backend_hint_is_installable(
@@ -2407,13 +2409,13 @@ def test_absent_codec_backend_hint_is_installable(
     rot unnoticed, because ``format_availability`` reported the updated string while
     ``open()`` still advertised a deleted extra.
     """
-    current = getattr(codecs_module, absent_global)
+    current = getattr(codecs_module.deps, absent_global)
     absent = (
-        codecs_module._LazyOptional(current.name, present=False)
-        if isinstance(current, codecs_module._LazyOptional)
+        codecs_module.deps.LazyOptional(current.name, present=False)
+        if isinstance(current, codecs_module.deps.LazyOptional)
         else None
     )
-    monkeypatch.setattr(codecs_module, absent_global, absent, raising=True)
+    monkeypatch.setattr(codecs_module.deps, absent_global, absent, raising=True)
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))

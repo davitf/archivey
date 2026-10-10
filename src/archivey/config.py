@@ -685,7 +685,8 @@ class ArchiveyConfig:
     when those bytes are not valid UTF-8. The default is cp437, as the ZIP specification
     (APPNOTE) says. Set a local code page (for example ``"cp1252"`` or ``"shift_jis"``)
     for archives known to come from one. An explicit ``encoding=`` on
-    :func:`~archivey.open_archive` overrides this and turns off the UTF-8 attempt.
+    :func:`~archivey.open_archive` replaces this fallback for that archive; a name
+    whose bytes are valid UTF-8 is still decoded as UTF-8.
     """
 
     rar_allow_glob_member_concatenation: bool = False
@@ -893,8 +894,11 @@ class PasswordRequest:
     Each ask follows a failure: either the previous answer failed to decrypt the unit,
     or it was a password that had already failed for this unit (a known-good password
     from an earlier unit, a listed candidate) and was skipped without a second try.
-    Asking stops when the provider returns ``None`` or gives an answer it already gave
-    for this unit.
+    A repeated answer is never decrypted twice. Asking stops when the provider returns
+    ``None``, or after three answers in a row that it had already given for this unit;
+    one or two repeats in a row do not stop it, so a person at a prompt who types the
+    same password again is asked again. A provider walking a stored list should skip
+    duplicates in it: three equal entries in a row end the asking.
     """
 
 

@@ -2651,6 +2651,19 @@ class RarReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_header_record_diagnostics(info, member.name, member, index)
+        if info.rar3_utf8_over_encoding:
+            assert self._encoding is not None
+            self._emit_name_encoding_inferred(
+                member,
+                index,
+                inferred_encoding="utf-8",
+                passed_over=self._encoding,
+                message=(
+                    f"RAR member name decoded as 'utf-8' rather than "
+                    f"{self._encoding!r} (the stored bytes are valid UTF-8): "
+                    f"{quoted(member.name)}"
+                ),
+            )
         for issue in info.timestamp_issues:
             field = _timestamp_field_name(info, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))

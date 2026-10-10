@@ -4,8 +4,9 @@ The scan dry-ran 57 390 archives; `dev-docs/investigations/2026-10-backup-scan.m
 the counts and the clusters these come from. The inputs here are synthetic: each one is
 built from the structure that the real files shared, never from their content.
 
-Each test asserts the behaviour a fix should give and is marked ``xfail(strict=True)``
-while the defect stands; the ``reason`` names it. Remove the marker when the fix lands.
+Each test asserts the behaviour a fix should give. A test whose defect still stands is
+marked ``xfail(strict=True)`` and the ``reason`` names it; the marker comes off when the
+fix lands, so an unmarked test pins a fix, or the mechanism a reproducer relies on.
 """
 
 from __future__ import annotations
@@ -13,12 +14,15 @@ from __future__ import annotations
 import io
 import lzma
 import struct
+import zipfile
 import zlib
+from pathlib import Path
 
 import pytest
 
 import archivey
-from archivey import FormatDetectionError
+from archivey import ArchiveFormat, FormatDetectionError
+from archivey.internal import detection
 from tests.conftest import requires
 
 # --- LZMA Alone: zero runs decode as an endless stream of zero literals. -------------
@@ -64,16 +68,10 @@ def test_id3_tagged_mp3_is_not_lzma_alone() -> None:
         archivey.detect_format(io.BytesIO(_id3v23_mp3_with_padding()))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LZMA Alone probe accepts a header followed by a zero run: the OLE compound "
-        "file magic then zeros is detected as LZMA_ALONE (PROBABLE)"
-    ),
-)
 def test_ole_magic_then_zeros_is_not_lzma_alone() -> None:
     # 0xD0 is legal Alone properties (lc=1, lp=3, pb=4). OLE files (.doc, .xls, .msi,
-    # Thumbs.db) are sector-aligned and often hold long zero runs early on.
+    # Thumbs.db) are sector-aligned and often hold long zero runs early on. The OLE
+    # signature stops the content probes, so the Alone probe never sees this input.
     data = _OLE_MAGIC + b"\0" * 4088
     with pytest.raises(FormatDetectionError):
         archivey.detect_format(io.BytesIO(data))
@@ -89,23 +87,68 @@ def test_zero_run_after_an_alone_header_decodes_without_error() -> None:
     assert out == b"\0" * (1 << 16)
 
 
-# --- Brotli: the residual false positive (tracked internally), on OLE files. -------
+# --- Brotli on OLE files: the OLE signature stops the content probes. --------------
 
 
 @requires("brotli")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "residual false positive: a standard OLE header followed by zeros is "
-        "detected as BROTLI (GUESS); the scan found 437 such files, mostly OLE"
-    ),
-)
 def test_ole_header_then_zeros_is_not_brotli() -> None:
     # The first 32 bytes every version-3 compound file starts with: magic, a zero CLSID,
     # minor version 0x3E, major version 3, byte-order mark 0xFFFE, sector shift 9.
     header = _OLE_MAGIC + b"\0" * 16 + struct.pack("<HHHH", 0x3E, 3, 0xFFFE, 9)
     data = header + b"\0" * (256 * 1024 - len(header))
     with pytest.raises(FormatDetectionError):
+        archivey.detect_format(io.BytesIO(data))
+
+
+def _ole_header() -> bytes:
+    return _OLE_MAGIC + b"\0" * 16 + struct.pack("<HHHH", 0x3E, 3, 0xFFFE, 9)
+
+
+def test_ole_file_with_an_archive_extension_still_gets_the_extension_guess(
+    tmp_path: Path,
+) -> None:
+    # The OLE signature stops the content probes only. The extension fallback still
+    # runs, as it does after a confirmed executable.
+    path = tmp_path / "mislabelled.br"
+    path.write_bytes(_ole_header() + b"\0" * (64 * 1024))
+    info = archivey.detect_format(path)
+    assert info.format == ArchiveFormat.BROTLI
+    assert info.detected_by == "extension"
+
+
+def _small_zip() -> bytes:
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("embedded.txt", b"embedded object\n")
+    return inner.getvalue()
+
+
+def test_ole_file_holding_a_zip_is_not_scanned_as_self_extracting() -> None:
+    # An OLE file is not an executable stub, so its signature does not start the SFX
+    # scan. A ZIP stored inside a document is part of the document, not its payload.
+    data = _ole_header() + b"\0" * 2016 + _small_zip() + b"\0" * (64 * 1024)
+    with pytest.raises(FormatDetectionError):
+        archivey.detect_format(io.BytesIO(data))
+
+
+def test_a_probe_stopping_signature_also_stops_the_sfx_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The rule holds for every entry, not only for OLE, whose signature raises no
+    # executable cue. A signature that starts with ``MZ`` raises a weak cue; the scan
+    # would find the ZIP behind it and report the file as that ZIP.
+    signature = b"MZ-not-an-archive"
+    monkeypatch.setattr(
+        detection, "_PROBE_STOPPING_SIGNATURES", ((signature, "a test signature"),)
+    )
+    data = signature + b"\0" * 2000 + _small_zip() + b"\0" * (64 * 1024)
+    with pytest.raises(FormatDetectionError):
+        archivey.detect_format(io.BytesIO(data))
+
+
+def test_the_error_names_the_signature_that_stopped_the_probes() -> None:
+    data = _OLE_MAGIC + b"\0" * 4088
+    with pytest.raises(FormatDetectionError, match="OLE compound file"):
         archivey.detect_format(io.BytesIO(data))
 
 

@@ -15,6 +15,14 @@ from archivey.types import ArchiveMember
 
 _T = TypeVar("_T")
 
+# How many answers in a row the provider may repeat for one unit before it is taken to
+# have no more. Structural, not a resource bound: a repeat costs one provider call and
+# no decrypt, and only the provider's own repeats count, so no archive and no keyring
+# length can reach it. It exists to end a provider stuck on one answer (a constant
+# ``lambda request: "secret"``) while letting a person re-type a password they think
+# they mistyped. Three lets them repeat twice and still be asked.
+_MAX_CONSECUTIVE_OWN_REPEATS = 3
+
 # The provider call running in this context, if any. The reentry check reads it as
 # well as the thread: a provider that hands reader work to a helper thread which
 # carries its context (``asyncio.to_thread``, ``contextvars.copy_context().run``, a
@@ -195,19 +203,30 @@ class _PasswordCandidates:
         password it already knows, often the one an earlier unit promoted to known-good,
         may have the right one next.
 
-        The loop ends when the provider returns ``None``, or when it gives an answer it
-        already gave for this unit. The second is the exact "no progress" signal: a
-        provider stuck on one answer stops on its second call, while a provider walking
-        a list of any length is never cut off. Termination depends only on the
-        provider's answers, not on the caller updating ``tried``.
+        A provider's own repeat is skipped the same way and does not end the loop on its
+        own: a person at a prompt may type a password again because they think they
+        mistyped it, or forgot they already gave it, and should be asked again. The loop
+        ends when the provider returns ``None``, or after
+        ``_MAX_CONSECUTIVE_OWN_REPEATS`` answers in a row that it had already given for
+        this unit. A provider stuck on one answer stops on its fourth call with one
+        decrypt, while a provider walking a list of any length is never cut off.
+        Termination depends only on the provider's answers, not on the caller updating
+        ``tried``.
         """
         answered: set[bytes] = set()
+        own_repeats = 0
         attempt = 1
         while self._provider is not None:
             password = self._call_provider(member, attempt)
             attempt += 1
-            if password is None or password in answered:
+            if password is None:
                 return
+            if password in answered:
+                own_repeats += 1
+                if own_repeats >= _MAX_CONSECUTIVE_OWN_REPEATS:
+                    return
+                continue
+            own_repeats = 0
             answered.add(password)
             if password in tried:
                 continue
@@ -219,7 +238,7 @@ class _PasswordCandidates:
         """One provider call, with the turn-taking and reentry guard.
 
         A password loop belongs in ``iter_provider_answers``, which skips an
-        answer already tried and stops when the provider repeats itself.
+        answer already tried and stops when the provider keeps repeating itself.
         """
         assert self._provider is not None
         me = threading.get_ident()

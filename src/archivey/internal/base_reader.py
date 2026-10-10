@@ -38,8 +38,10 @@ from archivey.diagnostics import (
     ExtractionReport,
     MemberListReport,
     MemberTimestampContext,
+    NameEncodingContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
+    raw_name_to_base64,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -1835,6 +1837,38 @@ class BaseArchiveReader(ArchiveReader):
             member=member,
             attach_to_member=True,
             logger=log,
+        )
+
+    def _emit_name_encoding_inferred(
+        self,
+        member: ArchiveMember,
+        member_id: int,
+        *,
+        inferred_encoding: str,
+        passed_over: str,
+        message: str,
+    ) -> None:
+        """Report one ``MEMBER_NAME_ENCODING_INFERRED`` finding, attached to ``member``.
+
+        ``inferred_encoding`` decoded the stored bytes to ``member.name``;
+        ``passed_over`` is the encoding the name would otherwise have had (the caller's
+        ``encoding=``, or the format's fallback), recorded as ``declared_encoding``.
+        ``member_id`` is the walk position, as for :meth:`_emit_timestamp_invalid`.
+        """
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+            message=message,
+            context=NameEncodingContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                raw_name_base64=raw_name_to_base64(member.raw_name),
+                inferred_encoding=inferred_encoding,
+                declared_encoding=passed_over,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
         )
 
     def _watch_unverified_read(

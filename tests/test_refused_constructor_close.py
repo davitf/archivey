@@ -239,20 +239,22 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
-    "archivey.internal.streams.codecs._DeflateEndCheckStream": "plain assignments only",
-    "archivey.internal.streams.codecs._GzipTruncationCheckStream": (
+    "archivey.internal.streams.codecs.zlib_codec._DeflateEndCheckStream": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs._Bzip2EmptyStreamCheck": (
+    "archivey.internal.streams.codecs.gzip_codec._GzipTruncationCheckStream": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs._ZlibAdlerCheckStream": (
+    "archivey.internal.streams.codecs.bzip2_codec._Bzip2EmptyStreamCheck": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs._StdlibOnAcceleratorError": (
+    "archivey.internal.streams.codecs.zlib_codec._ZlibAdlerCheckStream": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs._StdlibSeekContract": "plain assignments only",
+    "archivey.internal.streams.codecs.stdlib_takeover._StdlibOnAcceleratorError": (
+        "plain assignments only"
+    ),
+    "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": "plain assignments only",
     "archivey.internal.backends.rar_reader._JoinedParts": (
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"
@@ -277,7 +279,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.sevenzip_pipeline._DecodedPastSizeCheck": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs._LzmaEndAtSize": (
+    "archivey.internal.streams.codecs.lzma_codec._LzmaEndAtSize": (
         "DelegatingStream.__init__ first, then plain assignments"
     ),
     "archivey.internal.external.unar.UnarOutputStream": (

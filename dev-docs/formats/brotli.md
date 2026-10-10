@@ -154,7 +154,8 @@ detection census in the investigation linked in §9.
 | A Brotli file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; from a pipe, `CorruptionError` |
 | A cut Brotli file | `TruncatedError` |
 | A `/usr` tree of 150 623 files, none of them Brotli | 29 claimed as Brotli (0.019%), measured with the 256-byte sample before the 4 KiB window; each claim's read error is stamped `format_unconfirmed` |
-| OLE (`.msi`, old `.doc`) and COFF files | Usually claimed first by the LZMA Alone probe ([`xz.md`](xz.md) §3) |
+| OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5). `FormatDetectionError`, or the extension guess |
+| COFF object files | Can be claimed by a probe, LZMA Alone or Brotli ([`xz.md`](xz.md) §3) |
 | A 7z, ZIP or RAR behind a low-entropy stub | Found by the SFX scan, not claimed as Brotli |
 
 ## 4. Threat surface
@@ -241,8 +242,8 @@ the meta-block header parser.
 - Investigation: [`brotli-content-probe-results.md`](../investigations/brotli-content-probe-results.md)
 - Registers: [`threat-model.md`](../threat-model.md) O10, O11
 - Decisions: [`library-analysis.md`](../library-analysis.md) §brotli
-- Code: `internal/streams/codecs.py` (`BrotliCodec`) · `internal/streams/brotli_framing.py`
-  · `internal/streams/decompress.py` (`BrotliDecoder`) · `internal/detection.py`
-  (`_brotli_probe_confidence`)
+- Code: `internal/streams/codecs/brotli_codec.py` (`BrotliCodec`) ·
+  `internal/streams/brotli_framing.py` · `internal/streams/decompress.py`
+  (`BrotliDecoder`) · `internal/detection.py` (`_brotli_probe_confidence`)
 - Handbook: [`single-file.md`](single-file.md) · [`xz.md`](xz.md) (the LZMA Alone probe) ·
   [`tar.md`](tar.md)

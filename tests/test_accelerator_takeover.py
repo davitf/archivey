@@ -41,7 +41,9 @@ _MODES = [AcceleratorMode.AUTO, AcceleratorMode.ON]
 def _bzip2_auto_takes_small_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     """The bzip2 payload here compresses to under the shipped AUTO threshold (1 MiB);
     ``AUTO`` must still take the accelerator for the tests to reach the takeover."""
-    monkeypatch.setattr(codecs_module, "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE", 0)
+    monkeypatch.setattr(
+        codecs_module.bzip2_codec, "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE", 0
+    )
 
 
 @functools.cache

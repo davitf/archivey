@@ -307,12 +307,24 @@ def open_archive(
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
     A non-seekable stream keeps the bytes detection peeked in a replay prefix that the
     backend's first reads drain, so detection never consumes bytes the backend needs.
+    A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
+    returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
+    error.
 
     A seekable stream source is taken to hold the archive **starting at its current
     position**: detection peeks from there and restores the position, and the opener
     then rebases a mid-positioned stream to a zero origin so every backend sees the
     archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
     without manual slicing).
+
+    ``encoding`` names the codec for member names whose encoding the archive does not
+    declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO and RAR 1.5-4). A name
+    whose bytes are valid UTF-8 is decoded as UTF-8 in every format, with or without
+    ``encoding``, and ``encoding`` replaces only the format's fallback (cp437 or
+    ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
+    RAR 1.5-4, surrogate escapes for TAR and ISO). ``member.raw_name`` keeps the stored
+    bytes. 7z, directory and single-file sources decode names another way, ignore it,
+    and record ``ENCODING_ARGUMENT_UNUSED``.
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
@@ -678,6 +690,10 @@ def open_stream(
     :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), or ``None`` to
     auto-detect. A container format (ZIP, TAR, …) is rejected — use
     :func:`open_archive` for those.
+
+    A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
+    returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
+    error.
     """
     import archivey.internal.backends  # noqa: F401
 

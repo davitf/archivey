@@ -144,7 +144,11 @@ the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
 under the wrapper, and exit nonzero — mirroring the failure a direct extraction
 would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
-containing `src/`) SHALL be flattened in place, not treated as a collision.
+containing `src/`) SHALL be flattened in place, not treated as a collision, and the
+wrapper SHALL then take that root's mode and times. A directory stored without owner
+write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
+and search permission for the move and then puts its mode back, as a direct extraction
+into the cwd would have succeeded.
 Container-name collisions SHALL be resolved by the overwrite policy, with one
 exception: a symlink at the container name, dangling or live, SHALL be treated
 as taken under every overwrite policy and the next free `<stem> (N)` used,
@@ -412,7 +416,9 @@ the destination (the folder was already there, the entry is a symlink, a symlink
 leaves it, or part of the entry could not be listed, which here means part of the
 scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
 reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
-already at that place.
+already at that place, nor whether an existing directory there can be written into: a
+real run whose hoist is refused by that directory's permissions fails where the dry run
+predicted the move.
 
 #### Scenario: extract dry-run matrix
 

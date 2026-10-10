@@ -287,7 +287,9 @@ def test_brotli_probe_skipped_when_backend_missing(
     # With the Brotli backend absent, the probe is skipped and detection falls back to the
     # .br extension guess rather than failing.
     monkeypatch.setattr(
-        codecs_module, "_brotli", codecs_module._LazyOptional("brotli", present=False)
+        codecs_module.deps,
+        "brotli",
+        codecs_module.deps.LazyOptional("brotli", present=False),
     )
     path = tmp_path / "thing.br"
     path.write_bytes(b"not a brotli stream, just bytes")
@@ -534,7 +536,7 @@ def test_inner_tar_probe_skipped_when_codec_missing(
     # With the zstd backend absent, a .tar.zst can't be probed: per the spec, detection
     # reports the *bare* compressor (ZST, by its magic) and defers the inner-TAR
     # determination to open time — without warning about the benign tar.zst/zst mismatch.
-    monkeypatch.setattr(codecs_module, "_zstd", None)
+    monkeypatch.setattr(codecs_module.deps, "zstd", None)
     path = tmp_path / "thing.tar.zst"
     path.write_bytes(
         b"\x28\xb5\x2f\xfd" + b"\x00" * 64
@@ -709,7 +711,7 @@ def test_zlib_grammar_accepts_a_preset_dictionary_header() -> None:
     compressor = zlib.compressobj(6, zlib.DEFLATED, 15, zdict=b"the quick brown fox")
     data = compressor.compress(b"payload " * 100) + compressor.flush()
     assert (data[1] >> 5) & 1, "fixture must actually set FDICT"
-    assert codecs_module._zlib_header_plausible(data)
+    assert codecs_module.zlib_codec._zlib_header_plausible(data)
     # archivey holds no preset dictionary, so the decode fails and the candidate falls
     # through — the "dictionary available" half of the grammar is unreachable from
     # detection until the codec layer can be handed one.
@@ -723,7 +725,7 @@ def test_zlib_grammar_admits_exactly_66_header_pairs() -> None:
         (cmf, flg)
         for cmf in range(256)
         for flg in range(256)
-        if codecs_module._zlib_header_plausible(bytes((cmf, flg)))
+        if codecs_module.zlib_codec._zlib_header_plausible(bytes((cmf, flg)))
     ]
     assert len(accepted) == 66
     assert sum(1 for _, flg in accepted if (flg >> 5) & 1) == 34  # FDICT set
@@ -731,7 +733,7 @@ def test_zlib_grammar_admits_exactly_66_header_pairs() -> None:
 
 def test_zlib_grammar_rejects_a_zeroed_header() -> None:
     # CM == 0 fails the grammar, so zero-filled padding never reaches the decode.
-    assert not codecs_module._zlib_header_plausible(b"\x00\x00")
+    assert not codecs_module.zlib_codec._zlib_header_plausible(b"\x00\x00")
 
 
 def test_lzma_alone_declaring_zero_output_is_not_claimed() -> None:
@@ -815,7 +817,7 @@ def test_lzma_alone_header_gate_admits_the_formats_full_properties_range(
     header = (
         bytes([props]) + (1 << 16).to_bytes(4, "little") + (6).to_bytes(8, "little")
     )
-    assert codecs_module._alone_header_plausible(header) is legal
+    assert codecs_module.lzma_codec._alone_header_plausible(header) is legal
 
 
 # --- far magic ahead of the content probes ---------------------------------------------

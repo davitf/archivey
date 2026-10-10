@@ -10,7 +10,7 @@ changes what the public package imports. The everyday layering checks are in
 Public API        archivey/__init__, core.py, reader.py, types.py, exceptions.py, config.py
 Orchestration     internal/: registry.py, detection.py, extraction.py, base_reader.py
 Format backends   internal/backends/: *_reader.py, *_parser.py, *_detect.py
-Codecs & streams  internal/streams/: codecs.py, decompress.py, child_process.py, …
+Codecs & streams  internal/streams/: codecs/, decompress.py, child_process.py, …
 Outer             stdlib I/O, optional extras (lazy), external programs (unrar, unar)
 ```
 
@@ -34,7 +34,8 @@ suffix or a backend class name.
 **Format and codec:**
 - [ ] A new format registers a backend plus detection, with minimal edits outside its
   own modules
-- [ ] A new codec goes behind `internal/streams/codecs.py`, not inline in a backend
+- [ ] A new codec goes behind `internal/streams/codecs/` (its own `<name>_codec.py`),
+  not inline in a backend
 - [ ] A missing optional dependency is reported through `FormatSupport` /
   `MissingComponent`, not a bare `ImportError`
 - [ ] Limits come from `ArchiveyConfig`, not module constants in a parser
@@ -52,6 +53,6 @@ suffix or a backend class name.
 ```markdown
 🔴 [blocking] "ArchiveMember now carries a sevenzip_parser struct — map it to public fields"
 🟡 [important] "Extraction path contains ZIP-specific logic — move it to zip_reader"
-🟡 [important] "Codec hard-coded in the backend — register it in streams/codecs.py"
+🟡 [important] "Codec hard-coded in the backend — register it in streams/codecs/"
 💡 [suggestion] "Gate the optional import behind the backend's availability check"
 ```

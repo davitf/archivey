@@ -65,8 +65,6 @@ from archivey.cost import (
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
-    NameEncodingContext,
-    raw_name_to_base64,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -781,12 +779,15 @@ class ZipReader(BaseArchiveReader):
             zip_source = handle
 
         try:
-            # `metadata_encoding` (3.11+) decodes names stored without the UTF-8 flag with
-            # the caller's encoding instead of the cp437 default (UTF-8-flagged names are
-            # unaffected). Reading the central directory here decodes every member name.
-            self._archive: zipfile.ZipFile = zipfile.ZipFile(
-                zip_source, "r", metadata_encoding=encoding
-            )
+            # Reading the central directory here decodes every member name: UTF-8 when
+            # the name's UTF-8 flag is set, else cp437. cp437 maps every byte and
+            # encodes back to the same bytes, so _to_member recovers the stored bytes
+            # of an unflagged name and decodes them itself (UTF-8 first, then the
+            # caller's encoding= or the configured fallback). The caller's encoding is
+            # not passed as `metadata_encoding`: zipfile would apply it to every
+            # unflagged name, valid UTF-8 included, and fail the open on a byte it
+            # cannot decode.
+            self._archive: zipfile.ZipFile = zipfile.ZipFile(zip_source, "r")
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
                 raise UnsupportedFeatureError(
@@ -814,19 +815,11 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             ) from exc
         except UnicodeError as exc:
-            # A member name failed to decode while reading the central directory: either a
-            # UTF-8-flagged entry whose stored bytes are corrupt, or a wrong explicit
-            # `encoding=`. Both are surfaced as a typed error (never a raw UnicodeError);
-            # the message points at the encoding when the caller supplied one. The base
-            # class, not UnicodeDecodeError: `idna` raises a plain UnicodeError for a
-            # name it cannot decode (an empty or over-long label).
-            hint = (
-                f" (with encoding={encoding!r}; the stored bytes may use a different encoding)"
-                if encoding is not None
-                else ""
-            )
+            # A UTF-8-flagged member name whose stored bytes are not valid UTF-8 failed
+            # to decode while reading the central directory. It is surfaced as a typed
+            # error, never a raw UnicodeError.
             raise CorruptionError(
-                f"Could not decode a ZIP member name{hint}: {exc!r}",
+                f"Could not decode a ZIP member name: {exc!r}",
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             ) from exc
@@ -933,19 +926,29 @@ class ZipReader(BaseArchiveReader):
     def _sniff_unflagged_name(
         self, raw_name: bytes, cp437_decoded: str
     ) -> tuple[str, str | None]:
-        """Decode an unflagged ZIP name (no explicit ``encoding=``): prefer valid UTF-8, else
-        the configured legacy fallback (default cp437).
+        """Decode an unflagged ZIP name: prefer valid UTF-8, else the caller's
+        ``encoding=``, else the configured legacy fallback (default cp437).
 
-        Returns ``(name, inferred_encoding)`` where ``inferred_encoding`` is the encoding used
-        only when it overrode the cp437 APPNOTE default (for the diagnostic), else ``None``.
-        UTF-8 is self-validating, so a clean decode is strong evidence the bytes are UTF-8;
-        legacy bytes that are coincidentally valid UTF-8 are the documented residual risk.
-        Pure ASCII (and any other bytes that decode identically under UTF-8 and cp437) is
-        not an override — both encodings agree, so no diagnostic.
+        Returns ``(name, inferred_encoding)`` where ``inferred_encoding`` is the encoding
+        archivey chose over the one the name would otherwise have had (for the
+        diagnostic), else ``None``. The caller's ``encoding=`` is not an inference, so it
+        gives ``None``. UTF-8 is self-validating, so a clean decode is strong evidence the bytes
+        are UTF-8; legacy bytes that are coincidentally valid UTF-8 are the documented
+        residual risk. Pure ASCII (and any other bytes that decode identically under
+        UTF-8 and cp437) is not an override — both encodings agree, so no diagnostic.
         """
         try:
             utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
+            if self._encoding is not None:
+                try:
+                    return raw_name.decode(
+                        self._encoding, errors="surrogateescape"
+                    ), None
+                except UnicodeError:
+                    # A codec that refuses the surrogateescape handler outright
+                    # (``idna``): fall through to the configured fallback.
+                    pass
             fallback = self._config.zip_unflagged_fallback_encoding
             if fallback.lower().replace("-", "").replace("_", "") in {
                 "cp437",
@@ -963,27 +966,6 @@ class ZipReader(BaseArchiveReader):
         if utf8_decoded == cp437_decoded:
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
-
-    @staticmethod
-    def _reencode_name(decoded: str, codec: str) -> bytes | None:
-        """The stored bytes of a name zipfile decoded with ``codec``, or ``None``.
-
-        ``surrogateescape`` keeps any escaped byte. A few codecs ``open_archive``
-        accepts (``idna``) refuse that handler before they look at the
-        input. zipfile decoded the name strictly with the same codec, so a strict
-        encode normally gives the bytes back. When even that fails (``idna`` cannot
-        encode the empty label in ``"a..b"``), no codec reproduces the name, and
-        ``raw_name`` is ``None``, as TAR reports it, rather than an error that would
-        stop the listing.
-        """
-        try:
-            return decoded.encode(codec, errors="surrogateescape")
-        except UnicodeError:
-            pass
-        try:
-            return decoded.encode(codec)
-        except UnicodeError:
-            return None
 
     def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
         full_mode = info.external_attr >> 16
@@ -1030,13 +1012,10 @@ class ZipReader(BaseArchiveReader):
         # Archivey's own backslash_is_separator / extraction checks are the single authority.
         decoded = info.orig_filename
         is_utf8_flagged = bool(info.flag_bits & 0x800)
-        # raw_name recovers the stored bytes by re-encoding the SAME source as name
-        # (decoded == orig_filename) with the codec zipfile decoded with: UTF-8 when the
-        # entry's UTF-8 flag is set, else the caller's metadata encoding (when given) or
-        # zipfile's cp437 default. Using orig_filename keeps name and raw_name consistent.
-        raw_name = self._reencode_name(
-            decoded, "utf-8" if is_utf8_flagged else (self._encoding or "cp437")
-        )
+        # raw_name recovers the stored bytes by re-encoding orig_filename with the codec
+        # zipfile decoded it with: UTF-8 when the entry's UTF-8 flag is set (decoded
+        # strictly, so it encodes back), else cp437, which maps every byte both ways.
+        raw_name = decoded.encode("utf-8" if is_utf8_flagged else "cp437")
         name_source = decoded
         # An unflagged name with an Info-ZIP Unicode Path extra field (0x7075) whose CRC
         # matches the stored bytes is named by the field, ahead of the sniff and of an
@@ -1050,27 +1029,19 @@ class ZipReader(BaseArchiveReader):
         # against the central one.
         alternate_raw_name: bytes | None = None
         unicode_name: bytes | None = None
-        if not is_utf8_flagged and raw_name is not None and info.extra:
+        if not is_utf8_flagged and info.extra:
             unicode_name = _unicode_path_name(info.extra, raw_name)
             if unicode_name is not None:
                 name_source = unicode_name.decode("utf-8")
                 if unicode_name != raw_name:
                     alternate_raw_name, raw_name = raw_name, unicode_name
         # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
-        # so cp437 would yield mojibake. With no authoritative signal (flag clear, no
-        # Unicode Path field and no explicit encoding=), prefer UTF-8 when the stored bytes
-        # are valid UTF-8, else a configurable legacy fallback. A set flag or explicit
-        # encoding= is honored as-is. ASCII bytes decode identically under UTF-8 and
-        # cp437 — skip the sniff.
+        # so cp437 would yield mojibake. With no authoritative signal (flag clear and no
+        # Unicode Path field), prefer UTF-8 when the stored bytes are valid UTF-8, else
+        # the caller's encoding= or a configurable legacy fallback. A set flag is honored
+        # as-is. ASCII bytes decode identically under UTF-8 and cp437 — skip the sniff.
         inferred_encoding: str | None = None
-        # raw_name is None only under an explicit encoding=, which skips the sniff.
-        if (
-            not is_utf8_flagged
-            and self._encoding is None
-            and unicode_name is None
-            and raw_name is not None
-            and not raw_name.isascii()
-        ):
+        if not is_utf8_flagged and unicode_name is None and not raw_name.isascii():
             name_source, inferred_encoding = self._sniff_unflagged_name(
                 raw_name, decoded
             )
@@ -1147,23 +1118,23 @@ class ZipReader(BaseArchiveReader):
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
         if inferred_encoding is not None:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+            # The codec the name would otherwise have had: for a UTF-8 reading, the
+            # caller's encoding= or the configured fallback; for a configured fallback,
+            # the cp437 APPNOTE default.
+            passed_over = (
+                (self._encoding or self._config.zip_unflagged_fallback_encoding)
+                if inferred_encoding == "utf-8"
+                else "cp437"
+            )
+            self._emit_name_encoding_inferred(
+                member,
+                index,
+                inferred_encoding=inferred_encoding,
+                passed_over=passed_over,
                 message=(
-                    f"ZIP member name decoded as {inferred_encoding!r} rather than the "
-                    f"cp437 default (UTF-8 flag not set): {quoted(member.name)}"
+                    f"ZIP member name decoded as {inferred_encoding!r} rather than "
+                    f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
                 ),
-                context=NameEncodingContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    raw_name_base64=raw_name_to_base64(member.raw_name),
-                    inferred_encoding=inferred_encoding,
-                    declared_encoding="cp437",
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
             )
         emit_member_name_normalized(
             self._diagnostics_collector,
@@ -1265,7 +1236,7 @@ class ZipReader(BaseArchiveReader):
                 if gp_flags & 0x800:
                     fname_str = local_name.decode("utf-8")
                 else:
-                    fname_str = local_name.decode(self._encoding or "cp437")
+                    fname_str = local_name.decode("cp437")
                 if fname_str != info.orig_filename:
                     raise zipfile.BadZipFile(
                         f"File name in directory {info.orig_filename!r} and header "
@@ -2582,7 +2553,7 @@ class ZipReadBackend(ReadBackend):
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
     # so even a forward-only pass needs a seekable source.
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
-    USES_ENCODING = True  # zipfile metadata_encoding for non-UTF-8 names
+    USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 
     def open_read(
         self,

@@ -454,9 +454,9 @@ _BZ_ACCELERATED = [
 
 @pytest.fixture
 def _bzip2_auto_at_any_size(monkeypatch: pytest.MonkeyPatch) -> None:
-    from archivey.internal.streams import codecs
+    from archivey.internal.streams.codecs import bzip2_codec
 
-    monkeypatch.setattr(codecs, "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE", 0)
+    monkeypatch.setattr(bzip2_codec, "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE", 0)
 
 
 @pytest.mark.usefixtures("_bzip2_auto_at_any_size")

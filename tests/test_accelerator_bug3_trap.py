@@ -78,7 +78,7 @@ _UNTRAPPED = _SETUP + textwrap.dedent(
 _TRAPPED = _SETUP + textwrap.dedent(
     """
     from archivey.internal.config import AcceleratorMode, StreamConfig
-    from archivey.internal.streams.codecs import _open_rapidgzip
+    from archivey.internal.streams.codecs.rapidgzip_select import _open_rapidgzip
     src = Src(full)
     # Fault on the next source pull after ~64 KiB compressed — well after open/header,
     # well before the 20 MiB payload is exhausted, so decode must observe it.

@@ -176,7 +176,7 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   stays under about 8 MiB and each block decodes into an 8 MiB buffer. Both numbers are
   the format's, so `DecoderLimits` has nothing to cap here.
 - **Detection lifts the cap.** The detection probes decode a sample with
-  `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs.py`, the same rule as
+  `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs/base.py`, the same rule as
   liblzma's dictionary), so a probe decodes with `window_log_max` at libzstd's ceiling.
   libzstd reserves the declared window on the first read: an 18-byte frame declaring
   2 GiB reserves 2 GiB of address space during `open_archive` whatever
@@ -260,7 +260,7 @@ formats. `zstd`, `pzstd` and `lz4` install from the distribution.
 - Decisions: [ADR 0009](../decisions/0009-zstd-stdlib-backports.md) ·
   [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §zstd, §lz4
-- Code: `internal/streams/codecs.py` (`ZstdCodec`, `Lz4Codec`) ·
+- Code: `internal/streams/codecs/zstd_codec.py` (`ZstdCodec`), `lz4_codec.py` (`Lz4Codec`) ·
   `internal/streams/zstd_framing.py` · `internal/streams/lz4_legacy.py`
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (zstd method) ·
   [`7z.md`](7z.md) (LZ4 coder) · [`tar.md`](tar.md)

@@ -91,7 +91,7 @@ def test_overrun_probe_still_reads_an_opaque_decoder_error_as_the_end() -> None:
 
 @requires("rapidgzip")
 def test_bzip2_accelerator_traps_a_failing_caller_source() -> None:
-    """codecs.py: the bzip2 accelerator reads a caller's stream through the trap too.
+    """codecs/bzip2_codec.py: the bzip2 accelerator reads a caller's stream through the trap too.
 
     Without it, the caller's ``OSError`` crossed into rapidgzip's C++ callback and
     aborted the interpreter (``std::invalid_argument``), so this runs in a child.

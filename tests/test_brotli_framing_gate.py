@@ -137,15 +137,16 @@ def test_lzma_alone_rejects_header_only_source() -> None:
 def test_ole_and_coff_residuals_honest_detect_format() -> None:
     # Named residual families survive the Brotli first-block gate *and* the chain walk
     # when the source is larger than the detection peek (completeness does not apply).
-    # End-to-end detect_format claims them by probe order, and *which* probe claims each
-    # is what this pins — both are fabrications either way.
+    # What end-to-end detect_format does with each is what this pins.
     #
-    # The two families split since `detection-format-gaps`: the Alone probe now refuses a
-    # header declaring an uncompressed size of exactly zero (bytes 5..12), because such a
-    # stream carries no payload to open. OLE's are `B1 1A E1 00 …` — nonzero, so it still
-    # goes to Alone. COFF's are all zero, so Alone declines and Brotli takes it instead,
-    # at GUESS rather than PROBABLE: a weaker claim on the same fabrication, still
-    # probe-only and so still stamping `format_unconfirmed` on a read failure.
+    # OLE: the probe still accepts it, but detection never runs the probes on it. Its
+    # signature is a known non-archive signature, which stops the content probes, so
+    # with no extension detection fails instead of claiming a stream.
+    #
+    # COFF: the Alone probe refuses a header declaring an uncompressed size of exactly
+    # zero (bytes 5..12), because such a stream carries no payload to open. COFF's are
+    # all zero, so Alone declines and Brotli takes it, at GUESS: a weak claim on a
+    # fabrication, probe-only and so stamping `format_unconfirmed` on a read failure.
     from archivey.internal.detection_workspace import DETECTION_LIMIT
 
     ole = bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
@@ -159,9 +160,8 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
         BrotliCodec().content_probe(prefix, source_length=len(ole), read_at=read_at)
         is True
     )
-    ole_info = detect_format(io.BytesIO(ole))
-    assert ole_info.format == ArchiveFormat.LZMA_ALONE
-    assert ole_info.confidence == DetectionConfidence.PROBABLE
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(ole))
 
     # COFF AMD64 machine word + crafted trailer that is a fitting uncompressed Brotli
     # first block (IMAGE_FILE_MACHINE_AMD64 = 0x8664 little-endian).

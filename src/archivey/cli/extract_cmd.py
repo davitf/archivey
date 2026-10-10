@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import stat
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -193,6 +195,43 @@ def _free_name(dest: Path, *, is_dir: bool) -> Path:
         n += 1
 
 
+def _open_up(path: Path) -> int | None:
+    """Give the directory at ``path`` owner read, write and search permission for a
+    move; return the mode to put back, or ``None`` when nothing was changed (it is
+    not a directory, or already has them).
+
+    Extraction applies a directory's stored mode when the run ends, so a hoisted
+    directory can be ``0o555``. Moving entries out of it needs write permission on
+    it, and so does moving it to another parent, because its ``..`` entry changes.
+    Without this, a non-root user's hoist failed where tar would have extracted.
+    """
+    st = os.lstat(path)
+    mode = stat.S_IMODE(st.st_mode)
+    if not stat.S_ISDIR(st.st_mode) or mode & stat.S_IRWXU == stat.S_IRWXU:
+        return None
+    os.chmod(path, mode | stat.S_IRWXU)
+    return mode
+
+
+def _put_back(path: Path, mode: int | None) -> None:
+    """Restore the mode :func:`_open_up` changed, at the directory's current path."""
+    if mode is not None:
+        with contextlib.suppress(OSError):
+            os.chmod(path, mode)
+
+
+def _rename(src: Path, dest: Path) -> None:
+    """``os.rename``, for a directory too that lacks owner write (:func:`_open_up`).
+    The directory keeps its mode."""
+    mode = _open_up(src)
+    try:
+        os.rename(src, dest)
+    except BaseException:
+        _put_back(src, mode)
+        raise
+    _put_back(dest, mode)
+
+
 def _merge_move(
     src: Path,
     dest: Path,
@@ -211,18 +250,25 @@ def _merge_move(
     ``None`` when SKIP discarded it. Only the caller's top-level call reads this: it is
     where the hoisted root ended up, which a collision can move off ``dest``."""
     if not os.path.lexists(dest):
-        os.rename(src, dest)
+        _rename(src, dest)
         return dest
     src_is_dir = src.is_dir() and not src.is_symlink()
     dest_is_dir = dest.is_dir() and not dest.is_symlink()
     if src_is_dir and dest_is_dir:
-        for entry in sorted(src.iterdir()):
-            _merge_move(entry, dest / entry.name, overwrite, result, err)
-        src.rmdir()
+        # ``dest`` keeps its own mode, as a directory that was already there does
+        # when extracting into it; ``src`` is opened up only to empty it.
+        mode = _open_up(src)
+        try:
+            for entry in sorted(src.iterdir()):
+                _merge_move(entry, dest / entry.name, overwrite, result, err)
+            src.rmdir()
+        except BaseException:
+            _put_back(src, mode)
+            raise
         return dest
     if overwrite is OverwritePolicy.RENAME:
         free = _free_name(dest, is_dir=src_is_dir)
-        os.rename(src, free)
+        _rename(src, free)
         result.renamed += 1
         print(
             f"renamed: {escape_path(dest)} -> {escape_path(free)}",
@@ -432,10 +478,20 @@ def maybe_hoist_single_root(
         if dest == wrapper:
             if child.is_dir() and not child.is_symlink():
                 # Flatten: wrapper/src/* → wrapper/*. The wrapper held only this
-                # child, so the moves cannot collide.
-                for entry in sorted(child.iterdir()):
-                    entry.rename(wrapper / entry.name)
-                child.rmdir()
+                # child, so the moves cannot collide. The wrapper takes the child's
+                # place, so it takes the child's mode and times too.
+                st = os.stat(child)
+                mode = _open_up(child)
+                try:
+                    for entry in sorted(child.iterdir()):
+                        _rename(entry, wrapper / entry.name)
+                    child.rmdir()
+                except BaseException:
+                    _put_back(child, mode)
+                    raise
+                with contextlib.suppress(OSError):  # best-effort, as in extraction
+                    os.chmod(wrapper, stat.S_IMODE(st.st_mode))
+                    os.utime(wrapper, ns=(st.st_atime_ns, st.st_mtime_ns))
             else:
                 # Sole non-dir entry named like the wrapper: step the wrapper
                 # aside so the entry can take its place.
