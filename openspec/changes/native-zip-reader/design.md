@@ -229,7 +229,8 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   `comment` are `None` until the directory has been read, not guessed. The type cannot
   be `None`: it is `FILE` or `DIRECTORY` from the name until then. Then the members
   already yielded are updated in place (`ArchiveMember` is mutable, ADR 0007), before
-  the pass ends. How a caller sees this gap before the pass starts (DR-8) is question D.
+  the pass ends. Each such member has `is_final` false until then (question D), so a
+  caller sees the gap on the member before reading anything (DR-8).
 - Extraction writes each member as it arrives, then at the end of the pass applies
   modes, turns a member the directory types as a symlink into a link (its target is the
   data just written, at most the link-target cap), and removes what it wrote for a
@@ -380,6 +381,7 @@ One PR each, in order; every PR goes through the review label.
    `backend-registry` (the `required_source` table), `access-mode-and-cost` (the
    trailing-index row), `safe-extraction` if the filter re-run needs a sentence there,
    `docs/access-and-cost.md` (the checklist tells users to buffer ZIP),
+   `archive-data-model` (the new `is_final` field, every format),
    `docs/formats.md`, handbook §1, §2.2, §5, §6.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
    (question B, answered). Format-zip spec, handbook §2.2 and §5, `docs/formats.md`,
@@ -439,14 +441,16 @@ first. One read at the tail, then forward reads only; every member is complete w
 yielded (DR-8), and nothing needs fixing at the end. The local-header walk is for
 non-seekable sources only.
 
-**D. How a caller sees that a forward pass fills some fields only at the end.** Open.
-In a forward pass a member's type is a guess from its name, and its mode, host and
-comment are `None`, until the directory arrives after the last member (§"What only the
-central directory says"). DR-8 asks for a way to see that before the pass starts. The
-options: a new public bool on the cost receipt, true only for this mode (recommended:
-visible at open, one field for the one mode that needs it); the docs and the `None`
-fields alone, with no new name; or a per-member bool. A new public name goes to the
-maintainer; the stage 3 PR proposes it.
+**D. How a caller sees that a forward pass fills some fields only at the end.**
+Answered (davi, 2026-10-10): a per-member field saying the member will not change
+again, working name `is_final` (to match `is_current`; the stage 3 PR settles the
+name). The cost receipt was rejected: it describes what listing and reading cost, not
+whether a member's fields are settled. The field is not ZIP-specific. It is false
+wherever archivey later updates a member in place: a ZIP member yielded in a forward
+pass until the directory has been read, and, in every format, a link whose target is
+stored as member data until that target has been read (`read_link_targets=False`, or a
+listing from the index alone). It is true everywhere else, so a caller checks it on
+each member before reading anything.
 
 ## Out of scope
 

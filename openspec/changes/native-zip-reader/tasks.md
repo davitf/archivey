@@ -7,7 +7,8 @@
       main; their tests are acceptance tests from here on.
 - [x] 0.2 Questions A, B and C in `design.md` are answered (davi, 2026-10-10) and
       recorded in `dev-docs/formats/zip.md` §6 and `dev-docs/design-rules.md` DR-8.
-- [ ] 0.4 Question D is answered before stage 3 merges.
+- [x] 0.4 Question D is answered (davi, 2026-10-10: a per-member `is_final`, name
+      settled in the stage 3 PR).
 - [ ] 0.3 `openspec validate --strict native-zip-reader`.
 
 ## 1. Parser (PR 1)
@@ -76,11 +77,14 @@
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
 - [ ] 3.3e Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
-      caller sees in a forward pass"; the answer to question D.
+      caller sees in a forward pass"; `ArchiveMember.is_final` (question D) in every
+      format, false for a pipe ZIP member until the directory and for a data-stored
+      link target until it is read (tests for both).
 - [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
       same files on disk.
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
-      and `access-mode-and-cost` specs (and `safe-extraction` if the filter re-run
+      and `access-mode-and-cost` specs, `archive-data-model` for `is_final` (and
+      `safe-extraction` if the filter re-run
       needs a sentence); `docs/access-and-cost.md`, `docs/formats.md`; handbook §1,
       §2.2, §5, §6.
 

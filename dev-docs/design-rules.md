@@ -443,7 +443,10 @@ yielded; only a non-seekable source walks local headers and completes members at
 of the pass (davi, 2026-10-10, native ZIP reader design). The reasons given with the
 question: the tail read costs one seek, and a member that is complete when yielded needs
 no fixing later. Reopen if a seekable source where the tail read is expensive (a remote
-object) turns out to matter more than complete members.
+object) turns out to matter more than complete members. A member that archivey will
+still update in place says so on the member itself, with a field (working name
+`is_final`), not on the cost receipt, which describes cost; it covers data-stored link
+targets not yet read as well as a ZIP read from a pipe (davi, 2026-10-10).
 
 **Do not** recommend "lazy by default, complete on request".
 
