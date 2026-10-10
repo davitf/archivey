@@ -2785,12 +2785,22 @@ def test_a_pass_holds_one_entry_per_member(streaming: bool) -> None:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
         for i in range(count):
-            tf.addfile(tarfile.TarInfo(f"f{i:05d}"))
+            tf.addfile(tarfile.TarInfo(f"held-once-{i:05d}"))
+
+    def ours(name: bytes) -> bool:
+        # A free-threaded build can still hold another test's objects after
+        # gc.collect(), so only this archive's are counted.
+        return name.startswith(b"held-once-")
+
     with open_archive(io.BytesIO(buf.getvalue()), streaming=streaming) as reader:
         names = [m.name for m, _ in reader.stream_members()]
         gc.collect()
-        entries = [o for o in gc.get_objects() if isinstance(o, TarEntry)]
-        headers = sum(isinstance(o, HeaderBlock) for o in gc.get_objects())
+        entries = [
+            o for o in gc.get_objects() if isinstance(o, TarEntry) and ours(o.name)
+        ]
+        headers = sum(
+            isinstance(o, HeaderBlock) and ours(o.name) for o in gc.get_objects()
+        )
         # Each entry is held by its member alone, not by a list of the walk's.
         holders = [
             type(r).__name__ for r in gc.get_referrers(entries[-1]) if r is not entries
