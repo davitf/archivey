@@ -384,7 +384,8 @@ def _require_folder_graph_count(count: int, limit: int, what: str) -> None:
 def _require_header_count(count: int, header_size: int, what: str) -> None:
     if count > header_size:
         raise CorruptionError(
-            f"7z {what} count {count} exceeds the {header_size}-byte header"
+            f"7z {what} count {count} exceeds the {header_size}-byte header "
+            f"(each item needs at least one byte of metadata)"
         )
 
 
@@ -1159,9 +1160,10 @@ def _read_files_info(
     cur: _Cursor, *, max_members: int | None
 ) -> tuple[list[SevenZipFileRecord], str | None]:
     num_files = cur.uint64()
-    # Bound the file count before pre-allocating one object per claimed file. See
-    # threat-model O1 / review L1. CRC does NOT make the header trustworthy: an
-    # attacker crafting the archive computes a matching CRC.
+    # Bound the file count against the header size and the listing budget before
+    # pre-allocating one object per claimed file. See threat-model O1 / review L1.
+    # CRC does NOT make the header trustworthy: an attacker crafting the archive
+    # computes a matching CRC.
     _require_member_scaled_count(num_files, len(cur.buf), max_members, "file")
     files = [_FileProps() for _ in range(num_files)]
     num_empty_streams = 0

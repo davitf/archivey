@@ -27,7 +27,11 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends import sevenzip_parser, sevenzip_pipeline
+from archivey.internal.backends import (
+    sevenzip_parser,
+    sevenzip_pipeline,
+    sevenzip_reader,
+)
 from archivey.internal.backends.sevenzip_parser import (
     MAGIC_7Z,
     PlainHeader,
@@ -555,10 +559,17 @@ def test_entry_points_default_to_the_listing_limit(
     assert param.default is not None
 
 
-def test_decoded_header_parse_requires_max_members() -> None:
-    param = inspect.signature(sevenzip_parser.parse_decoded_header).parameters[
-        "max_members"
-    ]
+@pytest.mark.parametrize(
+    "helper",
+    [
+        sevenzip_parser.parse_decoded_header,
+        sevenzip_reader._decode_encoded_header_block,  # noqa: SLF001
+    ],
+)
+def test_decoded_header_helpers_require_max_members(
+    helper: Callable[..., object],
+) -> None:
+    param = inspect.signature(helper).parameters["max_members"]
     assert param.default is inspect.Parameter.empty
 
 

@@ -902,6 +902,35 @@ def test_header_encrypted_empty_decoded_header_rejected(
     assert "Password required" not in caught.value.message
 
 
+@requires("cryptography")
+def test_fuzz_header_target_reaches_the_encrypted_header_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Atheris 7z header target passes the corpus password.
+
+    Without one, an AES-coded encoded header stops at "Password required" and the
+    fuzzer never reaches the folder pipeline or the O8 check behind it.
+    """
+    pytest.importorskip("py7zr")
+    from archivey.internal.backends import sevenzip_pipeline
+    from tests.atheris_fuzz.targets import sevenzip_header_one
+    from tests.sample_archives import CORPUS, corpus_archive_path
+
+    entry = next(e for e in CORPUS if e.id == "encrypted-header")
+    data = corpus_archive_path(entry, "7z", tmp_path).read_bytes()
+
+    planned: list[object] = []
+    original = sevenzip_pipeline.plan_folder
+
+    def counting(folder: object) -> object:
+        planned.append(folder)
+        return original(folder)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sevenzip_pipeline, "plan_folder", counting)
+    sevenzip_header_one(data)
+    assert planned
+
+
 def test_lzma1_bcj_fixture_roundtrip(tmp_path: Path) -> None:
     """py7zr LZMA1+BCJ archives decode via a staged BCJ filter (not combined liblzma)."""
     archive = tmp_path / "lzma1-bcj.7z"

@@ -18,6 +18,7 @@ import pytest
 from archivey import ArchiveyError
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
 from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
+from archivey.internal.password import _PasswordCandidates
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 
 pytestmark = pytest.mark.skipif(
@@ -26,7 +27,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 _HARNESS_VERSION = 1
-_SEED_ENTRY_IDS = {"basic", "encoding", "large"}
+_SEED_ENTRY_IDS = {"basic", "encoding", "large", "encrypted-header"}
+# The corpus password, so an encrypted header reaches the folder pipeline.
+_PASSWORDS = ["", "password"]
 
 
 def _corpus_seed_entries() -> Iterable[CorpusEntry]:
@@ -66,6 +69,9 @@ def test_load_sevenzip_archive_fuzz_harness(tmp_path: Path) -> None:
     for index, seed in enumerate(_seed_bytes(tmp_path)):
         for mutated in _mutations(seed, str(index)):
             try:
-                load_sevenzip_archive(io.BytesIO(mutated))
+                load_sevenzip_archive(
+                    io.BytesIO(mutated),
+                    passwords=_PasswordCandidates.from_input(_PASSWORDS),
+                )
             except ArchiveyError:
                 pass

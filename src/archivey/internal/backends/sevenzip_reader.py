@@ -5,7 +5,9 @@ Module split:
 - :mod:`.sevenzip_methods` — method-id registry / :class:`MethodKind`
 - :mod:`.sevenzip_parser` — signature + header property tree → :class:`SevenZipArchive`
 - :mod:`.sevenzip_pipeline` — folder coder plan/execute + encoded-header decode
-- this module — passwords, member list, solid-folder demux, CRC/encryption mapping
+- this module — passwords, member list, solid-folder demux, CRC/encryption mapping,
+  and the archive-open flow (:func:`load_sevenzip_archive`), which lives here because
+  decrypting an encoded header needs the password candidates
 
 Open path: signature → ``parse_header_block`` → (one encoded-header layer) →
 ``materialize_archive`` → list members. Member open folds the folder's packed
@@ -71,7 +73,6 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
-    HEADER_PASSWORD_REJECTED,
     decode_encoded_header,
     encoded_header_needs_password,
     open_folder_pipeline,
@@ -239,6 +240,8 @@ def _password_to_kdf_bytes(password: bytes) -> bytes:
     except UnicodeDecodeError:
         return password
 
+
+HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 
 # Omitting max_members on the archive-level entry point means the ListingLimits
 # default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.

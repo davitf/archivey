@@ -102,8 +102,6 @@ from archivey.internal.streams.streamtools.binaryio import (
     try_readinto,
 )
 
-HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
-
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
