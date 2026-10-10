@@ -18,6 +18,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -29,8 +30,8 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import FilterRejectionError, LinkTargetNotFoundError
-from archivey.internal.backends import directory_reader
-from archivey.internal.backends.rar_parser import RarMemberInfo
+from archivey.internal.backends import directory_reader, rar_parser
+from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
 from archivey.internal.backends.zip_reader import ZipReader
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
@@ -155,9 +156,32 @@ def test_an_odd_name_length_is_declined_rather_than_raising(which: str) -> None:
 
 def test_truncated_payload_does_not_raise() -> None:
     whole = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "target", "target")
-    # Every prefix is either declined or parsed into a shorter target; none may raise.
-    for cut in range(len(whole)):
-        parse_reparse_data(whole[:cut])
+    # 8-byte header, 8 bytes of name offsets, 4 bytes of symlink flags, then the
+    # substitute name (12 bytes and a NUL) from byte 20 of the payload.
+    names_end = 16
+    substitute_end = 16 + 4 + len("target".encode("utf-16-le"))
+    # No prefix raises. One too short for the name offsets is declined; one that holds
+    # them but not a whole name parses to a link with no target; past that, the
+    # substitute name is in bounds and is the target.
+    for cut in range(len(whole) + 1):
+        parsed = parse_reparse_data(whole[:cut])
+        if cut < names_end:
+            assert parsed is None, cut
+        elif cut < substitute_end:
+            assert parsed is not None, cut
+            assert parsed.target == "", cut
+        else:
+            assert parsed is not None, cut
+            assert parsed.target == "target", cut
+
+
+@pytest.mark.parametrize("declared", [0, 7])
+def test_a_declared_payload_shorter_than_the_name_offsets_is_declined(
+    declared: int,
+) -> None:
+    """The declared length is trusted when the bytes are there, so it can decline alone."""
+    data = struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, declared, 0) + b"\0" * 64
+    assert parse_reparse_data(data) is None
 
 
 # --------------------------------------------------------------------------------
@@ -1030,16 +1054,22 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     all, and each flag here is the only thing that would differ between this fixture
     and the archive a RAR4 writer would emit. The branch reads nothing else off the
     member. Only the symlinks are touched, so the rest of the listing stays honest.
+
+    The fields are patched after the header walk, not in the member's constructor:
+    the walk skips a FILE header's data by its parsed ``compress_size``, so zeroing
+    it any earlier would also move the walk into the link's data.
     """
-    original_init = RarMemberInfo.__init__
+    original_walk = rar_parser._parse_rar3
 
-    def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
-        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
-        if self.is_symlink:
-            for name in fields:
-                setattr(self, name, value)
+    def patched_walk(*args: Any, **kwargs: Any) -> RarArchive:
+        archive = original_walk(*args, **kwargs)
+        for member in archive.members:
+            if member.is_symlink:
+                for name in fields:
+                    setattr(member, name, value)
+        return archive
 
-    monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
+    monkeypatch.setattr(rar_parser, "_parse_rar3", patched_walk)
 
     fixture = Path(__file__).parent / "fixtures" / "rar" / "symlinks_solid__rar4.rar"
     with open_archive(fixture) as opened:
