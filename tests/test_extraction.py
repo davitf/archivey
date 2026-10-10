@@ -856,7 +856,19 @@ def test_deferred_metadata_of_a_directory_removed_by_another_spelling_is_dropped
     The removal names ``d`` and the member named ``s/d``: the pending metadata was
     kept under the spelled path, so the removal did not drop it. Inodes are reported
     as 0 here, so the identity check cannot tell the two directories apart, as on a
-    filesystem that reuses the freed inode."""
+    filesystem that reuses the freed inode.
+
+    Python 3.11 and 3.12 refuse the loop ``d -> d`` because ``Path.resolve()`` raises
+    on it; from 3.13 it does not raise, and the link is kept. The re-check is patched
+    to refuse it on every version, so the run removes ``d`` the same way everywhere."""
+    import archivey.internal.extraction as extraction_mod
+
+    escapes = extraction_mod._symlink_escapes
+    monkeypatch.setattr(
+        extraction_mod,
+        "_symlink_escapes",
+        lambda link, target, root: link.name == "d" or escapes(link, target, root),
+    )
     lstat, fstat = os.lstat, os.fstat
     monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
     monkeypatch.setattr(os, "fstat", lambda fd: _NoInode(fstat(fd)))
