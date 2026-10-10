@@ -1341,28 +1341,40 @@ def test_a_raise_mid_read_keeps_the_decoded_bytes(small_seek_cap: int, n: int) -
         assert stream.seek(0, io.SEEK_END) == len(full)
 
 
+@pytest.mark.parametrize("wrapper", ["ArchiveStream", "VerifyingStream"])
 def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
-    small_seek_cap: int,
+    small_seek_cap: int, wrapper: str
 ) -> None:
-    """The public wrapper learns where a seek that raised left the stream.
+    """Both verifying wrappers learn where a seek that raised left the stream.
 
     The raise comes after the inner seek moved, so the verifier must drop the
     digest and track the new position, or reading on reports a false truncation.
     """
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.verify import VerifyingStream
     from archivey.types import HashAlgorithm, crc32_digest
 
     compressed = make_multi_member_lzip(LZIP_PARTS)
     full = b"".join(LZIP_PARTS)
     collector = _strict_collector()
-    stream = ArchiveStream(
-        lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
-        translate=lambda _exc: None,
-        collector=collector,
-        expected_hashes={HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))},
-        expected_size=len(full),
-    )
+    hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))}
+    stream: BinaryIO
+    if wrapper == "ArchiveStream":
+        stream = ArchiveStream(
+            lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            translate=lambda _exc: None,
+            collector=collector,
+            expected_hashes=hashes,
+            expected_size=len(full),
+        )
+    else:
+        stream = VerifyingStream(
+            LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            hashes,
+            expected_size=len(full),
+            collector=collector,
+        )
     with stream:
         with pytest.raises(DiagnosticRaisedError):
             stream.seek(500)

@@ -13,7 +13,6 @@ import errno
 import os
 import stat
 from collections.abc import Iterator, Mapping
-from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -53,15 +52,6 @@ from archivey.types import (
     MemberStreams,
     MemberType,
 )
-
-
-def _stat_datetime(ts: float) -> datetime | None:
-    """A stat timestamp as an aware UTC datetime, or ``None`` when out of range.
-
-    A network/FUSE filesystem can genuinely report an out-of-range value, and a
-    pre-1970 one is a real date on every platform (``unix_to_datetime``).
-    """
-    return unix_to_datetime(ts)
 
 
 def _link_extra(member_type: MemberType, is_junction: bool) -> MemberExtra:
@@ -508,16 +498,16 @@ class DirectoryReader(BaseArchiveReader):
         # network/FUSE filesystem can report a value outside datetime's range, which
         # lists as None rather than sinking the whole walk. A pre-1970 value is a real
         # date on every platform.
-        modified = _stat_datetime(st.st_mtime)
-        accessed = _stat_datetime(st.st_atime)
+        modified = unix_to_datetime(st.st_mtime)
+        accessed = unix_to_datetime(st.st_atime)
         # st_birthtime is the true creation time but only exists on some platforms
         # (macOS/BSD, Windows; never Linux); st_ctime is metadata-change time on
         # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
         birthtime = getattr(st, "st_birthtime", None)
-        created = _stat_datetime(birthtime) if birthtime is not None else None
+        created = unix_to_datetime(birthtime) if birthtime is not None else None
         # On Windows st_ctime was the creation time before 3.12 (deprecated since),
         # so it is only an inode change time elsewhere.
-        ctime = _stat_datetime(st.st_ctime) if os.name != "nt" else None
+        ctime = unix_to_datetime(st.st_ctime) if os.name != "nt" else None
 
         # os.stat_result always defines st_uid/st_gid (both 0 on Windows), so no
         # getattr guard is needed.
