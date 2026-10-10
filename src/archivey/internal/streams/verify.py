@@ -143,11 +143,14 @@ def _probe_past_declared(inner: BinaryIO) -> bytes:
 
     A decoder error propagates: the body goes on past the declared size and does not
     decode, which is damage the read must not hand over as clean. The one error that
-    counts as "nothing more" is a closed source: an archive closed from another thread
-    once the read that delivered the last declared byte returned (closing waits for a
-    read in the source, not for the whole member read). Every declared byte has been
-    delivered, so only the over-run verdict is given up; the digests, checked after
-    this probe, still judge the content.
+    counts as "nothing more" is a closed source. Closing an archive waits for a read in
+    its source, not for the whole member read, so ``close()`` can land between the read
+    that delivered the last declared byte and this probe. A stored ZIP member's bounded
+    view then refuses the probe with the closed-file ``ValueError``, though the probe
+    would read no source byte (``test_archive_closed_before_the_overrun_probe``). Every
+    declared byte has been delivered, so the over-run verdict is what is given up. On a
+    sequential read the digests, checked after this probe, still judge the content;
+    after a seek off the frontier the checksum was forfeited already, so nothing does.
     """
     try:
         return inner.read(1)

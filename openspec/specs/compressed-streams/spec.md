@@ -248,13 +248,14 @@ at the public surface. `read(0)` is a no-op, never EOF.
 expected hashes) when a read **reaches the member's end**:
 
 - **Size-declared** (`expected_size` set): the read that consumes the declared
-  size is a verifying event (checksum and over-run). On digest mismatch, on
-  over-run, or when the data past the declared size fails to decode, it SHALL
-  raise `CorruptionError` and return **no bytes** for that call (withhold the
-  final chunk). The decode error is the verdict even when the declared bytes
-  match their checksum. On truncation-shaped EOF before the declared size,
-  the first read that asks past available output returns the remaining prefix
-  (short return); the next empty `read` raises `TruncatedError`.
+  size is a verifying event (checksum and over-run). On digest mismatch or
+  over-run it SHALL raise `CorruptionError` and return **no bytes** for that call
+  (withhold the final chunk). When the data past the declared size fails to
+  decode, that read SHALL raise the decoder's error as the verdict and return no
+  bytes, even when the declared bytes match their checksum; the translator above
+  the verifier types it as `CorruptionError`. On truncation-shaped EOF before the
+  declared size, the first read that asks past available output returns the
+  remaining prefix (short return); the next empty `read` raises `TruncatedError`.
 - **Size-unknown**: every data chunk MAY be returned first; `CorruptionError`
   SHALL raise on the read that observes end-of-stream (typically the terminal
   empty `read`) — no mandatory one-chunk delayed-release lookahead.

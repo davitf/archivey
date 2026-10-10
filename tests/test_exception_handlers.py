@@ -89,6 +89,26 @@ def test_overrun_probe_lets_resource_errors_through(error: BaseException) -> Non
 
 
 @pytest.mark.parametrize("n", [-1, 10])
+def test_overrun_probe_reads_a_closed_source_as_the_end(n: int) -> None:
+    """verify.py ``_probe_past_declared``: a closed source past the end is "no more data".
+
+    The digests still judge the declared bytes: a wrong CRC raises.
+    """
+    closed = ValueError("I/O operation on closed file.")
+    good = zlib.crc32(b"x" * 10).to_bytes(4, "big")
+    with VerifyingStream(
+        _ExactThenFails(b"x" * 10, closed), {"crc32": good}, expected_size=10
+    ) as stream:
+        assert stream.read(n) == b"x" * 10
+    bad = (zlib.crc32(b"x" * 10) ^ 1).to_bytes(4, "big")
+    with VerifyingStream(
+        _ExactThenFails(b"x" * 10, closed), {"crc32": bad}, expected_size=10
+    ) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read(n)
+
+
+@pytest.mark.parametrize("n", [-1, 10])
 def test_overrun_probe_raises_a_decoder_error_past_the_end(n: int) -> None:
     """verify.py ``_probe_past_declared``: a decoder error past the declared size raises.
 
@@ -162,7 +182,9 @@ def test_read_reaching_declared_size_raises_when_the_body_goes_on_corrupt(
     """A read that reaches ``member.size`` does not hand over a member zlib rejects.
 
     With ``read(65536)`` the four reads ended at the declared size with no error, so a
-    caller that stops at ``member.size`` took a damaged member as verified.
+    caller that stops at ``member.size`` took a damaged member as verified. The verdict
+    is corruption, not truncation, and the reaching read withholds its chunk: only the
+    reads before it deliver bytes.
     """
     blob, size = _zip_with_bad_block_after_declared_size()
     with pytest.raises(zlib.error):
@@ -171,13 +193,15 @@ def test_read_reaching_declared_size_raises_when_the_body_goes_on_corrupt(
     with (
         archivey.open_archive(io.BytesIO(blob)) as reader,
         reader.open("m") as stream,
-        pytest.raises(CorruptionError),
+        pytest.raises(CorruptionError) as info,
     ):
         while got < size:
             chunk = stream.read(n)
             if not chunk:
                 break
             got += len(chunk)
+    assert not isinstance(info.value, TruncatedError)
+    assert got == (0 if n < 0 else (size - 1) // n * n)
 
 
 @requires("rapidgzip")
