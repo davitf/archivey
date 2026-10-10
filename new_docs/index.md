@@ -14,8 +14,8 @@ and older, the rarer compression methods in 7z and ZIP, and AES decryption, whic
 and ZIP archives need.
 
 RAR archives can be listed with nothing else installed. To read the files inside, you also need
-RARLAB's `unrar` 6.0 or later (or RARLAB's `rar`), or `unar` 1.10 or later, which handles fewer RAR
-archives. [Install](install.md) has the details.
+RARLAB's `unrar` or `rar`, 6.0 or later, or `unar` 1.10 or later, which handles fewer RAR archives.
+[Install](install.md) has the details.
 
 ## Open and list
 
