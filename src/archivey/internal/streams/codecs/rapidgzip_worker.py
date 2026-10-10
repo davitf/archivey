@@ -279,6 +279,9 @@ def disable_core_dumps() -> None:
 
 def _peak_memory() -> int | None:
     """This process's peak resident memory in bytes, or ``None`` where it is unknown."""
+    linux_peak = _linux_peak_memory()
+    if linux_peak is not None:
+        return linux_peak
     try:
         import resource
     except ImportError:
@@ -286,6 +289,27 @@ def _peak_memory() -> int | None:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # Linux and the BSDs give kilobytes, macOS gives bytes.
     return peak if sys.platform == "darwin" else peak * 1024
+
+
+def _linux_peak_memory() -> int | None:
+    """``VmHWM`` from ``/proc/self/status`` in bytes, or ``None`` where there is none.
+
+    Not ``getrusage`` on Linux: its ``ru_maxrss`` starts at the parent's peak, because
+    ``exec`` keeps the high-water mark of the memory it replaces, and that memory was
+    the parent's. In a parent that once held 300 MB, the child's peak read 300 MB
+    before it allocated anything, so its own growth stayed under that and the limit
+    never fired. ``VmHWM`` belongs to the memory ``exec`` made and counts only this
+    program.
+    """
+    try:
+        with open("/proc/self/status", "rb") as status:
+            for line in status:
+                if line.startswith(b"VmHWM:"):
+                    # "VmHWM:   13256 kB"
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 def _windows_peak_memory() -> int | None:

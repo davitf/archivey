@@ -189,8 +189,12 @@ the cap plus about 17 MB, for caps of 8, 16 and 32 MiB; without a cap it was 87 
 busy machine the watching thread can wait for a processor, and the peak passes the cap by
 more. Ordinary
 data on four threads held about 55 MB over start-up, so the 2 GiB default leaves room for
-about 140 threads. The peak is read with `getrusage` (Linux, macOS) or
-`GetProcessMemoryInfo` (Windows); where neither works, no cap applies.
+about 140 threads. The peak is read from `VmHWM` in `/proc/self/status` (Linux),
+`getrusage` (macOS, the BSDs) or `GetProcessMemoryInfo` (Windows); where none works, no
+cap applies. Not `getrusage` on Linux: there a child's `ru_maxrss` starts at its parent's
+peak, because `exec` keeps the high-water mark of the memory it replaces. A parent that had
+once held more than the child's decode plus the cap left the child never stopped
+(`test_the_limit_counts_from_the_childs_own_memory_not_the_parents_peak`).
 
 Where no child can start — a frozen application, no `sys.executable`, archivey imported
 from a zip so the worker is not a file, or a spawn or temporary file the system refuses —

@@ -14,6 +14,9 @@ limit of 8 MiB.
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
+import textwrap
 import time
 import zlib
 from collections.abc import Callable
@@ -58,13 +61,14 @@ def _read_in_chunks(read: Callable[[int], bytes]) -> int:
 
 def _read_until_stopped(child: RapidgzipChildStream) -> ResourceLimitError:
     """Read ``child`` from the start, again and again, until a read raises
-    ``ResourceLimitError``; fail after 60 seconds.
+    ``ResourceLimitError``; fail after 20 seconds, well inside the suite's 60-second
+    ``--timeout``, which would end the whole worker and hide this message.
 
     The child checks its memory from a thread every millisecond. On a busy machine
     that thread can wait long enough for the whole stream to be decoded first, but the
     peak stays over the limit, so the child stops at the thread's next check.
     """
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         try:
             _read_in_chunks(child.read)
@@ -87,6 +91,56 @@ def test_a_child_over_its_memory_limit_is_stopped() -> None:
         # Every later call raises the same error.
         with pytest.raises(ResourceLimitError):
             child.read(1)
+
+
+# A parent whose peak resident memory is far above what the child decodes to. Run in
+# its own process, so the peak it raises is not the test worker's.
+_STOPPED_UNDER_A_LARGE_PARENT = textwrap.dedent(
+    """
+    import io, sys, zlib
+    from archivey.exceptions import ResourceLimitError
+    from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
+
+    # Touch every page, then free them: the peak stays, the memory does not.
+    ballast = bytearray(int(sys.argv[1]))
+    for i in range(0, len(ballast), 4096):
+        ballast[i] = 1
+    del ballast
+
+    compressor = zlib.compressobj(9, zlib.DEFLATED, 31)
+    block = bytes(1 << 20)
+    data = b"".join([*(compressor.compress(block) for _ in range(64)), compressor.flush()])
+    with RapidgzipChildStream(io.BytesIO(data), label="gzip", max_memory=8 << 20) as child:
+        try:
+            while child.read(1 << 20):
+                pass
+        except ResourceLimitError:
+            print("stopped")
+        else:
+            print("not stopped")
+    """
+)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Linux carries the parent's peak memory into the child's getrusage",
+)
+def test_the_limit_counts_from_the_childs_own_memory_not_the_parents_peak() -> None:
+    """On Linux, a child's ``getrusage`` peak starts at its parent's peak: ``exec``
+    keeps the high-water mark of the memory it replaces, which is the parent's. With
+    that as the start, a child in a parent that once held more than the child's
+    decode plus the limit was never stopped. The parent here raises its peak to 256
+    MiB, more than the 64 MiB the child decodes to, and frees it again."""
+    result = subprocess.run(
+        [sys.executable, "-c", _STOPPED_UNDER_A_LARGE_PARENT, str(256 << 20)],
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "stopped"
 
 
 def test_a_child_under_its_memory_limit_reads_the_whole_stream() -> None:
