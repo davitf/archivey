@@ -22,7 +22,7 @@ from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.codecs import _stdlib_bzip2
+from archivey.internal.streams.codecs.bzip2_codec import _stdlib_bzip2
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
