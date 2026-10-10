@@ -20,7 +20,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cli import test_cmd
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, main
@@ -928,6 +928,93 @@ def test_test_early_abort_reports_not_tested(
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "1 OK, 1 failed, 1 not tested" in err
+
+
+class _StderrFailingAtFirstOk(io.StringIO):
+    """A stderr that raises ``exc`` when the first ``OK`` line is written: once, as
+    Ctrl-C arrives, or on that write and every later one, as a closed pipe does.
+    """
+
+    def __init__(self, exc: BaseException, *, every_later_write: bool) -> None:
+        super().__init__()
+        self._exc = exc
+        self._every_later_write = every_later_write
+        self._failed = False
+
+    @property
+    def failed(self) -> bool:
+        """Whether the injected error has been raised."""
+        return self._failed
+
+    def write(self, s: str) -> int:
+        if (s.startswith("OK   ") and not self._failed) or (
+            self._failed and self._every_later_write
+        ):
+            self._failed = True
+            raise self._exc
+        return super().write(s)
+
+
+def test_test_ctrl_c_mid_pass_exits_interrupted(sample_zip: Path) -> None:
+    """Ctrl-C during the read pass ends as ``interrupted`` and 130, as in ``extract``.
+
+    The interrupt leaves the loop while the member pass is suspended between members;
+    that pass must not then stop the reader from closing.
+    """
+    err = _StderrFailingAtFirstOk(KeyboardInterrupt(), every_later_write=False)
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_INTERRUPTED
+    assert "interrupted" in err.getvalue()
+    assert "Cannot close the archive reader" not in err.getvalue()
+
+
+def test_extract_ctrl_c_mid_pass_exits_interrupted(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ctrl-C during the extraction pass ends as ``interrupted`` and 130.
+
+    The progress callback runs inside the extraction loop while the member pass is
+    suspended, so an interrupt raised there must not leave that pass blocking the
+    reader's close.
+    """
+    import archivey.cli.extract_cmd as extract_mod
+
+    class _InterruptingProgress:
+        calls = 0
+
+        def __call__(self, progress: object) -> None:
+            self.calls += 1
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            pass
+
+    progress = _InterruptingProgress()
+    monkeypatch.setattr(extract_mod, "make_progress_callback", lambda **_: progress)
+    dest = tmp_path / "out"
+    assert main(["extract", str(sample_zip), "-d", str(dest)]) == EXIT_INTERRUPTED
+    assert progress.calls == 1
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
+    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stderr pipe closed during the pass gets the broken-pipe exit, not a usage
+    error about closing the reader while its member pass is active.
+    """
+    from archivey.cli import main as main_mod
+
+    # The real one closes sys.stdout / sys.stderr, which pytest's capture owns.
+    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    err = _StderrFailingAtFirstOk(
+        BrokenPipeError(32, "Broken pipe"), every_later_write=True
+    )
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+    # The pipe did close mid-pass: without this, a clean run passes the test too.
+    assert err.failed
 
 
 def test_test_summary_helper() -> None:
