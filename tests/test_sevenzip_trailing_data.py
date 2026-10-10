@@ -1,8 +1,9 @@
 """Bytes after the end of a 7z archive are ``ARCHIVE_TRAILING_DATA`` (DR-3).
 
-A 7z archive ends with its next header. A non-zero byte after it is a warning by
-default and refused under ``DiagnosticPolicy.strict()``; zero padding is silent. 7-Zip
-23.01 warns "There are data after the end of archive" for the same bytes.
+A 7z archive ends at its next header or its last packed stream, whichever is later. A
+non-zero byte after that is a warning by default and refused under
+``DiagnosticPolicy.strict()``; zero padding is silent. 7-Zip 23.01 warns "There are data
+after the end of archive" for any tail, zeros included.
 """
 
 from __future__ import annotations
@@ -26,14 +27,40 @@ def _crc(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
 
-def _stored_7z(name: str = "f.txt", payload: bytes = _PAYLOAD) -> bytes:
-    """One member stored with the COPY coder, folder CRC set."""
+def _stored_7z(
+    name: str = "f.txt", payload: bytes = _PAYLOAD, *, header_first: bool = False
+) -> bytes:
+    """One member stored with the COPY coder, folder CRC set.
+
+    ``header_first`` puts the next header before the packed stream, a layout the format
+    allows and 7-Zip 23.01 refuses ("Headers Error").
+    """
     assert len(payload) < 0x80  # every 7z number below fits one byte
     names = b"\x00" + name.encode("utf-16le") + b"\x00\x00"
-    header = (
+    header = _header(names, payload, pack_pos=0)
+    if header_first:
+        header = _header(names, payload, pack_pos=len(header))
+        start_header = struct.pack("<QQI", 0, len(header), _crc(header))
+        body = header + payload
+    else:
+        start_header = struct.pack("<QQI", len(payload), len(header), _crc(header))
+        body = payload + header
+    signature = (
+        b"7z\xbc\xaf\x27\x1c\x00\x04"
+        + struct.pack("<I", _crc(start_header))
+        + start_header
+    )
+    return signature + body
+
+
+def _header(names: bytes, payload: bytes, *, pack_pos: int) -> bytes:
+    assert pack_pos < 0x80
+    return (
         b"\x01"  # kHeader
         b"\x04"  # kMainStreamsInfo
-        b"\x06\x00\x01\x09"  # kPackInfo, pack pos 0, one stream, kSize
+        b"\x06"  # kPackInfo
+        + bytes([pack_pos])
+        + b"\x01\x09"  # one stream, kSize
         + bytes([len(payload)])
         + b"\x00"  # kEnd
         + b"\x07\x0b\x01\x00"  # kUnPackInfo, kFolder, one folder, not external
@@ -51,13 +78,16 @@ def _stored_7z(name: str = "f.txt", payload: bytes = _PAYLOAD) -> bytes:
         + b"\x00"  # kEnd (files info)
         + b"\x00"  # kEnd (header)
     )
-    start_header = struct.pack("<QQI", len(payload), len(header), _crc(header))
-    signature = (
+
+
+def _empty_7z(next_header_offset: int = 0) -> bytes:
+    """No members: NextHeaderSize 0. With offset 0 it is the 32 bytes py7zr writes."""
+    start_header = struct.pack("<QQI", next_header_offset, 0, 0)
+    return (
         b"7z\xbc\xaf\x27\x1c\x00\x04"
         + struct.pack("<I", _crc(start_header))
         + start_header
     )
-    return signature + payload + header
 
 
 def _trailing(data: bytes) -> list[ArchiveEofContext]:
@@ -104,9 +134,12 @@ def test_two_archives_concatenated_list_the_first_and_report_the_second() -> Non
 
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
-    with pytest.raises(DiagnosticRaisedError):
+    with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(io.BytesIO(_stored_7z() + b"JUNK"), config=config) as reader:
             reader.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+    assert isinstance(ei.value.diagnostic.context, ArchiveEofContext)
+    assert ei.value.diagnostic.context.observed_bytes == 0
 
 
 def test_strict_policy_accepts_zero_padding() -> None:
@@ -122,3 +155,36 @@ def test_self_extractor_tail_is_reported_after_the_payload() -> None:
     stub = b"MZ" + b"\x90" * 510
     (context,) = _trailing(stub + _stored_7z() + b"\x00" * 10 + b"cfg")
     assert context.observed_bytes == 10
+
+
+def test_packed_stream_after_the_next_header_is_part_of_the_archive() -> None:
+    data = _stored_7z(header_first=True)
+    assert _trailing(data) == []
+    (context,) = _trailing(data + b"\x00" * 3 + b"JUNK")
+    assert context.observed_bytes == 3
+
+
+def _empty_trailing(data: bytes, config: ArchiveyConfig | None = None) -> list[int]:
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        assert reader.members() == []
+        return [
+            d.context.observed_bytes
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+            and isinstance(d.context, ArchiveEofContext)
+        ]
+
+
+def test_empty_archive_ends_at_its_signature_header() -> None:
+    assert _empty_trailing(_empty_7z()) == []
+    assert _empty_trailing(_empty_7z() + b"JUNK") == [0]
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    assert _empty_trailing(_empty_7z() + b"\x00" * 512, strict) == []
+
+
+def test_empty_archive_ends_at_its_next_header_offset() -> None:
+    # NextHeaderOffset counts even when the header is empty: the four bytes before it
+    # are inside the archive, the ones after it are not.
+    data = _empty_7z(next_header_offset=4) + b"SKIP"
+    assert _empty_trailing(data) == []
+    assert _empty_trailing(data + b"JUNK") == [0]

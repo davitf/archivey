@@ -289,7 +289,7 @@ SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="iso"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
 offset of that byte past the end. It is a warning by default and raises under
 `DiagnosticPolicy.strict()` (DR-3). Zero bytes SHALL be silent (xorriso pads 300 KiB
-of zeros by default), and a byte more than 1 MiB past the end goes unseen. A partition
+of zeros by default), and a byte at 1 MiB or more past the end goes unseen. A partition
 table that does not parse widens nothing.
 
 #### Scenario: ISO trailing bytes
@@ -300,7 +300,7 @@ table that does not parse widens nothing.
 | `b"JUNK"` after the volume space, or after zeros within 1 MiB | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
 | Hybrid image: EFI partition listed in the MBR or GPT after the volume space, GPT backup header at the end | Nothing | Opens |
 | Hybrid image followed by `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at the partition's or backup header's end | `DiagnosticRaisedError` |
-| Non-zero byte more than 1 MiB past the end | Nothing | Opens |
+| Non-zero byte at 1 MiB or more past the end | Nothing | Opens |
 
 ### Requirement: Weigh every parsed directory tree against one image-wide metadata budget
 
