@@ -37,9 +37,9 @@ from archivey.exceptions import (
 )
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
-from archivey.reader import ArchiveReader, ForwardArchiveReader
+from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType
-from tests.conftest import requires
+from tests.conftest import complete_listing, requires
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _RAR5_SOLID = _FIXTURES / "rar" / "symlinks_solid__.rar"
@@ -57,17 +57,6 @@ _MODES = [pytest.param(False, id="random-access"), pytest.param(True, id="stream
 def _base(reader: ArchiveReader) -> BaseArchiveReader:
     assert isinstance(reader, BaseArchiveReader)
     return reader
-
-
-def _complete_listing(reader: ForwardArchiveReader) -> list[ArchiveMember]:
-    """The member list from ``members_report()``, raising its error if incomplete.
-
-    The complete-or-raise listing that works on a streaming reader too.
-    """
-    report = reader.members_report()
-    if report.error is not None:
-        raise report.error
-    return list(report.members)
 
 
 def _symlink_info(name: str) -> zipfile.ZipInfo:
@@ -265,9 +254,9 @@ def test_a_dropped_streaming_pass_is_finished_by_members_report(
     with open_archive(_restart_archive(kind, tmp_path), streaming=True) as reader:
         walks = _count_walks(monkeypatch, reader)
         taken = _dropped(reader, how)
-        with pytest.raises(ArchiveyUsageError, match="members_report"):
+        with pytest.raises(ArchiveyUsageError, match=r"members_report\(\)"):
             list(reader)
-        listed = _complete_listing(reader)
+        listed = complete_listing(reader)
         assert all(a is b for a, b in zip(taken, listed[:2], strict=True))
         assert [m.member_id for m in listed] == list(range(len(listed)))
         assert len(listed) > 2
@@ -341,7 +330,7 @@ def test_a_pass_abandoned_after_a_peek_finalizes_nothing(
         assert _base(reader)._materialized is None
         assert reads == []
         # The same pass, finished, does finalize.
-        (_, link) = _complete_listing(reader)
+        (_, link) = complete_listing(reader)
         assert link.link_target == "a.txt"
         assert reads == ["link"]
 
@@ -756,7 +745,7 @@ def test_7z_pass_reads_links_through_its_own_decode(
         assert _link_targets(yielded) == _EXPECTED_TARGETS
         expected = _FOLDER_SIZE if read_streams else _LINK_ENDS[-1]
         assert _decoded(reader) == expected
-        members = _complete_listing(reader)
+        members = complete_listing(reader)
         assert _link_targets(members) == _EXPECTED_TARGETS
         assert _decoded(reader) == expected
 
@@ -812,7 +801,7 @@ def test_7z_listing_after_an_abandoned_pass_reuses_its_link_bytes(
             if seen == abandon_after:
                 break
         assert _decoded(reader) == _LINK_ENDS[abandon_after - 1]
-        members = _complete_listing(reader) if streaming else reader.members()
+        members = complete_listing(reader) if streaming else reader.members()
         assert _link_targets(members) == _EXPECTED_TARGETS
         assert _decoded(reader) == expected
 
@@ -826,7 +815,7 @@ def test_7z_nonsolid_decodes_each_link_folder_once(streaming: bool) -> None:
         if streaming:
             for _member, _stream in reader.stream_members():
                 pass
-            members = _complete_listing(reader)
+            members = complete_listing(reader)
         else:
             members = reader.members()
         assert _link_targets(members) == _EXPECTED_TARGETS
@@ -846,7 +835,7 @@ def test_7z_without_link_reads_decodes_nothing_for_links(streaming: bool) -> Non
             r.members()
         for _member, _stream in r.stream_members():
             pass
-        members = _complete_listing(r)
+        members = complete_listing(r)
         assert _link_targets(members) == dict.fromkeys(_EXPECTED_TARGETS)
         assert _decoded(r) == 0
         assert DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE not in r.diagnostics.counts
@@ -877,7 +866,7 @@ def test_7z_link_excluded_by_the_selector_still_resolves_by_default(
             lambda m: m.type is not MemberType.SYMLINK
         ):
             pass
-        members = _complete_listing(reader)
+        members = complete_listing(reader)
     assert _link_targets(members) == _EXPECTED_TARGETS
 
 
@@ -924,7 +913,7 @@ def test_without_link_reads_a_pass_reads_and_prompts_for_nothing(
     ):
         for _member, _stream in reader.stream_members(lambda m: False):
             pass
-        members = _complete_listing(reader)
+        members = complete_listing(reader)
         assert _decoded(reader) == 0
         assert provider.requests == []
         (link,) = [m for m in members if m.type is MemberType.SYMLINK]

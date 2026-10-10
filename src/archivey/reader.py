@@ -127,9 +127,9 @@ class ForwardArchiveReader(ABC):
         prefix. Only that damage is returned instead of raised. Every other failure
         raises, as it does from :meth:`~ArchiveReader.members`: a
         :class:`~archivey.exceptions.ResourceLimitError` when the listing exceeds
-        :class:`~archivey.config.ListingLimits`, ``ArchiveyUsageError`` on misuse
-        (closed reader, overlapping call), and other read failures (a password error, an
-        escalated diagnostic, a pass that failed earlier, an I/O error).
+        :class:`~archivey.config.ListingLimits`, :class:`~archivey.ArchiveyUsageError`
+        on misuse (closed reader, overlapping call), and other read failures (a password
+        error, an escalated diagnostic, a pass that failed earlier, an I/O error).
 
         Random access: does not consume anything; the members are the ones
         :meth:`~ArchiveReader.members` returns. Streaming: runs the single forward pass
@@ -262,10 +262,10 @@ class ArchiveReader(ForwardArchiveReader):
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
         on a streaming reader (there, use :meth:`~ForwardArchiveReader.members_report`,
-        which uses up the pass, or iterate
-        :meth:`~ForwardArchiveReader.stream_members` and ignore the streams). Raises
-        terminal archive-level listing errors instead of returning an incomplete
-        list."""
+        which uses up the pass and applies :class:`~archivey.config.ListingLimits`, or
+        iterate :meth:`~ForwardArchiveReader.stream_members` and ignore the streams,
+        which ``ListingLimits`` does not cap). Raises terminal archive-level listing
+        errors instead of returning an incomplete list."""
         ...
 
     @abstractmethod

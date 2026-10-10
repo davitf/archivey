@@ -40,7 +40,7 @@ from archivey.internal.backends.rar_parser import RarArchive
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType, OnError
-from tests.conftest import requires_binary
+from tests.conftest import complete_listing, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.memory_util import traced_peak
 
@@ -135,10 +135,7 @@ def _list(reader: ArchiveReader, streaming: bool) -> list[ArchiveMember]:
     for _member, stream in reader.stream_members():
         if stream is not None:
             stream.read()
-    report = reader.members_report()
-    if report.error is not None:
-        raise report.error
-    return list(report.members)
+    return complete_listing(reader)
 
 
 def _too_long(reader: ArchiveReader) -> list[str]:

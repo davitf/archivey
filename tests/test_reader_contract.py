@@ -8,7 +8,8 @@ access-mode gate (``streaming=True`` is forward-only) plus
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Any
 
 import pytest
 
@@ -244,6 +245,28 @@ def test_streaming_members_refusal_names_the_two_listing_routes() -> None:
     assert "stream_members()" in message
     # Both routes still list the archive; members_report() uses up the pass.
     assert [m.name for m in reader.members_report()] == ["a.txt"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda r: r.get("a.txt"), id="get"),
+        pytest.param(lambda r: r.open("a.txt"), id="open"),
+        pytest.param(lambda r: r.read("a.txt"), id="read"),
+    ],
+)
+def test_streaming_data_refusal_names_the_data_route(
+    call: Callable[[Any], object],
+) -> None:
+    """get()/open()/read() want member data, so the refusal names the route that
+    gives it (stream_members()) and none of the listing-only routes."""
+    reader = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
+    with pytest.raises(ArchiveyUsageError) as info:
+        call(reader)
+    message = str(info.value)
+    assert "stream_members() and read each member's stream" in message
+    assert "members_report" not in message
+    assert "ignore the streams" not in message
 
 
 def test_members_report_usage_errors_name_members_report() -> None:

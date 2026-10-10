@@ -2326,17 +2326,30 @@ class BaseArchiveReader(ArchiveReader):
         A ``streaming=True`` reader is forward-only: only a single pass of
         ``__iter__``/``stream_members`` (or one ``extract_all``) is allowed. This is
         uniform and format-independent — it does **not** depend on whether a backend
-        happens to have an index loaded (use :meth:`members_report`, iterate
-        :meth:`stream_members`, or peek with :meth:`members_report_if_available`).
+        happens to have an index loaded. The message names the route that fits
+        ``op``: for member data (``get()``, ``open()``/``read()``), iterate
+        :meth:`stream_members` and read each stream as the pass reaches it; for the
+        listing (``members()``), use :meth:`members_report` (which applies
+        ``ListingLimits``), iterate :meth:`stream_members` (which ``ListingLimits`` does
+        not cap), or peek with :meth:`members_report_if_available`.
         """
         self._state.require_open(op)
         if self._streaming:
+            if op == "members()":
+                advice = (
+                    "Call members_report() for the member list (it uses up the "
+                    "forward pass and applies ListingLimits; raise report.error for "
+                    "complete-or-raise), iterate stream_members() and ignore the "
+                    "streams (not capped by ListingLimits), or call "
+                    "members_report_if_available() for an index-only peek."
+                )
+            else:
+                advice = (
+                    "Iterate stream_members() and read each member's stream as the "
+                    "pass reaches it."
+                )
             raise ArchiveyUsageError(
-                f"{op} is not available on a streaming (forward-only) reader. "
-                f"Call members_report() for the member list (it uses up the forward "
-                f"pass; raise report.error for complete-or-raise), iterate "
-                f"stream_members() and ignore the streams, or call "
-                f"members_report_if_available() for an index-only peek.",
+                f"{op} is not available on a streaming (forward-only) reader. {advice}",
             )
 
     @property

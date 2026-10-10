@@ -93,9 +93,8 @@ Its other limitations:
 
 - **Listing limits on the pass.** On a streaming reader, `stream_members()`,
   `for member in reader` and `extract_all()` are deliberately outside `ListingLimits`.
-  `members_report()` enforces the limits as `members()` does, and
-  7z, RAR and ISO check `max_members` when the archive is opened. See
-  [Limits](extracting.md#limits).
+  `members_report()` enforces the limits as `members()` does, and 7z, RAR and ISO check
+  `max_members` when the archive is opened. See [Limits](extracting.md#limits).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).
@@ -294,11 +293,10 @@ A *wrong* password on an archive that really is encrypted still fails loudly wit
 
 ## Damaged archives
 
-`members()` gives you the whole listing or raises — if the archive
-is damaged partway through, you get an error, never a quietly shortened list.
-`members_report()` is the other half of that deal: it hands back the members it did
-manage to read *together with* the error that stopped it. Iterating yields members up
-to the damage and then raises.
+`members()` gives you the whole listing or raises — if the archive is damaged partway
+through, you get an error, never a quietly shortened list. `members_report()` is the
+other half of that deal: it hands back the members it did manage to read *together with*
+the error that stopped it. Iterating yields members up to the damage and then raises.
 
 [Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) has the
 recipe and what each failure means.

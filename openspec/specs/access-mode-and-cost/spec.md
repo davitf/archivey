@@ -129,8 +129,8 @@ report). Starting the pass consumes it. It returns `MemberListReport` instead of
 raising on terminal archive-level listing errors (`archive-reading`); a caller that
 needs complete-or-raise raises `report.error`. A caller that wants each member as
 the pass reaches it, without the data, iterates `stream_members()` (or the reader)
-and ignores the streams. `members_report_if_available()` never
-begins/advances/consumes the pass.
+and ignores the streams. `members_report_if_available()` never begins/advances/consumes
+the pass.
 
 On both access modes, `__iter__` and `stream_members` SHALL yield every
 recovered member before propagating a terminal archive-level listing error

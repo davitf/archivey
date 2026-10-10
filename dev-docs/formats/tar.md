@@ -202,10 +202,10 @@ dense pass; one header per lock hold was measurably slower on ordinary listings.
 the walk fails partway through a batch, the headers already parsed are handed out first,
 so `members_report()` keeps its salvaged prefix. tarfile still keeps every header it has
 parsed in `TarFile.members`, so a listing holds each header twice: once as tarfile's
-`TarInfo` and once as the `ArchiveMember`. On a streaming reader,
-`members_report()` counts members against the cap as they arrive and raises at the one
-past it. `stream_members()` and forward-only iteration are not capped, by design, and
-there both lists grow for the whole pass.
+`TarInfo` and once as the `ArchiveMember`. On a streaming reader, `members_report()`
+counts members against the cap as they arrive and raises at the one past it.
+`stream_members()` and forward-only iteration are not capped, by design, and there both
+lists grow for the whole pass.
 
 **Member metadata** is mapped in `_to_member`:
 

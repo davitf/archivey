@@ -348,15 +348,15 @@ ergonomics as `ExtractionReport` vs its results).
 Members in the report SHALL be identity-stamped for this reader (`member in
 reader`) so `open(member)` works for recovered `FILE` members. An incomplete
 report (`error` set) MUST NOT be treated as a successful complete materialization:
-subsequent `members()` / `get(name)` MUST still raise the
-terminal error rather than return a silent partial list.
+subsequent `members()` / `get(name)` MUST still raise the terminal error rather
+than return a silent partial list.
 `members_report_if_available()` SHALL return a `MemberListReport | None`: the stored
 report when one exists without scanning — complete (`error is None`) **or**
 incomplete (`error` set) from a prior pass — or the upfront index as a complete
 report for backends that carry one; `None` only when nothing is materialized and a
 scan would be required. Returning an incomplete report to a caller MUST NOT change
-the complete-or-raise behaviour of `members()` / `get(name)`;
-the report self-labels via `error` and those methods still raise.
+the complete-or-raise behaviour of `members()` / `get(name)`; the report self-labels
+via `error` and those methods still raise.
 
 On `streaming=True`, `members_report()` MAY start or finish the single forward
 pass and thereby consume it; it still returns a report instead of raising on
@@ -446,8 +446,8 @@ of `error` (completeness).
 With `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
 `ArchiveyUsageError` uniformly. Only one forward pass
 (`__iter__`/`stream_members` or one `extract_all`) is allowed, with
-`members_report()` to finish/return it and
-`members_report_if_available()` anytime.
+`members_report()` to finish/return it and `members_report_if_available()`
+anytime.
 Canonical access-mode × method table: `access-mode-and-cost`.
 
 #### Scenario: iteration / access-mode matrix
@@ -1307,14 +1307,14 @@ outside this requirement: the header parser has already allocated them, and
 
 A reader SHALL build one `ArchiveMember` object per archive member and hand out that same
 object from every listing method and pass: `members_report_if_available()`,
-`members_report()`, `members()`, `get()`, `__iter__`,
-`stream_members()` and `extract_all()`. Each member SHALL be registered (its
-`member_id` and its reader's identity stamped, its presentation checks run and its listing-limit
-accounting done) exactly once, before any of those methods returns or yields it.
-Typing-time and presentation diagnostics for a member SHALL therefore be emitted once
-per reader, whichever methods are called and in whatever order, so
-`DiagnosticSummary.counts` stays exact. A typing-time diagnostic's context SHALL carry,
-as `member_id`, the id the member is registered with, on every backend.
+`members_report()`, `members()`, `get()`, `__iter__`, `stream_members()` and
+`extract_all()`. Each member SHALL be registered (its `member_id` and its reader's
+identity stamped, its presentation checks run and its listing-limit accounting done)
+exactly once, before any of those methods returns or yields it. Typing-time and
+presentation diagnostics for a member SHALL therefore be emitted once per reader,
+whichever methods are called and in whatever order, so `DiagnosticSummary.counts` stays
+exact. A typing-time diagnostic's context SHALL carry, as `member_id`, the id the member
+is registered with, on every backend.
 
 A backend's member walk SHALL run at most once per reader when it completes. A walk that
 fails before completing, without terminal archive damage, MAY be repeated on the next
@@ -1386,13 +1386,13 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   writing the link, as under `False` below, rather than failing it as a link with no
   target.
 - `False`: the reader SHALL NOT read member data for a link target as a side effect of
-  listing (the peek, `members()`, `members_report()`, `get()`,
-  `__iter__`) or of a pass advancing (`stream_members()`, including the child pass
-  `extract_all` drives). Such a link keeps `link_target=None`, no
-  `SYMLINK_TARGET_UNAVAILABLE` is emitted for it, and the skipped read is not recorded as
-  an attempt. This covers RAR3/4 stored targets too, although that read needs no
-  decompression or password. Under `False`, a `link_target` set by listing then means
-  exactly that the header carries it, whatever the compression method.
+  listing (the peek, `members()`, `members_report()`, `get()`, `__iter__`) or of a pass
+  advancing (`stream_members()`, including the child pass `extract_all` drives). Such a
+  link keeps `link_target=None`, no `SYMLINK_TARGET_UNAVAILABLE` is emitted for it, and
+  the skipped read is not recorded as an attempt. This covers RAR3/4 stored targets too,
+  although that read needs no decompression or password. Under `False`, a `link_target`
+  set by listing then means exactly that the header carries it, whatever the compression
+  method.
   Header-carried targets (RAR5, TAR, ISO) are unaffected.
 - Under `False` the reader SHALL read a link's target only when the caller asks for that
   member:
