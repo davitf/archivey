@@ -150,7 +150,6 @@ def _is_junction(entry: os.DirEntry[str]) -> bool:
 class DirectoryReader(BaseArchiveReader):
     """Reads a filesystem directory as an archive."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     # A filesystem directory has no O(1) upfront index: enumerating members is an
     # os.scandir walk (a scan). So this is False (like plain TAR) — members_report_if_available()
     # returns None rather than triggering an uncached walk on every call, and the walk only runs

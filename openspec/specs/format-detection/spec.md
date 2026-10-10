@@ -59,6 +59,15 @@ format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt 
 bytes read). It SHALL NOT raise `IsADirectoryError` or any
 other `OSError`.
 
+A **path to a volume of a set** SHALL be detected on the source `open_archive` resolves
+for it: any part of a numbered split set (`set.7z.002`, `set.zip.003`, `set.exe.002`) on
+the parts joined in order, and a RAR continuation on volume 1. A middle part has no magic
+at offset 0, so detecting the named file alone would refuse a path `open_archive` opens.
+That resolution runs before detection reads a byte and MAY raise what `open_archive`
+raises for the same path: a numbered set with a gap SHALL raise `TruncatedError` naming the
+missing part. A lone first part (`set.zip.001` with no other part) SHALL be detected as the
+format its bytes show; `open_archive` refuses it as an incomplete set.
+
 **Collectors:**
 
 | Path | Behavior |
@@ -75,6 +84,9 @@ other `OSError`.
 | Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
+| Any part of a numbered split set, or a RAR continuation | The format, `detected_by` and `payload_offset` `open_archive` reports for the same path |
+| Numbered set with a gap (`set.zip.002`, no `set.zip.001`) | `TruncatedError` naming the missing part, from `detect_format` and `open_archive` alike |
+| Lone first part (`set.zip.001`, no other part) | The format its bytes show; `open_archive` raises `TruncatedError` |
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring
@@ -571,10 +583,15 @@ them as part of the prefix fetches them again. No other backward seek re-reads t
 prefix. The exit restore of a seekable caller stream is the non-consumption contract.
 
 This holds for every source kind. A network range reader pays for the prefix pass and,
-when the trailer runs, one range for that block; a member stream from a solid block is
+when the trailer runs, one range for that block; a member stream (`ArchiveStream`) is
 not asked for the trailer, because a rewind would re-decode, and it decodes the prefix
-forward once. The rule is stated flatly rather than derived from a cost model because
-`StreamCapability` cannot distinguish a cheap seek from an expensive one.
+forward once. That holds whether the member stream reaches detection bare, under a
+pass-through buffer, wrapped in the `ArchiveSource` that `open_archive` builds, or as a
+volume in a list passed to `open_archive`. A source that is not asked records `trailer`
+as *capability unavailable* (detection-cost), unless it is shorter than the 512-byte
+block: then there is no block to miss and nothing is recorded. The rule is stated flatly rather than
+derived from a cost model because `StreamCapability` cannot distinguish a cheap seek
+from an expensive one.
 
 Resolving an exact `payload_offset` through a central-directory walk does not fit this
 shape — the directory is reached backwards from the end and points backwards again. Offset
@@ -589,6 +606,7 @@ resolution is therefore separable from identification, and no tier does it today
 | Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
 | `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
+| Member stream (`ArchiveStream`), bare, buffered, through `open_archive`, or one volume of a list, any tier | 1 pass | 0 | **0** |
 
 The backward-seek column does not count the exit restore of a seekable caller stream.
 

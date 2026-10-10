@@ -96,7 +96,7 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     return gzip_corruption(exc)
 
 
-@dataclass(order=True)
+@dataclass(order=True, slots=True)
 class SeekPoint:
     """A point from which decompression can resume.
 
