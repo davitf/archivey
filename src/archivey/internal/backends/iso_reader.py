@@ -1118,7 +1118,9 @@ def _raw_record(
     file_flags = directory_data[offset + 25]
     key = (
         extent,
-        # pycdlib's clamp: a length running past the image becomes what is left.
+        # Clamped as pycdlib clamps a lone record: a length running past the image
+        # becomes what is left. pycdlib clamps per inode, not per record
+        # (``_record_key``), so this can differ from what it kept.
         image_length - start if start + data_length > image_length else data_length,
         file_flags & 0x7F,
         directory_data[offset + 1],
@@ -1134,7 +1136,16 @@ def _record_key(record: DirectoryRecord) -> _RecordKey:
     """``_RawRecord.key`` for a record pycdlib parsed: the fields it keeps as written.
 
     The multi-extent bit is left out of the flags, because pycdlib sets it in
-    memory, and the length is the one pycdlib clamped at the end of the image.
+    memory. The length is ``data_length`` as pycdlib left it, and pycdlib clamps
+    per inode, not per record: it computes what is left of the image from the
+    inode's extent and writes that length to every record linked to the inode,
+    that is every record sharing the extent, and it does not clamp a zero-length
+    record or a Rock Ridge symlink at all. ``_raw_record`` clamps each record on its
+    own, so a record that shares its extent with a longer one that runs past the end
+    of the image, or a zero-length record or symlink whose extent lies past it, gets
+    a key that matches nothing here, and its identifier's records are then listed one
+    by one (``IsoReader._entries_sharing_identifier``). That loses only the join of a
+    multi-extent file's records in such an image; no record is hidden.
     """
     return (
         record.extent_location(),
@@ -1739,9 +1750,21 @@ class IsoReader(BaseArchiveReader):
             dirpath, raw_dirpath, dir_record = stack.pop()
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
-            groups: dict[bytes, list[DirectoryRecord]] = {}
-            for record in dir_record.children:
-                groups.setdefault(bytes(record.file_ident), []).append(record)
+            # The runs of records with one identifier, as (start, end) in ``children``
+            # keyed by ``id`` of the run's first record. pycdlib keeps equal
+            # identifiers adjacent, as ``_yield_children`` relies on, so one pass
+            # finds them, and a directory with no repeated identifier allocates none.
+            children = dir_record.children
+            runs: dict[int, tuple[int, int]] = {}
+            start = 0
+            for index in range(1, len(children) + 1):
+                if (
+                    index == len(children)
+                    or children[index].file_ident != children[start].file_ident
+                ):
+                    if index - start > 1:
+                        runs[id(children[start])] = (start, index)
+                    start = index
             for first in _yield_children(dir_record, use_rr):
                 if (
                     use_rr
@@ -1750,12 +1773,9 @@ class IsoReader(BaseArchiveReader):
                     and self._is_rr_moved(first)
                 ):
                     continue
-                # A directory relocated from elsewhere has no group here.
-                group = (
-                    groups.get(bytes(first.file_ident), [first])
-                    if first.parent is dir_record
-                    else [first]
-                )
+                # A directory relocated from elsewhere has no run here.
+                run = runs.get(id(first)) if first.parent is dir_record else None
+                group = [first] if run is None else children[run[0] : run[1]]
                 for child in self._entries_sharing_identifier(dir_record, group):
                     name, raw_name = self._record_name(child)
                     path = self._join(dirpath, name)

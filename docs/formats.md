@@ -487,7 +487,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   under their stored identifier (`FOO.;1`) with `is_current=False`, the same shape as
   RAR file-version history. Plain directory names have no version and keep any `;N`. Two
   files stored with the same identifier both list, the later one current, as in ZIP
-  and TAR. Entries within a directory list in on-disc record order.
+  and TAR. That includes a file and its associated file (such as the resource fork on a
+  Mac hybrid image), which list as two members with one name and nothing to tell the
+  fork apart. Entries within a directory list in on-disc record order.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
