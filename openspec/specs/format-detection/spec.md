@@ -59,6 +59,15 @@ format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt 
 bytes read). It SHALL NOT raise `IsADirectoryError` or any
 other `OSError`.
 
+A **path to a volume of a set** SHALL be detected on the source `open_archive` resolves
+for it: any part of a numbered split set (`set.7z.002`, `set.zip.003`, `set.exe.002`) on
+the parts joined in order, and a RAR continuation on volume 1. A middle part has no magic
+at offset 0, so detecting the named file alone would refuse a path `open_archive` opens.
+That resolution runs before detection reads a byte and MAY raise what `open_archive`
+raises for the same path: a numbered set with a gap SHALL raise `TruncatedError` naming the
+missing part. A lone first part (`set.zip.001` with no other part) SHALL be detected as the
+format its bytes show; `open_archive` refuses it as an incomplete set.
+
 **Collectors:**
 
 | Path | Behavior |
@@ -75,6 +84,9 @@ other `OSError`.
 | Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
+| Any part of a numbered split set, or a RAR continuation | The format, `detected_by` and `payload_offset` `open_archive` reports for the same path |
+| Numbered set with a gap (`set.zip.002`, no `set.zip.001`) | `TruncatedError` naming the missing part, from `detect_format` and `open_archive` alike |
+| Lone first part (`set.zip.001`, no other part) | The format its bytes show; `open_archive` raises `TruncatedError` |
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring

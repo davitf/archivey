@@ -20,7 +20,9 @@ import pytest
 from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
 from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams import codecs as codecs_module
+from archivey.internal.streams.streamtools import source_name
 from archivey.types import MagicSignature
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.detection_cost_util import within_budget
@@ -1542,14 +1544,19 @@ def _budget_config() -> ArchiveyConfig:
 def _record_detect(
     monkeypatch: pytest.MonkeyPatch, module: object
 ) -> list[tuple[str, ArchiveyConfig | None]]:
-    """Record each call through ``module.detect_format`` as (source name, config)."""
+    """Record each call through ``module.detect_format`` as (source name, config).
+
+    A resolved source is named as ``open_archive`` names it: a joined split set by
+    its first part.
+    """
     calls: list[tuple[str, ArchiveyConfig | None]] = []
     real = getattr(module, "detect_format")
 
     def recording(source: object, *args: object, **kwargs: object) -> FormatInfo:
         config = kwargs.get("config")
         assert config is None or isinstance(config, ArchiveyConfig)
-        calls.append((Path(str(getattr(source, "path", None) or source)).name, config))
+        name = source_name(source) if isinstance(source, ArchiveSource) else source
+        calls.append((Path(str(name)).name, config))
         return real(source, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(module, "detect_format", recording)
