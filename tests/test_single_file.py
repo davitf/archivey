@@ -54,6 +54,10 @@ from tests.streams_util import (
     xz_cli_available,
 )
 
+# LZMA Alone, zlib and Brotli have no magic: a source not named for its format (a
+# BytesIO, or the ``.bi5`` samples) reaches them only with every content probe on.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
+
 
 def _gzip_bytes(
     payload: bytes, *, filename: str | None = None, mtime: int = 0
@@ -249,7 +253,9 @@ def test_bz2_size_none_before_full_read() -> None:
 
 
 def test_zlib_size_none() -> None:
-    with open_archive(io.BytesIO(zlib.compress(b"x" * 1000))) as ar:
+    with open_archive(
+        io.BytesIO(zlib.compress(b"x" * 1000)), config=_ALWAYS_PROBE
+    ) as ar:
         assert ar.members()[0].size is None
 
 
@@ -679,7 +685,7 @@ def test_bpo21872_lzma_alone_samples_decode_whole(name: str) -> None:
     expected_size, expected_digest = _BPO21872_SAMPLES[name]
     path = _BPO21872_DIR / name
 
-    with open_archive(path) as ar:
+    with open_archive(path, config=_ALWAYS_PROBE) as ar:
         member = ar.members()[0]
         # These carry a real known size in the header, which stdlib never writes.
         assert member.size == expected_size
@@ -688,7 +694,7 @@ def test_bpo21872_lzma_alone_samples_decode_whole(name: str) -> None:
     assert hashlib.sha256(whole).hexdigest() == expected_digest
 
     for chunk_size in (1, 8192, 65536):
-        with open_archive(path) as ar:
+        with open_archive(path, config=_ALWAYS_PROBE) as ar:
             stream = ar.open(ar.members()[0])
             got = bytearray()
             while True:
@@ -822,7 +828,7 @@ def test_brotli_roundtrip() -> None:
     import brotli
 
     data = brotli.compress(b"brotli payload")
-    with open_archive(io.BytesIO(data)) as ar:
+    with open_archive(io.BytesIO(data), config=_ALWAYS_PROBE) as ar:
         assert ar.format == ArchiveFormat.BROTLI
         assert ar.read(ar.members()[0]) == b"brotli payload"
 
@@ -1058,7 +1064,8 @@ def test_open_validation_table_covers_every_single_file_codec() -> None:
     # makes it fail here until the tables below cover it too.
     from archivey.internal.streams.codecs import SINGLE_FILE_CODECS
 
-    suffixes = {ext for codec in SINGLE_FILE_CODECS for ext in codec.extensions}
+    # The canonical extension only: an alias (``.brotli``) is the same codec.
+    suffixes = {codec.extensions[0] for codec in SINGLE_FILE_CODECS if codec.extensions}
     assert suffixes == set(_SINGLE_FILE_CODECS)
 
 
@@ -1110,7 +1117,7 @@ def _assert_zeros_read_as_empty_lzma(
 def test_undecodable_bytesio_raises_at_open(suffix: str) -> None:
     # A seekable stream source takes the SharedSource branch rather than the path one.
     compress, _marks = _SINGLE_FILE_CODECS[suffix]
-    with open_archive(io.BytesIO(compress(b"probe"))) as ar:
+    with open_archive(io.BytesIO(compress(b"probe")), config=_ALWAYS_PROBE) as ar:
         fmt = ar.format
     if suffix == ".lzma":
         _assert_zeros_read_as_empty_lzma(io.BytesIO(b"\x00" * 40_000), format=fmt)

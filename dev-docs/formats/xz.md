@@ -85,9 +85,11 @@ xz is the magic `fd 37 7a 58 5a 00` at offset 0 and lzip `LZIP`, each `CERTAIN`.
 inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_XZ`, or
 to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
 
-LZMA Alone is found by the first of the three content probes. `_alone_header_plausible`
-checks that the properties byte encodes a legal `(lc, lp, pb)` and that the declared size
-is not exactly zero. The dictionary size is not checked: every value is legal, and the
+LZMA Alone is found by the first of the three content probes. That probe runs only for a
+`.lzma`, `.tar.lzma` or `.tlz` name, under `open_stream`, or with
+`ArchiveyConfig.always_probe_content` ([`detection.md`](../topics/detection.md) §2.5).
+`_alone_header_plausible` checks that the properties byte encodes a legal `(lc, lp, pb)`
+and that the declared size is not exactly zero. The dictionary size is not checked: every value is legal, and the
 specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
 are a valid, complete, empty Alone stream, so without it a run of zero padding would be
 claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
@@ -98,8 +100,9 @@ liblzma's is 3). Then the probe decodes the sample and requires at least one byt
 ([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
 probe-only match is stamped `format_unconfirmed`.
 
-`.tlz` is an lzip extension. An LZMA Alone file named `.tlz` is identified by content as
-TAR over LZMA Alone, with an extension-conflict warning.
+`.tlz` is an lzip extension, and it also runs the LZMA Alone probe. An LZMA Alone file
+named `.tlz` is identified by content as TAR over LZMA Alone, with an extension-conflict
+warning.
 
 ### 2.2 Open and list
 
@@ -257,10 +260,13 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   not with its data can return another block's bytes for the offset asked, with no error.
   A forward read always verifies: xz checks each block against its index record and lzip
   each member against its trailer. Callers who need certainty read forward.
-- **An index can declare millions of units.** The seek table is capped and thinned; the xz
-  index is walked record by record and never reserved at its declared count, and the lzip
-  trailer walk keeps no per-member state. A 16.8 MB lzip file of 645 277 empty members is
-  listed in bounded memory.
+- **An index can declare millions of units.** The seek table is capped and thinned; the
+  reader walks the xz index record by record and never reserves it at its declared count,
+  and the lzip trailer walk keeps no per-member state. A 16.8 MB lzip file of 645 277
+  empty members is listed in bounded memory. The detection probe walks the xz index
+  differently: it counts record ends a buffer at a time, each scan no wider than the
+  index still to come, so a count no input can hold costs one pass over the bytes the
+  probe may read.
 - **Padding and the backward scan.** The padding scan reads in growing chunks, so a file of
   megabytes of zeros costs a few reads, not one per four bytes.
 - **LZMA Alone has no check.** Corrupt data that the range coder accepts decodes to wrong
@@ -300,6 +306,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Cold seeks trust a self-consistent index (O17) | Verifying a seek means decoding from the start, which removes the reason to have an index; a forward read still verifies | Verifying every seek |
 | Check lzip `member_size` on the forward read (PR #407) | An unchecked member size let a seek serve another member's bytes | Trusting it |
 | Cap every declared dictionary before allocation (PR #413) | The number is the attacker's | Letting liblzma allocate what the header asks |
+| Detection probes decode with the dictionary their read needs, not the declared one | liblzma reserves the declaration, up to 4 GiB, which under `RLIMIT_AS` or Windows' commit limit was a `MemoryError` out of `detect_format`; a match never reaches past output already produced, so the bytes are identical. xz decodes each block raw with its filter chain (rewriting the header would need its CRC recomputed) and walks the index, stream padding and later streams as the reader does | Capping the probe, which changes the format a caller with `UNLIMITED` gets |
 | Refuse an over-cap `.lzma` on read, not open | Keeps the `format_unconfirmed` stamp on a probe-only claim | Refusing at open |
 | Map liblzma errors by cause (PR #432) | A missing filter or a cap refusal is not damage, and callers act differently on each | Everything as `CorruptionError` |
 | The Alone probe accepts any dictionary size and refuses a declared size of zero (PR #270) | Every dictionary size is legal and real streams use zero; zero padding is a valid empty stream | Gating on the dictionary size, which missed real files |
@@ -330,6 +337,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Truncation and short sources | `::test_xz_truncated_large_read_recovers_prefix`, `::test_lzip_truncated_large_read_recovers_prefix`, `::test_xz_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_short_source_that_is_not_lzip_is_corrupt` |
 | lzip trailing data is allowed | `::test_lzip_short_trailing_data_after_a_member_is_allowed` |
 | The index through bytes after the end, and its bound | `tests/test_stream_trailing_data.py::test_xz_keeps_its_size_and_index_through_appended_bytes`, `::test_lzip_keeps_its_size_and_crc_through_appended_bytes`, `::test_the_index_search_reaches_its_bound_and_no_further` |
+| Probes reserve only their read's dictionary | `tests/test_probe_dictionary_clamp.py` |
 | Dictionary caps | `tests/test_decoder_limits.py::test_xz_block_declaring_four_gib_is_refused`, `::test_xz_block_resume_after_a_seek_is_capped_too`, `::test_lzip_member_dictionary_is_capped`, `::test_lzma_alone_declaring_four_gib_is_refused`, `::test_lzma_alone_non_seekable_source_is_checked_and_replayed` |
 | A check liblzma cannot compute warns | `tests/test_audit2_tar_streams.py::test_xz_unsupported_check_type_is_not_silent`, `::test_xz_without_a_check_is_not_unverifiable`, `::test_xz_unsupported_check_in_a_later_stream_is_reported`, `::test_xz_unsupported_check_reached_by_a_block_resume_is_reported_once`, `::test_tar_xz_unsupported_check_type_is_not_silent` |
 | liblzma errors by cause | `tests/test_lzma_error_causes.py::test_xz_with_an_unknown_filter_is_unsupported_not_corrupt`, `::test_an_unknown_filter_mid_tar_xz_aborts_the_listing`, `::test_corrupt_xz_data_is_still_corruption` |

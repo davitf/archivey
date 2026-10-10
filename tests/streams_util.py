@@ -44,6 +44,18 @@ class NonSeekableBytesIO(io.RawIOBase):
         return self._inner.tell()
 
 
+class SizedNonSeekable(NonSeekableBytesIO):
+    """A non-seekable stream with an fsspec-style ``size`` attribute it sets itself.
+
+    ``size`` is the caller's claim and need not match ``len(data)``: a test can
+    inflate it to check that nothing trusts a claim it cannot verify.
+    """
+
+    def __init__(self, data: bytes, size: int) -> None:
+        super().__init__(data)
+        self.size = size
+
+
 class ShortReadBytesIO(io.RawIOBase):
     """A ``BytesIO`` whose ``read``/``readinto`` never return more than ``max_chunk``.
 

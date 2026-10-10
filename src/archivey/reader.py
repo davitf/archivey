@@ -235,6 +235,10 @@ class ForwardArchiveReader(ABC):
         no-op. The archive's own source is released after the last of them, never
         underneath a stream still reading through it.
 
+        A :meth:`stream_members` iterator (or a streaming reader's iteration) that is
+        still alive does not stop the close: the reader closes, and advancing that
+        iterator afterwards raises ``ArchiveyUsageError``.
+
         Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
         ...
 

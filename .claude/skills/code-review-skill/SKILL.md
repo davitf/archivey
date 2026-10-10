@@ -35,6 +35,25 @@ different output shape, and it will edit code. (Cursor's
 **Repo default — report findings, edit nothing** unless the user asks. Output is markdown
 prose in the three-block shape (§3), never a host-specific findings tool.
 
+## Stop rules
+
+A short form of five §6 sections, kept at the top because the compound-engineering plugin
+reports that a long session may keep only the start of a skill (not measured here). Where
+this list and §6 disagree, §6 wins; edit both together.
+
+- Edit nothing unless the user asks; otherwise the implementer fixes (§6 "Do not fix while
+  reviewing").
+- Do not re-run the gates or re-measure what an earlier round recorded; run a command
+  only to reproduce or check a claim, and say what you ran. A commissioned `review/` brief
+  overrides this: record a baseline first (§6 "Do not re-run the gates",
+  `reference/deep-reviews.md` §1).
+- Never add the `review` label; your verdict says whether another round is wanted (§6 "The
+  `review` label is a command").
+- Submit with `event: COMMENT` and carry the verdict in the text; GitHub refuses an
+  approval on your own PR (§6 "You cannot post a GitHub approval").
+- End every review body, inline comment and reply with the attribution footer (§6
+  "Attribution footer").
+
 ## 1. What are you reviewing?
 
 | Reviewing | Read | Why it is separate |
@@ -346,6 +365,9 @@ The usual workflow here is that **a second agent posts this review to the PR, an
 implementing agent then works through it** (`.claude/skills/address-review-findings/`).
 That handoff is the reason for the rules below: a review that reads well in a terminal but
 cannot be dispositioned finding-by-finding costs the next round more than it saved.
+
+Five of these sections have a short form in §Stop rules at the top of this file; change
+both together.
 
 ### Stable IDs, one thread per finding
 

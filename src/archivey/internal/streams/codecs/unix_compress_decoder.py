@@ -91,7 +91,8 @@ def _parse_header(header: bytes) -> tuple[int, bool]:
     if reserved:
         raise UnsupportedFeatureError(
             f"unix-compress (.Z) header has unknown reserved flags "
-            f"(0x{reserved:02x} in flag byte 0x{flag_byte:02x})"
+            f"(0x{reserved:02x} in flag byte 0x{flag_byte:02x}); a damaged header "
+            "reads the same way"
         )
     max_width = flag_byte & _CODE_WIDTH_FLAG
     if max_width < _INITIAL_CODE_WIDTH:
@@ -103,7 +104,8 @@ def _parse_header(header: bytes) -> tuple[int, bool]:
         # gzip and ncompress: "compressed with 17 bits, can only handle 16 bits".
         raise UnsupportedFeatureError(
             f"unix-compress (.Z) max code width {max_width} is not supported: "
-            f"decoders handle up to {_MAX_CODE_WIDTH} bits"
+            f"decoders handle up to {_MAX_CODE_WIDTH} bits; a damaged header reads the "
+            "same way"
         )
     block_mode = bool(flag_byte & _BLOCK_MODE_FLAG)
     return max_width, block_mode

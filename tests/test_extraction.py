@@ -11,6 +11,7 @@ import errno
 import gzip
 import io
 import os
+import struct
 import tarfile
 import time
 import unicodedata
@@ -41,6 +42,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
+    TruncatedError,
 )
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.extraction import (
@@ -54,6 +56,7 @@ from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     apply_name_policy,
     check_universal,
+    resolve_or_raise_on_loop,
     transform_standard,
     transform_strict,
 )
@@ -61,6 +64,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
+from tests.streams_util import SizedNonSeekable
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -238,6 +242,27 @@ def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> 
 def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
     m = _member("sub/link", type=MemberType.SYMLINK, link_target="../file.txt")
     check_universal(m, tmp_path)  # resolves to <dest>/file.txt, inside root
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    ("name", "in_loop"),
+    [("p/f", False), ("f", True), ("", True)],
+    ids=["parent", "dest", "dest-root-member"],
+)
+def test_check_universal_names_a_loop_in_the_destination(
+    tmp_path: Path, name: str, in_loop: bool
+) -> None:
+    # A loop the destination already had, below dest or at dest itself. Path.resolve()
+    # raises on it before Python 3.13 and returns a path from 3.13; the answer must not
+    # depend on which.
+    os.symlink("p", tmp_path / "p")
+    dest = tmp_path / "p" if in_loop else tmp_path
+    member = _member(name, type=MemberType.DIRECTORY) if name == "" else _member(name)
+    with pytest.raises(ExtractionError) as info:
+        check_universal(member, dest)
+    assert type(info.value) is ExtractionError
+    assert "A path in the destination does not resolve" in str(info.value)
 
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
@@ -1712,6 +1737,145 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
     assert (dest / "ok.txt").read_bytes() == b"ok"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    "links",
+    [
+        [("d", "d")],
+        [("a", "b"), ("b", "a")],
+        [("a", "b"), ("b", "c"), ("c", "a")],
+        [("x/a", "../y/b"), ("y/b", "../x/a")],
+    ],
+    ids=["self", "pair", "triple", "across-dirs"],
+)
+def test_tar_symlink_closing_a_loop_is_rejected(
+    tmp_path: Path, links: list[tuple[str, str]]
+) -> None:
+    # The link that closes the loop is refused, on every Python version: Path.resolve()
+    # raises on a loop before 3.13 and returns a path from 3.13, so the check must
+    # not depend on it raising.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("sym", name, target) for name, target in links]))
+    dest = tmp_path / "out"
+    results = open_and_extract(src, dest, on_error=OnError.CONTINUE).results
+    statuses = {r.member.name: r.status for r in results}
+    closing = links[-1][0]
+    assert statuses == {
+        name: ExtractionStatus.BLOCKED
+        if name == closing
+        else ExtractionStatus.EXTRACTED
+        for name, _ in links
+    }
+    error = next(r.error for r in results if r.member.name == closing)
+    assert isinstance(error, FilterRejectionError)
+    assert error.message == "Symlink target escapes destination"
+    assert not os.path.lexists(dest / closing)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_under_a_symlink_loop_raises_eloop(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest below a looping link is refused with the OSError mkdir raises, for every
+    # backend and on every Python version. Before 3.13 Path.resolve() raised
+    # RuntimeError there, and the directory backend's into-itself check let it out.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(OSError) as info:
+            reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+    assert info.value.errno == errno.ELOOP
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest that is itself a looping link exists and is not a directory, so every
+    # backend refuses it as it refuses a regular file there. The directory backend's
+    # into-itself check must not answer first with the loop's OSError.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(ExtractionError, match="exists and is not a directory"):
+            reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("shape", ["self", "ancestor"])
+def test_resolve_or_raise_on_loop_raises_eloop(tmp_path: Path, shape: str) -> None:
+    # One OSError on every Python version, naming the path asked about: before 3.13
+    # resolve() raises RuntimeError itself, from 3.13 only the stat sees the loop.
+    os.symlink("loop", tmp_path / "loop")
+    path = tmp_path / "loop" if shape == "self" else tmp_path / "loop" / "x" / "y"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
+    assert info.value.filename == str(path)
+
+
+def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> None:
+    (tmp_path / "d").mkdir()
+    path = tmp_path / "d" / "missing" / "f"
+    assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
+    tmp_path: Path,
+) -> None:
+    # A dangling link inside dest must resolve to its target name, not count as a loop
+    # (an escape, at the call sites).
+    os.symlink("nowhere", tmp_path / "dangling")
+    assert resolve_or_raise_on_loop(tmp_path / "dangling") == (
+        tmp_path.resolve() / "nowhere"
+    )
+
+
+def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows reports a loop as ERROR_CANT_RESOLVE_FILENAME, not ELOOP. Raised here by
+    # a stubbed stat so the branch runs on every platform.
+    def stat(self: Path, **kwargs: object) -> os.stat_result:
+        exc = OSError(errno.EINVAL, "The name of the file cannot be resolved")
+        exc.winerror = 1921  # type: ignore[attr-defined]
+        raise exc
+
+    # resolve() is stubbed to return the path as 3.13+ does on a loop: before 3.13
+    # resolve() calls stat itself and would turn the stub's error into RuntimeError,
+    # so the stat branch would never run.
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(Path, "stat", stat)
+    path = tmp_path / "x"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
+    assert info.value.filename == str(path)
+    # The Windows code stays visible on the chained original.
+    assert getattr(info.value.__cause__, "winerror", None) == 1921
+
+
 # ---------------------------------------------------------------------------
 # Chained-symlink attack (task 5a.4, ported from the DEV oracle suite)
 #
@@ -2280,6 +2444,93 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                     max_extracted_bytes=100 * 2**20,
                 ),
             )
+
+
+@pytest.mark.parametrize("mode", ["gz", "tar.gz"])
+def test_pipe_size_claim_does_not_switch_off_live_ratio(
+    tmp_path: Path, mode: str
+) -> None:
+    # Regression: a non-seekable caller stream's ``size`` attribute became the static
+    # archive-wide denominator, and because a static denominator existed the live byte
+    # counter was not installed. An inflated claim (1 GB for a ~1 KiB gzip) therefore
+    # switched off both archive-wide ratio guards. Nothing can check a pipe's claim, so
+    # the claim is not a denominator: the live counter stays.
+    payload = b"\x00" * (1024 * 1024)
+    if mode == "gz":
+        raw = gzip.compress(payload)
+    else:
+        raw = _tar_bytes([("file", "z.bin", payload)], mode="w:gz")
+    limits = ExtractionLimits(
+        max_ratio=10.0,
+        ratio_activation_threshold=1024,
+        max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+    )
+    with open_archive(SizedNonSeekable(raw, size=10**9), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is not None
+        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
+            r.extract_all(tmp_path / "out", limits=limits)
+
+
+def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
+    # A member stream is non-seekable without ``seekable_members``, but its ``size`` is
+    # the length its container declares, not a caller's claim: it stays the static
+    # denominator, and no live counter is installed.
+    inner = gzip.compress(b"\x00" * 4096)
+    outer = tmp_path / "outer.tar"
+    with tarfile.open(outer, "w") as t:
+        info = tarfile.TarInfo("inner.gz")
+        info.size = len(inner)
+        t.addfile(info, io.BytesIO(inner))
+    with open_archive(outer) as outer_ar:
+        with outer_ar.open("inner.gz") as member_stream:
+            assert not member_stream.seekable()
+            with open_archive(member_stream, streaming=True) as inner_ar:
+                assert inner_ar.compressed_source_size == len(inner)
+                assert inner_ar.compressed_bytes_consumed is None
+
+
+def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:
+    # Pins the documented gap: a plain tar from a non-seekable caller stream has no
+    # trusted size, and only a compressed container installs the live counter, so
+    # neither archive-wide denominator exists and only max_extracted_bytes applies.
+    raw = _tar_bytes([("file", "a.bin", b"x" * 4096)])
+    with open_archive(SizedNonSeekable(raw, size=len(raw)), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is None
+
+
+def test_forged_member_declaration_is_refused_only_after_the_decode(
+    tmp_path: Path,
+) -> None:
+    # Pins the documented gap: a nested archive's static denominator is the length
+    # its container declares, unchecked until the member ends. An outer ZIP declaring
+    # 1 GB for a ~4 KiB inner.gz makes the ratio unreachable, so the inner payload
+    # decodes to its end; the container's end-of-member check then refuses it, and
+    # the failed extraction leaves no file behind.
+    inner = gzip.compress(b"\x00" * (4 * 2**20))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("inner.gz", inner)
+    raw = bytearray(buf.getvalue())
+    forged = 10**9
+    struct.pack_into("<I", raw, 22, forged)  # local header: uncompressed size
+    cd = raw.index(b"PK\x01\x02")
+    struct.pack_into("<I", raw, cd + 24, forged)  # central directory: same field
+    outer = tmp_path / "outer.zip"
+    outer.write_bytes(bytes(raw))
+    limits = ExtractionLimits(
+        max_ratio=10.0, ratio_activation_threshold=1024, max_extracted_bytes=100 * 2**20
+    )
+    out = tmp_path / "out"
+    with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
+        assert not member_stream.seekable()
+        with open_archive(member_stream, streaming=True) as inner_ar:
+            assert inner_ar.compressed_source_size == forged
+            assert inner_ar.compressed_bytes_consumed is None
+            with pytest.raises(TruncatedError):
+                inner_ar.extract_all(out, limits=limits)
+    assert not out.exists() or not any(out.iterdir())
 
 
 # ---------------------------------------------------------------------------

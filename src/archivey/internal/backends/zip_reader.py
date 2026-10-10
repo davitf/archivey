@@ -167,8 +167,10 @@ from archivey.types import (
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
-# Comment decoding: try UTF-8 first, else fall back to cp437 (the ZIP appnote default,
-# which maps every byte and therefore never fails — no further fallbacks are reachable).
+# Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
+# default, which maps every byte and therefore never fails). An unflagged comment goes
+# through `_decode_unflagged_comment`, which shares the `encoding=` / fallback step
+# (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
@@ -969,9 +971,11 @@ class ZipReader(BaseArchiveReader):
             # A corrupt local-header offset makes stdlib zipfile seek to a bad position
             # ("negative seek value -N") before reading the member. That is archive
             # corruption, surfaced as a typed error rather than a raw ValueError.
-            # The closed-handle ValueError is *not* corruption and is carved out ahead of
-            # this arm, in _reraise_member_error (it cannot be returned from here:
-            # ArchiveyUsageError is deliberately not an ArchiveyError).
+            # A closed handle is *not* corruption and never reaches this arm: the
+            # shared boundary (BaseArchiveReader._raise_translated) maps a closed
+            # source ahead of this translator, and _reraise_member_error maps
+            # zipfile's own closed-archive wording (neither can be returned from
+            # here: ArchiveyUsageError is deliberately not an ArchiveyError).
             return CorruptionError(f"Corrupt ZIP member offset/structure: {exc!r}")
         if isinstance(exc, EOFError):
             # Short input, from any decoder a member read reaches. The codec layer maps
@@ -1025,32 +1029,57 @@ class ZipReader(BaseArchiveReader):
         try:
             utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
-            if self._encoding is not None:
-                try:
-                    return raw_name.decode(
-                        self._encoding, errors="surrogateescape"
-                    ), None
-                except UnicodeError:
-                    # A codec that refuses the surrogateescape handler outright
-                    # (``idna``): fall through to the configured fallback.
-                    pass
-            fallback = self._config.zip_unflagged_fallback_encoding
-            if fallback.lower().replace("-", "").replace("_", "") in {
-                "cp437",
-                "437",
-                "ibm437",
-            }:
-                return cp437_decoded, None
-            try:
-                return raw_name.decode(fallback, errors="surrogateescape"), fallback
-            except (LookupError, UnicodeError):
-                # An unknown fallback encoding name, or a codec that refuses the
-                # surrogateescape handler outright (``idna``): keep the cp437 decode
-                # rather than fail.
-                return cp437_decoded, None
+            return self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
         if utf8_decoded == cp437_decoded:
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
+
+    def _decode_unflagged_legacy(
+        self, raw: bytes, cp437_decoded: Callable[[], str]
+    ) -> tuple[str, str | None]:
+        """Decode unflagged bytes that are not valid UTF-8: the caller's ``encoding=``,
+        else the configured legacy fallback (default cp437).
+
+        ``cp437_decoded`` is called only when the cp437 reading is the answer. Returns
+        ``(text, fallback)`` where ``fallback`` is a configured fallback other than
+        cp437 that was used, else ``None``. A byte the chosen codec does not define
+        survives as a lone surrogate.
+        """
+        if self._encoding is not None:
+            try:
+                return raw.decode(self._encoding, errors="surrogateescape"), None
+            except UnicodeError:
+                # A codec that refuses the surrogateescape handler outright
+                # (``idna``): fall through to the configured fallback.
+                pass
+        fallback = self._config.zip_unflagged_fallback_encoding
+        if fallback.lower().replace("-", "").replace("_", "") in {
+            "cp437",
+            "437",
+            "ibm437",
+        }:
+            return cp437_decoded(), None
+        try:
+            return raw.decode(fallback, errors="surrogateescape"), fallback
+        except (LookupError, UnicodeError):
+            # An unknown fallback encoding name, or a codec that refuses the
+            # surrogateescape handler outright (``idna``): keep the cp437 decode
+            # rather than fail.
+            return cp437_decoded(), None
+
+    def _decode_unflagged_comment(self, raw: bytes) -> str:
+        """Decode a comment with no UTF-8 flag the way an unflagged name is decoded.
+
+        A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
+        As for a name, ASCII skips the sniff (UTF-8 and cp437 agree on it), and the
+        cp437 decode runs only when it is the answer.
+        """
+        if raw.isascii():
+            return raw.decode("ascii")
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return self._decode_unflagged_legacy(raw, lambda: raw.decode("cp437"))[0]
 
     def _decode_member_name(self, info: zipfile.ZipInfo) -> _DecodedName:
         """The entry's name as archivey reads it: the source of ``member.name`` and of
@@ -1216,7 +1245,12 @@ class ZipReader(BaseArchiveReader):
         if _is_encrypted_entry(info):
             member.is_encrypted = True
         if info.comment:
-            member.comment = _decode_with_fallback(info.comment)
+            # APPNOTE puts the member comment under the name's UTF-8 flag.
+            member.comment = (
+                _decode_with_fallback(info.comment)
+                if info.flag_bits & 0x800
+                else self._decode_unflagged_comment(info.comment)
+            )
         member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
@@ -1502,7 +1536,8 @@ class ZipReader(BaseArchiveReader):
         codec = _ZIP_METHOD_CODECS.get(method)
         if codec is None:
             raise UnsupportedFeatureError(
-                f"Unsupported ZIP compression method {method}{suffix}",
+                f"Unsupported ZIP compression method {method}{suffix}"
+                "; a damaged header reads the same way",
                 archive_name=self._archive_name,
                 member_name=member_name,
                 source_format=ArchiveFormat.ZIP,
@@ -2025,9 +2060,10 @@ class ZipReader(BaseArchiveReader):
         reclassified). Shared by the member-open and compressed-confirm decrypt paths
         so their translate/stamp/raise tail stays identical.
 
-        The closed-handle ``ValueError`` is intercepted here rather than in
+        zipfile's closed-archive ``ValueError`` is intercepted here rather than in
         ``_translate_exception``, which can only return an ``ArchiveyError``; a lifecycle
-        fault is deliberately not one.
+        fault is deliberately not one. A closed source (``I/O operation on closed
+        file``) is mapped by the shared base boundary for every format.
         """
         if isinstance(exc, ValueError) and _CLOSED_ARCHIVE_MESSAGE in str(exc):
             raise _closed_archive_error() from exc
@@ -2356,7 +2392,8 @@ class ZipReader(BaseArchiveReader):
             format_version=None,
             is_solid=False,  # ZIP is never solid: each member has an independent offset
             member_count=len(self._archive.infolist()),
-            comment=_decode_with_fallback(comment) if comment else None,
+            # The archive comment has no UTF-8 flag of its own.
+            comment=self._decode_unflagged_comment(comment) if comment else None,
             is_encrypted=False,  # ZIP has per-member encryption, not header-level
             # True for a rejoined 7-Zip `.zip.NNN` set: it arrived as several files,
             # which is what a caller checking this wants to know. It says nothing
