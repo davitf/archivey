@@ -127,11 +127,13 @@ candidate ends there: a tail can be crafted so that every `YZ` is 4-aligned, or 
 thousands of short runs of zeros. Past either bound the index is reported unreadable:
 `size=None`, and a seek falls back to decoding forward with `SEEK_INDEX_DEGRADED`. The
 forward read then reports the bytes as `ARCHIVE_TRAILING_DATA`
-([`single-file.md`](single-file.md) §2.3). The two bounds keep the cost of a file of junk
-to 1 MiB of reading and 4096 checks at open, a few milliseconds. Each stream's index is
-read at most 1 MiB at a time (`_INDEX_READ_CHUNK`), because a footer that checks out can
-still claim an index as large as the file; a real index fits in one read, which the CRC
-check and both record walks share (threat model,
+([`single-file.md`](single-file.md) §2.3). A footer or trailer followed by a header
+magic with a few bytes damaged (`near_stream_magic()`) is not taken for the end: the
+search raises `CorruptionError`, as the forward read does there. The two bounds keep the
+cost of a file of junk to 1 MiB of reading and 4096 checks at open, a few milliseconds.
+Each stream's index is read at most 1 MiB at a time (`_INDEX_READ_CHUNK`), because a
+footer that checks out can still claim an index as large as the file; a real index fits
+in one read, which the CRC check and both record walks share (threat model,
 [Allocations sized by a header field](../threat-model.md#allocations-sized-by-a-header-field)).
 
 **LZMA Alone** gives its size from the header when the header is not the all-ones
@@ -239,12 +241,14 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `xz -C none`, `xz -C sha256` | Reads. With `-C none` only a broken LZMA2 stream reveals damage |
 | Two `xz` streams with zero padding between them | Reads both |
 | A stream followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and seeks from the index. `xz -t` refuses the file |
+| Two streams, one byte of the second stream's header magic damaged | `CorruptionError` on a read and a seek; the index is unreadable. `xz -t`: "Compressed data is corrupt" |
 | `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
 | LZMA Alone followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`. Junk that passes the next-stream check (about one random tail in 870) fails with `CorruptionError` |
 | Two LZMA Alone streams concatenated | Reads both, as `lzma.LZMAFile` does; the second is recognised by its header (§2.3 of [`single-file.md`](single-file.md)) |
 | 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
 | An lzip member followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and the CRC-32 from the trailers. The lzip manual allows trailing data |
+| Two lzip members, one byte of the second member's `LZIP` damaged | `CorruptionError` on a read and a seek; `size` and the CRC-32 unknown. `lzip` reports a corrupt header, unless `--loose-trailing` |
 | COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
 | MP3s whose ID3 tag starts with padding, any plausible header followed by zeros | Not claimed: the zero run after the header is refused |
 | OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5) |
