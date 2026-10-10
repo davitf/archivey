@@ -49,7 +49,7 @@ both arms, because a change that can only finish one way is a change that parks.
   (`:13`, `:47`, `:73`, `:138-143`) — roughly 60 lines to rework, not delete. See
   `design.md` §"The denominator".
 - Docs: `dev-docs/formats/rar.md` (`:286`, `:308`, `:709`, `:710`),
-  `dev-docs/topics/stream-ownership.md` (`:19`, `:35`), `review/backlog.md:65`.
+  `dev-docs/topics/stream-ownership.md` (`:19`, `:35`).
 - **`dev-docs/formats/rar.md:710` is already a decisions-table row** titled "Keep
   `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py`", carrying the same
   blockers in the same words as the two docstrings. The question is written down three

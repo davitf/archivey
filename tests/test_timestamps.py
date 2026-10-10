@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -12,23 +12,23 @@ from archivey.internal.timestamps import (
     unix_to_datetime,
 )
 
-_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
     ("ticks", "expected"),
     [
         # S25-K11: the float path gave .967791 for this one.
-        (133530429099677897, datetime(2024, 2, 22, 2, 35, 9, 967789, timezone.utc)),
+        (133530429099677897, datetime(2024, 2, 22, 2, 35, 9, 967789, UTC)),
         # The Unix epoch, and one tick either side of a microsecond boundary.
-        (116444736000000000, datetime(1970, 1, 1, tzinfo=timezone.utc)),
-        (116444736000000009, datetime(1970, 1, 1, 0, 0, 0, 0, timezone.utc)),
-        (116444736000000010, datetime(1970, 1, 1, 0, 0, 0, 1, timezone.utc)),
+        (116444736000000000, datetime(1970, 1, 1, tzinfo=UTC)),
+        (116444736000000009, datetime(1970, 1, 1, 0, 0, 0, 0, UTC)),
+        (116444736000000010, datetime(1970, 1, 1, 0, 0, 0, 1, UTC)),
         # The first tick after the FILETIME epoch, and a pre-1970 value (checked with
         # divmod and time.gmtime, not with this module's expression).
         (1, _EPOCH),
         (10, _EPOCH + timedelta(microseconds=1)),
-        (1 << 56, datetime(1829, 5, 5, 23, 50, 3, 792793, timezone.utc)),
+        (1 << 56, datetime(1829, 5, 5, 23, 50, 3, 792793, UTC)),
     ],
 )
 def test_filetime_converts_exactly(ticks: int, expected: datetime) -> None:
@@ -67,15 +67,15 @@ def test_filetime_out_of_range_is_an_issue(ticks: int) -> None:
 def test_unix_to_datetime_matches_fromtimestamp(seconds: float) -> None:
     # Where fromtimestamp works on every platform, the helper gives the same value,
     # sub-second rounding included.
-    assert unix_to_datetime(seconds) == datetime.fromtimestamp(seconds, tz=timezone.utc)
+    assert unix_to_datetime(seconds) == datetime.fromtimestamp(seconds, tz=UTC)
 
 
 @pytest.mark.parametrize(
     ("seconds", "expected"),
     [
-        (-1, datetime(1969, 12, 31, 23, 59, 59, tzinfo=timezone.utc)),
-        (-86_400.25, datetime(1969, 12, 30, 23, 59, 59, 750_000, tzinfo=timezone.utc)),
-        (-(2**31), datetime(1901, 12, 13, 20, 45, 52, tzinfo=timezone.utc)),
+        (-1, datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC)),
+        (-86_400.25, datetime(1969, 12, 30, 23, 59, 59, 750_000, tzinfo=UTC)),
+        (-(2**31), datetime(1901, 12, 13, 20, 45, 52, tzinfo=UTC)),
     ],
 )
 def test_unix_to_datetime_pre_1970(seconds: float, expected: datetime) -> None:
@@ -92,11 +92,11 @@ def test_unix_to_datetime_out_of_range_is_none(seconds: float) -> None:
 @pytest.mark.parametrize(
     ("seconds", "expected"),
     [
-        (-(2**31), datetime(1901, 12, 13, 20, 45, 52, tzinfo=timezone.utc)),
-        (-1, datetime(1969, 12, 31, 23, 59, 59, tzinfo=timezone.utc)),
-        (0, datetime(1970, 1, 1, tzinfo=timezone.utc)),
-        (2**31 - 1, datetime(2038, 1, 19, 3, 14, 7, tzinfo=timezone.utc)),
-        (2**32 - 1, datetime(2106, 2, 7, 6, 28, 15, tzinfo=timezone.utc)),
+        (-(2**31), datetime(1901, 12, 13, 20, 45, 52, tzinfo=UTC)),
+        (-1, datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC)),
+        (0, datetime(1970, 1, 1, tzinfo=UTC)),
+        (2**31 - 1, datetime(2038, 1, 19, 3, 14, 7, tzinfo=UTC)),
+        (2**32 - 1, datetime(2106, 2, 7, 6, 28, 15, tzinfo=UTC)),
     ],
 )
 def test_unix32_to_datetime_covers_every_32_bit_value(

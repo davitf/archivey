@@ -35,9 +35,9 @@ deliberately two-tiered — see :class:`ExecutableCue`.
 from __future__ import annotations
 
 import struct
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from enum import Enum
-from typing import BinaryIO, Callable, Generic, NamedTuple, Protocol, Sequence, TypeVar
+from typing import BinaryIO, Generic, NamedTuple, Protocol, TypeVar
 
 from archivey.internal.streams.streamtools import source_byte_size
 

@@ -5,18 +5,19 @@
 > ([`code-pr.md`](code-pr.md) pass 1 and its checklists), with no PR body to read after.
 
 A **sweep batch** is a cold whole-file reading pass rather than a diff review — the `S*`
-batches posted to [#315](https://github.com/davitf/archivey/pull/315). Findings post exactly
+batches posted to [#315](https://github.com/davitf/archivey/pull/315). #315 was closed on
+2026-10-02 after the first pass; the formal sweep is planned for after the release, and
+this file is the convention it will follow (its hub will be named in its brief). Findings post exactly
 as any review's do (`SKILL.md` §6), one inline thread each. What a sweep posts *in
 addition* is a per-file record that the file was read at all, **whether or not it found
 anything**:
 
-- **One top-level comment on #315 per file**, posted when you finish reading that file and
+- **One top-level comment on the hub PR per file**, posted when you finish reading that file and
   before you start the next one. Not inline: a whole-file read has no line to anchor to.
 - **Writing about the hub elsewhere?** Never reproduce a closing phrase next to its number
-  in a commit message or a pull request body — it closes the hub, silently, and quoting one
-  counts. The rule lives in [`AGENTS.md`](../../../../AGENTS.md) §Review workflow; it bit
-  twice on 2026-09-21. Inline comments like the ones above are not parsed, so findings and
-  markers are unaffected.
+  in a commit message or a pull request body — it closes the hub, silently, and quoting
+  one counts. It bit twice on 2026-09-21. Inline comments like the ones above are not
+  parsed, so findings and markers are unaffected.
 - **The marker is always its own comment, including for a file that produced findings.**
   Never put the `SWEPT` line in a review body, a finding, or a reply. A file with findings
   therefore gets its findings *and* a marker comment, which is the point: the marker says

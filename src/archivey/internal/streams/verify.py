@@ -45,7 +45,8 @@ from __future__ import annotations
 
 import hashlib
 import zlib
-from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, BinaryIO, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError

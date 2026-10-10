@@ -3,8 +3,8 @@ name: unslop
 description: |
   Cut AI tells from maintainer-facing prose (chat, decision packets, PR comments,
   briefs). Standing default voice per AGENTS.md. Use when writing to the maintainer,
-  when the user invokes /unslop, or when asked to strip LLM filler. Prefer this over
-  loading technical-writing unless Diátaxis/docs craft is also needed.
+  when the user invokes /unslop, or when asked to strip LLM filler. For ambiguity use
+  asd-ste100; for a user docs page use write-user-docs.
 ---
 
 # Unslop (archivey)
@@ -13,8 +13,8 @@ Condensed from poteto/pstack `unslop` (MIT). Checklist only — no Diátaxis.
 
 Standing rule: [`AGENTS.md`](../../../AGENTS.md) §Writing English, which also says
 where [`asd-ste100`](../asd-ste100/SKILL.md) applies. That skill cuts ambiguity; this
-one cuts AI tells. Run both on maintainer-facing prose.  
-Docs/handbook structure + craft: [`../technical-writing/SKILL.md`](../technical-writing/SKILL.md).
+one cuts AI tells. Run both on maintainer-facing prose. User docs pages:
+[`write-user-docs`](../write-user-docs/SKILL.md).
 
 Rewrite until nothing reads like default LLM filler:
 

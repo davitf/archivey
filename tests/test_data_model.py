@@ -13,6 +13,7 @@ import copy
 import json
 import pickle
 from collections.abc import Hashable
+from datetime import UTC
 
 import pytest
 
@@ -224,19 +225,19 @@ def test_modified_utc_normalizes_mixed_timestamps() -> None:
         name="aware",
         modified=datetime(2020, 6, 1, 14, 0, tzinfo=timezone(timedelta(hours=2))),
     )
-    assert aware.modified_utc() == datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+    assert aware.modified_utc() == datetime(2020, 6, 1, 12, 0, tzinfo=UTC)
 
     # Naive (a wall-clock DOS time): tz_for_naive supplies the caller's assumption.
     naive = ArchiveMember(
         type=MemberType.FILE, name="naive", modified=datetime(2020, 6, 1, 14, 0)
     )
     as_utc = naive.modified_utc(tz_for_naive=timezone(timedelta(hours=-3)))
-    assert as_utc == datetime(2020, 6, 1, 17, 0, tzinfo=timezone.utc)
+    assert as_utc == datetime(2020, 6, 1, 17, 0, tzinfo=UTC)
 
     # Default: naive is interpreted in the local timezone; the result is aware UTC and
     # comparable with the aware member's (mixed naive/aware raises TypeError directly).
     local_utc = naive.modified_utc()
-    assert local_utc is not None and local_utc.tzinfo == timezone.utc
+    assert local_utc is not None and local_utc.tzinfo == UTC
     assert (local_utc < aware.modified_utc()) in (
         True,
         False,

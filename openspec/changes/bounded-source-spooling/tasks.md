@@ -97,7 +97,7 @@
 
 ## 6. Registers and docs
 
-- [x] 6.1 *(shipped)* Close `dev-docs/open-issues.md` **P11**, recording the limit that
+- [x] 6.1 *(shipped)* Close the open-issue entry for the disk copy, recording the limit that
       shipped. Its `CostReceipt.notes` half is already closed — the note ships today;
       update the entry's stale "no signal" measurement at the same time.
 - [ ] 6.2 Threat-model pass: untrusted bytes at a predictable path, spool-directory
@@ -106,7 +106,7 @@
 - [ ] 6.3 Update `review/docs-content/claims.md` **E-71** — the row records that no page
       states the spill; when this lands the page states the limit instead. Do **not** edit
       pages under `docs/` from this change; Topic 8 owns the guide.
-- [ ] 6.4 Add the payload-cache idea to `dev-docs/IDEAS.md` §Performance, recorded as a
+- [ ] 6.4 Track the payload-cache idea internally, recorded as a
       **caller-side wrapper-stream** concern archivey might ship or recommend later — not
       as a deferred version of this change.
 - [ ] 6.5 Before archiving, re-derive this change's `format-rar` `MODIFIED` block from the

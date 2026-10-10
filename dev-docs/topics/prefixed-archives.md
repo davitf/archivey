@@ -32,7 +32,7 @@ Only the cued forward scan is shipped today.
 | **Tail probe** | Some formats locate themselves from the end, so no search is needed — only the willingness to look. | Set by the format (ZIP: 65 557 bytes) | **Designed, not shipped.** Held out of the default budget pending a seek-cost measurement |
 | **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
 | **Exhaustive scan** | Search the whole source, for a caller who knows they are holding a firmware image. | Caller's `max_scan_bytes` | Designed, not shipped |
-| **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | Parked in [`IDEAS.md`](../IDEAS.md) |
+| **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | An idea in [`IDEAS.md`](../IDEAS.md) |
 
 **Prefix analysis is not a tier, which is why it is last.** A makeself `.run` is a shell
 script that exports `SKIP` (the header's line count) and `COMPRESS`, so the payload offset is
@@ -41,8 +41,8 @@ false `1f 8b 08` picked up from the script's own text. It also names compressors
 cannot read (`bzip3`, `lzo`) instead of reporting a needle miss. But it works only for stub
 families somebody taught it, so it can never replace the scan; it can only short-circuit it.
 The cost of promoting it is a corpus of current and old installers and a definition of "looks
-like makeself" that does not turn into a second shell parser — see `IDEAS.md` §API &
-ergonomics.
+like makeself" that does not turn into a second shell parser ([`IDEAS.md`](../IDEAS.md)
+§Detection).
 
 The scan runs second in the detector's order — near magic → **SFX scan** → far magic →
 content probes → extension — and reports `PROBABLE` with `detected_by="sfx_scan"` and a
@@ -82,8 +82,7 @@ nibble check (97 of 100 carry `90 00`). The one measured collision between a pro
 executable is a different probe: a zero-filled Mach-O stub came back `LZMA_ALONE`, since
 `cf fa ed fe` passes the LZMA-Alone properties gate. So strong-cue suppression is an
 invariant held on principle, not a patch for a common collision — the probes' real
-false-positive problem is arbitrary data, tracked as
-[`open-issues.md`](../open-issues.md) P12 and threat-model O10.
+false-positive problem is arbitrary data, tracked as threat-model O10.
 
 Mach-O has no weak tier: its header either parses, giving `STRONG`, or it raises **no cue
 at all** and the file is never scanned. It is never `WEAK`, because `ca fe ba be` is also
@@ -179,7 +178,7 @@ compressed stream is a real shape for script launchers and not for executable on
 | What you see | Where | More |
 | --- | --- | --- |
 | A prefixed ZIP behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it | **archivey** | The tail probe is the tier that would find it (§2) |
-| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit — [`open-issues.md`](../open-issues.md) P18 (Closed) |
+| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the forward scan needs a cue in the first bytes |
 
 A defect worth remembering because it shows what the cue gate is really protecting: before
@@ -262,4 +261,3 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
 - Code: `internal/sfx.py` (bound, cue, scan, `HitOutcome`) · `internal/detection.py` (tier
   order) · `internal/backends/zip_detect.py`, `internal/backends/sevenzip_detect.py`, `internal/backends/rar_detect.py` ·
   `internal/volumes.py` (sibling discovery)
-- Status: [`open-issues.md`](../open-issues.md) §Closed (P17)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -49,7 +49,7 @@ def _norm_ts(dt: datetime) -> datetime:
     """
     dt = datetime.combine(dt.date(), dt.timetz())
     if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+        return dt.astimezone(UTC).replace(tzinfo=UTC)
     return dt
 
 

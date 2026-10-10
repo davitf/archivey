@@ -28,6 +28,7 @@ from archivey.internal.streams.deflate_resume import (
     WINDOW_SIZE,
     DeflateResume,
     DeflateResumeDecoder,
+    stream_end,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 
@@ -162,3 +163,27 @@ def test_gzip_maps_a_corrupt_resumed_decode_like_its_own() -> None:
     stream.add_seek_points([SeekPoint(10, len(header), DeflateResume(0, b""))])
     with pytest.raises(CorruptionError):
         stream.seek(20)
+
+
+@pytest.mark.parametrize("bit", [0, 3, 6])
+def test_stream_end_finds_the_final_block_from_a_resume_point(bit: int) -> None:
+    stream, start, head, data = _stream(bit)
+    end = len(head) + len(data)
+    point = SeekPoint(len(head), start, DeflateResume(bit, head[-WINDOW_SIZE:]))
+    assert stream_end(io.BytesIO(stream), point, end) == end
+    assert stream_end(io.BytesIO(stream), None, end) == end
+    # The input runs out first, or the output passes the cap: no end.
+    cut = stream[: start + (len(stream) - start) // 2]
+    assert stream_end(io.BytesIO(cut), point, end) is None
+    assert stream_end(io.BytesIO(stream), point, end - 1) is None
+
+
+def test_stream_end_needs_a_final_block() -> None:
+    """A stream cut right after a whole block decodes every byte with no error, and
+    has no end."""
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    body = compressor.compress(b"payload " * 100) + compressor.flush(zlib.Z_FULL_FLUSH)
+    assert len(zlib.decompressobj(-15).decompress(body)) == 800
+    assert stream_end(io.BytesIO(body), None, 800) is None
+    final = body + compressor.flush()
+    assert stream_end(io.BytesIO(final), None, 800) == 800

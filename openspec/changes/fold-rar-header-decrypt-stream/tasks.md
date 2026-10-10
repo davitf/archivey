@@ -55,5 +55,5 @@ whose boxes can only tick one way is a change that parks in `openspec/changes/` 
       `dev-docs/discussions/` note: that row plus the two docstrings already record this
       decision three times, and a fourth record is the failure mode, not the fix.
 - [ ] 3.2 If folded, update the other doc sites: `dev-docs/formats/rar.md:286`, `:308`,
-      `:709`, `dev-docs/topics/stream-ownership.md:19`, `:35`, and `review/backlog.md:65`.
+      `:709`, and `dev-docs/topics/stream-ownership.md:19`, `:35`.
 - [ ] 3.3 `openspec validate --strict fold-rar-header-decrypt-stream`.

@@ -370,7 +370,8 @@ class EncryptedVerificationContext(_JsonSafeContext):
     carried.
 
     The code answers a question a member stream cannot answer for itself yet. Retire it
-    when ``stream.verified`` lands (``dev-docs/IDEAS.md``, §API & ergonomics).
+    when member streams report their verification state (``dev-docs/IDEAS.md``,
+    "Verification state as data").
     """
 
     kind: Literal["encrypted_verification"] = "encrypted_verification"
@@ -513,8 +514,8 @@ and the reasons are part of the contract rather than an oversight:
 - ``ENCRYPTED_MEMBER_UNVERIFIED`` — fires only when the caller abandons a member stream
   before EOF (extraction reads every member to EOF and never fires it). In ``strict`` it
   would turn a peek at a ZipCrypto or RAR3/4 encrypted member into
-  ``DiagnosticRaisedError``. Revisit when a
-  ``stream.verified`` attribute lands (``dev-docs/IDEAS.md``) and retires this code.
+  ``DiagnosticRaisedError``. Revisit when member streams report their verification
+  state (``dev-docs/IDEAS.md``, "Verification state as data") and retire this code.
 - ``PROBE_FORMAT_UNCONFIRMED`` — a probe-only identification is an advisory about
   what the file *is* (its bytes passed that format's content check), not a finding
   about the archive's own bytes, and it only accompanies a read that already failed

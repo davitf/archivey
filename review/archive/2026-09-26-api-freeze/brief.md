@@ -1,9 +1,9 @@
 # Brief — The public API at the `0.2.0` freeze
 
-Read [`review/README.md`](../README.md) first: conventions, VISION tie-breakers, and the
+Read [`review/README.md`](../../README.md) first: conventions, VISION tie-breakers, and the
 deliverable shape. This brief inherits all of it and does not repeat it.
 
-This is a **re-review**, not a first look. [`archive/2026-07-19-api-coherence/`](../archive/2026-07-19-api-coherence/)
+This is a **re-review**, not a first look. [`archive/2026-07-19-api-coherence/`](../2026-07-19-api-coherence/)
 judged the same surface two months ago and every one of its questions was decided and
 implemented. Read that review before this one. Its `parity.md`, `surface.md` and
 `QUESTIONS.md` are the baseline you are re-testing, not material to rediscover.

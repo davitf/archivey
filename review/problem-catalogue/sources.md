@@ -1,5 +1,9 @@
 # `sources.md` — the inventory and coverage proof
 
+> **`dev-docs/open-issues.md` left the repo on 2026-10-09**; its open items are tracked
+> internally. Citations of it here, line numbers included, refer to its last committed
+> state: `git show bd135512:dev-docs/open-issues.md`.
+
 Step 1 of [`brief.md`](brief.md) §Suggested process: **every** document named in
 §Sources, listed with a state, written down *before* reading started. Coverage is
 checkable only against a denominator recorded in advance.
@@ -265,6 +269,6 @@ Not mined for entries; they say what the catalogue is *for*.
 
 | Document | Use |
 |---|---|
-| `review/docs/independent/rationale-gaps.md` | 32 "why is it like this?" questions — catalogue entries with the answer missing (§Why now #4) |
+| `review/archive/2026-10-06-docs/independent/rationale-gaps.md` | 32 "why is it like this?" questions — catalogue entries with the answer missing (§Why now #4) |
 | `VISION.md` | The four load-bearing claims; input to the experiment, not a problem source |
 | `review/README.md` | Conventions every brief inherits |

@@ -5,7 +5,7 @@ The review loop's findings, measured over 38 pull requests (2026-09-23/24), are 
 by three shapes that a script can find faster than a reviewer:
 
 - a symbol or an exception type changed in `src/` and is still described the old way in a
-  spec, a handbook page or the CHANGELOG (``sweep``);
+  spec or a handbook page (``sweep``; the CHANGELOG is left out, since the release writes it);
 - a paragraph edited in place and not rewrapped, leaving a line far wider than the rest of
   its file (``width``);
 - a new test the PR body says fails on `main`, which passes there (``red-on-base``).
@@ -47,7 +47,6 @@ DOC_ROOTS = (
     "openspec/changes",
     "docs",
     "dev-docs",
-    "CHANGELOG.md",
     "README.md",
     "AGENTS.md",
     "CONTRIBUTING.md",

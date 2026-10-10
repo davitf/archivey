@@ -43,7 +43,8 @@ prints (shared-runner noise).
   slowdown. An explicit `--wall-drift-baseline` path fails closed if the file
   is missing or has no overlapping `wall_ratio` cases.
 
-See `QUESTIONS.md` Q2 (decided 2026-07-20) and debt-ledger Q1.
+See `QUESTIONS.md` Q2 (decided 2026-07-20; baseline rule superseded 2026-10-10,
+#655) and debt-ledger Q1.
 
 ## G2 — The canonical O(n²) collapse IS caught (fine)
 

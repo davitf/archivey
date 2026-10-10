@@ -42,9 +42,9 @@ import os
 import re
 import stat
 import unicodedata
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Callable, Sequence
 
 # More symlink follows than any supported kernel allows in one resolution (Linux 40,
 # macOS and FreeBSD 32, Windows 63 reparse points). A walk stops there: the OS

@@ -20,16 +20,15 @@ from __future__ import annotations
 import bisect
 import io
 import os
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import (
     Any,
     BinaryIO,
-    Callable,
     Generic,
     NoReturn,
     Protocol,
-    Sequence,
     TypeVar,
     cast,
 )

@@ -16,9 +16,9 @@ from the git tag). `publish.yml` fails if the tag and packaged version disagree.
 ## 0. Preconditions
 
 - [ ] Default branch green (CI + recent nightly wall job not in unexplained fail).
-- [ ] No open “must land before this tag” items on `review/STATUS.md` /
-      debt-ledger pay-list / in-flight OpenSpec changes you intended for this
-      version. The 2026-07-28 debt-ledger pay-list is closed
+- [ ] No open “must land before this tag” items in the internal tracker or the
+      in-flight OpenSpec changes you intended for this version. The 2026-07-28
+      debt-ledger pay-list is closed
       (`review/archive/2026-07-28-debt-ledger/SUMMARY.md`).
 - [ ] First public release only: cutover runbook complete — see
       `dev-docs/release-repo-cutover.md`; the repo is already named `archivey`.
@@ -90,10 +90,14 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
       --mode full --scale realistic --warmup \
       --json-out /tmp/archivey-wall-prev.json \
       --text-out /tmp/archivey-wall-prev.md )
-  # Drift helper against the previous JSON (same relative gates as nightly)
+  # Drift helper against the previous JSON: the nightly's two ratio gates, with
+  # the 1 ms time floor off. The floor absorbs night-to-night timer noise; both
+  # runs here are on one host in one session, so a sub-millisecond listing case
+  # that drifts is a real change and must be reported.
   uv run --no-sync python -m benchmarks.harness \
     --mode full --scale realistic --warmup \
     --wall-drift-baseline /tmp/archivey-wall-prev.json \
+    --wall-drift-min-extra-ms 0 \
     --json-out /tmp/archivey-wall-current.json \
     --text-out /tmp/archivey-wall-current.md
   ```
@@ -124,8 +128,8 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 - [ ] `dev-docs/threat-model.md` §5 open design gaps: either closed, consciously
       deferred with wording, or called out in SECURITY / gotchas; each §4
       accepted non-guarantee still has its public line in `docs/extracting.md`.
-- [ ] `dev-docs/open-issues.md` not contradicting shipped decisions (stale
-      rows fixed or moved to Closed).
+- [ ] `dev-docs/known-issues.md` not contradicting shipped decisions (fixed
+      entries deleted).
 - [ ] MkDocs builds clean:
 
   ```bash

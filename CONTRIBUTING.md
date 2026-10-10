@@ -1,80 +1,31 @@
 # Contributing to Archivey (v2)
 
-Thanks for working on Archivey! This file is the **coding and testing standards**;
-the *design* lives elsewhere and is authoritative:
-
-- `openspec/specs/<capability>/spec.md` — the authoritative capability specs.
-- `docs/` — the published end-user guide, and nothing else (see "Where does a new doc
-  go?" at the end of this file).
-- `new_docs/` — an unpublished rewrite of the user guide, page by page. It replaces
-  `docs/` once it covers it; until then `docs/` is authoritative (`new_docs/README.md`).
-- `dev-docs/` — unpublished maintainer material: `decisions/` (the ADR log),
-  threat model / codec analysis / known issues, `investigations/` (finished
-  evidence), `history/` (superseded SPEC/ARCHITECTURE/COMPARISON/ASYNC prose,
-  not normative).
-- `VISION.md` (repo root), `dev-docs/IDEAS.md`: vision and backlog. The pre-0.2.0 phase
-  roadmap is in `dev-docs/history/PLAN.md`, kept for history.
-- `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
-  edit shipped specs ad hoc). Default schema is `library` (compact library-style
-  deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
-- `AGENTS.md` — orientation for AI agents working in this repo (`CLAUDE.md` points at it).
-
-### Archiving an OpenSpec change
-
-**Merging a change does not apply it.** A proposal's deltas reach the authoritative specs
-only when someone runs `openspec archive <change> --yes` and commits the resulting
-`openspec/specs/` updates.
-
-**Archive in the PR that finishes the change.** Most changes here are proposed,
-implemented, and finished in one PR, and that PR is where the archive belongs — the
-deltas are what make `openspec/specs/` describe what actually ships. Treating the archive
-as a follow-up produced both halves of the problem it was meant to avoid: a window on
-`main` where the authority was wrong (three times running — #212, #213, #214) and a
-steady stream of PRs whose entire content was `openspec archive` (#214, #215, #222, #227,
-#238). CI enforces this on pull requests and on `main`
-(`scripts/check_openspec_archived.py`).
-
-### Writing a delta requirement body
-
-**Do not write "this change" in a requirement body or its scenarios.** It is unambiguous
-while you are writing it and meaningless the moment `openspec archive` folds that body
-into `openspec/specs/`: the change has moved to `openspec/changes/archive/` and a reader
-of the authoritative spec cannot tell which one you meant. Ten such phrases had
-accumulated across five capabilities before anyone counted, and most were not worth
-naming even then — they were pre-merge arguments ("this change is a strict increase in
-what is stamped", "it SHALL ship anyway because…") whose other referents, the prior
-behaviour and the pre-change tree, had gone too.
-
-State the contract as it stands. The reasoning behind it goes in the change's
-`design.md`, which `openspec/config.yaml` rules.specs already asks for. Naming the change
-id is the last resort, for a cross-reference a reader of the archived spec would follow.
-`scripts/check_openspec_self_reference.py` enforces this over `openspec/specs/` and over
-in-flight deltas; the two changes that predate it are grandfathered in its `PENDING` set,
-and it fails if an entry there goes stale, so the list can only shrink.
-
-Practically, make the archive the change's **last task**, so checking the final box and
-applying the deltas are the same act. Most of the archived corpus is already written this
-way.
-
-**When the change genuinely is not finished, leave the trailing task unchecked.** That is
-the escape hatch, and it costs one character. Use it when the design is still moving under
-review (archiving early is what turns a review round into a revert-and-rework), or when an
-archive is deliberately batched with a sibling change. The gate reads finished-ness from
-the checkboxes: an unchecked box is an honest "not done yet", while a checked one is a
-claim that the change has landed in the specs. Do not check the last box to make a
-progress report look tidy.
+Thanks for working on Archivey! This file is the **coding and testing standards**, the
+gates, and the OpenSpec mechanics. The *design* is authoritative elsewhere: the
+capability specs under `openspec/specs/`, the handbook under `dev-docs/`, and
+`VISION.md`. [`dev-docs/index.md`](dev-docs/index.md) maps where everything lives.
+`new_docs/` is an unpublished rewrite of the user guide, page by page; until it covers
+`docs/`, `docs/` is authoritative (`new_docs/README.md`).
 
 ## Getting started
 
-Python **3.11+**. Tooling runs through [`uv`](https://docs.astral.sh/uv/):
+Python **3.11+**. Tooling runs through [`uv`](https://docs.astral.sh/uv/).
+`scripts/setup-dev-env.sh` provisions everything — the `unrar` and `7z` binaries, the
+`openspec` CLI, the dev environment and the format-on-commit git hook — and agent
+environments run it at session start. By hand:
 
 ```bash
-uv sync                         # create/refresh the dev environment
-./scripts/install-git-hooks.sh  # required: auto ruff fix+format on commit
+scripts/setup-dev-env.sh          # idempotent; prints anything still missing at the end
+# or, for the Python side only:
+uv sync --group dev --extra all   # create/refresh the dev environment
+./scripts/install-git-hooks.sh    # required: auto ruff fix+format on commit
 ```
 
-On macOS, Homebrew no longer ships RARLAB `unrar`; `scripts/setup-dev-env.sh`
-compiles the same pin CI uses (`scripts/install-rarlab-unrar.sh`).
+RAR *data* tests need the system `unrar` binary, and encrypted-ZIP fixtures need `7z`
+(`p7zip-full`). Without them those tests skip cleanly — which is the problem: the suite
+still reports green while running about a hundred fewer tests. Read the setup script's
+last lines. On macOS, Homebrew no longer ships RARLAB `unrar`; the setup script compiles
+the same pin CI uses (`scripts/install-rarlab-unrar.sh`).
 
 Then two scripts cover the gates, split by how long they take and how often you run them:
 
@@ -97,7 +48,8 @@ everything that is wrong. Without `--fix` it writes nothing and answers "will CI
 `test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
 -k roundtrip`), and `--all-configs` runs the full before-pushing gate described below.
 
-Run the underlying commands directly when you want one in isolation:
+Run the underlying commands directly when you want one in isolation (`--no-sync` avoids a
+redundant re-resolve):
 
 ```bash
 uv run pytest                      # test suite
@@ -117,17 +69,20 @@ and running it alone is the most common self-inflicted CI failure here.
 (`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
 paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
 run `uv run ruff format` yourself before committing — `ruff format --check` only
-reports problems; it does not rewrite files.
+reports problems; it does not rewrite files. Prefer the script over
+`uv run pre-commit install`: Cursor remaps `core.hooksPath`, and the script installs into
+the chained original hooks directory so the hook still runs.
 
-(`uv run pre-commit install` remains an alternative if you prefer the
-`pre-commit` framework's own installer, but on Cursor Cloud it can land in the
-remapped `core.hooksPath`; `./scripts/install-git-hooks.sh` is the supported path.)
+**From a `git worktree`,** both scripts work unchanged. A worktree starts without a
+`.venv`, so they create one for it (about a second; uv hardlinks from its cache), and the
+tree gets its own environment. One trap if you bypass the scripts: a bare
+`uv run --no-sync` in a worktree creates an *empty* `.venv`, after which `pyrefly` and
+`ty` report `missing-import` for every optional extra. That output is a missing
+environment, not real findings; `./scripts/check.sh` fixes it.
 
-RAR *data* tests need the system `unrar` binary, and encrypted-ZIP fixtures need `7z`
-(`p7zip-full`). Without them those tests skip cleanly — which is the problem: the suite
-still reports green while running ~109 fewer tests. Run `scripts/setup-dev-env.sh` to
-provision both (it is idempotent, and prints anything still missing at the end); agent
-environments run it automatically at session start.
+If a gate cannot be run for environment reasons, **say it was not run** rather than
+reporting its output. A phantom failure passed off as a result costs the next reader more
+than a skipped gate honestly labelled.
 
 **Before pushing a change whose behaviour could depend on which optional libraries are
 installed, run the suite in all three dependency configurations CI runs** — optional
@@ -153,7 +108,7 @@ The three legs, which `--all-configs` runs in order:
 uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 
 # 2. Minimum supported versions — every declared dependency pinned to its floor
-#    (`pycdlib 1.16`, `zstandard 0.23`, …), so version-specific library bugs in the
+#    (`pycdlib 1.16`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
 uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
 
@@ -169,28 +124,19 @@ These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three mus
 green. `-n auto` (pytest-xdist) runs the suite on every core; it is not in `addopts`, so
 a plain `uv run pytest tests/test_zip.py` stays one process.
 
-> **`--resolution lowest-direct` rewrites `uv.lock`.** Leg 2 does not merely install
-> different versions — it *persists* them, so every later `uv sync --frozen` /
-> `uv run --no-sync` silently keeps the downgraded set until you re-lock, and `git status`
-> shows a few hundred lines of lockfile churn that is easy to commit by accident.
-> **`./scripts/test.sh --all-configs` handles this for you** — it restores `uv.lock` and
-> the everyday environment on exit, including on failure or Ctrl-C. Running the legs by
-> hand, restore with:
->
-> ```bash
-> git checkout -- uv.lock && uv sync --frozen --group dev --extra all
-> ```
->
-> The **lint and type checkers are pinned exactly** (`ruff`, `pyrefly`, `ty` — see the
-> comment in `pyproject.toml`) precisely so this cannot change what the gates report:
-> before that, leg 2 resolved `ruff>=0.11.0` to 0.11.0, which flagged 367 "errors" on an
-> unchanged tree. Everything else keeps a floor, because exercising the *runtime*
-> libraries across their supported range is what leg 2 is for.
-
 CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
-macOS/Windows). Repo `.python-version` pins the default local env to 3.11, so the
-workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
-`uv run` in the test job — otherwise newer-version legs silently re-test 3.11.
+macOS/Windows). Repo `.python-version` pins the default local env to 3.11, so a matrix
+job must pin its Python on every `uv sync` / `uv run`, or newer-version legs silently
+re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes `--python`; the
+free-threaded job and the stress workflows pin each call with `--python` or `UV_PYTHON`.
+Keep that when you add a step.
+
+> **`--resolution lowest-direct` rewrites `uv.lock`**, and every later `uv sync --frozen`
+> / `uv run --no-sync` keeps the downgraded set. `./scripts/test.sh --all-configs`
+> restores `uv.lock` and the everyday environment on exit. Running the legs by hand,
+> restore with `git checkout -- uv.lock && uv sync --frozen --group dev --extra all`. The
+> lint and type checkers are pinned exactly in `pyproject.toml` so that leg 2 cannot
+> change what the gates report.
 
 ## Cutting a release
 
@@ -224,26 +170,30 @@ security fixes one line each, other bug fixes summarized in one line).
 
 ## Coding standards
 
+Design questions (what a default should be, what a damaged archive should do, whether
+two formats should agree) are settled by
+[`dev-docs/design-rules.md`](dev-docs/design-rules.md) before anyone asks the
+maintainer.
+
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
-- **Don't accumulate debt — clean as you go.** When you touch something, leave it in the
-  shape it *should* have, not a quick patch bolted onto the old shape. If a change calls
-  for a rename, a moved file, an updated doc/spec, or a small refactor to keep the design
-  coherent, do it now as part of the change rather than deferring it — a deferred cleanup
-  is debt the next person (often the next phase) inherits. Code and docs/specs are kept in
-  sync: renaming a type or changing a contract means updating the prose docs and the
-  `openspec/specs/` that describe it in the same change. The one exception is the
-  pause-and-ask rule below: when a cleanup would resolve a genuine design discrepancy,
-  surface it instead of silently picking a direction.
+- **Share code that must agree; copy code that agrees by coincidence** (DR-23a). Before
+  factoring out duplicated code, ask whether a change to one copy must reach the other.
+- **Don't accumulate debt — clean as you go** (DR-23). When you touch something, leave it
+  in the shape it *should* have: a rename, a moved file, an updated doc or spec, or a small
+  refactor goes in this change. Renaming a type or changing a contract updates the prose
+  docs and the `openspec/specs/` that describe it in the same change. The exception is a
+  cleanup that would resolve a genuine design discrepancy: surface it (see "Working with
+  the specs") instead of silently picking a direction.
 - **A pre-existing bug in the mechanism this change is already editing is fixed here,
   when the fix is proportionate.** Finding one mid-change is not a reason to open a ticket
   and move on: it lands in this PR, where the reviewer can see it against the code it
   belongs to. Being in a file the change touches is not enough on its own — the test is
   the mechanism under change, not the file. What does *not* land here is a
   **sweep**: the same mistake across files this change does not touch, or a rename that
-  ripples through specs and archived changes. That is a follow-up, recorded in
-  `review/backlog.md` or `dev-docs/IDEAS.md` with a reason. The line is whether you are
-  still in the code under review, not whether the bug is old.
+  ripples through specs and archived changes. That is its own PR; anything not yet
+  picked up is tracked internally, not parked in a file in the repo. The line is whether
+  you are still in the code under review, not whether the bug is old.
 - **Leave the code self-explanatory.** The *resulting* tree — names, structure, and
   nearby comments — must make sense to a future editor who never saw the PR. They will
   read the current code, not the diff or the OpenSpec change / `design.md` / PR body
@@ -307,14 +257,12 @@ security fixes one line each, other bug fixes summarized in one line).
   An unjustified or non-specific suppression should be treated as a review blocker. The
   library is kept clean on **both** Pyrefly and ty precisely so neither checker's blind
   spot can hide an error the other would catch — don't defeat that with a suppression.
-- **Every resource bound is reachable from the public config.** Guards against hostile
-  input belong in `ListingLimits` / `ExtractionLimits` on `ArchiveyConfig`, where a user
-  who legitimately needs a bigger archive can raise them — including to `UNLIMITED`. Do
-  **not** add a second ceiling as a module constant inside a parser or reader: it is
-  invisible from the API, it cannot be lifted, and it turns a real archive into an error
-  the caller has no way to accept. If a bound genuinely cannot be expressed in the config
-  (it is structural, not a policy), say why in a comment at the constant and treat it as
-  a contract change: it needs a spec row, not a quiet `_MAX_…`.
+- **Every resource bound is reachable from the public config** (DR-9). Guards against
+  hostile input belong on the limits objects of `ArchiveyConfig`, where a user who needs a
+  bigger archive can raise them, including to `UNLIMITED`. Do **not** add a second ceiling
+  as a module constant inside a parser or reader: it cannot be lifted. A bound that is
+  structural rather than policy says why in a comment at the constant and gets a spec row,
+  not a quiet `_MAX_…`.
 - **Never silently drop or clamp data.** Truncating an over-long read, clamping a seek
   past a boundary, or discarding a consumed count desynchronizes the stream for every
   later caller and turns a detectable error into wrong bytes. Raise, with a message that
@@ -386,22 +334,10 @@ security fixes one line each, other bug fixes summarized in one line).
   layer — should also get focused **unit** tests of their internals, because they're
   shared foundations and their corner cases are exactly what break formats downstream.
 - **Leaked OS resources fail the test.** `tests/leak_oracle.py` is an autouse oracle
-  (disable with `ARCHIVEY_LEAK_ORACLE=0`) that fails a test which leaves a child
-  process running or an owning stream unclosed (`owns_inner=True` / a
-  `DelegatingStream` whose `_subclass_closes_inner` resolved True via the
-  class flag or the kwarg). Extra pipe fds are annotated on those failures, not
-  a standalone fail (`os.pipe()` helpers close by GC). It pins those objects so
-  `IOBase.__del__` cannot reap them between the test return and teardown — that is
-  the gap that let a missing `owns_inner=True` on a RAR glob-mask pipe ship with a
-  green suite. An owning stream must be closed in the test that constructed
-  it — a later test's close still fails the constructor. Module-scoped owning
-  streams are invisible (pins reset at each test). `unrar`/`7z` leaks are
-  invisible under `[core-only]` (those tests
-  skip); the oracle still runs, and `tests/test_leak_oracle.py` spawns
-  `sys.executable` so the gate is exercised in every config. Teardown reaps
-  leaked children via `Popen.terminate` — `os.WNOHANG` does not exist on
-  Windows, and using it hid the leak report behind an `AttributeError`.
-  `@pytest.mark.allow_resource_leaks` skips the fail, not the reap.
+  (disable with `ARCHIVEY_LEAK_ORACLE=0`) that fails a test which leaves a child process
+  running or an owning stream unclosed. Close an owning stream in the test that
+  constructed it; `@pytest.mark.allow_resource_leaks` skips the fail, not the reap. The
+  module docstring has what it detects and what it deliberately does not.
 - **Measure a memory peak with `tests/memory_util.traced_peak`.** Do not start and stop
   `tracemalloc` by hand for a peak. On free-threaded 3.13 a garbage collection that runs
   inside the window adds memory in proportion to every live object in the process, so a
@@ -443,51 +379,127 @@ security fixes one line each, other bug fixes summarized in one line).
   absent extra) compare nothing. A surface you don't compare is where a divergence
   ships, and in practice where review finds it.
 
-### Coverage-guided fuzz (Atheris)
+### Cross-platform traps (you develop on Linux; CI runs Windows and macOS)
 
-Atheris lives in the PEP 735 `fuzz` dependency group (`atheris`) and runs via
-`.github/workflows/atheris-fuzz.yml` — same shape as the benchmark wall split:
+The test matrix covers Linux, macOS and Windows, but your container is Linux — so this
+class of failure lands *after* you push, and it has repeatedly cost a review round. Check
+new tests and new message-formatting code for all four:
 
-- **Every PR:** short partitioned budgets over all targets (blocks the PR; sharded
-  across parallel jobs because each target pays a large Atheris cold-start).
-- **Nightly schedule:** full partition, but only if default-branch HEAD moved in the
-  last ~3 days (commit-recency guard; dormant stretches skip the expensive run).
-- **`workflow_dispatch`:** force the full partition (optional `budget_scale`).
+- **`read_text()` / `open()` without `encoding="utf-8"`.** Python's default encoding on
+  Windows is the ANSI code page (cp1252), not UTF-8. Any test that reads a repo source
+  file — static/AST guards especially — will raise `UnicodeDecodeError` there the moment a
+  source file contains a curly quote or an accented character. Always pass
+  `encoding="utf-8"` explicitly.
+- **Control characters and `:*?"<>|` in on-disk filenames.** Windows rejects them with
+  `WinError 123` at *creation* time, so a test that writes a hostile member name to disk
+  fails before it reaches the behaviour it meant to assert. Use a Windows-legal spoof
+  (U+2028 and friends) for the portable case, and mark the ANSI variant with the repo's
+  existing `_ANSI_ONLY` marker.
+- **Path separators in compared strings.** A native `Path` interpolated into a message
+  renders `C:\Users\…` on Windows, and backslashes double once the text is escaped for
+  terminal display. Render paths through `terminal.display_path()` before they enter a
+  message, and compare against `as_posix()` rather than `str(path)`.
+- **Filesystem case-insensitivity.** macOS and Windows collapse `A.txt` / `a.txt`, which
+  changes name-collision behaviour. If a test depends on two members differing only by
+  case, it is testing something different on each platform.
 
-Mutation fuzz (`tests/test_mutation_fuzz.py`) and `ARCHIVEY_FUZZ=1` /
-`tests/fuzz_sevenzip_parser.py` / `tests/fuzz_rar_parser.py` stay as they are.
+### Fuzzing
 
-Local smoke (Linux; needs corpus fixture builders). Prefer Python 3.12 for current
-Atheris wheels; on 3.11 ``uv`` resolves ``atheris`` 3.0.x::
+Atheris coverage-guided fuzz runs on every PR (short sharded budgets) and nightly; the
+workflow, local smoke runs and per-target budgets are in
+[`dev-docs/fuzzing.md`](dev-docs/fuzzing.md). Mutation fuzz
+(`tests/test_mutation_fuzz.py`) and the `ARCHIVEY_FUZZ=1` parser harnesses run in the
+ordinary suite.
 
-    uv sync --group fuzz --group dev --extra all
-    uv run --no-sync python -m tests.atheris_fuzz --smoke
+## OpenSpec changes
 
-    # or explicitly:
-    uv sync --python 3.12 --group fuzz --group dev --extra all
-    uv run --python 3.12 --no-sync python -m tests.atheris_fuzz --smoke
+Committed work is an OpenSpec change under `openspec/changes/<change>/` — propose
+changes there, don't edit shipped specs ad hoc. The default schema is `library`
+(proposal → compact specs + design → tasks): specs stay dense (signatures, matrices) and
+`design.md` holds investigations and decisions. Use `--schema minimalist` for tiny
+changes. See `openspec/schemas/library/README.md` and `openspec/config.yaml`.
 
-Deepen one target (budget seconds via env, e.g. `ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=60`,
-`ARCHIVEY_FUZZ_BUDGET_ZIP=60`, or `ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=60`)::
+The setup script installs the `openspec` CLI. By hand, install the scoped package into a
+prefix that is writable and already on `PATH` (the bare `openspec` package on npm is an
+unrelated stub; a plain `npm install -g` fails with `EACCES` on the cloud images):
 
-    uv run --no-sync python -m tests.atheris_fuzz --target sevenzip_header
-    uv run --no-sync python -m tests.atheris_fuzz --target zip
-    uv run --no-sync python -m tests.atheris_fuzz --target unix_compress
-On a crash the harness writes the input under `artifacts/atheris/` and prints a one-line
-repro command.
+```bash
+npm install -g --prefix "$HOME/.local" @fission-ai/openspec   # known-good: 1.4.1
+openspec list                     # in-flight changes + task progress
+openspec validate --all           # validate all specs and changes
+openspec validate --strict <item-name>
+openspec archive <change> --yes   # apply the deltas to openspec/specs/
+```
+
+### Archiving an OpenSpec change
+
+**Merging a change does not apply it.** A proposal's deltas reach the authoritative specs
+only when someone runs `openspec archive <change> --yes` and commits the resulting
+`openspec/specs/` updates.
+
+**Archive in the PR that finishes the change.** Most changes here are proposed,
+implemented, and finished in one PR, and that PR is where the archive belongs — the
+deltas are what make `openspec/specs/` describe what actually ships. Deferring it left
+`main` with the wrong authority three times running. CI enforces this on pull requests
+and on `main` (`scripts/check_openspec_archived.py`).
+
+Practically, make the archive the change's **last task**, so checking the final box and
+applying the deltas are the same act. Most of the archived corpus is already written this
+way.
+
+**When the change genuinely is not finished, leave the trailing task unchecked.** That is
+the escape hatch, and it costs one character. Use it when the design is still moving under
+review (archiving early is what turns a review round into a revert-and-rework), or when an
+archive is deliberately batched with a sibling change. The gate reads finished-ness from
+the checkboxes: an unchecked box is an honest "not done yet", while a checked one is a
+claim that the change has landed in the specs. Do not check the last box to make a
+progress report look tidy.
+
+**`openspec validate --strict` does not check that a `MODIFIED` header names a
+requirement that actually exists** in the parent spec, so a mis-targeted delta can
+validate green and silently do nothing on archive. For a non-trivial delta, verify with
+a dry-run archive (apply on a scratch tree, diff `openspec/specs/`, then reset).
+
+**Retiring a whole capability has no delta form.** Removing every requirement leaves a
+spec with none, which `openspec archive` refuses to write; deleting the directory first
+makes archive read the same delta as a request to *create* the capability. Delete
+`openspec/specs/<capability>/` by hand, keep only the deltas that modify surviving specs,
+and record the retired requirements and their reasons in the change's `README.md` so the
+archived change still explains itself. Worked example:
+`openspec/changes/archive/2026-09-02-retire-archive-writing-specs/`.
+
+### Writing a delta requirement body
+
+**Do not write "this change" in a requirement body or its scenarios.** It is unambiguous
+while you are writing it and meaningless the moment `openspec archive` folds that body
+into `openspec/specs/`: the change has moved to `openspec/changes/archive/` and a reader
+of the authoritative spec cannot tell which one you meant. Ten such phrases had
+accumulated across five capabilities before anyone counted, and most were not worth
+naming even then — they were pre-merge arguments ("this change is a strict increase in
+what is stamped", "it SHALL ship anyway because…") whose other referents, the prior
+behaviour and the pre-change tree, had gone too.
+
+State the contract as it stands. The reasoning behind it goes in the change's
+`design.md`, which `openspec/config.yaml` rules.specs already asks for. Naming the change
+id is the last resort, for a cross-reference a reader of the archived spec would follow.
+`scripts/check_openspec_self_reference.py` enforces this over `openspec/specs/` and over
+in-flight deltas; the two changes that predate it are grandfathered in its `PENDING` set,
+and it fails if an entry there goes stale, so the list can only shrink.
 
 ## Working with the specs (please read)
 
-When you hit a **discrepancy** — specs disagreeing with the prose docs, the specs
-disagreeing with each other, or the design simply not covering your case — **pause and
-ask the maintainer** rather than silently picking an interpretation. A conflict usually
-means a decision hasn't been made yet, and guessing bakes the wrong one into the code.
-Surface it (an issue, a PR comment, or an `openspec/changes/` proposal) and let it be
-decided explicitly.
+When you hit a **discrepancy** — specs disagreeing with the prose docs, or the specs
+disagreeing with each other — **pause and ask the maintainer** rather than silently
+picking an interpretation. A conflict usually means a decision hasn't been made yet, and
+guessing bakes the wrong one into the code. Surface it (an issue, a PR comment, or an
+`openspec/changes/` proposal) and let it be decided explicitly. When the design simply
+does not cover your case, check
+[`dev-docs/design-rules.md`](dev-docs/design-rules.md) first: if a rule settles it, do
+what it says and name the rule in the PR; ask only when no rule does.
 
-**Thin as you go.** Specs stay the authoritative *machine* contract for now (pair-workflow
-DP1 = C), but we are migrating executable detail into **tests** and human truth into
-**handbook** pages — see
+**Thin as you go.** Specs stay the authoritative *machine* contract for now (DP1 = C in the
+specs-to-handbook discussion below), but we are migrating executable detail into
+**tests** and human truth into **handbook** pages — see
 [`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md).
 On every PR that touches `openspec/specs/` or a change delta:
 
@@ -506,18 +518,17 @@ Five questions, in order. The first `yes` wins.
    `mkdocs.yml`'s nav in the same commit**. If `new_docs/` already has a rewrite of that
    page, change it there too. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision. Use `/technical-writing` for structure and craft, and
-   [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) for the voice, which
-   outranks STE on user docs. The standing prose rules are [`AGENTS.md`](AGENTS.md)
+   page per decision. Use
+   [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) for structure and voice,
+   which outranks STE on user docs. The standing prose rules are [`AGENTS.md`](AGENTS.md)
    §Writing English.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
    (rewrite in place; light decision bullets, not a new ADR). **Create the file in the
    same PR that needs it** — do not add empty `formats/` / `topics/` trees. Format pages
-   follow the eight-section shape in
-   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Format page structure, with
-   [`dev-docs/formats/zip.md`](dev-docs/formats/zip.md) as the worked example. Everyday
-   loop: same doc.
+   follow the shape (At a glance, then sections 1–9) in
+   [`dev-docs/formats/README.md`](dev-docs/formats/README.md) §Format page structure, with
+   [`dev-docs/formats/zip.md`](dev-docs/formats/zip.md) as the worked example.
 3. **Is it rare repo-wide policy that will not fit a handbook page?** → a new ADR in
    `dev-docs/decisions/`, ADR-shaped (Context / Decision / Consequences, tens of
    lines). If it needs an `## Open questions` section, it is not an ADR yet — grill

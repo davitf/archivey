@@ -2509,9 +2509,9 @@ class RarReader(BaseArchiveReader):
         comment in a single ``unrar`` call is tracked separately.
 
         Refusing, rather than dropping the remaining comments to ``None`` the way an
-        undecodable comment is dropped, is the maintainer's ruling (``review/backlog.md``,
-        "#353 F12"): ``max_metadata_bytes`` means retained metadata on every format, and
-        an over-budget listing raises on all of them.
+        undecodable comment is dropped, is the maintainer's ruling (#353, finding F12):
+        ``max_metadata_bytes`` means retained metadata on every format, and an over-budget
+        listing raises on all of them.
 
         Comments the parser already decoded (stored ones) are weighed in the same
         total. The parser read them in pieces bounded by the file, so what they hold
@@ -2686,13 +2686,15 @@ class RarReader(BaseArchiveReader):
         """Point each RAR5 file copy's ``link_target_member`` at its source.
 
         The source is the latest member before the copy whose name the stored target
-        names (read as a hard link's target is: archive-root relative), and it must be
-        a ``FILE``. ``rar`` always writes the source first, and ``unrar`` copies from a
-        file it has already extracted, so only earlier members count; that also rules
-        out a copy of itself and any cycle. A source that is itself a copy stands for
-        its own source, so a chain collapses to the one member that holds the bytes.
-        A copy left unresolved stays listed and raises ``LinkTargetNotFoundError``
-        when read (:meth:`_open_file_copy`).
+        names (read as a hard link's target is: archive-root relative), and it must be a
+        ``FILE``. A target that ``..``-escapes the archive root names no source
+        (``within_root``): extraction writes a copy from its source's bytes and does not
+        refuse it for a refused source, as it refuses a hard link. ``rar`` always writes
+        the source first, and ``unrar`` copies from a file it has already extracted, so
+        only earlier members count; that also rules out a copy of itself and any cycle.
+        A source that is itself a copy stands for its own source, so a chain collapses
+        to the one member that holds the bytes. A copy left unresolved stays listed and
+        raises ``LinkTargetNotFoundError`` when read (:meth:`_open_file_copy`).
         """
         latest: dict[str, ArchiveMember] = {}
         for member in self._members:
@@ -2700,7 +2702,10 @@ class RarReader(BaseArchiveReader):
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_copy() and member.link_target:
                 target_name = resolve_link_target_name(
-                    member.name, member.link_target, MemberType.HARDLINK
+                    member.name,
+                    member.link_target,
+                    MemberType.HARDLINK,
+                    within_root=True,
                 )
                 source = latest.get(target_name) if target_name is not None else None
                 if source is not None and source.type is MemberType.FILE:
