@@ -33,6 +33,27 @@ from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import SharedView
 
 
+def _seek_reached_end(offset: int, whence: int, result: int) -> bool:
+    """Whether a seek of an accelerated stream stopped at the end of the accelerator's
+    output: a seek to the end, or one that ``result`` shows was clamped short of
+    ``offset``.
+
+    rapidgzip can end a stream that is cut or damaged without an error, and that end is
+    where it clamps such a seek. So the wrappers that check the end of rapidgzip's
+    output (gzip, raw DEFLATE, bzip2) run, on such a seek, the check that a read at the
+    end runs, before they return a position. When the standard library then takes over,
+    they seek it again to ``offset``: it raises, or returns the caller's position.
+
+    ``whence`` is ``SEEK_SET`` or ``SEEK_END``: ``_StdlibSeekContract``, outermost,
+    resolves a relative seek itself. With ``SEEK_CUR``, ``result < offset`` would
+    compare a position with a distance."""
+    assert whence != io.SEEK_CUR, "a relative seek must be resolved above this layer"
+    # A SEEK_END lands at the end only at offset 0. Elsewhere ``result`` is not the end,
+    # and the callers' end checks (and the gzip read-through) would treat it as the end.
+    assert whence != io.SEEK_END or offset == 0, "only seek(0, SEEK_END) reaches here"
+    return whence == io.SEEK_END or result < offset
+
+
 @dataclass(frozen=True)
 class _SourceViews:
     """Fresh views of an accelerator's source at offset 0 that leave its cursor alone.
