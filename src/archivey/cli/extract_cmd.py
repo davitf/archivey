@@ -65,12 +65,26 @@ def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
         suffix = f".{ext}"
         if name.lower().endswith(suffix.lower()):
             return _safe_stem(name[: -len(suffix)])
-    stem_path = path
-    if stem_path.suffix:
-        stem_path = stem_path.with_suffix("")
-        if stem_path.suffix.lower() == ".tar":
-            stem_path = stem_path.with_suffix("")
-    return _safe_stem(stem_path.name)
+    stem, suffix = _split_suffix(name)
+    if suffix:
+        stem, suffix = _split_suffix(stem)
+        if suffix.lower() != ".tar":
+            stem += suffix
+    return _safe_stem(stem)
+
+
+def _split_suffix(name: str) -> tuple[str, str]:
+    """Split ``name`` into stem and final suffix, the same on every Python version.
+
+    ``pathlib`` changed in 3.14 to skip all leading dots before looking for a suffix
+    (``Path("...bin").suffix`` is ``".bin"`` up to 3.13 and ``""`` from 3.14), so it
+    would name the wrapper folder differently by interpreter. This keeps the 3.11-3.13
+    rule: a suffix starts at the last dot, which is not the first or last character.
+    """
+    i = name.rfind(".")
+    if 0 < i < len(name) - 1:
+        return name[:i], name[i:]
+    return name, ""
 
 
 def _safe_stem(stem: str) -> str:
