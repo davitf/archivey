@@ -1349,7 +1349,8 @@ class _FullDiskAtFlush(io.StringIO):
 def test_final_flush_os_error_prints_message_and_exits_1(tmp_path: Path) -> None:
     """A full disk at the final flush: ``main`` prints one line and returns 1.
 
-    ``test_full_disk_on_stdout_exits_1_with_one_line`` runs the real process.
+    This checks the return value only. The real process, where the exit flush
+    could fail again, is ``test_full_disk_on_stdout_exits_1_with_one_line``.
     """
     archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
     err = io.StringIO()
@@ -1364,10 +1365,16 @@ def test_full_disk_on_stdout_exits_1_with_one_line(tmp_path: Path) -> None:
     Output still buffered for stdout when ``main`` returns would fail again in the
     interpreter's exit flush, which prints "Exception ignored" and exits 120, so
     ``main`` points a stream that cannot flush at the null device first.
+
+    One member and a buffered stdout keep all the output in the buffer until
+    ``main``'s final flush, so the error reaches ``main``'s ``except OSError`` arm.
+    A larger archive or ``PYTHONUNBUFFERED`` fails inside the verb instead, and
+    then nothing is left for the exit flush to fail on.
     """
     import subprocess
 
-    archive = _zip(tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(2000)})
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
     with open("/dev/full", "wb") as full:
         proc = subprocess.run(
             [sys.executable, "-m", "archivey", "list", str(archive)],
@@ -1375,6 +1382,7 @@ def test_full_disk_on_stdout_exits_1_with_one_line(tmp_path: Path) -> None:
             stdout=full,
             stderr=subprocess.PIPE,
             cwd=tmp_path,
+            env=env,
             timeout=120,
             check=False,
         )
