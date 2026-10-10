@@ -3,8 +3,8 @@
 ## Purpose
 
 Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z) are exposed
-as one-member pseudo-archives through the unified `ArchiveReader` /
-`ArchiveWriter` interface. Each source contains exactly one file member whose
+as one-member pseudo-archives through the unified `ArchiveReader`
+interface. Each source contains exactly one file member whose
 name is inferred from the source filename.
 
 This capability is the standalone-stream side of `compressed-streams`. Raw
