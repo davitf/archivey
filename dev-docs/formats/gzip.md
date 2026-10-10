@@ -208,8 +208,8 @@ logger; `ON` raises `ResourceLimitError`.
 stream softly, by design: `read()` returns `b""` or a prefix with no error. For a gzip
 source that is seekable, two layers back it up. Item 1 is done by
 `_StdlibOnAcceleratorError` on a read (its `empty_to_stdlib` switch), and by
-`_GzipTruncationCheckStream` above it on a seek that meets that end (`_settle_end`), since
-a seek issues no read. `_GzipTruncationCheckStream` does the rest:
+`_GzipTruncationCheckStream` above it on a seek that meets the end of an empty output,
+which issues no read (`_settle_end`). `_GzipTruncationCheckStream` does the rest:
 
 1. If the stream ends before a single byte came out, the reader switches to the standard
    library engine over a fresh view of the source, which recovers the prefix and raises.
