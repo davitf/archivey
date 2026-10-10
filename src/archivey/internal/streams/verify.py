@@ -49,7 +49,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, BinaryIO, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
-from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -60,6 +60,7 @@ from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
+    is_closed_file_error,
     is_seekable,
 )
 from archivey.types import HashAlgorithm
@@ -140,19 +141,23 @@ def _make_hasher(
 def _probe_past_declared(inner: BinaryIO) -> bytes:
     """Read one byte past a member's declared size; ``b""`` means the member ends there.
 
-    An ``ArchiveyError``, an ``OSError`` or a ``MemoryError`` propagates. Any other
-    error from the decoder at this point counts as "nothing more": an accelerator can
-    raise an opaque error at the end of its input instead of returning ``b""``, and
-    every declared byte has already been delivered. What is given up is only the
-    over-run verdict. On a sequential read the digests, checked after this probe, still
-    judge the content; after a seek the checksum was forfeited already.
+    A decoder error propagates: the body goes on past the declared size and does not
+    decode, which is damage the read must not hand over as clean. The one error that
+    counts as "nothing more" is a closed source. Closing an archive waits for a read in
+    its source, not for the whole member read, so ``close()`` can land between the read
+    that delivered the last declared byte and this probe. A stored ZIP member's bounded
+    view then refuses the probe with the closed-file ``ValueError``, though the probe
+    would read no source byte (``test_archive_closed_before_the_overrun_probe``). Every
+    declared byte has been delivered, so the over-run verdict is what is given up. On a
+    sequential read the digests, checked after this probe, still judge the content;
+    after a seek off the frontier the checksum was forfeited already, so nothing does.
     """
     try:
         return inner.read(1)
-    except (ArchiveyError, OSError, MemoryError):
+    except ValueError as exc:
+        if is_closed_file_error(exc):
+            return b""
         raise
-    except Exception:  # noqa: BLE001 - an opaque decoder error past the end is "no more data"
-        return b""
 
 
 class MemberVerifier:
@@ -526,6 +531,27 @@ class MemberVerifier:
         inner.close()
 
 
+def note_raised_seek(verifier: MemberVerifier | None, inner: BinaryIO) -> int | None:
+    """Tell ``verifier`` where a seek that raised left ``inner``; return that position.
+
+    A seek can raise after it moved: a decompressor stream raises an escalated
+    report once its own seek has finished (see ``DecompressorStream``), so a caller
+    that catches it reads on from the new position. The verifier must know, or it
+    keeps hashing as if the read were still linear and checks length against a
+    frontier the stream has left. Both wrappers that drive a verifier
+    (:class:`VerifyingStream` and ``ArchiveStream``) call this from their seek.
+    Returns ``None`` when ``inner`` cannot say where it is; the seek's own error is
+    the one that propagates.
+    """
+    try:
+        after = inner.tell()
+    except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+        return None
+    if verifier is not None:
+        verifier.note_seek(after)
+    return after
+
+
 def build_member_verifier(
     expected: _ExpectedHashes | None,
     *,
@@ -614,7 +640,11 @@ class VerifyingStream(ReadOnlyIOStream):
         return is_seekable(self._inner)
 
     def seek(self, offset: int, whence: int = 0, /) -> int:
-        result = self._inner.seek(offset, whence)
+        try:
+            result = self._inner.seek(offset, whence)
+        except Exception:
+            note_raised_seek(self._verifier, self._inner)
+            raise
         self._verifier.note_seek(result)
         return result
 

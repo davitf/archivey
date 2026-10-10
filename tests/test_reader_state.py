@@ -382,8 +382,12 @@ def test_open_long_cycle_raises_read_error(tmp_path: Path) -> None:
     with open_archive(path) as reader:
         start = reader.get("l0")
         assert start is not None and start.link_target_member is None
-        with pytest.raises(ReadError, match="Link cycle detected"):
+        with pytest.raises(ReadError, match="Link cycle detected") as info:
             reader.open("l0")
+    # The member name is an attribute, rendered once by __str__, not repeated in
+    # the message text.
+    assert info.value.member_name is not None
+    assert str(info.value).count(info.value.member_name) == 1
 
 
 # The terminal memo is sound only because every lookup is node-local. These shapes
