@@ -136,7 +136,10 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   never leaves a half-written destination file. The destination root itself is yours,
   so if it is a symlink to a directory, archivey follows it and extracts into the
   target (as `tar -C` and `unzip -d` do).
-- **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
+- **Special files** (devices, FIFOs, sockets) are always rejected: an entry that stores
+  no data under such a mode is `MemberType.OTHER` and is skipped, never recreated with
+  `mknod`. An entry that stores data under such a mode is a `FILE` and is written as one
+  (`MEMBER_SPECIAL_FILE_HAS_DATA` reports it). An NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
   which in practice means RAR and a directory tree read from a Windows filesystem. ZIP

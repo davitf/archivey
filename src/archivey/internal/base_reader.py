@@ -39,6 +39,7 @@ from archivey.diagnostics import (
     MemberListReport,
     MemberTimestampContext,
     NameEncodingContext,
+    SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
     raw_name_to_base64,
@@ -114,6 +115,7 @@ from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
+    EXTRA_SPECIAL_FILE_TYPE,
     AbortOn,
     AbortOnStr,
     ArchiveFormat,
@@ -1837,6 +1839,34 @@ class BaseArchiveReader(ArchiveReader):
             member=member,
             attach_to_member=True,
             logger=log,
+        )
+
+    def _emit_special_file_has_data(
+        self, member: ArchiveMember, member_id: int
+    ) -> None:
+        """Report ``MEMBER_SPECIAL_FILE_HAS_DATA`` for a ``FILE`` whose stored type is a
+        device, FIFO or socket (``extra["special_file_type"]`` is set), attached to
+        ``member``. ``member_id`` is the walk position, as for
+        :meth:`_emit_timestamp_invalid`."""
+        special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
+        assert isinstance(special, str)
+        size = member.size
+        stored = "data" if size is None else f"{size} bytes"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+            message=(
+                f"Member {quoted(member.name)} is listed as a file: the archive marks "
+                f"it as a {special.replace('_', ' ')} and stores {stored} for it."
+            ),
+            context=SpecialFileDataContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                special_file_type=special,
+                size=size,
+            ),
+            member=member,
+            attach_to_member=True,
         )
 
     def _emit_name_encoding_inferred(

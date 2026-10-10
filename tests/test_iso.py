@@ -19,6 +19,7 @@ from archivey import (
     ArchiveFormat,
     CompressionAlgorithm,
     CompressionMethod,
+    DiagnosticCode,
     MemberType,
     detect_format,
     format_availability,
@@ -948,22 +949,65 @@ def test_duplicate_rock_ridge_names_all_list() -> None:
         assert ar.read("dup/f") == b"x"
 
 
-def test_a_rock_ridge_device_node_is_other_not_file(tmp_path: Path) -> None:
-    """The PX file-type bits decide the type: a character device is never a FILE."""
-    data = _build_rr_iso(_two_rr_files)
-    # PX mode is a both-endian 32-bit field: 0o100444 (regular, r--r--r--).
-    regular = struct.pack("<I", 0o100444) + struct.pack(">I", 0o100444)
-    assert data.count(regular) == 2
-    device = struct.pack("<I", 0o020666) + struct.pack(">I", 0o020666)
-    data = data.replace(regular, device, 1)
+def _empty_and_regular_rr_files(iso: Any) -> None:
+    iso.add_fp(io.BytesIO(b""), 0, "/AAA.;1", rr_name="aaa")
+    iso.add_fp(io.BytesIO(b"BBBB"), 4, "/BBB.;1", rr_name="bbb")
+
+
+# PX mode is a both-endian 32-bit field: 0o100444 (regular, r--r--r--).
+_PX_REGULAR = struct.pack("<I", 0o100444) + struct.pack(">I", 0o100444)
+_PX_CHAR_DEVICE = struct.pack("<I", 0o020666) + struct.pack(">I", 0o020666)
+
+
+def test_a_rock_ridge_device_node_without_data_is_other(tmp_path: Path) -> None:
+    """A PX mode naming a device over an empty extent is OTHER (what genisoimage and
+    xorriso write for a FIFO): nothing to read, and extraction skips it."""
+    data = _build_rr_iso(_empty_and_regular_rr_files)
+    assert data.count(_PX_REGULAR) == 2
+    data = data.replace(_PX_REGULAR, _PX_CHAR_DEVICE, 1)
     with open_archive(io.BytesIO(data)) as ar:
         by_name = {m.name: m for m in ar.members()}
         assert by_name["aaa"].type is MemberType.OTHER
         assert by_name["aaa"].size is None
         assert by_name["aaa"].mode == 0o666
+        assert by_name["aaa"].extra["special_file_type"] == "char_device"
         assert by_name["bbb"].type is MemberType.FILE
+        assert "special_file_type" not in by_name["bbb"].extra
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
         ar.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "aaa").exists()
+    assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
+
+
+def test_a_rock_ridge_device_node_with_data_is_a_file(tmp_path: Path) -> None:
+    """A device mode over a non-empty extent is a FILE whose bytes are the content:
+    the extent is the structure, the PX mode an attribute (DR-25). The stored type
+    stays in ``extra`` and an advisory diagnostic reports the mismatch."""
+    data = _build_rr_iso(_two_rr_files)
+    assert data.count(_PX_REGULAR) == 2
+    data = data.replace(_PX_REGULAR, _PX_CHAR_DEVICE, 1)
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["aaa"].type is MemberType.FILE
+        assert by_name["aaa"].size == 4
+        assert by_name["aaa"].mode == 0o666
+        assert by_name["aaa"].extra["special_file_type"] == "char_device"
+        assert ar.read("aaa") == b"AAAA"
+        diags = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert len(diags) == 1
+        assert diags[0].context is not None
+        context = diags[0].context.to_dict()
+        assert context["kind"] == "special_file_data"
+        assert context["member_name"] == "aaa"
+        assert context["special_file_type"] == "char_device"
+        assert context["size"] == 4
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "aaa").read_bytes() == b"AAAA"
     assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
 
 

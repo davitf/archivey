@@ -37,6 +37,7 @@ from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
     EXTRA_RAR_EXTRACT_VERSION,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveInfoExtra,
     MemberExtra,
 )
@@ -50,6 +51,7 @@ _CONST_KEYS = {
     "EXTRA_IS_JUNCTION": EXTRA_IS_JUNCTION,
     "EXTRA_IS_REPARSE_POINT": EXTRA_IS_REPARSE_POINT,
     "EXTRA_RAR_EXTRACT_VERSION": EXTRA_RAR_EXTRACT_VERSION,
+    "EXTRA_SPECIAL_FILE_TYPE": EXTRA_SPECIAL_FILE_TYPE,
 }
 
 # Written by tests, not by the library. See tests/test_codec_descriptor.py
@@ -79,6 +81,10 @@ def _type_as_doc(ann: object) -> str:
     if origin is dict:
         key_t, val_t = typing.get_args(ann)
         return f"dict[{_type_as_doc(key_t)}, {_type_as_doc(val_t)}]"
+    if origin is typing.Literal:
+        # A closed string set documents as ``"a" | "b"``, wrapped across lines
+        # when long; the bullet reader collapses that whitespace.
+        return " | ".join(f'"{value}"' for value in typing.get_args(ann))
     if isinstance(ann, type):
         return ann.__name__
     return str(ann)
@@ -126,7 +132,7 @@ def _docstring_key_types(mapping_cls: type) -> dict[str, str]:
         key = match.group("key")
         if key in found:
             raise AssertionError(f"{mapping_cls.__name__} docstring repeats {key!r}")
-        found[key] = match.group("type")
+        found[key] = " ".join(match.group("type").split())
     if not found:
         raise AssertionError(f"{mapping_cls.__name__} Known keys: section is empty")
     return found

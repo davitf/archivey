@@ -119,8 +119,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
+from archivey.internal.unix_mode import special_file_type
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -1754,13 +1756,18 @@ class IsoReader(BaseArchiveReader):
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
 
+        special = special_file_type(raw_mode) if raw_mode is not None else None
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
         elif record.is_dir():
             member_type = MemberType.DIRECTORY
-        elif raw_mode is not None and not stat.S_ISREG(raw_mode):
-            # A Rock Ridge PX mode names a device, FIFO or socket: never a regular file,
-            # whatever bytes sit at the extent.
+        elif (
+            special is not None or (raw_mode is not None and not stat.S_ISREG(raw_mode))
+        ) and not self._file_size(record):
+            # A Rock Ridge PX mode names a device, FIFO or socket, and the extent is
+            # empty (genisoimage and xorriso write a FIFO so): OTHER. A non-empty extent
+            # under such a mode is a FILE whose bytes are the content (DR-25), with
+            # ``extra["special_file_type"]`` keeping the stored type.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
@@ -1783,6 +1790,12 @@ class IsoReader(BaseArchiveReader):
             if version is not None
             else MemberExtra()
         )
+        if member_type in (MemberType.FILE, MemberType.OTHER) and (
+            special is not None or member_type is MemberType.OTHER
+        ):
+            extra[EXTRA_SPECIAL_FILE_TYPE] = (
+                special if special is not None else "unknown"
+            )
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
         mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
@@ -1837,6 +1850,8 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        if EXTRA_SPECIAL_FILE_TYPE in extra and member_type is MemberType.FILE:
+            self._emit_special_file_has_data(member, index)
         # The message names the normalized name, so it is built here, not in
         # ``_timestamps``.
         for field, source, value_repr in invalid_dates:

@@ -141,12 +141,13 @@ from archivey.internal.timestamps import (
     filetime_to_datetime,
     unix32_to_datetime,
 )
-from archivey.internal.unix_mode import is_special_file_mode
+from archivey.internal.unix_mode import special_file_type
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_ALTERNATE_RAW_NAME,
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -990,15 +991,19 @@ class ZipReader(BaseArchiveReader):
         reparse_fallback = _reparse_fallback_type(info, create_system)
         is_reparse_point = reparse_fallback is not None
 
+        special = special_file_type(full_mode) if is_unix else None
         if is_reparse_point:
             member_type = MemberType.SYMLINK
         elif info.is_dir():
             member_type = MemberType.DIRECTORY
         elif is_unix and stat.S_ISLNK(full_mode):
             member_type = MemberType.SYMLINK
-        elif is_unix and is_special_file_mode(full_mode):
-            # A device, FIFO or socket. unzip writes these as empty regular files, but
-            # every format types them OTHER, so extraction refuses them everywhere.
+        elif special is not None and info.file_size == 0:
+            # A device, FIFO or socket with no data. unzip writes these as empty regular
+            # files, but every format types them OTHER, so extraction refuses them
+            # everywhere. With data the entry is a FILE: ``zip -FI`` stores a named
+            # pipe's content under the pipe's FIFO mode, and every extractor writes the
+            # bytes (DR-25). ``extra["special_file_type"]`` keeps the stored type.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
@@ -1076,6 +1081,8 @@ class ZipReader(BaseArchiveReader):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
+        if special is not None and member_type in (MemberType.FILE, MemberType.OTHER):
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if alternate_raw_name is not None:
             extra[EXTRA_ALTERNATE_RAW_NAME] = alternate_raw_name
         if is_reparse_point:
@@ -1153,6 +1160,8 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if special is not None and member_type is MemberType.FILE:
+            self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))

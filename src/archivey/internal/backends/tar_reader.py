@@ -96,8 +96,10 @@ from archivey.internal.streams.streamtools import (
     read_within_reach,
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
+from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -1507,6 +1509,14 @@ class TarReader(BaseArchiveReader):
         )
 
         extra = MemberExtra({"tar.type": info.type})
+        if member_type is MemberType.OTHER:
+            # The typeflag is structure in TAR: GNU tar ignores the size field of a
+            # device or FIFO header, so there is no data-bearing special entry here
+            # (one is damage, raised as CorruptionError). The cross-format key still
+            # says which kind the archive recorded (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special_file_type_from_tar_typeflag(
+                info.type
+            )
         if info.pax_headers:
             extra["tar.pax_headers"] = dict(info.pax_headers)
         if info.isdev():

@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, MemberType, open_archive
+from archivey import ArchiveyConfig, DiagnosticCode, MemberType, open_archive
 from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
@@ -291,18 +291,22 @@ def test_duplicate_named_compressed_rar5_members_read_their_own_bytes(
 
 @requires_binary("unrar")
 @pytest.mark.parametrize(
-    "attr",
+    ("attr", "unrar_reads_it"),
     [
-        0o020664,
-        # A vint wider than a C unsigned long, which stat.S_IFMT would refuse.
-        (1 << 70) | 0o020664,
+        (0o020664, True),
+        # A vint wider than a C unsigned long, which stat.S_IFMT would refuse. unrar
+        # misreads the rest of that header, so only the listing is checked.
+        ((1 << 70) | 0o020664, False),
     ],
 )
-def test_unix_special_file_is_other(tmp_path: Path, attr: int) -> None:
-    """A Unix-host entry whose mode names a device is OTHER, as in TAR and ISO.
+def test_unix_special_file_with_data_is_a_file(
+    tmp_path: Path, attr: int, unrar_reads_it: bool
+) -> None:
+    """A Unix-host entry whose mode names a device but that stores data is a FILE:
+    the data stream is the structure, the mode only an attribute (DR-25). The mode
+    survives in ``extra["special_file_type"]`` and an advisory diagnostic says so.
 
     rar skips devices when archiving, so the mode is written into a fixture's header.
-    The later member still reads its own bytes, and extraction refuses the device.
     """
     payloads = _hostile_argv_payloads()
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
@@ -314,12 +318,60 @@ def test_unix_special_file_is_other(tmp_path: Path, attr: int) -> None:
 
     with open_archive(path, config=_UNRAR_ONLY) as archive:
         members = archive.members()
+        assert [m.type for m in members] == [MemberType.FILE] * 3
+        assert members[1].size == len(payloads["-inul"])
+        assert members[1].extra["special_file_type"] == "char_device"
+        assert "special_file_type" not in members[0].extra
+        if unrar_reads_it:
+            assert archive.read(members[1]) == payloads["-inul"]
+        assert archive.read(members[2]) == payloads["@atfile"]
+        diags = [
+            d
+            for d in archive.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert len(diags) == 1
+        assert diags[0].context is not None
+        assert diags[0].context.to_dict() == {
+            "kind": "special_file_data",
+            "archive_name": str(path),
+            "member_name": "-inul",
+            "member_id": 1,
+            "special_file_type": "char_device",
+            "size": len(payloads["-inul"]),
+        }
+        if unrar_reads_it:
+            archive.extract_all(tmp_path / "out")
+            assert (tmp_path / "out" / "-inul").read_bytes() == payloads["-inul"]
+            assert (tmp_path / "out" / "@atfile").read_bytes() == payloads["@atfile"]
+
+
+@requires_binary("unrar")
+def test_unix_special_file_without_data_is_other(tmp_path: Path) -> None:
+    """A device-mode entry with no data is OTHER, as in TAR, 7z and ISO: there is
+    nothing to read, and extraction skips it instead of creating an empty file."""
+    payloads = _hostile_argv_payloads()
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
+    files = _rar5_file_blocks(blocks)
+    assert files[1]["host_os"] == 1  # Unix
+    files[1]["attr"] = 0o010664  # FIFO
+    files[1]["data"] = b""
+    files[1]["unpacked"] = 0
+    files[1]["crc"] = struct.pack("<I", zlib.crc32(b""))
+    files[1]["flags"] &= ~2
+    path = tmp_path / "fifo.rar"
+    path.write_bytes(_rar5_build(blocks))
+
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        members = archive.members()
         assert [m.type for m in members] == [
             MemberType.FILE,
             MemberType.OTHER,
             MemberType.FILE,
         ]
-        assert members[1].size == len(payloads["-inul"])  # the stored size
+        assert members[1].extra["special_file_type"] == "fifo"
+        codes = [d.code for d in archive.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
         assert archive.read(members[2]) == payloads["@atfile"]
         archive.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "-inul").exists()

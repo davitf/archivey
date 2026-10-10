@@ -24,7 +24,7 @@ from archivey.config import (
     PasswordInput,
     PasswordRequest,
 )
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import ARCHIVE_INTEGRITY_CODES, DiagnosticCode
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -2741,6 +2741,80 @@ def test_unix_special_file_is_other(attributes: int, expected: MemberType) -> No
         assert isinstance(reader, SevenZipReader)
         member = reader._to_member(_created_slot_record(attributes), 0)
     assert member.type is expected
+
+
+def _special_file_with_data_record(attributes: int) -> SevenZipFileRecord:
+    from dataclasses import replace
+
+    return replace(
+        _created_slot_record(attributes),
+        emptystream=False,
+        is_empty_file=False,
+        folder_index=0,
+        file_in_folder=0,
+        uncompressed_size=5,
+        crc32=0,
+        compressed_size=5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("attributes", "special"),
+    [
+        (0x8000 | 0x20 | (0o020644 << 16), "char_device"),
+        (0x8000 | 0x20 | (0o060660 << 16), "block_device"),
+        (0x8000 | 0x20 | (0o010644 << 16), "fifo"),
+        (0x8000 | 0x20 | (0o140755 << 16), "socket"),
+    ],
+)
+def test_unix_special_file_records_name_their_type(
+    attributes: int, special: str
+) -> None:
+    """Stream-less special entries stay OTHER and say which kind of special file
+    the archive described, so a caller can tell a FIFO from a device."""
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_created_slot_record(attributes), 0)
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert member.type is MemberType.OTHER
+    assert member.extra["special_file_type"] == special
+    assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+
+
+@pytest.mark.parametrize(
+    ("attributes", "special"),
+    [
+        (0x8000 | 0x20 | (0o020644 << 16), "char_device"),
+        (0x8000 | 0x20 | (0o010644 << 16), "fifo"),
+    ],
+)
+def test_unix_special_file_with_a_stream_is_a_file(
+    attributes: int, special: str
+) -> None:
+    """A special mode on an entry that owns a data stream does not hide the data: the
+    stream is the structure, so the member is a FILE that keeps the mode in ``extra``
+    and reports the mismatch (advisory, so strict still reads it)."""
+    py7zr = pytest.importorskip("py7zr")
+    archive = io.BytesIO()
+    with py7zr.SevenZipFile(archive, "w") as z:
+        z.writestr(b"hello", "a.txt")
+    archive.seek(0)
+    with open_archive(archive) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_special_file_with_data_record(attributes), 0)
+        diags = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+    assert member.type is MemberType.FILE
+    assert member.size == 5
+    assert member.extra["special_file_type"] == special
+    assert len(diags) == 1
+    assert diags[0].context is not None
+    assert diags[0].context.to_dict()["special_file_type"] == special
+    assert diags[0].context.to_dict()["size"] == 5
+    assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in ARCHIVE_INTEGRITY_CODES
 
 
 @requires_binary("7z")

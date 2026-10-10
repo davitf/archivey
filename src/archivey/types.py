@@ -342,7 +342,9 @@ class MemberType(Enum):
 
     ``ANTI`` is a deletion/tombstone (solid 7z incremental updates), not a payload
     file — ``is_file`` is false and extraction skips it. ``OTHER`` covers device
-    nodes, FIFOs, sockets, etc., and is always rejected by safe extraction.
+    nodes, FIFOs, sockets, etc. that store no data, and is always rejected by safe
+    extraction. A special-mode entry that does carry data is a ``FILE`` with
+    ``extra["special_file_type"]`` saying what the archive called it (DR-25).
     """
 
     FILE = "file"
@@ -476,6 +478,16 @@ EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
 # CompressionMethod.level, which carries the method-byte offset instead.
 EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 
+# What the archive called a member whose stored type is a device, FIFO, socket or an
+# unknown file type: set on every such member, the stream-less ``OTHER`` and the
+# data-bearing ``FILE`` alike (design rule DR-25). Not namespaced: TAR, ZIP, 7z, RAR
+# and ISO all carry one.
+EXTRA_SPECIAL_FILE_TYPE: Final = "special_file_type"
+
+SpecialFileType = Literal["fifo", "char_device", "block_device", "socket", "unknown"]
+"""Values of ``extra["special_file_type"]``: the stored type of a device, FIFO, socket
+or unknown entry, as the format recorded it."""
+
 
 class MemberExtra(dict[str, object]):
     """Per-member format-specific metadata on :class:`~archivey.ArchiveMember`.
@@ -501,6 +513,12 @@ class MemberExtra(dict[str, object]):
     * ``is_file_copy`` (``bool``) — RAR. A ``FILE`` member whose bytes the archive
       stores once under an earlier member (a RAR5 file reference, ``rar -oi``).
       ``link_target`` names that source and ``link_target_member`` is it.
+    * ``special_file_type`` (``"fifo" | "char_device" | "block_device" | "socket" |
+      "unknown"``) — every format. The entry's stored type when it is a device, FIFO,
+      socket or an unknown kind: set on the stream-less ``OTHER`` member that type
+      makes, and on the ``FILE`` that a special-mode entry carrying data becomes (its
+      bytes are the content, as every extractor delivers them). TAR keeps
+      ``tar.type`` as well.
     * ``alternate_raw_name`` (``bytes``) — ZIP. The other stored spelling of the
       name, when the archive stores two and ``raw_name`` is the one ``name`` was
       decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra
@@ -541,6 +559,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["is_file_copy"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["special_file_type"], /) -> SpecialFileType: ...
     @overload
     def __getitem__(self, key: Literal["alternate_raw_name"], /) -> bytes: ...
     @overload

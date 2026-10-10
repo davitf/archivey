@@ -217,8 +217,10 @@ What is ISO-specific in turning a record into a member:
   relocated directory whose `..` carries `PL`), not by its name, and its subtrees appear
   where they belong.
 - **Type.** An `SL` record makes a symlink, the directory flag a directory, and a `PX`
-  mode naming a device, FIFO or socket makes `OTHER`, whatever bytes sit at the extent.
-  Everything else is a `FILE`. There is no `HARDLINK`: records sharing an extent are
+  mode naming a device, FIFO or socket makes `OTHER` when the extent is empty (what
+  genisoimage and xorriso write). Over a non-empty extent such a mode gives a `FILE`
+  whose bytes are the content, with `MEMBER_SPECIAL_FILE_HAS_DATA` (DR-25); both carry
+  `extra["special_file_type"]`. Everything else is a `FILE`. There is no `HARDLINK`: records sharing an extent are
   independent files. Records with the hidden flag are listed like any other.
 - **Size.** The sum of the lengths of every extent record of the file. `compression` is
   one `STORED` entry. Directories and links have `size=None`.

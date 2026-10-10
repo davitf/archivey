@@ -2437,3 +2437,38 @@ def test_a_pass_reads_no_member_data_the_consumer_does_not_reach(
         assert reads_after(2) >= big
     else:
         assert reads_after(2) < 1 * 2**20  # random access seeks past the data
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "special"),
+    [
+        (tarfile.CHRTYPE, "char_device"),
+        (tarfile.BLKTYPE, "block_device"),
+        (tarfile.FIFOTYPE, "fifo"),
+    ],
+)
+def test_special_entries_are_other_and_name_their_type(
+    tmp_path: Path, typeflag: bytes, special: str
+) -> None:
+    """A device or FIFO header is OTHER (the typeflag is the structure, and GNU tar
+    stores no data under it), and ``extra["special_file_type"]`` says which kind."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        info = tarfile.TarInfo("dev")
+        info.type = typeflag
+        info.mode = 0o660
+        info.devmajor, info.devminor = 1, 3
+        t.addfile(info)
+        reg = tarfile.TarInfo("reg.txt")
+        reg.size = 2
+        t.addfile(reg, io.BytesIO(b"hi"))
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["dev"].type is MemberType.OTHER
+        assert by_name["dev"].extra["special_file_type"] == special
+        assert "special_file_type" not in by_name["reg.txt"].extra
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+        ar.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "dev").exists()
+    assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
