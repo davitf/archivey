@@ -430,8 +430,8 @@ selects an encoding archivey chose over the cp437 default — UTF-8, or a config
 other than cp437 — the backend SHALL emit a `diagnostics` warning identifying the member,
 the chosen encoding and the encoding it passed over (the caller's `encoding=` or the
 configured fallback for a UTF-8 reading, cp437 for a configured fallback), so the decision
-is observable and escalatable via `DiagnosticPolicy`. A name decoded with the caller's `encoding=` emits no such warning.
-Decoding SHALL NOT raise a bare `UnicodeDecodeError`.
+is observable and escalatable via `DiagnosticPolicy`. A name decoded with the caller's
+`encoding=` emits no such warning. Decoding SHALL NOT raise a bare `UnicodeDecodeError`.
 
 An Info-ZIP Unicode Path extra field (`0x7075`) in the central directory outranks both the
 sniff and an explicit `encoding=` for an unflagged name: when the field is version 1, its

@@ -630,9 +630,9 @@ lone surrogate stays in `name`, and extraction writes it by the cross-format rul
 `safe-extraction` ("Lone surrogates in a member name"). It used to decode with
 `replace`, which also left the U+D800–U+DFFF arm of `_fix_rar3_astral_truncation`
 unreachable. 7-Zip 23.01 writes such a name as 7z's. `unrar` 7.00 holds the field as
-UTF-16 code units, one `wchar_t` each, so a valid pair is two characters to its `-n` matcher (`-n./pair??.txt` selects
-`pair` U+1F600 `.txt`, `-n./pair?.txt` does not), and `unrar x` on Linux writes the name
-cut at its first surrogate unit (`hi\ud800.txt` → `hi`); both measured. On POSIX the
+UTF-16 code units, one `wchar_t` each, so a valid pair is two characters to its `-n`
+matcher (`-n./pair??.txt` selects `pair` U+1F600 `.txt`, `-n./pair?.txt` does not), and
+`unrar x` on Linux writes the name cut at its first surrogate unit (`hi\ud800.txt` → `hi`); both measured. On POSIX the
 mask goes out as UTF-8 bytes, which cannot carry a surrogate unit, so it sends each unit
 as `?`. A member that mask also selects is handled like a stored glob's sibling (§2.3):
 refused by default when it comes earlier, read with
