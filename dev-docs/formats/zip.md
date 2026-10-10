@@ -402,28 +402,28 @@ A member's compressed data is one stream of its codec and nothing else, as 7-Zip
 Info-ZIP and `zipfile` read it: each codec ends the member at its stream's end (an LZMA
 member at its end marker; `lzma.LZMAFile` would start a second raw stream on the bytes
 after it and read that as content). The reader opens every member with
-`StreamConfig.refuse_input_after_end`, so any byte of the compressed data the codec leaves after that
-end, a zero too, and a second stream, are `DataAfterEndError` (a `CorruptionError`),
-raised once the output before them has been read, whatever the declared size and CRC
-cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error", or "There are some data
-after the end of the payload data"), and the bytes may be a side channel
-(`design-rules.md` DR-3). Under ZipCrypto the read raises the `EncryptionError` of an
-unconfirmed password instead, caused by that `CorruptionError`, as the verify table
-below records. A Zstd member (method 93) is one frame: a second frame, a skippable one
-too, is refused, where a 7z Zstd coder reads concatenated frames as one stream. An LZMA
-member with bit 1 clear, and a PPMd member, end at their declared size, and their input must end there too: right after it for LZMA (or one zero
-byte later, which 7-Zip's encoder sometimes writes), after the end mark PPMd8 must carry.
-So a declared size short of the stream's data is `CorruptionError`, not `TruncatedError`:
-the input is too long, not short. The 7z handbook (§ coders, *Input after the stream*)
-has how each codec finds its end, and what it cannot see; `inflate64` drops input after
-a Deflate64 stream's end and has no `unused_data`, so `Deflate64Decoder` holds back the
-last byte it is given, and input follows the end when `eof` is already True as that
-byte goes in. The accelerators read on into
-a second stream; at the bytes after the first they hand the read over to the standard
-library, which refuses them, so the verdict does not depend on the accelerator. Finding
-where a DEFLATE member's first stream ends takes a zlib decode from its start (a rapidgzip
-resume point may lie in a second stream), so a full read under rapidgzip pays that decode
-too; the accelerator still speeds up seeks.
+`StreamConfig.refuse_input_after_end`, so any byte of the compressed data the codec
+leaves after that end, a zero too, and a second stream, are `DataAfterEndError` (a
+`CorruptionError`), raised once the output before them has been read, whatever the
+declared size and CRC cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error",
+or "There are some data after the end of the payload data"), and the bytes may be a side
+channel (`design-rules.md` DR-3). Under ZipCrypto the read raises the `EncryptionError`
+of an unconfirmed password instead, caused by that `CorruptionError`, as the verify
+table below records. A Zstd member (method 93) is one frame: a second frame, a skippable
+one too, is refused, where a 7z Zstd coder reads concatenated frames as one stream. An
+LZMA member with bit 1 clear, and a PPMd member, end at their declared size, and their
+input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
+encoder sometimes writes), after the end mark PPMd8 must carry. So a declared size short
+of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
+not short. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
+its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
+and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
+and input follows the end when `eof` is already True as that byte goes in. The
+accelerators read on into a second stream; at the bytes after the first they hand the
+read over to the standard library, which refuses them, so the verdict does not depend on
+the accelerator. Finding where a DEFLATE member's first stream ends takes a zlib decode
+from its start (a rapidgzip resume point may lie in a second stream), so a full read
+under rapidgzip pays that decode too; the accelerator still speeds up seeks.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through
@@ -711,8 +711,8 @@ move.
 | Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators; `7z t` fails on the same members | `tests/test_zip_native_codecs.py::test_zip_member_with_input_after_its_stream_is_corrupt`, `::test_zip_zstd_member_with_input_after_its_frame_is_corrupt`, `::test_zip_input_after_the_stream_is_corrupt_under_the_accelerator`, `::test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process` |
 | A Zstd member with a second frame or a skippable frame after its first frame is `CorruptionError`; the shared framed decoder refuses a second stream | `tests/test_zip_native_codecs.py::test_zip_zstd_member_with_a_second_frame_is_corrupt`, `::test_zip_zstd_member_with_a_skippable_frame_is_corrupt`, `::test_framed_stream_refuses_a_second_stream_after_the_end` |
 | Bytes after the stream inside a ZipCrypto member (the `EncryptionError` of an unconfirmed password, caused by the `CorruptionError`) or a WinZip AES member raise | `tests/test_zip_native_codecs.py::test_zip_zipcrypto_member_with_input_after_its_stream_is_corrupt`, `::test_zip_winzip_aes_member_with_input_after_its_stream_is_corrupt` |
-| A PPMd member with no end mark reads clean, in process and in a child; an end mark already decoded at the size is checked; a worker the end-mark probe parks is quiesced on close | `tests/test_zip_native_codecs.py::test_zip_ppmd_member_without_an_end_mark_reads_clean`, `tests/test_ppmd_raw_streams.py::test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data`, `::test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close` |
-| A second DEFLATE or bzip2 stream in a member is `CorruptionError`, except a DEFLATE pair under rapidgzip whose size and CRC cover both | `tests/test_audit2_zip.py::test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt`, `::test_bzip2_accelerator_refuses_a_second_stream_the_declared_crc_covers`, `::test_rapidgzip_reads_a_second_deflate_stream_the_declared_crc_covers` |
+| A PPMd member with no end mark is `CorruptionError`, in process and in a child; an end mark already decoded at the size is checked; a worker the end-mark probe parks is quiesced on close | `tests/test_zip_native_codecs.py::test_zip_ppmd_member_without_an_end_mark_is_corrupt`, `tests/test_ppmd_raw_streams.py::test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data`, `::test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close` |
+| A second bzip2 stream in a member is `DataAfterEndError`, whatever the size and CRC cover, where `zipfile` ends the member at the first | `tests/test_audit2_zip.py::test_bzip2_member_ends_at_its_first_stream`, `::test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt` |
 | Tampered HMAC raises on a full read (STORED and DEFLATE); partial read then `close()` is quiet | `tests/test_zip_aes.py::test_aes_tampered_hmac_raises_corruption`, `::test_aes_tampered_hmac_partial_read_then_close_is_quiet` |
 | AES decrypt stream `close()` still releases the source after a partial read; a source `OSError` still marks the wrapper closed | `::test_aes_decrypt_stream_close_releases_source`, `::test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises` |
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |

@@ -578,8 +578,10 @@ class _Bzip2Layout:
                         self._last_bit = bit
                         self.covered = offsets[bit]
                         continue
+                    # Byte 0 is the first stream, checked as usual; under
+                    # single_stream any later stream is a gap.
                     if (
-                        self._single_stream and self._next_stream
+                        self._single_stream and self._next_stream != 0
                     ) or not _bzip2_stream_starts(view, self._next_stream, bit):
                         self.gap = offsets[bit]
                         return self.gap

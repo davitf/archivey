@@ -63,12 +63,12 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 
 _DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
 
-# Input after a member's declared output that an ``refuse_input_after_end`` decoder collects
-# before its end check: room for an end mark and its range-coder flush. Measured on
-# pyppmd 1.3.1 and 7-Zip 23.01, that is at most 3 bytes for PPMd8 and 1 for PPMd7; the
-# bound leaves slack over it, so that a producer that flushes a little more reaches
-# the end check rather than being refused for its length. More is input the member
-# does not use (see ``PpmdDecoder._check_end``).
+# Input after a member's declared output that a ``refuse_input_after_end`` decoder
+# collects before its end check: room for an end mark and its range-coder flush.
+# Measured on pyppmd 1.3.1 and 7-Zip 23.01, that is at most 3 bytes for PPMd8 and 1
+# for PPMd7; the bound leaves slack over it, so that a producer that flushes a little
+# more reaches the end check rather than being refused for its length. More is input
+# the member does not use (see ``PpmdDecoder._check_end``).
 _PPMD_TAIL_MAX = 16
 
 # The five bytes 7-Zip's PPMd7 range coder writes for a stream with no symbols.
@@ -131,9 +131,10 @@ class PpmdDecoder(BaseDecoder):
     :data:`_PPMD_EXTRA_NUL_MAX_OUTPUT`; unsized PPMd8 gets **no** post-eof drain at all
     (its end mark terminates valid decodes; a drain would only fabricate trailing bytes).
 
-    ``refuse_input_after_end`` (``StreamConfig.refuse_input_after_end``: a ZIP member, a 7z coder) checks
-    that the member's input ends where its declared output does, as 7-Zip does
-    (:meth:`_check_end`); a byte it leaves is ``DataAfterEndError`` through the stream.
+    ``refuse_input_after_end`` (``StreamConfig.refuse_input_after_end``: a ZIP member,
+    a 7z coder) checks that the member's input ends where its declared output does, as
+    7-Zip does (:meth:`_check_end`); a byte it leaves is ``DataAfterEndError`` through
+    the stream.
 
     **Invariant:** ``pack_size`` must measure the same byte stream that
     ``feed()`` accumulates into ``_fed_compressed`` (the PPMd coder's compressed
@@ -489,7 +490,8 @@ class PpmdDecoder(BaseDecoder):
         return DecodeOut(out)
 
     def _at_declared_size(self) -> bool:
-        """Whether an ``refuse_input_after_end`` member has all its output, input handed over."""
+        """Whether a ``refuse_input_after_end`` member has all its output, its input
+        handed over to the native decoder."""
         return (
             self._refuse_input_after_end
             and self._unpack_size is not None

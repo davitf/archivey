@@ -531,7 +531,11 @@ class _LzmaToSizeDecoder(BaseDecoder):
 
     An end marker before ``size`` leaves the output short (``TruncatedError``), and
     input after that marker is still refused. LZMA2 always ends with its end byte,
-    so a stream that reaches ``size`` without one is truncated too.
+    so a stream that reaches ``size`` without one is truncated too. No shipped reader
+    builds this decoder for LZMA2: 7z gives an LZMA2 chain no ``unpack_size`` (its end
+    byte ends it, and the pipeline checks the size it decoded), and ZIP has no LZMA2
+    method. The ``lzma2`` branches serve a direct
+    ``open_codec_stream(Codec.LZMA2, ..., params=CodecParams(unpack_size=...))``.
     """
 
     def __init__(self, filters: list[dict], size: int, *, lzma2: bool) -> None:

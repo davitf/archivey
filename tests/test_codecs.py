@@ -99,6 +99,25 @@ def test_raw_lzma2_backend_for_7z_folder() -> None:
         assert stream.read() == CONTENT
 
 
+def test_raw_lzma2_with_a_declared_size_needs_its_end_byte() -> None:
+    """Only a direct caller gives LZMA2 a declared size (7z checks the size it
+    decoded instead): the stream must still end with its end byte."""
+    compressed = compress_lzma2_raw(CONTENT)
+    assert compressed[-1] == 0  # LZMA2's end byte
+    params = CodecParams(filters=lzma2_raw_filters(), unpack_size=len(CONTENT))
+    with open_codec_stream(
+        Codec.LZMA2, io.BytesIO(compressed), params=params
+    ) as stream:
+        assert stream.read() == CONTENT
+    with (
+        open_codec_stream(
+            Codec.LZMA2, io.BytesIO(compressed[:-1]), params=params
+        ) as stream,
+        pytest.raises(TruncatedError, match="no end marker after its declared size"),
+    ):
+        stream.read()
+
+
 @requires("brotli")
 def test_brotli_backend_roundtrip() -> None:
     """A Brotli stream decompresses via the brotli-backed stream (no file-like open())."""

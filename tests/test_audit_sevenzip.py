@@ -711,16 +711,13 @@ def test_empty_frames_after_the_data_are_not_surplus() -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# S1, S2, S3: a coder whose stream has an end marker ends there, as 7-Zip reads it.
+# S1, S2, S3: a coder's data is one stream, and its input ends with that stream.
 #
-# Two complete streams in one coder's packed data. BZip2, LZMA (with its end marker)
-# and LZMA2 decoded the second as content, so a size and CRC covering both read clean;
-# `7z t` reports "Data Error" for every one of them. Now each ends at its first stream.
-# BZip2 and Deflate then behave as Deflate already did: a size covering both is short
-# (TruncatedError), and a size covering the first reads it, the bytes after the stream
-# ending the coder silently (`7z t` only warns: "There are some data after the end of
-# the payload data"). For LZMA and LZMA2, `7z t` says "Data Error" for any byte of the
-# coder's input after the end marker, a zero too, so that is CorruptionError here.
+# Two complete streams in one coder's packed data. The coder ends at its first stream's
+# end, and any byte of its input left after that end, a zero too, is DataAfterEndError,
+# whatever the unpack size and CRC count. 7-Zip 23.01 `7z t` fails every such coder:
+# "There are some data after the end of the payload data" for BZip2 and Deflate, "Data
+# Error" for LZMA (with its end marker) and LZMA2.
 # ---------------------------------------------------------------------------------------
 
 _LZMA1_FILTER = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
