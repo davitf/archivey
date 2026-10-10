@@ -472,8 +472,9 @@ pass, and a forward-only source makes the orphaned link unrecoverable and theref
 per-member failure governed by `OnError`. When a free member list exists
 (`members_report_if_available()`), the coordinator MAY plan recovery into the first
 pass instead, as `format-tar` describes; archivey does not, so recovering an orphan in
-a solid archive decodes the solid stream a second time. A hardlink that merely precedes its selected source is linked after the source
-is written, with one read and one bomb-limit count for the source bytes.
+a solid archive decodes the solid stream a second time. A hardlink that merely precedes
+its selected source is linked after the source is written, with one read and one
+bomb-limit count for the source bytes.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the

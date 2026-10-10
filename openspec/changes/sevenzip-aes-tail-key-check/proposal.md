@@ -44,5 +44,6 @@ against the 261 ms full pass it replaces.**
 - Depends on `bounded-password-confirmation`: it defines the rung, and its diagnostics
   delta must be archived first (this one re-pastes that taxonomy table).
 - Closes threat-model **O12**.
-- Premise verified against 7-Zip 23.01 (version inferred, see `design.md`) and py7zr 1.1.3 only. Confirm-only semantics mean an
-  unverified writer costs a fallback, not a failure.
+- Premise verified against 7-Zip 23.01 (version inferred, see `design.md`) and py7zr
+  1.1.3 only. Confirm-only semantics mean an unverified writer costs a fallback, not a
+  failure.
