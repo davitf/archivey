@@ -12,6 +12,7 @@ capability gates (password / seekability) → normalize stream origin →
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, overload
@@ -373,6 +374,15 @@ def open_archive(
     open_site = capture_open_site()
 
     format = coerce_archive_format(format, call="open_archive(format=…)")
+    if format is not None and format.container is ContainerFormat.UNKNOWN:
+        # Detection's answer for "none of the above", not a format a caller can assert;
+        # tested on the container so an unnamed pair such as (UNKNOWN, GZIP) is refused
+        # too. Refused here rather than in coerce_archive_format:
+        # format_availability(UNKNOWN) is a legitimate query that answers NONE.
+        raise ArchiveyUsageError(
+            f"open_archive(format=…) cannot open {format!r}, which names no format; "
+            f"pass the archive's format, or None to auto-detect."
+        )
     check_config(config, call="open_archive(config=…)")
     check_encoding(encoding, call="open_archive(encoding=…)")
 
@@ -481,6 +491,23 @@ def _open_resolved(
                 f"format=ArchiveFormat.DIRECTORY to read the directory tree."
             )
         resolved_format = ArchiveFormat.DIRECTORY
+    elif format is not None and format.container is ContainerFormat.DIRECTORY:
+        # The mirror of the conflict above, refused the same way; tested on the
+        # container, so an unnamed pair such as (DIRECTORY, GZIP) gets this message
+        # rather than "no read backend". A path the OS cannot stat (missing, under a
+        # file, a symlink loop) raises the OS's own error first, as it does under every
+        # other format=; Path.exists() would fold all of those into "missing".
+        if archive_source.path is not None:
+            os.stat(archive_source.path)
+        where = archive_name or (
+            display_path(archive_source.path)
+            if archive_source.path is not None
+            else "The source stream"
+        )
+        raise ArchiveyUsageError(
+            f"{where} is not a directory, but format={format!r} was requested. Pass a "
+            f"directory path, or the archive's own format (or None to auto-detect)."
+        )
 
     detected: FormatInfo | None = None
     # What ``reader.format_info`` reports. A directory is decided without running
@@ -707,6 +734,19 @@ def open_stream(
     # Before any I/O: a value of neither format type used to fall through to
     # auto-detection, which silently discards the caller's assertion.
     format = coerce_stream_or_archive_format(format, call="open_stream(format=…)")
+    if (
+        isinstance(format, ArchiveFormat)
+        and format.container is ContainerFormat.UNKNOWN
+    ):
+        # Not a container: detection's answer for "none of the above". Refused here,
+        # as open_archive refuses it, so a missing path or a directory does not answer
+        # first; the container refusal in _resolve_stream_format would also send the
+        # caller to open_archive, which refuses it as well.
+        raise ArchiveyUsageError(
+            f"open_stream cannot open {format!r}, which names no format; pass a "
+            "StreamFormat or a raw-stream ArchiveFormat (e.g. ArchiveFormat.GZ), "
+            "or None to auto-detect."
+        )
     check_config(config, call="open_stream(config=…)")
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
@@ -821,6 +861,7 @@ def _resolve_stream_format(
     if isinstance(format, StreamFormat):
         return format
     if isinstance(format, ArchiveFormat):
+        # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.
         if format.container is not ContainerFormat.RAW_STREAM:
             raise ArchiveyUsageError(
                 f"open_stream does not accept container format {format!r}; "

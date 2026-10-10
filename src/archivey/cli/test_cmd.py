@@ -287,7 +287,7 @@ def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
     if isinstance(exc, LinkTargetNotFoundError):
         return True
     if type(exc) is ReadError:
-        return exc.raw_message.startswith("Link cycle detected at ")
+        return exc.raw_message == "Link cycle detected"
     # A link to a directory, an anti-item or an OTHER member: ``open()`` refuses to
     # return bytes for it, as a usage error, after following the link.
     return isinstance(exc, ArchiveyUsageError) and str(exc).endswith("(not a file)")

@@ -601,10 +601,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `UnsupportedFeatureError`. Detection reads a sample of the stream with no cap, so
   a frame declaring 2 GiB has that much address space reserved while `open_archive`
   detects it, whatever the cap.
+- A `.zst` frame carries a content checksum only when its writer adds one, as a modern
+  `.lz4` frame does. Archivey checks it when it is there; a frame without one can decode
+  damaged data to wrong bytes with no error.
 - The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) reads as `.lz4`. It has
   no checksum, so damaged data can decode to wrong bytes with no error, as a modern
   frame written without one can. It has no end mark either, so a file cut exactly
   between two of its blocks reads short with no error.
+- Brotli (`.br`), unix-compress (`.Z`) and LZMA Alone (`.lzma`) have no checksum
+  either, so damaged data can decode to wrong bytes with no error. Archivey does not
+  report this with a diagnostic on each file, because there is no check to skip. A
+  `.Z` file has no end mark, so a cut can also read short with no error (see the `.Z`
+  bullet above).
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 
