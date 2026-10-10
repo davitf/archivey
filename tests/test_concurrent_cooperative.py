@@ -7,10 +7,8 @@ Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
 from __future__ import annotations
 
 import contextvars
-import gc
 import gzip
 import io
-import sys
 import tarfile
 import threading
 import zipfile
@@ -222,22 +220,42 @@ def test_close_while_streaming_iteration_suspended_closes_reader(
 
 
 @pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
-def test_dropping_pass_after_close_raises_nothing(
+def test_close_winds_down_suspended_pass_before_teardown(
     tmp_path: Path,
     make_source,
     streaming: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The backend's pass is wound down by close(), before teardown, not later by GC."""
-    unraisable: list[object] = []
-    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    """close() finishes the backend's pass, with a member read, before it closes the archive.
+
+    A member is read first so the pass holds its resources (a solid block, an ``unrar``
+    pipe). The backend's pass iterator is wrapped so its end is recorded once its own
+    ``finally`` (last stream close, then pass cleanup) has run.
+    """
+    events: list[str] = []
     reader = open_archive(make_source(tmp_path), streaming=streaming)
+    real_pass = reader._iter_with_data
+    real_close_archive = reader._close_archive
+
+    def recorded_pass(*args, **kwargs):  # noqa: ANN202 - a generator wrapper
+        try:
+            yield from real_pass(*args, **kwargs)
+        finally:
+            events.append("pass wound down")
+
+    def recorded_close_archive() -> None:
+        events.append("archive closed")
+        real_close_archive()
+
+    monkeypatch.setattr(reader, "_iter_with_data", recorded_pass)
+    monkeypatch.setattr(reader, "_close_archive", recorded_close_archive)
     it = reader.stream_members()
-    next(it)
+    stream = next(s for m, s in it if s is not None and m.size)
+    assert stream.read()
     reader.close()
-    del it
-    gc.collect()
-    assert unraisable == []
+    assert events == ["pass wound down", "archive closed"]
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
 
 
 def test_close_still_refused_while_pass_runs_on_another_thread(tmp_path: Path) -> None:

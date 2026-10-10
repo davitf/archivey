@@ -698,12 +698,12 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 Reader close is the one exception, and only while the pass is suspended at a yield
 (the caller holds the iterator and is not inside a `next()` call). `close()` and
 `with`-exit then close the reader, as `zipfile.ZipFile.close()` does with member
-handles open: the yielded stream is closed and the backend's pass is wound down
-before teardown. Resuming that iterator SHALL raise `ArchiveyUsageError`. A pass
-that is executing (inside `next()`, e.g. a selector on another thread) still makes
-`close()` raise. This was the maintainer's ruling on 2026-10-10: before it, a pass
-kept in a variable or wrapped in `enumerate()` made `with`-exit raise
-`ArchiveyUsageError`, leave the reader open, and hide the body's own exception.
+handles open, in this order: the backend's pass is wound down (its last yielded
+stream closed, then its pass-scoped resources such as a solid block or an `unrar`
+pipe released), then any other member stream still open is closed, and only then is
+the archive torn down. Resuming that iterator SHALL raise `ArchiveyUsageError`. A
+pass that is executing (inside `next()`, e.g. a selector on another thread) still
+makes `close()` raise (maintainer's ruling, 2026-10-10).
 
 #### Scenario: stream_members matrix
 

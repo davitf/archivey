@@ -109,8 +109,10 @@ carries a child scope so its I/O is permitted during the pass. Exhaustion,
 exceptions, explicit generator close, and generator abandonment/finalization
 SHALL close the current yielded stream and release the pass scope/token exactly
 once. While the generator is suspended at a yield the pass is not executing, so
-`reader.close()` does not refuse: it closes the yielded stream, winds down the
-backend's pass before teardown, and closes the reader; resuming the generator then
+`reader.close()` does not refuse: it closes the reader, winds the backend's pass down
+(last yielded stream, then pass-scoped resources), closes any other open member
+stream, and only then tears the archive down, holding a lease across the first two
+steps so no stream close can start teardown early. Resuming the generator then
 raises `ArchiveyUsageError` (maintainer's ruling, 2026-10-10). A pass that is
 executing still makes a non-`CONCURRENT` `close()` raise. A caller needing
 simultaneous streams SHALL materialize and use random `open()`.

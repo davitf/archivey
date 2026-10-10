@@ -106,14 +106,15 @@ class OperationToken:
     # ``_same_thread_token_locked`` skips the token. While the generator is executing a
     # step (where a diagnostic callback fires) the flag is False and the token counts.
     # Set with :meth:`ReaderState.set_suspended`. A suspended pass also does not block
-    # ``close()``: the reader closes and the pass is wound down (see ``on_abandon``).
+    # ``close()``: the reader closes and the pass is wound down (see ``pass_closer``).
     suspended: bool = field(default=False, repr=False)
-    # Winds down the backend side of a generator-held pass (closes the format's own
-    # member iterator). ``close()`` calls it, through
-    # :meth:`ReaderState.take_suspended_pass_closer`, when it closes the reader under a
-    # pass suspended at a yield, so the backend's cleanup runs before teardown rather
-    # than whenever the caller's iterator is collected.
-    on_abandon: Callable[[], None] | None = field(default=None, repr=False)
+    # Winds down the backend side of a ``stream_members()`` pass: closes the format's
+    # own member iterator, whose ``finally`` closes its last stream and releases
+    # pass-scoped resources (a solid block, an ``unrar`` pipe). When ``close()`` closes
+    # the reader under a pass suspended at a yield, :meth:`ReaderState.mark_reader_closed`
+    # hands it over together with a lease, so teardown waits until it has run. Set with
+    # :meth:`ReaderState.set_pass_closer`, under the lock like ``suspended``.
+    pass_closer: Callable[[], None] | None = field(default=None, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
@@ -167,6 +168,9 @@ class ReaderState:
         self._reader_lease_held = True
         self._teardown_claimed = False
         self._stream_shutdown_claimed = False
+        # A suspended pass's ``pass_closer``, handed over by the close transition with
+        # one lease in ``_lease_count``; see :meth:`take_pass_wind_down`.
+        self._pass_wind_down: Callable[[], None] | None = None
         # Library-internal open windows (extract_all's coordinator, first-touch link
         # reads), keyed BY THREAD: the exemption from the live-stream gate and from
         # worker rejection applies only to the thread that entered the window. A plain
@@ -245,17 +249,28 @@ class ReaderState:
         with self._lock:
             token.suspended = suspended
 
-    def take_suspended_pass_closer(self) -> Callable[[], None] | None:
-        """After the close transition: the suspended pass's ``on_abandon``, once.
+    def set_pass_closer(
+        self, token: OperationToken, closer: Callable[[], None] | None
+    ) -> None:
+        """Record how ``close()`` winds down this pass if it is suspended at a yield."""
+        with self._lock:
+            token.pass_closer = closer
 
-        ``None`` when no pass was suspended at the close, or another caller took it.
+    def take_pass_wind_down(self) -> Callable[[], None] | None:
+        """The closer the close transition took from a suspended pass, once.
+
+        The transition also took a lease for it, so teardown cannot be claimed until
+        the caller has run the closer and called :meth:`finish_pass_wind_down`.
+        ``None`` when no suspended pass had a closer, or another caller took it.
         """
         with self._lock:
-            root = self._root
-            if root is None or not root.suspended or root._released:
-                return None
-            closer, root.on_abandon = root.on_abandon, None
+            closer, self._pass_wind_down = self._pass_wind_down, None
             return closer
+
+    def finish_pass_wind_down(self) -> None:
+        """Drop the lease taken with the pass closer. Teardown is the caller's next step."""
+        with self._lock:
+            self._release_lease_locked()
 
     def release_pass(self, token: OperationToken) -> None:
         with self._lock:
@@ -528,6 +543,14 @@ class ReaderState:
                     # Notify last. If an interrupt lands after the transition but
                     # before the lease drop, the retry branch above finishes the drop.
                     self.lifecycle = LifecycleState.READER_CLOSED
+                    # In the same lock hold as the decision above, so the suspended
+                    # pass cannot resume and release itself in between. The lease
+                    # keeps teardown back until close() has run the closer: the
+                    # backend's pass cleanup must come before the source is closed.
+                    root = self._root
+                    if root is not None and root.pass_closer is not None:
+                        self._pass_wind_down, root.pass_closer = root.pass_closer, None
+                        self._lease_count += 1
                     run_teardown = self._drop_reader_lease_locked()
                     self._close_cv.notify_all()
                     return run_teardown

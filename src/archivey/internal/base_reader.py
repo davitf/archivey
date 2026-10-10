@@ -189,8 +189,8 @@ The extension code is also the empty-listing code, which
 def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
     """The ``close`` of a backend's pass iterator when it is a generator, else ``None``.
 
-    Recorded as the pass token's ``on_abandon`` so that ``close()`` can wind the backend
-    pass down before teardown when the caller's iterator is suspended at a yield.
+    Recorded as the pass token's ``pass_closer`` so that ``close()`` can wind the
+    backend pass down before teardown when the caller's iterator is suspended at a yield.
     """
     return source.close if isinstance(source, Generator) else None
 
@@ -2469,9 +2469,7 @@ class BaseArchiveReader(ArchiveReader):
             token = self._state.acquire_pass("__iter__")
             try:
                 self._enter_forward_pass("__iter__")
-                source = self._begin_forward_pass()
-                token.on_abandon = _closer_of(source)
-                for member in source:
+                for member in self._begin_forward_pass():
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
                     self._state.set_suspended(token, True)
@@ -2832,7 +2830,7 @@ class BaseArchiveReader(ArchiveReader):
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             source = self._iter_with_data(copies)
-            token.on_abandon = _closer_of(source)
+            self._state.set_pass_closer(token, _closer_of(source))
             for m, stream in source:
                 if current is not None:
                     current.close()
@@ -2982,8 +2980,9 @@ class BaseArchiveReader(ArchiveReader):
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
         pass is actively executing, and the reader stays open. A ``stream_members()`` or
         streaming iteration pass suspended at a yield does not block it: the reader
-        closes, and resuming that iterator raises ``ArchiveyUsageError``. Teardown runs
-        at most once, after the last stream's lease drops.
+        closes, and resuming that iterator raises ``ArchiveyUsageError``. A suspended
+        ``stream_members()`` pass is wound down here, before teardown. Teardown runs at
+        most once, after the last lease drops.
         """
         if self._closed:
             return
@@ -3003,15 +3002,22 @@ class BaseArchiveReader(ArchiveReader):
         # ArchiveStream.close tests `self.closed` outside its lock, so two concurrent
         # close() calls could otherwise both reach inner.close() on the same stream.
         if self._state.claim_stream_shutdown():
-            # Wind down a pass suspended at a yield before its streams close: the last
-            # stream close can run teardown, and the backend's own pass cleanup must
-            # come before it. The streams are closed even if that cleanup fails.
-            closer = self._state.take_suspended_pass_closer()
+            # A stream_members() pass suspended at a yield: close the backend's pass
+            # iterator first, whose finally closes its last stream and then frees the
+            # pass's own resources. The transition took a lease with the closer, so
+            # no stream close in here can claim teardown; it runs at _maybe_teardown()
+            # below, after the closer and the stream shutdown. The streams are closed
+            # and the lease dropped even if the closer fails.
+            closer = self._state.take_pass_wind_down()
             try:
                 if closer is not None:
                     closer()
             finally:
-                self._close_public_streams()
+                try:
+                    self._close_public_streams()
+                finally:
+                    if closer is not None:
+                        self._state.finish_pass_wind_down()
         # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
         # so this is a no-op wherever mark_reader_closed() returned False for a good
         # reason. It is not a no-op after a close() interrupted just past the transition:
