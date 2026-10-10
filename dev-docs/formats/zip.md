@@ -450,8 +450,8 @@ after reading some bytes and before the end emits `ENCRYPTED_MEMBER_UNVERIFIED`:
 bytes may have been decrypted with a wrong password. `check` says which of the two
 accepted it (`weak_open_check`, `confirm_budget_exhausted`); `reason` is `partial_read`,
 or `seek` for a ZipCrypto member whose seek jumped past its read position and so lost
-its CRC (a STORED member's forward seek), even if it then read to the end. A WinZip AES seek keeps the HMAC, so there only a read that reaches the end
-counts. Extraction reads every member to the end and never emits it, and a candidate that
+its CRC (a STORED member's forward seek), even if it then read to the end. A WinZip AES
+seek keeps the HMAC, so there only a read that reaches the end counts. Extraction reads every member to the end and never emits it, and a candidate that
 a CRC confirmed has nothing to report.
 
 For AES, a wrong password fails fast on the 2-byte verification value with no bytes

@@ -281,8 +281,9 @@ skips can no longer reach them:
   at or before the frontier) SHALL read those bytes through the digests itself and
   SHALL keep them. The decode is the one the inner's seek, or its next read, would
   run; an inner whose seek is lazy (the unrar pipe decodes on the next read) pays it
-  at the seek instead, so a seek forward then back with no read between now decodes. A decode error in those bytes raises
-  from the seek, as it would from the inner's own seek.
+  at the seek instead, so a seek forward then back with no read between now decodes.
+  A decode error in those bytes raises from the seek, as it would from the inner's
+  own seek.
 - A seek to or past the declared size SHALL keep the digests: concluding reads the
   skipped gap through them (below), so the seek itself reads nothing.
 - A seek past the frontier that the inner can jump (a seek index, an accelerator, a
