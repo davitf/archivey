@@ -155,9 +155,32 @@ def test_an_odd_name_length_is_declined_rather_than_raising(which: str) -> None:
 
 def test_truncated_payload_does_not_raise() -> None:
     whole = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "target", "target")
-    # Every prefix is either declined or parsed into a shorter target; none may raise.
-    for cut in range(len(whole)):
-        parse_reparse_data(whole[:cut])
+    # 8-byte header, 8 bytes of name offsets, 4 bytes of symlink flags, then the
+    # substitute name (12 bytes and a NUL) from byte 20 of the payload.
+    names_end = 16
+    substitute_end = 16 + 4 + len("target".encode("utf-16-le"))
+    # No prefix raises. One too short for the name offsets is declined; one that holds
+    # them but not a whole name parses to a link with no target; past that, the
+    # substitute name is in bounds and is the target.
+    for cut in range(len(whole) + 1):
+        parsed = parse_reparse_data(whole[:cut])
+        if cut < names_end:
+            assert parsed is None, cut
+        elif cut < substitute_end:
+            assert parsed is not None, cut
+            assert parsed.target == "", cut
+        else:
+            assert parsed is not None, cut
+            assert parsed.target == "target", cut
+
+
+@pytest.mark.parametrize("declared", [0, 7])
+def test_a_declared_payload_shorter_than_the_name_offsets_is_declined(
+    declared: int,
+) -> None:
+    """The declared length is trusted when the bytes are there, so it can decline alone."""
+    data = struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, declared, 0) + b"\0" * 64
+    assert parse_reparse_data(data) is None
 
 
 # --------------------------------------------------------------------------------

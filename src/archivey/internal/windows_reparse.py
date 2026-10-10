@@ -143,11 +143,10 @@ def reparse_payload_length(header: bytes) -> int:
 def parse_reparse_data(data: bytes) -> ReparsePoint | None:
     """Parse a ``REPARSE_DATA_BUFFER``, or return ``None`` when ``data`` is not one.
 
-    ``None`` means "this is not a link buffer I understand" — too short to hold the
-    header and the name offsets, or a tag that is not a symlink or a junction. Callers
-    treat that as "no link target here" rather than report arbitrary bytes as a
-    filesystem path: a member with data becomes its fallback type (normally a file),
-    and a directory-shaped one stays a link with no target.
+    ``None`` means "this is not a link buffer I understand": too short to hold the
+    header and the name offsets, a declared payload length shorter than those offsets,
+    or a tag that is not a symlink or a junction. What a reader does with ``None`` is
+    decided in :meth:`~archivey.internal.base_reader.BaseArchiveReader._apply_reparse_data`.
 
     A payload length that runs past the end of ``data`` is cut to the bytes present,
     and the buffer still parses: a name that then falls outside those bytes decodes as
