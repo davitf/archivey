@@ -61,6 +61,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
+# ``archive_stream`` imports nothing back from the source boundary (this module, the
+# detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
+# without a lazy import.
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
@@ -74,6 +77,7 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
     source_name,
     source_size_fact,
+    underlying_stream,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
 
@@ -94,6 +98,8 @@ class JoinedVolumes(Protocol):
     def volume_count(self) -> int: ...
     @property
     def volume_paths(self) -> list[Path]: ...
+    @property
+    def seek_is_expensive(self) -> bool: ...
     def read(self, n: int = -1, /) -> bytes: ...
     def seek(self, offset: int, whence: int = 0, /) -> int: ...
     def tell(self) -> int: ...
@@ -416,6 +422,7 @@ class ArchiveSource(ReadOnlyIOStream):
             volume_paths=joined.volume_paths,
             volume_count=joined.volume_count,
             joined=joined,
+            seek_is_expensive=joined.seek_is_expensive,
         )
 
     # --- cheap facts ---------------------------------------------------------------------
@@ -471,11 +478,13 @@ class ArchiveSource(ReadOnlyIOStream):
 
     @property
     def seek_is_expensive(self) -> bool:
-        """Whether a seek on the borrowed caller stream may re-decode what it skips.
+        """Whether a seek on this source may re-decode what it skips.
 
-        True when the caller's stream is an :class:`~archivey.ArchiveStream`: see
-        :func:`seek_is_expensive`. A path, a joined set and any other caller stream
-        answer ``False``.
+        True when the caller's stream is an :class:`~archivey.ArchiveStream`, under any
+        pass-through buffer (see :func:`seek_is_expensive`), and for a joined set with
+        such a stream among its volumes: a read near the end of the set seeks that
+        volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
+        ``False``.
         """
         return self._seek_is_expensive
 
@@ -768,13 +777,15 @@ def seek_is_expensive(stream: BinaryIO) -> bool:
 
     True for an :class:`~archivey.ArchiveStream`: many codecs serve a backward seek by
     decoding again from the start, and a seek to the end decodes everything before it.
-    True as well for an :class:`ArchiveSource` that borrows one, which is how
-    ``open_archive`` hands a member stream to detection. Detection reads this to keep
-    its trailer and probe reads off such a stream (``dev-docs/topics/detection.md`` §4.2).
+    The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
+    which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
+    well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
+    hands a member stream to detection. Detection reads this to keep its trailer and
+    probe reads off such a stream (``dev-docs/topics/detection.md`` §4.2).
     """
     if isinstance(stream, ArchiveSource):
         return stream.seek_is_expensive
-    return isinstance(stream, ArchiveStream)
+    return isinstance(underlying_stream(stream), ArchiveStream)
 
 
 __all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]

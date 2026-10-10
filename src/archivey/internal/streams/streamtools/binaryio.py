@@ -477,6 +477,20 @@ def _metadata_end_size(stream: object) -> int | None:
     return None
 
 
+def underlying_stream(stream: object) -> object:
+    """The stream under the pass-through layers a caller or archivey put on top.
+
+    Peels the wrappers that opt in with ``peel_for_source_size`` (a seek counter), then
+    one ``BufferedReader``/``BufferedRandom``. Neither layer changes the bytes or the
+    cost of moving through them, so a question about the stream itself (its cheap
+    size, or whether a seek on it re-decodes) is asked of what this returns.
+    :func:`source_byte_size`'s metadata probes and
+    ``archivey.internal.source.seek_is_expensive`` both peel through it, so the two
+    cannot disagree on which object they describe.
+    """
+    return _under_buffer(_peel_passthrough(stream))
+
+
 def _seek_end_is_cheap(stream: object) -> bool:
     """Whether ``SEEK_END`` on ``stream`` is O(1) — never a decompression or scan.
 
@@ -640,7 +654,7 @@ def source_byte_size(source: object) -> int | None:
         return None
     outer = source
     peeled = _peel_passthrough(source)
-    metadata_source = _under_buffer(peeled)
+    metadata_source = underlying_stream(source)
     size = getattr(metadata_source, "size", None)
     if isinstance(size, int) and not isinstance(size, bool):
         return size

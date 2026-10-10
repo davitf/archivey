@@ -22,7 +22,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.source import ArchiveSource
+from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_stream,
     raise_if_text_stream,
@@ -641,6 +641,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             source for source in sources if isinstance(source, Path)
         ]
         self._volume_items: list[Path | BinaryIO] = list(sources)
+        # Every read seeks the volume it lands in, so one member stream among the
+        # parts makes a read near its end a re-decode of that member.
+        self._seek_is_expensive = any(
+            not isinstance(source, Path) and seek_is_expensive(source)
+            for source in sources
+        )
         offsets = [0]
         total = 0
         for source in sources:
@@ -697,6 +703,11 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def volume_items(self) -> list[Path | BinaryIO]:
         """Original volume sources in order (paths and/or streams)."""
         return list(self._volume_items)
+
+    @property
+    def seek_is_expensive(self) -> bool:
+        """Whether a stream volume may re-decode on a seek (see ``seek_is_expensive``)."""
+        return self._seek_is_expensive
 
     @property
     def volume_ranges(self) -> list[tuple[int, int]]:

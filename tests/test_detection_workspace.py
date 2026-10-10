@@ -26,19 +26,20 @@ import os
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import pytest
 
 from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig
+from archivey.detection import FormatInfo
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     THOROUGH_BUDGET,
     DetectionBudget,
+    TierSkip,
     TierSkipReason,
 )
-from archivey.exceptions import FormatDetectionError
 from archivey.internal import detection_workspace
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
@@ -49,6 +50,7 @@ from archivey.internal.sfx import (
 )
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.volumes import resolve_source
 from archivey.types import ArchiveFormat
 from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import NonSeekableBytesIO
@@ -208,18 +210,31 @@ def test_seekable_koly_image_reads_the_trailer_once() -> None:
     assert src.tell() == 0
 
 
-def _member_seeks(
-    monkeypatch: pytest.MonkeyPatch, detect: Callable[[BinaryIO], object]
-) -> list[int]:
-    """Targets of every seek ``detect`` makes on a deflated ZIP member stream.
+def _koly_image() -> bytes:
+    """A bzip2 stream with a UDIF ``koly`` block after it, larger than any prefix.
 
-    The member has no magic, so detection reaches the UDIF trailer step and fails.
-    It is opened with ``seekable_members=True``: a seek to its end decodes the whole
-    member, and the seek back re-decodes it from the start.
+    The bzip2 magic is a near-magic hit that yields to the trailer, so detection of these
+    bytes reads the last 512 when it can: ``DMG`` from a file or a ``BytesIO``.
     """
+    trailer = bytearray(512)
+    trailer[:12] = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
+    return bz2.compress(os.urandom(64 * 1024)) + bytes(trailer)
+
+
+_TRAILER_DECLINED = TierSkip("trailer", TierSkipReason.CAPABILITY_UNAVAILABLE)
+
+
+def _zip_of(members: dict[str, bytes]) -> io.BytesIO:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("m.bin", bytes(range(256)) * 4096)
+        for name, data in members.items():
+            zf.writestr(name, data)
+    buf.seek(0)
+    return buf
+
+
+def _seek_spy(patch: pytest.MonkeyPatch) -> list[int]:
+    """Record the position every ``ArchiveStream.seek`` lands on."""
     targets: list[int] = []
     real_seek = ArchiveStream.seek
 
@@ -228,37 +243,106 @@ def _member_seeks(
         targets.append(pos)
         return pos
 
-    buf.seek(0)
-    with (
-        monkeypatch.context() as patch,
-        open_archive(buf, seekable_members=True) as reader,
-        reader.open("m.bin") as member,
-    ):
-        patch.setattr(ArchiveStream, "seek", spy)
-        with pytest.raises(FormatDetectionError):
-            detect(member)
+    patch.setattr(ArchiveStream, "seek", spy)
     return targets
 
 
+def test_koly_image_detects_as_dmg_when_the_tail_is_cheap() -> None:
+    # The control for the member-stream tests below: the same bytes, where the trailer
+    # read is allowed, answer DMG with nothing skipped.
+    info = detect_format(io.BytesIO(_koly_image()))
+    assert info.format == ArchiveFormat.DMG
+    assert info.unavailable_tiers == ()
+
+
 @pytest.mark.parametrize(
-    "detect",
+    "wrap",
     [
-        lambda m: detect_format(ArchiveSource.for_stream(m)),
-        lambda m: open_archive(m),
+        lambda m: m,
+        ArchiveSource.for_stream,
+        io.BufferedReader,
+        lambda m: ArchiveSource.for_stream(io.BufferedReader(m)),
     ],
-    ids=["archive_source", "open_archive"],
+    ids=["bare", "archive_source", "buffered", "archive_source_over_buffer"],
 )
-def test_wrapped_member_stream_is_not_seeked_to_its_end(
-    monkeypatch: pytest.MonkeyPatch, detect: Callable[[BinaryIO], object]
+def test_member_stream_is_not_seeked_to_its_tail(
+    monkeypatch: pytest.MonkeyPatch, wrap: Callable[[BinaryIO], BinaryIO]
 ) -> None:
-    # ``open_archive`` wraps a member stream in an ``ArchiveSource`` before detection
-    # sees it. The workspace must still treat it as the ``ArchiveStream`` it is: no
-    # trailer or probe seek towards the end, the same as for the bare stream. The only
-    # seek allowed is the exit restore to the entry position, 0. Whether that restore
-    # reaches the member at all depends on the Python version: from 3.14, a
-    # ``BufferedReader`` seeking back inside its own buffer does not call its raw.
-    for run in (detect_format, detect):
-        assert set(_member_seeks(monkeypatch, run)) <= {0}
+    # A seek to the end of a member stream decodes the whole member, and the seek back
+    # decodes it again. Detection must not make one, whatever pass-through layer sits on
+    # top: ``open_archive`` puts an ``ArchiveSource`` there, a caller a buffer.
+    image = _koly_image()
+    with (
+        open_archive(_zip_of({"m.dmg": image}), seekable_members=True) as reader,
+        reader.open("m.dmg") as member,
+        monkeypatch.context() as patch,
+    ):
+        assert member.seekable()
+        targets = _seek_spy(patch)
+        info = detect_format(wrap(member))
+    # The trailer step was reached and declined, so the guard is what kept the seek
+    # off. The answer is the near-magic one.
+    assert info.format == ArchiveFormat.BZ2
+    assert _TRAILER_DECLINED in info.unavailable_tiers
+    assert all(t < len(image) - 512 for t in targets), targets
+
+
+def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only detection's seeks count here: the backend that opens the result afterwards
+    # has its own access shape.
+    import archivey.core
+
+    image = _koly_image()
+    detection_targets: list[int] = []
+    real_detect = archivey.core.detect_format_into
+
+    def detect_and_snapshot(*args: Any, **kwargs: Any) -> FormatInfo:
+        info = real_detect(*args, **kwargs)
+        detection_targets.extend(targets)
+        return info
+
+    with (
+        open_archive(_zip_of({"m.dmg": image}), seekable_members=True) as reader,
+        reader.open("m.dmg") as member,
+        monkeypatch.context() as patch,
+    ):
+        targets = _seek_spy(patch)
+        patch.setattr(archivey.core, "detect_format_into", detect_and_snapshot)
+        with open_archive(member) as nested:
+            assert nested.format_info.format == ArchiveFormat.BZ2
+            assert _TRAILER_DECLINED in nested.format_info.unavailable_tiers
+    assert all(t < len(image) - 512 for t in detection_targets), detection_targets
+
+
+def test_volume_list_of_member_streams_is_not_seeked_to_its_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Joining the volumes sizes each one with a seek to its end; that is the join's
+    # cost. Detection over the join must not add a read near the end of the last one.
+    image = _koly_image()
+    half = len(image) // 2
+    archive = _zip_of({"a.001": image[:half], "a.002": image[half:]})
+    with (
+        open_archive(archive, seekable_members=True, concurrent_members=True) as reader,
+        reader.open("a.001") as first,
+        reader.open("a.002") as second,
+    ):
+        resolved = resolve_source([first, second])
+        with resolved.source as source, monkeypatch.context() as patch:
+            assert source.seek_is_expensive
+            targets = _seek_spy(patch)
+            info = detect_format(source)
+    assert info.format == ArchiveFormat.BZ2
+    assert _TRAILER_DECLINED in info.unavailable_tiers
+    assert all(t < len(image) - half - 512 for t in targets), targets
+
+
+def test_pipe_records_the_trailer_it_could_not_read() -> None:
+    info = detect_format(NonSeekableBytesIO(_koly_image()))
+    assert info.format == ArchiveFormat.BZ2
+    assert _TRAILER_DECLINED in info.unavailable_tiers
 
 
 def test_path_detection_access_shape(tmp_path: Path) -> None:

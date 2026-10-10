@@ -847,6 +847,57 @@ def test_a_joined_set_closes_with_the_source_and_borrows_its_stream_parts() -> N
     assert not any(c.closed for c in callers)
 
 
+def test_seek_is_expensive_sees_a_member_stream_under_every_pass_through_layer(
+    tmp_path: Path,
+) -> None:
+    """A member stream re-decodes on a seek however it is wrapped; a file never does.
+
+    Fails against a predicate that type-tests only the outermost object (the buffered
+    shapes answer ``False``), and against a source or a join that drops the fact.
+    """
+    import zipfile
+
+    from archivey.internal.measurement import SeekCounter
+    from archivey.internal.source import seek_is_expensive
+    from archivey.internal.streams.counting import SeekCountingStream
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("m", DATA)
+    path = tmp_path / "f.bin"
+    path.write_bytes(DATA)
+    buf.seek(0)
+    with (
+        open_archive(buf, seekable_members=True) as reader,
+        reader.open("m") as member,
+    ):
+        expensive = {
+            "bare": member,
+            "source": ArchiveSource.for_stream(member),
+            "buffered": io.BufferedReader(member),  # type: ignore[arg-type]
+            "source over buffer": ArchiveSource.for_stream(
+                io.BufferedReader(member)  # type: ignore[arg-type]
+            ),
+            "seek counter": SeekCountingStream(member, SeekCounter()),
+            "join": ArchiveSource.for_volumes(
+                ConcatenatedFile([io.BytesIO(b"x"), member])
+            ),
+        }
+        for label, stream in expensive.items():
+            assert seek_is_expensive(stream), label
+        cheap = {
+            "BytesIO": io.BytesIO(DATA),
+            "source over BytesIO": ArchiveSource.for_stream(io.BytesIO(DATA)),
+            "path source": ArchiveSource.for_path(path),
+            "join of files": ArchiveSource.for_volumes(ConcatenatedFile([path, path])),
+        }
+        for label, stream in cheap.items():
+            assert not seek_is_expensive(stream), label
+        for stream in (*expensive.values(), *cheap.values()):
+            if isinstance(stream, ArchiveSource):
+                stream.close()
+
+
 def test_close_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "f.bin"
     path.write_bytes(DATA)
