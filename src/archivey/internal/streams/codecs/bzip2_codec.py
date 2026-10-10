@@ -48,6 +48,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
 )
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _accelerator_backstop_source,
+    _seek_reached_end,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
@@ -408,12 +409,10 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                 offset += skipped
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # The one caller, _StdlibSeekContract, resolves a relative seek itself and
-        # passes SEEK_SET or SEEK_END only.
         result = super().seek(offset, whence)
         if result != 0:
             self._armed = False
-        if whence == io.SEEK_END or result < offset:
+        if _seek_reached_end(offset, whence, result):
             # The seek reached the decoder's end, which can be short or wrong: settle
             # it before a position is handed out, as a read at the end would.
             if self._settle_end_for_seek(result):
