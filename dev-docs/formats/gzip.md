@@ -206,8 +206,10 @@ logger; `ON` raises `ResourceLimitError`.
 
 **Truncation through `rapidgzip`.** Besides aborting, `rapidgzip` often ends a truncated
 stream softly, by design: `read()` returns `b""` or a prefix with no error. For a gzip
-source that is seekable, two layers back it up: `_StdlibOnAcceleratorError` does item 1
-(its `empty_to_stdlib` switch), and `_GzipTruncationCheckStream` above it does the rest:
+source that is seekable, two layers back it up. Item 1 is done by
+`_StdlibOnAcceleratorError` on a read (its `empty_to_stdlib` switch), and by
+`_GzipTruncationCheckStream` above it on a seek that meets that end (`_settle_end`), since
+a seek issues no read. `_GzipTruncationCheckStream` does the rest:
 
 1. If the stream ends before a single byte came out, the reader switches to the standard
    library engine over a fresh view of the source, which recovers the prefix and raises.

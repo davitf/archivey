@@ -148,10 +148,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
        zero bytes). This wrapper sees only that decoder's reads, and its checks stand
        down after the switch. A seek that meets the end of an empty output reads
        nothing, so the takeover does not switch there; this wrapper makes the same
-       switch for it (:meth:`_settle_end`). That decoder reads a seekable view of the source, so it
-       is seekable too, and the ``seekable()`` that this wrapper and the ones above it
-       cached from rapidgzip stays true (``_StdlibOnAcceleratorError._open_stdlib_at``
-       asserts it).
+       switch for it (:meth:`_settle_end`). That decoder reads a seekable view of the
+       source, so it is seekable too, and the ``seekable()`` that this wrapper and the
+       ones above it cached from rapidgzip stays true
+       (``_StdlibOnAcceleratorError._open_stdlib_at`` asserts it).
     2. On EOF after **non-empty** delivery — check that rapidgzip decoded to the end of
        the source (its compressed position), then look for the member's trailer: the CRC-32
        of the output, kept as it goes by, and its length (mod 2**32), as the eight bytes
