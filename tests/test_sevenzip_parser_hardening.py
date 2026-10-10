@@ -572,6 +572,7 @@ def test_pipeline_helpers_require_max_members(helper: str) -> None:
 # ---------------------------------------------------------------------------
 
 _EMPTY_STREAM = 0x0E
+_EMPTY_FILE = 0x0F
 _ANTI = 0x10
 _ATTRIBUTES = 0x15
 _FILE_DATA = b"hello world"
@@ -656,15 +657,37 @@ def test_an_anti_bit_left_on_a_member_with_data_is_dropped() -> None:
         assert members["b/"].type is MemberType.DIRECTORY
 
 
-def test_an_anti_bit_does_not_move_to_another_member_without_data() -> None:
-    """A repeated ``kEmptyStream`` re-partitions the stream-less entries.
+def test_a_stale_anti_bit_on_a_stream_less_member_is_dropped() -> None:
+    """A bit survives only the ``kEmptyStream`` vector it was supplied under.
 
-    The ``kAnti`` bit was assigned to ``a`` under the first vector; the second vector
-    gives ``a`` no anti bit, so ``a`` is not an anti item (deletion marker).
+    The first vector's ``kAnti`` marks ``a``. The second vector supplies no ``kAnti``,
+    so the bit is dropped, not carried: ``a`` is still stream-less, and it is a
+    directory, not an anti item (deletion marker).
     """
     props = (
         _file_prop(_EMPTY_STREAM, _bits([True, False, False]))
         + _file_prop(_ANTI, _bits([True]))
+        + _file_prop(_EMPTY_STREAM, _bits([True, True, False]))
+    )
+    data = _copy_archive(["a", "b", "c"], props)
+    with open_archive(io.BytesIO(data)) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert members["a/"].type is MemberType.DIRECTORY
+        assert members["b/"].type is MemberType.DIRECTORY
+        assert members["c"].type is MemberType.FILE
+        assert reader.read(members["c"]) == _FILE_DATA
+
+
+def test_a_stale_empty_file_bit_on_a_stream_less_member_is_dropped() -> None:
+    """``kEmptyFile`` follows the same rule as ``kAnti``.
+
+    The first vector's ``kEmptyFile`` marks ``a`` as an empty file. The second vector
+    supplies no ``kEmptyFile``, so the bit is dropped: ``a`` is a directory, not a
+    zero-byte file.
+    """
+    props = (
+        _file_prop(_EMPTY_STREAM, _bits([True, False, False]))
+        + _file_prop(_EMPTY_FILE, _bits([True]))
         + _file_prop(_EMPTY_STREAM, _bits([True, True, False]))
     )
     data = _copy_archive(["a", "b", "c"], props)

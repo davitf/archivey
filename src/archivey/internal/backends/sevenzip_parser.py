@@ -1154,8 +1154,9 @@ def _read_files_info(
             # kEmptyFile and kAnti are indexed over the stream-less entries of the
             # current vector, so a new vector drops the bits assigned under the old
             # one, as 7zIn.cpp clears emptyFileVector and antiFileVector here. A bit
-            # can then only sit on an entry with no stream, and a crafted header that
-            # repeats kEmptyStream cannot move one onto another member.
+            # is kept only while the vector it was supplied under is in force: a
+            # crafted header that repeats kEmptyStream drops it, whether the entry
+            # now has a stream or is still stream-less.
             for file_props, empty in zip(files, empty_streams, strict=True):
                 file_props.emptystream = empty
                 file_props.is_anti = False
