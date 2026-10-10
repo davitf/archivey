@@ -471,18 +471,48 @@ def test_walk_truncated_inside_member_data(seekable: bool) -> None:
         walker.next_entry()
 
 
+def _long_name(name: bytes) -> bytes:
+    return _block(b"././@LongLink", size=len(name) + 1, typeflag=b"L") + _data(
+        name + b"\x00"
+    )
+
+
+_DANGLING = {
+    "x": _pax({"path": "b"}),
+    "L": _long_name(b"b"),
+    "g": _pax({"comment": "c"}, typeflag=b"g"),
+}
+
+
 @pytest.mark.parametrize("seekable", [True, False])
-@pytest.mark.parametrize("after", [_END, b"\xff" * BLOCKSIZE], ids=["zero", "junk"])
-def test_extended_header_followed_by_no_member_is_rejected(
-    seekable: bool, after: bytes
+@pytest.mark.parametrize("typeflag", list(_DANGLING))
+def test_extended_header_before_the_end_marker_ends_the_walk(
+    seekable: bool, typeflag: str
 ) -> None:
-    """A chain that ends before its member header is a header that does not parse,
-    as tarfile reports it, never a clean end of the archive."""
+    """GNU tar 1.35 lists these archives cleanly. A chain with no member names the
+    header it left unused, so the reader can report it; a global header starts no
+    chain."""
     one = _block(b"a", size=3) + _data(b"abc")
-    pax = _pax({"path": "b"})
-    entries, end = _walk(one + pax + after, seekable=seekable)
+    extended = _DANGLING[typeflag]
+    entries, end = _walk(one + extended + _END, seekable=seekable)
     assert [e.name for e in entries] == [b"a"]
-    assert (end.kind, end.offset) == (TarEndKind.REJECTED, 1024 + len(pax))
+    assert (end.kind, end.offset) == (TarEndKind.ZERO_BLOCK, 1024 + len(extended))
+    if typeflag == "g":
+        assert end.reason == ""
+    else:
+        assert "extended header at offset 1024" in end.reason
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+@pytest.mark.parametrize("typeflag", ["x", "L"])
+def test_extended_header_followed_by_a_block_that_is_no_header_is_rejected(
+    seekable: bool, typeflag: str
+) -> None:
+    one = _block(b"a", size=3) + _data(b"abc")
+    extended = _DANGLING[typeflag]
+    entries, end = _walk(one + extended + b"\xff" * BLOCKSIZE, seekable=seekable)
+    assert [e.name for e in entries] == [b"a"]
+    assert (end.kind, end.offset) == (TarEndKind.REJECTED, 1024 + len(extended))
     assert "extended header at offset 1024" in end.reason
 
 
@@ -767,6 +797,17 @@ def test_old_gnu_header_slot_past_any_file_rejects_the_block() -> None:
     assert isinstance(parsed, RejectedBlock)
 
 
+def test_old_gnu_header_slot_below_any_offset_rejects_the_block() -> None:
+    def header(h: bytearray) -> None:
+        h[386:398] = b"\xff" + (-(2**70) % 2**88).to_bytes(11, "big")
+        h[398:410] = _octal(5, 12)
+        h[483:495] = _octal(10, 12)
+
+    block = _block(b"sp", size=5, typeflag=b"S", magic=b"ustar  \x00", patch=header)
+    parsed = parse_header_block(block, 0)
+    assert isinstance(parsed, RejectedBlock)
+
+
 def test_old_gnu_extension_slot_past_any_file_rejects_the_header() -> None:
     def header(h: bytearray) -> None:
         h[386:398] = _octal(0, 12)
@@ -866,15 +907,33 @@ def test_pax_sparse_later_versions_read_as_1_0(major: str, minor: str) -> None:
 
 @pytest.mark.parametrize("major", ["0", "x", ""])
 def test_pax_sparse_version_with_no_map_is_damage(major: str) -> None:
-    """GNU tar refuses these. Serving the member as a plain file would hand the map
-    blocks out as its content."""
-    data = _pax_1_0_member(major, "0")
-    if major:
+    """GNU tar refuses these, the empty value included. Serving the member as a
+    plain file would hand the map blocks out as its content."""
+    with pytest.raises(CorruptionError):
+        _walk(_pax_1_0_member(major, "0"))
+
+
+def test_sparse_records_on_a_type_without_data_make_no_sparse_member() -> None:
+    records = {
+        "GNU.sparse.major": "1",
+        "GNU.sparse.minor": "0",
+        "GNU.sparse.name": "real",
+        "GNU.sparse.realsize": "20",
+    }
+    (entry,), _ = _walk(_pax(records) + _block(b"d", typeflag=b"5") + _END)
+    assert (entry.name, entry.sparse_format, entry.sparse) == (b"real", None, None)
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_the_walk_stays_failed_after_an_error(seekable: bool) -> None:
+    records = {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}
+    bad = _data(b"x\n")
+    data = _block(b"a") + _pax(records) + _block(b"s", size=len(bad)) + bad + _END
+    walker = TarWalker(io.BytesIO(data), seekable=seekable)
+    assert isinstance(walker.next_entry(), TarEntry)
+    for _ in range(2):
         with pytest.raises(CorruptionError):
-            _walk(data)
-    else:  # an empty value cancels the keyword: not sparse at all
-        (entry,), _ = _walk(data)
-        assert entry.sparse_format is None
+            walker.next_entry()
 
 
 def test_bad_pax_size_is_damage() -> None:

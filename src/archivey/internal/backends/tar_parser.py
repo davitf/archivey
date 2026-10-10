@@ -42,6 +42,7 @@ from enum import Enum
 from typing import BinaryIO
 
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     ResourceLimitError,
     TruncatedError,
@@ -311,7 +312,8 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
             break
         offset = parse_number(block[pos : pos + 12])
         length = parse_number(block[pos + 12 : pos + 24])
-        if offset > MAX_OFFSET or length > MAX_OFFSET:
+        # A base-256 field can hold a negative number, or one past 2**63.
+        if not (0 <= offset <= MAX_OFFSET and 0 <= length <= MAX_OFFSET):
             raise _BadNumber(block[pos : pos + 24])
         slots.append((offset, length))
     return tuple(slots)
@@ -609,6 +611,8 @@ class TarEntry:
     # An AREGTYPE (NUL) entry whose final name ends in "/": a directory, whose
     # declared data is skipped, as GNU tar reads it.
     old_style_directory: bool
+    # Set only for a member type that carries data: sparse records on a link,
+    # device, FIFO or directory leave both None.
     sparse_format: SparseFormat | None = None
     sparse: SparseMap | None = None
 
@@ -644,7 +648,8 @@ class TarEndKind(Enum):
 
 @dataclass(frozen=True, slots=True)
 class TarEnd:
-    """Why a walk stopped, and where. ``reason`` says why a header was rejected;
+    """Why a walk stopped, and where. ``reason`` says why a header was rejected, or
+    names the extended header that a zero block left with no member;
     ``observed_bytes`` is how much of a short block the stream held."""
 
     kind: TarEndKind
@@ -699,6 +704,9 @@ class TarWalker:
         # (see _check_data_present).
         self._unchecked_data_end: int | None = None
         self.end: TarEnd | None = None
+        # The first error next_entry raised: the walk is over, and later calls
+        # raise it again.
+        self._failed: ArchiveyError | None = None
 
     # The stream ---------------------------------------------------------------
 
@@ -783,10 +791,19 @@ class TarWalker:
         Raises :class:`CorruptionError`, :class:`TruncatedError` or
         :class:`ResourceLimitError` for damage inside a member's headers; a block that
         is not a header at all ends the walk as a :class:`TarEnd` for the caller to
-        classify.
+        classify. After an error, every later call raises the same error.
         """
+        if self._failed is not None:
+            raise self._failed
         if self.end is not None:
             return self.end
+        try:
+            return self._next_entry(budget)
+        except ArchiveyError as exc:
+            self._failed = exc
+            raise
+
+    def _next_entry(self, budget: Budget) -> TarEntry | TarEnd:
         charge = _Charger(budget)
         start = self._pos
         offset = start
@@ -797,8 +814,9 @@ class TarWalker:
         own_records: list[tuple[bytes, PaxValue]] = []
         long_name: bytes | None = None
         long_link: bytes | None = None
-        # Where the last extended header of this member's chain starts, once there is
-        # one: the chain must end in a member header.
+        # Where the last x or L header of this member's chain starts, once there is
+        # one: the chain must end in a member header. A global header describes no
+        # member, so it starts no chain.
         extended_at: int | None = None
         while True:
             block = self._read_block(offset)
@@ -813,32 +831,36 @@ class TarWalker:
                 return self.end
             parsed = parse_header_block(block, offset)
             if isinstance(parsed, ZeroBlock | RejectedBlock):
-                if extended_at is not None:
-                    # A chain that ends in no member header is a header that does not
-                    # parse, as tarfile reports it: never the end of the archive.
-                    what = (
-                        "a zero block"
-                        if isinstance(parsed, ZeroBlock)
-                        else f"a block that is no header ({parsed.reason})"
+                if isinstance(parsed, ZeroBlock):
+                    # GNU tar 1.35 lists an archive whose last x or L header comes
+                    # right before the end marker cleanly; the reason names the
+                    # unused header so the reader can report it.
+                    reason = (
+                        ""
+                        if extended_at is None
+                        else f"the extended header at offset {extended_at} "
+                        "describes no member"
                     )
+                    self.end = TarEnd(TarEndKind.ZERO_BLOCK, offset, reason=reason)
+                elif extended_at is not None:
                     return self._reject(
                         offset,
                         f"the extended header at offset {extended_at} is followed "
-                        f"by {what}",
+                        f"by a block that is no header ({parsed.reason})",
                     )
-                if isinstance(parsed, ZeroBlock):
-                    self.end = TarEnd(TarEndKind.ZERO_BLOCK, offset)
                 else:
                     self.end = TarEnd(TarEndKind.REJECTED, offset, reason=parsed.reason)
                 return self.end
             if parsed.typeflag in EXTENDED_TYPES:
-                extended_at = offset
+                header_at = offset
+                if parsed.typeflag != PAX_GLOBAL_TYPE:
+                    extended_at = offset
                 charge(parsed.size, "an extended header")
                 data = self._read(parsed.size)
                 if len(data) < parsed.size:
                     raise TruncatedError(
                         "TAR archive is truncated inside an extended header at "
-                        f"offset {offset}"
+                        f"offset {header_at}"
                     )
                 offset += BLOCKSIZE + _round_up(parsed.size)
                 if parsed.typeflag == LONG_NAME_TYPE:
@@ -853,7 +875,7 @@ class TarWalker:
                     except CorruptionError as exc:
                         # Records that do not parse make a header that does not parse,
                         # which the reader classifies like any rejected block.
-                        return self._reject(extended_at, str(exc))
+                        return self._reject(header_at, str(exc))
                     if parsed.typeflag == PAX_GLOBAL_TYPE:
                         self._apply_global(records)
                     else:
@@ -971,12 +993,16 @@ class TarWalker:
         size = stored_size
         sparse_format: SparseFormat | None = None
         sparse: SparseMap | None = None
-        if typeflag == SPARSE_TYPE:
+        if typeflag == SPARSE_TYPE:  # always carries data
             sparse_format = SparseFormat.OLD_GNU
             sparse, data_offset = self._old_gnu_map(
                 header, data_offset, charger_name, charge
             )
             size = header.sparse_realsize
+        elif not carries_data(typeflag):
+            # Sparse records on a link, device, FIFO or directory describe no data
+            # area: the member is not sparse.
+            pass
         elif pax(b"GNU.sparse.map") is not None:
             sparse_format = SparseFormat.PAX_0_1
             sparse = sparse_map_0_1(
@@ -987,11 +1013,12 @@ class TarWalker:
             sparse_format = SparseFormat.PAX_0_0
             sparse = sparse_map_0_0(own_records, charger_name, charge)
             size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif (major := pax(b"GNU.sparse.major")) is not None:
+        elif (major := merged.get(b"GNU.sparse.major")) is not None:
             # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the
-            # minor (measured with 1.1, 1.5, 2.0 and 9.9), and refuses a major of 0
-            # or one that is not a number when no 0.x map came with it. Read as a
-            # plain file, the member would serve its map blocks as content.
+            # minor (measured with 1.1, 1.5, 2.0 and 9.9), and refuses a major of 0,
+            # an empty one, or one that is not a number when no 0.x map came with
+            # it. Read as a plain file, the member would serve its map blocks as
+            # content.
             if not (major.value.isdigit() and int(major.value) >= 1):
                 version = major.value[:20].decode("ascii", "replace")
                 raise CorruptionError(
@@ -1000,16 +1027,15 @@ class TarWalker:
                 )
             sparse_format = SparseFormat.PAX_1_0
             size = _pax_int(merged, b"GNU.sparse.realsize") or 0
-            if carries_data(typeflag):
-                # The map is the first blocks of the data area. It is read here, as
-                # tarfile and GNU tar read it, so a bad map fails the listing as in the
-                # other encodings and its entries count against this member's budget.
-                self._seek(data_offset)
-                sparse, used = read_sparse_map_1_0(
-                    self._read, stored_size, charger_name, charge
-                )
-                data_offset += used
-                stored_size -= used
+            # The map is the first blocks of the data area. It is read here, as
+            # tarfile and GNU tar read it, so a bad map fails the listing as in the
+            # other encodings and its entries count against this member's budget.
+            self._seek(data_offset)
+            sparse, used = read_sparse_map_1_0(
+                self._read, stored_size, charger_name, charge
+            )
+            data_offset += used
+            stored_size -= used
 
         old_style_directory = typeflag == b"\x00" and name.endswith(b"/")
         if not carries_data(typeflag):
