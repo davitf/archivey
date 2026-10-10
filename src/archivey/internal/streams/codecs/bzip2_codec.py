@@ -53,6 +53,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 )
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
+    input_after_end_error,
     report_trailing_data,
 )
 from archivey.internal.streams.resume import ask_resume_offset
@@ -100,6 +101,7 @@ def _stdlib_bzip2(
         magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
+        refuse_input_after_end=config.refuse_input_after_end,
     )
 
 
@@ -273,10 +275,31 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         """Check the combined CRCs, then what follows the last stream. Return whether
         the standard library took over at the end to decode a further stream."""
         self._end_unchecked = False
-        self._check_combined_crcs()
+        first_end = self._check_combined_crcs()
+        if self._config.refuse_input_after_end:
+            self._refuse_input_after_end(first_end)
         return self._check_trailing_data()
 
-    def _check_combined_crcs(self) -> None:
+    def _refuse_input_after_end(self, first_end: int | None) -> None:
+        """Raise when any byte, a zero too, follows the first stream.
+
+        ``StreamConfig.refuse_input_after_end`` (a ZIP member), as the standard library
+        path refuses it. ``first_end`` is where the first end-of-stream marker ends,
+        from :meth:`_check_combined_crcs`; without an index, the decoder's compressed
+        position. The accelerator reads a second stream as data, so the check is from
+        the first stream's end, not the last one's.
+        """
+        if first_end is None:
+            position = getattr(self._accelerator(), "compressed_position", None)
+            first_end = position() if position is not None else None
+        if first_end is None:
+            return
+        with self._views.view() as view:
+            view.seek(first_end)
+            if view.read(1):
+                raise input_after_end_error("bzip2")
+
+    def _check_combined_crcs(self) -> int | None:
         """Check each stream's combined CRC, which the accelerator does not.
 
         rapidgzip's bzip2 decoder checks every block's CRC against its data, but not the
@@ -286,11 +309,15 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         in its block's header, so the decoder's index (where every block and every
         end-of-stream marker starts) and 80 bits of the source at each of those places
         are enough to check it, without decoding anything again.
+
+        Returns the byte offset where the first stream's end-of-stream marker ends, or
+        ``None`` when there is no index or no marker in it.
         """
         offsets_fn = getattr(self._accelerator(), "block_offsets", None)
         offsets = offsets_fn() if offsets_fn is not None else None
         if not offsets:
-            return
+            return None
+        first_end: int | None = None
         with self._views.view() as view:
             combined = 0
             stream_end = -1
@@ -316,6 +343,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                         )
                     combined = 0
                     stream_end = -(-(bit + 80) // 8) * 8
+                    if first_end is None:
+                        first_end = stream_end // 8
+        return first_end
 
     def _check_trailing_data(self) -> bool:
         """Find the first byte after the last stream that is neither zero padding nor

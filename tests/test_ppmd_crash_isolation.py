@@ -454,7 +454,7 @@ import os, signal, struct, sys
 out = sys.stdout.buffer
 inp = sys.stdin.buffer
 def reply():
-    out.write(struct.pack("<BBBI", 0, 0, 1, 0))
+    out.write(struct.pack("<BBBII", 0, 0, 1, 0, 0))
     out.flush()
 inp.read(7)
 """

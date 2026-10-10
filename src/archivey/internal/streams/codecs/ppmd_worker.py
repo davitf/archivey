@@ -20,8 +20,8 @@ Protocol, all integers little-endian, over the child's stdin and stdout:
   allocating its model (between the two replies) from one that never started.
 - Then, per request: ``<iI`` (length, data size) and the data bytes. The child calls
   ``decode(data, length)``.
-- Every reply, including the two to the opening message: ``<BBBI`` (status, eof,
-  needs_input, payload size) and the payload. Status 0 carries the decoded bytes;
+- Every reply, including the two to the opening message: ``<BBBII`` (status, eof,
+  needs_input, length of the decoder's ``unused_data``, payload size) and the payload. Status 0 carries the decoded bytes;
   status 1 carries ``"<exception type name>\\n<message>"`` in UTF-8.
 - The parent closes stdin to end the child.
 """
@@ -35,7 +35,8 @@ from typing import IO
 
 _OPEN = struct.Struct("<BBIB")
 _REQUEST = struct.Struct("<iI")
-_REPLY = struct.Struct("<BBBI")
+# Kept equal to ``_REPLY`` in ``ppmd_child.py`` (this file imports nothing from archivey).
+_REPLY = struct.Struct("<BBBII")
 
 
 def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
@@ -52,7 +53,8 @@ def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
 def _reply(out: IO[bytes], status: int, decoder: object, payload: bytes) -> None:
     eof = bool(getattr(decoder, "eof", False))
     needs_input = bool(getattr(decoder, "needs_input", True))
-    out.write(_REPLY.pack(status, eof, needs_input, len(payload)))
+    unused = len(getattr(decoder, "unused_data", b"") or b"")
+    out.write(_REPLY.pack(status, eof, needs_input, unused, len(payload)))
     out.write(payload)
     out.flush()
 

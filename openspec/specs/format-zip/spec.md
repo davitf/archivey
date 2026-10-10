@@ -89,12 +89,22 @@ above 2 SHALL raise `CorruptionError` (7-Zip: "Data Error"). Under ZipCrypto the
 settings are decrypted data, so both SHALL raise `CorruptionError` there, which the
 password confirmation counts as the candidate failing (see below).
 
+A member's compressed size is its codec's input exactly. Any byte of it after the
+codec's end of stream, a zero byte or a second stream included, SHALL raise
+`CorruptionError`, for every method and for encrypted members too, as 7-Zip reports
+an error for it (DR-3). An LZMA member raises `LzmaDataAfterEndError`, its subclass. A
+PPMd member is checked when its end mark follows right at the declared size, as 7-Zip
+writes it; a PPMd stream without an end mark cannot be told from input past its size,
+and reads clean.
+
 #### Scenario: ZIP codec-layer decoding
 
 | Case | Expected |
 | --- | --- |
 | STORED / DEFLATE / BZIP2 / LZMA member, unencrypted | Decodes via the shared codec layer; CRC verified through `VerifyingStream` |
 | LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error"; with bit 1 clear, only a marker right at the declared size is checked |
+| DEFLATE, Deflate64, BZIP2, Zstd or PPMd member with compressed data after its end of stream (a zero byte, junk, or a second stream), inside the declared compressed size | `CorruptionError`, as 7-Zip reports "There are some data after the end of the payload data" (PPMd: "Data Error"), under the accelerators too; a PPMd member is checked only when an end mark follows right at the declared size |
+| DEFLATE member under rapidgzip holding two streams whose output the declared size and CRC both cover | Both streams' content (the `compressed-streams` accelerator exception); `CorruptionError` with the accelerator off |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |

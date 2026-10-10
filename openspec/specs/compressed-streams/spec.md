@@ -534,9 +534,11 @@ the standard-library decoder on stream-boundary malformations they cannot see:
 - for a container member that declares its size and CRC (a ZIP member, a 7z coder
   under a CRC-checked file), a second stream or
   trailing bytes inside the member's compressed data, which the accelerator MAY read as
-  content where the standard-library decoder stops at the first stream's end; the
-  declared size and CRC then decide, so output that matches both reads and output that
-  breaks either raises;
+  content where the standard-library decoder stops at the first stream's end (and, in a
+  ZIP member, raises `CorruptionError` for the bytes after it); the declared size and
+  CRC then decide, so output that matches both reads and output that breaks either
+  raises. The bzip2 accelerator checks a ZIP member's stream ends from its block index,
+  so there only rapidgzip's DEFLATE MAY differ;
 - for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
   when every member's CRC-32 is still checked.
 
@@ -581,6 +583,7 @@ no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 
 | Member | Accelerator `OFF` | Accelerator `ON` |
 | --- | --- | --- |
-| Two DEFLATE or bzip2 streams; declared size and CRC cover both | `TruncatedError` (decoder stops after the first) | Both streams' content |
-| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `TruncatedError` | `CorruptionError` (CRC) |
-| Two bzip2 streams; declared size and CRC cover the first | First stream's content | `CorruptionError` (output past the declared size) |
+| Two DEFLATE streams; declared size and CRC cover both | `CorruptionError` (input after the first stream's end) | Both streams' content |
+| Two bzip2 streams; declared size and CRC cover both | `CorruptionError` (input after the first stream's end) | `CorruptionError` (the end check finds input after the first stream) |
+| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `CorruptionError` | `CorruptionError` (CRC) |
+| Two DEFLATE or bzip2 streams; declared size and CRC cover the first | `CorruptionError` (input after the first stream's end) | `CorruptionError` |
