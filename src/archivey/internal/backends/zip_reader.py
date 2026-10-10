@@ -692,7 +692,6 @@ def _reparse_fallback_type(
 class ZipReader(BaseArchiveReader):
     """Reads a ZIP archive via stdlib ``zipfile``."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(

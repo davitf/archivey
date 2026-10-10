@@ -21,6 +21,7 @@ from archivey.types import (
     ExtractionPolicyStr,
     ExtractionProgress,
     MemberFilter,
+    MemberSelectorArg,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -32,9 +33,8 @@ if TYPE_CHECKING:
 
 # Type alias for the member selector passed to stream_members() and extract_all().
 # Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
-MemberSelector = (
-    Collection[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
-)
+# ``types.MemberSelectorArg`` is the one definition; this is its public name.
+MemberSelector = MemberSelectorArg
 
 
 class ForwardArchiveReader(ABC):

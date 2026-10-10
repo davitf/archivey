@@ -1140,7 +1140,6 @@ _SERVICE_PAYLOAD_LOST = {
 class RarReader(BaseArchiveReader):
     """Reads RAR archives: native metadata parse + RARLAB ``unrar`` for data."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(

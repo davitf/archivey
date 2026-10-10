@@ -285,7 +285,6 @@ class _LazyFolder:
 class SevenZipReader(BaseArchiveReader):
     """Reads 7z archives using the native parser and shared codec streams."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(

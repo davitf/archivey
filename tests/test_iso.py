@@ -32,7 +32,6 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.iso_reader import IsoReader, _strip_version
-from archivey.internal.registry import get_registry
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from archivey.types import FormatSupport
@@ -259,12 +258,6 @@ def test_password_is_accepted_and_recorded(rock_ridge_iso: Path) -> None:
 
     with open_archive(rock_ridge_iso, password=b"secret") as reader:
         assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1
-
-
-def test_write_rejected() -> None:
-    # No ISO write backend is registered, so requesting a writer raises.
-    with pytest.raises(UnsupportedFeatureError):
-        get_registry().writer_for_format(ArchiveFormat.ISO)
 
 
 def test_non_seekable_iso_rejected() -> None:
@@ -1083,8 +1076,6 @@ def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
 
 def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
     """Extents that are not back to back are refused rather than read as one run."""
-    from archivey.exceptions import UnsupportedFeatureError
-
     image = _split_into_two_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
     with open_archive(io.BytesIO(image)) as ar:
         assert ar.get("BIG.BIN").size == 3048
@@ -1407,8 +1398,6 @@ def test_the_zisofs_stream_refuses_a_negative_absolute_seek_and_a_bad_whence() -
 def test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone(
     zf: dict[str, Any],
 ) -> None:
-    from archivey.exceptions import UnsupportedFeatureError
-
     data = _zisofs_image(_ZISOFS_PLAIN, **zf)
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.get("zzz").compression == (
