@@ -172,7 +172,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         *,
         views: _SourceViews,
         config: StreamConfig,
-        single_stream: bool = False,
+        single_stream: bool,
     ) -> None:
         super().__init__(inner)
         self._views = views

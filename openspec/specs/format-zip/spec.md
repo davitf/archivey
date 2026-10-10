@@ -92,12 +92,11 @@ password confirmation counts as the candidate failing (see below).
 A member's compressed size is its codec's input exactly. Any byte of it after the
 codec's end of stream, a zero byte or a second stream included (a Zstd skippable
 frame too), SHALL raise `CorruptionError`, for every method and for encrypted members
-too, as 7-Zip reports an error for it (DR-3). Under ZipCrypto the password confirmation
-counts it as the candidate failing (see below). An LZMA member raises
-`LzmaDataAfterEndError`, its subclass. A
-PPMd member is checked when its end mark follows right at the declared size, as 7-Zip
-writes it; a PPMd stream without an end mark cannot be told from input past its size,
-and reads clean.
+too, as 7-Zip reports an error for it (DR-3), and under ZipCrypto the password
+confirmation counts it as the candidate failing, as above. An LZMA member raises
+`LzmaDataAfterEndError`, its subclass. A PPMd member is checked when its end mark
+follows right at the declared size, as 7-Zip writes it; a PPMd stream without an end
+mark cannot be told from input past its size, and reads clean.
 
 #### Scenario: ZIP codec-layer decoding
 

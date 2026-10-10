@@ -403,8 +403,10 @@ An LZMA member ends at its end marker too (`lzma.LZMAFile` would start a second 
 the bytes after it and read that as content).
 
 **Any byte of a member's compressed data after its codec's end is `CorruptionError`** (DR-3),
-a zero too, and a second stream too. The member's compressed size is the codec's input
-exactly, with no padding in it, and `7z t` (23.01) reports these bytes as an error: "There
+a zero too, and a second stream too. Under ZipCrypto the read raises the `EncryptionError` of
+an unconfirmed password instead, caused by that `CorruptionError`, as the verify table below
+records. The member's compressed size is the codec's input exactly, with no padding in it,
+and `7z t` (23.01) reports these bytes as an error: "There
 are some data after the end of the payload data" for DEFLATE, Deflate64 and BZip2, "Data
 Error" for LZMA and PPMd. The reader sets `StreamConfig.refuse_input_after_end`, and
 `DecompressorStream` raises when its decoder reports input after the end

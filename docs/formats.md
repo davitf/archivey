@@ -96,7 +96,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   ``EncryptionError`` instead, because those settings are encrypted.
 - Bytes inside a member's compressed data after its compressed stream ends (a zero
   byte, junk, or a second stream) raise `CorruptionError` when the member is read, for
-  every compression method, as `7z t` reports an error for them. Two cases still read:
+  every compression method, as `7z t` reports an error for them. Under ZipCrypto they
+  read as the password-or-damage ``EncryptionError`` instead, caused by that
+  ``CorruptionError``, because the bytes are encrypted. Two cases still read:
   a PPMd member whose stream has no end mark (7-Zip writes one), and, under rapidgzip,
   a second DEFLATE stream that the member's declared size and CRC both cover.
 - An end record that disagrees with the central directory is a warning, not an error:
