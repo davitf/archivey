@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import detect_format, open_archive
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -348,17 +348,21 @@ def test_open_archive_refuses_a_buffered_gzip_followed_by_none() -> None:
         _read_non_blocking(_BufferedThenNothing(gzip.compress(b"hello")))
 
 
-def _nonblocking_pipe(payload: bytes | None = None) -> tuple[io.BufferedReader, int]:
+def _nonblocking_pipe(
+    payload: bytes | None = None, *, buffered: bool = True
+) -> tuple[io.BufferedReader, int]:
     """Read end of a pipe with nothing more ready. The write end stays open.
 
     Closing it would be a real EOF (``b""``). Leaving it open and writing
-    nothing — or only ``payload`` — is the stall ``None`` means.
+    nothing — or only ``payload`` — is the stall ``None`` means. With
+    ``buffered=False`` the read end is a ``FileIO``, typed as the buffered
+    reader for the callers' sake.
     """
     read_fd, write_fd = os.pipe()
     os.set_blocking(read_fd, False)
     if payload:
         os.write(write_fd, payload)
-    return open(read_fd, "rb"), write_fd
+    return open(read_fd, "rb", buffering=-1 if buffered else 0), write_fd  # type: ignore[return-value]  # FileIO when unbuffered
 
 
 @pytest.mark.skipif(
@@ -418,18 +422,41 @@ def test_open_archive_refuses_a_nonblocking_pipe_after_a_complete_gzip() -> None
         os.close(write_fd)
 
 
-def test_blocking_reads_refuses_a_negative_count() -> None:
-    """The follow-up adapter does not forward ``read(-1)`` to the inner.
+def test_detect_format_refuses_a_raw_stream_with_nothing_ready() -> None:
+    """``None`` on the first detection read is not an empty source."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        detect_format(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
 
-    ``read_exact`` never asks for a drain. The default stays, because that
-    function's ``read`` protocol has one, and a negative count is refused
-    before the inner is touched.
+
+def test_detect_format_refuses_a_short_chunk_then_none() -> None:
+    """A partial prefix, then ``None``, is not the whole source.
+
+    Detection asks for more than 100 bytes, so it must ask again, and the
+    ``None`` it then gets must not end the prefix as if it were EOF.
     """
-    from archivey.internal.source import _BlockingReads
+    inner = _ShortThenNothing(b"x" * 100)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        detect_format(inner)  # type: ignore[arg-type]  # RawIOBase double
+    assert inner.calls == 2
 
-    adapter = _BlockingReads(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
-    with pytest.raises(ValueError, match="non-negative"):
-        adapter.read(-1)
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+@pytest.mark.parametrize("payload", [None, b"x" * 100], ids=["empty", "partial"])
+@pytest.mark.parametrize("buffered", [True, False], ids=["buffered", "raw"])
+def test_detect_format_refuses_a_nonblocking_pipe(
+    payload: bytes | None, buffered: bool
+) -> None:
+    """A pipe with nothing more ready is not a short or empty source."""
+    stream, write_fd = _nonblocking_pipe(payload, buffered=buffered)
+    try:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            detect_format(stream)
+    finally:
+        stream.close()
+        os.close(write_fd)
 
 
 class _BufferedShortThenStall(io.BufferedIOBase):

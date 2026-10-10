@@ -99,30 +99,6 @@ class JoinedVolumes(Protocol):
     def close(self) -> None: ...
 
 
-class _BlockingReads:
-    """``read`` that raises when a non-blocking stream returns ``None``.
-
-    :func:`read_exact` treats a falsy return, ``None`` included, as the end of the
-    stream. The gathering reader uses it for the bytes still missing after a short
-    read, and a ``None`` there would end the archive. Routing the follow-up through
-    :func:`read_blocking` is the same refusal the first read makes.
-
-    ``read_exact`` only ever asks for a positive remainder, so a negative count is a
-    caller bug and is refused rather than forwarded. The default stays so this still
-    matches the ``read`` protocol that function expects.
-    """
-
-    __slots__ = ("_inner",)
-
-    def __init__(self, inner: BinaryIO) -> None:
-        self._inner = inner
-
-    def read(self, n: int = -1, /) -> bytes:
-        if n < 0:
-            raise ValueError("n must be non-negative")
-        return read_blocking(self._inner, n)
-
-
 class _GatheringReader:
     """Full-count ``read(n)`` over a source that may return short, with no buffer.
 
@@ -185,7 +161,7 @@ class _GatheringReader:
             )
         if got == 0:
             return b""
-        return data + read_exact(_BlockingReads(self._inner), n - got)
+        return data + read_exact(self._inner, n - got)
 
 
 class ArchiveSource(ReadOnlyIOStream):

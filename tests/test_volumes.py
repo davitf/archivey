@@ -1263,6 +1263,24 @@ def test_short_returning_seekable_volume_item_reads_through_boundary() -> None:
     joined.close()
 
 
+class _SeekableNothingReady(io.BytesIO):
+    """A seekable caller stream that answers ``read`` with ``None``, as non-blocking."""
+
+    def read(self, n: int | None = -1, /) -> bytes:  # type: ignore[override]  # None is the point
+        return None  # type: ignore[return-value]  # non-blocking answer
+
+
+def test_concatenated_file_refuses_none_from_a_caller_volume() -> None:
+    """``None`` from a caller's volume stream is not a volume that ended early."""
+    joined = ConcatenatedFile([io.BytesIO(b"abc"), _SeekableNothingReady(b"def")])
+    try:
+        assert joined.read(3) == b"abc"
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            joined.read(3)
+    finally:
+        joined.close()
+
+
 def test_concatenated_file_backwards_seek_across_volume_boundaries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

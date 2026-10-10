@@ -218,7 +218,10 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     """Read up to ``n`` bytes, treating a short non-empty return as "ask again".
 
     Stops only on empty (EOF) or once ``n`` bytes are gathered. That is the
-    ``io.RawIOBase`` contract: a short chunk is not a terminal signal.
+    ``io.RawIOBase`` contract: a short chunk is not a terminal signal. ``None``
+    (nothing ready on a non-blocking stream) is not EOF either, so it raises
+    ``BlockingIOError``, as :func:`read_blocking` does. When ``None`` follows a
+    short chunk, that chunk has already left the stream and is not returned.
 
     This is the *exception*, not the default. Most bounded reads in the stream
     layer issue a plain ``inner.read(n)``, because their inner is full-count
@@ -243,12 +246,14 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
         # (a decoder may prime state). The loop this replaced never issued it.
         return b""
 
-    # A falsy first return is terminal *on this call*, exactly as the loop this
-    # replaced treated it: ``None`` from a non-blocking raw, or ``b""`` at EOF.
-    # Reading again would both waste I/O at EOF and change the result on a source
-    # that yields data after a falsy return.
-    data = stream.read(n)
+    # An empty first return is terminal *on this call*: reading again would waste
+    # I/O at EOF. ``None`` is not EOF but a non-blocking stream with nothing ready;
+    # returning ``b""`` for it would end the caller's data early, and reading again
+    # would busy-loop, so it raises.
+    data: bytes | None = stream.read(n)
     if not data:
+        if data is None:
+            raise BlockingIOError(_BLOCKING_READ_MESSAGE)
         return b""
 
     # Fast path, and the common one now that the source boundary makes every
@@ -272,8 +277,10 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     chunks = [data]
     gathered = len(data)
     while gathered < n:
-        chunk = stream.read(n - gathered)
+        chunk: bytes | None = stream.read(n - gathered)
         if not chunk:
+            if chunk is None:
+                raise BlockingIOError(_BLOCKING_READ_MESSAGE)
             break
         chunks.append(chunk)
         gathered += len(chunk)
