@@ -27,6 +27,7 @@ from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStr
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.deflate_resume import stream_end
 from archivey.internal.streams.codecs.stdlib_takeover import (
+    _drain_to_end,
     _OutputChecksum,
     _SourceViews,
     _StdlibOnAcceleratorError,
@@ -200,9 +201,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             if size < 0:
                 # A completing read: reach the end now, so the check raises from this
                 # read rather than leave the caller to find it on a later one.
-                while more := self._inner.read(1 << 20):
-                    self._count(more)
-                    data += more
+                data += _drain_to_end(self._inner, self._count)
                 tail = self._at_end(size, start)
                 # Where the standard library took over: _at_end put _pos there, then
                 # moved it on by the tail it read. With no handover the tail is empty
@@ -413,8 +412,7 @@ class _DeflateEndCheckStream(DelegatingStream):
             return data
         if data:
             # A completing read: reach the end now, so the check raises from this read.
-            while more := self._inner.read(1 << 20):
-                data += more
+            data += _drain_to_end(self._inner)
         return data + self._at_end(size)
 
     def nearest_resume_offset(self, target: int) -> int | None:

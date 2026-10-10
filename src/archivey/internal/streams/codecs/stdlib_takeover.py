@@ -355,6 +355,30 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._replace_inner(self._open_stdlib_at())
 
 
+# How much output a completing ``read()`` of an end check asks the decoder for in one
+# call while it drains to the end of rapidgzip's output (:func:`_drain_to_end`).
+_DRAIN_CHUNK = 1 << 20
+
+
+def _drain_to_end(
+    inner: BinaryIO, count: Callable[[bytes], None] | None = None
+) -> bytes:
+    """Read ``inner`` to its end in ``_DRAIN_CHUNK`` pieces, pass each to ``count``, and
+    return them joined.
+
+    The end checks around rapidgzip (gzip, zlib, raw DEFLATE) run on the read that meets
+    the end of the output (ADR 0014: never from ``close()``), so a completing ``read()``
+    drains the rest itself before it returns. No read here asks ``inner`` for an
+    unbounded size, so ``inner`` never builds the whole rest as one more copy.
+    """
+    pieces: list[bytes] = []
+    while more := inner.read(_DRAIN_CHUNK):
+        if count is not None:
+            count(more)
+        pieces.append(more)
+    return b"".join(pieces)
+
+
 class _OutputChecksum:
     """A running checksum of the output from offset 0 up to a ``frontier``.
 
