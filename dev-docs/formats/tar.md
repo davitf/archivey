@@ -57,12 +57,12 @@ one, so duplicate names are ordinary and the last one is current.
 
 **The end is two zero blocks, and tarfile does not say why it stopped.** A trailer, a
 corrupt header after the first, and a source that simply ran out all end tarfile's walk
-the same way, with no exception. archivey reconstructs the reason from the block tarfile
-stopped on (§2.2), and the result has three outcomes: a non-null block where a header
-belonged is corruption; a missing, short or damaged trailer is a warning, because a
-complete tar written without a trailer and a tar truncated exactly at a member boundary
-are the same bytes, and a zero block followed by a damaged one still ends a whole
-listing; bytes after a good trailer are trailing data. An empty tar is nothing but
+the same way, with no exception. archivey reconstructs the reason from the error the
+last header parse raised before tarfile swallowed it (§2.2), and the result has three
+outcomes: a header tarfile rejected is corruption; a missing, short or damaged trailer
+is a warning, because a complete tar written without a trailer and a tar truncated
+exactly at a member boundary are the same bytes, and a zero block followed by a damaged
+one still ends a whole listing; bytes after a good trailer are trailing data. An empty tar is nothing but
 zeros, so a zero-filled file of any block-aligned length is a valid empty archive
 ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). Two tars joined
 with `cat` list as the first one plus a trailing-data diagnostic, because the first
@@ -129,39 +129,43 @@ to the codec as a path, so the codec can use an accelerator and a static ratio. 
 way tarfile gets `fileobj=`, so it never owns or closes the handle, and archivey closes
 the decompressor it built.
 
-In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does two jobs:
+**Reads whose size the archive chooses are bounded.** In random-access mode the fileobj
+is wrapped in `_BoundedTarFileobj`. tarfile reads a PAX record or a GNU long name with
+one `read(size)`, where `size` is the header's field, up to 8 GiB in octal and more
+through base-256. Over a decompressor the wrapper asks in steps, so the allocation
+follows the bytes that exist. Over the source it passes through, because the source
+already clamps a read to what is left ([`threat-model.md`](../threat-model.md) O15).
+Streaming needs neither: tarfile's `_Stream` reads in `bufsize` chunks. What streaming
+does need is a guard on the skip. tarfile skips an unread member by reading
+`size // bufsize` chunks and does not stop when they come back empty, so the cost
+followed the declared size: a 2 KiB archive declaring a 2**45-byte member looped for
+hours. Before each header after the first, `_read_through_member_data` reads the rest of
+the previous member's data area itself (up to `TarFile.offset`, in 64 KiB chunks) and
+raises `TruncatedError` at the first short read, so the skip costs the bytes present. On
+an honest archive these are the bytes tarfile would have read anyway, and its own skip
+is left with nothing to do.
 
-- **It bounds the one read whose size the archive chooses.** tarfile reads a PAX record
-  or a GNU long name with one `read(size)`, where `size` is the header's field, up to
-  8 GiB in octal and more through base-256. Over a decompressor the probe asks in steps,
-  so the allocation follows the bytes that exist. Over the source it passes through,
-  because the source already clamps a read to what is left
-  ([`threat-model.md`](../threat-model.md) O15). Streaming needs neither: tarfile's
-  `_Stream` reads in `bufsize` chunks. What streaming does need is a guard on the skip.
-  tarfile skips an unread member by reading `size // bufsize` chunks and does not stop
-  when they come back empty, so the cost followed the declared size: a 2 KiB archive
-  declaring a 2**45-byte member looped for hours. Before each header after the first,
-  `_read_through_member_data` reads the rest of the previous member's data area itself
-  (up to `TarFile.offset`, in 64 KiB chunks) and raises `TruncatedError` at the first
-  short read, so the skip costs the bytes present. On an honest archive these are the
-  bytes tarfile would have read anyway, and its own skip is left with nothing to do.
-- **It remembers the last read**, which is how the end is classified. `TarFile.next()`
-  always tries one more block before it returns `None`, so the last read is the block
-  the walk stopped on. The EOF check then runs in this order:
-  1. The block the walk stopped on is a full non-null block. A header was rejected, so
-     it is `CorruptionError` whatever the diagnostic policy, and the same is true when
-     that block is the last one in the file.
+**How the end is classified.** `TarFile.next()` returns `None` on a zero block and on a
+header it rejects after the first, and swallows the error that told them apart.
+`_TarInfo.fromtarfile` records that error's class on the `_TarFile` (`stopped_on`:
+`EOFHeaderError` is a zero block, `InvalidHeaderError` a rejected header) before it is
+swallowed. The class is the same in both access modes and does not depend on which
+bytes were read, so both modes run the same EOF check, in this order:
+
+  1. The last header parse rejected the header (a bad checksum or number field, a
+     negative size, PAX records that do not parse). The listing was cut short, so it is
+     `CorruptionError` whatever the diagnostic policy and whatever follows: more
+     members, nothing, or a zero block (a member whose data starts with 512 zero bytes,
+     which step 2 would take for the second trailer block).
   2. Otherwise read the next block. tarfile has already consumed the first trailer block,
      so this is the second. A null block is a good trailer. A short or empty read emits
      `ARCHIVE_EOF_MARKER_MISSING` under the ordinary policy, a warning by default. A
-     non-null block depends on what tarfile stopped on, which `_TarInfo.fromtarfile`
-     records on the `_TarFile` because `TarFile.next()` swallows the error: after a zero
-     block, with at least one member listed, the listing is whole and only the
-     end-of-archive marker is damaged, so it is `ARCHIVE_EOF_MARKER_MISSING`
-     (`expected_marker="second_zero_block"`, `observed_kind="nonzero"`) under the
-     ordinary policy, as GNU tar ("A lone zero block") and 7-Zip list it with a warning
-     (maintainer ruling, 2026-10-06), and step 3 runs from the block after it. After a
-     rejected header, or with no member before the zero block, it is
+     non-null block after a zero block, with at least one member listed, means the
+     listing is whole and only the end-of-archive marker is damaged, so it is
+     `ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="second_zero_block"`,
+     `observed_kind="nonzero"`) under the ordinary policy, as GNU tar ("A lone zero
+     block") and 7-Zip list it with a warning (maintainer ruling, 2026-10-06), and step 3
+     runs from the block after it. With no member before the zero block it is
      `CorruptionError`, with `expected_marker="two_zero_blocks"`.
   3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero
      byte and emit `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar`
@@ -180,10 +184,6 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
      The same check can instead be reached while the last member is read, when the
      codec has already read to the stream's end; that read raises `CorruptionError`.
      Which one happens depends on the codec's input chunking, so on member size.
-
-  Streaming has no probe, so it runs steps 2 and 3 only, and a rejected header that is
-  the file's last block reads there as a missing trailer
-  ([`known-issues.md`](../known-issues.md), §7).
 
 **The walk stops at the listing caps.** Random-access listing pulls headers through
 `iter(TarFile)` in batches of up to 1 024 under one lock hold. A batch never asks for
@@ -404,8 +404,8 @@ extraction checks (§2.4).
   cleanly. Anything that needs integrity has to come from the compressor or from outside
   the archive.
 - **A listing can end early without an error.** tarfile treats a corrupt header after the
-  first as the end. archivey turns that into `CorruptionError` except for the final block
-  in streaming mode, where it is a warning (§2.2). A caller who needs a provably complete
+  first as the end. archivey turns that into `CorruptionError` in both access modes
+  (§2.2). What stays a warning is a missing trailer. A caller who needs a provably complete
   listing sets `ARCHIVE_EOF_MARKER_MISSING` to `RAISE`, as `DiagnosticPolicy.strict()`
   does.
 - **Link targets are header text.** A symlink or hardlink target costs no decode to read,
@@ -424,7 +424,6 @@ extraction checks (§2.4).
 | Reading members of a `.tar.gz` by name is slow, and reports `STREAM_REWIND_REDECOMPRESSES` | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3). `stream_members()` decodes once. `[seekable]` adds resume points for gzip and bzip2 |
 | A seek past the end of a member returns the member size, not the target | **library** | stdlib `ExFileObject` clamps the position; reads agree either way ([`known-issues.md`](../known-issues.md)) |
 | A tar with no trailer warns `ARCHIVE_EOF_MARKER_MISSING` and still lists | **format** | Complete-without-trailer and truncated-at-a-boundary are the same bytes. Set the code to `RAISE` when completeness matters |
-| A corrupt last header raises in random access and only warns when streaming | **library** | tarfile's `_Stream` hides the block the walk stopped on. A native header walker would close it (§7, [`known-issues.md`](../known-issues.md)) |
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |
 | A byte more than 1 MiB past the trailer goes unreported | **archivey** | The trailing-data scan is an effort bound, not a guarantee (§2.2). On a compressed tar that also leaves the stream checksum unchecked, reported as `DIGEST_UNVERIFIABLE` |
 | A `.tar` of nothing but zeros opens as an empty archive | **format** | That is what an empty tar is ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). `detect_format()` still refuses it |
@@ -442,8 +441,8 @@ extraction checks (§2.4).
 | --- | --- | --- |
 | Read through stdlib `tarfile` | Zero dependencies, and it already handles GNU long names, base-256 numbers, PAX, globals and every sparse encoding | A native header walker now. It is the planned structural fix for the silent-end problem (§7), and larger than anything this backend has needed so far |
 | Feed tarfile archivey's own decompressor, never `r:gz` | One codec layer for every format: the same seek points, accelerators, ratio guard, diagnostics and error translation as a bare `.gz` | tarfile's built-in modes, which cover four codecs and bypass all of that |
-| Classify the end from the block the walk stopped on | tarfile does not report why it stopped. The last read is the only evidence that needs no backward seek, which on a compressed tar would mean decoding again | Computing the next header's offset from `offset_data + size`, which is wrong for sparse members; treating every early end as a warning |
-| A rejected header is `CorruptionError` whatever the policy; a missing trailer is a warning | A complete tar never stops on a non-null block, so that one is certain. A missing trailer is ambiguous by construction | One disposition for both, which is either too loud for ordinary trailer-less tars or silent about corruption |
+| Classify the end by the error class of the last header parse, then by the block after the stop | tarfile does not report why it stopped, but the error passes through `_TarInfo.fromtarfile` before `next()` swallows it. That is the same answer in both access modes and needs no backward seek, which on a compressed tar would mean decoding again | Computing the next header's offset from `offset_data + size`, which is wrong for sparse members; inspecting the last block tarfile read, which streaming cannot see and which misses a PAX header longer than one block; treating every early end as a warning |
+| A rejected header is `CorruptionError` whatever the policy; a missing trailer is a warning | A complete tar never stops on a rejected header, so that one is certain. A missing trailer is ambiguous by construction | One disposition for both, which is either too loud for ordinary trailer-less tars or silent about corruption |
 | A zero block followed by a non-null one is a warning, not corruption (maintainer ruling, 2026-10-06) | The zero block ends the members, so the listing is whole and only the marker is damaged. GNU tar and 7-Zip list such an archive with a warning and exit 0; a damaged RAR end-of-archive block is handled the same way. `strict()` refuses it | `CorruptionError`, as before the ruling, which in random access threw away a whole listing |
 | A zero-filled file is a valid empty tar | It is byte-identical to one, at every block-aligned length ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)) | Refusing zero-member tars; a length rule |
 | Report trailing data, do not read past it | Two archives in one file is a fact worth reporting, and listing both would present members from an archive the caller did not name | `ignore_zeros=True`, which is how `tar -i` reads concatenated archives |
@@ -456,10 +455,10 @@ extraction checks (§2.4).
 ## 7. Open questions
 
 - **Whether to replace tarfile's walk with a native one.** It would validate each header
-  at its offset, which closes the streaming last-block gap, lets a listing salvage past a
-  bad header, and drops tarfile's duplicate member list. It would not settle the
-  missing-trailer ambiguity, which is in the bytes. What would answer it: whether any
-  of those three matters to a real caller before 1.0. The walker is tracked internally.
+  at its offset, which lets a listing salvage past a bad header and drops tarfile's
+  duplicate member list. It would not settle the missing-trailer ambiguity, which is in
+  the bytes. What would answer it: whether either of those two matters to a real caller
+  before 1.0. The walker is tracked internally.
 - **Whether to detect v7 tars by their header checksum.** A 512-byte block whose checksum
   field matches its byte sum is strong evidence, and it is what `tarfile.is_tarfile`
   checks. It would also admit random blocks that happen to match, which the current
@@ -490,7 +489,7 @@ extraction checks (§2.4).
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
 | A zero block then a damaged block lists and reads every member, warns, extracts everything, and raises under `strict()`, in both modes | `::test_damaged_second_eof_block_lists_every_member`, `::test_damaged_second_eof_block_gzip_lists_every_member`, `::test_damaged_second_eof_block_extracts_every_member`, `::test_damaged_second_eof_block_refused_under_strict`, `::test_zero_block_then_junk_with_no_member_stays_corruption` |
 | After a damaged second block the trailing scan still runs: a bad gzip CRC raises and junk is trailing data | `::test_bad_gzip_crc_is_reported_after_a_damaged_second_eof_block`, `::test_damaged_second_eof_block_then_junk_reports_trailing_data` |
-| The streaming last-block gap | `::test_corrupt_final_header_streaming_warns_not_corruption` |
+| A rejected header raises in both modes whatever follows it: members, nothing, a zero block; a negative PAX or base-256 size; a malformed PAX header as the last thing in the file | `::test_corrupt_final_header_streaming_raises_corruption`, `::test_rejected_header_raises_corruption_in_both_modes` |
 | Rejected header wins over `IGNORE` and `RAISE` | `::test_corrupt_final_header_ignore_disposition_still_raises`, `::test_corrupt_mid_header_raise_disposition_still_corruption` |
 | `extract_all` writes the salvageable members, then raises, in both modes | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |
 | `extract_all` on `.tar.gz`/`.bz2`/`.xz` decodes once; limits still bind | `::test_extract_compressed_tar_decodes_once`, `::test_extract_enforces_listing_limits_as_members_arrive` |

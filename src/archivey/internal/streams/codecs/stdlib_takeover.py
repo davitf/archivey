@@ -136,7 +136,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     is wrapped by ``_wrap_accelerated_length``, whose ``VerifyingStream`` has the same
     size as its ``expected_size`` and bounds each of its reads to what remains of it.
     There the only read that reaches past ``limit`` is that verifier's one-byte
-    over-run probe at the declared size (``_probe_past_declared``): this branch is
+    over-run probe at the declared size (``MemberVerifier._conclude``): this branch is
     what decides an over-run on the accelerated path. A 7z coder is the other case.
     It declares an unpack size but no ``expected_decompressed_size``, so
     ``_wrap_accelerated_length`` adds no verifier: ``limit`` is the coder's unpack
@@ -174,15 +174,15 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     ``bzip2_resume``).
 
     Once switched, a data error of the standard library leaves as the codec's typed
-    error (``translate``), as it does from the outer translator with the accelerator
-    off. A raw ``zlib.error`` would be taken for the accelerator's opaque end-of-input
-    error by the over-run probe of a declared size (``_probe_past_declared``), which
-    reads it as "no more data": a ZIP member declared empty with a body that is not
-    DEFLATE read as empty, where the accelerator off raises. Only the DEFLATE family
-    passes ``translate``: bzip2's accelerated path adds no ``_wrap_accelerated_length``
-    verifier, so no over-run probe sits inside it, and its translator maps every
-    ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage
-    error (a closed source) that ``ArchiveStream`` reports as one.
+    error (``translate``), as it does from the codec's own translator with the
+    accelerator off. ``translate`` stays for that reason: without it the raw error
+    travels on to a different translator (the member's or the enclosing reader's),
+    which need not classify it the same way, so the verdict would depend on whether
+    rapidgzip was engaged. The tests do not pin it while both translators type a
+    ``zlib.error`` alike. Only the DEFLATE family passes ``translate``:
+    bzip2's translator maps every ``ValueError`` to ``TruncatedError``, which inside
+    the stream would claim a usage error (a closed source) that ``ArchiveStream``
+    reports as one.
 
     ``empty_to_stdlib`` hands a stream that ends before its first byte to the standard
     library, which decodes a valid empty stream to nothing as well and raises on a cut
@@ -332,6 +332,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         the newest of ``points``, in ascending order, at or before it. A point past it
         would only serve a later seek: the seek here ignores it."""
         stdlib = self._open_stdlib(self._views.for_stdlib())
+        # A view of a seekable source gives a seekable decoder. The wrappers above this
+        # stream cached seekable() from the accelerator, and the seek below needs it.
+        assert is_seekable(stdlib), "a standard-library fallback must be seekable"
         if points and isinstance(stdlib, DecompressorStream):
             stdlib.add_seek_points(points)
         try:
@@ -353,6 +356,31 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """
         assert self.switched, "only a standard-library decoder resumes"
         self._replace_inner(self._open_stdlib_at())
+
+
+# How much output an end check asks the decoder for in one call while it reads ahead:
+# the drain of a completing ``read()`` (:func:`_drain_into`), and the zlib check's
+# read-through on a seek.
+_DRAIN_CHUNK = 1 << 20
+
+
+def _drain_into(
+    inner: BinaryIO, buf: bytearray, count: Callable[[bytes], None] | None = None
+) -> None:
+    """Read ``inner`` to its end in ``_DRAIN_CHUNK`` pieces, pass each to ``count``, and
+    append it to ``buf``.
+
+    The end checks around rapidgzip (gzip, zlib, raw DEFLATE) run on the read that meets
+    the end of the output (ADR 0014: never from ``close()``), so a completing ``read()``
+    drains the rest itself before it returns. No read here asks ``inner`` for an
+    unbounded size, so ``inner`` never builds the whole rest as one more copy. The
+    caller owns ``buf`` and makes the one ``bytes`` it returns from it, so the rest is
+    held once while it drains, not as pieces and then as their join.
+    """
+    while more := inner.read(_DRAIN_CHUNK):
+        if count is not None:
+            count(more)
+        buf += more
 
 
 class _OutputChecksum:

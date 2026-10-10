@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
@@ -21,6 +21,7 @@ from archivey.types import (
     ExtractionPolicyStr,
     ExtractionProgress,
     MemberFilter,
+    MemberSelectorArg,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -30,10 +31,19 @@ from archivey.types import (
 if TYPE_CHECKING:
     from archivey.internal.streams.archive_stream import ArchiveStream
 
-# Type alias for the member selector passed to stream_members() and extract_all().
-# Accepts a predicate, an iterable of names / ArchiveMember objects (read once, so a
-# generator works), or None (all).
-MemberSelector = Iterable[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
+# ``types.MemberSelectorArg`` is the one definition; this is its public name.
+MemberSelector = MemberSelectorArg
+"""Which members :meth:`~archivey.ForwardArchiveReader.stream_members` and
+:meth:`~archivey.ForwardArchiveReader.extract_all` act on. One of:
+
+- an iterable of member names (``str``) and :class:`~archivey.ArchiveMember` objects,
+  read once, so a generator works. A name selects every member with exactly that name
+  (a directory is ``"dir/"``); an ``ArchiveMember`` selects that member only, by
+  identity. A bare ``str`` is refused: pass ``["name"]`` for one member;
+- a predicate ``Callable[[ArchiveMember], bool]`` that returns ``True`` for the members
+  to select;
+- ``None``, for all members.
+"""
 
 
 class ForwardArchiveReader(ABC):

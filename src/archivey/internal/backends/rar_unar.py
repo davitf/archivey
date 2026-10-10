@@ -27,9 +27,8 @@ from __future__ import annotations
 
 from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
 
-# RAR3/4 method byte for "stored". Compression versions below 2.0 are decoded by a
-# separate RAR 1.5 algorithm, which only matters when the data is compressed.
-_METHOD_STORED = 0x30
+# Compression versions below 2.0 are decoded by a separate RAR 1.5 algorithm, which
+# only matters when the data is compressed.
 _FIRST_UNAR_SAFE_EXTRACT_VERSION = 20
 
 UNAR_PURPOSE = (
@@ -111,7 +110,7 @@ def uses_no_dictionary(info: RarMemberInfo) -> bool:
     not count. An empty compressed member still counts: its declared dictionary may
     start a stream.
     """
-    return _carries_no_data(info) or info.compress_type == _METHOD_STORED
+    return _carries_no_data(info) or info.is_stored
 
 
 def unar_emitted_size(info: RarMemberInfo) -> int:
@@ -276,7 +275,7 @@ class UnarRarPolicy:
         if (
             info.extract_version is not None
             and info.extract_version < _FIRST_UNAR_SAFE_EXTRACT_VERSION
-            and info.compress_type != _METHOD_STORED
+            and not info.is_stored
         ):
             return REFUSE_RAR15
         if id(info) in self._solid_after_empty:

@@ -1,8 +1,8 @@
 """Contract tests for the BaseArchiveReader extension points and access-mode enforcement.
 
 Exercised directly with minimal in-test readers (no real format backend), covering the
-two orthogonal gates — the access mode (``streaming=True`` is forward-only) and backend
-**capability** (``_SUPPORTS_RANDOM_ACCESS``) — plus ``members_report_if_available``.
+access-mode gate (``streaming=True`` is forward-only) plus
+``members_report_if_available``.
 """
 
 from __future__ import annotations
@@ -56,7 +56,6 @@ def _info(
 class _IndexedReader(BaseArchiveReader):
     """Random-access reader with a true upfront index (like ZIP / a directory)."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -73,10 +72,8 @@ class _IndexedReader(BaseArchiveReader):
 
 
 class _ForwardOnlyReader(BaseArchiveReader):
-    """A reader that cannot do random access and has no upfront index (like a
-    non-seekable streaming TAR)."""
+    """A reader with no upfront index (like a streaming TAR)."""
 
-    _SUPPORTS_RANDOM_ACCESS = False
     _MEMBER_LIST_UPFRONT = False
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -94,27 +91,6 @@ class _ForwardOnlyReader(BaseArchiveReader):
 
     def _close_archive(self) -> None:
         pass
-
-
-# --- Capability gate: _SUPPORTS_RANDOM_ACCESS (independent of access mode) -----------
-
-
-def test_open_raises_without_random_access_capability() -> None:
-    # streaming=False isolates the *capability* gate from the access-mode gate.
-    reader = _ForwardOnlyReader(ArchiveFormat.TAR, False, "x.tar")
-    with pytest.raises(archivey.UnsupportedFeatureError):
-        reader.open("a.txt")
-    with pytest.raises(archivey.UnsupportedFeatureError):
-        reader.read("a.txt")
-
-
-def test_stream_members_works_without_random_access() -> None:
-    reader = _ForwardOnlyReader(ArchiveFormat.TAR, False, "x.tar")
-    out = [
-        (m.name, s.read() if s is not None else None)
-        for m, s in reader.stream_members()
-    ]
-    assert out == [("a.txt", b"x")]
 
 
 # --- Access-mode gate: streaming=True is forward-only, even on a capable backend ----
@@ -324,7 +300,6 @@ def test_baseexception_during_materialization_does_not_wedge_reader() -> None:
 class _FailingScanReader(BaseArchiveReader):
     """Streaming reader whose scan raises after yielding its first member."""
 
-    _SUPPORTS_RANDOM_ACCESS = False
     _MEMBER_LIST_UPFRONT = False
 
     def _iter_members(self) -> Iterator[ArchiveMember]:

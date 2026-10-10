@@ -27,7 +27,7 @@ src/archivey/
 ├── terminal.py          public, not re-exported: terminal-safe display of hostile text
 ├── cli/                 the CLI — a *consumer* of the public API, not a peer of it
 └── internal/            everything else; not importable contract
-    ├── base_reader.py   BaseArchiveReader ABC + the ReadBackend/WriteBackend ABCs
+    ├── base_reader.py   BaseArchiveReader ABC + the ReadBackend ABC
     ├── extraction.py    extraction coordinator + decompression-bomb tracker
     ├── filters.py       path-safety checks and policy permission transforms
     ├── detection.py     detect_format() and FormatInfo

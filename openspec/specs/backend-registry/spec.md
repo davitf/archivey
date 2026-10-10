@@ -2,8 +2,8 @@
 
 ## Purpose
 
-The backend registry maps detected archive formats to stateless read/write
-backend factories. It knows core and optional formats at import time, reports
+The backend registry maps detected archive formats to stateless read backend
+factories. It knows core and optional formats at import time, reports
 availability with install hints, and keeps format detection separate from backend
 selection.
 
@@ -63,8 +63,8 @@ behind `is not None` or equivalent registry-selection guarantees.
 
 ### Requirement: Backend classes are stateless factories
 
-Each `ReadBackend` and `WriteBackend` subclass SHALL hold no per-archive state.
-All archive state lives in the returned `ArchiveReader` or `ArchiveWriter`.
+Each `ReadBackend` subclass SHALL hold no per-archive state.
+All archive state lives in the returned `ArchiveReader`.
 Multiple readers from the same backend class MUST be independent.
 
 #### Scenario: stateless backend matrix
@@ -92,11 +92,8 @@ rather than `PackageNotInstalledError`.
 class BackendRegistry:
     def register_reader(self, backend_cls: type[ReadBackend]) -> None: ...
     def reader_for_format(self, format: ArchiveFormat) -> type[ReadBackend]: ...
-    def register_writer(self, backend_cls: type[WriteBackend]) -> None: ...
-    def writer_for_format(self, format: ArchiveFormat) -> type[WriteBackend]: ...
     def list_known_formats(self) -> list[ArchiveFormat]: ...
     def list_supported_formats(self) -> list[ArchiveFormat]: ...
-    def list_writable_formats(self) -> list[ArchiveFormat]: ...
 ```
 
 #### Scenario: detection/selection matrix
@@ -108,11 +105,7 @@ class BackendRegistry:
 | Detected format whose backend sets `READ_IMPLEMENTED` false (`DMG`) | `UnsupportedFeatureError` naming the format; `missing` is empty |
 | No magic/probe/extension matches | `FormatDetectionError`; no backend lookup |
 
-### Requirement: ReadBackend and WriteBackend are separate ABCs
-
-The system SHALL define separate `ReadBackend` and `WriteBackend` ABCs because
-read and write lifecycles, state, and availability differ. A format may have
-read support, write support, both, or read-only support such as RAR.
+### Requirement: Read backends declare detection signals as data
 
 Read backends SHALL declare all detection signals as data, and each signal SHALL
 name the `ArchiveFormat` it implies so multi-format backends can map each
@@ -136,35 +129,22 @@ class ReadBackend(ABC):
 
     @abstractmethod
     def open_read(self, source, format, streaming, password, encoding, archive_name) -> ArchiveReader: ...
-
-class WriteBackend(ABC):
-    FORMATS: tuple[ArchiveFormat, ...]
-    OPTIONAL_DEPENDENCY: str | None = None
-
-    @abstractmethod
-    def open_write(self, dest, compression, password, encoding) -> ArchiveWriter: ...
 ```
 
 The `format` argument SHALL be the already-resolved `ArchiveFormat`; multi-format
 backends use it to choose a variant, while single-format backends may ignore it.
-A missing write backend SHALL raise `UnsupportedFeatureError` for read-only
-formats or `PackageNotInstalledError` with an install hint for optional write
-formats.
 
-**No writer is registered for any format today.** `register_writer` is never
-called, so `writer_for_format` raises `UnsupportedFeatureError` for every
-format and the second branch above is unreachable — the write half of the
-registry is ABC scaffolding, not a shipped path. There is no `archivey.create`.
-The writer surface is parked in
+**Writing is not shipped.** There is no write backend ABC, no writer half in the
+registry and no `archivey.create`. Unused scaffolding for them would only drift from
+the design, so the writer surface stays in
 [`archive-writing-design.md`](../../../dev-docs/investigations/archive-writing-design.md)
-until an OpenSpec change for writing takes it up.
+until an OpenSpec change for writing adds it.
 
 #### Scenario: backend ABC matrix
 
 | Case | Expected |
 | --- | --- |
 | `SingleFileBackend.MAGIC` has gzip and bzip2 signatures | Detector resolves `GZ` vs `BZ2`; both are served by one backend |
-| `writer_for_format(RAR)` — or any other format | `UnsupportedFeatureError` names the format; nothing is registered to write |
 
 ### Requirement: Optional dependencies degrade gracefully
 

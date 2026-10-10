@@ -91,11 +91,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   an encrypted member's. An archive with nothing encrypted is unaffected — no password
   is handed to `unrar` at all. Watch for a password read from a file, which usually
   carries a trailing newline; strip it. → [RAR](formats.md#rar)
-- **TAR has two honesty residuals.** A trailer-less or `cat`-joined tar is *warned*
-  about, not raised — it is byte-identical to a truncation at a member boundary; set
+- **A trailer-less TAR is warned about, not raised.** A trailer-less or `cat`-joined
+  tar is byte-identical to a truncation at a member boundary; set
   `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or use `DiagnosticPolicy.strict()`) when you
-  need a provably complete listing. And a corrupt **final** header is caught in random
-  access but not in forward-only streaming. → [TAR](formats.md#tar-and-compressed-tar)
+  need a provably complete listing. A corrupt member header raises `CorruptionError` by
+  default in both access modes. → [TAR](formats.md#tar-and-compressed-tar)
 - **TAR trailing data is checked only 1 MiB past the trailer.** A non-zero byte in that
   window emits `ARCHIVE_TRAILING_DATA` (trailing junk, or a second archive concatenated
   on); zero padding passes, since `tar` writes 10 KiB records. A byte further out is not
