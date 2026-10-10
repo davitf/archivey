@@ -4,8 +4,10 @@ end-of-archive verification."""
 
 from __future__ import annotations
 
+import errno
 import io
 import logging
+import os
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1441,6 +1443,96 @@ def test_size_past_filesystem_limit_is_truncation(
     with pytest.raises(TruncatedError):
         with open_archive(source, format=ArchiveFormat.TAR) as ar:
             ar.members()
+
+
+class _SeekRefusingBytesIO(io.BytesIO):
+    """A ``BytesIO`` that refuses a seek past ``limit`` as ext4 does past its largest
+    file size, so the refused-seek path runs on every filesystem and OS."""
+
+    def __init__(self, data: bytes, *, err: int, limit: int = 2**40) -> None:
+        super().__init__(data)
+        self._err = err
+        self._limit = limit
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if whence == io.SEEK_SET and offset > self._limit:
+            raise OSError(self._err, os.strerror(self._err))
+        return super().seek(offset, whence)
+
+
+@pytest.mark.parametrize("err", [errno.EINVAL, errno.EOVERFLOW])
+def test_refused_seek_is_truncation_naming_the_offset(err: int) -> None:
+    inner = _SeekRefusingBytesIO(b"\0" * 1024, err=err)
+    fileobj = tar_reader_module._BoundedTarFileobj(inner, bounded=False)
+    with pytest.raises(TruncatedError, match=r"byte 4611686018427388415\b"):
+        fileobj.seek(2**62 + 511)
+
+
+def test_refused_seek_with_other_errno_propagates() -> None:
+    # Only the errnos lseek gives for an offset past the filesystem's limit read as
+    # the end of the data; any other OSError is an I/O failure (DR-15a).
+    inner = _SeekRefusingBytesIO(b"\0" * 1024, err=errno.EIO)
+    fileobj = tar_reader_module._BoundedTarFileobj(inner, bounded=False)
+    with pytest.raises(OSError) as excinfo:
+        fileobj.seek(2**62)
+    assert excinfo.value.errno == errno.EIO
+    assert not isinstance(excinfo.value, TruncatedError)
+
+
+@pytest.mark.parametrize("typeflag", [tarfile.AREGTYPE, tarfile.REGTYPE])
+def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> None:
+    # The ext4 arm of test_size_past_filesystem_limit_is_truncation, on any OS.
+    size_field = b"\x80" + (2**62).to_bytes(11, "big")
+    data = _tar_slash_entry_with_data(typeflag, size_field=size_field)
+    source = _SeekRefusingBytesIO(data, err=errno.EINVAL)
+    with pytest.raises(TruncatedError, match="past the end of the archive"):
+        with open_archive(source, format=ArchiveFormat.TAR) as ar:
+            ar.members()
+
+
+@pytest.mark.parametrize(
+    ("name", "pax_path", "is_dir"),
+    [
+        # The header's own name, with no PAX path.
+        ("d/", None, True),
+        # tarfile strips the slash from a PAX path, so the record decides.
+        ("d", "d/", True),
+        # A PAX path with no slash over an own name of "d/": the PAX name is final.
+        ("d", "d", False),
+    ],
+    ids=["own-name", "pax-slash", "pax-no-slash"],
+)
+def test_mark_old_style_directory_reads_the_final_name(
+    name: str, pax_path: str | None, is_dir: bool
+) -> None:
+    info = tar_reader_module._TarInfo(name)
+    info.type = tarfile.AREGTYPE
+    info.old_style_directory = False  # as _undo_stdlib_directory_check leaves it
+    if pax_path is not None:
+        info.pax_headers = {"path": pax_path}
+    info._mark_old_style_directory()
+    assert info.old_style_directory is is_dir
+    assert info.type == (tarfile.DIRTYPE if is_dir else tarfile.AREGTYPE)
+    assert info.name == "d"
+
+
+def test_nested_fromtarfile_does_not_mark() -> None:
+    # On Pythons without the 2025 tarfile fixes (CPython 3.11.15 and 3.12.13, for
+    # example), a PAX or GNU long-name header parses the member's own header through
+    # fromtarfile from inside its own call. That inner parse is not final, so it must
+    # not mark; the outer call marks once the final name is known.
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    tar = tar_reader_module._TarFile(
+        fileobj=io.BytesIO(data), tarinfo=tar_reader_module._TarInfo
+    )
+    tar.fileobj.seek(0)
+    tar.offset = 0
+    tar.header_depth = 1
+    info = tar_reader_module._TarInfo.fromtarfile(tar)
+    assert tar.header_depth == 1
+    assert info.type == tarfile.AREGTYPE
+    assert info.name == "d/"
+    assert not info.old_style_directory
 
 
 @pytest.mark.parametrize(

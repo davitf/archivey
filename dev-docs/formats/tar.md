@@ -260,6 +260,19 @@ the member is opened (streaming: on its first read,
 so a consumer that skips it is unaffected). The end is known only in whole blocks, so up
 to 511 bytes of the member's own padding can still read as data.
 
+**A seek the filesystem refuses reads as the end of the data.** tarfile seeks to offsets
+it adds up from size fields, and a PAX or base-256 size can put one anywhere. An offset
+past 2**63 - 1 is refused before the seek, with `CorruptionError`: no file has a byte
+there. A smaller one can still be past the largest file the filesystem holds: ext4
+(about 16 TiB) refuses the seek with `EINVAL` or `EOVERFLOW`, while APFS and a `BytesIO`
+accept it and the next read finds the end. The archive is shorter than any file that
+filesystem can hold, so the offset is past its end either way, and the reader raises
+`TruncatedError` naming the offset. One archive then gives one error from every source
+on every OS (DR-5), and it is GNU tar's answer for the same bytes (`Unexpected EOF in
+archive`). The `except` holds one absolute seek to an archive-chosen offset, which is
+why `EINVAL` is an archive fact here though extraction deliberately does not translate
+it (`openspec/specs/safe-extraction/spec.md`).
+
 **A plain tar reads the member's bytes from the source**, at the offset the walk found.
 Random opens cost one seek each, and members can be read in any order.
 
@@ -485,6 +498,7 @@ extraction checks (§2.4).
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch | `::test_bad_pax_time_is_reported`, `::test_several_bad_pax_times_on_one_member_are_each_reported`, `::test_pax_mtime_zero_is_the_epoch` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
+| A size field past what the filesystem can seek to is `TruncatedError` naming the offset, from a path, a `BytesIO` and a stream that refuses the seek as ext4 does; another errno propagates | `::test_size_past_filesystem_limit_is_truncation`, `::test_refused_seek_through_open_archive_is_truncation`, `::test_refused_seek_is_truncation_naming_the_offset`, `::test_refused_seek_with_other_errno_propagates` |
 | End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |
 | Missing trailer warns, and raises under `RAISE` | `::test_missing_eof_blocks_warns_by_default`, `::test_missing_eof_blocks_raise_disposition_raises`, and the `_streaming_` pair |
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |

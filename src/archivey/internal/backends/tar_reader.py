@@ -44,7 +44,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import replace
 from datetime import datetime
-from io import SEEK_END, SEEK_SET, BytesIO
+from io import SEEK_SET, BytesIO
 from typing import BinaryIO, Literal, Self, cast
 
 from archivey.config import ArchiveyConfig
@@ -299,7 +299,9 @@ class _TarFile(tarfile.TarFile):
     header_depth: int = 0
     """How many :meth:`_TarInfo.fromtarfile` calls are running. A GNU long name or a
     PAX header parses the header after it from inside its own call on Pythons without
-    the 2025 tarfile fixes, so 0 after a call returns means the member is final."""
+    the 2025 tarfile fixes (CPython 3.11.15 and 3.12.13 among them; a distribution's
+    build of an older version may carry the fixes, as Ubuntu's 3.12.3 does), so 0
+    after a call returns means the member is final."""
 
 
 class _TarInfo(tarfile.TarInfo):
@@ -312,7 +314,8 @@ class _TarInfo(tarfile.TarInfo):
     next header. :func:`_sparse_map_error` compares the map to this end.
 
     It also decides old-style directories itself, as GNU tar does: see
-    :meth:`_mark_old_style_directory`.
+    :meth:`_mark_old_style_directory`. That needs the nesting count only a
+    :class:`_TarFile` keeps, so :meth:`fromtarfile` requires one.
     """
 
     __slots__ = ("old_style_directory", "stored_end")
@@ -389,22 +392,23 @@ class _TarInfo(tarfile.TarInfo):
         # ``TarFile.next()`` swallows the header error that ends the walk, so whether
         # it stopped on a zero block or on a rejected header is recorded here, where
         # the error passes through (see :class:`_TarFile`).
-        if isinstance(tarfile, _TarFile):
-            tarfile.stopped_on = None
-            tarfile.header_depth += 1
+        # Only a _TarFile counts its nesting. Over a plain TarFile this would mark
+        # the inner header of a PAX or GNU long-name member on older CPython patch
+        # releases, before tarfile skips its data, and the data would be read as the
+        # next header.
+        assert isinstance(tarfile, _TarFile)
+        tarfile.stopped_on = None
+        tarfile.header_depth += 1
         try:
             info = super().fromtarfile(tarfile)
         except _EOFHeaderError:
-            if isinstance(tarfile, _TarFile):
-                tarfile.stopped_on = "zero_block"
+            tarfile.stopped_on = "zero_block"
             raise
         except _InvalidHeaderError:
-            if isinstance(tarfile, _TarFile):
-                tarfile.stopped_on = "rejected_header"
+            tarfile.stopped_on = "rejected_header"
             raise
         finally:
-            if isinstance(tarfile, _TarFile):
-                tarfile.header_depth -= 1
+            tarfile.header_depth -= 1
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
         # the end of this member's data area. This call returns only after any GNU
         # long-name or PAX headers before the member's header have been parsed and
@@ -414,7 +418,7 @@ class _TarInfo(tarfile.TarInfo):
         # long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
         _drop_unweighed_link_name(info)
-        if not isinstance(tarfile, _TarFile) or tarfile.header_depth == 0:
+        if tarfile.header_depth == 0:
             info._mark_old_style_directory()
         return info
 
@@ -702,14 +706,29 @@ class _BoundedTarFileobj(ReadOnlyIOStream):
         except OSError as e:
             # A filesystem refuses a smaller offset too, past its largest file size:
             # ext4 (about 16 TiB) with EINVAL or EOVERFLOW, while APFS and a BytesIO
-            # take it. That offset is past the end of this archive on every
-            # filesystem, so it reads as the end of the data here too, and the same
-            # archive is a TruncatedError from any source on any OS (DR-5).
-            if whence != SEEK_SET or e.errno not in (errno.EINVAL, errno.EOVERFLOW):
+            # take it and the next read finds the end of the data. The archive is
+            # shorter than any file that filesystem can hold, so the offset is past
+            # its end, and the same archive is a TruncatedError from any source on
+            # any OS (DR-5), as GNU tar reports it ("Unexpected EOF in archive").
+            #
+            # Taking EINVAL as an archive fact is sound here, though extraction
+            # deliberately does not (safe-extraction spec): there one ``try`` holds
+            # open, mkdir and write calls, where EINVAL has unrelated causes. Over a
+            # plain tar this ``try`` holds one absolute lseek to a non-negative
+            # offset the archive chose, whose EINVAL or EOVERFLOW means only that
+            # the offset is past what the file can hold. Over a decompressor the
+            # seek decodes forward with plain reads of the source, which give
+            # neither errno for a reachable offset.
+            if (
+                whence != SEEK_SET
+                or offset < 0
+                or e.errno not in (errno.EINVAL, errno.EOVERFLOW)
+            ):
                 raise
-            self._inner.seek(0, SEEK_END)
-            self._pos = offset
-            return self._pos
+            raise TruncatedError(
+                f"TAR archive is truncated: a size field puts data at byte {offset}, "
+                "past the end of the archive"
+            ) from e
         self._pos = self._inner.tell()
         return self._pos
 

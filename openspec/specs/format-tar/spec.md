@@ -246,6 +246,7 @@ whatever the diagnostic policy, in both random-access and streaming modes.
 | Zero block, then a non-null block, after at least one member | both | `nonzero` (`expected_marker="second_zero_block"`) | `ARCHIVE_EOF_MARKER_MISSING`; every member listed and read; `extract_all` writes every member; trailing scan runs past the block | `DiagnosticRaisedError` after delivery |
 | Zero block, then a non-null block, no member | both | `nonzero` | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Truncation inside member data / partial header | both | — | `TruncatedError` during iteration | `TruncatedError` during iteration |
+| A size field puts the next header past the largest file the filesystem holds (base-256 size of 2**62): ext4 refuses the seek, APFS and a `BytesIO` take it | both | — | `TruncatedError` during iteration, from every source on every OS | `TruncatedError` during iteration |
 | Corruption during `extract_all` | both | `nonzero` | Salvageable members written, then `CorruptionError` | same |
 | Diagnostic code resolves to `IGNORE`, rejected header | both | `nonzero` | Count increments without delivery; `CorruptionError` raises | same |
 | Diagnostic code resolves to `IGNORE`, `absent`/`short` | both | `absent`/`short` | Count increments without delivery; no error | — |
