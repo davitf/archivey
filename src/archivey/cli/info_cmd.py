@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-import stat
 import sys
 from typing import TextIO
 
 from archivey import FormatInfo, detect_format, open_archive
-from archivey.cli.common import reject_stdin_token
+from archivey.cli.common import is_read_once, read_once_refusal, reject_stdin_token
 from archivey.cli.format import (
     escape_path,
     format_access_summary,
@@ -75,12 +74,11 @@ def _can_reread(path: str) -> bool:
 
     False for a FIFO, a character device or a socket, the same set that
     ``ArchiveSource.for_path`` treats as non-seekable; a block device rereads fine.
+    Also false for a path that cannot be stat'ed, which the existence check is for:
+    ``is_read_once`` reports ``False`` for such a path, so without the check it would
+    count as rereadable and detection would run on a path the open already failed on.
     """
-    try:
-        mode = os.stat(path).st_mode
-    except OSError:
-        return False
-    return not (stat.S_ISFIFO(mode) or stat.S_ISCHR(mode) or stat.S_ISSOCK(mode))
+    return os.path.exists(path) and not is_read_once(path)
 
 
 def run_info(
@@ -100,8 +98,11 @@ def run_info(
 
     pwd: PasswordInput = resolve_password(password)
     identity_printed = False
+    # A read-once path opens in streaming mode, as in the other verbs: nothing below
+    # needs random access, and a random-access open of a pipe always fails.
+    streaming = is_read_once(archive)
     try:
-        with open_archive(archive, password=pwd) as reader:
+        with open_archive(archive, password=pwd, streaming=streaming) as reader:
             # The open already detected the format; print what it found rather than
             # detecting a second time. No format= is passed, so it is never None.
             detected = reader.format_info
@@ -135,6 +136,10 @@ def run_info(
         # that never comes.
         if not identity_printed and _can_reread(archive):
             _print_identity(archive, detect_format(archive), out)
-        _field("open", format_error_detail(exc), err)
+        refusal = read_once_refusal(archive, exc, streaming=streaming)
+        if refusal is not None:
+            _field("open", escape_control_chars(refusal), err)
+        else:
+            _field("open", format_error_detail(exc), err)
         return 1
     return 0

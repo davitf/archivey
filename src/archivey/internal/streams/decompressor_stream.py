@@ -10,7 +10,9 @@ The decoders live next to their codec in :mod:`archivey.internal.streams.codecs`
 ``framed_decoder`` for the one-shot decompressors (bzip2, zstd, LZ4).
 
 ``codecs.StreamCodec.open`` wires those into an ``ArchiveStream``; this module is
-only the shared engine underneath.
+only the shared engine underneath. One exception: above :class:`SeekPoint` sit the
+DEFLATE family's shared helpers, the ``zlib.error`` translators, the truncation message
+and the inflate step, used by the zlib, gzip, raw DEFLATE and resume decoders.
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ from __future__ import annotations
 import bisect
 import io
 import os
-from collections.abc import Callable, Sequence
+import zlib
+from collections.abc import Callable, Container, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import (
@@ -108,6 +111,58 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
             "same way"
         )
     return gzip_corruption(exc)
+
+
+def zlib_error(exc: Exception, label: str) -> CorruptionError:
+    """The error for a ``zlib.error`` from a zlib (``label`` "zlib") or raw DEFLATE
+    ("deflate") stream: always :func:`gzip_corruption`.
+
+    Unlike :func:`gzip_error`, a refused header is not unsupported. zlib refuses a zlib
+    header whose method is not deflate ("unknown compression method"), but RFC 1950
+    defines no method other than 8, so that header is damage, not a valid feature
+    archivey cannot decode (DR-4).
+    """
+    return gzip_corruption(exc, label)
+
+
+def truncated_message(label: str) -> str:
+    """The message of the :class:`TruncatedError` a decoder gives a ``label`` stream
+    that ends before its end marker."""
+    return f"{label} stream is truncated"
+
+
+def _inflate(
+    decomp: zlib._Decompress,
+    data: bytes,
+    max_length: int,
+    error: Callable[[zlib.error], Exception],
+) -> bytes:
+    """One inflate step: ``data`` to at most ``max_length`` output bytes, the rest kept
+    in ``unconsumed_tail``. A negative ``max_length`` is no limit, and so is 0 (zlib's
+    reading): ``DecompressorStream`` never asks for 0 bytes. A ``zlib.error`` leaves
+    as ``error`` maps it."""
+    try:
+        if max_length < 0:
+            return decomp.decompress(data)
+        return decomp.decompress(data, max_length)
+    except zlib.error as exc:
+        raise error(exc) from exc
+
+
+def _inflate_rest(
+    decomp: zlib._Decompress, error: Callable[[zlib.error], Exception]
+) -> bytes:
+    """At the end of the input: the output of what ``decomp`` still holds.
+
+    The caller checks ``decomp.eof`` after: when it is false, the stream is truncated.
+    """
+    out = b""
+    if decomp.unconsumed_tail:
+        out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
+    try:
+        return out + decomp.flush()
+    except zlib.error as exc:
+        raise error(exc) from exc
 
 
 @dataclass(order=True, slots=True)
@@ -1198,6 +1253,63 @@ TRAILING_DATA_SEARCH = 1 << 20
 # crafted to be all candidates would otherwise cost a Python check per few bytes on
 # every open.
 TRAILING_DATA_CANDIDATES = 4096
+
+
+def near_stream_magic(data: bytes, magic: bytes | Sequence[Container[int]]) -> bool:
+    """Whether ``data``, the bytes after a complete stream, start like a damaged stream.
+
+    The rule is lzip's: ``lzip`` refuses a file whose trailing data has two or three of
+    the four ``LZIP`` magic bytes in place, as a "corrupt header in multimember file"
+    (its ``--loose-trailing`` option turns that off). Here it is stated for a magic of
+    any length: the first ``len(magic)`` bytes of ``data`` hold the magic's byte in at
+    least half of the positions, and not in all of them. One rule serves every codec
+    whose magic tells a further stream from appended bytes (xz, lzip, zstd, LZ4,
+    bzip2), so they cannot disagree on what a damaged stream is.
+
+    One damaged byte, or a few flipped bits in one byte, leaves a 4-byte magic three
+    matches and xz's 6-byte one five, so the damage the rule exists for is always
+    caught. Random appended bytes match a 4-byte magic about once in 11 000 tails,
+    zstd's and LZ4's skippable-frame magic (16 values for its first byte) about once in
+    1 300, and xz's magic about once in 850 000. A codec is judged against each magic
+    it accepts after a stream, so its rate is the sum: about once in 1 160 tails for
+    zstd (a frame or a skippable frame) and once in 1 050 for LZ4 (a frame, a legacy
+    stream or a skippable frame). A tail shorter than the magic does not match:
+    ``lzip`` also refuses a few bytes that begin like its magic, but a tail that short
+    holds too little to tell damage from appended bytes, so it is reported as trailing
+    data like any other.
+
+    archivey has no option like lzip's ``--loose-trailing``. A file whose appended
+    bytes match by chance fails to read past its last stream, with nothing a caller
+    can set to get the rest of the data. Damage is not a policy choice in this
+    layer: a damaged last footer also raises with no option.
+
+    ``magic`` is the magic's bytes, or the bytes each position may hold (bzip2's
+    block-size digit, zstd's skippable-frame range). A ``data`` that starts with the
+    whole magic is a stream, not a near match.
+    """
+    if len(data) < len(magic):
+        return False
+    if isinstance(magic, bytes):
+        matches = sum(a == b for a, b in zip(data, magic))
+    else:
+        matches = sum(byte in allowed for byte, allowed in zip(data, magic))
+    return len(magic) <= 2 * matches < 2 * len(magic)
+
+
+def damaged_stream_error(offset: int | None = None) -> CorruptionError:
+    """The error for bytes after a stream that :func:`near_stream_magic` matches.
+
+    ``offset`` is where the damaged stream starts in the source. The xz and lzip
+    decoders and their index searches know it and pass it. ``FramedDecoder`` (zstd, LZ4,
+    bzip2) does not: it sees only the bytes it is fed, and only the
+    ``DecompressorStream`` that feeds it knows their source offset. Its error still
+    names the archive, member and format, from the error context.
+    """
+    where = "" if offset is None else f" at offset {offset}"
+    return CorruptionError(
+        f"Damaged stream header{where}: the bytes after a complete stream hold at "
+        "least half of the stream magic, so a further stream starts there and is damaged"
+    )
 
 
 def report_trailing_data(

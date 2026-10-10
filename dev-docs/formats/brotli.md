@@ -20,12 +20,13 @@ behaviour and links the row.
 | Digests | None. Brotli has no checksum |
 | Metadata | None beyond the shared fields |
 | Truncation | Raised as `TruncatedError` when the decoder never reaches the last meta-block |
-| Detection | By a content probe only, `PROBABLE` or `GUESS` (§2.1); a failed read of a probe-only match is stamped `format_unconfirmed` |
+| Detection | By a content probe only, which runs for a `.br` name, under `open_stream`, or with `always_probe_content=True`; `PROBABLE` or `GUESS` (§2.1); a failed read of a probe-only match is stamped `format_unconfirmed` |
 
-**Four things a reader might expect and will not find.** A Brotli file with no extension is
-found by decoding, not by a signature, and a small share of non-Brotli files are still
-claimed (§3). A file named `.brotli` gets no help from its name: only `.br` and `.tar.br`
-are registered. Damaged Brotli data can decode to wrong bytes with no error, since there
+**Three things a reader might expect and will not find.** A Brotli file with no extension is
+not found by `open_archive` or `detect_format` by default: the probe runs only for a `.br`,
+`.brotli`, `.tar.br` or `.tar.brotli` name, or with `always_probe_content=True`, or under
+`open_stream`. Where it runs, Brotli is found by decoding, not by a signature, and a small
+share of non-Brotli files are still claimed (§3). Damaged Brotli data can decode to wrong bytes with no error, since there
 is no checksum. And a read of a misidentified file can deliver up to 64 KiB of invented
 bytes before it raises (§4).
 
@@ -159,7 +160,7 @@ detection census in the investigation linked in §9.
 | Source | archivey |
 | --- | --- |
 | `brotli` output, any size | Detected by the probe and read. A compressed first block is `PROBABLE` without an extension |
-| A Brotli file named `.brotli` | Detected by content alone; uncorroborated, so a read error is stamped `format_unconfirmed` |
+| A Brotli file named `.brotli` | Detected by the probe, corroborated by the name, like `.br` |
 | A Brotli file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; from a pipe, `CorruptionError` |
 | A cut Brotli file | `TruncatedError` |
 | A `/usr` tree of 150 623 files, none of them Brotli | 29 claimed as Brotli (0.019%), measured with the 256-byte sample before the 4 KiB window; each claim's read error is stamped `format_unconfirmed` |
@@ -194,7 +195,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | A non-Brotli file lists as one `.uncompressed` member | **format** | No magic (§1); the gates narrow it, and the claim is `GUESS` or stamped (§2.1) |
-| `format_unconfirmed` on a genuine `.brotli` file that failed to read | **archivey** | `.brotli` is not a registered extension (tracked internally) |
 | A read delivers bytes, then raises | **format** | A fabricated claim decodes for a while before it fails (§4) |
 | `member.size` is `None` | **format** | No size field |
 | Damaged data reads with no error | **format** | No checksum |
@@ -220,8 +220,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 ## 7. Open questions
 
-- **Registering `.brotli`.** It would corroborate genuine files and remove the stamp from
-  their errors. Open-issues P13.
 - **A re-measured census with the 4 KiB window.** The 0.019% residual predates it and is
   the baseline for the next count.
 

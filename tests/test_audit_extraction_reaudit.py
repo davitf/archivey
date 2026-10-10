@@ -190,10 +190,10 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
 
 @posix_links
 @pytest.mark.parametrize(
-    ("entries", "existing", "unlistable"),
+    ("entries", "unlistable"),
     [
-        ([("top", "sym", "passwd")], False, False),
-        ([("top", "dir", None), ("top/k", "sym", "../passwd")], False, False),
+        ([("top", "sym", "passwd")], False),
+        ([("top", "dir", None), ("top/k", "sym", "../passwd")], False),
         (
             [
                 ("top", "dir", None),
@@ -202,9 +202,7 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
                 ("top/sub/l", "sym", "a/../passwd"),
             ],
             False,
-            False,
         ),
-        ([("top", "dir", None), ("top/f", "file", b"x")], True, False),
         # `top/d` stands for a directory extracted without its read bit (0o300 under
         # STANDARD): neither walk can see `k`, so neither may assume it is safe.
         (
@@ -213,7 +211,6 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
                 ("top/d", "dir", None),
                 ("top/d/k", "sym", "../../passwd"),
             ],
-            False,
             True,
         ),
     ],
@@ -221,7 +218,6 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
         "lone-symlink",
         "link-leaves-the-entry",
         "chain-hides-a-climb",
-        "wrapper-was-there",
         "unlistable-directory",
     ],
 )
@@ -229,7 +225,6 @@ def test_a_dry_run_predicts_the_hoist_keeping_the_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     entries: list,
-    existing: bool,
     unlistable: bool,
 ) -> None:
     # Each case is one the real hoist leaves in the wrapper. The dry run must say so
@@ -249,11 +244,8 @@ def test_a_dry_run_predicts_the_hoist_keeping_the_entry(
         cwd = tmp_path / ("dry" if dry_run else "real")
         cwd.mkdir()
         _build_tar(cwd / "bundle.tar", entries)
-        if existing:
-            (cwd / "bundle").mkdir()
         monkeypatch.chdir(cwd)
         out, err = io.StringIO(), io.StringIO()
-        # Any explicit --overwrite extracts into an existing wrapper.
         argv = ["x", "--overwrite", "skip", "bundle.tar", "--hide-progress"]
         code = main([*argv, "--dry-run"] if dry_run else argv, out=out, err=err)
         runs[dry_run] = (code, err.getvalue())
@@ -329,8 +321,8 @@ def test_hoist_flatten_keeps_links_inside_the_reported_destination(
     assert _links_escaping(tmp_path / "src") == []
 
 
-@pytest.mark.parametrize("overwrite", ["error", "skip", "replace"])
-def test_hoist_never_moves_the_operators_own_directory(
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_extraction_never_enters_the_operators_own_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -343,9 +335,11 @@ def test_hoist_never_moves_the_operators_own_directory(
 
     main(["x", "--overwrite", overwrite, "backup.tar"])
 
+    # The wrapper is a new `backup (1)/`, so the hoist can only move this run's files.
+    assert sorted(p.name for p in (tmp_path / "backup").iterdir()) == ["notes.txt"]
     assert (tmp_path / "backup" / "notes.txt").read_text() == "operator data"
     assert not (tmp_path / "notes.txt").exists()
-    assert "kept in backup/: the folder was already there" in capsys.readouterr().err
+    assert "extracting into backup (1)/" in capsys.readouterr().err
 
 
 # --- Directory members and the caller's directories ---------------------------------
