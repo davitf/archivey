@@ -75,7 +75,7 @@ def _probable_brotli_probe_only_residual() -> bytes:
 def _lzma_alone_zero_run_residual() -> bytes:
     """An LZMA Alone header over a zero run, past the detection peek — ``PROBABLE``.
 
-    Properties ``0xD0`` are legal (lc=1, lp=3, pb=4), bytes 1-4 declare a 2.7 GiB
+    Properties ``0xD0`` are legal (lc=1, lp=3, pb=4), bytes 1-4 declare a 2.5 GiB
     dictionary, and the declared 1 MiB size is more than the zeros decode to before
     the input ends. These are the first five bytes of an OLE header; the full OLE
     signature is not used, because it stops the content probes.
@@ -125,7 +125,7 @@ def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
-    # Bytes 1-4 declare a 2.7 GiB dictionary, over the default cap;
+    # Bytes 1-4 declare a 2.5 GiB dictionary, over the default cap;
     # this case lifts the cap to reach the decode failure, and the next one keeps it.
     config = ArchiveyConfig(decoder_limits=DecoderLimits.UNLIMITED)
     diagnostics: list[Diagnostic] = []

@@ -480,42 +480,6 @@ produced.
 | **Strong** executable cue (validated PE / ELF), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
 
-### Requirement: A known non-archive signature stops the content probes
-
-A content probe is the weakest evidence detection has, and some common non-archive files
-hold what the probes accept: a constant header, then long zero runs. When the source starts
-with a recognized **non-archive signature**, detection SHALL NOT run the content probes. It
-falls through to the extension guess or `FormatDetectionError`, as after a strong
-executable cue (*Executable-looking prefixes must not silently become a wrong stream
-format*). The magic tiers (near, far, trailer) run as before.
-
-Today the one such signature is the OLE / Compound File Binary signature
-`D0 CF 11 E0 A1 B1 1A E1` at offset 0 (`.doc`, `.xls`, `.ppt`, `.msi`, `Thumbs.db`). A
-scan of a real backup drive found 437 such files claimed as Brotli and none of them decoded;
-OLE files are also claimed by the LZMA Alone probe. Neither probe can reject them on its
-own framing: the OLE header is a fitting Brotli chain, and a range coder decodes zero bytes
-without error.
-
-This is not the threshold that *Executable-looking prefixes must not silently become a
-wrong stream format* forbids. It does not tune a probe against a false-positive rate: it
-is positive evidence of another format. An eight-byte signature at offset 0 is as specific
-as an archive's exact magic, so a real stream that starts with it is not a case to keep.
-A two-byte prefix such as `MZ` is not specific enough for this rule.
-
-A non-archive signature SHALL NOT start the SFX scan. The scan is for an archive appended
-to an executable stub, and these files are not stubs: an archive stored inside an OLE file
-(an embedded object) is part of the document, and reporting it as the file's payload would
-be a wrong answer.
-
-#### Scenario: non-archive signature matrix
-
-| Case | Expected |
-| --- | --- |
-| OLE header followed by zeros, 256 KiB, no extension | `FormatDetectionError` — not `BROTLI` |
-| OLE signature followed by zeros, 4 KiB, no extension | `FormatDetectionError` — not `LZMA_ALONE` |
-| OLE file named `x.br` | `BROTLI` / `GUESS` / `extension` — the extension fallback still runs |
-| OLE file that holds a ZIP inside it, no extension | `FormatDetectionError` — no SFX scan, so the embedded ZIP is not reported |
-
 ### Requirement: ISO 9660 requires an extended peek window
 
 The system SHALL raise the peek window to 32774 bytes when `.iso` or ISO
@@ -923,3 +887,29 @@ not supported, nothing to install. The `.dmg` suffix SHALL NOT select the format
 | `format=DMG` or `format="dmg"` | `UnsupportedFeatureError` naming UDIF |
 | Non-seekable source longer than the far-magic window, zlib first block, `koly` at the end | `ZLIB`; the trailer is not seeked to |
 | `format_availability(DMG)` | `NONE`, `missing` empty; in `list_known_formats()`, absent from `list_supported_formats()` |
+
+### Requirement: A known non-archive signature stops the content probes
+
+When the source starts with a recognized **non-archive signature**, detection SHALL NOT run
+the content probes or the SFX scan, whatever executable cue the bytes raise, and SHALL fall
+through to the extension guess. The magic tiers run as before. With no extension, the
+`FormatDetectionError` SHALL name the evidence that stopped the probes, as it SHALL after
+a strong executable cue. Today the one signature is OLE / Compound File Binary,
+`D0 CF 11 E0 A1 B1 1A E1` at offset 0.
+
+#### Scenario: non-archive signature
+
+Both the Brotli and the LZMA Alone probe accept an OLE header followed by zeros (`.doc`,
+`.xls`, `.ppt`, `.msi`, `Thumbs.db`), and neither can reject it on its own framing: the
+header is a fitting Brotli chain, and a range coder decodes zero bytes without error.
+This is not the threshold that *Executable-looking prefixes must not silently become a
+wrong stream format* forbids: it is positive evidence of another format, and an
+eight-byte signature at offset 0 is as specific as an archive's exact magic. A two-byte
+prefix such as `MZ` is not specific enough. The SFX scan is skipped because these files
+are not stubs: an archive stored inside one is part of the document, not its payload.
+
+The cases are pinned in `tests/test_audit_backup_scan.py`: an OLE header over zeros is
+`FormatDetectionError` naming the OLE signature, not `BROTLI` or `LZMA_ALONE`; an OLE file
+named `x.br` is `BROTLI` / `GUESS` / `extension`; a ZIP inside an OLE file is not
+reported; and a signature whose bytes raise an executable cue does not start the SFX
+scan. The measurement is in `dev-docs/investigations/2026-10-backup-scan.md` §3.2.

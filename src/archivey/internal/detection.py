@@ -29,7 +29,8 @@ header before decoding). Each probe is a function the backends declare as data �
 stream codecs, on the codec descriptor — so the detector stays format-agnostic. The probes
 do not run on a prefix that is evidence of a non-archive file: a structurally confirmed
 executable (``ExecutableCue.STRONG``) or a known non-archive signature
-(``_PROBE_STOPPING_SIGNATURES``, today OLE compound files).
+(``_PROBE_STOPPING_SIGNATURES``, today OLE compound files), and the error then names
+that evidence. A non-archive signature also stops the SFX scan.
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
 magic → content probes → extension. Both signals ahead of the probes are there for the
@@ -137,13 +138,27 @@ _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 # constant header, then zero runs. An 8-byte signature at offset 0 is as specific as an
 # archive's exact magic, so a real stream that starts with it is not a case to keep.
 #
-# Unlike an executable cue, a signature here does not start the SFX scan. These files
-# are not executable stubs, so an archive the scan finds in one is an object stored
-# inside the document, and reporting it as the file's payload would be a wrong answer.
-_PROBE_STOPPING_SIGNATURES: tuple[bytes, ...] = (
-    # OLE / Compound File Binary: .doc, .xls, .ppt, .msi, Thumbs.db.
-    bytes.fromhex("d0cf11e0a1b11ae1"),
+# A signature here also stops the SFX scan, whatever executable cue its bytes raise.
+# These files are not executable stubs, so an archive the scan finds in one is an object
+# stored inside the document, and reporting it as the file's payload is a wrong answer.
+#
+# Each entry is ``(signature, what it is)``; the description goes into the
+# ``FormatDetectionError`` raised when no extension follows.
+_PROBE_STOPPING_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (
+        bytes.fromhex("d0cf11e0a1b11ae1"),
+        "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
+        "which is not an archive format",
+    ),
 )
+
+
+def _non_archive_signature(data: bytes) -> str | None:
+    """Describe the probe-stopping signature ``data`` starts with, or ``None``."""
+    for signature, description in _PROBE_STOPPING_SIGNATURES:
+        if data.startswith(signature):
+            return description
+    return None
 
 
 class _BoundedPeekReader(ReadOnlyIOStream):
@@ -875,9 +890,10 @@ def _detect_format_body(
             )
             return conclude(info, _ConflictEvidence.MAGIC)
 
-        # 2. Self-extracting archives.
+        # 2. Self-extracting archives. A known non-archive signature is not a stub.
+        non_archive = _non_archive_signature(data)
         cue = executable_cue(data)
-        if cue is not ExecutableCue.NONE:
+        if cue is not ExecutableCue.NONE and non_archive is None:
             sfx_info = _scan_for_sfx_payload(
                 registry.sfx_magic_entries(),
                 peek_more,
@@ -939,10 +955,14 @@ def _detect_format_body(
             )
 
         # 5. Content probes, unless the prefix is a confirmed executable or a known
-        # non-archive signature.
-        if cue is not ExecutableCue.STRONG and not data.startswith(
-            _PROBE_STOPPING_SIGNATURES
-        ):
+        # non-archive signature. The reason is kept for the error below.
+        probes_stopped_by = non_archive
+        if probes_stopped_by is None and cue is ExecutableCue.STRONG:
+            probes_stopped_by = (
+                "a structurally valid executable header (PE, ELF or Mach-O), and no "
+                "archive was found behind it"
+            )
+        if probes_stopped_by is None:
 
             def read_at(offset: int, n: int) -> bytes | None:
                 return workspace.read_at(offset, n)
@@ -986,6 +1006,13 @@ def _detect_format_body(
             raise FormatDetectionError(
                 "Could not detect archive format: there are no bytes to read (the "
                 "source is empty, or already positioned at its end).",
+                archive_name=name,
+            )
+        if probes_stopped_by is not None:
+            raise FormatDetectionError(
+                f"Could not detect archive format: the source starts with "
+                f"{probes_stopped_by}. No content probe was run, and no file extension "
+                "matched.",
                 archive_name=name,
             )
         raise FormatDetectionError(

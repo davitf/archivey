@@ -122,7 +122,8 @@ pass that format's validator before it counts. The cue decides only whether to s
 window. The validator decides whether a hit is real. A structurally confirmed executable (a
 `STRONG` cue) with no hit also turns off the content probes. Without that, a probe could claim the stub
 as a compressed stream and `open_archive` would return a fabricated `installer.uncompressed`
-member. All of this is on [`prefixed-archives.md`](prefixed-archives.md) §2 to §5.
+member. A known non-archive signature (§2.5) does not start the scan, whatever cue its
+bytes raise. All of this is on [`prefixed-archives.md`](prefixed-archives.md) §2 to §5.
 
 One cost rule settled here belongs on this page because it is a budget question. **A 7z hit
 whose declared end falls short of the end of the source is kept only as a fallback, and the
@@ -189,14 +190,16 @@ guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
   decode that still asks for input at the end of the source. The window alone cannot tell a
   stream that goes on from one that turns invalid after 4 KiB.
 - **A `STRONG` executable cue turns the step off** (§2.2).
-- **A known non-archive signature turns the step off.** Today that is the OLE compound
-  file signature `D0 CF 11 E0 A1 B1 1A E1` (`.doc`, `.xls`, `.ppt`, `.msi`, `Thumbs.db`).
-  These files are a constant header followed by zero runs, which the Brotli and LZMA Alone
-  probes both accept: a scan of a backup drive found 437 claimed as Brotli, and none
-  decoded. Neither probe's own framing can reject them, and the spec forbids a threshold.
-  An eight-byte signature is as specific as archive magic, so it costs no real stream.
-  Unlike an executable cue, it does not start the SFX scan: an OLE file is not a stub, and
-  a ZIP stored inside a document is not the document's payload.
+- **A known non-archive signature turns the step off.** Today that is the OLE compound file
+  signature `D0 CF 11 E0 A1 B1 1A E1` (`.doc`, `.xls`, `.ppt`, `.msi`, `Thumbs.db`). These
+  files are a constant header followed by zero runs, which the Brotli and LZMA Alone probes
+  both accept. A scan of a backup drive found 437 files claimed as Brotli, all but two of
+  which failed to decode. OLE files were among them, but they were not counted separately,
+  and the scan did not record what the two that decoded were. Neither probe's own framing
+  can reject these files, and the spec forbids a threshold. An eight-byte signature is as
+  specific as archive magic. The signature also turns off the SFX scan (§2.2): an OLE file
+  is not a stub, and a ZIP stored inside a document is not the document's payload. With no
+  extension, the error names the signature, as it names a `STRONG` cue.
 - **Framing that the source cannot hold is rejected** when the source length is known.
   This check is the Brotli probe's own, on [`formats/brotli.md`](../formats/brotli.md).
 

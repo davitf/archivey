@@ -188,7 +188,7 @@ nearest member.
   as `_RefusedAloneStream`, which refuses on the first read, not at open. The refusal has
   to come on read because a probe-only claim's read errors are stamped
   `format_unconfirmed`, and that stamp is attached after open: a file whose header
-  bytes read as a 2.7 GiB dictionary would otherwise tell the caller to raise the cap for
+  bytes read as a 2.5 GiB dictionary would otherwise tell the caller to raise the cap for
   a file that is not LZMA at all.
 
 **Errors by cause.** CPython raises every liblzma failure as `LZMAError` and tells them
