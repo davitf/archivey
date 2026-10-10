@@ -79,7 +79,8 @@ record gives, with `observed_kind="nonzero"`, `expected_bytes` that size and
 trailer, a 7z next header, a RAR end-of-archive block), whose `format` names the
 archive format and whose `observed_bytes` is the offset of the first non-zero byte
 past that end; `"end_of_stream"` for bytes after a compressed stream's end, whose
-`format` is the codec name, such as `"gzip"`, and whose `observed_bytes` is the offset of the first non-zero byte after that end).
+`format` is the codec name, such as `"gzip"`, and whose `observed_bytes` is the
+offset of the first non-zero byte after that end).
 `member_id` MAY be `None` only before registration.
 `controls` SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints
 found, in the order they occur, so a caller can tell an override from a mark
