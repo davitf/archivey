@@ -32,7 +32,7 @@ class EndRecord:
     base: int                 # added to every stored offset (stub before the archive)
     comment: bytes            # cut at end of file
     comment_declared: int     # the stored length, for the "comment cut short" finding
-    trailing: int             # bytes after the record and its declared comment
+    trailing: int             # bytes after the record and its declared comment (seekable only)
 
 ReadAt = Callable[[int, int], bytes]   # read_at(offset, n); the caller owns handle and lock
 
@@ -170,6 +170,27 @@ first, so the walk charges it there. A forward pass has no offset array (it read
 in order), but it keeps every member it yielded until the end of the pass to update it
 in place, so it charges `max_members` as members are yielded.
 
+### Trailing bytes
+
+ZIP reports bytes after its end record as TAR reports bytes after its trailer
+(`format-tar`, the 1 MiB scan), so the one ruling gives one behaviour:
+
+- The scan starts at the end of the declared comment and reads at most 1 MiB, in
+  bounded chunks, in both modes. The first non-zero byte is reported as
+  `ARCHIVE_TRAILING_DATA` with `observed_bytes` its offset past the comment; zeros are
+  silent; past the bound the scan stops and reports nothing. The bound is TAR's
+  `_MAX_TRAILING_SCAN` (measured there at about 5 ms), shared, not a second constant.
+- A seekable source skips the scan when `EndRecord.trailing` is 0, which is free from
+  the file size. A forward pass has no size, so it reads; a pipe held open after the
+  ZIP ends blocks there until more bytes or end of file, as a TAR pipe does today
+  (`docs/gotchas.md` says so for TAR and gains ZIP).
+- `expected_marker` is the existing `"zeros_to_eof"`, with `format="zip"`. Its meaning
+  is the same (only zeros may follow the end marker, to end of file), so no new public
+  value is added; the `diagnostics` spec row and the `ArchiveEofContext` docstring
+  change from naming the TAR trailer to naming each format's end marker. 7z, RAR and
+  ISO can share it under the same ruling; their thread decides, and this design does
+  not need them to.
+
 ## Streaming: a forward walk over local headers
 
 A ZIP can be read start to end with no seek, from a pipe, a socket or a remote object
@@ -298,16 +319,26 @@ order reverses their file order, and a directory entry with no local entry. Each
 member-scoped failure of the member it names, handled as `safe-extraction` handles any
 other (the `OnError` requirement):
 
-- In `extract_all`, the member's result is revised in place to `FAILED`, as the
-  `OVERWRITTEN` rows revise a result, and what archivey wrote for it is removed (DR-18).
-  A directory entry with no local entry never had a result, so one is added. Results
-  stay in member-processing order. Under `OnError.CONTINUE` the report completes; under
-  `OnError.STOP` the first such failure raises `CorruptionError` naming the member, at
-  the end of the pass, which is the earliest point it is known.
-- In `stream_members()`, the descriptor mismatch and the missing local entry raise
-  `CorruptionError` from the iterator at the end of the pass; the reversed order raises
-  nothing (the previous section).
-
+- In `extract_all`, the end of the pass settles every member the directory changes
+  (its `is_current`, type or sizes), and every path such a member was written to:
+  - **The member's own result** becomes the one the seekable extraction of the same
+    archive gives it, revised in place as the `OVERWRITTEN` rows revise a result. Where
+    that result needs bytes the stream has already passed (the member is now current
+    but its data was not written, or its data failed the descriptor check), it becomes
+    `FAILED` with `CorruptionError` instead. A directory entry with no local entry never
+    had a result, so one is added, `FAILED`. Results stay in member-processing order.
+  - **The path.** After the revisions, an entry this run wrote stays only if the member
+    whose result names it is `EXTRACTED`. Any other entry archivey wrote there is
+    removed (DR-18), and the path is left empty: the bytes the seekable extraction
+    would put there are behind in the stream.
+  - For the reversed pair (file order `M1`, `M2`; the directory makes `M1` current):
+    during the pass `M1` was `SUPERSEDED` and `M2` `EXTRACTED` at the path. At the end
+    `M2` becomes `SUPERSEDED` (non-current, never written in seekable mode), `M1`
+    becomes `FAILED`, and `M2`'s entry is removed. For a descriptor mismatch the member
+    is `FAILED` and its entry removed.
+  - Under `OnError.CONTINUE` the report completes. Under `OnError.STOP` the first such
+    failure raises `CorruptionError` naming the member, at the end of the pass, which is
+    the earliest point it is known; the revisions and removals above are made first.
 The first two make a streaming extraction fail a member that the seekable extraction of
 the same archive writes. That is the only place the two access modes differ on disk.
 Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
@@ -367,7 +398,7 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 | Malformed Unicode Path field | Depends on the Python version until the Unicode Path PR merges | Same as that PR, on every version, without the subclass | DR-5 |
 | `streaming=True` on a non-seekable source | `StreamNotSeekableError` at open | Read forward (§"Streaming") | The maintainer's request, 2026-10-10 |
 | A ZIP64 archive whose directory is Strong-Encrypted | `CorruptionError` | `UnsupportedFeatureError` | DR-4 |
-| Bytes after the end record and its comment | Nothing reported | `ARCHIVE_TRAILING_DATA` warning; strict refuses; zero padding stays silent. 7-Zip 23.01 warns on the same input, `unzip` says nothing. A forward pass reads the rest of the stream to the end to count them, keeping none | The 2026-10-07 ruling (davi): report trailing data after ZIP, 7z, RAR and ISO, as TAR and the codecs already do. Stage 2 |
+| Bytes after the end record and its comment | Nothing reported | `ARCHIVE_TRAILING_DATA` warning; strict refuses; zero padding stays silent. 7-Zip 23.01 warns on the same input, `unzip` says nothing. Examined as TAR's tail is, in both modes: at most 1 MiB past the comment's end, first non-zero byte reported, `expected_marker="zeros_to_eof"` (§"Trailing bytes") | The 2026-10-07 ruling (davi): report trailing data after ZIP, 7z, RAR and ISO, as TAR and the codecs already do. Stage 2 |
 | A ZIP from a pipe whose data descriptor understates a STORED member, or whose directory lists two same-name members in the reverse of their file order | Not readable at all (non-seekable source refused) | That member fails at the end of the pass (`FAILED` under `OnError.CONTINUE`, a raise under `STOP`); the seekable read of the same archive writes it. The only on-disk difference between the two modes | DR-5a: only crafted archives have these shapes, and matching would mean buffering every member (ADR 0010). Stage 3 |
 | A member flagged as a Windows reparse point whose data is not a reparse buffer, in a `stream_members()` pass | Yielded as a SYMLINK with no stream, retyped to FILE after the pass: its content is lost | Typed when the pass reaches it, by reading the bounded reparse header ahead and handing back a stream of the whole member, as 7z already does; `members()` already lists it as FILE. From a pipe the reparse bit arrives with the directory, so such a member is written as a file and stays one, and only a real reparse buffer becomes a link (§"What only the central directory says") | DR-5, DR-1. Stage 3 |
 | Open of an archive with a huge declared directory | All `ZipInfo` built at open | Members built as listed; `ListingLimits` stop the walk | DR-9a, DR-15b |
@@ -409,8 +440,10 @@ One PR each, in order; every PR goes through the review label.
    change.
 2. **Switch the reader.** `zip_reader.py` reads through the parser; every row of the
    removal table except the name decode. Damaged-directory and version-needed rows of the
-   behaviour table. ADR 0006 is superseded by a new ADR; format-zip spec, handbook §2.2,
-   §5 and §6 updated.
+   behaviour table, and trailing bytes reported (§"Trailing bytes"). ADR 0006 is
+   superseded by a new ADR; format-zip spec, the `diagnostics` spec row and the
+   `ArchiveEofContext` docstring for `"zeros_to_eof"`, `docs/gotchas.md` (trailing data
+   and the open-pipe note), handbook §2.2, §5 and §6 updated.
 3. **Streaming.** The forward local-header walk and the end-of-pass reconciliation,
    for non-seekable sources (seekable ones read the directory first, question C). `stream_members()` and
    `extract_all()` over a pipe, tested against the same archives read seekably: the
@@ -421,8 +454,10 @@ One PR each, in order; every PR goes through the review label.
    trailing-index row), `safe-extraction` if the filter re-run needs a sentence there,
    `docs/access-and-cost.md` (the checklist tells users to buffer ZIP),
    `archive-data-model` (the new `member_state_final` field, every format),
-   `archive-reading` (ZIP applies `max_members` at parse, in every mode),
-   `docs/formats.md`, handbook §1, §2.2, §5, §6.
+   `archive-reading` (ZIP applies `max_members` at parse, in every mode) and the
+   `ListingLimits` docstring in `config.py` that restates it, `docs/formats.md`, handbook
+   §1, §2.2, §5, §6, and the TAR, 7z and RAR handbook pages for which of their fields
+   `member_state_final` covers.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
    (question B, answered). Format-zip spec, handbook §2.2 and §5, `docs/formats.md`,
    and the DR-21 ruling in `design-rules.md`, which says the refusal lasts until this

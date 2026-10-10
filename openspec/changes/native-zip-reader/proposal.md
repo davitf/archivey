@@ -50,18 +50,22 @@ directory is the simplest of the three.
 
 - Code: new `zip_parser.py`; `zip_reader.py` loses its `zipfile` import and the
   workarounds listed in `design.md` §"What the parser removes".
-- Public API: none in stages 1 and 2. Stage 3 changes a declared capability: ZIP's
-  `SUPPORTS_STREAMING_NON_SEEKABLE` becomes true, so the public `required_source` for
-  ZIP moves from `SEEKABLE` to `FORWARD_ONLY`, and it adds one `ArchiveMember` field,
-  working name `member_state_final`, in every format (question D).
+- Public API: none in stage 1. Stage 2 reports `ARCHIVE_TRAILING_DATA` on ZIP, reusing
+  the existing `expected_marker="zeros_to_eof"` (no new value). Stage 3 makes three
+  changes: ZIP's `SUPPORTS_STREAMING_NON_SEEKABLE` becomes true, so the public
+  `required_source` for ZIP moves from `SEEKABLE` to `FORWARD_ONLY`; it adds one
+  `ArchiveMember` field, working name `member_state_final`, in every format (question
+  D); and ZIP applies `ListingLimits.max_members` under `streaming=True`, as 7z, RAR
+  and ISO do.
   Stages 5 to 7 may add diagnostic codes and `CompressionAlgorithm` members. Every new
   public name goes to the maintainer before merging.
 - Tests: `zipfile` stays as a test oracle and fixture writer. Tests that reach into
   `ZipInfo` through `member._raw` change to the parser's entry type.
 - Specs and docs, each moved by the stage that changes the behaviour (`design.md`
   §Stages lists them per stage): the format-zip spec; for stage 3 also the
-  `backend-registry`, `access-mode-and-cost` and `archive-data-model` specs and
-  `docs/access-and-cost.md`; `dev-docs/formats/zip.md`; ADR 0006; `dev-docs/IDEAS.md`;
+  `backend-registry`, `access-mode-and-cost`, `archive-data-model` and
+  `archive-reading` specs and `docs/access-and-cost.md`; for stage 2 the `diagnostics`
+  spec and `docs/gotchas.md`; `dev-docs/formats/zip.md`; ADR 0006; `dev-docs/IDEAS.md`;
   `dev-docs/design-rules.md` (the DR-21 ruling); `docs/formats.md`;
   `docs/errors-and-diagnostics.md`.
 - No spec delta in this change (`skip_specs`). The change lands as seven PRs over time,

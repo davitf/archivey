@@ -11,7 +11,6 @@
 - [x] 0.4 Question D is answered (davi, 2026-10-10: a per-member field, working name
       `member_state_final`, settled in the stage 3 PR).
 
-
 ## 1. Parser (PR 1)
 
 - [ ] 1.1 `internal/backends/zip_parser.py`: `EndRecord`, `find_end_record`,
@@ -46,13 +45,16 @@
 - [ ] 2.5 Damaged directory lists the entries before the damage, then raises (tests
       first: bad signature mid-directory, directory cut by end of file).
 - [ ] 2.6 Version needed above 6.3 lists and reads (test first).
-- [ ] 2.6a Trailing bytes after the end record report `ARCHIVE_TRAILING_DATA` (warning,
-      strict refuses, zero padding silent), as TAR does; tests first, with the 7z,
-      RAR and ISO counterparts' tests as the pattern if they have landed.
+- [ ] 2.6a Trailing bytes after the end record report `ARCHIVE_TRAILING_DATA` as
+      `design.md` §"Trailing bytes" states (1 MiB bound shared with TAR,
+      `expected_marker="zeros_to_eof"`, zeros silent, strict refuses); tests first,
+      including a first non-zero byte past 1 MiB (silent) and a pipe.
 - [ ] 2.7 Remove every row of `design.md` §"What the parser removes" except the name
       decode; tests that read `ZipInfo` off `member._raw` move to `CentralEntry`.
-- [ ] 2.8 New ADR superseding 0006; format-zip spec; `dev-docs/formats/zip.md` §2.2,
-      §5, §6; `dev-docs/IDEAS.md`; `docs/formats.md`.
+- [ ] 2.8 New ADR superseding 0006; format-zip spec; the `diagnostics` spec row and the
+      `ArchiveEofContext` docstring for `"zeros_to_eof"`; `docs/gotchas.md` (trailing
+      data, open pipe); `dev-docs/formats/zip.md` §2.2, §5, §6; `dev-docs/IDEAS.md`;
+      `docs/formats.md`.
 - [ ] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
 
 ## 3. Streaming (PR 3)
@@ -68,17 +70,17 @@
       STORED + bit 3 descriptor scan; tests with stdlib `zipfile` writing to a pipe.
 - [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
-      and reported; missing ones raise.
+      and reported; a missing one is handled per 3.3g.
 - [ ] 3.3a A retyped member goes through the filter and the policy checks again before
       its link is made; refused, its file is removed (test: a pipe ZIP whose directory
       types `payload` as a symlink to `../../etc/passwd` is refused from a pipe and from
       a file).
-- [ ] 3.3b A size or CRC from a data descriptor that differs from the central entry
-      raises `CorruptionError` and removes the written file (test: a STORED bit-3
-      member that embeds a descriptor for a prefix of itself, read from a pipe and
-      seekably).
-- [ ] 3.3c `is_current` from the directory order; same-name members in reverse order
-      raise at the end of the pass (fixture with the two orders reversed).
+- [ ] 3.3b A size or CRC from a data descriptor that differs from the central entry is
+      detected; its outcome is 3.3g's (test: a STORED bit-3 member that embeds a
+      descriptor for a prefix of itself, read from a pipe and seekably).
+- [ ] 3.3c `is_current` from the directory order; same-name members in reverse order are
+      detected at the end of the pass, with 3.3g's outcome (fixture with the two orders
+      reversed).
 - [ ] 3.3d A stream that starts neither with a local header nor an end record: scan
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
@@ -91,10 +93,12 @@
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
       (read-ahead stream); from a pipe it stays a file (tests in both modes, red
       first).
-- [ ] 3.3g End-of-pass failures as in `design.md` §"Failures found at the end of the
-      pass": the result revised to `FAILED` under `OnError.CONTINUE`, a raise under
-      `STOP`, the written file removed (tests under both, for 3.3b, 3.3c and a
-      directory entry with no local entry).
+- [ ] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
+      the pass" states them, under `OnError.CONTINUE` and `STOP`, for 3.3b, 3.3c and a
+      directory entry with no local entry. Each test checks every affected result and
+      what is at the path afterwards (the reversed pair: `M1` `FAILED`, `M2`
+      `SUPERSEDED`, the path empty); `stream_members()` raises for 3.3b and the missing
+      entry, not for 3.3c.
 - [ ] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).
@@ -102,11 +106,12 @@
       same files on disk, except the two divergences `design.md` names (3.3b, 3.3c),
       which 3.3g tests instead.
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
-      and `access-mode-and-cost` specs, `archive-reading` (ZIP applies `max_members`
-      at parse), `archive-data-model` for
+      and `access-mode-and-cost` specs, `archive-reading` (ZIP applies `max_members` at
+      parse) and the `ListingLimits` docstring in `config.py`, `archive-data-model` for
       `member_state_final` (and `safe-extraction` if the filter re-run needs a
       sentence); `docs/access-and-cost.md`, `docs/formats.md`; handbook §1, §2.2, §5,
-      §6.
+      §6; `dev-docs/formats/tar.md`, `7z.md` and `rar.md` for which fields
+      `member_state_final` covers there.
 
 ## 4. Names (PR 4)
 
