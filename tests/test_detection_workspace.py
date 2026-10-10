@@ -253,11 +253,12 @@ def test_wrapped_member_stream_is_not_seeked_to_its_end(
 ) -> None:
     # ``open_archive`` wraps a member stream in an ``ArchiveSource`` before detection
     # sees it. The workspace must still treat it as the ``ArchiveStream`` it is: no
-    # trailer or probe seek towards the end, only the exit restore, the same as for the
-    # bare stream.
-    bare = _member_seeks(monkeypatch, detect_format)
-    assert bare == [0]
-    assert _member_seeks(monkeypatch, detect) == bare
+    # trailer or probe seek towards the end, the same as for the bare stream. The only
+    # seek allowed is the exit restore to the entry position, 0. Whether that restore
+    # reaches the member at all depends on the Python version: from 3.14, a
+    # ``BufferedReader`` seeking back inside its own buffer does not call its raw.
+    for run in (detect_format, detect):
+        assert set(_member_seeks(monkeypatch, run)) <= {0}
 
 
 def test_path_detection_access_shape(tmp_path: Path) -> None:
