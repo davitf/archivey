@@ -41,6 +41,8 @@ from archivey.internal.streams.decompressor_stream import (
     DecodeOut,
     Decoder,
     SeekPoint,
+    _inflate,
+    _inflate_rest,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 
@@ -158,9 +160,8 @@ class DeflateResumeDecoder(BaseDecoder):
     """Inflate from a :class:`DeflateResume` point to the end of the input.
 
     ``base`` is the codec's own decoder, which every other seek point recreates.
-    ``corruption`` maps a ``zlib.error`` the way the base decoder does (``None``
-    raises it as is), and ``truncated`` is the message the base decoder gives a
-    truncation.
+    ``corruption`` maps a ``zlib.error`` the way the base decoder does, and
+    ``truncated`` is the message the base decoder gives a truncation.
     """
 
     def __init__(
@@ -168,7 +169,7 @@ class DeflateResumeDecoder(BaseDecoder):
         resume: DeflateResume,
         base: Decoder,
         *,
-        corruption: Callable[[zlib.error], Exception] | None,
+        corruption: Callable[[zlib.error], Exception],
         truncated: str,
     ) -> None:
         self._decomp = _resume_decompressor(resume)
@@ -188,31 +189,19 @@ class DeflateResumeDecoder(BaseDecoder):
         self._before_input = False
         return _splice(self._bit, chunk)
 
-    def _decompress(self, data: bytes, max_length: int) -> bytes:
-        try:
-            if max_length < 0:
-                out = self._decomp.decompress(data)
-            else:
-                out = self._decomp.decompress(data, max_length)
-        except zlib.error as exc:
-            if self._corruption is None:
-                raise
-            raise self._corruption(exc) from exc
-        if self._decomp.eof:
-            raise ResumeReachedStreamEnd
-        return out
-
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         data = self._decomp.unconsumed_tail + self._spliced(chunk)
         if not data:
             return DecodeOut(b"")
-        return DecodeOut(self._decompress(data, max_length))
+        out = _inflate(self._decomp, data, max_length, self._corruption)
+        if self._decomp.eof:
+            raise ResumeReachedStreamEnd
+        return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        out = b""
-        if self._decomp.unconsumed_tail:
-            out = self._decompress(self._decomp.unconsumed_tail, -1)
-        out += self._decomp.flush()
+        out = _inflate_rest(self._decomp, self._corruption)
+        if self._decomp.eof:
+            raise ResumeReachedStreamEnd
         self._pending_error = TruncatedError(self._truncated)
         return DecodeOut(out)
 
