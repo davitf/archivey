@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable
 from typing import BinaryIO
 
+from archivey.config import INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -38,13 +39,19 @@ from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     stream_magic,
 )
-from archivey.internal.streams.codecs.rapidgzip_child import from_callers_source
-from archivey.internal.streams.codecs.rapidgzip_inprocess import _open_accelerator
+from archivey.internal.streams.codecs.rapidgzip_child import (
+    crashed_on_data,
+    from_callers_source,
+    rapidgzip_child_unavailable_reason,
+    reported_by_child,
+)
 from archivey.internal.streams.codecs.rapidgzip_select import (
     _RAPIDGZIP_REQUIREMENT,
     _bound_rapidgzip_source,
+    _open_rapidgzip,
     _refuse_forward_only_accelerator,
     _StdlibSeekContract,
+    _warn_child_fallback,
 )
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _accelerator_backstop_source,
@@ -67,21 +74,41 @@ from archivey.types import (
 )
 
 
+def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
+    """Resolve ``use_indexed_bzip2`` including the ``AUTO`` size gate
+    (:data:`~archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), before asking
+    whether a child process can run the decoder."""
+    return config.use_indexed_bzip2.enabled_for(
+        seekable=config.seekable,
+        available=available,
+        input_size=config.compressed_input_size,
+        min_size=INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE,
+    )
+
+
+def _bzip2_auto_without_child(config: StreamConfig) -> str | None:
+    """Why an ``AUTO`` bzip2 open that wants rapidgzip cannot have it here (no child
+    process can run it: :func:`rapidgzip_child_unavailable_reason`), or ``None``."""
+    if config.use_indexed_bzip2 is not AcceleratorMode.AUTO:
+        return None
+    if not _bzip2_wanted(config, available=deps.rapidgzip.available()):
+        return None
+    return rapidgzip_child_unavailable_reason()
+
+
 def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
     """Whether bzip2 opens through rapidgzip for this config.
 
-    Imports rapidgzip when the config asks for it, so that a package that is found but
-    fails to import reads as unavailable: ``AUTO`` then falls back to the standard
-    library, as it does for a missing package. Called only on the way to opening a
-    bzip2 stream (:func:`resolve_codec`, :meth:`Bzip2Codec.open`).
+    rapidgzip's bzip2 decoder runs in a child process, as the DEFLATE family's does
+    (:func:`_open_rapidgzip`), so this process never imports rapidgzip. ``AUTO`` stays
+    on the standard library where no child process can run it, and falls back to it
+    when a child cannot be started at open. This is a query: the warning for the first
+    case is logged by :meth:`Bzip2Codec.open`.
     """
-    return (
-        deps.rapidgzip.available()
-        and config.use_indexed_bzip2.enabled_for(
-            seekable=config.seekable, available=True
-        )
-        and deps.rapidgzip_bzip2() is not None
-    )
+    available = deps.rapidgzip.available()
+    if not available or not _bzip2_wanted(config, available=available):
+        return False
+    return _bzip2_auto_without_child(config) is None
 
 
 # What may start a further stream after one ends, so a concatenated file reads whole.
@@ -735,52 +762,62 @@ class Bzip2Codec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        # Imports rapidgzip into this process, which on a free-threaded build re-enables
-        # the GIL (see deps.LazyOptional).
+        why = _bzip2_auto_without_child(config)
+        if why is not None:
+            _warn_child_fallback(why, "use_indexed_bzip2")
         if _bzip2_uses_accelerator(config):
-            indexed_bzip2_file = deps.rapidgzip_bzip2()
-            assert indexed_bzip2_file is not None
-            _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
-            # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
-            # deps.rapidgzip_bzip2 note): keeps a single accelerator library in the process.
-            # Bound the input: AES pad after EOS is trailing garbage that rapidgzip
-            # prints to stderr outside DiagnosticCollector.
-            accel_source, views = _accelerator_backstop_source(
-                _bound_rapidgzip_source(source, params, config)
-            )
-            stream = _open_accelerator(indexed_bzip2_file, accel_source)
-            # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert views is not None
-            # A data error hands the read to the standard library, which delivers what
-            # it delivers with the accelerator off and raises its error; see
-            # _StdlibOnAcceleratorError.
-            takeover = _StdlibOnAcceleratorError(
-                stream,
-                views=views,
-                open_stdlib=lambda fallback: _stdlib_bzip2(
-                    fallback, config, single_stream=params.single_stream
-                ),
-                label="bzip2",
-                takes_over=self._accelerator_data_error,
-                resume_points=_bzip2_resume_points,
-            )
-            # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
-            return _StdlibSeekContract(
-                _Bzip2EmptyStreamCheck(
-                    takeover,
-                    views=views,
-                    config=config,
-                    single_stream=params.single_stream,
-                )
-            )
-        if config.use_indexed_bzip2 is AcceleratorMode.ON:
+            stream = self._open_accelerated(source, params, config)
+            if stream is not None:
+                return stream
+        elif config.use_indexed_bzip2 is AcceleratorMode.ON:
             raise PackageNotInstalledError(
                 _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
             )
         # A rewind re-decompresses from the start; the outer ArchiveStream warns about
-        # that (see rewind_warning). The [seekable] accelerator (above) gives real
-        # random access.
+        # that (see rewind_warning). The [seekable] accelerator gives real random
+        # access.
         return _stdlib_bzip2(source, config, single_stream=params.single_stream)
+
+    def _open_accelerated(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO | None:
+        """Open ``source`` through rapidgzip's bzip2 decoder in a child process, or
+        ``None`` for an ``AUTO`` open whose child could not start
+        (:func:`_open_rapidgzip`)."""
+        _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
+        # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package
+        # (ADR 0008). Bound the input: an AES pad after the end-of-stream marker is
+        # trailing garbage, which rapidgzip would read as such.
+        accel_source, views = _accelerator_backstop_source(
+            _bound_rapidgzip_source(source, params, config)
+        )
+        # _refuse_forward_only_accelerator has refused a source that cannot seek.
+        assert views is not None
+        child = _open_rapidgzip(accel_source, "bzip2", config)
+        if child is None:
+            return None
+        # A data error hands the read to the standard library, which delivers what it
+        # delivers with the accelerator off and raises its error; see
+        # _StdlibOnAcceleratorError.
+        takeover = _StdlibOnAcceleratorError(
+            child,
+            views=views,
+            open_stdlib=lambda fallback: _stdlib_bzip2(
+                fallback, config, single_stream=params.single_stream
+            ),
+            label="bzip2",
+            takes_over=self._accelerator_data_error,
+            resume_points=_bzip2_resume_points,
+        )
+        # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
+        return _StdlibSeekContract(
+            _Bzip2EmptyStreamCheck(
+                takeover,
+                views=views,
+                config=config,
+                single_stream=params.single_stream,
+            )
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
@@ -811,7 +848,10 @@ class Bzip2Codec(StreamCodec):
         Not an ``EOFError`` or ``OSError``: :meth:`_translate_accelerator` maps those for
         the standard-library engine behind it, and from the accelerator they would be
         an I/O fault, not a verdict. Not an error from the caller's own source either.
+        A decoder process that crashed on the data (``crashed_on_data``) is a verdict.
         """
+        if crashed_on_data(exc):
+            return True
         if isinstance(exc, (EOFError, OSError)) or from_callers_source(exc):
             return False
         return isinstance(
@@ -821,15 +861,11 @@ class Bzip2Codec(StreamCodec):
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the rapidgzip bzip2 accelerator's exceptions to the library's error types."""
         if from_callers_source(exc):
-            return None  # the caller's source raised it, through _TrappingSource
+            return None  # the caller's source raised it, through the decoder process
+        # A message rapidgzip could not decode to text (it quotes a non-UTF-8 input
+        # byte) arrives readable, as a RuntimeError: see ``_error_payload`` in
+        # ``rapidgzip_worker.py``.
         text = str(exc)
-        if isinstance(exc, UnicodeDecodeError) and isinstance(exc.object, bytes):
-            # rapidgzip quotes the offending input byte in some messages ("…magic
-            # string 'BZh' … with \xf2 …"). When that byte is not UTF-8, the message
-            # itself fails to decode on its way to Python, and the error raised is
-            # this one, holding the message bytes. Read the message from them, so the
-            # arms below match it as they match a message that did decode.
-            text = exc.object.decode("utf-8", "replace")
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
@@ -870,6 +906,13 @@ class Bzip2Codec(StreamCodec):
         ):
             return StreamNotSeekableError(
                 "the rapidgzip bzip2 accelerator does not support non-seekable streams"
+            )
+        if isinstance(exc, RuntimeError) and reported_by_child(exc):
+            # Any other RuntimeError the decoder raised, as for the DEFLATE family
+            # (_translate_rapidgzip): its data errors are not a stable list, and the
+            # mark tells them from a RuntimeError of the caller's own source.
+            return CorruptionError(
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.

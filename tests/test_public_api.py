@@ -256,6 +256,7 @@ def test_public_symbols_are_in_all() -> None:
         "MemberTimestampContext",
         "NameEncodingContext",
         "NameNormalizationContext",
+        "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
         "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
         "ScanRaceContext",
         "SeekIndexContext",

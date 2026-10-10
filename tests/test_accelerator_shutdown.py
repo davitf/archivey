@@ -1,6 +1,7 @@
 """Canary for the accelerator interpreter-shutdown abort and archivey's guard against it
-(see ``dev-docs/investigations/rapidgzip-upstream-report.md`` §6 and ``_AcceleratorStream`` in
-``archivey.internal.streams.codecs.rapidgzip_inprocess``).
+(see ``dev-docs/investigations/rapidgzip-upstream-report.md`` §6). archivey runs rapidgzip
+only in its decoder process (``rapidgzip_worker.py``), which closes the stream before it
+exits and then skips interpreter finalization (``os._exit``).
 
 archivey uses a single accelerator library, ``rapidgzip``, for both gzip (``RapidgzipFile``) and
 bzip2 (its bundled ``IndexedBzip2File``) — deliberately NOT the separate ``indexed_bzip2``
@@ -22,13 +23,14 @@ warning for the record:
   interpreter shutdown, with **no** close. These abort on every platform measured — the
   underlying-library behaviour archivey works around.
 - ``guard_cycle_gc`` / ``guard_unclosed`` — the same two finalization paths but wrapped in a
-  faithful copy of archivey's ``weakref.finalize`` guard, which **closes** the raw object when
-  the wrapper is reclaimed. These exit cleanly, which is why the accelerator is safe to use.
+  ``weakref.finalize`` guard, which **closes** the raw object when the wrapper is reclaimed.
+  These exit cleanly. archivey's in-process wrapper had this guard; it is kept here as the
+  record that closing is what stops the thread.
 
 Asserted invariants: ``closed`` and the two ``guard_*`` paths exit cleanly on every platform (the
 cleanup contract archivey depends on), while the raw ``cycle_gc`` / ``unclosed`` paths abort (the
 upstream behaviour; if a future release stops aborting there, the assertion flips, signalling the
-close-on-finalize guard is no longer load-bearing).
+worker's close before it exits is no longer load-bearing).
 """
 
 from __future__ import annotations
@@ -74,7 +76,7 @@ def _script(fmt: str, opener: str, variant: str, cleanup: str) -> str:
 
         cleanup = {cleanup!r}
 
-        # A faithful copy of archivey's _AcceleratorStream guard: weakref.finalize holds the raw
+        # The guard archivey's in-process wrapper used: weakref.finalize holds the raw
         # object strongly and CLOSES it exactly once, when the wrapper is collected (cyclically or
         # not) or at interpreter exit — whichever comes first. close() (not join_threads()) is
         # what stops the worker thread, and is sufficient on its own.
@@ -151,8 +153,9 @@ def test_accelerator_shutdown_canary(fmt: str, opener: str) -> None:
     # 1. The cleanup contract archivey depends on: an accelerator object that is closed exits
     #    cleanly — whether close() is called explicitly during the run ('closed') or by the
     #    weakref.finalize guard when the wrapper is reclaimed by the cyclic GC ('guard_cycle_gc')
-    #    or at interpreter exit ('guard_unclosed'). The guard is a faithful copy of
-    #    _AcceleratorStream's, so if any of these abort, archivey's own cleanup is broken.
+    #    or at interpreter exit ('guard_unclosed'). The decoder process relies on the same
+    #    fact: it closes the stream before it exits, so if any of these abort, its cleanup
+    #    is broken.
     for variant in _VARIANTS:
         for safe in ("closed", "guard_cycle_gc", "guard_unclosed"):
             rc = matrix[f"{variant}/{safe}"]
@@ -164,17 +167,17 @@ def test_accelerator_shutdown_canary(fmt: str, opener: str) -> None:
     # 2. The underlying-library behaviour, and the canary for it: a raw accelerator object
     #    finalized *without* being closed — reclaimed by the cyclic GC ('cycle_gc') or left to
     #    interpreter shutdown ('unclosed') — aborts with SIGABRT, because join_threads() alone
-    #    does not stop the C++ worker thread; only close() does. This is the whole reason
-    #    _AcceleratorStream's guard must close (not merely join) the object. When a future
-    #    release stops aborting here, these assertions fail — the signal that the guard is no
-    #    longer load-bearing. Asserted on the characterised platforms (Linux, macOS).
+    #    does not stop the C++ worker thread; only close() does. This is why the decoder
+    #    process closes (not merely joins) the stream before it exits. When a future release
+    #    stops aborting here, these assertions fail — the signal that the close is no longer
+    #    load-bearing. Asserted on the characterised platforms (Linux, macOS).
     if sys.platform in ("linux", "darwin"):
         for ungraceful in ("cycle_gc", "unclosed"):
             rc = matrix[f"intact/{ungraceful}"]
             assert rc != 0, (
                 f"rapidgzip {fmt}: a raw (unguarded) {ungraceful} object now exits cleanly on "
                 f"{sys.platform} (rc={rc}). The upstream interpreter-finalization abort may be "
-                f"fixed — _AcceleratorStream's close-on-finalize guard may no longer be needed."
+                f"fixed — the decoder process's close before exit may no longer be needed."
             )
 
 

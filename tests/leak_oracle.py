@@ -38,8 +38,8 @@ What it deliberately does not:
   runs; it just has no subprocesses to catch. Isolated tests in
   ``test_leak_oracle.py`` spawn ``sys.executable`` so the gate is exercised in
   every config, including core-only.
-- Interpreter-shutdown accelerator leftovers. That is still
-  ``scripts/accel_leak_trace.py``: a manual diagnostic, not a per-test gate.
+- Interpreter-shutdown accelerator leftovers. None run in the test process any more:
+  rapidgzip decodes every codec in a child process (``rapidgzip_worker.py``).
 
 Cost: one ``Popen.__init__`` append, a flag check on two constructors, and two
 small ``/proc`` snapshots. Disable with ``ARCHIVEY_LEAK_ORACLE=0``. A single

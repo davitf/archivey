@@ -84,12 +84,11 @@ both common stream shapes, and measurement on and off.
 | `_UnconfirmedZipCryptoStream` | the decoded ZipCrypto member and its CRC verifier |
 | `UnverifiedPasswordReadWatch` | the decoded encrypted member (zip and 7z) |
 
-The other four own too, but close themselves and tell the base to skip the second call:
+The other three own too, but close themselves and tell the base to skip the second call:
 
 | Class | Why `_SUBCLASS_CLOSES_INNER = True` |
 | --- | --- |
 | `ProcessOutputStream` (`_UnrarOwnedStream`, `UnarOutputStream`) | close the pipe, then reap the process, then mark closed |
-| `_AcceleratorStream` | `weakref.finalize` closes the raw object once |
 
 The ten that ride the default would need `owns_inner=True` after a flip. A missed one
 leaks a handle the oracle does not pin: default `DelegatingStream` constructors wrap

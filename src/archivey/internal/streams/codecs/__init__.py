@@ -24,9 +24,8 @@ The package, one module per codec plus the shared pieces:
 - ``deps`` — the optional packages, read at call time (patch them there in tests).
 - ``registry`` — :data:`STREAM_CODECS`, lookups, :func:`resolve_codec`,
   :func:`open_codec_stream`.
-- ``rapidgzip_select`` / ``rapidgzip_inprocess`` / ``stdlib_takeover`` — the rapidgzip
-  accelerator: choosing and opening it, guarding the in-process decoder, and handing a
-  failed decode to the standard library. Checks that parse one format (the gzip ISIZE
+- ``rapidgzip_select`` / ``stdlib_takeover`` — the rapidgzip accelerator: choosing it,
+  opening it in a child process, and handing a failed decode to the standard library. Checks that parse one format (the gzip ISIZE
   backstop, the zlib Adler-32 check, the bzip2 empty-stream check) live in that codec's
   module.
 - ``<name>_codec`` — one module per codec family: its :class:`StreamCodec`.
@@ -45,7 +44,6 @@ This module re-exports the names other modules use.
 from archivey.internal.streams.codecs import (  # noqa: F401
     deflate_family_codec,
     deps,
-    rapidgzip_inprocess,
     rapidgzip_select,
     stdlib_takeover,
 )

@@ -1,0 +1,93 @@
+# Accelerator crash search (cross-platform)
+#
+# archivey runs rapidgzip (gzip, zlib, raw DEFLATE and bzip2) in a child process, so a
+# crash in its C++ code costs one stream and not the caller. This job runs the decoders
+# in-process on damaged input (scripts/accelerator_crash_search.py) and reports every
+# crash by its signature, so we know whether that isolation is still needed:
+#
+# - a new signature (any bzip2 crash, or a new DEFLATE one) turns the run red;
+# - the known DEFLATE truncation abort is listed but does not; when a run no longer
+#   finds it, the verdict line says it may be fixed upstream.
+#
+# It runs weekly, on demand, and on a PR that changes the script, this file or the
+# lockfile (a rapidgzip upgrade). Not a required check: a red run is the signal we want,
+# not a merge gate.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  pull_request:
+    paths:
+      - "scripts/accelerator_crash_search.py"
+      - ".github/workflows/accelerator-crash-search.yml"
+      - "uv.lock"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per codec"
+        required: false
+        default: "300"
+
+concurrency:
+  group: accel-crash-search-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  crash-search:
+    name: ${{ matrix.os }} / accelerator crash search
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      UV_PYTHON: "3.11"
+      # A PR run is a short check that the script and the lockfile's rapidgzip work;
+      # the weekly and manual runs search longer.
+      SECONDS_PER_CODEC: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '300' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync (seekable)
+        run: uv sync --python 3.11 --extra seekable
+
+      - name: Run the crash search
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p crash-search
+          uv run --python 3.11 --no-sync python scripts/accelerator_crash_search.py \
+            --seconds "$SECONDS_PER_CODEC" \
+            --seed "${{ github.run_id }}" \
+            --out crash-search/inputs \
+            --json-out crash-search/report.json \
+            | tee crash-search/report.txt
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f crash-search/report.txt ]; then
+            { echo '```'; cat crash-search/report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload report and crashing inputs
+        if: always()
+        # An upload that times out (seen on macOS) is not a finding; the report is in
+        # the log and the step summary too.
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: accel-crash-search-${{ matrix.os }}
+          path: crash-search/
+          if-no-files-found: warn

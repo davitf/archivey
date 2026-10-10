@@ -163,23 +163,19 @@ single-file reader's `_close_archive` leaves the non-owning `SharedSource` behin
 streams open, so `reader.close()` with a member stream still open cannot trigger it. For a
 caller's own stream that fails or is closed mid-read:
 
-- gzip, zlib and raw DEFLATE decode in a child process (Bug 4). The child's source never
-  raises (a failed read is an end of input); this process serves the reads from the
-  caller's stream and raises the caller's exception itself.
-- bzip2 decodes in-process and reads a caller-owned stream through `_TrappingSource` in
-  `codecs/rapidgzip_inprocess.py`, which parks the callback's exception and returns an EOF-shaped value.
-  `_AcceleratorStream` re-raises it after the call, marked as the caller's, so an
-  `EOFError` from a dropped network stream stays an `EOFError`
-  ([`topics/exception-handlers.md`](topics/exception-handlers.md) §C-boundary trap).
-  The decoder took the fault for the end of its input, so the stream is then given up
-  for good: every later `read`, `readinto`, `seek` and `tell()` raises `ReadError`,
-  even after the caller's source recovers. The rapidgzip child does the same
-  (`compressed-streams`, the accelerated-decoder paragraph).
+- Every codec rapidgzip decodes (gzip, zlib, raw DEFLATE and bzip2) runs in a child
+  process (Bug 4). The child's source never raises (a failed read is an end of input);
+  this process serves the reads from the caller's stream and raises the caller's
+  exception itself, marked as the caller's, so an `EOFError` from a dropped network
+  stream stays an `EOFError`. The decoder took the fault for the end of its input, so the
+  stream is then given up for good: every later `read`, `seek` and `tell()` raises
+  `ReadError`, even after the caller's source recovers (`compressed-streams`, the
+  accelerated-decoder paragraph).
 
 Pinned by `tests/test_accelerator_bug3_trap.py`. The stdlib codec fallbacks raise an
 ordinary `ValueError`.
 
-**What remains.** The shim is needed until rapidgzip stops terminating.
+**What remains.** The child process is needed until rapidgzip stops terminating.
 
 **Upstream.** Not filed.
 
@@ -200,10 +196,12 @@ The throw comes from a destructor (`GzipChunk::determineUsedWindowSymbolsForLast
 → `BitReader::tell()`), so it fires for a path, a file object and a `BytesIO` alike, on
 files from about 380 KB up; on an 8 MB gzip, 27 of 30 random cuts aborted. The macOS build
 raises `Unexpected end of file when getting block ...` instead. bzip2
-(`IndexedBzip2File`) never aborted in 110 tries.
+(`IndexedBzip2File`) never aborted in 110 tries, nor in the crash search below.
 
 **What archivey does.** gzip, zlib and raw DEFLATE decode through rapidgzip in a child
-process (`rapidgzip_child.py` running `rapidgzip_worker.py`). The abort ends the child, and
+process (`rapidgzip_child.py` running `rapidgzip_worker.py`). bzip2 does too, as a
+precaution: its decoder has not been seen to abort, but it comes from the same library.
+The abort ends the child, and
 the parent reports it by how the child ended: an abort naming this truncation is
 `TruncatedError`, another crash `CorruptionError`, SIGKILL `ResourceLimitError`, anything
 else `ReadError`. `tests/test_accelerator_truncation_abort.py` pins the reporting and
@@ -216,8 +214,12 @@ reader passed, so a cut stream delivers the same bytes as without rapidgzip
 everything it had decoded past the reader: up to the whole stream for a cut file of tens
 of MB with every core decoding.
 
-**What remains.** bzip2 still runs in-process, so an input
-that aborts the bzip2 decoder would end the caller's process; none has been found.
+**What remains.** Nothing runs rapidgzip in the caller's process. To know whether the
+isolation is still needed, `scripts/accelerator_crash_search.py` runs both decoders
+in-process on damaged input, in a process it watches, and reports each crash by its
+signature; `.github/workflows/accelerator-crash-search.yml` runs it weekly and on a
+lockfile change, on Linux, macOS and Windows. A new signature (any bzip2 crash) turns the
+run red; a run with cut inputs that no longer finds this abort suggests it is fixed.
 
 **Upstream.** Not filed. It is the one worth filing: a destructor must not throw, and the
 input is only short, not hostile. The throw is the `Finally` guard's `bitReader.seekTo()`
@@ -235,26 +237,21 @@ collection, a weak reference to `f` is still alive, and so is every bound method
 took. Each open also leaks a little native memory. Measured on rapidgzip 0.16.0 with an
 `io.BytesIO` subclass, through archivey and directly.
 
-**What archivey does.** A path source is opened by rapidgzip itself and holds no Python
-object of the caller's. bzip2 reads a caller-owned stream through `_TrappingSource`
-(Bug 3), so rapidgzip holds the shim, not the caller's stream. When the accelerator stream
-closes, the shim drops the source (`_TrappingSource.release`), so the source and an
-`io.BytesIO`'s buffer are freed. Before that, every accelerated bzip2 open of a `BytesIO`
-leaked a full copy of its buffer, and a fuzz run over the accelerated bzip2 path ran out
-of memory after about 36 000 inputs. gzip, zlib and raw DEFLATE decode in a child process
-(Bug 4), whose memory goes when it ends.
+**What archivey does.** bzip2 decodes in a child process (Bug 4), one per stream, and the
+child's memory goes when it ends. The child reads a caller-owned stream through this
+process, which drops it when the stream closes. Before bzip2 moved to the child, an
+in-process shim between rapidgzip and the caller's stream did that, and before the shim,
+every accelerated bzip2 open of a `BytesIO` leaked a full copy of its buffer: a fuzz run
+over the accelerated bzip2 path ran out of memory after about 36 000 inputs.
 
-**What remains.** For a caller-owned stream, the shim and what rapidgzip keeps with it:
-about 1.7 kB of Python objects per open, whatever the input's size. For every source,
-path included, a few kB of native memory per open. A long-running process that opens
-many `.bz2` streams through the accelerator grows by that much per open.
+**What remains.** Nothing in the caller's process.
 
 **Upstream.** Not filed. The report, with a ten-line reproduction, is ready in
 [`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md) §9.
 
 **Evidence.**
 `tests/test_accelerator_corruption.py::test_indexed_bzip2_frees_a_stream_source_after_close`
-fails without `release`. Python objects measured with `tracemalloc` over 1 000 opens after
+pins that the caller's stream is freed. In-process, Python objects measured with `tracemalloc` over 1 000 opens after
 200 warm-up opens of a 4 kB `.bz2`: 0 bytes per open from a path, about 1.7 kB from an
 `io.BytesIO`. Native memory measured by RSS over 3 000 opens: 2 to 5 kB per open, noisy,
 for every source.
@@ -352,10 +349,10 @@ stacks are not in a PPMd decode.
 
 **Suspects (unconfirmed).**
 
-1. The in-process rapidgzip decoder in a long-lived pytest process. Since gzip, zlib and
-   raw DEFLATE moved to a child process (Bug 4), only bzip2 (`IndexedBzip2File`) runs
-   rapidgzip in the suite's own process. The last recorded red runs predate that move and
-   the rate has not been re-measured since.
+1. The in-process rapidgzip decoder in a long-lived pytest process. Every codec now runs
+   rapidgzip in a child process (Bug 4), bzip2 included, so the suite's own process no
+   longer loads it. The last recorded red runs predate the move and the rate has not been
+   re-measured since.
 2. Allocator layout: many natives loaded together, plus coverage and GC, with Hypothesis
    or `subprocess` only the tripwire.
 3. Not the gzip/zlib truncation-recovery logic: the crashes do not stack in

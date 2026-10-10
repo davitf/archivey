@@ -25,6 +25,7 @@ __version__: str
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
+    INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE,  # noqa: F401 — advanced; not in __all__
     RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,  # noqa: F401 — advanced; not in __all__
     AcceleratorMode,
     ArchiveyConfig,

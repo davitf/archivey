@@ -14,6 +14,7 @@ test and does not kill pytest.
 from __future__ import annotations
 
 import base64
+import bz2
 import gzip
 import importlib.metadata
 import io
@@ -55,8 +56,18 @@ pytestmark = requires("rapidgzip")
 # raw rapidgzip on this payload.
 _CUTS = [500, 1500, 3000]
 
-_ON = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.ON)
-_OFF = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.OFF)
+_ON = StreamConfig(
+    seekable=True,
+    use_rapidgzip=AcceleratorMode.ON,
+    use_indexed_bzip2=AcceleratorMode.ON,
+)
+_OFF = StreamConfig(
+    seekable=True,
+    use_rapidgzip=AcceleratorMode.OFF,
+    use_indexed_bzip2=AcceleratorMode.OFF,
+)
+# Every codec rapidgzip decodes in a child process.
+_CHILD_CODECS = [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE, Codec.BZIP2]
 _POSIX = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 
 # On Linux the truncation detail survives, in the child's abort message or in the
@@ -78,6 +89,8 @@ def _payload() -> bytes:
 
 
 def _compress(codec: Codec, data: bytes) -> bytes:
+    if codec is Codec.BZIP2:
+        return bz2.compress(data)
     if codec is Codec.GZIP:
         return gzip.compress(data)
     if codec is Codec.ZLIB:
@@ -395,7 +408,7 @@ def test_a_large_cut_stream_delivers_what_the_standard_library_delivers(
     assert got == expected
 
 
-@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+@pytest.mark.parametrize("codec", _CHILD_CODECS)
 @pytest.mark.parametrize("mode", ["path", "bytesio"])
 def test_the_child_stream_reads_and_seeks_like_stdlib(
     tmp_path: Path, codec: Codec, mode: str
@@ -444,21 +457,26 @@ def test_rewind_offset_comes_from_the_childs_index() -> None:
         assert offset is not None and 0 <= offset <= len(payload) // 2
 
 
-def test_bzip2_stays_in_process() -> None:
-    """rapidgzip's bzip2 decoder has not been seen to abort; it keeps its in-process path."""
-    import bz2
-
-    with open_codec_stream(
-        Codec.BZIP2,
-        io.BytesIO(bz2.compress(b"x" * 1000)),
-        config=StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON),
-    ) as stream:
-        inner = stream
-        while not isinstance(
-            inner, codecs_module.rapidgzip_inprocess._AcceleratorStream
-        ):
-            inner = getattr(inner, "_inner")
-        assert stream.read() == b"x" * 1000
+def test_bzip2_runs_in_a_child_process() -> None:
+    """rapidgzip's bzip2 decoder has not been seen to abort, but it runs in a child
+    process too, as a precaution, since it comes from the same library as the DEFLATE
+    decoder. This process never imports rapidgzip for it."""
+    code = """
+        import bz2, io, sys
+        from archivey.internal.config import AcceleratorMode, StreamConfig
+        from archivey.internal.streams.codecs import Codec, open_codec_stream
+        from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
+        config = StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON)
+        source = io.BytesIO(bz2.compress(b"x" * 1000))
+        with open_codec_stream(Codec.BZIP2, source, config=config) as stream:
+            inner = stream
+            while not isinstance(inner, RapidgzipChildStream):
+                inner = getattr(inner, "_inner")
+            assert stream.read() == b"x" * 1000
+        print("rapidgzip" in sys.modules)
+    """
+    proc = _run(code)
+    _assert_clean_exit(proc, "False")
 
 
 # --- the caller's source ----------------------------------------------------------------
@@ -481,7 +499,7 @@ class _FailingSource(io.BytesIO):
 
 
 @pytest.mark.parametrize("error", [RuntimeError, EOFError])
-@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+@pytest.mark.parametrize("codec", _CHILD_CODECS)
 def test_an_exception_from_the_callers_source_reaches_the_caller_unchanged(
     codec: Codec, error: type[Exception]
 ) -> None:
@@ -545,7 +563,7 @@ class _FailingOnceSource(io.BytesIO):
         return super().read(size)
 
 
-@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+@pytest.mark.parametrize("codec", _CHILD_CODECS)
 def test_after_a_source_fault_every_later_call_raises(codec: Codec) -> None:
     """The child was told its input ended where the source failed, so what it decodes
     after that is not the stream: no later call may return a clean end or a verdict on
@@ -675,14 +693,15 @@ def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
 @_POSIX
 @pytest.mark.parametrize("sig", ["SIGSEGV", "SIGABRT"])
 @pytest.mark.parametrize("then", ["read", "seek"])
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.BZIP2])
 def test_after_a_child_crash_the_standard_library_reads_on(
-    tmp_path: Path, sig: str, then: str
+    tmp_path: Path, sig: str, then: str, codec: Codec
 ) -> None:
     """A crash is a verdict on the data, and the standard library gives it: on a valid
     stream it reads on from where the caller was, so the caller loses nothing."""
     payload = _payload()
-    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
-    with open_codec_stream(Codec.GZIP, str(path), config=_ON) as stream:
+    path = _write(tmp_path, f"valid.{codec.value}", _compress(codec, payload))
+    with open_codec_stream(codec, str(path), config=_ON) as stream:
         child = _child_stream(stream)
         assert stream.read(10) == payload[:10]
         assert child._proc is not None
@@ -991,27 +1010,33 @@ def test_an_interrupted_request_leaves_the_stream_unusable(tmp_path: Path) -> No
 # --- where no child can run -------------------------------------------------------------
 
 
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.BZIP2])
 def test_without_a_child_auto_uses_stdlib_and_on_refuses(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, codec: Codec
 ) -> None:
     """A frozen application has no interpreter to run the worker. AUTO decodes with the
     standard library; ON, which asked for rapidgzip, is refused rather than run in-process."""
-    monkeypatch.setattr(
-        codecs_module.rapidgzip_select,
-        "rapidgzip_child_unavailable_reason",
-        lambda: "no child here",
-    )
+    for module in (codecs_module.rapidgzip_select, codecs_module.bzip2_codec):
+        monkeypatch.setattr(
+            module, "rapidgzip_child_unavailable_reason", lambda: "no child here"
+        )
     # Low enough that AUTO would otherwise pick rapidgzip for this input.
     monkeypatch.setattr(
         codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
     )
     payload = _payload()
-    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
-    auto = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.AUTO)
-    with open_codec_stream(Codec.GZIP, str(path), config=auto) as stream:
+    path = _write(tmp_path, f"valid.{codec.value}", _compress(codec, payload))
+    auto = StreamConfig(
+        seekable=True,
+        use_rapidgzip=AcceleratorMode.AUTO,
+        use_indexed_bzip2=AcceleratorMode.AUTO,
+    )
+    with open_codec_stream(codec, str(path), config=auto) as stream:
+        assert not _has_child_stream(stream)
         assert stream.read() == payload
-    with pytest.raises(ResourceLimitError, match=r"use_rapidgzip.*\(no child here\)"):
-        open_codec_stream(Codec.GZIP, str(path), config=_ON)
+    field = "use_indexed_bzip2" if codec is Codec.BZIP2 else "use_rapidgzip"
+    with pytest.raises(ResourceLimitError, match=rf"{field}.*\(no child here\)"):
+        open_codec_stream(codec, str(path), config=_ON)
 
 
 def _refuse(*args: object, **kwargs: object) -> NoReturn:
@@ -1050,7 +1075,7 @@ def test_a_child_that_cannot_start_is_a_resource_limit_under_on(
 
 
 @pytest.mark.parametrize("mode", ["path", "bytesio"])
-@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+@pytest.mark.parametrize("codec", _CHILD_CODECS)
 @pytest.mark.parametrize("how", sorted(_START_FAILURES))
 def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str, codec: Codec, mode: str
@@ -1079,6 +1104,7 @@ def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
         config = StreamConfig(
             seekable=True,
             use_rapidgzip=AcceleratorMode.AUTO,
+            use_indexed_bzip2=AcceleratorMode.AUTO,
             compressed_input_size=len(content),
             expected_decompressed_size=(None if codec is Codec.GZIP else len(payload)),
         )
@@ -1128,7 +1154,7 @@ def test_an_auto_fallback_warns_once_per_process(
     """A child that cannot start is a fact about the environment: AUTO logs it once,
     naming why, however many streams fall back. A normal open, and ON (which raises),
     log nothing."""
-    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", set())
     monkeypatch.setattr(
         codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
     )
@@ -1159,6 +1185,33 @@ def test_an_auto_fallback_warns_once_per_process(
     assert why in message
 
 
+def test_the_bzip2_fallback_warns_once_and_names_its_own_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bzip2 fallback is logged once too, apart from the DEFLATE family's, and names
+    the setting that silences it."""
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", set())
+    caplog.set_level(logging.WARNING, logger="archivey.streams")
+    payload = _payload()
+    path = _write(tmp_path, "valid.bz2", bz2.compress(payload))
+    auto = StreamConfig(
+        seekable=True,
+        use_indexed_bzip2=AcceleratorMode.AUTO,
+        compressed_input_size=path.stat().st_size,
+    )
+    _take_the_child_away(monkeypatch, tmp_path, "frozen")
+    for _ in range(2):
+        with open_codec_stream(Codec.BZIP2, str(path), config=auto) as stream:
+            assert not _has_child_stream(stream)
+            assert stream.read() == payload
+    messages = [r.getMessage() for r in caplog.records if r.name == "archivey.streams"]
+    (message,) = [m for m in messages if "use_indexed_bzip2=AcceleratorMode.OFF" in m]
+    assert "bzip2 streams are read with the standard library decoder" in message
+    assert _fallback_warnings(caplog) == []
+
+
 @pytest.mark.parametrize("how", ["frozen", "zip-import"])
 def test_resolving_a_codec_does_not_warn(
     monkeypatch: pytest.MonkeyPatch,
@@ -1168,7 +1221,7 @@ def test_resolving_a_codec_does_not_warn(
 ) -> None:
     """``resolve_codec`` is a query that opens nothing, so it logs nothing; the open
     that then reads with the stdlib is what warns."""
-    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", set())
     monkeypatch.setattr(
         codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
     )
@@ -1195,7 +1248,10 @@ def test_no_fallback_warning_when_rapidgzip_is_not_installed(
 ) -> None:
     """Without rapidgzip, AUTO reads with the stdlib as it always has, quietly: there is
     no child to fail."""
-    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", set())
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     monkeypatch.setattr(
         codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
     )

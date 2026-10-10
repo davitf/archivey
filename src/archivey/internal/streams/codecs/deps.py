@@ -106,19 +106,8 @@ lz4_block = _optional("lz4.block")
 brotli = LazyOptional("brotli")
 pyppmd = LazyOptional("pyppmd")
 inflate64 = LazyOptional("inflate64")
-# gzip, zlib and raw deflate run rapidgzip in a child process, so this process only needs
-# to know it is installed. bzip2 random access imports it here (see rapidgzip_bzip2).
+# rapidgzip runs in a child process for every codec it decodes (gzip, zlib, raw deflate
+# and bzip2), so this process only needs to know it is installed. bzip2 uses rapidgzip's
+# bundled IndexedBzip2File, never the separate indexed_bzip2 package: the two loaded into
+# one process corrupt the heap on macOS (ADR 0008).
 rapidgzip = LazyOptional("rapidgzip")
-
-
-def rapidgzip_bzip2() -> type | None:
-    """rapidgzip's bundled ``IndexedBzip2File``, imported now if it was not yet.
-
-    bzip2 random access is provided by rapidgzip's *bundled* IndexedBzip2File, NOT the
-    separate ``indexed_bzip2`` package. Loading both rapidgzip and indexed_bzip2 into one
-    process corrupts the heap and aborts on macOS (they statically bundle an overlapping
-    C++ core, whose symbols collide under dyld). Routing both gzip and bzip2 through
-    rapidgzip keeps a single accelerator library in the process, which is safe on every
-    platform. See ADR 0008 and dev-docs/investigations/rapidgzip-upstream-report.md §7.
-    """
-    return getattr(rapidgzip.load(), "IndexedBzip2File", None)

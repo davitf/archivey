@@ -64,13 +64,14 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
 - **Accelerators are on by default for seekable streams.** If you open an archive with
-  `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data, and
-  DEFLATE data of 16 MiB or more compressed, through rapidgzip. DEFLATE is the compression in gzip
-  files and in most ZIP members. rapidgzip marks places in the stream it can restart from as it
-  reads, so a seek jumps to the nearest one instead of decompressing from the start. rapidgzip can
-  crash on some damaged DEFLATE data, so archivey runs it in a separate process, where a crash ends
-  only that read, with an error. Its bzip2 decoder hasn't been seen to crash, but it runs there too
-  as a precaution, since it's part of the same library. Archivey's fuzz tests run them and compare
+  `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data of 1 MiB
+  or more compressed, and DEFLATE data of 16 MiB or more, through rapidgzip. DEFLATE is the
+  compression in gzip files and in most ZIP members. rapidgzip marks places in the stream it can
+  restart from as it reads, so a seek jumps to the nearest one instead of decompressing from the
+  start. rapidgzip can crash on some damaged DEFLATE data, so archivey runs it in a separate
+  process. If it crashes, the standard library's decoder takes over and reports what it finds. Its
+  bzip2 decoder hasn't been seen to crash, but it runs there too as a precaution, since it's part
+  of the same library. Archivey's fuzz tests run them and compare
   their output with the standard decoders.
   To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,

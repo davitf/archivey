@@ -177,7 +177,10 @@ raises `PackageNotInstalledError` naming `[seekable]` — even without
 `seekable_members=True`, at the first gzip, zlib or deflate stream it would handle.
 `AUTO` treats the accelerator as an enhancement and falls back to the stdlib decoder
 without raising. The stream is still seekable, but a backward seek may re-decode from
-the start. `use_indexed_bzip2` behaves the same way for bzip2.
+the start. `use_indexed_bzip2` behaves the same way for bzip2. Its decoder runs in a
+child process too, and `AUTO` selects it from `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`
+(1 MiB) of compressed input: the standard library decodes bzip2 slowly, so the child
+pays for its start much sooner than for gzip.
 
 An accelerator raises on the same corrupt input as the stdlib decoder, with one kind of
 exception: crafted stream boundaries that the data's own checksums cannot see. Inside a

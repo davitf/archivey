@@ -1,4 +1,4 @@
-"""Run the rapidgzip DEFLATE-family decoder in a child process.
+"""Run rapidgzip's decoders (DEFLATE family and bzip2) in a child process.
 
 rapidgzip 0.16 aborts the whole process when it decodes a gzip, zlib or raw DEFLATE
 stream that ends early: a destructor in its chunk decoder throws (``BitReader::tell``,
@@ -20,8 +20,13 @@ start the child and import rapidgzip, and about 70 µs per round trip. A full re
 1.1 to 1.35 times as long as in-process rapidgzip, and stayed about 1.5 times faster
 than the stdlib engine.
 
-bzip2 is not here: rapidgzip's bzip2 decoder has not been seen to abort on truncated
-input, and it stays in-process (``_AcceleratorStream`` in ``codecs/rapidgzip_inprocess.py``).
+rapidgzip's bzip2 decoder (``IndexedBzip2File``) runs in the same kind of child, one
+per stream (``bzip2=True``), as a precaution: it has not been seen to abort, but it
+comes from the same library as the DEFLATE decoder, which does. Being native code is
+not by itself a reason to isolate a decoder (the standard library's are not);
+an observed crash that cannot always be avoided is. ``scripts/accelerator_crash_search.py``
+keeps looking for crashes in both, by running them on damaged input in a process it
+watches, so whether the isolation is still needed stays known.
 """
 
 from __future__ import annotations
@@ -57,10 +62,15 @@ from archivey.internal.streams.codecs.deflate_resume import WINDOW_SIZE, Deflate
 from archivey.internal.streams.codecs.rapidgzip_worker import (
     ARG_MAX,
     ARG_MIN,
+    BZIP2_ARG,
     ERR,
     FRAME,
     MEMORY_LIMIT_EXIT,
     NO_MEMORY_LIMIT,
+    OFFSET_PAIR,
+    OFFSETS,
+    OFFSETS_AVAILABLE,
+    OFFSETS_COMPLETE,
     OK,
     OPEN,
     OPEN_LIMIT,
@@ -314,7 +324,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     garbage-collected instance is reaped by its finalizer. ``tell`` needs no round
     trip: the position is kept here.
 
-    ``label`` names the codec in error messages (``gzip``, ``zlib``, ``deflate``).
+    ``label`` names the codec in error messages (``gzip``, ``zlib``, ``deflate``,
+    ``bzip2``). ``bzip2`` selects rapidgzip's bzip2 decoder; its stream keeps no
+    DEFLATE checkpoints (``resume_point`` is always ``None``), and the bzip2 takeover
+    finds its blocks through :meth:`available_block_offsets` instead.
     ``max_memory`` is ``DecoderLimits.max_decoder_memory``: the child is ended when its
     memory grows by more than that many bytes after the open (``watch_memory`` in the
     worker), and every later call raises ``ResourceLimitError``. ``None`` sets no
@@ -326,11 +339,16 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         source: str | os.PathLike[str] | BinaryIO,
         *,
         label: str,
+        bzip2: bool = False,
         max_memory: int | None,
     ) -> None:
         # Everything close() reads is assigned before anything that can raise.
         self._label = label
+        self._bzip2 = bzip2
         self._max_memory = max_memory
+        # The last index the child sent (``available_block_offsets``), kept so that it
+        # still answers after the child has died.
+        self._known_offsets: dict[int, int] = {}
         self._proc: subprocess.Popen[bytes] | None = None
         self._stderr: IO[bytes] | None = None
         self._finalizer: weakref.finalize | None = None
@@ -384,6 +402,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         )
         super().__init__()
         argv = python_argv(_WORKER, _start_error)
+        if bzip2:
+            argv.append(BZIP2_ARG)
         try:
             stderr = tempfile.TemporaryFile()
         except OSError as exc:
@@ -674,8 +694,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         grows with the index; so a checkpoint can lag the reader by that distance
         plus the spacing of the points, and a takeover decodes that much again, which
         is bounded and paid only by a damaged stream.
+
+        A bzip2 stream keeps no checkpoints: a bzip2 block needs no window, and the
+        takeover reads the blocks from the index (:meth:`available_block_offsets`).
         """
-        if not data:
+        if not data or self._bzip2:
             return
         start = self._received_end
         end = start + len(data)
@@ -921,6 +944,39 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         except Exception:  # noqa: BLE001 - a probe; None leaves the caller's check as it was
             return None
         return -(-value // 8) if value >= 0 else None
+
+    def _offsets(self, which: int) -> dict[int, int]:
+        """One ``OFFSETS`` round trip: the decoder's index, compressed bit offset to
+        decompressed offset."""
+        _, payload = self._call(OFFSETS, which, keep_parked=True)
+        return dict(OFFSET_PAIR.iter_unpack(payload))
+
+    def available_block_offsets(self) -> dict[int, int]:
+        """The part of the decoder's index built so far, compressed bit offset to
+        decompressed offset; empty when it has none.
+
+        Unlike :meth:`block_offsets` it forces nothing. When the child cannot answer
+        (it died, or it reported an error), this is the last index it sent: the
+        bzip2 takeover asks for it after an error, to find the blocks the decoder
+        indexed before it (``_bzip2_resume_points`` in ``codecs.py``). A parked
+        source error is left for the next read or seek.
+        """
+        if self._death is None and self._proc is not None:
+            try:
+                self._known_offsets = self._offsets(OFFSETS_AVAILABLE)
+            except Exception:  # noqa: BLE001 - the last index sent is still true
+                pass
+        return dict(self._known_offsets)
+
+    def block_offsets(self) -> dict[int, int]:
+        """The decoder's complete index, compressed bit offset to decompressed offset.
+
+        This makes the decoder index the whole stream, so it is for a caller that has
+        read to the end. A child that cannot answer raises, as the next read would.
+        """
+        offsets = self._offsets(OFFSETS_COMPLETE)
+        self._known_offsets = dict(offsets)
+        return offsets
 
     def close(self) -> None:
         if self.closed:

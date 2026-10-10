@@ -258,7 +258,7 @@ retargeting them is deferred (see the rapidgzip follow-up). The wording below is
 a standing rule for the in-scope streams, not a claim that every stream type in
 the library has been audited to it. The one exception is the paragraph on accelerated
 decoders and its three `Accelerated decoder` matrix rows, which are deliberately
-normative for the in-process bzip2 accelerator and the rapidgzip decoder process.
+normative for the rapidgzip decoder process, which decodes the DEFLATE family and bzip2.
 
 Decode and verify streams SHALL raise content `TruncatedError` and
 `CorruptionError` from `read` / `readall` (and from size/seek paths that would
@@ -351,8 +351,8 @@ back SHALL NOT read the damaged member as complete, clean data. `tell()`, `seeka
 and `close()` are not gated by the verdict, and `close()` still does not raise it.
 Opening the member again gives a fresh stream.
 
-An accelerated decoder (the in-process bzip2 accelerator, or the rapidgzip decoder
-process) SHALL leave `tell()` at the bytes the caller received after a read that raised,
+An accelerated decoder (the rapidgzip decoder process, for the DEFLATE family and bzip2)
+SHALL leave `tell()` at the bytes the caller received after a read that raised,
 by moving the decoder back to where that read started. When it cannot, its position
 matches no byte the caller received, and the stream SHALL be given up rather than read
 on from past a gap. That is the case when the caller's own source raised during a read or
