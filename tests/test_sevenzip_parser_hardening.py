@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import MemberType, open_archive
 from archivey.config import ListingLimits
 from archivey.exceptions import (
     ResourceLimitError,
@@ -112,6 +112,7 @@ def _header(
     names: list[str],
     folder_crcs: list[int] | None = None,
     substreams: bytes | None = None,
+    file_props: bytes = b"",
 ) -> bytes:
     streams = b""
     if pack_sizes is not None:
@@ -128,7 +129,7 @@ def _header(
         streams += b"\x08" + substreams + b"\x00"
     names_blob = b"\x00" + b"".join(n.encode("utf-16le") + b"\x00\x00" for n in names)
     files = b"\x05" + _num(len(names))
-    files += b"\x11" + _num(len(names_blob)) + names_blob + b"\x00"
+    files += b"\x11" + _num(len(names_blob)) + names_blob + file_props + b"\x00"
     return b"\x01\x04" + streams + b"\x00" + files + b"\x00"
 
 
@@ -563,3 +564,88 @@ def test_pipeline_helpers_require_max_members(helper: str) -> None:
         "max_members"
     ]
     assert param.default is inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# A record with a data stream is a file
+# ---------------------------------------------------------------------------
+
+_EMPTY_STREAM = 0x0E
+_ANTI = 0x10
+_ATTRIBUTES = 0x15
+_FILE_DATA = b"hello world"
+
+
+def _file_prop(prop_id: int, payload: bytes) -> bytes:
+    return bytes([prop_id]) + _num(len(payload)) + payload
+
+
+def _bits(values: list[bool]) -> bytes:
+    """A 7z bit vector, most significant bit first."""
+    out = bytearray((len(values) + 7) // 8)
+    for index, value in enumerate(values):
+        if value:
+            out[index // 8] |= 0x80 >> (index % 8)
+    return bytes(out)
+
+
+def _attributes(values: list[int]) -> bytes:
+    """``kAttributes`` with every value defined."""
+    return _file_prop(
+        _ATTRIBUTES,
+        b"\x01\x00" + b"".join(struct.pack("<I", value) for value in values),
+    )
+
+
+def _copy_archive(names: list[str], file_props: bytes) -> bytes:
+    """One COPY folder holding ``_FILE_DATA`` as its only stream."""
+    header = _header(
+        folders=[_linear([_coder(_COPY)])],
+        coder_unpack_sizes=[[len(_FILE_DATA)]],
+        pack_sizes=[len(_FILE_DATA)],
+        names=names,
+        folder_crcs=[zlib.crc32(_FILE_DATA) & 0xFFFFFFFF],
+        file_props=file_props,
+    )
+    return _archive(_FILE_DATA, header)
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        pytest.param(0x8000 | (0o040755 << 16), id="unix-directory-mode"),
+        pytest.param(0x8000 | 0x400 | (0o040755 << 16), id="with-reparse-bit"),
+    ],
+)
+def test_a_member_with_data_and_a_directory_mode_is_a_file(
+    attributes: int, tmp_path: Path
+) -> None:
+    """7-Zip never makes a directory of an entry that has a stream, and extracts it as
+    a file. A directory type would skip the data on every read without an error."""
+    data = _copy_archive(["a"], _attributes([attributes]))
+    with open_archive(io.BytesIO(data)) as reader:
+        (member,) = reader.members()
+        assert (member.name, member.type) == ("a", MemberType.FILE)
+        assert reader.read(member) == _FILE_DATA
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.extract_all(tmp_path)
+    assert (tmp_path / "a").read_bytes() == _FILE_DATA
+
+
+def test_an_anti_bit_left_on_a_member_with_data_is_dropped() -> None:
+    """``kEmptyStream`` repeated after ``kAnti`` moves the stream to the anti entry.
+
+    7-Zip clears the anti bits on each ``kEmptyStream`` and lists ``a`` as an 11-byte
+    file and ``b`` as a folder; ``a`` must not be an anti item whose data is skipped.
+    """
+    props = (
+        _file_prop(_EMPTY_STREAM, _bits([True, False]))
+        + _file_prop(_ANTI, _bits([True]))
+        + _file_prop(_EMPTY_STREAM, _bits([False, True]))
+    )
+    data = _copy_archive(["a", "b"], props)
+    with open_archive(io.BytesIO(data)) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert members["a"].type is MemberType.FILE
+        assert reader.read(members["a"]) == _FILE_DATA
+        assert members["b/"].type is MemberType.DIRECTORY

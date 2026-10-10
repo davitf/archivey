@@ -1309,14 +1309,19 @@ _FILES_INFO_HANDLERS: dict[
 
 
 def _file_record_from_props(props: _FileProps) -> SevenZipFileRecord:
+    # A record with a stream is a file: never a directory, an empty file or an anti
+    # item, as in 7-Zip (7zIn.cpp clears all three when HasStream). The anti and
+    # empty-file bits can otherwise stay on a data record when a crafted header repeats
+    # kEmptyStream after kAnti, and the member's data would then never be read.
+    emptystream = props.emptystream
+    is_anti = emptystream and props.is_anti
+    is_empty_file = emptystream and props.is_empty_file
     return SevenZipFileRecord(
         filename=props.filename,
-        emptystream=props.emptystream,
-        is_anti=props.is_anti,
-        is_directory=props.emptystream
-        and not props.is_empty_file
-        and not props.is_anti,
-        is_empty_file=props.is_empty_file,
+        emptystream=emptystream,
+        is_anti=is_anti,
+        is_directory=emptystream and not is_empty_file and not is_anti,
+        is_empty_file=is_empty_file,
         attributes=props.attributes,
         creation_time=props.creation_time,
         last_access_time=props.last_access_time,
