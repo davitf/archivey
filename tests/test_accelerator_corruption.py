@@ -882,12 +882,15 @@ def _soft_short_backstop() -> tuple[_GzipTruncationCheckStream, bytes]:
 
     stream = _GzipTruncationCheckStream(
         _StdlibOnAcceleratorError(
-            io.BytesIO(prefix), views=views, open_stdlib=open_stdlib, label="gzip"
+            io.BytesIO(prefix),
+            views=views,
+            open_stdlib=open_stdlib,
+            label="gzip",
+            empty_to_stdlib=True,
         ),
         views=views,
         isize=int.from_bytes(cut[-4:], "little"),
         source_len=len(cut),
-        open_stdlib=open_stdlib,
     )
     return stream, prefix
 

@@ -120,7 +120,8 @@ target) SHALL run this check there as a read does; after a handover the stdlib b
 seek to the caller's target, so the seek raises or returns what it does with the accelerator
 off. Once the stdlib
 backend has taken over from rapidgzip, its errors SHALL leave as the codec's typed errors, so
-the over-run probe of a declared size never takes a data error for the end of the data.
+the verdict does not depend on whether rapidgzip was engaged: with rapidgzip off, the codec's
+own translator types the same error.
 
 rapidgzip 0.16 aborts the process on a DEFLATE-family stream that ends early, so the system
 SHALL run the gzip, zlib and deflate decoders in a child process and MUST NOT decode those

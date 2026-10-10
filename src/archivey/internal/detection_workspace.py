@@ -30,7 +30,7 @@ from archivey.detection_cost import (
     TierSkipReason,
 )
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
-from archivey.internal.source import ArchiveSource
+from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_seekable,
     read_exact,
@@ -262,6 +262,8 @@ class PrefixWorkspace:
         re-decode), grow the prefix under the smaller of
         :data:`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` and :attr:`read_ceiling`, and return
         ``None`` past that cap (recorded as ``BUDGET_EXHAUSTED``). Short/empty on EOF.
+        A seek read that starts inside the prefix takes that part from the prefix, so
+        the bytes are not fetched twice.
         """
         if offset < 0 or length < 0:
             return None
@@ -274,6 +276,11 @@ class PrefixWorkspace:
 
         handle = self._cheap_random_access_handle()
         if handle is not None:
+            held = len(self._buf)
+            if offset < held:
+                self._receipt.prefix_bytes += held - offset
+                rest = self._read_at_via_seek(handle, held, end - held)
+                return bytes(self._buf[offset:held]) + rest
             return self._read_at_via_seek(handle, offset, length)
 
         if end > min(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE, self.read_ceiling):
@@ -285,21 +292,16 @@ class PrefixWorkspace:
         """Handle for O(1) probe seeks, or ``None`` to fall back to capped buffering.
 
         A path's own handle and a bare seekable stream (``BytesIO``, file object)
-        are treated as cheap. :class:`~archivey.ArchiveStream` is not:
-        many codecs service a backward restore by re-decoding, so probes prefer the
-        capped buffer path there. Richer "is this seek cheap?" pricing is an idea in
-        ``dev-docs/IDEAS.md`` ("Price detection in round trips, not bytes").
+        are treated as cheap. :class:`~archivey.ArchiveStream` is not, under any
+        pass-through layer or in a volume list (``seek_is_expensive``): many codecs
+        service a backward restore by re-decoding, so probes prefer the capped buffer
+        path there. Richer "is this seek cheap?" pricing is
+        an idea in ``dev-docs/IDEAS.md`` ("Price detection in round trips, not
+        bytes").
         """
-        if self._handle is None or self._seek_is_expensive(self._handle):
+        if self._handle is None or seek_is_expensive(self._handle):
             return None
         return self._handle
-
-    @staticmethod
-    def _seek_is_expensive(stream: BinaryIO) -> bool:
-        # Lazy import: archive_stream must not import the detection workspace.
-        from archivey.internal.streams.archive_stream import ArchiveStream
-
-        return isinstance(stream, ArchiveStream)
 
     def _read_at_via_seek(self, handle: BinaryIO, offset: int, length: int) -> bytes:
         assert self._entry_pos is not None
@@ -323,20 +325,27 @@ class PrefixWorkspace:
         handle, the same way :meth:`read_at` does, and does not grow the prefix
         through the middle of the file. A non-seekable source, and an
         ``ArchiveStream`` whose backward seek may re-decode, returns ``None``
-        rather than buffering the whole source to reach the end.
+        rather than buffering the whole source to reach the end. Those declines
+        record the trailer tier as ``CAPABILITY_UNAVAILABLE``: the source has a
+        tail detection did not look at. A source shorter than ``length`` has no
+        such block and returns ``None`` with nothing recorded.
         """
         if length < 0:
             return None
         if length == 0:
             return b""
         total = self.remaining_known()
-        if total is None or total < length:
+        if total is None:
+            self.record_skip("trailer", TierSkipReason.CAPABILITY_UNAVAILABLE)
+            return None
+        if total < length:
             return None
         origin = total - length
         if origin + length <= len(self._buf):
             return bytes(self._buf[origin : origin + length])
         handle = self._cheap_random_access_handle()
         if handle is None:
+            self.record_skip("trailer", TierSkipReason.CAPABILITY_UNAVAILABLE)
             return None
         return self._read_at_via_seek(handle, origin, length)
 
