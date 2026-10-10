@@ -348,10 +348,12 @@ and no member `FAILED`, the system SHALL exit `3` (refused by safety policy —
 safe members are on disk). Because `OnError.STOP` / `--stop-on-error` never
 halts on a policy block, a STOP+policy abort cannot occur; exit `3` MUST NOT
 be used for an aborted STOP-path failure. Exit codes `4` to `127` SHALL remain
-reserved. Codes `128` and above follow the shell's `128 + N` convention for
-signal `N` and are not in the reserved range: a command interrupted by Ctrl-C
-(SIGINT) SHALL print `interrupted` and exit `130`. Documentation SHALL direct callers to treat any nonzero code other
-than `2` as a failure and MUST NOT assume `1` is the only failure code.
+reserved.
+Codes `128` and above follow the shell's `128 + N` convention for signal `N`
+and are not in the reserved range: a command interrupted by Ctrl-C (SIGINT)
+SHALL print `interrupted` and exit `130`.
+Documentation SHALL direct callers to treat any nonzero code other than `2` as
+a failure and MUST NOT assume `1` is the only failure code.
 
 #### Scenario: exit codes
 
