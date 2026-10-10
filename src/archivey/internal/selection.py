@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from archivey.diagnostics import DiagnosticCode, SelectorUnmatchedContext
@@ -136,24 +136,28 @@ class CollectionSelector:
 
 
 def normalize_member_selector(
-    members: Collection[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None,
+    members: Iterable[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None,
 ) -> Callable[[ArchiveMember], bool] | None:
-    """Normalize a collection or predicate selector to a predicate.
+    """Normalize an iterable or predicate selector to a predicate.
+
+    An iterable is read exactly once, so a generator works. Call this once per public
+    call and pass the result on: a second call on the caller's argument would find a
+    one-shot iterable empty.
 
     A ``str`` entry matches every member with exactly that name, so a directory is
     selected as ``"dir/"``, not ``"dir"``. An ``ArchiveMember`` entry matches by
     identity. The collection form returns a :class:`CollectionSelector`, which also
     records the entries that matched nothing.
 
-    A selector that is both callable and a collection is read as a collection.
-    ``Collection`` is not final, so the two arms of the parameter's type can
+    A selector that is both callable and iterable is read as an iterable.
+    ``Iterable`` is not final, so the two arms of the parameter's type can
     overlap; the tie is decided here rather than falling out of the order of
     the checks.
     """
     if members is None:
         return None
     if isinstance(members, (str, bytes)):
-        # A str is a Collection of one-character strings, so `members="notes.txt"`
+        # A str is an iterable of one-character strings, so `members="notes.txt"`
         # selected the set {"n", "o", "t", "e", "s", ".", "x"} — no member matched,
         # and the call reported a clean extraction of nothing. Refused rather than
         # wrapped: guessing that a string meant [string] would make the plural
@@ -172,12 +176,12 @@ def normalize_member_selector(
     if not isinstance(members, Iterable):
         # Everything below is the collection arm, so only the predicate is left here.
         # Testing the collection first is what decides the tie: an object that is both
-        # callable and a collection is read as a collection, which is the more
+        # callable and iterable is read as a collection, which is the more
         # defensible reading of a parameter named ``members``. The precedence was
         # never an explicit decision before; it is one now.
         #
         # It is also what lets both checkers narrow this arm with no ``cast``.
-        # ``callable()`` cannot drop the collection arm, because ``Collection`` is not
+        # ``callable()`` cannot drop the collection arm, because ``Iterable`` is not
         # final and a subclass may define ``__call__`` — ty intersects the two instead
         # and the intersection returns ``object``. A negative ``isinstance`` does drop
         # it, so the value that reaches the return below is already a predicate.
