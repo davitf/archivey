@@ -843,25 +843,25 @@ review, not part of the PR that found it.
 
 ### DR-23a. Share what must agree; copy what agrees by coincidence
 
-**Rule.** Before sharing or copying code inside `src/`, ask: if one copy changes, must
-the other change too?
+**Rule.** Before sharing or copying code in `src/`, `tests/` or `scripts/`, ask: if one
+copy changes, must the other change too?
 - If yes, share it. Copies that must agree for correctness drift apart, and the drift is
   a bug: limits and resource checks, error translation, integrity checks, diagnostics
   wiring, and the workarounds for one library that several codecs use.
 - If no, keep the copies. Code that happens to look alike today (two formats' header
-  parsers, two tests' setup) may diverge for good reasons.
+  parsers, two tests' setup) may diverge for good reasons. Keeping copies does not
+  narrow DR-0: a bug found in one copy is still a question for the others.
 - A shared helper that needs a flag, mode or callback per caller to cover their
   differences is worse than plain copies. Share the part that must agree and leave the
   rest in each caller.
-- If you can't tell, keep the copies and add a comment at each one naming the other.
+- If you can't tell, keep the copies and add a comment at each one naming the other, so
+  a fix to one reaches the other.
 
 **Why.** The maintainer, 2026-10-09: some duplication makes sense; "nothing is black and
-white". The same day's duplication check of `streams/codecs/` found copies that had
-drifted into different behaviour, and one bug where one copy missed the diagnostics
-collector the others pass. DR-14 covers duplicated public mechanisms; this rule covers
-internal code.
-
-**Reopen if** a shared helper keeps gaining per-caller options; then split it back.
+white". The same day's duplication check of the codec modules (on the layout PRs 647 and
+649 introduce) found copies that had drifted into different behaviour, and one bug where
+a copy missed the diagnostics collector the others pass (tracked internally). DR-14
+covers duplicated public mechanisms; this rule covers internal code.
 
 ### DR-24. Tests pin behaviour against real producers
 
