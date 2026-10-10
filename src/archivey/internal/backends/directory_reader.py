@@ -191,8 +191,10 @@ class DirectoryReader(BaseArchiveReader):
         # A dest that does not resolve is left to the shared path, so it fails as on
         # every other backend: under a symlink loop, mkdir raises OSError (ELOOP); a
         # dest that is itself a looping link exists and is not a directory, so it is
-        # refused with ExtractionError. Nothing can be created inside the source
-        # through a path that does not resolve.
+        # refused with ExtractionError. A source root that does not resolve skips the
+        # check too, and the walk fails on it a moment later. So neither case writes
+        # members into the source, but in the second the dest directory itself may
+        # already be created inside the source, as it was with 3.13's resolve().
         try:
             root = resolve_or_raise_on_loop(self._root)
             target = resolve_or_raise_on_loop(dest)
