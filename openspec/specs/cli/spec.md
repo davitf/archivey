@@ -142,23 +142,22 @@ per-file collisions resolve by the overwrite policy (`rename` derives the librar
 `foo/x.txt` without a `foo/` directory member, extracted where the operator's file
 `foo` exists, hoists to `foo (1)/x.txt` where a direct extraction fails on `foo`,
 because the implied parent directory is created, not extracted, so no collision policy
-applies to it. The hoist MUST NOT delete pre-existing files or
-directories under any policy. A collision
-the policy cannot resolve without deleting data (`error`, or a dir-vs-file
-shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
-under the wrapper, and exit nonzero — mirroring the failure a direct extraction
-would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
+applies to it. The hoist MUST NOT delete pre-existing files or directories under any
+policy. A collision the policy cannot resolve without deleting data (`error`, or a
+dir-vs-file shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved
+remainder under the wrapper, and exit nonzero — mirroring the failure a direct
+extraction would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
 containing `src/`) SHALL be flattened in place, not treated as a collision, and the
 wrapper SHALL then take that root's mode and times. A directory stored without owner
 write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
 and search permission for the move and then puts its mode back, as a direct extraction
 into the cwd would have succeeded. After a hoist, the per-member lines (`renamed:`,
-`name rewritten:`, `not overwritten:` and the others) SHALL name each member where it
-is after the move, as a direct extraction into the cwd names it, never a path inside
-the removed wrapper: a member the merge renamed is named under its new name, and a
-member the merge discarded under `skip` gets no line of its own beyond the hoist's
-`skipped:` line, since its path is the operator's entry. When the hoist stops, a member
-left behind is named inside the wrapper.
+`name rewritten:`, `not overwritten:`, `kept existing directory's mode` and the others)
+SHALL name each member where it is after the move, as a direct extraction into the cwd
+names it, never a path inside the removed wrapper: a member the merge renamed is named
+under its new name, and a member the merge discarded under `skip` gets no line of its
+own beyond the hoist's `skipped:` line, since its path is the operator's entry. When
+the hoist stops, a member left behind is named inside the wrapper.
 Container-name collisions SHALL be resolved by the overwrite policy, with one
 exception: a symlink at the container name, dangling or live, SHALL be treated
 as taken under every overwrite policy and the next free `<stem> (N)` used,

@@ -190,10 +190,10 @@ class _Moves:
 
     ``names`` maps an entry's name in the wrapper (``/``-separated) to its name in the
     wrapper's parent after the move. A name that is not a key moved with its nearest
-    ancestor that is. ``discarded`` holds the keys whose entry ``SKIP`` unlinked rather than moved:
-    their ``names`` value is the operator's entry that was kept, not the member.
-    ``left_in`` is the wrapper's name when the hoist stopped part-way: a name under no
-    key is still in the wrapper.
+    ancestor that is. ``discarded`` holds the keys whose entry ``SKIP`` unlinked
+    rather than moved: their ``names`` value is the operator's entry that was kept,
+    not the member. ``left_in`` is the wrapper's name when the hoist stopped
+    part-way: a name under no key is still in the wrapper.
     """
 
     names: dict[str, str]
@@ -220,7 +220,7 @@ class _Moves:
         *,
         stopped: bool = False,
     ) -> _Moves:
-        """What :func:`_merge_move` recorded in ``moved``, named from ``wrapper``'s
+        """What the hoist recorded in ``moved``, named from ``wrapper``'s
         parent; ``stopped`` when the merge did not finish."""
         return cls(
             {
@@ -319,7 +319,15 @@ def _merge_move(
     dest_is_dir = dest.is_dir() and not dest.is_symlink()
     if src_is_dir and dest_is_dir:
         # ``dest`` keeps its own mode, as a directory that was already there does
-        # when extracting into it; ``src`` is opened up only to empty it.
+        # when extracting into it, and the line is the one extraction prints then.
+        # ``src`` holds the archive's mode, as extraction applied it.
+        kept = stat.S_IMODE(os.stat(dest).st_mode)
+        if kept != stat.S_IMODE(os.lstat(src).st_mode):
+            print(
+                f"kept existing directory's mode {kept:04o}: {escape_path(dest)}",
+                file=err,
+            )
+        # ``src`` is opened up only to empty it.
         mode = _open_up(src)
         try:
             for entry in sorted(src.iterdir()):
@@ -563,7 +571,11 @@ def maybe_hoist_single_root(
                 mode = _open_up(child)
                 try:
                     for entry in sorted(child.iterdir()):
-                        _rename(entry, wrapper / entry.name)
+                        up = wrapper / entry.name
+                        _rename(entry, up)
+                        # Recorded for a failure part-way: an entry already moved is
+                        # named where it is, and ``left_in`` covers only the rest.
+                        moved[f"{child.name}/{entry.name}"] = (up, False)
                     child.rmdir()
                 except BaseException:
                     _put_back(child, mode)
@@ -806,16 +818,23 @@ def _report_extraction(
         and r.requested_path != r.path
     }
 
-    def shown(path: Path | None) -> str | None:
-        """``path`` as the line names it, or ``None`` when the hoist discarded it."""
-        if path is not None and moves is not None and _discarded(path, target, moves):
-            return None
+    def shown(path: Path | None) -> str:
+        """``path`` as the line names it."""
         return escape_member_name(_relative_name(path, target, moves))
 
     for result in report:
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
             extracted += 1
+            if (
+                result.path is not None
+                and moves is not None
+                and _discarded(result.path, target, moves)
+            ):
+                # The hoist discarded this member under ``SKIP``. Its ``skipped:`` line
+                # is the member's only line: it was not extracted, and not re-rooted
+                # either. ``extracted -= extra_skipped`` below takes it off the count.
+                continue
             was_renamed = (
                 result.requested_path is not None
                 and result.path is not None
@@ -829,13 +848,20 @@ def _report_extraction(
             landed = shown(result.path)
             if was_renamed:
                 renamed += 1
-                # Renames change where data lives — always report them.
-                if landed is not None:
-                    print(
-                        f"renamed: {shown(result.requested_path)} -> {landed}",
-                        file=err,
-                    )
-            elif verbose:
+                # Renames change where data lives — always report them. Neither side
+                # names a discarded entry: a discard implies ``skip``, which implies no
+                # rename.
+                print(
+                    f"renamed: {shown(result.requested_path)} -> {landed}",
+                    file=err,
+                )
+            elif verbose and not (
+                result.path is not None
+                and moves is not None
+                and _hoist_renamed(result.path, target, moves)
+            ):
+                # A member the hoist renamed has the hoist's ``renamed:`` line instead,
+                # as a member that extraction renamed has its own.
                 print(
                     f"extracted: {escape_member_name(result.member.name)}",
                     file=err,
@@ -861,7 +887,7 @@ def _report_extraction(
                 rerooted_name = is_rooted(result.presented_name)
                 if rerooted_name:
                     rerooted += 1
-                if landed is not None and (not rerooted_name or verbose):
+                if not rerooted_name or verbose:
                     # ``presented_name`` is the full relative name, so the arrow's other
                     # side must be too: a basename would print ``dir/foo. -> foo`` and
                     # invent a destination the member never had.
@@ -982,6 +1008,16 @@ def _relative_name(
     if moves is not None:
         return moves.place(relative)[0]
     return relative
+
+
+def _hoist_renamed(path: PurePath, target: PurePath, moves: _Moves) -> bool:
+    """Whether the hoist moved the entry at ``path`` itself to a new name. An entry
+    inside a renamed directory only follows it, as in :func:`_follows_renamed_dir`."""
+    try:
+        relative = path.relative_to(target).as_posix()
+    except ValueError:
+        return False
+    return moves.names.get(relative, relative) != relative
 
 
 def _discarded(path: PurePath, target: PurePath, moves: _Moves) -> bool:

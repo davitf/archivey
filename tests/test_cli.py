@@ -17,6 +17,7 @@ from archivey import (
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
+    OverwritePolicy,
     open_archive,
 )
 from archivey.cli import test_cmd
@@ -2436,13 +2437,16 @@ def _hoist_and_direct(
     entries: dict[str, bytes],
     mine: dict[str, bytes],
     overwrite: str = "rename",
+    args: tuple[str, ...] = (),
+    mine_modes: dict[str, int] | None = None,
 ) -> tuple[tuple[dict[str, bytes | None], str], tuple[dict[str, bytes | None], str]]:
     """Extract ``entries`` once through the wrapper and hoist, and once with ``-d .``,
-    each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``;
-    return each tree and stderr. Both runs must exit 0.
+    each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``
+    and ``args``; return each tree and stderr. Both runs must exit 0.
 
-    A name ending in ``/`` is stored as a directory. A root directory that collides
-    with a file is stored, because a direct extraction fails on an implied one."""
+    A name ending in ``/`` is stored as a directory, at mode 0755. A root directory
+    that collides with a file is stored, because a direct extraction fails on an
+    implied one. ``mine_modes`` sets the mode of the operator's entries it names."""
     runs = []
     for how, extra in (("hoist", []), ("direct", ["-d", "."])):
         cwd = tmp_path / overwrite / how
@@ -2450,6 +2454,8 @@ def _hoist_and_direct(
         for name, data in mine.items():
             (cwd / name).parent.mkdir(parents=True, exist_ok=True)
             (cwd / name).write_bytes(data)
+        for name, mode in (mine_modes or {}).items():
+            (cwd / name).chmod(mode)
         archive = tmp_path / archive_name
         with tarfile.open(archive, "w") as tf:
             for name, data in entries.items():
@@ -2462,9 +2468,27 @@ def _hoist_and_direct(
                     info.size = len(data)
                     tf.addfile(info, io.BytesIO(data))
         monkeypatch.chdir(cwd)
-        assert main(["x", str(archive), "--overwrite", overwrite, *extra]) == EXIT_OK
+        argv = ["x", str(archive), "--overwrite", overwrite, *args, *extra]
+        assert main(argv) == EXIT_OK
         runs.append((_tree(cwd), capsys.readouterr().err))
     return runs[0], runs[1]
+
+
+# The lines only the hoist prints: where the wrapper went.
+_HOIST_ONLY = ("extracting into ", "moved to ", "removed wrapper")
+
+
+def _as_direct(hoist_err: str) -> list[str]:
+    """The hoist's stderr lines as ``-d .`` would print them: without the lines about
+    the wrapper, and with the hoist's ``skipped:`` (it discarded its own copy) as
+    ``not overwritten:`` (extraction did not write it)."""
+    return [
+        f"not overwritten: {ln.removeprefix('skipped: ')}"
+        if ln.startswith("skipped: ")
+        else ln
+        for ln in hoist_err.split("\n")
+        if ln and not ln.startswith(_HOIST_ONLY)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2531,12 +2555,29 @@ def test_hoist_reports_member_paths_where_they_landed(
 
 @pytest.mark.parametrize("overwrite", ["rename", "skip", "replace"])
 @pytest.mark.parametrize(
-    ("archive_name", "entries", "mine"),
+    ("archive_name", "entries", "mine", "args"),
     [
-        ("t.tar", {"top/": b"", "top/c\x02": b"ARCHIVE"}, {"top/c%02": b"MINE"}),
-        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}),
+        (
+            "t.tar",
+            {"top/": b"", "top/c\x02": b"ARCHIVE"},
+            {"top/c%02": b"MINE"},
+            (),
+        ),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ()),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ("-v",)),
+        (
+            "c.tar",
+            {"/c\x02": b"ARCHIVE"},
+            {"c%02": b"MINE"},
+            ("--policy", "standard"),
+        ),
     ],
-    ids=["collision-inside-root", "collision-at-root"],
+    ids=[
+        "collision-inside-root",
+        "collision-at-root",
+        "collision-at-root-verbose",
+        "collision-at-rerooted-root",
+    ],
 )
 def test_hoist_reports_what_the_merge_did_under_each_policy(
     tmp_path: Path,
@@ -2546,6 +2587,7 @@ def test_hoist_reports_what_the_merge_did_under_each_policy(
     archive_name: str,
     entries: dict[str, bytes],
     mine: dict[str, bytes],
+    args: tuple[str, ...],
 ) -> None:
     """A member whose rewritten name collides with the operator's file while the
     hoist merges: the layout and the per-member lines are those of ``-d .``.
@@ -2556,18 +2598,44 @@ def test_hoist_reports_what_the_merge_did_under_each_policy(
     ``-d .``'s ``not overwritten:``). Both used to name ``c%02``.
     """
     (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
-        tmp_path, monkeypatch, capsys, archive_name, entries, mine, overwrite
+        tmp_path, monkeypatch, capsys, archive_name, entries, mine, overwrite, args
     )
     assert hoisted == direct
-    for prefix in ("name rewritten: ", "renamed: "):
-        assert _report_lines(hoist_err, prefix) == _report_lines(direct_err, prefix)
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
     if overwrite == "skip":
         (where,) = mine
         assert _report_lines(hoist_err, "skipped: ") == [f"skipped: {where}"]
         assert _report_lines(direct_err, "not overwritten: ") == [
             f"not overwritten: {where}"
         ]
-    assert _summary_lines(hoist_err) == _summary_lines(direct_err)
+
+
+def test_hoist_reports_an_existing_directory_keeping_its_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The archive's ``top/`` (0755) merges into the operator's ``top/`` (0700): the
+    operator's keeps its mode, and the hoist says so with the line ``-d .`` prints.
+
+    Only the library printed it, and after a hoist the library never meets the
+    operator's directory: the merge does."""
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        "t.tar",
+        {"top/": b"", "top/a.txt": b"ARCHIVE"},
+        {"top/m": b"MINE"},
+        mine_modes={"top": 0o700},
+    )
+    assert hoisted == direct
+    line = "kept existing directory's mode 0700: top"
+    assert _report_lines(direct_err, "kept ") == [line]
+    assert _report_lines(hoist_err, "kept ") == [line]
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    for how in ("hoist", "direct"):
+        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == 0o700
 
 
 def test_stopped_hoist_names_members_left_in_the_wrapper(
@@ -2595,6 +2663,38 @@ def test_stopped_hoist_names_members_left_in_the_wrapper(
     ]
     assert (cwd / "c" / "c%02").read_bytes() == b"ARCHIVE"
     assert (cwd / "c%02").read_bytes() == b"MINE"
+
+
+def test_flatten_failing_part_way_names_each_entry_where_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``s/s/a.txt`` moved up to ``s/a.txt`` before the flatten failed on ``b.txt``:
+    each is named where it is, not both inside the directory ``a.txt`` left."""
+    from archivey.cli import extract_cmd
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "s" / "s").mkdir(parents=True)
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / "s" / "s" / name).write_bytes(b"x")
+    real_rename = extract_cmd._rename
+    calls = []
+
+    def rename_once(src: Path, dest: Path) -> None:
+        calls.append(src)
+        if len(calls) > 1:
+            raise OSError(28, "No space left on device")
+        real_rename(src, dest)
+
+    monkeypatch.setattr(extract_cmd, "_rename", rename_once)
+    result = extract_cmd.maybe_hoist_single_root(
+        Path("s"), overwrite=OverwritePolicy.RENAME, err=io.StringIO()
+    )
+    assert not result.ok
+    assert (tmp_path / "s" / "a.txt").exists()
+    assert (tmp_path / "s" / "s" / "b.txt").exists()
+    target, moves = Path("s"), result.moves
+    assert extract_cmd._relative_name(Path("s/s/a.txt"), target, moves) == "s/a.txt"
+    assert extract_cmd._relative_name(Path("s/s/b.txt"), target, moves) == "s/s/b.txt"
 
 
 def test_relative_name_falls_back_to_forward_slashes() -> None:
