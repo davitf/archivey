@@ -280,7 +280,7 @@ class GzipDecoder(BaseDecoder):
             ):
                 self._arm_trailing_junk(trailing)
             elif trailing.startswith(_GZIP_MAGIC):
-                self._pending_error = TruncatedError("gzip stream is truncated")
+                self._pending_error = TruncatedError(truncated_message("gzip"))
             else:
                 self._finished = True
         return DecodeOut(bytes(out))

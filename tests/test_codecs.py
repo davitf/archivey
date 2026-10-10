@@ -2573,10 +2573,10 @@ def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
 
         deflater = inflate64.Deflater()
         data = deflater.deflate(CONTENT) + deflater.flush()
+        data = data[: len(data) // 2]
     else:
-        data = zlib.compress(CONTENT)
-        data = data if codec is Codec.ZLIB else data[2:-4]
-    source = io.BytesIO(data[: len(data) // 2])
+        data = _truncated(codec, "tail")
+    source = io.BytesIO(data)
     with open_codec_stream(codec, source, config=_STDLIB_GZIP) as stream:
         with pytest.raises(TruncatedError, match=f"^{label} stream is truncated"):
             stream.read()

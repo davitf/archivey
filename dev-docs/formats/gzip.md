@@ -21,7 +21,7 @@ behaviour and links the row.
 | Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too; under `rapidgzip`, archivey checks the Adler-32 when the stream is read to its end (§2.3) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
 | Truncation | Always raised by the standard library engine. Through `rapidgzip`, raised by a backstop that a seek does not turn off. It stands down only when it finds a further member that zlib confirms, so it is best-effort for a multi-member gzip (§2.3) |
-| Refuses | A member whose method is not 8 (deflate) or whose header sets a reserved FLG bit, as `UnsupportedFeatureError` (gzip: "-- not supported"; `gzip_error`). A zlib stream whose CM is not 8 is `CorruptionError`, not unsupported (`zlib_error`): zlib reports it as damage ("unknown compression method"), RFC 1950 defines no other method, and DR-4 covers only valid features (duplicate-check thread, 2026-10-10; reopen if a zlib method other than 8 is ever defined). A zlib stream with a preset dictionary fails to decode, since archivey holds no dictionary |
+| Refuses | A member whose method is not 8 (deflate) or whose header sets a reserved FLG bit, as `UnsupportedFeatureError` (gzip: "-- not supported"; `gzip_error`). A zlib stream whose CM is not 8 is `CorruptionError`, not unsupported (`zlib_error`): zlib reports it as damage ("unknown compression method"), RFC 1950 defines no other method, and DR-4 covers only valid features. This changes only if a zlib method other than 8 is ever defined. A zlib stream with a preset dictionary fails to decode, since archivey holds no dictionary |
 
 **Four things a reader might expect and will not find.** The gzip trailer's CRC-32 is not
 in `member.hashes`, even for a one-member file: proving there is one member means reading
@@ -325,11 +325,12 @@ padding bits. `BZh` and a digit is a possible start, so a real raw DEFLATE strea
 has it decodes without the accelerator. `rapidgzip` also ends a raw DEFLATE stream cut
 before any output (`03`, a final block with no end code) softly, as if it were empty, so
 a raw DEFLATE stream that ends before its first byte goes to the standard library too,
-which reads a valid empty stream as empty and raises on a cut one. Once the standard
-library has taken over, its errors leave as archivey's typed errors, so the over-run
-probe of a declared size does not take a raw `zlib.error` for the end of the data. Before
-that, a ZIP member declared empty with a body that is not DEFLATE read as empty. The
-accelerator fuzz targets found all three.
+which reads a valid empty stream as empty and raises on a cut one. The standard library
+DEFLATE-family decoders raise archivey's typed errors themselves, after a takeover or
+with no accelerator at all, so the over-run probe of a declared size raises on a damaged
+body past that size and does not take the error for the end of the data. A ZIP member
+declared empty with a body that is not DEFLATE raises `CorruptionError`. The accelerator
+fuzz targets found all three.
 
 **Every accelerator object is closed, never only joined.** `rapidgzip`'s C++ worker
 threads call `std::terminate` if they are still running at interpreter finalization, and

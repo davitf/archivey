@@ -10,7 +10,9 @@ The decoders live next to their codec in :mod:`archivey.internal.streams.codecs`
 ``framed_decoder`` for the one-shot decompressors (bzip2, zstd, LZ4).
 
 ``codecs.StreamCodec.open`` wires those into an ``ArchiveStream``; this module is
-only the shared engine underneath.
+only the shared engine underneath. One exception: above :class:`SeekPoint` sit the
+DEFLATE family's shared helpers, the ``zlib.error`` translators, the truncation message
+and the inflate step, used by the zlib, gzip, raw DEFLATE and resume decoders.
 """
 
 from __future__ import annotations
@@ -109,6 +111,12 @@ def zlib_error(exc: Exception, label: str) -> CorruptionError:
     return gzip_corruption(exc, label)
 
 
+def truncated_message(label: str) -> str:
+    """The message of the :class:`TruncatedError` a decoder gives a ``label`` stream
+    that ends before its end marker."""
+    return f"{label} stream is truncated"
+
+
 def _inflate(
     decomp: zlib._Decompress,
     data: bytes,
@@ -117,8 +125,8 @@ def _inflate(
 ) -> bytes:
     """One inflate step: ``data`` to at most ``max_length`` output bytes, the rest kept
     in ``unconsumed_tail``. A negative ``max_length`` is no limit, and so is 0 (zlib's
-    reading): ``DecompressorStream`` never asks for 0 bytes. A ``zlib.error`` leaves as ``error``
-    maps it."""
+    reading): ``DecompressorStream`` never asks for 0 bytes. A ``zlib.error`` leaves
+    as ``error`` maps it."""
     try:
         if max_length < 0:
             return decomp.decompress(data)
@@ -141,12 +149,6 @@ def _inflate_rest(
         return out + decomp.flush()
     except zlib.error as exc:
         raise error(exc) from exc
-
-
-def truncated_message(label: str) -> str:
-    """The message of the :class:`TruncatedError` a decoder gives a ``label`` stream
-    that ends before its end marker."""
-    return f"{label} stream is truncated"
 
 
 @dataclass(order=True)

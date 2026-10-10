@@ -115,7 +115,9 @@ def _zip_declared_empty_with_garbage_body() -> bytes:
 def test_overrun_probe_raises_a_typed_decoder_error() -> None:
     """verify.py ``_probe_past_declared``: the standard-library DEFLATE decoder raises
     a typed ``CorruptionError`` past the declared size, and the probe lets it through.
-    A garbage body behind a member declared empty is not read as an empty member."""
+    A garbage body behind a member declared empty is not read as an empty member. A valid
+    DEFLATE body there: test_audit2_zip.py
+    ::test_zero_declared_size_with_data_raises_rather_than_serving_it."""
     blob = _zip_declared_empty_with_garbage_body()
     with (
         archivey.open_archive(io.BytesIO(blob)) as reader,
