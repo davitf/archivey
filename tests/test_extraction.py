@@ -2028,6 +2028,39 @@ def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
     assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("second_link", "overwrite"),
+    [
+        # A tar that lists the same hard link twice: the second copy supersedes the
+        # first, whose parked name is already the same file as the source.
+        ("h", OverwritePolicy.ERROR),
+        # Under REPLACE, STANDARD folds ``H`` onto ``h``, a link to the same file.
+        ("H", OverwritePolicy.REPLACE),
+    ],
+)
+def test_link_onto_a_name_of_the_same_file_leaves_no_temp(
+    tmp_path: Path, streaming: bool, second_link: str, overwrite: OverwritePolicy
+) -> None:
+    # POSIX rename(2) does nothing, and reports success, when the temp link and the
+    # destination are already names of the same file. The temp name then stayed in the
+    # destination as a stray ``.archivey-tmp-*`` entry.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "f", b"data"), ("hard", "h", "f"), ("hard", second_link, "f")]
+        )
+    )
+    dest = tmp_path / "out"
+
+    report = open_and_extract(src, dest, streaming=streaming, overwrite=overwrite)
+
+    assert report.results[-1].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in dest.iterdir()) == ["f", "h"]
+    assert (dest / "h").read_bytes() == b"data"
+    assert os.path.samefile(dest / "f", dest / "h")
+
+
 def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> None:
     # Regression: the second-pass-materialized source was written with member=None, so no
     # chmod/utime ever ran and the file kept mkstemp's 0600 forever. The link's transformed

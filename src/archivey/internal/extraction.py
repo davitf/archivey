@@ -3138,8 +3138,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            with self._readonly_cleared(dest_path):
-                os.replace(tmp, dest_path)
+            self._swap_into_place(tmp, dest_path)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -3268,13 +3267,27 @@ class ExtractionCoordinator:
                 # Applied before the swap, so the final name never appears with the
                 # source's metadata instead of this member's.
                 self._apply_metadata(tmp, member)
-            with self._readonly_cleared(new_path):
-                os.replace(tmp, new_path)
+            self._swap_into_place(tmp, new_path)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
         existing.append(new_path)
+
+    def _swap_into_place(self, tmp: Path, dest: Path) -> None:
+        """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
+        of every atomic write (``_write_file_atomic``, ``_place_link``).
+
+        POSIX ``rename(2)`` does nothing, and reports success, when ``tmp`` and ``dest``
+        are already names of the same file. That happens when ``_place_link`` links a
+        file onto another of its own names (a hard link listed twice, or one REPLACE
+        routes onto a link to the same file). ``dest`` then already names the right
+        file, so only the temp name is left, and it is removed here. After a real
+        rename the temp name is gone and the unlink finds nothing."""
+        with self._readonly_cleared(dest):
+            os.replace(tmp, dest)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
 
     @staticmethod
     def _temp_sibling(parent: Path) -> Path:
