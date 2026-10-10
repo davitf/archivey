@@ -81,6 +81,12 @@ class FramedDecoder(BaseDecoder):
     refuse the next stream. ``zero_padding=False`` hands zeros to that check too (raw
     LZMA, where 7-Zip refuses any byte after the end marker).
 
+    ``padding_ends_data=True`` accepts zeros only where they run to the end of the
+    input: zeros followed by any byte end the data there, and the first non-zero byte
+    after them sets :attr:`trailing_bytes`, a further stream's magic too. That is what
+    ``bzip2`` 1.0.8 and 7-Zip do with a bzip2 stream after zero padding: they warn and
+    stop. Streams with nothing between them still read as one.
+
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
     inside a stream, is truncated. A stream with no end mark (legacy LZ4) ends with its
@@ -94,14 +100,18 @@ class FramedDecoder(BaseDecoder):
         *,
         magic: StreamStart,
         zero_padding: bool = True,
+        padding_ends_data: bool = False,
     ) -> None:
         self._new = new_decompressor
         self._magic = magic
         self._zero_padding = zero_padding
+        self._padding_ends_data = padding_ends_data
         self._decomp = new_decompressor()
         self._fed = False
         # Past a stream's end, looking for the next one.
         self._between = False
+        # Past a stream's end, zeros have been skipped (``padding_ends_data``).
+        self._padded = False
         # Input not yet handed on: kept when an output budget ran out, or a prefix of
         # the next stream's magic waiting for its remaining bytes (``_need_more``).
         self._held = b""
@@ -114,13 +124,21 @@ class FramedDecoder(BaseDecoder):
             # Only the bzip2 takeover adds such a point (``bzip2_resume``).
             return Bzip2ResumeDecoder(point.state, self)
         return FramedDecoder(
-            self._new, magic=self._magic, zero_padding=self._zero_padding
+            self._new,
+            magic=self._magic,
+            zero_padding=self._zero_padding,
+            padding_ends_data=self._padding_ends_data,
         )
 
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
         rest = data.lstrip(b"\x00") if self._zero_padding else data
+        self._padded = self._padded or len(rest) < len(data)
         if not rest:
+            return b""
+        if self._padded and self._padding_ends_data:
+            self._past_end(rest)
+            self._done = True
             return b""
         state = self._magic(rest)
         if state is None:
@@ -130,6 +148,7 @@ class FramedDecoder(BaseDecoder):
         if state:
             self._decomp = self._new()
             self._between = False
+            self._padded = False
             return rest
         self._past_end(rest)
         self._done = True
@@ -203,6 +222,7 @@ def FramedDecompressorStream(
     codec_name: str,
     magic: StreamStart,
     zero_padding: bool = True,
+    padding_ends_data: bool = False,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
 ) -> DecompressorStream:
@@ -210,7 +230,10 @@ def FramedDecompressorStream(
     return DecompressorStream(
         path,
         make_decoder=lambda _p, _i: FramedDecoder(
-            new_decompressor, magic=magic, zero_padding=zero_padding
+            new_decompressor,
+            magic=magic,
+            zero_padding=zero_padding,
+            padding_ends_data=padding_ends_data,
         ),
         collector=collector,
         codec_name=codec_name,

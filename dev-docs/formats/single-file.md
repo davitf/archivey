@@ -72,7 +72,9 @@ luck by `.Z` ([`unix-compress.md`](unix-compress.md)).
 **Most of them allow concatenation.** gzip members, bzip2 streams, xz streams (with zero
 padding between them), lzip members, zstd frames and LZ4 frames can each follow one
 another in one file, and the file's content is all of them joined. archivey reads every
-codec's concatenation as one payload. The consequence is that a trailer describes its own
+codec's concatenation as one payload. For gzip and bzip2 that means segments with
+nothing between them: zero bytes there end the data, as in GNU `gzip`, `bzip2` and
+7-Zip ([`gzip.md`](gzip.md) §6, [`bzip2.md`](bzip2.md) §6). The consequence is that a trailer describes its own
 segment, not the file: gzip's ISIZE is the last member's size, which is why archivey
 never reports it as the file's size.
 
@@ -251,7 +253,10 @@ properties byte is one liblzma decodes and byte 13, the range coder's first byte
 zero, which every LZMA encoder writes and text almost never has. That is how
 `lzma.LZMAFile` reads a concatenated `.lzma` too, and a second stream's dictionary is
 checked against `max_decoder_memory` like the first. Past the end, zero bytes are
-padding, as `tar` pads its records; the first non-zero byte ends the stream there.
+padding, as `tar` pads its records; the first non-zero byte ends the stream there. For
+gzip and bzip2 zeros are padding only when they run to the end of the file: after them,
+the first non-zero byte ends the stream even when it starts a further member or stream
+(`padding_ends_data` of `FramedDecoder`, and `GzipDecoder`).
 `DecompressorStream` stops reading the source, returns everything decoded, and emits one
 `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` at that byte's offset.
 Only a bare file, a compressed TAR's codec and `open_stream` report

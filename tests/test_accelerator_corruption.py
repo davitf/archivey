@@ -961,7 +961,7 @@ _BZ2_LAYOUT_CASES = {
 
 def _bz2_intact_prefix(data: bytes) -> bytes:
     """The output of the whole streams at the start of ``data``, up to the first
-    damage, skipping zero padding between them."""
+    damage or zero byte between them."""
     out = bytearray()
     while data:
         decompressor = bz2.BZ2Decompressor()
@@ -972,7 +972,9 @@ def _bz2_intact_prefix(data: bytes) -> bytes:
         if not decompressor.eof:
             break
         out += chunk
-        data = decompressor.unused_data.lstrip(b"\0")
+        data = decompressor.unused_data
+        if data.startswith(b"\0"):
+            break
     return bytes(out)
 
 
@@ -1046,9 +1048,9 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
 def test_bzip2_accelerator_seeks_past_padding_as_off(
     tail: Callable[[bytes], bytes], target: int, whence: int
 ) -> None:
-    # The decoder stops at zero padding, so its end is short of the stream after it. A
-    # seek that reaches that end must not hand out a position from it: the end check
-    # runs first, and the standard library seeks to the real one.
+    # Both engines end the data at zero padding, whatever follows it: a seek that
+    # reaches the decoder's end runs the end check, which reports what follows the
+    # padding as trailing data rather than handing it to the standard library.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     # Every offset of the second stream holds a different byte from its neighbours, so
     # a read from the wrong place does not pass.
@@ -1066,6 +1068,8 @@ def test_bzip2_accelerator_seeks_past_padding_as_off(
                 outcome.append(type(exc))
             outcomes.append(outcome)
     assert outcomes[1] == outcomes[0]
+    if (target, whence) == (0, io.SEEK_END):
+        assert outcomes[0][0] == 1000
 
 
 _BZ2_SEEK_CASES = {
@@ -1086,7 +1090,7 @@ def test_bzip2_accelerator_seeks_into_damage_as_off(
 ) -> None:
     # A seek gets the verdict a read would, as with the accelerator off, by three
     # paths: past a skipped region it hands over there; at the decoder's end it runs
-    # the end check (padding or empty streams between streams, trailing data); at the
+    # the end check (empty streams after the last stream, padding, trailing data); at the
     # end of a stream the decoder read as empty it falls back. A caller sizing the
     # stream with seek(0, SEEK_END) gets the error, not a plausible size.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
