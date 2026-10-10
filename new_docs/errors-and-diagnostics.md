@@ -51,3 +51,18 @@ from inside archivey is a bug, and we'd like to hear about it.
 Exception messages are safe to print. Control characters from the archive, such as a member name
 built to move the terminal cursor, are escaped in the message. Attributes like `e.member_name` keep
 the raw value.
+
+## Damaged archives
+
+`members()` raises if the archive is damaged partway through its list of members, and gives you
+nothing. Iterating over the reader, or over `stream_members()`, gives you the members before the
+damage, then raises. `members_report()` gives you both at once:
+
+```python
+with archivey.open_archive("damaged.tar") as archive:
+    report = archive.members_report()
+    for member in report:
+        print(member.name)
+    if report.error is not None:
+        print("The list stops early:", report.error)
+```
