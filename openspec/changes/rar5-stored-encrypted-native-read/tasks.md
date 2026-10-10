@@ -42,7 +42,7 @@
 - [ ] 2.1 Split `_can_direct_read`'s encryption clause: allow `info.is_encrypted` when
       `info.file_encryption is not None` **and** a crypto backend is available **and** a
       password is available. Keep `file_solid`, `split_after`, `split_before`,
-      `spanned_volumes` and the `_RAR_METHOD_STORED` check untouched.
+      `spanned_volumes` and the `RarMemberInfo.is_stored` check untouched.
 - [ ] 2.2 In `_open_member`, open the ciphertext view over **`compress_size`**
       (`_direct_view(raw, raw.compress_size)`), wrap it in `AesDecryptStream`, and trim to
       `file_size` with

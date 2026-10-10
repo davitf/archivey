@@ -55,6 +55,7 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
     MetadataContext,
+    ProbeChargeDecode,
     ProbeReadAt,
     StreamCodec,
 )
@@ -122,6 +123,7 @@ __all__ = [
     "LzmaDataAfterEndError",
     "MetadataContext",
     "PpmdCodec",
+    "ProbeChargeDecode",
     "ProbeReadAt",
     "StoredCodec",
     "StreamCodec",
