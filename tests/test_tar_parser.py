@@ -927,6 +927,73 @@ def test_pax_sparse_version_with_no_map_is_damage(major: str) -> None:
         _walk(_pax_1_0_member(major, "0"))
 
 
+def _pax_0_x_member(records: dict[str, str]) -> bytes:
+    """A PAX 0.0 or 0.1 member whose 20-byte file holds ``abc`` at offset 10."""
+    return (
+        _pax({"GNU.sparse.name": "real", **records})
+        + _block(b"GNUSparseFile.1/real", size=3)
+        + _data(b"abc")
+        + _END
+    )
+
+
+_PAX_0_0 = {
+    "GNU.sparse.size": "20",
+    "GNU.sparse.numblocks": "1",
+    "GNU.sparse.offset": "10",
+    "GNU.sparse.numbytes": "3",
+}
+_PAX_0_1 = {
+    "GNU.sparse.size": "20",
+    "GNU.sparse.numblocks": "1",
+    "GNU.sparse.map": "10,3",
+}
+
+
+@pytest.mark.parametrize(
+    ("records", "sparse_format"),
+    [(_PAX_0_0, SparseFormat.PAX_0_0), (_PAX_0_1, SparseFormat.PAX_0_1)],
+    ids=["0.0", "0.1"],
+)
+def test_pax_sparse_0_x_is_detected(
+    records: dict[str, str], sparse_format: SparseFormat
+) -> None:
+    (entry,), _ = _walk(_pax_0_x_member(records))
+    assert (entry.name, entry.sparse_format, entry.size, entry.stored_size) == (
+        b"real",
+        sparse_format,
+        20,
+        3,
+    )
+    assert entry.sparse is not None
+    assert (list(entry.sparse.offsets), list(entry.sparse.lengths)) == ([10], [3])
+
+
+def test_pax_sparse_0_1_empty_map_is_damage() -> None:
+    """An empty map record is damage, as GNU tar reports it; read as a plain file,
+    the member would serve its compacted data as the content."""
+    with pytest.raises(CorruptionError):
+        _walk(_pax_0_x_member({**_PAX_0_1, "GNU.sparse.map": ""}))
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        {**_PAX_0_0, "GNU.sparse.size": ""},
+        {k: v for k, v in _PAX_0_0.items() if k != "GNU.sparse.size"},
+    ],
+    ids=["size-empty", "size-absent"],
+)
+def test_pax_sparse_0_0_without_a_size_is_refused(records: dict[str, str]) -> None:
+    """The offset records make the member sparse, so it is never read as a plain
+    file; the map then ends past the logical size of 0, which is damage."""
+    (entry,), _ = _walk(_pax_0_x_member(records))
+    assert (entry.sparse_format, entry.size) == (SparseFormat.PAX_0_0, 0)
+    assert entry.sparse is not None
+    error = validate_sparse_map(entry.sparse, entry.size, entry.stored_size, "'real'")
+    assert isinstance(error, CorruptionError)
+
+
 def test_sparse_records_on_a_type_without_data_make_no_sparse_member() -> None:
     records = {
         "GNU.sparse.major": "1",
