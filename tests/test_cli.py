@@ -2724,6 +2724,14 @@ def test_hoist_reports_what_the_merge_did_under_each_policy(
     )
     assert hoisted == direct
     assert _as_direct(hoist_err) == _as_direct(direct_err)
+    if archive_name == "t3.tar" and overwrite == "rename":
+        # The order the cli spec states: the merge's own line, then the per-member ones.
+        lines = hoist_err.split("\n")
+        rewritten = [
+            i for i, ln in enumerate(lines) if ln.startswith("name rewritten: ")
+        ]
+        assert len(rewritten) == 2
+        assert lines.index("renamed: top/c%02 -> top/c%02 (1)") < min(rewritten)
     if overwrite == "skip":
         (where,) = mine
         assert _report_lines(hoist_err, "skipped: ") == [f"skipped: {where}"]
