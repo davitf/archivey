@@ -91,15 +91,18 @@ encrypted members fail as if no password had been given.
   (or `archivey list -- -weird.zip`). Every word after `--` is a file or pattern, so
   `archivey -- list` opens a file named `list`.
 - Without `-d`, `extract` may wrap the members in a folder named after the archive.
-  If a symlink already has that name, `extract` never writes through it, whatever
-  `--overwrite` says: it uses the next free `name (N)` instead. Pass `-d name` to
-  extract through the link on purpose.
+  That folder is always a new one: if anything already has that name (a folder, a file
+  or a symlink), `extract` uses the next free `name (N)` instead, whatever `--overwrite`
+  says. It never writes into an existing folder or through a link it did not choose. To
+  re-extract into an existing folder, name it: `archivey x backup.zip -d backup
+  --overwrite replace`.
 - When the wrapper ends up holding a single entry, `extract` moves that entry up into the
-  working directory. It skips the move when the wrapper folder was already there before the
-  run, when the entry is a symlink, or when a symlink in it leaves it on the way to its
-  target (or is absolute), because such a link would point somewhere else after the
-  move. It also skips the move when part of the entry could not be listed, since it
-  may hold such a link. It prints a line saying why the files stayed in the wrapper.
+  working directory, where `--overwrite` decides what happens to entries already there.
+  It skips the move when the entry is a symlink, or when a symlink in it leaves it on
+  the way to its target (or is absolute), because such a link would point somewhere
+  else after the move. It also skips the move when part of the entry could not be
+  listed, since it may hold such a link. It prints a line saying why the files stayed
+  in the wrapper.
 - `test` exits `1` when its summary reports members as not tested, or digests as not
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip

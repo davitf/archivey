@@ -433,7 +433,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-d",
         "--dest",
         default=None,
-        help="destination directory (default: smart enclosing dir; use -d . for cwd)",
+        help=(
+            "destination directory. By default, extract into a new folder named "
+            "after the archive, or into the current directory when the archive holds "
+            "a single top-level folder. Pass -d . to extract into the current "
+            "directory in any case."
+        ),
     )
     p_extract.add_argument(
         "--policy",
