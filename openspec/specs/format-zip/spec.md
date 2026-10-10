@@ -194,7 +194,7 @@ rules:
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
 | `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
-| `is_encrypted` | `flag_bits & 0x1 != 0` |
+| `is_encrypted` | `flag_bits & 0x1 != 0`, or `compress_type == 99` (WinZip AES) whatever bit 0 says |
 
 Invalid DOS or NTFS timestamp values SHALL fall through to the next valid
 precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`, whose `field`
@@ -224,7 +224,7 @@ halts with `DiagnosticRaisedError`.
 | NTFS FILETIMEs present, no Extended Timestamp, DOS-attribute host | Present `modified` / `accessed` / `created` fields are timezone-aware UTC from `0x000A` |
 | Creation time stored (NTFS or Extended Timestamp third time), FAT / OS2 / NTFS / VFAT host | `created` holds it (the Extended Timestamp wins); `ctime is None` |
 | Creation time stored, Unix or any other host | `created is None`; `ctime` holds it (7-Zip and libarchive on Linux and macOS store `st_ctime`) |
-| `flag_bits & 0x1` | `member.is_encrypted is True` |
+| `flag_bits & 0x1`, or method 99 with bit 0 clear | `member.is_encrypted is True` |
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 | Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |

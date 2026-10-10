@@ -971,3 +971,24 @@ def test_aes_short_payload_is_truncated_whichever_candidate_fails_first(
     with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
         with pytest.raises(TruncatedError):
             ar.read(ar.members()[0])
+
+
+@requires("cryptography")
+def test_method_99_without_encryption_flag_lists_as_encrypted() -> None:
+    """A method-99 member is encrypted whatever general-purpose bit 0 says.
+
+    Crafted: no producer writes method 99 with bit 0 clear (DR-24 allows a crafted
+    fixture for that). Opening already treats method 99 as encrypted and asks for
+    a password, so the listing must say so too.
+    """
+    blob = bytearray(build_aes_zip([(b"x.txt", _PAYLOAD)], password=_PASSWORD))
+    struct.pack_into("<H", blob, 6, 0)  # local file header flags
+    cd_at = blob.find(b"PK\x01\x02")
+    struct.pack_into("<H", blob, cd_at + 8, 0)  # central directory flags
+    with open_archive(io.BytesIO(bytes(blob))) as ar:
+        member = ar.members()[0]
+        assert member.is_encrypted
+        with pytest.raises(EncryptionError):
+            ar.read(member)
+    with open_archive(io.BytesIO(bytes(blob)), password=_PASSWORD) as ar:
+        assert ar.read(ar.members()[0]) == _PAYLOAD
