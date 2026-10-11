@@ -370,10 +370,10 @@ smaller of `VALIDATOR_PEEK_MAX` (132 KiB, the largest header any validator reads
 header that does not fit is rejected, and the clamped view records `sfx_scan` as *budget
 exhausted*, so the tier never reads more than twice `max_scan_bytes`.
 
-**Probe reads at an offset are the one path whose cap is not tied to a budget field.** A content probe can ask for
-a few bytes deep in the source through `PrefixWorkspace.read_at`, which is how the Brotli
-chain walk checks later meta-block headers. On a path or a plain seekable stream,
-`read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is
+**Probe reads at an offset are the one path whose cap is not tied to a budget field.** A
+content probe can ask for a few bytes deep in the source through `PrefixWorkspace.read_at`,
+which is how the Brotli chain walk checks later meta-block headers. On a path or a plain
+seekable stream, `read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is
 charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS` (8 links of
 24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose rewind would
 re-decode, `read_at` grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1

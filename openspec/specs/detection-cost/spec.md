@@ -112,20 +112,21 @@ as `sfx_scan` *budget exhausted*, on the same carve-out, and as *not enabled by 
 when `max_scan_bytes` is 0. An SFX scan in which any format reaches the
 rejected-candidate cap, or in which a hit validator's view is clamped at the validator
 allowance, SHALL be recorded as `sfx_scan` *budget exhausted* too, whether or not it
-answers. A near signature that ends past a positive `max_prefix_bytes` SHALL be recorded as `near_magic` *budget exhausted*, and as *not enabled by policy* when
-`max_prefix_bytes` is 0.
+answers. A near signature that ends past a positive `max_prefix_bytes` SHALL be recorded
+as `near_magic` *budget exhausted*, and as *not enabled by policy* when `max_prefix_bytes`
+is 0.
 
 A receipt is within its budget when each bounded counter is at most `passes` times its
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field
 of the same name, and `unique_bytes_read` against the largest of `max_prefix_bytes`,
-`max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance, the trailer
-allowance, and, when `scanned_bytes` is positive, the SFX validator allowance: the
-smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes`, which a candidate that starts inside
-the scan window may have its header read past the window end. `prefix_bytes` is not
-compared, because it bills overlapping requests in full and `unique_bytes_read` stands in
-for it. A receipt that is not within its budget SHALL
-carry a *budget exhausted* or *capability unavailable* skip naming the tier that was cut
-short. The library does not expose this check; the test suite asserts it.
+`max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance, the trailer allowance,
+and, when `scanned_bytes` is positive, the SFX validator allowance: the smaller of
+`VALIDATOR_PEEK_MAX` and `max_scan_bytes`, the bytes a hit validator may read past the
+window end to judge a candidate that starts inside it. `prefix_bytes` is not compared,
+because it bills overlapping requests in full and `unique_bytes_read` stands in for it. A
+receipt that is not within its budget SHALL carry a *budget exhausted* or *capability
+unavailable* skip naming the tier that was cut short. The library does not expose this
+check; the test suite asserts it.
 
 #### Scenario: receipt reflects the source kind
 
