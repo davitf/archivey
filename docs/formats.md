@@ -603,29 +603,31 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   bits after the last complete code raise `TruncatedError` on the next `read()` after
   delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
   non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
-- **Bytes after the compressed stream** (a signature or checksum appended to a
-  download, a tool that pads its output) do not stop the read. For gzip, zlib, bzip2,
-  xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then
-  emits one `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of the first
-  appended byte. It is a warning under the default policy; under
-  `DiagnosticPolicy.strict()` the read that reaches it raises `DiagnosticRaisedError`.
-  Zero bytes after the end are padding and report nothing, as for TAR. A second stream
-  of the same codec (a concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more
-  data, not trailing bytes. For `.xz`, `.lz`, `.zst`, `.lz4` and `.bz2`, bytes that
-  hold at least half of the codec's stream magic, but not all of it, are a later stream
-  with a damaged header: the read raises `CorruptionError` rather than return the
-  first stream alone. `.xz` and `.lz` keep their size and seeks when the appended
-  bytes are within 1 MiB, unless they are crafted to hold thousands of fake end
-  markers; further out the index is not found and the size reads as unknown.
-  A damaged end marker on the last of several `.xz` streams or `.lz` members is
-  corruption, not appended bytes: the size reads as unknown, and the read or seek
-  that reaches the damage raises `CorruptionError`.
-  Brotli has no end marker the library reports, so archivey finds the end by decoding
-  the source again, which needs a seekable source: from a pipe, bytes after a Brotli
-  stream raise `CorruptionError`. The check applies to a bare compressed file and to a
-  compressed tar; inside a ZIP or 7z member such bytes raise `CorruptionError` (see
-  [ZIP](#zip)). `.Z` is not
-  covered: it has no end marker, so appended bytes decode as more data.
+- **Bytes after the compressed stream** (a signature or checksum appended to a download,
+  a tool that pads its output) do not stop the read. For gzip, zlib, bzip2, xz, lzip,
+  LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then emits one
+  `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of the first appended
+  byte. It is a warning under the default policy; under `DiagnosticPolicy.strict()` the
+  read that reaches it raises `DiagnosticRaisedError`. Zero bytes after the end are
+  padding and report nothing, as for TAR. A second stream of the same codec (a
+  concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more data, not trailing
+  bytes. For every codec but `.xz`, zero bytes are padding only at the end of the file:
+  a stream after them is reported as trailing bytes and not read, as GNU `gzip`,
+  `bzip2`, `zstd` and `lz4` do. `.xz` defines padding between streams and reads past it.
+  For `.xz`, `.lz`, `.zst`, `.lz4` and `.bz2`, bytes after a stream that hold at least
+  half of the codec's stream magic, but not all of it, are a later stream with a damaged
+  header: the read raises `CorruptionError` rather than return the first stream alone.
+  `.xz` and `.lz` keep their size and seeks when the appended bytes are within 1 MiB,
+  unless they are crafted to hold thousands of fake end markers; further out the index
+  is not found and the size reads as unknown. A damaged end marker on the last of
+  several `.xz` streams or `.lz` members is corruption, not appended bytes: the size
+  reads as unknown, and the read or seek that reaches the damage raises
+  `CorruptionError`. Brotli has no end marker the library reports, so archivey finds the
+  end by decoding the source again, which needs a seekable source: from a pipe, bytes
+  after a Brotli stream raise `CorruptionError`. The check applies to a bare compressed
+  file and to a compressed tar; inside a ZIP or 7z member such bytes raise
+  `CorruptionError` (see [ZIP](#zip)). `.Z` is not covered: it has no end marker, so
+  appended bytes decode as more data.
 - `open_archive` decodes the first byte of a seekable source, so a file that is not
   the codec its name or detection claims (a `.gz` full of zeros, an empty `.bz2`) raises
   `CorruptionError` or `TruncatedError` from `open_archive` rather than from the first
