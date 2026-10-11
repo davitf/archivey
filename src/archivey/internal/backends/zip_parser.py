@@ -19,8 +19,8 @@ or ``TruncatedError`` (an archive cut short), a valid feature archivey refuses r
 ``UnsupportedFeatureError``. The caller stamps archive and member context.
 
 The ZIP64 record checks and the stub offset (``base``) follow stdlib ``zipfile``
-(3.13), and the end-record search is stdlib's up to 3.12 (one byte wider than 3.13's,
-see ``_SEARCH_BACK``), so a prefixed or commented archive resolves to the record stdlib
+(3.13), and the end-record search is stdlib's older window (one byte wider than
+3.13's, see ``_SEARCH_BACK``), so a prefixed or commented archive resolves to the record stdlib
 would have read. The walk tolerates more than stdlib does: it does not refuse
 the archive for an extra field cut short or a version-needed it does not know, and it
 yields every entry before a damaged one.
@@ -61,11 +61,12 @@ EOCD_SIZE = 22
 ZIP64_LOCATOR_SIZE = 20
 ZIP64_EOCD_SIZE = 56
 CENTRAL_HEADER_SIZE = 46
-# How far before the end of the file the end-record search starts: stdlib's window
-# before Python 3.13, ``1 << 16`` plus the record. The comment length is a uint16, so
-# this is one byte more than the format needs; 3.13 shrank stdlib's window to match.
-# Keeping the wider one reads every archive either window reads, so one byte of junk
-# after a maximal comment stays readable on every Python.
+# How far before the end of the file the end-record search starts: stdlib's older
+# window (3.11, early 3.12 releases), ``1 << 16`` plus the record. The comment length
+# is a uint16, so this is one byte more than the format needs; 3.13 and later 3.12
+# releases shrank stdlib's window to match. Keeping the wider one reads every archive
+# either window reads, so one byte of junk after a maximal comment stays readable on
+# every Python.
 _SEARCH_BACK = (1 << 16) + 22
 
 _EOCD = struct.Struct("<4s4H2LH")
@@ -129,9 +130,9 @@ class EndRecord:
 def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     """Locate and read the end record, and the ZIP64 records when there are some.
 
-    The search is stdlib's up to Python 3.12: a comment-less record ending at end of
-    file, then the last ``PK\\x05\\x06`` in the final 65 558 bytes. 3.13's window is one
-    byte shorter; the wider one finds the same record whenever the shorter one finds
+    The search is stdlib's older one: a comment-less record ending at end of file, then
+    the last ``PK\\x05\\x06`` in the final 65 558 bytes. Newer stdlib's window (3.13,
+    later 3.12 releases) is one byte shorter; the wider one finds the same record whenever the shorter one finds
     any. A decoy signature earlier in the file, in the comment or in the record's own
     fields therefore cannot make the two disagree.
 
