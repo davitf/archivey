@@ -2795,7 +2795,8 @@ class BaseArchiveReader(ArchiveReader):
         if current.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
             raise ArchiveyUsageError(
                 f"Cannot open member {quoted(current.name)}: type is {current.type.value!r} "
-                f"(not a file)"
+                f"(not a file)",
+                refused_member_type=current.type,
             )
         return self._open_member(current)
 

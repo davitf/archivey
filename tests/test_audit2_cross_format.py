@@ -1606,7 +1606,8 @@ class _LinkOpenStub:
         ),
         pytest.param(
             ArchiveyUsageError(
-                "Cannot open member 'd': type is 'directory' (not a file)"
+                "Cannot open member 'd': type is 'directory' (not a file)",
+                refused_member_type=MemberType.DIRECTORY,
             ),
             id="directory",
         ),
@@ -1642,8 +1643,9 @@ def test_cli_test_ignores_a_real_link_cycle() -> None:
 
 
 def test_cli_test_ignores_a_real_link_to_a_directory() -> None:
-    """``open()`` refuses a link to a directory with a usage error after it has read
-    the link's target; the CLI tells it apart by that order, not by the message."""
+    """``open()`` refuses a link to a directory with a usage error marked by
+    ``refused_member_type``; the CLI tells it apart by that marker, not by the
+    message."""
     from archivey.cli.test_cmd import _verify_link
 
     buf = io.BytesIO()
@@ -1659,8 +1661,9 @@ def test_cli_test_ignores_a_real_link_to_a_directory() -> None:
     with open_archive(buf) as reader:
         link = reader.get("l")
         assert link is not None
-        with pytest.raises(ArchiveyUsageError):
+        with pytest.raises(ArchiveyUsageError) as info:
             reader.open(link)
+        assert info.value.refused_member_type is MemberType.DIRECTORY
         _verify_link(reader, link)
 
 
@@ -1670,11 +1673,13 @@ def test_cli_test_ignores_a_real_link_to_a_directory() -> None:
         pytest.param(PackageNotInstalledError("pyppmd is not installed"), id="pkg"),
         pytest.param(CorruptionError("CRC mismatch"), id="corrupt"),
         pytest.param(ReadError("some other read error"), id="read"),
+        pytest.param(ArchiveyUsageError("The reader is closed"), id="usage"),
     ],
 )
 def test_cli_test_raises_other_errors_from_a_link_open(exc: Exception) -> None:
     """Only the errors about where a link points are ignored once its target is
-    read; a target that cannot be opened is not a clean link."""
+    read; a target that cannot be opened, or an unmarked usage error, is not a
+    clean link."""
     from archivey.cli.test_cmd import _verify_link
 
     link = ArchiveMember(type=MemberType.SYMLINK, name="l")

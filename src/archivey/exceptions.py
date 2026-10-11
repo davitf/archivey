@@ -38,7 +38,7 @@ from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
-    from archivey.types import ArchiveFormat
+    from archivey.types import ArchiveFormat, MemberType
 
 
 def _restore_exception(
@@ -343,13 +343,22 @@ class ArchiveyUsageError(Exception):
     error's text is mostly archivey's own, so the escaping is usually a no-op — but
     "mostly" is not a property worth carving an exception into, and a usage error is
     free to name the member that provoked it.
+
+    ``refused_member_type`` marks one case by type rather than by message. It is the
+    type of the member ``open()`` / ``read()`` refused because it is not a file
+    (``DIRECTORY``, ``ANTI`` or ``OTHER``), and ``None`` on every other usage error.
+    When the caller opened a link, it is the type of the member the link resolved to:
+    a symlink to a directory gives ``MemberType.DIRECTORY``.
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self, message: str, *, refused_member_type: MemberType | None = None
+    ) -> None:
         self.raw_message = message
         message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
+        self.refused_member_type = refused_member_type
 
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle and copy without re-running __init__; see _restore_exception.

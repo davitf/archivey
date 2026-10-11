@@ -794,17 +794,9 @@ def test_link_verify_on_a_streaming_reader_is_a_fail_not_a_traceback(
     does, the usage error from ``open()`` must count as a FAIL.
 
     A stub reaches the path: every link counts as unverified, and a regular TAR is
-    opened in streaming mode as if it were a pipe. An unverified link has no target
-    yet (``_link_needs_verification``), so the stub clears the one TAR listed: the
-    refusal then comes before ``open()`` reads a target, as it would for a real one.
+    opened in streaming mode as if it were a pipe.
     """
     from archivey.cli import common
-
-    def unverified(m: ArchiveMember) -> bool:
-        if m.type is not MemberType.SYMLINK:
-            return False
-        m.link_target = None
-        return True
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:
@@ -819,7 +811,11 @@ def test_link_verify_on_a_streaming_reader_is_a_fail_not_a_traceback(
     archive.write_bytes(buf.getvalue())
 
     monkeypatch.setattr(common, "is_read_once", lambda _path: True)
-    monkeypatch.setattr(test_cmd, "_link_needs_verification", unverified)
+    monkeypatch.setattr(
+        test_cmd,
+        "_link_needs_verification",
+        lambda m: m.type is MemberType.SYMLINK,
+    )
     assert main(["test", "--hide-progress", str(archive)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "FAIL l:" in err

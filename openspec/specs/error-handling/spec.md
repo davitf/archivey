@@ -113,7 +113,8 @@ as the parameter that would have allowed the operation.
 - driving a reader or stream from inside a diagnostic callback it is emitting;
 - `open_stream()` given a `format=` that is not a compressed stream;
 - `open()` / `read()` of a resolved non-payload member (`DIRECTORY`, `ANTI`,
-  `OTHER`). A symlink/hardlink that fails to resolve remains
+  `OTHER`), marked by `refused_member_type` (that member's type; `None` on every other
+  usage error). A symlink/hardlink that fails to resolve remains
   `LinkTargetNotFoundError` (`ArchiveyError`) — that is an archive property,
   not caller misuse. A link that resolves to a non-`FILE` then hits the
   non-payload rule above.

@@ -1,10 +1,11 @@
 """The public names the CLI uses in place of library internals.
 
 ``archivey.paths.numbered_name``, ``ExtractionResult.rewrites`` (``NameRewrite``),
-``ArchiveMember.link_target_unrecorded`` and ``LinkTargetNotFoundError.reason``
-(``LinkTargetNotFoundReason``) replaced an internal import, two private-field reads and
-two error-message matches in ``archivey.cli``. Each gets its own contract test here,
-and the CLI tests at the end pin that the CLI prints what it printed before.
+``ArchiveMember.link_target_unrecorded``, ``LinkTargetNotFoundError.reason``
+(``LinkTargetNotFoundReason``) and ``ArchiveyUsageError.refused_member_type`` replaced
+an internal import, two private-field reads and two error-message matches in
+``archivey.cli``. Each gets its own contract test here, and the CLI tests at the end
+pin that the CLI prints what it printed before.
 """
 
 from __future__ import annotations
@@ -331,6 +332,38 @@ def test_a_hardlink_with_no_source_fails_as_unresolved(tmp_path: Path) -> None:
     (result,) = report.results
     assert isinstance(result.error, LinkTargetNotFoundError)
     assert result.error.reason is LinkTargetNotFoundReason.UNRESOLVED
+
+
+# --- ArchiveyUsageError.refused_member_type ---
+
+
+def test_refused_member_type_marks_an_open_of_a_member_with_no_bytes(
+    tmp_path: Path,
+) -> None:
+    archive = _tar(
+        tmp_path / "a.tar",
+        [("d", "dir", b""), ("to-dir", "sym", "d"), ("f", "file", b"x")],
+    )
+    with open_archive(archive) as reader:
+        for name in ("d/", "to-dir"):
+            with pytest.raises(archivey.ArchiveyUsageError) as info:
+                reader.open(name)
+            assert info.value.refused_member_type is MemberType.DIRECTORY, name
+        with pytest.raises(archivey.ArchiveyUsageError) as info:
+            reader.open(0)  # type: ignore[arg-type]  # the misuse under test
+        assert info.value.refused_member_type is None
+    with pytest.raises(archivey.ArchiveyUsageError) as info:
+        reader.open("f")  # the reader is closed
+    assert info.value.refused_member_type is None
+
+
+def test_refused_member_type_survives_a_pickle() -> None:
+    import pickle
+
+    exc = archivey.ArchiveyUsageError(
+        "not a file", refused_member_type=MemberType.OTHER
+    )
+    assert pickle.loads(pickle.dumps(exc)).refused_member_type is MemberType.OTHER
 
 
 # --- The CLI's output is what it was before ---

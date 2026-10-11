@@ -641,7 +641,9 @@ valid chunks; `read()` raises without returning bytes.
 
 After symlink/hardlink following, if the **resolved** member is
 `DIRECTORY`, `ANTI`, or `OTHER`, `open()` / `read()` SHALL raise
-`ArchiveyUsageError`. They MUST NOT return empty bytes, and MUST NOT leak raw
+`ArchiveyUsageError` with `refused_member_type` set to that member's type, so a caller
+can tell this refusal from other usage errors without reading the message. Every other
+usage error SHALL leave `refused_member_type` `None`. They MUST NOT return empty bytes, and MUST NOT leak raw
 `IsADirectoryError` or format `CorruptionError` for directory paths. A link whose
 target is missing SHALL still raise `LinkTargetNotFoundError` (`ArchiveyError`).
 
@@ -661,8 +663,9 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | Reader-owned stream emits rewind diagnostic | Visible on stream and reader snapshots; retained once |
 | `read("readme.txt")` | Full uncompressed `bytes` |
 | `open(member)` from a different reader | `ValueError` |
-| `open`/`read` directory (ZIP/TAR/ISO/directory/7z) | `ArchiveyUsageError` |
-| `open`/`read` `MemberType.ANTI` or `OTHER` | `ArchiveyUsageError` |
+| `open`/`read` directory (ZIP/TAR/ISO/directory/7z) | `ArchiveyUsageError`, `refused_member_type == DIRECTORY` |
+| `open`/`read` `MemberType.ANTI` or `OTHER` | `ArchiveyUsageError`, `refused_member_type` is that type |
+| `open`/`read` a symlink that resolves to a directory | `ArchiveyUsageError`, `refused_member_type == DIRECTORY` |
 | Symlink resolves to a file | Follow succeeds; returns file stream/bytes |
 | Symlink target missing in archive | `LinkTargetNotFoundError` |
 

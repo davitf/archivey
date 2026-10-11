@@ -282,15 +282,12 @@ def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
 
     A target that names no member, or a chain of links that loops, is a
     ``LinkTargetNotFoundError``. A link that resolves to a directory, an anti-item or
-    an OTHER member is a usage error: ``open()`` refuses to return bytes for it. That
-    refusal is the only usage error ``open()`` raises after reading the link's target.
-    The others (a closed reader, a member from another reader, an overlapping stream, a
-    bad argument) come before that read, so the caller sees ``link_target`` still
-    ``None`` and raises them. The one later source is a password the library cannot
-    encode, which from the CLI means a lone surrogate on a Windows command line; the
-    encrypted members themselves then fail the test with that error.
+    an OTHER member is a usage error that carries ``refused_member_type``: ``open()``
+    refuses to return bytes for it. Any other usage error is raised.
     """
-    return isinstance(exc, (LinkTargetNotFoundError, ArchiveyUsageError))
+    if isinstance(exc, LinkTargetNotFoundError):
+        return True
+    return isinstance(exc, ArchiveyUsageError) and exc.refused_member_type is not None
 
 
 def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:

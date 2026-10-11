@@ -519,7 +519,8 @@ fields, the CLI SHALL NOT read a private attribute of a library object, and SHAL
 decide anything from an exception's message: `extract` tells a re-root from a portable
 rewrite by `ExtractionResult.rewrites`, and `test` tells a link the archive left
 without a target by `ArchiveMember.link_target_unrecorded`, and an error about where a
-link points by its type.
+link points by its type (`LinkTargetNotFoundError`) or its marker
+(`ArchiveyUsageError.refused_member_type`).
 
 #### Scenario: CLI import boundary
 
