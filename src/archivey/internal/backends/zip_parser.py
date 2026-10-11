@@ -19,9 +19,9 @@ or ``TruncatedError`` (an archive cut short), a valid feature archivey refuses r
 ``UnsupportedFeatureError``. The caller stamps archive and member context.
 
 The ZIP64 record checks and the stub offset (``base``) follow stdlib ``zipfile``
-(3.13), and the end-record search is stdlib's older window (one byte wider than
-3.13's, see ``_SEARCH_BACK``), so a prefixed or commented archive resolves to the record stdlib
-would have read. The walk tolerates more than stdlib does: it does not refuse
+(3.13). The end-record search is stdlib's older window, one byte wider than 3.13's
+(see ``_SEARCH_BACK``), so a prefixed or commented archive resolves to the record
+stdlib reads whenever stdlib finds one. The walk tolerates more than stdlib does: it does not refuse
 the archive for an extra field cut short or a version-needed it does not know, and it
 yields every entry before a damaged one.
 """
@@ -497,9 +497,9 @@ class CentralFixed:
 def parse_central_fixed(fixed: bytes, index: int) -> CentralFixed:
     """Unpack the fixed part of central directory header ``index``.
 
-    Shared by the directory walk over a seekable source and the forward walk, which
-    meets the directory after the last member. ``CorruptionError`` when the signature
-    is not there.
+    Separate from the walk because the same 46 bytes are parsed wherever a directory
+    header turns up, not only on a walk that starts at the directory.
+    ``CorruptionError`` when the signature is not there.
     """
     (
         signature,

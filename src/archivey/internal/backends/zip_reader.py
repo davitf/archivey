@@ -1450,8 +1450,8 @@ class ZipReader(BaseArchiveReader):
                 raise _closed_archive_error()
             saved = fp.tell()
             try:
-                # A ZIP64 extra can declare any uint64; past ssize_t, ``seek`` raises a
-                # raw OverflowError. Refuse an absurd offset before seeking to it.
+                # A ZIP64 extra can declare any uint64: refuse one past the policy
+                # bound (``MAX_DATA_OFFSET`` in zip_parser) before seeking to it.
                 if not 0 <= info.header_offset <= _MAX_DATA_OFFSET:
                     raise zipfile.BadZipFile(
                         f"Absurd local-header offset: {info.header_offset}"
