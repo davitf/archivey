@@ -171,9 +171,10 @@ _EofFinding = Literal[
 # and old GNU sparse (``S``) all carry the file's data. Every other typeflag that is not
 # a directory or a link lists as OTHER, its data skipped by size.
 _FILE_TYPES = frozenset((b"0", b"\x00", b"7", b"S"))
-# The walk's read-ahead over a codec stream or a view. Fixed rather than io's default, which Python 3.14
-# raised from 8 KiB to 128 KiB: a larger read-ahead reads and decodes further past what
-# the listing needs, so listing costs and source reads would differ by Python version.
+# The walk's read-ahead over a codec stream or a view. Fixed rather than io's default,
+# which Python 3.14 raised from 8 KiB to 128 KiB: a larger read-ahead reads and decodes
+# further past what the listing needs, so listing costs and source reads would differ
+# by Python version.
 _WALK_BUFFER = 8 * 1024
 
 # GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
