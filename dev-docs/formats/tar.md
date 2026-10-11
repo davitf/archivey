@@ -141,6 +141,15 @@ so a member read never moves the walk. A streaming walk is the only reader of th
 forward stream, buffered, and member data is read through it. The reader closes every
 stream it built.
 
+**Every buffer reads the stream under it at most once per read.** It is a
+`ReadAheadStream`, not `io.BufferedReader`, which asks again after a short read. A
+decoder over a cut stream returns the bytes it could decode and raises
+`TruncatedError` on the next read, so asking again in the same read would drop those
+bytes. For the same reason the random-access codec stream does not repeat its first
+error after a seek (`open_codec_stream(repeat_verdict=False)`): its views seek before
+every read. Each member stream keeps its own. A cut member therefore gives its whole
+readable prefix before `TruncatedError`, in either mode and in any read size.
+
 **The first header is parsed at open**, so a file that is not a tar fails there (DR-15b):
 a first block that does not parse is `CorruptionError`, and an empty file or one shorter
 than a block is `TruncatedError`.
@@ -263,7 +272,8 @@ global header reset, declares no encoding and is read as a ustar field is.
 **A member's stream is a view of its data area.** In random access it is a `SharedView`
 over the reader's byte stream (the source, or the codec stream), from the member's
 `data_offset` for its `stored_size` bytes, which re-seeks the shared stream before each
-read. A seek past the end returns the target and the next read returns `b""`, as in every
+read. On a compressed tar the view has an 8 KiB buffer above it, so small reads do not
+each reach the decoder. A seek past the end returns the target and the next read returns `b""`, as in every
 other format. In a streaming pass, and in a random-access pass whose walk is still
 running, the member is read through the walk's own stream (`TarWalker.open_data`). A
 sparse member is a `SparseStream` over either: it serves the logical bytes, zeros in the
@@ -512,7 +522,7 @@ ours.
   offset, so a listing could resync past a bad one, as GNU tar does ("Skipping to next
   header"), instead of raising `CorruptionError` after the members before it. It would
   not settle the missing-trailer ambiguity, which is in the bytes. What would answer it:
-  whether a real caller needs it; `IDEAS.md` plans salvage after 0.2.0.
+  whether a real caller needs it; `IDEAS.md` lists salvage mode as *Needs design*.
 - **Whether to detect v7 tars by their header checksum.** A 512-byte block whose checksum
   field matches its byte sum is strong evidence, and it is what `tarfile.is_tarfile`
   checks. It would also admit random blocks that happen to match, which the current
@@ -529,6 +539,8 @@ ours.
 
 | Claim | Pinned by |
 | --- | --- |
+| A member seek past its end returns the target, as in every other format | `tests/test_tar.py::test_a_member_stream_seeks_past_its_end_like_a_file` |
+| A cut compressed member gives its whole readable prefix before `TruncatedError`, in any read size, streaming or random access | `tests/test_tar.py::test_a_cut_compressed_member_delivers_its_prefix_in_both_modes`; `tests/test_readahead_stream.py` |
 | Cost matrix, plain and compressed | `tests/test_tar.py::test_plain_tar_cost`, `::test_compressed_tar_cost_and_read` |
 | No member count and no report peek before a pass | `::test_member_list_not_available_without_scan`; `tests/test_review_simplicity_consistency.py::test_tar_has_no_report_peek_before_a_pass` |
 | Random access needs a seekable source; streaming works on a pipe, plain and compressed | `::test_non_seekable_tar_fails_fast`, `::test_non_seekable_tar_streaming_opens_without_scanning`, `::test_non_seekable_plain_tar_stream_members`, `::test_non_seekable_tar_gz_streaming` |
@@ -555,7 +567,7 @@ ours.
 | The parser reads each header encoding and refuses each damaged one; the walk ends cleanly on an extended header before the end marker and with `TruncatedError` on one at the end of the stream | `tests/test_tar_parser.py` (a table per encoding and per rejection reason), `::test_extended_header_before_the_end_marker_ends_the_walk`, `::test_extended_header_at_the_end_of_the_stream_is_truncation`; fuzzed by `tests/fuzz_tar_parser.py` |
 | On well-formed archives written by `tarfile` and GNU tar, the walker lists the same members and bytes as `tarfile`. Where it follows GNU tar on purpose (no `prefix` outside the ustar magic, a GNU dumpdir as a directory, a PAX `uid` that is not a number ignored), a test pins the difference | `tests/test_tar_parser_differential.py`, `::test_gnu_incremental_names_have_no_prefix`; `tests/test_tar.py::test_gnu_dumpdir_entry_is_a_directory`, `::test_pax_id_that_is_not_a_number_keeps_the_header_value` |
 | A sparse member serves its logical bytes, holes as zeros, over seekable and forward-only stored streams; each map is checked against exact sizes | `tests/test_sparse_stream.py`; `tests/test_tar_parser.py::test_validate_sparse_map` |
-| The listing stops reading headers at `max_members` and `max_metadata_bytes`, and keeps its prefix when the walk fails; a pass holds one entry per member | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_listing_stops_reading_headers_at_max_metadata_bytes`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_a_pass_holds_one_entry_per_member`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch`; extended-header chains, sparse maps, shared and read-only global records in both modes: `tests/test_tar_header_memory.py` |
+| The listing stops reading headers at `max_members` and `max_metadata_bytes`, and keeps its prefix when the walk fails; a pass holds one entry per member | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_listing_stops_reading_headers_at_max_metadata_bytes`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_a_pass_holds_one_entry_per_member`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises`; extended-header chains, sparse maps, shared and read-only global records in both modes: `tests/test_tar_header_memory.py` |
 | Links: relative, `..`, absolute, archive-relative hardlinks, duplicate names, cycles | `tests/test_tar.py::test_relative_symlink_resolves_against_link_directory` through `::test_chain_through_same_named_members_not_false_cycle` |
 | Hardlink extraction: one pass, orphans, cross-device, past the link-count limit | `tests/test_extraction.py::test_tar_hardlink_shares_inode`, `::test_tar_hardlink_orphan_recovered_seekable`, `::test_tar_hardlink_orphan_forward_only_onerror`, `::test_cross_device_hardlink_reuses_sibling`; `tests/test_cross_os_extraction.py::test_hard_link_past_the_link_limit_is_copied` |
 | `\` in a name or link target under `STRICT`/`STANDARD` | `tests/test_cross_os_extraction.py::test_tar_backslash_is_written_as_a_separator`, `::test_hardlink_target_backslash_becomes_a_separator`, `::test_hardlink_resolves_by_its_stored_target`, `::test_symlink_to_a_member_named_with_a_backslash_resolves`, `::test_symlink_target_backslash_cannot_climb_out` |

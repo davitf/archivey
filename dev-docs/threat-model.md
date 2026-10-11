@@ -464,9 +464,9 @@ record.
 the source really has.
 
 **Mechanism.** A TAR extended header (PAX record or GNU long name) and a pycdlib
-directory extent both declare their own size, straight from the archive. Read with one
-`read(size)`, as stdlib `tarfile` and pycdlib read them, a 10 KB tar asked for 6 GiB and
-a 51 KB ISO for 4 GiB, both dying on a bare `MemoryError`. archivey's TAR walker
+directory extent both declare their own size, straight from the archive. Measured
+without a bound, read with one `read(size)` as stdlib `tarfile` and pycdlib read them: a
+10 KB tar asked for 6 GiB and a 51 KB ISO for 4 GiB, both dying on a bare `MemoryError`. archivey's TAR walker
 (`internal/backends/tar_parser.py` `TarWalker`) charges an extended header's declared
 size to the member's `max_metadata_bytes` budget before it reads anything
 ([Listing](#listing)), then reads it with `streams/streamtools/binaryio.py`

@@ -259,13 +259,15 @@ For random-access TAR readers that allow concurrent member streams under
 `MemberStreams.CONCURRENT`, the backend SHALL serialize every operation that touches
 the shared archive handle with one per-reader lock.
 
-The lock SHALL cover archive initialization/failure cleanup, the header walk,
-strict-EOF direct reads, member stream creation, member `read` / `readinto` / `seek` /
-`tell`, member close, archive close, and any operation that repositions or closes the
-shared handle. The lock surrounds each complete operation, not individual raw
-seek/read calls. Archivey buffering/error/lifecycle wrappers sit outside it; exception
-translation, diagnostics/logging, lifecycle release, callbacks, and finalizers run after
-the lock is released.
+The lock SHALL cover archive initialization/failure cleanup, each read of the header
+walk's buffer, strict-EOF direct reads, each member `read` / `readinto` that reaches the
+shared handle, archive close, and any operation that repositions or closes the shared
+handle. A member view's supported `seek` and `tell` change only the view's own position,
+and the next read applies it under the lock. The lock surrounds each complete
+operation, not individual raw seek/read calls. Archivey buffering/error/lifecycle
+wrappers sit outside it; exception translation, diagnostics/logging, lifecycle release,
+callbacks, and finalizers run after the lock is released. Unsupported positioning
+retains normal `io.UnsupportedOperation` behavior.
 
 Compressed TAR remains `SOLID`; locking guarantees correctness but not parallel
 throughput. Streaming TAR (`streaming=True`) remains one forward pass and does not gain
@@ -281,6 +283,7 @@ random concurrent open.
 | Materialization then strict EOF verification | The header walk and the EOF read use the same lock |
 | Member operation raises/closes | Translation/logging/lifecycle/callback work runs without the TAR handle lock held |
 | GNU sparse member opened | Stream yields the member's logical bytes, holes as zeros |
+| A member `seek` past its end | Returns the target; the next read returns `b""` |
 | `streaming=True` TAR | Forward-only contract unchanged; no concurrent random-open behavior |
 | Contention on shared handle | Correctness guaranteed; no correctness speed threshold |
 
@@ -399,7 +402,6 @@ reads it.
 | --- | --- |
 | The same archive on Python 3.11 to 3.15, any patch release | Same members, same bytes |
 | A chain of extended headers | Read in a loop; each header is charged to the member's `max_metadata_bytes` budget before it is read |
-| A member `seek` past its end | Returns the target; the next read returns `b""` |
 | A GNU incremental archive (`tar -G`), whose old GNU headers hold `atime` where ustar has `prefix` | Members listed under their own names |
 
 ### Requirement: Reject TAR headers that do not parse
