@@ -1384,14 +1384,19 @@ def test_old_style_directory_with_data_is_skipped(
     ]
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
-def test_old_style_directory_data_is_reported_and_readable(typeflag: bytes) -> None:
-    # The directory keeps the size its header declares, MEMBER_DIRECTORY_DATA_IGNORED
-    # names the bytes extraction drops, and read() delivers them, so the data an
-    # archive hides behind a directory name is never out of reach.
+def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) -> None:
+    # The directory keeps the size its header declares and
+    # MEMBER_DIRECTORY_DATA_IGNORED names the bytes extraction drops, on both walks.
     data = _tar_slash_entry_with_data(typeflag)
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-        directory, after = ar.members()
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        directory, stream = next(iter(ar.stream_members()))
+        assert stream is None
         assert directory.type is MemberType.DIRECTORY
         assert directory.size == 15
         assert directory.extra["tar.type"] == typeflag
@@ -1411,43 +1416,61 @@ def test_old_style_directory_data_is_reported_and_readable(typeflag: bytes) -> N
             }
         ]
         assert "15 bytes" in diags[0].message
+
+
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_data_is_readable(typeflag: bytes) -> None:
+    # read() delivers the bytes, so the data an archive hides behind a directory name
+    # is never out of reach. Random access only: a streaming walk hands a directory
+    # no stream, whatever its size.
+    data = _tar_slash_entry_with_data(typeflag)
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        directory, after = ar.members()
         assert ar.read(directory) == b"hello directory"
         assert ar.read(after) == b"after\n"
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
 def test_old_style_directory_data_is_refused_by_strict_policy(
-    typeflag: bytes,
+    typeflag: bytes, streaming: bool
 ) -> None:
     data = _tar_slash_entry_with_data(typeflag)
     with pytest.raises(DiagnosticRaisedError) as excinfo:
         with open_archive(
-            io.BytesIO(data),
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
+            streaming=streaming,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
         ) as ar:
-            ar.members()
+            list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_regtype_slash_name_without_data_is_a_plain_directory(
-    streaming: bool,
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_slash_name_without_data_is_a_plain_directory(
+    typeflag: bytes, streaming: bool
 ) -> None:
-    # The common producer shape: a REGTYPE "d/" header with size 0 (some v7-era tars
+    # The common producer shape: an old-style "d/" header with size 0 (v7-era tars
     # wrote directories so). It is a directory with no size and nothing to report.
-    data = _tar_slash_entry_with_data(tarfile.REGTYPE, data=b"")
+    data = _tar_slash_entry_with_data(typeflag, data=b"")
     assert _stream_all(data, streaming) == [
         ("d/", MemberType.DIRECTORY, None),
         ("after.txt", MemberType.FILE, b"after\n"),
     ]
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-        directory = ar.members()[0]
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        directory = next(m for m, _ in ar.stream_members())
         assert directory.size is None
-        assert directory.extra["tar.type"] == tarfile.REGTYPE
+        assert directory.extra["tar.type"] == typeflag
         assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         with pytest.raises(ArchiveyUsageError, match="declares no data"):
-            ar.open(directory)
+            ar.open(ar.members()[0])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -1643,14 +1666,19 @@ def test_old_style_directory_with_data_extracts(
     assert (tmp_path / "after.txt").read_bytes() == b"after\n"
 
 
-def test_dirtype_with_data_stays_corruption() -> None:
-    # A DIRTYPE header has no data area, so the caller gets CorruptionError: in random
-    # access the listing yields no members, and after.txt is not reached. GNU tar 1.35
-    # reports an error ("Skipping to next header") and keeps listing; 7-Zip stops.
-    data = _tar_slash_entry_with_data(tarfile.DIRTYPE)
-    with raises_corruption_not_truncation():
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "payload", [b"hello directory", b"\0" * 512], ids=["bytes", "zero_block"]
+)
+def test_dirtype_with_data_is_corruption(payload: bytes, streaming: bool) -> None:
+    # A DIRTYPE header has no data area and tarfile skips no blocks for it, so the
+    # header is refused as damaged: a non-zero payload would be read as the next
+    # header and an all-zero one as the end-of-archive marker, dropping after.txt
+    # without a word. GNU tar 1.35 reports an error ("Skipping to next header") and
+    # keeps listing; 7-Zip stops.
+    data = _tar_slash_entry_with_data(tarfile.DIRTYPE, data=payload)
+    with raises_corruption_not_truncation(match="directory that declares"):
+        _stream_all(data, streaming)
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:

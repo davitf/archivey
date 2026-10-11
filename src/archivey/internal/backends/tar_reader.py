@@ -44,7 +44,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import replace
 from datetime import datetime
-from io import SEEK_SET, BytesIO
+from io import SEEK_SET
 from typing import BinaryIO, Literal, Self, cast
 
 from archivey.config import ArchiveyConfig
@@ -396,8 +396,9 @@ class _TarInfo(tarfile.TarInfo):
     ``DIRTYPE`` and :attr:`stored_typeflag` holds the header's byte."""
 
     stored_typeflag: bytes
-    """The typeflag byte as stored, which ``type`` no longer is for an old-style
-    directory."""
+    """The header's typeflag byte, recorded for every header. ``type`` is the same
+    byte except for an old-style directory, whose ``type`` becomes ``DIRTYPE``; the
+    stored byte is what ``extra["tar.type"]`` reports."""
 
     @classmethod
     def frombuf(cls, buf: bytes | bytearray, encoding: str, errors: str) -> Self:
@@ -422,7 +423,8 @@ class _TarInfo(tarfile.TarInfo):
         return info
 
     def _undo_stdlib_directory_check(self, buf: bytes | bytearray) -> None:
-        """Keep an ``AREGTYPE`` header a regular file while its member is parsed.
+        """Record the stored typeflag, and keep an ``AREGTYPE`` header a regular file
+        while its member is parsed.
 
         Old (v7) tars mark a directory as a regular file whose name ends in ``/``.
         ``tarfile`` decides that from the header's own name field: on every header
@@ -1903,11 +1905,7 @@ class TarReader(BaseArchiveReader):
         # The typeflag as stored: NUL or ``0`` for an old-style directory, whose
         # ``type`` is DIRTYPE.
         old_style_directory = getattr(info, "old_style_directory", False)
-        stored_type = (
-            getattr(info, "stored_typeflag", info.type)
-            if old_style_directory
-            else info.type
-        )
+        stored_type = info.stored_typeflag if old_style_directory else info.type  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
         extra = MemberExtra({"tar.type": stored_type})
         special = special_file_type_from_tar_typeflag(info.type)
         if special is not None:
@@ -1929,6 +1927,20 @@ class TarReader(BaseArchiveReader):
                 )
             # The cross-format key says which kind the archive recorded (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
+        if info.type == tarfile.DIRTYPE and info.size and not old_style_directory:
+            # A DIRTYPE header has no data area either, and tarfile skips no blocks
+            # for it: a non-zero payload desynchronises the walk, an all-zero one
+            # reads as the end-of-archive marker and drops every later member. The
+            # same refusal as above makes both shapes the same damage. An old-style
+            # directory is the opposite case: its header is a regular file's, so its
+            # blocks were skipped and are reported below.
+            raise CorruptionError(
+                f"TAR header for {quoted(name)} is a directory that declares "
+                f"{info.size} bytes of data; a directory entry has no data, and tar "
+                "skips such a header as damaged",
+                archive_name=self._archive_name,
+                member_name=name,
+            )
         if info.pax_headers:
             extra["tar.pax_headers"] = self._extra_pax_headers(info.pax_headers)
         if info.isdev():
@@ -1990,8 +2002,8 @@ class TarReader(BaseArchiveReader):
         if info.issparse():
             member.is_sparse = True
         if old_style_directory and info.size:
-            # GNU tar and 7-Zip create the directory and drop the bytes without a
-            # word; so does extraction here, and ``open()`` delivers them.
+            # GNU tar and 7-Zip create the directory and drop the bytes silently. Say
+            # so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
         emit_member_name_normalized(
             self._diagnostics_collector,
@@ -2083,11 +2095,12 @@ class TarReader(BaseArchiveReader):
                 raw = self._tar.fileobject(self._tar, info)
             else:
                 raw = self._tar.extractfile(info)
-        if raw is None:
-            # Only FILE members and data-bearing directories reach here (the base
-            # follows links and refuses the other types), so a None stream means a
-            # zero-length entry; present an empty stream.
-            raw = BytesIO(b"")
+        # ``extractfile`` returns None only for a directory or a special entry, and a
+        # link's target in place of the link. The base follows links itself and
+        # refuses OTHER, ANTI and a directory with no size before this runs, and a
+        # directory with a size took the branch above, so every member that reaches
+        # here has a file object; a zero-length file is one with nothing to read.
+        assert raw is not None, "TAR member reached open() without a data area"
         stream: BinaryIO = ensure_binaryio(raw)
         if self._handle_lock is not None:
             stream = LockedStream(stream, self._handle_lock)

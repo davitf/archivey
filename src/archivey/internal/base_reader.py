@@ -2887,8 +2887,8 @@ class BaseArchiveReader(ArchiveReader):
         # A tombstone and a special entry are refused by type: there is nothing to
         # deliver for them even where a header declares a size. A directory is
         # refused by data: it has none unless its header declares some, and one that
-        # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP and
-        # RAR; a 7z directory can carry a size too until the sweep that types a
+        # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP, TAR
+        # and RAR; a 7z directory can carry a size too until the sweep that types a
         # member with a stream as a file lands) opens here, and only here: the bytes
         # the backend can decode are reachable through ``open()``, while
         # ``stream_members()`` and extraction still route by type and skip them.

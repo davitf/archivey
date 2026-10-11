@@ -216,11 +216,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       runs from the block after the damaged one. This needs at least one member before
       the zero block: a file that is only a zero block and then other bytes is not shown
       to be a TAR archive, and it raises `CorruptionError`.
-    - A **device, FIFO or socket header that declares data** (typeflag `3`, `4` or `6`
-      with a non-zero size) raises `CorruptionError` at that header, before the
-      end-marker check runs. Such an entry has no data, GNU tar skips the header as
-      damaged, and `tarfile` would read an all-zero payload as the end of the archive
-      and drop every member after it.
+    - A **device, FIFO, socket or directory header that declares data** (typeflag
+      `3`, `4`, `6` or `5` with a non-zero size) raises `CorruptionError` at that
+      header, before the end-marker check runs. Such an entry has no data, GNU tar
+      skips the header as damaged, and `tarfile` would read an all-zero payload as
+      the end of the archive and drop every member after it. An old-style directory,
+      a regular-file header named `d/`, is the other case: see above.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes
