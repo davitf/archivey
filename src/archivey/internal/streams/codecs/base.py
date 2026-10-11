@@ -113,18 +113,14 @@ class CodecParams:
       pad after it is not input after the end marker. Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
-    - ``single_stream`` — the coder's data is one bzip2 stream (a ZIP member or a 7z
-      coder), so the standard-library decoder ends at its end-of-stream marker rather
-      than reading a further stream as a concatenated file. Under the accelerator it
-      turns off the end handover to the standard library for a further stream. The
-      decoder itself still reads a stream that follows the first with no zero padding
-      between, either right after it or after empty streams only (measured on
-      rapidgzip 0.16); that output runs past the container's declared size, and the
-      container's size check raises where the standard library would have stopped.
-      A damaged stream, or a stream header with junk after it, between the first
-      stream and a further one makes the standard library take over without the
-      flag, and it raises instead of stopping (``dev-docs/formats/bzip2.md`` §5).
-      After zero padding the decoder stops.
+    - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
+      member or 7z coder, a Zstd ZIP member. The decoder ends at the first stream's
+      end rather than reading a further stream (a Zstd frame) as a concatenated
+      file's, so a further stream is input after the end, which a
+      ``refuse_input_after_end`` stream refuses. Under the bzip2 accelerator, which
+      reads on into a further stream, the read hands over to the standard library
+      where one starts (``bzip2_codec._Bzip2Layout``). A 7z Zstd or LZ4 coder does
+      not set it: there concatenated frames count together against the unpack size.
       Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
       end marker, refusing any input after it.
     """

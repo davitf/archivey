@@ -31,7 +31,10 @@ from archivey.config import AcceleratorMode
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.decompressor_stream import DecompressorStream
+from archivey.internal.streams.decompressor_stream import (
+    DataAfterEndError,
+    DecompressorStream,
+)
 from tests.conftest import requires
 
 pytestmark = requires("rapidgzip")
@@ -375,3 +378,45 @@ def test_a_seek_to_the_end_of_a_gzip_or_deflate_stream_gives_what_it_does_off(
         tail = c.payload[pos : pos + 16]
         assert off == [pos, tail, pos + len(tail)]
     assert on == off
+
+
+# A container coder's raw DEFLATE (refuse_input_after_end): bytes after the stream's
+# end, and a second stream the declared size covers, which rapidgzip reads whole.
+_AFTER_THE_END = {
+    "junk": (_raw_deflate(_PATTERN) + b"JUNKJUNK", len(_PATTERN)),
+    "zero": (_raw_deflate(_PATTERN) + b"\x00", len(_PATTERN)),
+    "second-stream": (
+        _raw_deflate(_PATTERN) + _raw_deflate(b"second"),
+        len(_PATTERN) + len(b"second"),
+    ),
+}
+
+
+@pytest.mark.parametrize("declared", [False, True], ids=["unsized", "declared"])
+@pytest.mark.parametrize("case", sorted(_AFTER_THE_END))
+def test_a_seek_to_the_end_refuses_input_after_a_container_streams_end(
+    case: str, declared: bool
+) -> None:
+    """A seek that meets the end of rapidgzip's output runs the end check a read
+    there runs, and under ``refuse_input_after_end`` that check decodes from the
+    start, so input after the first stream's end is refused at the seek, as with the
+    accelerator off."""
+    blob, size = _AFTER_THE_END[case]
+    outcomes = []
+    for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
+        config = StreamConfig(
+            seekable=True,
+            use_rapidgzip=mode,
+            refuse_input_after_end=True,
+            expected_decompressed_size=size if declared else None,
+        )
+        outcome: list[object] = []
+        try:
+            with open_codec_stream(Codec.DEFLATE, io.BytesIO(blob), config=config) as s:
+                outcome.append(s.seek(0, io.SEEK_END))
+                s.seek(0)
+                outcome.append(len(s.read()))
+        except (CorruptionError, TruncatedError) as exc:
+            outcome.append(type(exc))
+        outcomes.append(outcome)
+    assert outcomes == [[DataAfterEndError], [DataAfterEndError]]

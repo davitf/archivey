@@ -43,6 +43,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
+from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -1184,24 +1185,33 @@ def test_bzip2_accelerator_reads_a_container_coders_single_stream_as_off(
 
 
 @pytest.mark.parametrize(
-    ("between", "accelerated"),
+    "between",
     [
-        pytest.param(b"", 2000, id="adjacent"),
-        pytest.param(_BZ2_EMPTY, 2000, id="empty-stream"),
+        pytest.param(b"", id="adjacent"),
+        pytest.param(_BZ2_EMPTY, id="empty-stream"),
+        pytest.param(b"BZh9" + bytes(40), id="header-and-zeros"),
+        pytest.param(_bz2_without_markers(b"B"), id="damaged-stream"),
     ],
 )
-def test_bzip2_accelerator_container_single_stream_differences(
-    between: bytes, accelerated: int | type[Exception]
+@pytest.mark.parametrize(
+    "refuse_input_after_end", [False, True], ids=["bounded", "exact"]
+)
+def test_bzip2_accelerator_ends_a_container_coders_single_stream_as_off(
+    between: bytes, refuse_input_after_end: bool
 ) -> None:
-    # The accepted differences for a container coder's single stream
-    # (dev-docs/formats/bzip2.md §5): with no zero padding after the first stream, the
-    # decoder reads a further stream. The accelerator off reads the first alone.
+    # A container coder's data is one stream: the accelerator hands over where a
+    # further stream starts, so both modes read the first alone. With
+    # refuse_input_after_end (a ZIP member, a 7z coder), both refuse what follows it.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _bz2_stream(b"X") + between + _bz2_stream(b"Y")
     params = CodecParams(single_stream=True)
     results: list[int | type[Exception]] = []
     for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
-        config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
+        config = StreamConfig(
+            use_indexed_bzip2=mode,
+            seekable=True,
+            refuse_input_after_end=refuse_input_after_end,
+        )
         try:
             with open_codec_stream(
                 Codec.BZIP2, io.BytesIO(data), config=config, params=params
@@ -1209,7 +1219,8 @@ def test_bzip2_accelerator_container_single_stream_differences(
                 results.append(len(s.read()))
         except CorruptionError as exc:
             results.append(type(exc))
-    assert results == [1000, accelerated]
+    expected = DataAfterEndError if refuse_input_after_end else 1000
+    assert results == [expected, expected]
 
 
 @pytest.mark.parametrize("single_stream", [True, False])
