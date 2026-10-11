@@ -68,6 +68,7 @@ provisioned Linux laptop; they do not run on CI.
 | `test_rar_reader.py::test_qo_listing_matches_file_walk_live` | live `rar a` shapes vs `use_qo=False` FILE walk |
 | `test_rar_reader.py::test_qo_listing_matches_file_walk_with_comment` | live `rar a -qo+ -z`; archive comment field parity |
 | `test_audit_rar_iso_dir.py::test_file_copy_with_a_special_mode_keeps_its_kind` | live `rar a -oi:1000` for a real file copy; `::test_file_copy_built_from_a_hardlink_record_keeps_its_kind` covers the same shape on CI from `hardlinks_solid__.rar` |
+| `test_rar_trailing_data.py::test_zeros_rar_writes_after_a_non_last_volume_are_silent` | live `rar a -v100k`; the committed `tinyvol_hp` set covers the padded case on CI |
 
 Committing a small SFX payload (and a real `-sfx` stub) the way this directory
 already does for volumes would close the gap. Tracked internally.

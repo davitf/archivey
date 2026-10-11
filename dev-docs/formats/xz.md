@@ -187,7 +187,10 @@ magic, and `CorruptionError` otherwise.
 Seek points are the member starts, from the trailer walk. A backward seek resumes at the
 nearest member.
 
-**LZMA Alone.** `lzma.LZMAFile(FORMAT_ALONE)`. A backward seek decodes again from the start.
+**LZMA Alone.** `FramedDecompressorStream` over `lzma.LZMADecompressor(FORMAT_ALONE)`,
+one decompressor per stream ([`single-file.md`](single-file.md) §2.3). Zero bytes are
+padding only where they run to the end of the file; a stream after them is trailing data
+(§6). A backward seek decodes again from the start.
 
 **Dictionary caps.** Each format's declared dictionary is compared with
 `DecoderLimits.max_decoder_memory` before a decoder is built:
@@ -242,12 +245,14 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `xz` | Reads; `size` from the index; one block, so no seek points but the start |
 | `xz -T4 --block-size=…` | Reads; one seek point per block |
 | `xz -C none`, `xz -C sha256` | Reads. With `-C none` only a broken LZMA2 stream reveals damage |
-| Two `xz` streams with zero padding between them | Reads both |
+| Two `xz` streams with zero padding between them | Reads both: Stream Padding, in multiples of 4 bytes, is part of the xz format. The other codecs stop at zeros between streams (§6) |
 | A stream followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and seeks from the index. `xz -t` refuses the file |
 | Two streams, one byte of the second stream's header magic damaged | `CorruptionError` on a read and a seek; the index is unreadable. `xz -t`: "Compressed data is corrupt" |
 | `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
 | LZMA Alone followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`. Junk that passes the next-stream check (about one random tail in 870) fails with `CorruptionError` |
 | Two LZMA Alone streams concatenated | Reads both, as `lzma.LZMAFile` does; the second is recognised by its header (§2.3 of [`single-file.md`](single-file.md)) |
+| An LZMA Alone stream, 4 zero bytes, a stream (crafted: no known writer emits this) | The first payload, then `ARCHIVE_TRAILING_DATA` at the second stream's first byte; `DiagnosticPolicy.strict()` raises. `xz --format=lzma -dc` and `lzma -dc` 5.4.5 write the first payload, then "Compressed data is corrupt", exit 1. 7-Zip 16.02 writes it and reports "There are some data after the end of the payload data"; `bsdcat` and Python's `lzma` (`FORMAT_ALONE`) return the first payload |
+| An LZMA Alone stream, then 4 zero bytes at the end of the file | Reads, with no diagnostic. `xz --format=lzma -dc` writes the payload and exits 1 on the zeros, and Python's `lzma` raises; archivey keeps them silent, as for every codec ([`single-file.md`](single-file.md) §6) |
 | 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
 | An lzip member followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and the CRC-32 from the trailers. The lzip manual allows trailing data |
@@ -308,6 +313,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | Parse xz framing natively over stdlib `lzma` (PR #7) | The index gives size and block seeks without decoding; `lzma.open` reports the last stream's size for a multi-stream file | `python-xz`, a dependency that needs a seekable source and scans the whole file up front; removed from every extra |
 | Parse lzip natively over stdlib `lzma` (PR #7) | lzip is LZMA1 with a fixed header; its trailers give size, seeks and a CRC | A dependency |
+| LZMA Alone: zero bytes end the data unless they run to the end of the file; a stream after them is `ARCHIVE_TRAILING_DATA` (maintainer ruling, 2026-10-10). xz keeps reading past its Stream Padding | Match the official tool (DR-6): `xz --format=lzma` stops at the zeros and fails, as do the gzip, bzip2, zstd and LZ4 tools; xz defines padding between streams and LZMA Alone defines none. Zeros at the end stay silent although `xz` refuses them: one rule for every codec ([`single-file.md`](single-file.md) §6) | Reading a stream after the zeros, as `lzma.LZMAFile` does |
 | Combine the lzip trailer CRCs into one whole-content CRC-32 (PR #160) | It is a real digest of the content, known from one backward walk | Listing it only for single-member files |
 | Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Size must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
 | Do not peek another archive's member stream, stored ZIP entries and TAR members included (PR #732; davitf, 2026-10-10: fix later) | A seek to the end of a deflated member decompresses it twice, and `seek_is_expensive`, the signal detection already uses, covers member streams only as a group. A nested `.xz` or `.lz` loses `size` and the lzip `CRC32`; both are metadata, and the decoder still checks the index and trailers on read. Reopen with a per-stream cheap-seek signal, which would keep both for a stored ZIP entry or a TAR member | Keeping the peek for member streams whose seek is a slice, which needs that signal, shared with detection |
@@ -344,6 +350,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Thinning | `::test_xz_stream_with_more_blocks_than_the_cap_keeps_spaced_blocks`, `::test_lzip_index_over_the_cap_is_thinned_and_seeks_read_right`, `::test_lzip_peek_index_summary_holds_no_per_member_state` |
 | Truncation and short sources | `::test_xz_truncated_large_read_recovers_prefix`, `::test_lzip_truncated_large_read_recovers_prefix`, `::test_xz_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_short_source_that_is_not_lzip_is_corrupt` |
 | lzip trailing data is allowed | `::test_lzip_short_trailing_data_after_a_member_is_allowed` |
+| An LZMA Alone or lzip stream after zero bytes is trailing data, and strict refuses it; zeros at the end and streams with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
 | The index through bytes after the end, and its bound | `tests/test_stream_trailing_data.py::test_xz_keeps_its_size_and_index_through_appended_bytes`, `::test_lzip_keeps_its_size_and_crc_through_appended_bytes`, `::test_the_index_search_reaches_its_bound_and_no_further` |
 | Probes reserve only their read's dictionary | `tests/test_probe_dictionary_clamp.py` |
 | Dictionary caps | `tests/test_decoder_limits.py::test_xz_block_declaring_four_gib_is_refused`, `::test_xz_block_resume_after_a_seek_is_capped_too`, `::test_lzip_member_dictionary_is_capped`, `::test_lzma_alone_declaring_four_gib_is_refused`, `::test_lzma_alone_non_seekable_source_is_checked_and_replayed` |
