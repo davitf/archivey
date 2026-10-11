@@ -204,14 +204,14 @@ FIFOs and directories (`1` to `6`) have none, and the next header is read straig
 theirs whatever size they declare, as GNU tar, bsdtar and 7-Zip do. A device, FIFO or
 socket header with a non-zero size is refused at the header, as the reader does today. A
 `DIRTYPE` header with a non-zero size is not: when the next header parses, the directory
-lists with no size; when the walk ends there, the end check looks at the declared span
-(the format-tar spec delta's rule): a block that is neither a header nor zero where the
-data would begin, or a member header right after the declared bytes, is `CorruptionError`
-naming the directory header, and a zero block then a damaged trailer with no header at
-the declared end is the ordinary marker report, as after a file. The walker has no block
-behaviour to inherit from `tarfile` here, so it applies the rule itself, reading to the
-block after the declared span within the trailing-scan bound. Every other typeflag, known
-or not, has its data skipped by size.
+lists with no size; when the walk ends there on a zero block, the directory is reported
+with `MEMBER_DIRECTORY_DATA_IGNORED` and the trailer checks run as after a file (the
+format-tar spec delta's rule: the zero block is either the declared span read as the
+marker or the trailer after blocks never written, and nothing tells them apart); a block
+that is neither a header nor zero where the data would begin is `CorruptionError` naming
+the directory header. The walker has no block behaviour to inherit from `tarfile` here, so
+it applies the rule itself at its own end-of-walk check. Every other typeflag, known or
+not, has its data skipped by size.
 
 On a seekable stream the walker checks that the last byte of the previous member's data
 area exists before reading the next header, as `tarfile` does, so a member cut short

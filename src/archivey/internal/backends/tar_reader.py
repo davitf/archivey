@@ -25,10 +25,12 @@ After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
   not a tar does not open as an empty one.
 - A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a complete trailer, or of a
   damaged second trailer block → ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
-- A ``DIRTYPE`` header with a size as the last member, with a member header right after
-  the blocks it declares (the span was read as the marker and hid them), or with a
-  block that is neither a header nor zero where its data would begin →
-  ``CorruptionError`` naming the directory (:meth:`_read_past_declared_blocks`).
+- A ``DIRTYPE`` header with a size as the last member, the walk stopped on a zero block
+  right after it → ``MEMBER_DIRECTORY_DATA_IGNORED`` naming the directory: the declared
+  blocks, if there, were read as the marker and hid the members behind them, and nothing
+  tells that from a trailer after a header whose blocks were never written
+  (:meth:`_report_directory_span`). A block that is neither a header nor zero there →
+  ``CorruptionError`` naming the directory.
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
 fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
@@ -62,6 +64,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    DirectoryDataContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -283,16 +286,6 @@ _InvalidHeaderError: type[Exception] = tarfile.InvalidHeaderError  # pyrefly: ig
 # Why the last header parse of a walk failed: on a zero block, or on a header tarfile
 # rejected. ``None`` when it did not fail with either (it parsed, or the data ran out).
 _HeaderStop = Literal["zero_block", "rejected_header"]
-
-
-def _is_member_header(block: bytes) -> bool:
-    """Whether a 512-byte block parses as a tar member header (checksum and number
-    fields), as ``TarFile.next()`` would accept it. A zero block does not."""
-    try:
-        tarfile.TarInfo.frombuf(block, tarfile.ENCODING, "surrogateescape")
-    except (tarfile.HeaderError, ValueError):
-        return False
-    return True
 
 
 class _TarFile(tarfile.TarFile):
@@ -1405,7 +1398,7 @@ class TarReader(BaseArchiveReader):
                 last_info = info
             if failure is not None:
                 raise failure
-        self._verify_tar_eof(any_members=index > 0, last_info=last_info)
+        self._verify_tar_eof(member_count=index, last_info=last_info)
 
     def _register_member(
         self,
@@ -1557,7 +1550,7 @@ class TarReader(BaseArchiveReader):
                 yield self._to_member(info, index)
                 index += 1
                 last_info = info
-        self._verify_tar_eof(any_members=index > 0, last_info=last_info)
+        self._verify_tar_eof(member_count=index, last_info=last_info)
 
     def _read_through_member_data(self) -> None:
         """Read what is left of the last member's data area, before the next header.
@@ -1619,20 +1612,25 @@ class TarReader(BaseArchiveReader):
             )
 
     def _verify_tar_eof(
-        self, *, any_members: bool, last_info: tarfile.TarInfo | None
+        self, *, member_count: int, last_info: tarfile.TarInfo | None
     ) -> None:
         """Verify the two-block null end-of-archive marker and surface a rejected header
         as corruption.
 
-        ``last_info`` is the last member header the walk parsed, or None. When it is a
-        ``DIRTYPE`` header that declares a size, tarfile read the next header where
-        that data would begin (a directory has no data area, so it skipped none), and
-        the walk ending there has two readings: the declared blocks are present, or
-        they are absent and the trailer is damaged. :meth:`_directory_declaring_blocks`
-        picks the header out and :meth:`_refuse_directory_blocks` raises where the
-        bytes settle it, see there; the same header followed by a header that parses
-        is GNU tar's, bsdtar's and 7-Zip's clean case, listed with no size and no
-        report, and never reaches this method as ``last_info``.
+        ``member_count`` is how many members the walk yielded and ``last_info`` the
+        header of the last one, or None. When that header is a ``DIRTYPE`` with a size,
+        tarfile read the next header where its data would begin (a directory has no
+        data area, so it skipped none), and the walk ending there has two readings
+        nobody can tell apart: the declared blocks are zeros, read as the
+        end-of-archive marker with the members behind them dropped, or they were never
+        written and the trailer follows the header. :meth:`_report_directory_span`
+        says so with ``MEMBER_DIRECTORY_DATA_IGNORED``, the weight DR-3 gives a
+        directory's declared data, and the marker checks below run unchanged. When
+        the header where the data would begin does not parse,
+        :meth:`_refuse_directory_blocks` names the directory in the
+        ``CorruptionError`` the rejected header is anyway. The same header followed
+        by a header that parses is GNU tar's, bsdtar's and 7-Zip's clean case, listed
+        with no size and no report, and never reaches this method as ``last_info``.
 
         What tarfile stopped on decides first (:class:`_TarFile`). When its last header
         parse rejected the header — a corrupt member header after the first, which
@@ -1662,38 +1660,30 @@ class TarReader(BaseArchiveReader):
         directory = self._directory_declaring_blocks(last_info)
         if stopped_on == "rejected_header":
             if directory is not None:
-                self._refuse_directory_blocks(directory, found="rejected_header")
+                self._refuse_directory_blocks(directory)
             self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
+        if directory is not None and stopped_on == "zero_block":
+            self._report_directory_span(directory, member_id=member_count - 1)
         fileobj = self._tar.fileobj
         if fileobj is None:
             return
         with self._handle_guard():
             chunk = fileobj.read(512)
-        read_ahead = b""
-        if directory is not None and stopped_on == "zero_block" and len(chunk) == 512:
-            # The zero block tarfile stopped on is the first block of the directory's
-            # declared span and ``chunk`` the second; the block after the span says
-            # whether the span hid members.
-            read_ahead = self._read_past_declared_blocks(directory, second_block=chunk)
         if len(chunk) == 512 and chunk == b"\x00" * 512:
-            self._verify_nothing_but_zeros_to_eof(already_read=read_ahead)
+            self._verify_nothing_but_zeros_to_eof()
             return
         if len(chunk) == 512:
-            if not any_members:
+            if not member_count:
                 self._emit_eof_marker("no_member", observed_bytes=512)
                 return
             if stopped_on == "zero_block":
                 # One zero block, then a damaged one: the marker is damaged, not the
-                # listing. After a directory that declares blocks, this is the shape
-                # that is also absent blocks and a damaged trailer, which GNU tar
-                # and 7-Zip list with a warning, so it is the same warning here
-                # (_read_past_declared_blocks raised above where a member header
-                # showed the blocks were present). The scan past it still runs,
-                # because on a compressed tar it is where the codec's whole-stream
-                # checksum over the members just listed is usually reached.
+                # listing. The scan past it still runs, because on a compressed tar
+                # it is where the codec's whole-stream checksum over the members just
+                # listed is usually reached.
                 self._emit_eof_marker("damaged_second_block", observed_bytes=512)
-                self._verify_nothing_but_zeros_to_eof(already_read=read_ahead)
+                self._verify_nothing_but_zeros_to_eof()
                 return
             # The walk recorded no stop reason, yet a whole block follows. Not reached
             # today: tarfile's other stops (no data, or a partial block) leave the
@@ -1725,111 +1715,74 @@ class TarReader(BaseArchiveReader):
             return None
         return last_info
 
-    def _read_past_declared_blocks(
-        self, directory: tarfile.TarInfo, *, second_block: bytes
-    ) -> bytes:
-        """Read to the block after the span ``directory`` declares and raise when a
-        member header sits there; return the bytes read past ``second_block``.
-
-        The walk stopped on a zero block where the directory's data would begin, and
-        ``second_block`` is the block after it. The span's own blocks say nothing: a
-        zero block followed by zeros is a trailer as much as a zero payload, and a
-        zero block followed by junk is a damaged trailer as much as a payload with a
-        zero block in front. The block right after the declared span does: a member
-        header there means the archive went on past the span, so the declared blocks
-        were there and were read as the end-of-archive marker, and every member behind
-        them was dropped (GNU tar lists the directory and stops, with "A lone zero
-        block" when the span is one block and no word when it is two or more). That
-        is the shape DR-3 refuses to pass over, and it is ``CorruptionError`` naming
-        the directory header. Anything else there leaves the two readings open, and
-        the caller reports the trailer as it would after a file.
-
-        A span whose end lies past ``_MAX_TRAILING_SCAN`` is not read to: the
-        trailing scan reports a non-zero byte within the bound as trailing data, and
-        a member header behind more than that is not looked for, as the bound is an
-        effort limit. A tail that does not decode ends the read where it fails, with
-        what was read so far; the trailing scan reads on from there and handles what
-        it meets, as it does without this read.
-
-        The bytes read past ``second_block`` are returned, so the caller's trailing
-        scan starts from them rather than from the source, whose position has moved.
-        """
-        assert directory.size is not None
-        span = 512 * ((directory.size + 511) // 512)
-        header_end = span + 512
-        # Blocks 0 and 1 of the span are read; ``header_end`` counts from block 0.
-        wanted = header_end - 1024
-        if wanted > _MAX_TRAILING_SCAN:
-            return b""
-        fileobj = self._tar.fileobj
-        assert fileobj is not None
-        pieces: list[bytes] = []
-        got = 0
-        try:
-            with self._translated_errors(), self._handle_guard():
-                while got < wanted:
-                    piece = fileobj.read(wanted - got)
-                    if not piece:
-                        break
-                    pieces.append(piece)
-                    got += len(piece)
-        except _StreamChecksumError:
-            raise
-        except ReadError:
-            pass
-        read_ahead = b"".join(pieces)
-        candidate = (b"\x00" * 512 + second_block + read_ahead)[span:header_end]
-        if len(candidate) == 512 and _is_member_header(candidate):
-            self._refuse_directory_blocks(directory, found="member_header")
-        return read_ahead
-
-    def _refuse_directory_blocks(
-        self,
-        directory: tarfile.TarInfo,
-        *,
-        found: Literal["rejected_header", "member_header"],
+    def _report_directory_span(
+        self, directory: tarfile.TarInfo, *, member_id: int
     ) -> None:
-        """Raise ``CorruptionError`` naming a ``DIRTYPE`` header whose declared blocks
-        ended the walk.
+        """Report ``MEMBER_DIRECTORY_DATA_IGNORED`` for a ``DIRTYPE`` header with a
+        size that the walk ended right after, on a zero block.
 
-        ``found`` says what settled it. ``"rejected_header"``: the block where the
-        declared data would begin is neither a member header nor a zero block, so the
-        archive is damaged there whichever reading holds, the declared blocks present
-        and read as a header or absent with junk behind the directory; GNU tar
-        reports "Skipping to next header" and exits 2 on both. ``"member_header"``: a
-        member header sits right after the declared span, so the span was there and
-        hid the members behind it (:meth:`_read_past_declared_blocks`). The message
-        states the reading the bytes support and no more.
+        The bytes have two readings: the declared blocks are zeros, which tarfile read
+        as the end-of-archive marker (a lone block, or a complete marker when the span
+        is two blocks or more), so the members behind them are not listed, as GNU tar
+        lists the directory and stops ("A lone zero block", or no word at all); or the
+        blocks were never written and the trailer follows the header, as a writer that
+        carried ``st_size`` leaves it. Nothing in the file tells them apart, so the
+        report says what the header declares and what the walk saw, and the directory
+        is listed with no ``size``: the declared bytes cannot be told from the trailer,
+        so ``open()`` has nothing to deliver. The code is in
+        ``ARCHIVE_INTEGRITY_CODES``, so ``DiagnosticPolicy.strict()`` refuses the
+        archive, the weight DR-3 gives a directory's declared data in every format. The
+        marker checks that follow report the trailer as they would after a file.
         """
         name = normalize_member_name(
             directory.name, MemberType.DIRECTORY, backslash_is_separator=False
         )
-        if found == "rejected_header":
-            what = (
-                "the block where that data would begin is neither a member header "
-                "nor a zero block: a directory entry has no data area, so either the "
-                "declared blocks are there and were read as a header, or the archive "
-                "is damaged right after the directory"
-            )
-        else:
-            what = (
-                "a member header follows those bytes: a directory entry has no data "
-                "area, so the declared blocks were read as the end of the archive and "
-                "the members behind them were dropped"
-            )
+        assert directory.size is not None
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+            message=(
+                f"Directory {quoted(name)} declares {directory.size} bytes of data and "
+                "the archive ends right after its header: a TAR directory entry has "
+                "no data area, so if the blocks are there they were read as the "
+                "end-of-archive marker and the members behind them are not listed. "
+                "Extraction creates the directory; the bytes cannot be told from the "
+                "trailer, so open() has nothing to deliver."
+            ),
+            context=DirectoryDataContext(
+                archive_name=self._archive_name,
+                member_name=name,
+                member_id=member_id,
+                size=directory.size,
+                compressed_size=None,
+            ),
+            logger=integrity_logger,
+        )
+
+    def _refuse_directory_blocks(self, directory: tarfile.TarInfo) -> None:
+        """Raise ``CorruptionError`` naming a ``DIRTYPE`` header with a size when the
+        block where its data would begin is neither a member header nor a zero block.
+
+        The archive is damaged there whichever reading holds, the declared blocks
+        present and read as a header or absent with junk behind the directory; GNU tar
+        reports "Skipping to next header" and exits 2 on both. The generic rejected
+        header report would raise anyway; this one names the directory, since its
+        declared size is the likeliest reason a header sits where none parses.
+        """
+        name = normalize_member_name(
+            directory.name, MemberType.DIRECTORY, backslash_is_separator=False
+        )
         raise CorruptionError(
             f"TAR header for {quoted(name)} is a directory that declares "
-            f"{directory.size} bytes of data, and {what}",
+            f"{directory.size} bytes of data, and the block where that data would "
+            "begin is neither a member header nor a zero block: a directory entry has "
+            "no data area, so either the declared blocks are there and were read as a "
+            "header, or the archive is damaged right after the directory",
             archive_name=self._archive_name,
             member_name=name,
         )
 
-    def _verify_nothing_but_zeros_to_eof(self, *, already_read: bytes = b"") -> None:
+    def _verify_nothing_but_zeros_to_eof(self) -> None:
         """Report a non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of the trailer.
-
-        ``already_read`` is what the caller read past the trailer before this scan
-        (:meth:`_read_past_declared_blocks`); the scan starts with it, as the bytes
-        at offset 0 of the tail, and reads on from the source after it.
 
         Without this, a complete trailer asserted only that the two trailer blocks were
         present — 4 KiB of arbitrary appended bytes passed silently. Zeros still pass,
@@ -1873,18 +1826,7 @@ class TarReader(BaseArchiveReader):
         if fileobj is None:
             return
         offset = 0
-        pending = already_read
         while offset <= _MAX_TRAILING_SCAN:
-            if pending:
-                chunk, pending = pending, b""
-                stripped = chunk.lstrip(b"\x00")
-                if stripped:
-                    self._emit_trailing_data(
-                        observed_bytes=offset + (len(chunk) - len(stripped))
-                    )
-                    return
-                offset += len(chunk)
-                continue
             # One byte past the bound, to learn whether the stream ended there.
             want = min(_TRAILING_SCAN_CHUNK, _MAX_TRAILING_SCAN - offset) or 1
             try:
