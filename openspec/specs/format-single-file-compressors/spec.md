@@ -345,7 +345,7 @@ then stop reading the source. Bytes after the end SHALL be classified this way:
   `observed_bytes`. A re-read after a seek SHALL NOT report again.
 
 Under the default policy the diagnostic is a warning and the read succeeds. Under
-`DiagnosticPolicy.strict()` it raises `DiagnosticRaisedError` from the read that
+`DiagnosticPolicy.STRICT` it raises `DiagnosticRaisedError` from the read that
 reaches it.
 
 The report SHALL come only from a bare single-file read, a compressed TAR's codec,
@@ -379,7 +379,7 @@ after the data decode as more codes.
 | Case | Expected |
 | --- | --- |
 | Valid stream of any listed codec + `b"appended signature\n"` | Full payload; one `ARCHIVE_TRAILING_DATA`, `observed_bytes` = compressed length |
-| Same, `DiagnosticPolicy.strict()` | The read raises `DiagnosticRaisedError` |
+| Same, `DiagnosticPolicy.STRICT` | The read raises `DiagnosticRaisedError` |
 | Valid stream + 4096 zero bytes | Full payload; no diagnostic |
 | Valid stream + zeros + junk | One report at the first non-zero byte |
 | Two concatenated `.gz` / `.bz2` / `.lzma` / `.zst` / `.lz4` streams + junk | Both payloads; one report after the second |

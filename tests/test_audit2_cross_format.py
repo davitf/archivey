@@ -30,7 +30,6 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     Diagnostic,
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticSummary,
 )
@@ -214,7 +213,7 @@ def test_rar5_complete_archive_emits_no_eof_warning() -> None:
 
 def test_rar5_cut_at_header_boundary_refused_under_strict() -> None:
     data = (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes()
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(_rar5_without_endarc(data)), config=config) as reader:
         with pytest.raises(DiagnosticRaisedError):
             reader.members()
@@ -760,7 +759,7 @@ def test_rar_damaged_endarc_random_access_reads_every_member(
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
 def test_rar_damaged_endarc_refused_under_strict(fixture: str, version: int) -> None:
     data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version)
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(data), config=config) as reader:
         with pytest.raises(DiagnosticRaisedError):
             reader.members()
@@ -1296,7 +1295,7 @@ def test_tar_damaged_second_eof_block_keeps_the_listing(streaming: bool) -> None
 
 def test_tar_damaged_second_eof_block_refused_under_strict() -> None:
     data, _members = _tar_with_damaged_second_eof_block()
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(data), config=config) as reader:
         with pytest.raises(DiagnosticRaisedError):
             reader.members()
@@ -1357,7 +1356,7 @@ def _tar_with_trailing_garbage() -> bytes:
 
 def test_diagnostic_policy_raise_control() -> None:
     """Control: the enum spelling raises on the trailing data."""
-    policy = DiagnosticPolicy(default=DiagnosticDisposition.RAISE)
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.ARCHIVE_TRAILING_DATA})
     config = ArchiveyConfig(diagnostic_policy=policy)
     with pytest.raises(DiagnosticRaisedError):
         with open_archive(io.BytesIO(_tar_with_trailing_garbage()), config=config) as r:
@@ -1367,16 +1366,12 @@ def test_diagnostic_policy_raise_control() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        pytest.param({"default": "raise"}, id="default-str"),
-        pytest.param(
-            {"overrides": {DiagnosticCode.ARCHIVE_TRAILING_DATA: "raise"}},
-            id="override-value-str",
-        ),
+        pytest.param({"raise_on": ["archive_trailing_data"]}, id="code-value-str"),
         pytest.param(
             # The member name, a spelling every coerced enum argument accepts. The
             # lower-case value happens to work only because the enum mixes in str.
-            {"overrides": {"ARCHIVE_TRAILING_DATA": DiagnosticDisposition.RAISE}},
-            id="override-key-name",
+            {"raise_on": ["ARCHIVE_TRAILING_DATA"]},
+            id="code-name-str",
         ),
     ],
 )

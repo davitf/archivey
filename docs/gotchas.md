@@ -93,7 +93,7 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   carries a trailing newline; strip it. → [RAR](formats.md#rar)
 - **A trailer-less TAR is warned about, not raised.** A trailer-less or `cat`-joined
   tar is byte-identical to a truncation at a member boundary; set
-  `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or use `DiagnosticPolicy.strict()`) when you
+  `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or use `DiagnosticPolicy.STRICT`) when you
   need a provably complete listing. A corrupt member header raises `CorruptionError` by
   default in both access modes. → [TAR](formats.md#tar-and-compressed-tar)
 - **TAR trailing data is checked only 1 MiB past the trailer.** A non-zero byte in that
@@ -123,7 +123,7 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   → [Single-file compressors](formats.md#single-file-compressors)
 - **Bytes after a compressed stream are reported, not refused.** A `.gz`, `.xz`, `.zst`
   or other single-file codec followed by extra bytes reads its whole payload, then emits
-  `ARCHIVE_TRAILING_DATA` (raised under `DiagnosticPolicy.strict()`). The `xz`, `lzma`
+  `ARCHIVE_TRAILING_DATA` (raised under `DiagnosticPolicy.STRICT`). The `xz`, `lzma`
   and `zstd` command-line tools refuse such a file, so archivey reading it is not proof
   the file is clean; check `reader.diagnostics` or use the strict policy. From a pipe,
   bytes after a Brotli stream raise `CorruptionError`, because telling them from damage

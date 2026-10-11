@@ -146,19 +146,25 @@ operation. For a program that must not proceed on an anomalous archive, set a po
 ```python
 from archivey import ArchiveyConfig, DiagnosticPolicy
 
-config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
 ```
 
 A [`DiagnosticPolicy`][archivey.DiagnosticPolicy] gives every code one of three
-dispositions. `COLLECT` (the default for every code) records, logs and calls back.
+dispositions. `COLLECT` (every code you name in neither set) records, logs and calls back.
 `RAISE` does all of that and then raises
 [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] (an `ArchiveyError`, carrying
 the `Diagnostic`) from the call that hit it. `IGNORE` counts the event and does nothing
 else: no record, no log line, no callback. Whether a condition stops you or is only noted
 is decided by the disposition; every diagnostic is a warning, there is no severity
-axis. To adjust one code, pass `overrides={DiagnosticCode.X: DiagnosticDisposition.RAISE}`;
-to silence one code's log line, set it to `IGNORE`. The [named presets](#named-policy-presets)
-below cover the common cases.
+axis. To raise on a code, put it in `raise_on`; to silence one code's log line, put it
+in `ignore`:
+
+```python
+DiagnosticPolicy(ignore={DiagnosticCode.PASSWORD_ARGUMENT_UNUSED})
+```
+
+Both take any collection of codes (or their names as strings), and a code in both is
+refused. The [named presets](#named-policy-presets) below cover the common cases.
 
 Two things a reader might expect here are deliberately not diagnostics: what extraction
 did to each member, which lives on `ExtractionReport.results` (see
@@ -181,7 +187,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | Code | Means |
 | --- | --- |
 | `EMPTY_ARCHIVE` | The listing finished, with no error, and there were no members. Not an error: an empty tar is a real thing (`tar cf empty.tar --files-from /dev/null`), and it is byte-identical to a zero-filled junk file of the same size. |
-| `ARCHIVE_EOF_MARKER_MISSING` | The archive ended without the end marker its format writes, so it may have been cut exactly between two members, which leaves bytes that otherwise read as a complete, shorter archive. The listing still completes; the code fires once, after the members. `context.expected_marker` names the marker: `"two_zero_blocks"` for TAR's two-block null trailer, `"second_zero_block"` when that trailer's first block is zero and its second is not, `"end_of_archive_block"` for the end-of-archive block RAR5 writes at the end of every volume. The same RAR marker with `context.observed_kind="nonzero"` means the block is there but fails its checksum, in RAR 1.5-4 or RAR5: every member is listed and reads normally, the code fires once per damaged volume, and `context.observed_bytes` is where the block starts in that volume, counted from the volume's first byte rather than across the set as member offsets are; the message names the volume. For TAR, `"second_zero_block"` means the first trailer block ended the members and only the second is damaged: every member is listed and reads normally. TAR's `"two_zero_blocks"` with `observed_kind="nonzero"` is a different case and always comes with `CorruptionError`: a header was rejected and the listing is shortened, or the file has no member at all. For ZIP, `"end_of_central_directory"` means the end record does not match the archive: with `observed_kind="nonzero"` its entry count is not the number of entries the central directory holds, and with `"short"` its comment length runs past the end of the file. `"central_directory"` means a directory entry's name, extra field or comment length runs past the directory, so that field is cut short; the message names the member. Every ZIP member still lists and reads. A trailer-less tar made with `cat` looks the same as a cut one, so this is a warning; `DiagnosticPolicy.strict()` raises it. |
+| `ARCHIVE_EOF_MARKER_MISSING` | The archive ended without the end marker its format writes, so it may have been cut exactly between two members, which leaves bytes that otherwise read as a complete, shorter archive. The listing still completes; the code fires once, after the members. `context.expected_marker` names the marker: `"two_zero_blocks"` for TAR's two-block null trailer, `"second_zero_block"` when that trailer's first block is zero and its second is not, `"end_of_archive_block"` for the end-of-archive block RAR5 writes at the end of every volume. The same RAR marker with `context.observed_kind="nonzero"` means the block is there but fails its checksum, in RAR 1.5-4 or RAR5: every member is listed and reads normally, the code fires once per damaged volume, and `context.observed_bytes` is where the block starts in that volume, counted from the volume's first byte rather than across the set as member offsets are; the message names the volume. For TAR, `"second_zero_block"` means the first trailer block ended the members and only the second is damaged: every member is listed and reads normally. TAR's `"two_zero_blocks"` with `observed_kind="nonzero"` is a different case and always comes with `CorruptionError`: a header was rejected and the listing is shortened, or the file has no member at all. For ZIP, `"end_of_central_directory"` means the end record does not match the archive: with `observed_kind="nonzero"` its entry count is not the number of entries the central directory holds, and with `"short"` its comment length runs past the end of the file. `"central_directory"` means a directory entry's name, extra field or comment length runs past the directory, so that field is cut short; the message names the member. Every ZIP member still lists and reads. A trailer-less tar made with `cat` looks the same as a cut one, so this is a warning; `DiagnosticPolicy.STRICT` raises it. |
 | `EXTENSION_FORMAT_UNCONFIRMED` | The format came from the **filename**, nothing in the bytes confirmed it, and either the listing came back empty or a read failed. The classic shapes are 32 KiB of zeros called `z.tar` (empty listing) and zeros called `backup.gz` (a read error). On a read error the exception also has `format_unconfirmed=True`, as for `PROBE_FORMAT_UNCONFIRMED`. |
 | `PROBE_FORMAT_UNCONFIRMED` | A single-file format came from a content probe with nothing corroborating it (no matching extension, no inner-TAR upgrade), and a decode failed (at `open_archive`, which decodes the first byte of a seekable single-file source, or on a later read) or a limit refused the read (`ResourceLimitError`, such as a declared LZMA dictionary over `DecoderLimits.max_decoder_memory`) — at any detection confidence. The matching exception also has `format_unconfirmed=True`. After a decode failure, partial output may already have been produced. |
 | `EXPLICIT_FORMAT_LISTED_EMPTY` | You passed `format=`, the listing came back empty, and detection disagrees. `format=` stays an override — wrong extensions are exactly what it is for — so this tells you rather than refusing. |
@@ -211,17 +217,17 @@ member, a collision, or a name rewrite.
 ### Named policy presets
 
 Hand-curating a disposition per code means re-reading the whole taxonomy every release.
-Two constructors do it for you:
+Two ready-made policies do it for you:
 
 ```python
-from archivey import ArchiveyConfig, DiagnosticPolicy, ARCHIVE_INTEGRITY_CODES
+from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, ARCHIVE_INTEGRITY_CODES
 
-config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
 ```
 
-- **`DiagnosticPolicy.strict()`** raises on `ARCHIVE_INTEGRITY_CODES` — the codes that
+- **`DiagnosticPolicy.STRICT`** raises on `ARCHIVE_INTEGRITY_CODES` — the codes that
   report the archive's own bytes or metadata as anomalous — and collects the rest.
-- **`DiagnosticPolicy.pedantic()`** raises on everything.
+- **`DiagnosticPolicy.PEDANTIC`** raises on everything.
 
 Eight codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
 is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
@@ -231,15 +237,22 @@ list of names, to every call would otherwise raise on every archive they do not 
 `STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive — most useful as a
 targeted tripwire), `ENCRYPTED_MEMBER_UNVERIFIED` (it fires when you close an encrypted
 member's stream before EOF, or after a seek that gave up its CRC, having read bytes that
-no checksum has checked yet; under `strict()` a peek at a ZipCrypto or RAR3/4 encrypted
+no checksum has checked yet; under `STRICT` a peek at a ZipCrypto or RAR3/4 encrypted
 member would raise), and
 `PROBE_FORMAT_UNCONFIRMED` (it is emitted while the matching `TruncatedError` or
 `CorruptionError` is raised, and that error already carries `format_unconfirmed=True`).
-`ARCHIVE_INTEGRITY_CODES` is exported, so you can build your own policy from it.
+`ARCHIVE_INTEGRITY_CODES` is exported, and the presets are ordinary policies built from
+it, so you adjust one by building your own from the same set:
 
-**New codes may appear in minor releases.** A policy with `default=RAISE` is therefore
+```python
+DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.ARCHIVE_TRAILING_DATA})
+DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES, ignore={DiagnosticCode.PASSWORD_ARGUMENT_UNUSED})
+```
+
+**New codes may appear in minor releases.** `PEDANTIC`, or any policy built from
+`frozenset(DiagnosticCode)`, raises on every code of the installed version, and is therefore
 not version-stable: an upgrade can start raising on events your working program never
-produced. `strict()`, whose membership is versioned alongside the taxonomy, is the
+produced. `STRICT`, whose membership is versioned alongside the taxonomy, is the
 recommended strict mode. Removing a code stays a breaking change.
 
 ## When an archive is damaged

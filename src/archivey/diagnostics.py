@@ -17,15 +17,15 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, TypeVar
+from typing import ClassVar, Literal, TypeVar
 
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
-from archivey.internal.enum_args import coerce_enum
+from archivey.internal.enum_args import coerce_enum_collection
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
 
@@ -502,7 +502,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The membership of :meth:`DiagnosticPolicy.strict`. Eight codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eight codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -515,7 +515,7 @@ and the reasons are part of the contract rather than an oversight:
 - ``STREAM_REWIND_REDECOMPRESSES`` — reports the caller's access pattern rather than the
   archive, and is most useful as a deliberately targeted tripwire.
 - ``ENCRYPTED_MEMBER_UNVERIFIED`` — fires only when the caller abandons a member stream
-  before EOF (extraction reads every member to EOF and never fires it). In ``strict`` it
+  before EOF (extraction reads every member to EOF and never fires it). In ``STRICT`` it
   would turn a peek at a ZipCrypto or RAR3/4 encrypted member into
   ``DiagnosticRaisedError``. Revisit when member streams report their verification
   state (``dev-docs/IDEAS.md``, "Verification state as data") and retire this code.
@@ -687,81 +687,66 @@ class DiagnosticSummary:
         return DiagnosticSummary(total_count=0, counts={}, retained=(), dropped_count=0)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class DiagnosticPolicy:
-    """Per-code disposition policy; matching is by code only."""
+    """Which diagnostic codes to ignore and which to raise; every other code is collected.
 
-    default: DiagnosticDisposition = DiagnosticDisposition.COLLECT
-    overrides: Mapping[DiagnosticCode, DiagnosticDisposition] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    Matching is by code only. Both fields take any iterable of :class:`DiagnosticCode`
+    (or code names / values as strings) and hold a ``frozenset``; a code in both is
+    refused. A policy is built with set operations on the code sets, for example
+    ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.X})``.
+
+    Two ready-made instances:
+
+    - ``DiagnosticPolicy.STRICT`` is ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)``:
+      RAISE on the codes about the archive's own bytes, COLLECT on everything else. It is
+      the recommended strict mode because it is version-stable in the way that matters:
+      new codes MAY be added in a minor release, and the set's membership is versioned
+      alongside the taxonomy, so each addition is a deliberate decision.
+    - ``DiagnosticPolicy.PEDANTIC`` is ``DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))``:
+      RAISE on every code, including the argument-hygiene and access-pattern ones.
+      ``frozenset(DiagnosticCode)`` is every code of the installed version, so it raises
+      on codes added after the caller wrote it.
+    """
+
+    STRICT: ClassVar[DiagnosticPolicy]
+    PEDANTIC: ClassVar[DiagnosticPolicy]
+
+    # Typed as Collection so a list or set type-checks; __post_init__ stores a frozenset.
+    ignore: Collection[DiagnosticCode] = frozenset()
+    raise_on: Collection[DiagnosticCode] = frozenset()
 
     def __post_init__(self) -> None:
-        # Converted, not only checked, as ``ArchiveyConfig`` converts its enum fields:
-        # ``resolve`` answers by lookup and the collector tests the answer with ``is``,
-        # so ``default="raise"`` or a code spelled as its name would construct fine and
-        # then never raise. After this the fields always hold members.
+        # Converted, not only checked: ``resolve`` answers by membership, so a code
+        # spelled as its name would construct fine and then never match.
         call = "DiagnosticPolicy()"
-        object.__setattr__(
-            self,
-            "default",
-            coerce_enum(
-                self.default, DiagnosticDisposition, call=call, param="default="
-            ),
+        ignore = coerce_enum_collection(
+            self.ignore, DiagnosticCode, call=call, param="ignore="
         )
-        overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
-        for key, value in _freeze_mapping(self.overrides).items():
-            code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
-            disposition = coerce_enum(
-                value, DiagnosticDisposition, call=call, param="overrides= value"
+        raise_on = coerce_enum_collection(
+            self.raise_on, DiagnosticCode, call=call, param="raise_on="
+        )
+        both = ignore & raise_on
+        if both:
+            # Keyword arguments have no order, so neither can win: keeping either would
+            # silently drop what the other asked for.
+            names = ", ".join(sorted(code.value for code in both))
+            raise ArchiveyUsageError(
+                f"{call} got codes in both ignore= and raise_on=: {names}."
             )
-            if overrides.setdefault(code, disposition) is not disposition:
-                # Two spellings of one code (its name and the member) that disagree:
-                # keeping either would silently drop what the other asked for.
-                raise ArchiveyUsageError(
-                    f"{call} got two dispositions for overrides= key "
-                    f"{code.value!r}: {overrides[code].value!r} and "
-                    f"{disposition.value!r}."
-                )
-        object.__setattr__(self, "overrides", MappingProxyType(overrides))
-
-    def __hash__(self) -> int:
-        # The generated frozen-dataclass hash would hash ``overrides``, and a
-        # ``MappingProxyType`` is unhashable, so ``hash(ArchiveyConfig())`` raised.
-        # Hash the frozen mapping's items instead; equality is unchanged.
-        return hash((self.default, frozenset(self.overrides.items())))
+        object.__setattr__(self, "ignore", ignore)
+        object.__setattr__(self, "raise_on", raise_on)
 
     def resolve(self, code: DiagnosticCode) -> DiagnosticDisposition:
-        return self.overrides.get(code, self.default)
+        if code in self.raise_on:
+            return DiagnosticDisposition.RAISE
+        if code in self.ignore:
+            return DiagnosticDisposition.IGNORE
+        return DiagnosticDisposition.COLLECT
 
-    @staticmethod
-    def strict() -> DiagnosticPolicy:
-        """RAISE on :data:`ARCHIVE_INTEGRITY_CODES`, COLLECT on everything else.
 
-        The recommended strict mode. Unlike a bare ``default=RAISE`` policy it is
-        version-stable in the way that matters: new codes MAY be added in a minor
-        release, and a ``default=RAISE`` caller starts raising on events their working
-        program never produced, whereas this set's membership is versioned alongside the
-        taxonomy and each addition is a deliberate decision.
-
-        Adds no resolution axis — the value is an ordinary frozen policy with per-code
-        overrides, and equals the same policy built by hand.
-        """
-        return DiagnosticPolicy(
-            default=DiagnosticDisposition.COLLECT,
-            overrides=dict.fromkeys(
-                ARCHIVE_INTEGRITY_CODES, DiagnosticDisposition.RAISE
-            ),
-        )
-
-    @staticmethod
-    def pedantic() -> DiagnosticPolicy:
-        """RAISE on every code, including the argument-hygiene and access-pattern ones.
-
-        See the taxonomy-growth note on :meth:`strict`: this policy raises on codes added
-        after the caller wrote it, by construction.
-        """
-        return DiagnosticPolicy(default=DiagnosticDisposition.RAISE)
+DiagnosticPolicy.STRICT = DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)
+DiagnosticPolicy.PEDANTIC = DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))
 
 
 @dataclass(frozen=True)

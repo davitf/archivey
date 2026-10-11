@@ -106,7 +106,15 @@ def test_policy_matrix_cells(
 ) -> None:
     seen: list[Diagnostic] = []
     collector = DiagnosticCollector(
-        policy=DiagnosticPolicy(default=disposition),
+        policy={
+            DiagnosticDisposition.IGNORE: DiagnosticPolicy(
+                ignore={DiagnosticCode.MEMBER_NAME_NORMALIZED}
+            ),
+            DiagnosticDisposition.COLLECT: DiagnosticPolicy(),
+            DiagnosticDisposition.RAISE: DiagnosticPolicy(
+                raise_on={DiagnosticCode.MEMBER_NAME_NORMALIZED}
+            ),
+        }[disposition],
         on_diagnostic=seen.append,
     )
     with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
@@ -218,7 +226,7 @@ def test_callback_order_and_failure_propagates(
 
 
 def test_deferring_raises_holds_until_the_outermost_block_asks() -> None:
-    collector = DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with collector.deferring_raises() as outer:
         with collector.deferring_raises() as inner:
             _emit_norm(collector, message="first")
@@ -341,9 +349,7 @@ def test_replaying_a_run_that_emits_less_does_not_grow_the_log() -> None:
 
 def test_a_settled_log_replays_from_its_codes_alone() -> None:
     strict = DiagnosticCollector(
-        policy=DiagnosticPolicy(
-            overrides={DiagnosticCode.SCAN_ENTRY_VANISHED: DiagnosticDisposition.RAISE}
-        )
+        policy=DiagnosticPolicy(raise_on={DiagnosticCode.SCAN_ENTRY_VANISHED})
     )
     log = EmitLog()
     with strict.replaying(log):
@@ -375,11 +381,7 @@ def test_replaying_repeats_the_emit_raise_but_not_a_callback_raise() -> None:
         _emit_norm(collector)  # replayed: the callback is not called again
 
     strict = DiagnosticCollector(
-        policy=DiagnosticPolicy(
-            overrides={
-                DiagnosticCode.MEMBER_NAME_NORMALIZED: DiagnosticDisposition.RAISE
-            }
-        )
+        policy=DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_NORMALIZED})
     )
     log = EmitLog()
     with pytest.raises(DiagnosticRaisedError) as first, strict.replaying(log):
@@ -666,9 +668,7 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
         tf.addfile(info, io.BytesIO(b"x"))
     dest = tmp_path / "out"
     dest.mkdir()
-    policy = DiagnosticPolicy(
-        overrides={DiagnosticCode.MEMBER_TIMESTAMP_INVALID: DiagnosticDisposition.RAISE}
-    )
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_TIMESTAMP_INVALID})
     del time
     with pytest.raises(DiagnosticRaisedError) as ei:
         open_and_extract(
@@ -694,11 +694,7 @@ def test_eof_marker_raise_yields_diagnostic_error() -> None:
     from tests.test_tar import _tar_missing_eof_block
 
     data = _tar_missing_eof_block()
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
-        }
-    )
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
     with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(
             io.BytesIO(data),
@@ -716,11 +712,7 @@ def test_eof_marker_ignore_counts_without_raising() -> None:
     from tests.test_tar import _tar_missing_eof_block
 
     data = _tar_missing_eof_block()
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
-        }
-    )
+    policy = DiagnosticPolicy(ignore={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
     with open_archive(
         io.BytesIO(data),
         format=ArchiveFormat.TAR,
@@ -837,14 +829,66 @@ def test_unused_argument_context_carries_no_password_material() -> None:
 
 def test_strict_preset_equals_hand_built_policy() -> None:
     """Presets add no resolution axis — they are ordinary frozen policy values."""
-    hand_built = DiagnosticPolicy(
-        default=DiagnosticDisposition.COLLECT,
-        overrides=dict.fromkeys(ARCHIVE_INTEGRITY_CODES, DiagnosticDisposition.RAISE),
+    assert DiagnosticPolicy.STRICT == DiagnosticPolicy(
+        raise_on=list(ARCHIVE_INTEGRITY_CODES)
     )
-    assert DiagnosticPolicy.strict() == hand_built
-    assert DiagnosticPolicy.pedantic() == DiagnosticPolicy(
-        default=DiagnosticDisposition.RAISE
+    assert DiagnosticPolicy.PEDANTIC == DiagnosticPolicy(raise_on=set(DiagnosticCode))
+    assert hash(DiagnosticPolicy.STRICT) == hash(
+        DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)
     )
+    for code in DiagnosticCode:
+        expected = (
+            DiagnosticDisposition.RAISE
+            if code in ARCHIVE_INTEGRITY_CODES
+            else DiagnosticDisposition.COLLECT
+        )
+        assert DiagnosticPolicy.STRICT.resolve(code) is expected
+        assert DiagnosticPolicy.PEDANTIC.resolve(code) is DiagnosticDisposition.RAISE
+
+
+def test_policy_fields_are_frozensets_of_codes() -> None:
+    """Any iterable of codes or their spellings is stored as a frozenset of members."""
+    policy = DiagnosticPolicy(
+        ignore=["password_argument_unused"],
+        raise_on=(DiagnosticCode.ARCHIVE_TRAILING_DATA, "ARCHIVE_EOF_MARKER_MISSING"),
+    )
+    assert policy.ignore == frozenset({DiagnosticCode.PASSWORD_ARGUMENT_UNUSED})
+    assert policy.raise_on == frozenset(
+        {
+            DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+        }
+    )
+    assert isinstance(policy.ignore, frozenset)
+    assert policy.resolve(DiagnosticCode.PASSWORD_ARGUMENT_UNUSED) is (
+        DiagnosticDisposition.IGNORE
+    )
+    assert policy.resolve(DiagnosticCode.EMPTY_ARCHIVE) is DiagnosticDisposition.COLLECT
+
+
+def test_policy_refuses_a_code_in_both_sets() -> None:
+    with pytest.raises(ArchiveyUsageError, match="both ignore= and raise_on="):
+        DiagnosticPolicy(
+            ignore={DiagnosticCode.ARCHIVE_TRAILING_DATA},
+            raise_on=["ARCHIVE_TRAILING_DATA"],
+        )
+
+
+@pytest.mark.parametrize("field", ["ignore", "raise_on"])
+def test_policy_refuses_a_bare_string(field: str) -> None:
+    """``ignore="x"`` is a typo for ``ignore=["x"]``, not a set of characters."""
+    with pytest.raises(ArchiveyUsageError, match="bare string"):
+        DiagnosticPolicy(**{field: "archive_trailing_data"})  # type: ignore[arg-type]
+
+
+def test_policy_refuses_an_unknown_code() -> None:
+    with pytest.raises(ArchiveyUsageError):
+        DiagnosticPolicy(raise_on=["no_such_code"])
+
+
+def test_policy_fields_are_keyword_only() -> None:
+    with pytest.raises(TypeError):
+        DiagnosticPolicy({DiagnosticCode.EMPTY_ARCHIVE})  # type: ignore[misc]
 
 
 def test_strict_preset_raises_on_archive_integrity() -> None:
@@ -855,7 +899,7 @@ def test_strict_preset_raises_on_archive_integrity() -> None:
         with open_archive(
             io.BytesIO(_tar_missing_eof_block()),
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
         ) as ar:
             ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
@@ -878,17 +922,17 @@ def test_strict_preset_does_not_raise_on_argument_hygiene(tmp_path: Path) -> Non
         io.BytesIO(data),
         format=ArchiveFormat.TAR,
         password="unused",
-        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
     ) as ar:
         ar.members()
         assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED in ar.diagnostics.counts
-    # pedantic() is the preset that does raise on it.
+    # PEDANTIC is the preset that does raise on it.
     with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             password="unused",
-            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic()),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC),
         ) as ar:
             ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
@@ -896,7 +940,7 @@ def test_strict_preset_does_not_raise_on_argument_hygiene(tmp_path: Path) -> Non
 
 def test_strict_preset_does_not_raise_on_empty_archive() -> None:
     """An empty archive is legitimate; the diagnostics spec forbids treating zero
-    members as an error, so strict() must not turn it into one."""
+    members as an error, so STRICT must not turn it into one."""
     import tarfile
 
     buf = io.BytesIO()
@@ -907,7 +951,7 @@ def test_strict_preset_does_not_raise_on_empty_archive() -> None:
     with open_archive(
         io.BytesIO(buf.getvalue()),
         format=ArchiveFormat.TAR,
-        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
     ) as ar:
         assert ar.members() == []
         assert DiagnosticCode.EMPTY_ARCHIVE in ar.diagnostics.counts

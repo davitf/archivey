@@ -315,7 +315,7 @@ listing's last member so the listing completes, each of:
   directory, so stdlib cuts that field at the directory's end
   (`expected_marker="central_directory"`, `observed_kind="nonzero"`).
 
-None of them SHALL raise under the default policy; `strict()` refuses the archive.
+None of them SHALL raise under the default policy; `STRICT` refuses the archive.
 Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
 every member.
 
@@ -336,7 +336,7 @@ while 7-Zip searches further back and lists the real members.
 | Consistent classic or ZIP64 end record | No diagnostic |
 | 65537 entries, classic record only, count 1 (65537 modulo 65536) | All 65537 members listed; no diagnostic |
 | Archive comment holding an end-record signature followed by 30 zero bytes | No members listed; one `EMPTY_ARCHIVE` and no `ARCHIVE_EOF_MARKER_MISSING` |
-| Any of the above under `strict()` | `DiagnosticRaisedError` from the listing |
+| Any of the above under `STRICT` | `DiagnosticRaisedError` from the listing |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 

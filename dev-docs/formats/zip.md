@@ -364,7 +364,7 @@ with a "16-bit overflow" note), an archive comment length past the end of the fi
 an entry whose name, extra field or comment runs past the directory, which stdlib cuts
 at the directory's end. Info-ZIP
 unzip warns or errors on each and 7-Zip says "Headers Error", after testing every
-member, so the default policy lists and reads; `strict()` refuses.
+member, so the default policy lists and reads; `STRICT` refuses.
 `_end_record_findings` takes the counts and the declared and present comment lengths
 from stdlib's own `_EndRecData` result (indices bound through `zipfile._ECD_*`), and
 reads the directory once more to find the entry that overruns it. Because the checks use

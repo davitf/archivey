@@ -723,7 +723,7 @@ Dropping a record SHALL NOT be silent: the reader SHALL emit
 `MEMBER_HEADER_RECORD_SKIPPED` (see `diagnostics`) naming the member, the record and the
 parse failure, attached to the member. Because that code is in `ARCHIVE_INTEGRITY_CODES`,
 a caller who wants the archive refused instead SHALL get that from
-`DiagnosticPolicy.strict()`.
+`DiagnosticPolicy.STRICT`.
 
 A crafted extra area SHALL NOT retain one skipped record per attacker byte, nor cost one
 parse per attacker byte. The number of dropped records retained per member is a structural
@@ -1222,7 +1222,7 @@ with an intact block. The damage is after the last member, so it SHALL be report
 `ARCHIVE_EOF_MARKER_MISSING` after the members, once per damaged volume (`format="rar"`,
 `expected_marker="end_of_archive_block"`, `observed_kind="nonzero"`, `observed_bytes`
 the offset where the block starts in its volume, `expected_bytes` 0).
-`members_report().error` SHALL be `None`, and `DiagnosticPolicy.strict()` SHALL refuse
+`members_report().error` SHALL be `None`, and `DiagnosticPolicy.STRICT` SHALL refuse
 the archive after the listing is delivered. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes. It matches `unrar` 7.00, which lists such an archive, tests each
 member OK, and then reports one error.

@@ -327,7 +327,7 @@ def test_probe_only_clean_read_stays_success() -> None:
 @requires("brotli")
 def test_pedantic_probable_probe_keeps_typed_error() -> None:
     blob = _probable_brotli_probe_only_residual()
-    cfg = replace(PROBE_ALL, diagnostic_policy=DiagnosticPolicy.pedantic())
+    cfg = replace(PROBE_ALL, diagnostic_policy=DiagnosticPolicy.PEDANTIC)
     diagnostics: list[Diagnostic] = []
     with pytest.raises(CorruptionError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics, config=cfg)
@@ -444,11 +444,11 @@ def test_extension_only_failure_sets_format_unconfirmed(tmp_path: Path) -> None:
 
 
 def test_strict_extension_only_failure_keeps_typed_error(tmp_path: Path) -> None:
-    # EXTENSION_FORMAT_UNCONFIRMED is in the strict set, so strict() resolves it to
+    # EXTENSION_FORMAT_UNCONFIRMED is in the strict set, so STRICT resolves it to
     # RAISE: the emit must surface the typed error, not DiagnosticRaisedError.
     path = tmp_path / "backup.gz"
     path.write_bytes(b"\x00" * 40_000)
-    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with raises_corruption_not_truncation() as caught:
         _open_and_read(path, config=cfg)
     assert not isinstance(caught.value, DiagnosticRaisedError)

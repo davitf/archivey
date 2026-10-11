@@ -248,7 +248,7 @@ The other members of the image MUST NOT be affected.
 | --- | --- |
 | A file whose `TF` entry has version 99 | Lists with its `PX` mode, reads, one `MEMBER_HEADER_RECORD_SKIPPED`; the other members carry nothing |
 | A symlink cut the same way (genisoimage 1.1.11 writes this for a target of about 400 bytes or more) | `link_target is None`; `MEMBER_HEADER_RECORD_SKIPPED` then `SYMLINK_TARGET_UNAVAILABLE` |
-| The same image under `DiagnosticPolicy.strict()` | Refused |
+| The same image under `DiagnosticPolicy.STRICT` | Refused |
 | `pycdlib.PyCdlib().open_fp` on a zisofs image, outside archivey | `pycdlib`'s own `Unknown SUSP record` |
 
 ### Requirement: Read zisofs members

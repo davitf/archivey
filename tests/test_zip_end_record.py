@@ -3,7 +3,7 @@
 stdlib zipfile reads entries until it has consumed the directory size the end record
 gives and ignores the rest. Info-ZIP unzip and 7-Zip list and test every member, then
 report the damage; archivey lists the members and reports ``ARCHIVE_EOF_MARKER_MISSING``
-after them, so ``strict()`` refuses the archive.
+after them, so ``STRICT`` refuses the archive.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import DiagnosticRaisedError
 
-_STRICT = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+_STRICT = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
 _EOCD = b"PK\x05\x06"
 
 

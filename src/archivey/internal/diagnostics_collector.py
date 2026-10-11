@@ -519,7 +519,7 @@ def resolve_collector(collector: DiagnosticCollector | None) -> DiagnosticCollec
     through. What falls through to the throwaway:
 
     - is judged by the **library default** policy, not the caller's, so a caller on
-      ``DiagnosticPolicy.strict()`` does not get the raise it asked for;
+      ``DiagnosticPolicy.STRICT`` does not get the raise it asked for;
     - never reaches ``reader.diagnostics`` or the caller's ``on_diagnostic`` callback.
       Only the WARNING log line survives.
 

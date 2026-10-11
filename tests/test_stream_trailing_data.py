@@ -3,7 +3,7 @@
 Every stream codec but ``.Z`` (which has no end marker) reads its data in full and
 reports what follows as one ``ARCHIVE_TRAILING_DATA``, with ``expected_marker=
 "end_of_stream"`` and the compressed offset of the first non-zero byte after the end.
-Zeros there are padding. ``DiagnosticPolicy.strict()`` makes the report an error. xz
+Zeros there are padding. ``DiagnosticPolicy.STRICT`` makes the report an error. xz
 and lzip keep their size and index through the appended bytes.
 """
 
@@ -128,7 +128,7 @@ def test_data_reads_and_the_bytes_after_it_are_reported(
 def test_strict_makes_the_report_an_error(tmp_path: Path, suffix: str) -> None:
     _name, compress, _marks = _CODECS[suffix]
     path = _write(tmp_path, suffix, compress(_PAYLOAD) + _JUNK)
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as info:
         with open_archive(path, config=strict) as reader:
             reader.read(reader.members()[0])
@@ -658,7 +658,7 @@ def test_empty_bzip2_streams_are_part_of_the_data(
     content = _tar_of(payload) if kind == ".tar.bz2" else payload
     path = _write(tmp_path, kind, _BZ2_LAYOUTS[layout](content))
     config = ArchiveyConfig(
-        use_indexed_bzip2=mode, diagnostic_policy=DiagnosticPolicy.strict()
+        use_indexed_bzip2=mode, diagnostic_policy=DiagnosticPolicy.STRICT
     )
     assert _read_single_member(path, config, access) == payload
 

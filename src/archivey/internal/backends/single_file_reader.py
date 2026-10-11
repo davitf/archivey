@@ -392,7 +392,7 @@ class SingleFileReader(BaseArchiveReader):
         # metadata question and answers size=None when the index is unreadable. The
         # member stream reports the same index into the reader's collector when a
         # caller seeks; reporting here too would count one file twice, and under
-        # strict() would refuse the open for a caller who never seeks. The cost is a
+        # STRICT would refuse the open for a caller who never seeks. The cost is a
         # second WARNING line for that file.
         def probe(f: BinaryIO) -> int | None:
             try:

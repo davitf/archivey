@@ -27,7 +27,6 @@ from archivey import ExtractionStatus, OverwritePolicy, open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import (
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
@@ -1079,11 +1078,7 @@ def test_a_missing_target_is_reported_once_per_member(
         pytest.param(
             ArchiveyConfig(
                 diagnostic_policy=DiagnosticPolicy(
-                    overrides={
-                        DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: (
-                            DiagnosticDisposition.IGNORE
-                        )
-                    }
+                    ignore={DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE}
                 )
             ),
             id="ignored",

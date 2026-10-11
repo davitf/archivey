@@ -1315,7 +1315,7 @@ SHALL stay unset, and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with
 link type, and since the archive does record a target, extraction SHALL fail that
 member (`LinkTargetNotFoundError`) rather than report `LINK_TARGET_UNAVAILABLE`.
 `SYMLINK_TARGET_UNAVAILABLE` is in `ARCHIVE_INTEGRITY_CODES`, so
-`DiagnosticPolicy.strict()` refuses the archive.
+`DiagnosticPolicy.STRICT` refuses the archive.
 
 For a RAR3/4 stored target, a declared size that differs from the packed size is damage
 rather than an oversized target: it SHALL be refused before the cap is consulted, and is
@@ -1348,7 +1348,7 @@ outside this requirement: the header parser has already allocated them, and
 | Compressed target declaring 64 MiB | Refused without decoding any of it |
 | ZIP target whose data outruns a declared size under the cap | `CorruptionError` naming the declared size; nothing past it decoded |
 | No declared size, data longer than the cap | Read stops at 4097 bytes; refused as over-long |
-| Over-long target under `DiagnosticPolicy.strict()` | Listing raises `DiagnosticRaisedError` |
+| Over-long target under `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
 | Over-long target, `extract_all(on_error=CONTINUE)` | That link `FAILED` with `LinkTargetNotFoundError`; other members extract |
 | Reparse buffer whose target is over 4096 UTF-8 bytes | Refused as over-long |
 | Reparse buffer followed by more data | Only the declared buffer and one byte are read |
@@ -1512,7 +1512,7 @@ and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with `reason="target_data_dama
 message naming the fault. The member SHALL NOT be memoized as resolved: opening the link,
 following it, or extracting it SHALL read the target again and raise the fault itself,
 and extraction SHALL record that link as a per-member failure. `SYMLINK_TARGET_UNAVAILABLE`
-is in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.strict()` refuses the archive.
+is in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the archive.
 This holds in random access and at the end of a streaming pass alike.
 
 #### Scenario: damaged link target matrix
@@ -1522,7 +1522,7 @@ This holds in random access and at the end of a streaming pass alike.
 | ZIP symlink whose stored data fails its CRC, `members()` | Every member listed; link `link_target is None`; `SYMLINK_TARGET_UNAVAILABLE`, `reason="target_data_damaged"` |
 | Same, `open()` on the link | `CorruptionError` |
 | Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `CorruptionError`; other members extract |
-| Same, `DiagnosticPolicy.strict()` | Listing raises `DiagnosticRaisedError` |
+| Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
 | WinZip AES symlink with a failing HMAC, one password or several | Listed targetless with `reason="target_data_damaged"` |
 | 7z symlink whose data fails its CRC | Listed targetless with `reason="target_data_damaged"` |
 | ZIP symlink whose data outruns its declared size | Listed targetless; the message names the declared size |

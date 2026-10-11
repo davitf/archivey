@@ -347,7 +347,7 @@ codecs' own tools disagree; archivey treats every codec with an end marker the s
 
 | Codec | archivey | The codec's own tool |
 | --- | --- | --- |
-| gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4, Brotli | The whole payload, then `ARCHIVE_TRAILING_DATA` at the junk's offset; `DiagnosticRaisedError` under `strict()`. xz and lzip keep `size` and seeks | — |
+| gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4, Brotli | The whole payload, then `ARCHIVE_TRAILING_DATA` at the junk's offset; `DiagnosticRaisedError` under `STRICT`. xz and lzip keep `size` and seeks | — |
 | gzip | as above | `gzip -t`: "trailing garbage ignored", exit 2 |
 | bzip2 | as above; the accelerator also prints a warning to standard error | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
 | xz | as above | `xz -t`: "Unexpected end of input", exit 1 |
@@ -396,7 +396,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | `member.size` is `None` for gzip, bzip2, zlib, zstd, LZ4, Brotli and `.Z`, and on a pipe for every codec but LZMA Alone | **format** / **archivey** | Most of those formats store no reliable total (§1). zstd and LZ4 frames can declare a content size, which archivey does not read ([`zstd-lz4.md`](zstd-lz4.md) §5) |
-| A file `xz -t` or `zstd -t` refuses reads, with a warning | **archivey** | Bytes after the stream are reported, not refused (§6); `DiagnosticPolicy.strict()` refuses them |
+| A file `xz -t` or `zstd -t` refuses reads, with a warning | **archivey** | Bytes after the stream are reported, not refused (§6); `DiagnosticPolicy.STRICT` refuses them |
 | Zero bytes read as an empty `.lzma` | **format** | Eighteen zero bytes are a complete empty LZMA Alone stream, a 13-byte header and 5 bytes of range coder, and the rest is padding (§2.3) |
 | A backward seek is slow, and the log says so | **format** | No resume point before the target (§2.3). Use `stream_members()` or read forward once; for gzip and bzip2, `rapidgzip` |
 | The rewind warning says the codec "has no random-access index" on an `.xz` or `.lz` that has one | **archivey** | The message is chosen by codec, not by whether a resume point was found; on a multi-block `.xz` it is wrong. Tracked internally |

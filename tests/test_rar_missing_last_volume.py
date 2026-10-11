@@ -61,7 +61,7 @@ def _config(decompressor: str, *, strict: bool = False) -> ArchiveyConfig:
     if strict:
         return ArchiveyConfig(
             rar_decompressor=RarDecompressor(decompressor),
-            diagnostic_policy=DiagnosticPolicy.strict(),
+            diagnostic_policy=DiagnosticPolicy.STRICT,
         )
     return ArchiveyConfig(rar_decompressor=RarDecompressor(decompressor))
 

@@ -605,7 +605,7 @@ class DecompressorStream(ReadOnlyIOStream):
     ``owns_inner=True``).
 
     A report the collector's policy escalates (``SEEK_INDEX_DEGRADED`` under
-    ``strict()``) is raised when the operation that met it has left the stream
+    ``STRICT``) is raised when the operation that met it has left the stream
     consistent, never from inside a decode or an index scan. ``read`` raises before it
     consumes: the bytes it decoded stay buffered and the position is unchanged, so the
     next read returns them. ``seek`` and a size query raise after they finish, with the

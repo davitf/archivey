@@ -375,14 +375,11 @@ ALIASES_NOT_WANTED = {
         "so the field always holds a budget, and every consumer reads it as one. Its "
         "only other consumer, detect_format(budget=), was removed."
     ),
-    "DiagnosticDisposition": (
-        "DiagnosticPolicy's default and override values stay annotated "
-        "DiagnosticDisposition, for the same reason as AcceleratorMode: __post_init__ "
-        "converts a spelling, so the fields always hold members."
-    ),
     "DiagnosticCode": (
-        "DiagnosticPolicy's override keys; see DiagnosticDisposition. The mapping is "
-        "rebuilt with member keys, so resolve() finds a code however it was spelled."
+        "DiagnosticPolicy's ignore= and raise_on= sets stay annotated "
+        "Collection[DiagnosticCode]: __post_init__ converts each spelling, so the "
+        "stored frozensets always hold members and resolve() finds a code however it "
+        "was spelled. A Literal of every code would be long and grow with the taxonomy."
     ),
     "StreamFormat": (
         "ArchiveFormat's stream field; see ContainerFormat. format= arguments take "

@@ -197,7 +197,7 @@ on seeing the bytes tarfile read, and SHALL NOT key the decision on
   `expected_marker="second_zero_block"` and `observed_kind="nonzero"` under ordinary
   diagnostic disposition, with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`. GNU tar ("A lone zero
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`. GNU tar ("A lone zero
   block") and 7-Zip list the same archive with a warning. The backend SHALL tell this
   case from a rejected header by the error tarfile's last header parse raised, not by
   the bytes read, so it holds in streaming too. With no member before the zero block
@@ -210,7 +210,7 @@ on seeing the bytes tarfile read, and SHALL NOT key the decision on
   byte-identical, so no reader can tell them apart. It SHALL follow ordinary diagnostic
   disposition with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`.
 
 The rejected-header escalation to `CorruptionError` SHALL take precedence over
 `DiagnosticRaisedError`, including when the diagnostic disposition is `IGNORE` or
@@ -339,7 +339,7 @@ backend SHALL scan the bytes that follow, up to 1 MiB past the trailer, whatever
 configuration. The first non-zero byte in that window SHALL emit
 `ARCHIVE_TRAILING_DATA` under ordinary diagnostic disposition, with no escalation of
 its own: a warning by default, `DiagnosticRaisedError` after delivery when the code
-resolves to `RAISE` (as under `DiagnosticPolicy.strict()`), a count alone under
+resolves to `RAISE` (as under `DiagnosticPolicy.STRICT`), a count alone under
 `IGNORE`.
 
 The check SHALL run only after a complete two-block null trailer has been confirmed, or
@@ -374,7 +374,7 @@ listing accounts for.
 
 #### Scenario: trailing-bytes matrix
 
-| Case | Default policy | `DiagnosticPolicy.strict()` |
+| Case | Default policy | `DiagnosticPolicy.STRICT` |
 | --- | --- | --- |
 | Valid tar, trailer, EOF | No diagnostic | No diagnostic |
 | Valid tar + 4 KiB of zeros (`tar` pads to 10 KiB records) | No diagnostic | No diagnostic |
