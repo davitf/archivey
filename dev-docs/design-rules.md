@@ -316,8 +316,8 @@ the right weight.
   `MEMBER_DIRECTORY_DATA_IGNORED` (a warning; strict refuses) and keeps the bytes
   readable through `open()` (2026-10-10, DR-25): nothing is misread, so this is the
   "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
-  Applied by PR 731 for ZIP and RAR; the TAR half (an old-style `d/` file entry with
-  data) waits on PR 706.
+  Applied by PR 731 for ZIP and RAR and by PR 763 for TAR (an old-style `d/` file
+  entry with data).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 
@@ -467,10 +467,9 @@ directory entry that declares data, are reported with `MEMBER_DIRECTORY_DATA_IGN
 warning; strict refuses) and stay readable: `open()` refuses a member that has no data (an
 anti item, a stream-less `OTHER`, a directory with none), not a member by its type.
 
-Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format) and PR 731
-(directory data in ZIP and RAR, and `open()` by data); the TAR half of the directory case
-waits on PR 706. Until those merge, the tree still types a data-bearing special entry
-`OTHER` and refuses `open()` by type.
+Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format), PR 731
+(directory data in ZIP and RAR, and `open()` by data) and PR 763 (directory data in TAR;
+a `DIRTYPE` header whose declared blocks end the walk is `CorruptionError`).
 
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar

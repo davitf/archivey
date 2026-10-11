@@ -179,6 +179,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
 - `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
+- **An old-style directory that declares data is reported.** A regular-file header
+  (typeflag NUL or `0`) whose name ends in `/` is a directory, as GNU tar and 7-Zip
+  read it. When its size field is not zero, the directory keeps that `size`,
+  `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction creates the directory and
+  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them.
+  `DiagnosticPolicy.strict()` refuses the archive.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
@@ -215,6 +221,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       end-marker check runs. Such an entry has no data, GNU tar skips the header as
       damaged, and `tarfile` would read an all-zero payload as the end of the archive
       and drop every member after it.
+    - A **directory header (typeflag `5`) that declares data** has no data area either,
+      so the next header is read straight after it. When that header parses, the
+      directory lists with no size, as GNU tar, bsdtar and 7-Zip list it. When the
+      walk ends there instead, because the declared blocks were present and read as a
+      header that does not parse or as a lone end-of-archive block, the listing raises
+      `CorruptionError` naming the directory header, rather than dropping the members
+      behind the blocks as GNU tar does. An old-style directory, a regular-file header
+      named `d/`, is the other case: see above.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes

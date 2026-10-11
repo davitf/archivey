@@ -44,7 +44,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import replace
 from datetime import datetime
-from io import SEEK_SET, BytesIO
+from io import SEEK_SET
 from typing import BinaryIO, Literal, Self, cast
 
 from archivey.config import ArchiveyConfig
@@ -401,14 +401,20 @@ class _TarInfo(tarfile.TarInfo):
     :class:`_TarFile` keeps, so :meth:`fromtarfile` requires one.
     """
 
-    __slots__ = ("old_style_directory", "stored_end")
+    __slots__ = ("old_style_directory", "stored_end", "stored_typeflag")
 
     stored_end: int
     """The offset where the member's data area ends, rounded up to whole blocks."""
 
     old_style_directory: bool
-    """The header is a regular file (``AREGTYPE``, typeflag NUL) whose final name ends
-    in ``/``, listed as a directory. ``type`` is then ``DIRTYPE``."""
+    """The header is a regular file (typeflag NUL, ``AREGTYPE``, or ``0``, ``REGTYPE``)
+    whose final name ends in ``/``, listed as a directory. ``type`` is then
+    ``DIRTYPE`` and :attr:`stored_typeflag` holds the header's byte."""
+
+    stored_typeflag: bytes
+    """The header's typeflag byte, recorded for every header. ``type`` is the same
+    byte except for an old-style directory, whose ``type`` becomes ``DIRTYPE``; the
+    stored byte is what ``extra["tar.type"]`` reports."""
 
     @classmethod
     def frombuf(cls, buf: bytes | bytearray, encoding: str, errors: str) -> Self:
@@ -433,7 +439,8 @@ class _TarInfo(tarfile.TarInfo):
         return info
 
     def _undo_stdlib_directory_check(self, buf: bytes | bytearray) -> None:
-        """Keep an ``AREGTYPE`` header a regular file while its member is parsed.
+        """Record the stored typeflag, and keep an ``AREGTYPE`` header a regular file
+        while its member is parsed.
 
         Old (v7) tars mark a directory as a regular file whose name ends in ``/``.
         ``tarfile`` decides that from the header's own name field: on every header
@@ -445,21 +452,24 @@ class _TarInfo(tarfile.TarInfo):
         final name once the member is complete.
         """
         self.old_style_directory = False
+        self.stored_typeflag = bytes(buf[156:157])
         if buf[156:157] == tarfile.AREGTYPE and self.type == tarfile.DIRTYPE:
             self.type = tarfile.AREGTYPE
             # ``tarfile`` stripped the slash, before adding the ustar prefix.
             self.name += "/"
 
     def _mark_old_style_directory(self) -> None:
-        """Make an ``AREGTYPE`` member whose final name ends in ``/`` a directory.
+        """Make a regular-file member whose final name ends in ``/`` a directory.
 
-        The final name is the one after a PAX ``path`` or a GNU long name, as GNU tar
-        1.35 and 7-Zip read it. Both list such a member as a directory and skip its
-        data. ``tarfile`` strips the slash from a PAX ``path``, so the record is read
-        again. A ``DIRTYPE`` header that declares a size is not this case: it has no
-        data area.
+        GNU tar 1.35 and 7-Zip read a typeflag NUL (``AREGTYPE``) or ``0``
+        (``REGTYPE``) header the same way: the final name, after a PAX ``path`` or a
+        GNU long name, decides, and a name ending in ``/`` is a directory whose data
+        blocks are skipped. ``tarfile`` strips the slash from a PAX ``path``, so the
+        record is read again. The declared ``size`` is kept: ``_to_member`` reports it
+        and ``open()`` delivers the bytes. A ``DIRTYPE`` header that declares a size
+        is not this case: it has no data area.
         """
-        if self.type != tarfile.AREGTYPE:
+        if self.type not in (tarfile.AREGTYPE, tarfile.REGTYPE):
             return
         name_is_dir = self.name.endswith("/")
         pax_path = self.pax_headers.get("path")
@@ -1331,6 +1341,7 @@ class TarReader(BaseArchiveReader):
         # walk costs is a backward seek, on a compressed tar a decode from the start.
         tar_iter = iter(self._tar)
         index = 0
+        last_info: tarfile.TarInfo | None = None
         ended = False
         byte_cap = self._config.listing_limits.max_metadata_bytes
         text_bytes = 0
@@ -1377,9 +1388,10 @@ class TarReader(BaseArchiveReader):
             for info in batch:
                 yield self._to_member(info, index)
                 index += 1
+                last_info = info
             if failure is not None:
                 raise failure
-        self._verify_tar_eof(any_members=index > 0)
+        self._verify_tar_eof(any_members=index > 0, last_info=last_info)
 
     def _register_member(
         self,
@@ -1516,6 +1528,7 @@ class TarReader(BaseArchiveReader):
             # the current member without deadlock (streaming is single-owner).
             tar_iter = iter(self._tar)
             index = 0
+            last_info: tarfile.TarInfo | None = None
             while True:
                 with lock:
                     if index:
@@ -1529,7 +1542,8 @@ class TarReader(BaseArchiveReader):
                         break
                 yield self._to_member(info, index)
                 index += 1
-        self._verify_tar_eof(any_members=index > 0)
+                last_info = info
+        self._verify_tar_eof(any_members=index > 0, last_info=last_info)
 
     def _read_through_member_data(self) -> None:
         """Read what is left of the last member's data area, before the next header.
@@ -1590,9 +1604,20 @@ class TarReader(BaseArchiveReader):
                 close_previous=False,
             )
 
-    def _verify_tar_eof(self, *, any_members: bool) -> None:
+    def _verify_tar_eof(
+        self, *, any_members: bool, last_info: tarfile.TarInfo | None
+    ) -> None:
         """Verify the two-block null end-of-archive marker and surface a rejected header
         as corruption.
+
+        ``last_info`` is the last member header the walk parsed, or None. When it is a
+        ``DIRTYPE`` header that declares a size and the walk ends right after it on a
+        header that does not parse, or on a lone zero block with other bytes behind
+        it, the declared blocks are what tarfile read there (a directory has no data
+        area, so it skipped none), and :meth:`_refuse_directory_blocks` names that
+        header instead of the generic marker report. The same header followed by a
+        header that parses is GNU tar's, bsdtar's and 7-Zip's clean case, listed with
+        no size and no report.
 
         What tarfile stopped on decides first (:class:`_TarFile`). When its last header
         parse rejected the header — a corrupt member header after the first, which
@@ -1620,6 +1645,7 @@ class TarReader(BaseArchiveReader):
         """
         stopped_on = self._tar.stopped_on if isinstance(self._tar, _TarFile) else None
         if stopped_on == "rejected_header":
+            self._refuse_directory_blocks(last_info)
             self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
         fileobj = self._tar.fileobj
@@ -1636,9 +1662,11 @@ class TarReader(BaseArchiveReader):
                 return
             if stopped_on == "zero_block":
                 # One zero block, then a damaged one: the marker is damaged, not the
-                # listing. The scan past it still runs, because on a compressed tar it
-                # is where the codec's whole-stream checksum over the members just
+                # listing, unless the zero block is a directory's declared data.
+                # The scan past it still runs, because on a compressed tar it is
+                # where the codec's whole-stream checksum over the members just
                 # listed is usually reached.
+                self._refuse_directory_blocks(last_info)
                 self._emit_eof_marker("damaged_second_block", observed_bytes=512)
                 self._verify_nothing_but_zeros_to_eof()
                 return
@@ -1651,6 +1679,39 @@ class TarReader(BaseArchiveReader):
             return
         self._emit_eof_marker(
             "absent" if len(chunk) == 0 else "short", observed_bytes=len(chunk)
+        )
+
+    def _refuse_directory_blocks(self, last_info: tarfile.TarInfo | None) -> None:
+        """Raise ``CorruptionError`` when the walk ended inside the blocks a ``DIRTYPE``
+        header declared.
+
+        A directory entry has no data area, so tarfile reads the next header straight
+        after a ``DIRTYPE`` header whatever size it declares. When that read hits a
+        header that does not parse, or a zero block followed by other bytes, the
+        declared blocks were there: non-zero ones desynchronise the walk, zero ones
+        read as the end-of-archive marker and drop every later member (GNU tar lists
+        the directory, warns of a lone zero block and stops). Either way the archive
+        is damaged at that header, which this names (DR-3: the blocks are not dropped
+        without a word). An old-style directory is not this case: its header is a
+        regular file's, so its blocks were skipped and reported at listing.
+        """
+        if (
+            last_info is None
+            or last_info.type != tarfile.DIRTYPE
+            or not last_info.size
+            or getattr(last_info, "old_style_directory", False)
+        ):
+            return
+        name = normalize_member_name(
+            last_info.name, MemberType.DIRECTORY, backslash_is_separator=False
+        )
+        raise CorruptionError(
+            f"TAR header for {quoted(name)} is a directory that declares "
+            f"{last_info.size} bytes of data, and the archive ends where the next "
+            "header should be: a directory entry has no data area, so the declared "
+            "blocks were read as headers",
+            archive_name=self._archive_name,
+            member_name=name,
         )
 
     def _verify_nothing_but_zeros_to_eof(self) -> None:
@@ -1916,13 +1977,15 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        # The typeflag as stored: NUL for an old-style directory, whose ``type`` is
-        # DIRTYPE.
-        stored_type = (
-            tarfile.AREGTYPE
-            if getattr(info, "old_style_directory", False)
-            else info.type
-        )
+        # The typeflag as stored: NUL or ``0`` for an old-style directory, whose
+        # ``type`` is DIRTYPE.
+        old_style_directory = getattr(info, "old_style_directory", False)
+        if old_style_directory:
+            # Only a _TarInfo marks one, and it records the stored byte with it.
+            assert isinstance(info, _TarInfo)
+            stored_type = info.stored_typeflag
+        else:
+            stored_type = info.type
         extra = MemberExtra({"tar.type": stored_type})
         special = special_file_type_from_tar_typeflag(info.type)
         if special is not None:
@@ -1944,6 +2007,10 @@ class TarReader(BaseArchiveReader):
                 )
             # The cross-format key says which kind the archive recorded (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
+        # A DIRTYPE header that declares a size is not refused here: it has no data
+        # area, so GNU tar, bsdtar and 7-Zip read the next header right after it and
+        # list the directory with no size, as this does. Only when the walk ends on
+        # what should have been that next header does _verify_tar_eof name it.
         if info.pax_headers:
             extra["tar.pax_headers"] = self._extra_pax_headers(info.pax_headers)
         if info.isdev():
@@ -1954,7 +2021,13 @@ class TarReader(BaseArchiveReader):
             type=member_type,
             name=name,
             raw_name=raw_name,
-            size=info.size if member_type == MemberType.FILE else None,
+            # An old-style directory keeps the size its header declares: the data
+            # blocks are there, skipped by extraction and reported below (DR-3).
+            size=(
+                info.size
+                if member_type == MemberType.FILE or (old_style_directory and info.size)
+                else None
+            ),
             modified=modified,
             # A GNU base-256 mode field can hold a negative or wider-than-32-bit value,
             # which stat.S_IMODE refuses with OverflowError. Masked first, as RAR does:
@@ -1998,6 +2071,10 @@ class TarReader(BaseArchiveReader):
         # plain ``0`` typeflag.
         if info.issparse():
             member.is_sparse = True
+        if old_style_directory and info.size:
+            # GNU tar and 7-Zip create the directory and drop the bytes silently. Say
+            # so; read() delivers them.
+            self._emit_directory_data_ignored(member, index)
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
@@ -2081,11 +2158,19 @@ class TarReader(BaseArchiveReader):
         # Callers put their translation boundary outside this guard, so
         # translation/stamping never run while the shared-fileobj lock is held.
         with self._handle_guard():
-            raw = self._tar.extractfile(info)
-        if raw is None:
-            # Only FILE members reach here (the base follows links/skips non-data members),
-            # so a None stream means a zero-length or special entry; present an empty stream.
-            raw = BytesIO(b"")
+            if info.isdir() and info.size:
+                # An old-style directory whose header declares data: ``extractfile``
+                # gives a directory ``None``, but the blocks are at ``offset_data``
+                # like a file's, so the file object is built on them directly.
+                raw = self._tar.fileobject(self._tar, info)
+            else:
+                raw = self._tar.extractfile(info)
+        # ``extractfile`` returns None only for a directory or a special entry, and a
+        # link's target in place of the link. The base follows links itself and
+        # refuses OTHER, ANTI and a directory with no size before this runs, and a
+        # directory with a size took the branch above, so every member that reaches
+        # here has a file object; a zero-length file is one with nothing to read.
+        assert raw is not None, "TAR member reached open() without a data area"
         stream: BinaryIO = ensure_binaryio(raw)
         if self._handle_lock is not None:
             stream = LockedStream(stream, self._handle_lock)
