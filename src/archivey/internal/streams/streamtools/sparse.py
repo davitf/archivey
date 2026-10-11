@@ -56,7 +56,8 @@ class SparseStream(DelegatingStream):
         size: int,
     ) -> None:
         super().__init__(inner)
-        # Empty chunks hold no bytes and would only make the search ambiguous.
+        # A read of a zero-length chunk returns no bytes, so the read loop would
+        # not advance.
         chunks = [(o, n) for o, n in zip(offsets, lengths, strict=True) if n]
         self._starts = [o for o, _ in chunks]
         self._ends = [o + n for o, n in chunks]
@@ -68,6 +69,10 @@ class SparseStream(DelegatingStream):
             total += n
         self._size = size
         self._pos = 0
+        # The chunk that contains _pos, or the next chunk when _pos is in a hole.
+        # len(self._starts) when _pos is past the last chunk. seek() sets this
+        # with a search. read() increases it by one at a chunk's end.
+        self._index = self._index_at(0)
         # Where the first chunk starts in the inner stream, and how far past it the
         # inner stream is now.
         self._base = inner.tell() if self._seekable else 0
@@ -89,7 +94,15 @@ class SparseStream(DelegatingStream):
                 "backward seek on a forward-only sparse stream"
             )
         self._pos = target
+        self._index = self._index_at(target)
         return target
+
+    def _index_at(self, pos: int) -> int:
+        # Ends increase: the map is ordered and non-overlapping, and a zero-length
+        # chunk is dropped. The first end strictly after pos is the chunk that
+        # contains pos, or the next chunk when pos is in a hole. An end equal to
+        # pos belongs to a chunk the position has already left.
+        return bisect_right(self._ends, pos)
 
     def read(self, n: int = -1, /) -> bytes:
         self._raise_if_closed()
@@ -103,21 +116,31 @@ class SparseStream(DelegatingStream):
             part = self._read_some(want)
             parts.append(part)
             want -= len(part)
-            self._pos += len(part)
         return b"".join(parts)
 
     def _read_some(self, want: int) -> bytes:
-        """Up to ``want`` bytes from ``self._pos``, from one chunk or one hole."""
-        i = bisect_right(self._starts, self._pos) - 1
-        if i >= 0 and self._pos < self._ends[i]:
-            count = min(want, self._ends[i] - self._pos)
-            return self._read_stored(
-                self._stored[i] + self._pos - self._starts[i], count
-            )
-        next_start = self._starts[i + 1] if i + 1 < len(self._starts) else self._size
+        """Up to ``want`` bytes from one chunk or one hole, advancing the position."""
+        i = self._index
+        if i == len(self._starts):
+            return self._read_hole(want, self._size)
+        start = self._starts[i]
+        if self._pos < start:
+            return self._read_hole(want, start)
+        end = self._ends[i]
+        pos = self._pos
+        count = min(want, end - pos)
+        data = self._read_stored(self._stored[i] + pos - start, count)
+        self._pos = pos + count
+        if self._pos == end:
+            self._index = i + 1
+        return data
+
+    def _read_hole(self, want: int, boundary: int) -> bytes:
+        count = min(want, boundary - self._pos)
+        self._pos += count
         # Built whole: ``read`` already bounds ``want``, and a read that is one hole
         # returns this object without a join copying it.
-        return bytes(min(want, next_start - self._pos))
+        return bytes(count)
 
     def _read_stored(self, at: int, count: int) -> bytes:
         inner = self._inner
