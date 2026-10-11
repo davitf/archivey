@@ -418,7 +418,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                 chunk = view.read(_TRAILING_SCAN_CHUNK)
                 data = held + chunk
                 if not padded:
-                    skipped = _run_end(_EMPTY_BZIP2_STREAM_RUN, data, 0)
+                    skipped = _run_end(_EMPTY_BZIP2_STREAM_RUN, data)
                     rest = data[skipped:]
                     if rest[:1] != b"\x00":
                         # A short ``rest`` that could begin an empty stream, or is
@@ -440,7 +440,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                     data = rest
                 # ``data`` starts with the zeros after the last stream, or with no more
                 # than a magic's length of them kept from the chunk before.
-                zeros = _run_end(_ZERO_RUN, data, 0)
+                zeros = _run_end(_ZERO_RUN, data)
                 width = len(_BZIP2_MAGIC)
                 if zeros < len(data):
                     # A run shorter than the magic can hold a damaged magic's first
@@ -658,8 +658,7 @@ def _bzip2_stream_starts(view: BinaryIO, start: int, bit: int) -> bool:
     if len(between) != header - start + _BZIP2_HEADER_LEN:
         return False
     return (
-        _run_end(_EMPTY_BZIP2_STREAM_RUN, between[: header - start], 0)
-        == header - start
+        _run_end(_EMPTY_BZIP2_STREAM_RUN, between[: header - start]) == header - start
         and _BZIP2_HEADER.fullmatch(between[header - start :]) is not None
     )
 
@@ -737,8 +736,9 @@ _EMPTY_BZIP2_STREAM_RUN = re.compile(rb"(?:" + _EMPTY_BZIP2_STREAM_BYTES + rb")*
 _ZERO_RUN = re.compile(rb"\x00*")
 
 
-def _run_end(pattern: re.Pattern[bytes], data: bytes, pos: int) -> int:
-    match = pattern.match(data, pos)
+def _run_end(pattern: re.Pattern[bytes], data: bytes) -> int:
+    """How many bytes at the start of ``data`` the run ``pattern`` matches."""
+    match = pattern.match(data)
     # Both run patterns are repetitions, so they match at least the empty string.
     assert match is not None
     return match.end()

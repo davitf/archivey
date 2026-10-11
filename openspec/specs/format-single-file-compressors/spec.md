@@ -342,8 +342,8 @@ then stop reading the source. Bytes after the end SHALL be classified this way:
   source. For every codec but xz, whose format defines Stream Padding between streams,
   they are padding only there: after zero bytes, the first non-zero byte is trailing
   data as the next bullet says, also when it starts another stream, in every
-  accelerator mode. GNU `gzip`, `bzip2`, `zstd`, `lz4`, `xz --format=lzma` and 7-Zip
-  stop there too;
+  accelerator mode. Each codec's own tool stops there too (GNU `gzip`, `bzip2`,
+  `zstd`, `lz4`, `xz --format=lzma`), and so does 7-Zip for gzip, bzip2 and LZMA Alone;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
   `format`, and the offset of the first non-zero byte after the end as
