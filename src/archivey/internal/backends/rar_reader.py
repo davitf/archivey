@@ -56,6 +56,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
@@ -2820,6 +2821,7 @@ class RarReader(BaseArchiveReader):
             raise LinkTargetNotFoundError(
                 "The source of this RAR file copy is not an earlier file member of "
                 "the archive",
+                reason=LinkTargetNotFoundReason.UNRESOLVED,
                 archive_name=self._archive_name,
                 member_name=member.name,
                 link_target=member.link_target,

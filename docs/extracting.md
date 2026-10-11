@@ -82,7 +82,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   letter or a UNC prefix) is refused under `STRICT`. `STANDARD` and `TRUSTED` drop the
   root and extract it inside the destination (`/etc/x` → `etc/x`, `C:/x` → `x`), as
   GNU tar, bsdtar, unzip and 7-Zip do, and record the stored name in
-  `ExtractionResult.presented_name`. A drive letter with no separator after it (`a:b`)
+  `ExtractionResult.presented_name`, with `NameRewrite.REROOTED` in
+  `ExtractionResult.rewrites`. A drive letter with no separator after it (`a:b`)
   is refused at every policy: it
   is also an ordinary POSIX name, so there is no root to drop. Your
   `filter` runs before these checks, so it sees every member and can rename an unsafe
@@ -154,7 +155,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   record — this was a Windows symlink or junction rather than a POSIX one — and is set
   from metadata in every format that states it.
 - **A link for which the archive records no target** (a stored target that is the empty
-  string counts, and lists as `link_target=None`) is recorded
+  string counts, and lists as `link_target=None`) lists with
+  `member.link_target_unrecorded` set to `True`, and is recorded
   `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts.
   Nothing can be written for it, and nothing about the extraction went wrong, so it is
   not a failure and `OnError.STOP` does not abort on it. That holds in a streaming read
@@ -301,7 +303,8 @@ resolution.
 it fires on a *successful* safety rewrite, and no policy or preset implies it. Set it
 only if any on-disk name differing from the archive's is unacceptable to you — a
 mirroring tool, a forensic extract, a byte-fidelity check. To merely *audit* rewrites,
-read `ExtractionResult.presented_name` and let extraction finish.
+read `ExtractionResult.presented_name` and `ExtractionResult.rewrites` and let
+extraction finish.
 
 | Policy | Intent |
 | --- | --- |
@@ -374,7 +377,7 @@ Archive order and identity matter more than “the” name.
 | Need to know | Detail |
 | --- | --- |
 | Safe ≠ unlimited | Traversal, symlink escapes, and bombs are blocked; huge/hostile archives can still raise `ResourceLimitError` unless you raise limits. |
-| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8 and the characters Windows refuses in a name (`<`, `>`, `"`, `?`, `*`, the vertical bar and the control characters, so `what?.txt` is written `what%3F.txt`), and write a `\` in a TAR name or link target as a separator, as Windows does; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
+| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8 and the characters Windows refuses in a name (`<`, `>`, `"`, `?`, `*`, the vertical bar and the control characters, so `what?.txt` is written `what%3F.txt`), and write a `\` in a TAR name or link target as a separator, as Windows does; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling; `ExtractionResult.rewrites` holds `NameRewrite.PORTABLE_NAME`. |
 | Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — the clobbered member's result is revised to `OVERWRITTEN`. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
 | Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename), for a directory member landing on a file as for a file. It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
 | `RENAME` and directories | When a file or symlink, yours or the run's, holds a directory member's name, archivey writes the directory as `name (1)/` and keeps the file. The members inside it follow it: `dd/f` lands at `dd (1)/f`, and its result reports `requested_path` `dd/f` and `path` `dd (1)/f`. The CLI reports the directory's rename once, not once per member. |

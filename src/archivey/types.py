@@ -880,7 +880,8 @@ class ArchiveMember:
     naming nothing — or it may carry one this reader could not reach, because the bytes
     are compressed, split across volumes or encrypted. Only the first is the archive's
     omission, and only the first is an extraction outcome rather than a failure, so the
-    backend that knows which it is says so here. Not part of the public contract."""
+    backend that knows which it is says so here. Read it through the public
+    :attr:`link_target_unrecorded`."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
     # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
@@ -974,6 +975,26 @@ class ArchiveMember:
         what the archive said about it.
         """
         return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
+
+    @property
+    def link_target_unrecorded(self) -> bool:
+        """The archive records no target for this link.
+
+        Some writers store a link with nowhere to point: 7-Zip writes a directory
+        symlink or junction this way, and a Windows reparse buffer can name nothing.
+        Such a link has :attr:`link_target` ``None``, :meth:`~archivey.ArchiveReader.open`
+        raises :class:`~archivey.LinkTargetNotFoundError` with ``reason``
+        ``NOT_RECORDED`` for it, and extraction records it as
+        ``ExtractionStatus.LINK_TARGET_UNAVAILABLE`` rather than as a failure.
+
+        ``False`` does not mean the target is known. :attr:`link_target` can also be
+        ``None`` because the archive stores a target this read could not produce
+        (damaged, encrypted, or out of reach), or because the target is stored as
+        member data that nothing has read yet (``ArchiveyConfig.read_link_targets``
+        is ``False``). This property is ``True`` only when the archive itself left
+        the target out.
+        """
+        return self.is_link and self.link_target is None and self._link_target_absent
 
     def replace(self, **kwargs: object) -> ArchiveMember:
         """Return a copy with the given fields changed; never mutates self.
@@ -1221,6 +1242,27 @@ class ExtractionStatus(StrEnum):
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
 
 
+class NameRewrite(StrEnum):
+    """A safety rewrite that changed a member's name before it reached disk.
+
+    ``ExtractionResult.rewrites`` holds one value per rewrite that ran on the member,
+    and ``ExtractionResult.presented_name`` holds the name before them.
+    Both can run on one member: under ``STANDARD``, ``/a/what?.txt`` is re-rooted to
+    ``a/what?.txt`` and then written ``a/what%3F.txt``.
+    """
+
+    REROOTED = "rerooted"
+    """An absolute name was moved inside the destination by dropping its root
+    (``/etc/x`` extracts as ``etc/x``). ``STRICT`` refuses such a name instead."""
+
+    PORTABLE_NAME = "portable_name"
+    """The name was respelled so that every supported OS stores it the same way: a
+    ``\\`` written as ``/``, a byte that is not UTF-8 or a character Windows refuses
+    (``<>"|?*`` and 0x01-0x1F) written as ``%XX``, and, under ``STRICT`` only, a
+    trailing dot or space removed from each segment. ``TRUSTED`` never rewrites a
+    name."""
+
+
 @dataclass
 class ExtractionProgress:
     """Progress snapshot for the ``on_progress`` callback.
@@ -1279,6 +1321,10 @@ class ExtractionResult:
     # final on-disk spelling): a caller ``filter`` rename followed by a portable rewrite
     # produces three spellings, and only this field records the middle one.
     presented_name: str | None = None
+    # Which safety rewrites produced ``presented_name``: empty exactly when
+    # ``presented_name`` is ``None``. A re-root followed by a portable rewrite records
+    # both, and ``presented_name`` is then the stored name.
+    rewrites: frozenset[NameRewrite] = frozenset()
     # Set together, and only when one failed hardlink source causes N FAILED link results:
     # those N results share one group id and carry ``failure_group_size=N``. The id is
     # opaque — compare for equality to join a group; do not rely on ordering, format, or

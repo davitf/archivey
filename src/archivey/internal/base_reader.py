@@ -51,6 +51,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
@@ -2936,22 +2937,23 @@ class BaseArchiveReader(ArchiveReader):
 
         The cycle policy differs from :meth:`_resolve_link` on purpose. That one is
         listing bookkeeping and leaves ``link_target_member`` unset on a cycle or dead
-        end; this one is a caller asking for bytes, so it raises ``ReadError`` /
-        ``LinkTargetNotFoundError``. Do not unify them.
+        end; this one is a caller asking for bytes, so it raises
+        ``LinkTargetNotFoundError`` (a ``ReadError``). Do not unify them.
         """
         current = member
         while current.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            if current._member_id is None:
-                raise LinkTargetNotFoundError(
-                    "Link target is unknown",
-                    member_name=current.name,
-                )
+            # Every hop is registered: ``open()`` refuses a member whose ``_archive_id``
+            # is not this reader's, ``_register_member`` sets that id together with
+            # ``_member_id``, and ``link_target_member`` / ``_find_link_target`` hand
+            # back registered members.
+            assert current._member_id is not None, current.name
             member_id = current._member_id
             if member_id in visited:
-                # The CLI's ``_is_link_destination_error`` (``cli/test_cmd.py``)
-                # matches this exact message, since the CLI may not import a shared
-                # constant from ``internal``. Change both together.
-                raise ReadError("Link cycle detected", member_name=current.name)
+                raise LinkTargetNotFoundError(
+                    "Link cycle detected",
+                    reason=LinkTargetNotFoundReason.UNRESOLVED,
+                    member_name=current.name,
+                )
             visited.add(member_id)
             if current.link_target_member is not None:
                 current = current.link_target_member
@@ -2961,6 +2963,9 @@ class BaseArchiveReader(ArchiveReader):
             if current.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
+                    reason=LinkTargetNotFoundReason.NOT_RECORDED
+                    if current.link_target_unrecorded
+                    else LinkTargetNotFoundReason.UNREADABLE,
                     member_name=current.name,
                 )
             # open() materializes first: a half-walked index must never answer a lookup.
@@ -2969,6 +2974,7 @@ class BaseArchiveReader(ArchiveReader):
             if target is None:
                 raise LinkTargetNotFoundError(
                     "Link target not found in archive",
+                    reason=LinkTargetNotFoundReason.UNRESOLVED,
                     member_name=current.name,
                     link_target=current.link_target,
                 )
@@ -2985,12 +2991,14 @@ class BaseArchiveReader(ArchiveReader):
         if current.type in (MemberType.ANTI, MemberType.OTHER):
             raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is "
-                f"{current.type.value!r} (not a file)"
+                f"{current.type.value!r} (not a file)",
+                refused_member_type=current.type,
             )
         if current.type is MemberType.DIRECTORY and not current.size:
             raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: directory entry "
-                "declares no data (not a file)"
+                "declares no data (not a file)",
+                refused_member_type=current.type,
             )
         return self._open_member(current)
 
