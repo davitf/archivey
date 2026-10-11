@@ -160,7 +160,7 @@ expands too much fails like any other member.
 
 ## Archives you trust
 
-By default, an extraction stops after 2 GiB of output, after a million entries, or when data
+By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
 expands more than 1000 times. The expansion check starts after the first 5 MiB. To extract
 something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
 
