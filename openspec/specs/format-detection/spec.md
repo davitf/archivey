@@ -499,6 +499,27 @@ short of a known end of source (`HitOutcome.VALID_SHORT`) is kept only as a fall
 scan goes on, and a later 7z hit that ends exactly at end of source wins over it, so a
 stub that embeds a whole small 7z archive does not hide the real payload after it. With no
 such later hit the short one is used, which keeps a 7z followed by trailing data readable.
+A held short hit SHALL be displaced only by a later `VALID` hit of the **same** format. A
+`VALID` hit of another format SHALL end the scan, and the held short hit SHALL be the
+answer: the exact-end preference is a tie-break within one format and never reorders
+formats, so the earliest accepted needle still decides between them.
+
+The window bounds where a magic may **start**, not how far its validator reads. A
+candidate that starts inside the window SHALL be judged on its whole header, read up to
+the smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes` past the window end, so under the
+presets the same bytes give the same answer at the window end, inside the window, and on
+a non-seekable source. A header that does not fit that allowance SHALL be rejected and
+`sfx_scan` recorded as *budget exhausted*.
+
+The scan SHALL cap rejected candidates only for a format whose parser runs its own capped
+scan (RAR and 7z), and SHALL count them per format, as each of those parsers counts its own
+format's. Decoys of one format SHALL NOT spend another's allowance. A format whose reader
+runs no such scan SHALL NOT be capped: ZIP already locates the end of central directory
+from the tail, so a cap on ZIP candidates would refuse a file that forced `format=ZIP`
+opens. With both rules, a file of decoys means the same thing to detection as to a forced
+`format=`. After `MAX_VALIDATED_CANDIDATES` (256) rejected candidates of a capped format,
+the scan SHALL stop searching for that format's needles, so its later candidates are not
+judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it answers.
 
 #### Scenario: SFX matrix
 
@@ -511,7 +532,16 @@ such later hit the short one is used, which keeps a 7z followed by trailing data
 | **Strong** executable cue (validated PE / ELF), no RAR/7z/ZIP in window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `dev-docs/topics/detection.md` |
 | Stub containing a decoy needle the validator rejects | The scan resumes past it and finds the real payload |
+| RAR decoy whose header (bad CRC) crosses the window end | Rejected, as at any offset inside the window and on a pipe |
+| Real RAR whose main header crosses the window end | `RAR`, `payload_offset` at its marker; receipt within budget |
+| A header that crosses the window end by more than a small `max_scan_bytes` allows | Rejected; `sfx_scan` recorded *budget exhausted*; the tier reads at most twice `max_scan_bytes` |
+| 256 rejected RAR decoys before the real RAR payload | No `sfx_scan` answer; `sfx_scan` recorded *budget exhausted*; forced `format=RAR` raises `CorruptionError` naming the cap |
+| 256 rejected ZIP decoys before a real RAR payload | `RAR` at its marker, as forced `format=RAR` opens it; nothing recorded as cut short |
+| 256 rejected ZIP decoys before a real ZIP payload | `ZIP` at its local header, as forced `format=ZIP` opens it; nothing recorded as cut short |
+| A window filled with one capped format's decoys | That format's needles are no longer searched after the 256th rejection; the scan does not walk the rest of its decoys |
+| Whole valid 7z in the stub, then 256 rejected 7z decoys, then the real 7z | The embedded 7z, as the fallback forced `format=SEVEN_Z` also takes; `sfx_scan` recorded *budget exhausted* |
 | Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
+| Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |

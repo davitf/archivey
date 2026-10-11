@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from archivey.internal.arg_checks import check_limit_fields
+from archivey.internal.sfx import SFX_MAX
 
 
 class DetectionBudgetPreset(Enum):
@@ -67,6 +68,11 @@ class DetectionBudget:
     ``max_decode_input``.
     ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
     against in full (see ``format-detection``); ``0`` turns the check off.
+
+    ``max_scan_bytes`` bounds where the SFX scan looks for a magic. A candidate found
+    there is judged on its whole header, which may extend past the window by up to
+    132 KiB or ``max_scan_bytes``, whichever is smaller; a header that does not fit is
+    rejected, and ``sfx_scan`` recorded as cut short.
 
     Content-probe header reads at an offset are not a budget field: the Brotli chain walk
     caps them itself, at ``CHAIN_MAX_LINKS`` (8) header reads of 24 bytes. The Brotli
@@ -132,7 +138,9 @@ class DetectionCostReceipt:
 
 # ISO CD001 ends at offset 32 773 inclusive → 32 774 bytes from origin.
 _ISO_FAR_BYTES = 32_774
-_SFX_SCAN_BYTES = 2 * 1024 * 1024
+# The SFX tier's structural bound: a wider budget field would scan past what the
+# parsers accept, and a narrower default would record every miss as cut short.
+_SFX_SCAN_BYTES = SFX_MAX
 _COMPLETION_WINDOW = 64 * 1024
 _INNER_TAR_DECODE = 1 << 20
 

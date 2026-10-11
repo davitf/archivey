@@ -165,7 +165,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
-from archivey.internal.unix_mode import is_special_file_mode
+from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
@@ -180,6 +180,7 @@ from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
     EXTRA_RAR_EXTRACT_VERSION,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -192,6 +193,7 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
+    SpecialFileType,
     crc32_digest,
 )
 
@@ -708,12 +710,24 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     return hashes
 
 
+def _rar_special_file_type(info: RarMemberInfo) -> SpecialFileType | None:
+    """The stored special type (device, FIFO, socket) of a Unix-host entry, or ``None``."""
+    if info.host_os != _RAR_HOST_OS_UNIX or info.mode is None:
+        return None
+    return special_file_type(info.mode)
+
+
 def _rar_member_extra_and_link(
     info: RarMemberInfo,
 ) -> tuple[MemberExtra, str | None]:
     """Build ``ArchiveMember.extra`` and the link target (or a file copy's source)."""
     extra = MemberExtra()
     link_target: str | None = None
+    special = _rar_special_file_type(info)
+    if special is not None:
+        # Whatever type ``_member_type`` gives the entry (a file copy is a FILE even
+        # though it carries a redirect), the key records what the mode said (DR-25).
+        extra[EXTRA_SPECIAL_FILE_TYPE] = special
     if info.file_redir is not None:
         link_target = _rar5_redirect_target(info.file_redir)
         if info.is_file_copy():
@@ -2697,6 +2711,8 @@ class RarReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_header_record_diagnostics(info, member.name, member, index)
+        if EXTRA_SPECIAL_FILE_TYPE in member.extra and member.type is MemberType.FILE:
+            self._emit_special_file_has_data(member, index)
         if info.rar3_utf8_over_encoding:
             assert self._encoding is not None
             self._emit_name_encoding_inferred(
@@ -2893,13 +2909,11 @@ class RarReader(BaseArchiveReader):
             return MemberType.HARDLINK
         if info.is_symlink:
             return MemberType.SYMLINK
-        if (
-            info.host_os == _RAR_HOST_OS_UNIX
-            and info.mode is not None
-            and is_special_file_mode(info.mode)
-        ):
-            # A device, FIFO or socket, typed OTHER as in every format. rar itself
-            # skips these when archiving; only a hand-built header carries one.
+        if _rar_special_file_type(info) is not None and info.file_size == 0:
+            # A device, FIFO or socket with no data, typed OTHER as in every format.
+            # rar itself skips these when archiving; only a hand-built header carries
+            # one. With data the entry is a FILE, its bytes the content (DR-25);
+            # ``extra["special_file_type"]`` keeps the stored type either way.
             return MemberType.OTHER
         return MemberType.FILE
 
@@ -4352,6 +4366,7 @@ class RarReadBackend(ReadBackend):
     # matching their shared `Rar!\x1a\x07` prefix and re-reading to disambiguate.
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SFX_HIT_VALIDATOR = staticmethod(validate_rar_main_header)
+    SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
     SUPPORTS_STREAMING_NON_SEEKABLE = False
