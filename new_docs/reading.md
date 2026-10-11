@@ -48,10 +48,11 @@ mean decompressing the member again from its start. If you install the `seekable
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
-compression in gzip files and in most ZIP members. A seek back, or forward in compressed data, keeps
-archivey's check for damage, but a seek that jumps over bytes without decoding them, as the
-accelerator's do, stops it until you seek back to the start. If you'll seek a lot, extracting the
-member to a file first is often faster.
+compression in gzip files and in most ZIP members. Without the accelerator, a forward seek decodes
+the bytes it passes, so archivey still checks the member's checksum. With it, a forward seek can
+jump to a restart point instead, and then the checksum isn't checked until you seek back to the
+start ([Damaged archives](errors-and-diagnostics.md#damaged-archives) lists what is still checked).
+If you'll seek a lot, extracting the member to a file first is often faster.
 
 ## Several members at once
 
@@ -68,9 +69,9 @@ source jump back and forth, and each jump throws away what it had buffered.
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off
-out-of-order reads. Each of these can be slow in some cases, or let damaged data go unnoticed, and
-nothing in the calling code shows it. With these defaults, the risky pattern raises instead of
-running.
+out-of-order reads. Each of these can be slow in some cases, some seeks also skip the check for
+damage, and nothing in the calling code shows it. With these defaults, the risky pattern raises
+instead of running.
 
 A ZIP can be read out of order at no cost, but a `.tar.gz` can't. If archivey raised only on the
 `.tar.gz`, code tested on ZIPs would first fail in production. So archivey raises on every
@@ -83,5 +84,5 @@ format, and the mistake shows up during development.
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
 | Read from a pipe | `streaming=True` | [TAR and single compressed files only](#reading-once) |
-| Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that jumps stops the check for damage |
+| Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_members=True` | [Slow on sources where each jump is costly](#several-members-at-once) |

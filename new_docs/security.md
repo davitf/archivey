@@ -76,8 +76,8 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
 - **After a seek, a crafted `.xz` or `.lz` file can return wrong data without an error.** A seek
-  trusts the file's own index, and the integrity check covers reading from start to end without
-  seeking.
+  trusts the file's own index, and the integrity check covers a read from start to end with no
+  skipped bytes.
 - **On Windows, a folder source is less protected.** Windows can't open a path without following
   links, so a subfolder swapped for a link during the listing can list files from outside the
   folder. Reading a file still checks it's the one listed where the filesystem reports file
