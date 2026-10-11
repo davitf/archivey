@@ -67,13 +67,21 @@ with archivey.open_archive("damaged.tar") as archive:
         print("The list stops early:", report.error)
 ```
 
-Reading a member from start to end lets archivey notice if its data is damaged, and the read that
-reaches the end raises. If you stop early, nothing is checked. A loop that reads in chunks gets
-every byte that could be read before the error, but those bytes may be wrong too, since archivey
-can't tell where the damage starts. A few formats, such as Brotli, `.Z` and `.lzma`, store nothing
-to check against, so damage there can go unnoticed.
+A TAR archive cut between two members, or inside a member's header, has nothing left that looks
+wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
+`ARCHIVE_EOF_MARKER_MISSING` shows it, and
+[`DiagnosticPolicy.strict()`](#raising-or-quieting-a-diagnostic) turns it into an exception.
 
-A seek back to the start begins the check again, but after a seek anywhere else, damage may go
+Where the format stores a checksum for each member, reading a member from start to end checks it,
+and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
+checked. A loop that reads in chunks gets every byte that could be read before the error, but those
+bytes may be wrong too, since archivey can't tell where the damage starts. Some formats store
+nothing to check a single member against, so damage there can go unnoticed: a TAR member has no
+checksum of its own, the checksum of a `.tar.gz` covers the whole file rather than one member, and
+Brotli, `.Z` and `.lzma` store none at all.
+
+If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)), a
+seek back to the start begins the check again, but after a seek anywhere else, damage may go
 unnoticed. Once a read has raised, a later read that reaches the end raises the same error, even
 after a seek, so seeking back can't hand you the damaged member as if it were complete.
 
@@ -81,21 +89,25 @@ after a seek, so seeking back can't hand you the damaged member as if it were co
 
 ## Diagnostics
 
-Each diagnostic has a `code` to check for, a `message` meant for people, and details such as the
-member's name, for example a name with characters that make it display as a different one. Archivey
-keeps them in a few places, depending on what you called:
+Each diagnostic, such as one for a name with characters that make it display as a different one,
+has a `code` to check for, a `message` meant for people, and a `context` with details such as the
+member's name, kept raw as in `e.member_name`. Archivey keeps them in a few places, depending on
+what you called:
 
 | After | Read them from |
 |---|---|
 | Opening, and anything on the reader | `archive.diagnostics`: everything since the archive was opened |
 | `archive.open(member)` | `stream.diagnostics`: that one read |
 | `extract_all` | `report.diagnostics`: that one call |
-| A listing | `member.diagnostics`: the ones about that member |
+| `members_report()` | `report.diagnostics`: that one listing |
+| Any listing | `member.diagnostics`: the ones about that member |
 
 All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
-records themselves, up to 256 by default.
+records themselves. An archive keeps at most 256 records by default, counting those attached to
+members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes that.
 
-Each diagnostic is also logged as a warning on the `archivey.diagnostics` logger, so a script that
+Each diagnostic is also logged as a warning on a logger under `archivey`, such as
+`archivey.normalization`, so a script that
 calls `logging.basicConfig()` prints a line for each. To handle them as they happen instead, pass a
 function as `on_diagnostic=` in `archivey.ArchiveyConfig`. Archivey calls it with each
 [`Diagnostic`](api.md#archivey.Diagnostic) as it's recorded, the same record the summaries keep. An
@@ -109,7 +121,9 @@ config = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.str
 
 With `DiagnosticPolicy.strict()`, the diagnostics that say the archive itself is unusual, such as a
 name that displays as a different one, raise `DiagnosticRaisedError` from the call that found them.
-The ones about your own arguments, such as an unused password, are only recorded as before.
+The ones about your own arguments, such as an unused password, and a few others, such as an empty
+archive, are only recorded as before. The [reference](api.md#archivey.DiagnosticPolicy) lists which
+codes raise.
 `DiagnosticPolicy.pedantic()` raises on every code, including codes a later release adds.
 
 ```python
