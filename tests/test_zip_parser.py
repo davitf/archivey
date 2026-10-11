@@ -13,7 +13,7 @@ import struct
 import subprocess
 import sys
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -219,12 +219,13 @@ def _with_overrun(field_offset: int) -> bytes:
         pytest.param(_with_count_and_comment_lies, id="count-and-comment"),
         pytest.param(lambda: _with_overrun(32), id="comment-overrun"),
         pytest.param(lambda: _with_overrun(30), id="extra-overrun"),
+        pytest.param(lambda: _with_overrun(28), id="name-overrun"),
     ],
 )
-def test_end_record_findings_match_the_reader(data: object) -> None:
+def test_end_record_findings_match_the_reader(data: Callable[[], bytes]) -> None:
     """Each walk finding is the reader's ``_end_record_findings`` finding: same kind,
     same context values, same entry, same numbers in the message."""
-    assert _assert_findings_match_today(data()) > 0  # type: ignore[operator]
+    assert _assert_findings_match_today(data()) > 0
 
 
 def test_no_findings_on_well_formed_fixtures() -> None:
@@ -266,7 +267,13 @@ def test_zip64_end_record_for_more_than_65535_entries() -> None:
 
 def _with_central_extra(data: bytes, index: int, extra: bytes, **fields: int) -> bytes:
     """``data`` with directory entry ``index`` given ``extra`` and some fixed fields."""
-    offsets = {"crc": 16, "compressed_size": 20, "file_size": 24, "header_offset": 42}
+    offsets = {
+        "crc": (16, "<L"),
+        "compressed_size": (20, "<L"),
+        "file_size": (24, "<L"),
+        "disk_start": (34, "<H"),
+        "header_offset": (42, "<L"),
+    }
     eocd = data.rindex(b"PK\x05\x06")
     cd_size, cd_offset = struct.unpack_from("<LL", data, eocd + 12)
     out = bytearray()
@@ -280,10 +287,8 @@ def _with_central_extra(data: bytes, index: int, extra: bytes, **fields: int) ->
             comment = entry[46 + name_len + extra_len :]
             struct.pack_into("<H", fixed_and_name, 30, len(extra))
             for field, value in fields.items():
-                if field == "disk_start":
-                    struct.pack_into("<H", fixed_and_name, 34, value)
-                else:
-                    struct.pack_into("<L", fixed_and_name, offsets[field], value)
+                offset, fmt = offsets[field]
+                struct.pack_into(fmt, fixed_and_name, offset, value)
             entry = fixed_and_name + extra + comment
         out += entry
         pos = end

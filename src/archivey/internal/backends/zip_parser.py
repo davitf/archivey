@@ -18,9 +18,10 @@ decodes no name or comment and emits no diagnostic. Damage raises ``CorruptionEr
 or ``TruncatedError`` (an archive cut short), a valid feature archivey refuses raises
 ``UnsupportedFeatureError``. The caller stamps archive and member context.
 
-The end-record search, the ZIP64 record checks and the stub offset (``base``) follow
-stdlib ``zipfile`` (3.13), so a prefixed or commented archive resolves to the record
-stdlib would have read. The walk tolerates more than stdlib does: it does not refuse
+The ZIP64 record checks and the stub offset (``base``) follow stdlib ``zipfile``
+(3.13), and the end-record search is stdlib's up to 3.12 (one byte wider than 3.13's,
+see ``_SEARCH_BACK``), so a prefixed or commented archive resolves to the record stdlib
+would have read. The walk tolerates more than stdlib does: it does not refuse
 the archive for an extra field cut short or a version-needed it does not know, and it
 yields every entry before a damaged one.
 """
@@ -128,9 +129,11 @@ class EndRecord:
 def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     """Locate and read the end record, and the ZIP64 records when there are some.
 
-    The search is stdlib's: a comment-less record ending at end of file, then the last
-    ``PK\\x05\\x06`` in the final 65 558 bytes. A decoy signature earlier in the file,
-    in the comment or in the record's own fields therefore cannot make the two disagree.
+    The search is stdlib's up to Python 3.12: a comment-less record ending at end of
+    file, then the last ``PK\\x05\\x06`` in the final 65 558 bytes. 3.13's window is one
+    byte shorter; the wider one finds the same record whenever the shorter one finds
+    any. A decoy signature earlier in the file, in the comment or in the record's own
+    fields therefore cannot make the two disagree.
 
     Raises ``UnsupportedFeatureError`` for a record that names another disk (a spanned
     set) and for an encrypted central directory (PKWARE Strong Encryption), and
@@ -273,7 +276,9 @@ def disk_field_is_split(value: int) -> bool:
     """A classic or ZIP64 end-record disk field that names another disk.
 
     0xFFFF in a classic field means "see the ZIP64 record", not disk 65535, so it is not
-    a split; a naive ``!= 0`` check would refuse legitimate ZIP64 archives.
+    a split; a naive ``!= 0`` check would refuse legitimate ZIP64 archives. In a ZIP64
+    record the field is a uint32, so 0xFFFF is a real disk there; it is tolerated
+    anyway, to keep the refusal identical to the stdlib-based reader's.
     """
     return value not in (0, _ZIP64_DISK_SENTINEL)
 

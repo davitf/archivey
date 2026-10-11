@@ -34,6 +34,9 @@
 ## 2. Switch the reader (PR 2)
 
 - [ ] 2.1 `ZipReader` reads through the parser; `import zipfile` leaves `src/`.
+- [ ] 2.1a Add the 3.13+ row for a comment plus trailing bytes totalling 65 536 to the
+  handbook's behaviour notes, as the design's §"Behaviour that changes" table records
+  it (the search window stays stdlib's up to 3.12).
 - [ ] 2.2 Reader-owned lock; the source is the handle for path sources too.
 - [ ] 2.3 Lazy `_iter_members`; `member_count` from a complete walk, `None` when it fails
       or stops at `max_members`.

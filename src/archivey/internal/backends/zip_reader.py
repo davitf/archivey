@@ -242,10 +242,6 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
 }
 
-# Local name/extra lengths are uint16; 65535 is the format maximum, so a separate
-# cap cannot fire (S1-F2). Absurd *offsets* are refused past ``_MAX_DATA_OFFSET``
-# (zip_parser).
-
 
 # The end-of-central-directory record as stdlib parsed it: the classic record, or the
 # ZIP64 one when stdlib found and used it. `_EndRecData` and the `_ECD_*` indices into
