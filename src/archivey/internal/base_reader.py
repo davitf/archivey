@@ -2958,9 +2958,9 @@ class BaseArchiveReader(ArchiveReader):
         # passed on, because ``members`` may be a one-shot iterable that a second read
         # would find empty.
         selector = normalize_member_selector(members)
-        check_dest(dest, call="extract_all(dest=…)")
-        check_path_not_empty(dest, call="extract_all()")
-        self._check_extraction_dest(Path(dest))
+        dest_path = check_dest(dest, call="extract_all(dest=…)")
+        check_path_not_empty(dest_path, call="extract_all()")
+        self._check_extraction_dest(Path(dest_path))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.
@@ -2994,7 +2994,7 @@ class BaseArchiveReader(ArchiveReader):
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
             with self._internal_member_opens():
-                results = coordinator.run(self, dest)
+                results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         return ExtractionReport(

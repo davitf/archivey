@@ -950,6 +950,13 @@ class _BytesPath:
         return b"/nonexistent-archivey-dest"
 
 
+class _EmptyStrPath:
+    """A path-like whose ``__fspath__`` returns ``""``, which ``Path()`` reads as ``"."``."""
+
+    def __fspath__(self) -> str:
+        return ""
+
+
 def _a_directory(tmp_path: Path) -> Path:
     directory = tmp_path / "a-directory"
     directory.mkdir(exist_ok=True)
@@ -1107,6 +1114,12 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
     # current directory.
     ("open_archive('')", lambda a, t: open_archive(""), ValueError),
     ("extract_all('')", lambda a, t: _extract_all(a, "", None), ValueError),
+    # The empty check runs on what ``__fspath__`` returns, not on the wrapper object.
+    (
+        "extract_all(empty path-like)",
+        lambda a, t: _extract_all(a, _EmptyStrPath(), None),
+        ValueError,
+    ),
 ]
 
 

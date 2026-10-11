@@ -151,23 +151,27 @@ def check_callable(value: object, *, call: str) -> None:
     )
 
 
-def check_dest(value: object, *, call: str) -> None:
-    """Raise ``ArchiveyUsageError`` unless ``value`` is a ``str`` or a ``str`` path-like.
+def check_dest(value: object, *, call: str) -> str:
+    """Return ``value`` as a ``str`` path, or raise ``ArchiveyUsageError``.
 
     ``Path(0)`` would otherwise raise ``expected str, bytes or os.PathLike object, not
     int``, which names neither the call nor the argument. The resolved value is checked,
     not the protocol: a path-like whose ``__fspath__`` returns bytes (which ``os`` and
     ``shutil`` accept) makes ``Path()`` fail the same way.
+
+    The caller uses the returned ``str`` for every later check and for ``Path()``, so
+    a path-like whose ``__fspath__`` returns ``""`` reaches the empty-path check as
+    ``""`` rather than as an object that check cannot see into.
     """
     if isinstance(value, str):
-        return
+        return value
     if isinstance(value, os.PathLike):
         try:
             resolved = os.fspath(value)
         except TypeError:  # ``__fspath__`` returned neither str nor bytes
             resolved = None
         if isinstance(resolved, str):
-            return
+            return resolved
     raise _UsageTypeError(
         f"{call} takes a directory path (str or Path), but got {describe_value(value)}."
     )
@@ -176,9 +180,9 @@ def check_dest(value: object, *, call: str) -> None:
 def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None:
     """Raise ``ArchiveyUsageError`` unless ``value`` names a usable byte codec.
 
-    This is the one check here that is about a *value* rather than a type, and it is
-    worth the lookup because all three ways of getting it wrong failed differently and
-    none of them named the argument:
+    This check is about a *value* rather than a type, and it is worth the lookup
+    because all three ways of getting it wrong failed differently and none of them
+    named the argument:
 
     * an unregistered name (``"utf8-"``, a typo) raised ``LookupError``;
     * a text-only codec (``"rot13"``, ``"base64"``) raised a different ``LookupError``,
