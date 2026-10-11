@@ -48,9 +48,10 @@ mean decompressing the member again from its start. If you install the `seekable
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
-compression in gzip files and in most ZIP members. Reading a member from start to end lets archivey
-notice if its data is damaged, but after a seek, damage may go unnoticed. If you'll seek a lot,
-extracting the member to a file first is often faster.
+compression in gzip files and in most ZIP members. A seek back, or forward in compressed data, keeps
+archivey's check for damage, but a seek that jumps over bytes without decoding them, as the
+accelerator's do, stops it until you seek back to the start. If you'll seek a lot, extracting the
+member to a file first is often faster.
 
 ## Several members at once
 
@@ -82,5 +83,5 @@ format, and the mistake shows up during development.
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
 | Read from a pipe | `streaming=True` | [TAR and single compressed files only](#reading-once) |
-| Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and damage may go unnoticed after a seek |
+| Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that jumps stops the check for damage |
 | Read members from several threads | `concurrent_members=True` | [Slow on sources where each jump is costly](#several-members-at-once) |

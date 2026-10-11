@@ -83,9 +83,12 @@ files have one only if the program that wrote them added it. When archivey can't
 you'd expect to be checked, such as a 7z member encrypted without a CRC, it records the diagnostic
 `DIGEST_UNVERIFIABLE`, which `strict()` also turns into an exception.
 
-If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)), a
-seek back to the start begins the check again, but after a seek anywhere else, damage may go
-unnoticed. Once a read has raised, a later read that reaches the end raises the same error, even
+If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
+most seeks keep the check: a seek back, and a seek forward in compressed data, whose skipped bytes
+the next read decodes and checks. Bytes you read again after a seek back aren't checked a second
+time. A seek that jumps over bytes without decoding them, in a member stored without compression, in
+a `.xz` or `.lz` file, or through the `seekable` accelerator, stops the check until you seek back to
+the start. Once a read has raised, a later read that reaches the end raises the same error, even
 after a seek, so seeking back can't hand you the damaged member as if it were complete.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
