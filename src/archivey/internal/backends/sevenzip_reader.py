@@ -35,6 +35,7 @@ from typing import BinaryIO
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
 )
@@ -68,6 +69,7 @@ from archivey.internal.backends.sevenzip_parser import (
     folder_is_encrypted,
     folder_unpack_size,
     materialize_archive,
+    packed_streams_end,
     parse_decoded_header,
     parse_header_block,
     read_signature_and_next_header,
@@ -85,6 +87,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -121,6 +124,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
 from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.types import (
@@ -273,8 +277,10 @@ def load_sevenzip_archive(
 
     block = parse_header_block(signature.header_data, max_members=max_members)
     header_encrypted = False
+    encoded_streams_end = 0
     if isinstance(block, EncodedHeader):
         header_encrypted = encoded_header_needs_password(block)
+        encoded_streams_end = packed_streams_end(block.streams)
         block = _decode_encoded_header_block(
             fp,
             block,
@@ -285,7 +291,12 @@ def load_sevenzip_archive(
             max_members=max_members,
         )
     assert isinstance(block, PlainHeader)
-    return materialize_archive(signature, block, is_header_encrypted=header_encrypted)
+    return materialize_archive(
+        signature,
+        block,
+        is_header_encrypted=header_encrypted,
+        encoded_streams_end=encoded_streams_end,
+    )
 
 
 def _decode_encoded_header_block(
@@ -518,6 +529,7 @@ class SevenZipReader(BaseArchiveReader):
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+        self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
         """A source view whose ``start`` is measured from the signature header.
@@ -536,6 +548,44 @@ class SevenZipReader(BaseArchiveReader):
             stream_config=self._stream_config,
             collector=self._diagnostics_collector,
             max_members=self._config.listing_limits.max_members,
+        )
+
+    def _report_trailing_data(self) -> None:
+        """Report a non-zero byte after the end of a 7z archive.
+
+        The end is the later of the next header's end and the last packed stream's.
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``
+        (DR-3). Zero padding is silent under DR-3; 7-Zip warns about any tail, zeros
+        included. Runs after the header has parsed, so a wrong header password or a
+        damaged header is reported as that, not as this. A self-extractor's tail (the
+        certificate table of a code-signed one) is reported too: it is outside the
+        archive whatever wrote it.
+        """
+        fp = self._view(self._archive.end_offset)
+        try:
+            found = first_nonzero_offset(fp)
+        finally:
+            fp.close()
+        if found is None:
+            return
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            message=(
+                "7z archive continues past its end: a non-zero byte appears "
+                f"{found} bytes after the end of its next header and packed streams. "
+                "The listing does not account for it (this file may hold something "
+                "appended to the archive)."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="7z",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found,
+                observed_kind="nonzero",
+            ),
+            logger=backends_logger,
         )
 
     def _init_folder_caches(self, archive: SevenZipArchive) -> None:
