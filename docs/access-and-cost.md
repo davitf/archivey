@@ -251,8 +251,9 @@ nothing; the copy's digests are its source's (`link_target_member`).
 ## Streaming mode is one pass
 
 With `streaming=True`, the first of `__iter__` / `stream_members` / `extract_all`
-consumes the pass. A second call raises — including after an early `break`. Use
-`scan_members()` to finish/drain when you need a full list after a partial pass.
+consumes the pass. A second call raises — including after an early `break`. Call
+`members_report()` to finish the pass when you need a full list after a partial pass;
+raise its `report.error` if you need the list complete or an error.
 
 ## Passwords and confirmation cost
 

@@ -603,8 +603,9 @@ class GzipCodec(_DeflateFamilyCodec):
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
-        # outcomes come from zlib's gzip window; multi-member chaining matches GzipFile
-        # (NUL padding, a further member). O(n) rewind with a warning.
+        # outcomes come from zlib's gzip window; members with nothing between them
+        # chain, and NULs end the data as in GNU gzip (GzipDecoder). O(n) rewind with
+        # a warning.
         return _stdlib_gzip(source, config)
 
     def _open_accelerated(
