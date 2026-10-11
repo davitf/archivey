@@ -475,7 +475,7 @@ per-call listing-limits override.
 ```python
 @dataclass(frozen=True)
 class ListingLimits:
-    max_members: int | None = 1_048_576
+    max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
     UNLIMITED: ClassVar["ListingLimits"]
 ```
@@ -502,12 +502,12 @@ escape hatch there.
 
 | Case | Expected |
 | --- | --- |
-| Default config, archive with ≤1_048_576 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
+| Default config, archive with ≤262_144 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR member whose extended headers and sparse map together weigh more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -545,13 +545,22 @@ from the running total above; the decoded comments are weighed again at registra
 
 A TAR sparse member's map is retained on `_raw` (the member's data is read through it),
 and the archive sizes it: a few kilobytes of compressed PAX sparse 1.0 map hold millions
-of entries. It SHALL be weighed at registration, 24 bytes per entry.
+of entries. It SHALL be weighed at registration, 24 bytes per entry. The parser builds
+the whole map before the member can be registered, so the map SHALL also be weighed
+while it is parsed, from its entry count (a PAX sparse 1.0 map's count line, a 0.1
+map's commas, a 0.0 map's offset records) before its entries are parsed, or as each
+old GNU extension block adds entries: a map weighing more than its member has left
+SHALL raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 A TAR extended header (PAX `x` / `g`, GNU long name or link name) is read whole by the
 parser before any member is registered, so its declared size SHALL be weighed first: one
 that declares more than is left of `max_metadata_bytes` in an enforcing listing, or more
 than the whole cap in any walk (`stream_members()` and `streaming=True` included), SHALL
-raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data.
+raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data. The
+headers ahead of one member form a chain the parser holds whole until the member is
+built, so each header of the chain, and the member's sparse map, SHALL be weighed
+against what the headers before it in the chain left, not against the member's whole
+share.
 
 #### Scenario: metadata accounting matrix
 
@@ -565,6 +574,8 @@ raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data.
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR compressed old-style comments whose declared sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
+| TAR chain of extended headers ahead of one member, each under the cap, together over it | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
+| TAR sparse map whose entries weigh more than the member has left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before its entries are parsed |
 
 ### Requirement: Name lookup and member identity
 
@@ -609,10 +620,18 @@ immutable operation-filtered diagnostic snapshot:
 class ArchiveStream(BinaryIO):
     @property
     def diagnostics(self) -> DiagnosticSummary: ...
+    @property
+    def name(self) -> str: ...  # member streams only; else AttributeError
 
 def read(self, member: str | ArchiveMember) -> bytes: ...
 def open(self, member: str | ArchiveMember) -> ArchiveStream: ...
 ```
+
+A stream from `open()` or `stream_members()` SHALL have `name` equal to the member's
+`name`, as `zipfile`'s `ZipExtFile` does, so `open_archive(reader.open(member))` matches
+the member's extension during detection (`format-detection`: a probe-only format runs its
+probe only for a matching name). It is a member name, not a filesystem path. A stream with
+no member (`open_stream`) SHALL raise `AttributeError` for `name`, as `io.BytesIO` does.
 
 Unknown name → `KeyError`; foreign `ArchiveMember` → `ValueError`. `read()`
 materializes the full payload without extraction bomb checks (small trusted
@@ -637,6 +656,8 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | Case | Expected |
 | --- | --- |
 | `open("data.bin")` succeeds | `ArchiveStream` as `BinaryIO`; `stream.diagnostics` = that operation only |
+| `open("dir/inner.zz").name` | `"dir/inner.zz"`; `open_archive` on it detects `ZLIB` by name and probe |
+| `open_stream(src).name` | `AttributeError` |
 | Reader-owned stream emits rewind diagnostic | Visible on stream and reader snapshots; retained once |
 | `read("readme.txt")` | Full uncompressed `bytes` |
 | `open(member)` from a different reader | `ValueError` |
@@ -707,6 +728,16 @@ Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and leave the
 active pass/stream valid. (Unlike random `open()`, whose independently owned
 streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 
+Reader close is the one exception, and only while the pass is suspended at a yield
+(the caller holds the iterator and is not inside a `next()` call). `close()` and
+`with`-exit then close the reader, as `zipfile.ZipFile.close()` does with member
+handles open, in this order: the backend's pass is wound down (its last yielded
+stream closed, then its pass-scoped resources such as a solid block or an `unrar`
+pipe released), then any other member stream still open is closed, and only then is
+the archive torn down. Resuming that iterator SHALL raise `ArchiveyUsageError`. A
+pass that is executing (inside `next()`, e.g. a selector on another thread) still
+makes `close()` raise (maintainer's ruling, 2026-10-10).
+
 #### Scenario: stream_members matrix
 
 | Case | Expected |
@@ -719,6 +750,8 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 | Advance after one yield | Prior stream closed/invalidated first |
 | Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
+| `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
+| `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
 | Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config), either access mode | The link's target is resolved; its folder is decoded up to the link once |
 | Pass to the end without `members()`, either access mode, over a ZIP, 7z, RAR4 or RAR5 holding symlinks (default config) | Each yielded symlink ends with the same `link_target` a `members()` call would set, unset where that read cannot produce one |
@@ -810,6 +843,12 @@ be idempotent.
   concurrent external close with I/O is unsupported.
 - `__exit__` always calls `close()`. Close failure propagates on normal exit;
   during body-exception unwind the body exception remains via normal chaining.
+- A `stream_members()` or streaming-iteration pass suspended at a yield does not
+  block `close()`: the reader closes and resuming that iterator raises
+  `ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see the
+  `stream_members()` requirement). So a `with` block whose body kept such an
+  iterator alive exits cleanly, and a body exception is never replaced by a
+  close-time usage error.
 
 **Under `MemberStreams.CONCURRENT`:** `reader.close()` drains in-flight worker
 `open()`/`read()` before transitioning to closed (see `reader-concurrency`).
@@ -826,7 +865,8 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | Open stream, then close reader (no concurrent I/O) | New reader ops → `ArchiveyUsageError`; the stream is closed by that `close()`; backend released after it |
 | Idle open stream + `reader.close()` | Close succeeds and closes the stream; a later read raises; `stream.close()` is a no-op |
 | Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
-| `close()` raises (active pass/worker) | Reader stays open; member streams untouched |
+| `close()` raises (executing pass/worker) | Reader stays open; member streams untouched |
+| `close()` while a pass is suspended at a yield | Reader closed; yielded stream closed; resuming the pass → `ArchiveyUsageError` |
 | Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
 | `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
@@ -1042,19 +1082,19 @@ class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
     max_ratio: float | None = 1000.0
     ratio_activation_threshold: int = 5 * 2**20
-    max_entries: int | None = 1_048_576
+    max_entries: int | None = 262_144
     UNLIMITED: ClassVar["ExtractionLimits"]
 
 @dataclass(frozen=True)
 class ListingLimits:
-    max_members: int | None = 1_048_576
+    max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20
     UNLIMITED: ClassVar["ListingLimits"]
 
 @dataclass(frozen=True)
 class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
-    max_key_derivation_rounds: int | None = 2**27
+    max_key_derivation_rounds: int | None = 2**25
     max_ppmd_in_process_input: int | None = 16 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
@@ -1075,6 +1115,7 @@ class ArchiveyConfig:
     decoder_limits: DecoderLimits = DecoderLimits()
     spool_limits: SpoolLimits = SpoolLimits()
     detection_budget: DetectionBudget = BALANCED_BUDGET
+    always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
@@ -1115,6 +1156,10 @@ auto-detection itself, and under `format=` the stub-volume check and the rescan 
 confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
 fields beside it: a preset member or its name is converted at construction, so the field
 always holds a budget.
+`always_probe_content` SHALL decide whether `detect_format` and `open_archive` run every
+content probe or only the probe of the format the source's extension names
+(`format-detection`); `open_stream` SHALL run every probe whatever it holds. Like the other
+switches it SHALL be a real `bool`.
 `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set and across attempts: a copy refused once SHALL stay refused for that reader
@@ -1149,6 +1194,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`) |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
+| `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, no child process possible | `ResourceLimitError` on the first read |

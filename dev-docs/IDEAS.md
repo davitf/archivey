@@ -16,6 +16,8 @@ is added here.
 
 Each idea carries a status:
 
+- *Planned for 0.2.0* — committed for the first public release; the OpenSpec change
+  named with it carries the work.
 - *Planned after 0.2.0* — we intend to do it, after the first public release.
 - *Needs design* — we want it, but the shape is not settled. Start with a proposal.
 - *Open idea* — worth doing if someone needs it. Not planned.
@@ -24,7 +26,8 @@ Each idea carries a status:
 
 ## Formats
 
-- **Read ZIPs over 4 GiB that macOS wrote without ZIP64.** *Planned after 0.2.0.*
+- **Read ZIPs over 4 GiB that macOS wrote without ZIP64.** *Planned for 0.2.0*, as
+  stage 6 of the `native-zip-reader` OpenSpec change.
   Finder's Compress writes a classic ZIP past 4 GiB and stores every offset mod 2³², so
   archivey and 7-Zip fail on it while Finder reads it back. One rule recovers a real
   4.9 GB archive ([`investigations/2026-10-backup-scan.md`](investigations/2026-10-backup-scan.md)
@@ -33,12 +36,13 @@ Each idea carries a status:
   single member over 4 GiB is still open, because its sizes wrap too. A test needs no
   large file: reduce the stored offsets of a small archive, as
   `tests/test_audit_backup_scan.py` does.
-- **Native streaming ZIP reader.** *Needs design.* A native parser that walks local
-  headers forward could read ZIPs from pipes and sockets, list a ZIP whose central
-  directory is lost, read spanned `.z01`…`.zip` sets (by resolving each (disk, offset)
-  pair), and keep an archive readable when one name's UTF-8 flag is wrong (stdlib
-  `zipfile` makes the whole archive unlistable). See
-  [`formats/zip.md`](formats/zip.md) §5.
+- **List a ZIP whose central directory is lost, and read spanned ZIP sets.** *Needs
+  design.* The native ZIP reader (*Planned for 0.2.0*, the `native-zip-reader`
+  OpenSpec change) walks local headers forward to read ZIPs from pipes and sockets, and
+  keeps an archive readable when one name's UTF-8 flag is wrong. The same walk could
+  list a ZIP whose central directory is lost, and its parser's per-entry disk number is
+  what reading spanned `.z01`…`.zip` sets would follow (by resolving each (disk, offset)
+  pair). See [`formats/zip.md`](formats/zip.md) §5.
 - **Read raw CD sector images (`.bin`).** *Open idea.* 0.2.0 recognizes a raw image and
   refuses it (`iso_reader.refuse_raw_sector_image`). Mode 1 and Mode 2 Form 1 images
   strip to a byte-identical `.iso`, so a slicing stream that skips the sector headers
@@ -87,9 +91,9 @@ Each idea carries a status:
 ## Detection
 
 - **Extension-first detection, and stopping early on agreement.** *Needs design.* Try the
-  formats a filename suggests first, then fall back to the full sweep. A `.br` file would
-  stop being claimed by whichever content probe runs first, and a misnamed file is still
-  found. A second step is to stop as soon as the extension and the content agree, which
+  formats a filename suggests first, then fall back to the full sweep, so a misnamed file
+  is still found. Content probes already follow the name: by default only the probe the
+  extension names runs ([`topics/detection.md`](topics/detection.md) §2.5). A second step is to stop as soon as the extension and the content agree, which
   saves the later scan tiers; the sound version may skip the expensive tiers but never a
   cheap exact-magic check. On `/usr`, near magic already settles almost every file, so the
   saving needs a Brotli-heavy corpus to show (the detection-algorithm
@@ -227,7 +231,9 @@ Each idea carries a status:
 
 ## CLI
 
-- **Read the archive from stdin.** *Open idea.* `-` is reserved as the archive argument.
+- **Read the archive from stdin.** *Open idea.* A piped archive is already read through
+  `/dev/stdin` on Linux and macOS. What is still open is wiring the reserved `-` archive
+  argument to it.
 - **`--json` output.** *Needs design.* Waits for a designed member schema. The flag name
   is `--json`.
 - **`--raw` names.** *Open idea.* An escape hatch that prints exact names, for scripts that

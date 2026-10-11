@@ -10,7 +10,9 @@ The decoders live next to their codec in :mod:`archivey.internal.streams.codecs`
 ``framed_decoder`` for the one-shot decompressors (bzip2, zstd, LZ4).
 
 ``codecs.StreamCodec.open`` wires those into an ``ArchiveStream``; this module is
-only the shared engine underneath.
+only the shared engine underneath. One exception: above :class:`SeekPoint` sit the
+DEFLATE family's shared helpers, the ``zlib.error`` translators, the truncation message
+and the inflate step, used by the zlib, gzip, raw DEFLATE and resume decoders.
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ from __future__ import annotations
 import bisect
 import io
 import os
-from collections.abc import Callable, Sequence
+import zlib
+from collections.abc import Callable, Container, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import (
@@ -68,6 +71,20 @@ class _StreamChecksumError(CorruptionError):
     """
 
 
+class DataAfterEndError(CorruptionError):
+    """Input left over in a container coder's compressed data after its codec's end.
+
+    A ZIP member or a 7z coder declares its compressed size, so no honest writer leaves
+    bytes there that the codec does not read; a zero byte counts too. 7-Zip reports
+    them as a data error ("There are some data after the end of the payload data", or
+    "Data Error"). Raised where a stream was opened with
+    ``StreamConfig.refuse_input_after_end``, and by raw LZMA, which is container-only,
+    whatever it was opened with (:func:`input_after_end_error`). A class of its own so
+    a check that reads one byte past a coder's declared output, and discards a decoder
+    error there, can still let this one through.
+    """
+
+
 def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
     """The error for a ``zlib.error`` from a gzip or zlib stream.
 
@@ -89,14 +106,19 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
 _GZIP_UNSUPPORTED_HEADER = ("unknown compression method", "unknown header flags set")
 
 
-def input_after_end_error(name: str) -> CorruptionError:
+def input_after_end_error(name: str, output: int | None = None) -> DataAfterEndError:
     """The error for input after a codec's end, where the container refuses it.
 
     ``StreamConfig.refuse_input_after_end`` (DR-3). The decoders' check
     (``DecompressorStream``) and the bzip2 accelerator's end check both raise it.
+    ``output`` is the stream's output before that end, when known. The bytes are
+    either data the member carries after the stream or, for a codec that stops at a
+    declared output size, the rest of a stream that size cuts short.
     """
-    return CorruptionError(
-        f"{name} stream ends before its input does: bytes are left after its end"
+    at = "" if output is None else f" after {output} bytes of output"
+    return DataAfterEndError(
+        f"{name} stream ends{at} before its input does: bytes are left after its end "
+        "(data after the stream, or a declared size shorter than the stream)"
     )
 
 
@@ -112,6 +134,58 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
             "same way"
         )
     return gzip_corruption(exc)
+
+
+def zlib_error(exc: Exception, label: str) -> CorruptionError:
+    """The error for a ``zlib.error`` from a zlib (``label`` "zlib") or raw DEFLATE
+    ("deflate") stream: always :func:`gzip_corruption`.
+
+    Unlike :func:`gzip_error`, a refused header is not unsupported. zlib refuses a zlib
+    header whose method is not deflate ("unknown compression method"), but RFC 1950
+    defines no method other than 8, so that header is damage, not a valid feature
+    archivey cannot decode (DR-4).
+    """
+    return gzip_corruption(exc, label)
+
+
+def truncated_message(label: str) -> str:
+    """The message of the :class:`TruncatedError` a decoder gives a ``label`` stream
+    that ends before its end marker."""
+    return f"{label} stream is truncated"
+
+
+def _inflate(
+    decomp: zlib._Decompress,
+    data: bytes,
+    max_length: int,
+    error: Callable[[zlib.error], Exception],
+) -> bytes:
+    """One inflate step: ``data`` to at most ``max_length`` output bytes, the rest kept
+    in ``unconsumed_tail``. A negative ``max_length`` is no limit, and so is 0 (zlib's
+    reading): ``DecompressorStream`` never asks for 0 bytes. A ``zlib.error`` leaves
+    as ``error`` maps it."""
+    try:
+        if max_length < 0:
+            return decomp.decompress(data)
+        return decomp.decompress(data, max_length)
+    except zlib.error as exc:
+        raise error(exc) from exc
+
+
+def _inflate_rest(
+    decomp: zlib._Decompress, error: Callable[[zlib.error], Exception]
+) -> bytes:
+    """At the end of the input: the output of what ``decomp`` still holds.
+
+    The caller checks ``decomp.eof`` after: when it is false, the stream is truncated.
+    """
+    out = b""
+    if decomp.unconsumed_tail:
+        out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
+    try:
+        return out + decomp.flush()
+    except zlib.error as exc:
+        raise error(exc) from exc
 
 
 @dataclass(order=True, slots=True)
@@ -188,8 +262,8 @@ class Decoder(Protocol):
         """True once any byte, a zero too, has been fed after the stream's end.
 
         Unlike :attr:`trailing_bytes` this counts zero padding, and the decoder may go
-        on reading after it. A stream opened with ``refuse_input_after_end`` raises
-        ``CorruptionError`` when it turns True (DR-3).
+        on reading after it. A stream opened with ``refuse_input_after_end`` ends there
+        and raises :class:`DataAfterEndError` once its output has been read (DR-3).
         """
         ...
 
@@ -540,6 +614,12 @@ class DecompressorStream(ReadOnlyIOStream):
     consumes: the bytes it decoded stay buffered and the position is unchanged, so the
     next read returns them. ``seek`` and a size query raise after they finish, with the
     position where they left it. Either way the handle stays usable.
+
+    ``refuse_input_after_end`` marks a source that is exactly one container coder's
+    compressed data (a ZIP member's, a 7z coder's declared input). Any byte the decoder is fed
+    after the end of its data, a zero byte too, is then :class:`DataAfterEndError`,
+    raised after the output before that end has been delivered, as for a truncation.
+    ``report_trailing_data`` does not apply to such a stream.
     """
 
     def __init__(
@@ -556,11 +636,13 @@ class DecompressorStream(ReadOnlyIOStream):
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
+        self._refuse_input_after_end = refuse_input_after_end
+        # The DataAfterEndError of a ``refuse_input_after_end`` stream, raised once the
+        # output before the end has been read (see _end_error), until a seek restarts.
+        self._surplus: DataAfterEndError | None = None
         self._diagnostics_collector = collector
         self._codec_name = codec_name
         self._report_trailing_data = report_trailing_data
-        # StreamConfig.refuse_input_after_end: see _decoding.
-        self._refuse_input_after_end = refuse_input_after_end
         # Reported once per stream: a seek back re-decodes to the same end.
         self._trailing_reported = False
         # Compressed bytes read from the start of the source, for the offset of
@@ -814,6 +896,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._decoder = old_decoder.recreate(point, self._inner)
         self._decoder.clear_pending_error()
         self._spent = None
+        self._surplus = None
         self._buffer.clear()
         self._eof = False
         self._pos = point.decompressed_offset
@@ -828,7 +911,7 @@ class DecompressorStream(ReadOnlyIOStream):
             drained = self._ingest_decode(
                 self._decoding(lambda: self._decoder.feed(b"", max_length))
             )
-            if self._decoder.trailing_bytes is not None:
+            if self._ended():
                 return self._end_at_trailing_data(drained)
             if drained:
                 return drained
@@ -839,7 +922,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._compressed_read += len(chunk)
         if not chunk:
             leftover = self._ingest_decode(self._decoding(self._decoder.flush))
-            if self._decoder.trailing_bytes is not None:
+            if self._ended():
                 return self._end_at_trailing_data(leftover)
             if leftover and getattr(self._decoder, "drains_after_flush", False):
                 # The decoder took its input whole at compressed EOF and has more
@@ -859,7 +942,7 @@ class DecompressorStream(ReadOnlyIOStream):
         data = self._ingest_decode(
             self._decoding(lambda: self._decoder.feed(chunk, max_length))
         )
-        if self._decoder.trailing_bytes is not None:
+        if self._ended():
             return self._end_at_trailing_data(data)
         return data
 
@@ -883,36 +966,52 @@ class DecompressorStream(ReadOnlyIOStream):
         or a bug in the decoder leaves its state just as undefined, so it sticks until a
         seek too. ``ResumeReachedStreamEnd`` is not an error, and its caller replaces
         this stream.
-
-        With ``refuse_input_after_end``, the call that first shows input after the
-        codec's end (:attr:`Decoder.input_after_end`) raises ``CorruptionError`` here,
-        kept the same way. Every codec a ZIP member uses goes through this one check.
         """
         try:
-            out = call()
+            return call()
         except ResumeReachedStreamEnd:
             raise
         except Exception as exc:
             self._spent = exc
             raise
-        if self._refuse_input_after_end and self._decoder.input_after_end:
-            # The container's compressed size is this codec's input exactly, so a
-            # byte after the codec's end is hidden data inside the member (DR-3).
-            error = input_after_end_error(self._codec_name or "compressed")
-            self._spent = error
-            raise error
-        return out
+
+    def _ended(self) -> bool:
+        """Whether the decoder has been fed bytes past its end that end this stream.
+
+        For a ``refuse_input_after_end`` stream that is any byte, a zero too (every
+        codec a container member uses reports it through :attr:`Decoder.input_after_end`);
+        otherwise the first byte that is not zero padding (:attr:`Decoder.trailing_bytes`).
+        """
+        if self._refuse_input_after_end:
+            return self._decoder.input_after_end
+        return self._decoder.trailing_bytes is not None
+
+    def _end_error(self) -> BaseException | None:
+        """The error this stream raises at its end, once its output has been read."""
+        if self._surplus is not None:
+            return self._surplus
+        return self._decoder.pending_error
 
     def _end_at_trailing_data(self, data: bytes) -> bytes:
         """End the stream where the decoder found bytes past the codec's end.
 
-        ``data`` is this call's output, all of it before that end. The stream is
-        complete, so its size is published, and nothing further is read from the
-        source: the bytes past the end are not decoded, however many there are. They
-        are reported once per stream, as ``ARCHIVE_TRAILING_DATA``, when the stream is
-        one the caller was handed (``report_trailing_data``); inside a container they
-        end the stream silently.
+        ``data`` is this call's output, all of it before that end. Nothing further is
+        read from the source: the bytes past the end are not decoded, however many
+        there are. In a ``refuse_input_after_end`` stream they are
+        :class:`DataAfterEndError`, raised once ``data`` and what came before it have
+        been read, and no size is
+        published. Otherwise the stream is complete, so its size is published, and
+        the bytes are reported once per stream, as ``ARCHIVE_TRAILING_DATA``, when the
+        stream is one the caller was handed (``report_trailing_data``).
         """
+        if self._refuse_input_after_end:
+            if not self._eof:
+                self._eof = True
+                self._surplus = input_after_end_error(
+                    self._codec_name or "compressed",
+                    self._pos + len(self._buffer) + len(data),
+                )
+            return data
         if not self._eof:
             self._eof = True
             self._size = self._pos + len(self._buffer) + len(data)
@@ -972,7 +1071,7 @@ class DecompressorStream(ReadOnlyIOStream):
                 # true total is _pos plus everything in chunks.
                 joined = b"".join(chunks)
                 self._buffer[:0] = joined
-                if self._decoder.pending_error is None and self._decoder.finished:
+                if self._end_error() is None and self._decoder.finished:
                     self._size = self._pos + len(joined)
                 raise held
         # A read(-1)/readall() caller expects the complete stream and will not call
@@ -983,7 +1082,7 @@ class DecompressorStream(ReadOnlyIOStream):
         # the recorded error's traceback keeps this frame, and its locals, alive. Gate
         # _size *before* raising so a caller that catches TruncatedError cannot then
         # read a clean prefix-as-complete size.
-        err = self._decoder.pending_error
+        err = self._end_error()
         if err is not None:
             chunks.clear()
             self._raise_deferred(err)
@@ -1029,7 +1128,7 @@ class DecompressorStream(ReadOnlyIOStream):
         del self._buffer[:n]
         self._pos += len(data)
         if not data:
-            err = self._decoder.pending_error
+            err = self._end_error()
             if err is not None:
                 self._raise_deferred(err)
         return data
@@ -1044,6 +1143,7 @@ class DecompressorStream(ReadOnlyIOStream):
         error again at the same place.
         """
         self._decoder.clear_pending_error()
+        self._surplus = None
         self._spent = err
         raise err
 
@@ -1134,7 +1234,7 @@ class DecompressorStream(ReadOnlyIOStream):
             # Truncated streams must not publish a clean complete size; surface
             # the deferred fault instead of asserting or treating the prefix as
             # the full stream.
-            err = self._decoder.pending_error
+            err = self._end_error()
             if err is not None:
                 self._raise_deferred(err)
             if self._size is None:
@@ -1227,6 +1327,63 @@ TRAILING_DATA_SEARCH = 1 << 20
 # crafted to be all candidates would otherwise cost a Python check per few bytes on
 # every open.
 TRAILING_DATA_CANDIDATES = 4096
+
+
+def near_stream_magic(data: bytes, magic: bytes | Sequence[Container[int]]) -> bool:
+    """Whether ``data``, the bytes after a complete stream, start like a damaged stream.
+
+    The rule is lzip's: ``lzip`` refuses a file whose trailing data has two or three of
+    the four ``LZIP`` magic bytes in place, as a "corrupt header in multimember file"
+    (its ``--loose-trailing`` option turns that off). Here it is stated for a magic of
+    any length: the first ``len(magic)`` bytes of ``data`` hold the magic's byte in at
+    least half of the positions, and not in all of them. One rule serves every codec
+    whose magic tells a further stream from appended bytes (xz, lzip, zstd, LZ4,
+    bzip2), so they cannot disagree on what a damaged stream is.
+
+    One damaged byte, or a few flipped bits in one byte, leaves a 4-byte magic three
+    matches and xz's 6-byte one five, so the damage the rule exists for is always
+    caught. Random appended bytes match a 4-byte magic about once in 11 000 tails,
+    zstd's and LZ4's skippable-frame magic (16 values for its first byte) about once in
+    1 300, and xz's magic about once in 850 000. A codec is judged against each magic
+    it accepts after a stream, so its rate is the sum: about once in 1 160 tails for
+    zstd (a frame or a skippable frame) and once in 1 050 for LZ4 (a frame, a legacy
+    stream or a skippable frame). A tail shorter than the magic does not match:
+    ``lzip`` also refuses a few bytes that begin like its magic, but a tail that short
+    holds too little to tell damage from appended bytes, so it is reported as trailing
+    data like any other.
+
+    archivey has no option like lzip's ``--loose-trailing``. A file whose appended
+    bytes match by chance fails to read past its last stream, with nothing a caller
+    can set to get the rest of the data. Damage is not a policy choice in this
+    layer: a damaged last footer also raises with no option.
+
+    ``magic`` is the magic's bytes, or the bytes each position may hold (bzip2's
+    block-size digit, zstd's skippable-frame range). A ``data`` that starts with the
+    whole magic is a stream, not a near match.
+    """
+    if len(data) < len(magic):
+        return False
+    if isinstance(magic, bytes):
+        matches = sum(a == b for a, b in zip(data, magic))
+    else:
+        matches = sum(byte in allowed for byte, allowed in zip(data, magic))
+    return len(magic) <= 2 * matches < 2 * len(magic)
+
+
+def damaged_stream_error(offset: int | None = None) -> CorruptionError:
+    """The error for bytes after a stream that :func:`near_stream_magic` matches.
+
+    ``offset`` is where the damaged stream starts in the source. The xz and lzip
+    decoders and their index searches know it and pass it. ``FramedDecoder`` (zstd, LZ4,
+    bzip2) does not: it sees only the bytes it is fed, and only the
+    ``DecompressorStream`` that feeds it knows their source offset. Its error still
+    names the archive, member and format, from the error context.
+    """
+    where = "" if offset is None else f" at offset {offset}"
+    return CorruptionError(
+        f"Damaged stream header{where}: the bytes after a complete stream hold at "
+        "least half of the stream magic, so a further stream starts there and is damaged"
+    )
 
 
 def report_trailing_data(

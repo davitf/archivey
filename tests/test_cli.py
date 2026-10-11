@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import stat
@@ -14,13 +15,23 @@ from pathlib import Path
 import pytest
 
 from archivey import (
+    ArchiveFormat,
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
+    FormatSupport,
+    OverwritePolicy,
+    format_availability,
     open_archive,
 )
 from archivey.cli import test_cmd
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import (
+    EXIT_BROKEN_PIPE,
+    EXIT_FAIL,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    EXIT_USAGE,
+)
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
@@ -241,9 +252,17 @@ def test_dash_prefixed_verb_rejected(sample_zip: Path) -> None:
     assert main(["-x", str(sample_zip)]) == EXIT_USAGE
 
 
-def test_stdin_token_reserved() -> None:
+def test_stdin_token_reserved(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["list", "-"]) == EXIT_USAGE
     assert main(["-"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    if sys.platform == "win32":
+        # Windows has no /dev/stdin, so the message names the action that works there.
+        assert "/dev/stdin" not in err
+        assert "copy the archive to a regular file" in err
+    else:
+        # The token is reserved, but a piped archive is readable through /dev/stdin.
+        assert "/dev/stdin" in err
 
 
 @pytest.mark.parametrize("verb", ["list", "test", "info", "extract"])
@@ -499,6 +518,44 @@ def test_info_prints_identity_once_when_the_open_fails(
     assert "open:" in captured.err
 
 
+def _tar_bytes(entries: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, data in entries.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            tf.addfile(member, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _zip_bytes(entries: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def _main_on_fifo(fifo: Path, argv: list[str]) -> int:
+    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``."""
+    import threading
+
+    result: list[int] = []
+    worker = threading.Thread(target=lambda: result.append(main(argv)), daemon=True)
+    worker.start()
+    worker.join(10)
+    if worker.is_alive():
+        # Unblock a stuck second open so the thread can finish, then fail.
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(5)
+        pytest.fail(f"archivey {argv[0]} blocked on a FIFO")
+    return result[0]
+
+
+_FIFO_TAR = {"a.txt": b"hello", "b/c.txt": b"see"}
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
 def test_info_on_a_fifo_reports_the_open_error_without_reopening(
     tmp_path: Path,
@@ -508,35 +565,261 @@ def test_info_on_a_fifo_reports_the_open_error_without_reopening(
     """A failed open on a FIFO must not run ``detect_format`` on the path again.
 
     A pipe is read once, so a second open waits for a writer that never comes.
-    ``info`` must print the open error and return.
+    ``info`` must print the open error and return. A ZIP cannot be read in one
+    forward pass, so its open fails even in the streaming mode the CLI picks.
     """
-    import threading
+    fifo = tmp_path / "pipe.zip"
+    named_fifo_with_writer(fifo, _zip_bytes({"a.txt": b"hello"}))
+    assert _main_on_fifo(fifo, ["info", str(fifo)]) == EXIT_FAIL
+    captured = capsys.readouterr()
+    assert "open:" in captured.err
+    assert "Copy the archive to a regular file first" in captured.err
+    # The user cannot pass streaming=True, so the message must not suggest it.
+    assert "streaming=True" not in captured.err
+    # The detected format is named plainly, not as an enum repr.
+    assert "ArchiveFormat." not in captured.err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_info_on_a_tar_fifo_opens_in_streaming_mode(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    assert _main_on_fifo(fifo, ["info", str(fifo)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "format:" in out
+    assert "forward-only source" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("verb", ["list", "l"])
+def test_list_on_a_tar_fifo_lists_every_member(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    assert _main_on_fifo(fifo, [verb, str(fifo)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "a.txt" in out
+    assert "b/c.txt" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("patterns", [[], ["b/*"]])
+def test_test_on_a_tar_fifo_verifies_in_one_pass(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    patterns: list[str],
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    argv = ["test", "--hide-progress", str(fifo), *patterns]
+    assert _main_on_fifo(fifo, argv) == EXIT_OK
+    expected = "1 OK, 0 failed" if patterns else "2 OK, 0 failed"
+    assert expected in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("patterns", [[], ["b/*"]])
+def test_extract_on_a_tar_fifo_streams_the_members_out(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    patterns: list[str],
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    dest = tmp_path / "out"
+    argv = ["extract", "--hide-progress", str(fifo), "-d", str(dest), *patterns]
+    assert _main_on_fifo(fifo, argv) == EXIT_OK
+    assert (dest / "b" / "c.txt").read_bytes() == b"see"
+    assert (dest / "a.txt").exists() == (not patterns)
+
+
+# Only the magic bytes: the refusal comes right after detection, before the backend
+# reads anything else, so no real archive of these formats is needed.
+_SEEK_ONLY_PAYLOADS = {
+    "zip": b"PK\x03\x04" + bytes(1024),
+    "7z": b"7z\xbc\xaf\x27\x1c\x00\x04" + bytes(1024),
+    "rar": b"Rar!\x1a\x07\x01\x00" + bytes(1024),
+    "iso": bytes(0x8001) + b"CD001\x01" + bytes(4096),
+}
+_SEEK_ONLY_FORMATS = {
+    "zip": ArchiveFormat.ZIP,
+    "7z": ArchiveFormat.SEVEN_Z,
+    "rar": ArchiveFormat.RAR,
+    "iso": ArchiveFormat.ISO,
+}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("fmt", sorted(_SEEK_ONLY_PAYLOADS))
+@pytest.mark.parametrize("verb", ["list", "test", "extract", "info"])
+def test_verbs_on_a_seek_only_fifo_say_to_copy_it_to_a_file(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+    fmt: str,
+) -> None:
+    """ZIP, 7z, RAR and ISO need to seek, so no mode can read them from a pipe: the
+    message must name the format as the user knows it (``7z``, not the enum's
+    ``SEVEN_Z``) and what a CLI user can do, not a ``streaming=True`` they cannot pass.
+    """
+    # ISO needs pycdlib; without it the open fails on the missing package before the
+    # seekability check, as in tests/test_non_seekable_refusal.py.
+    if format_availability(_SEEK_ONLY_FORMATS[fmt]).support is FormatSupport.NONE:
+        pytest.skip(f"{fmt} has no usable backend here")
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _SEEK_ONLY_PAYLOADS[fmt])
+    argv = [verb, str(fifo)]
+    if verb == "extract":
+        argv += ["-d", str(tmp_path / "out")]
+    assert _main_on_fifo(fifo, argv) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert f"the {fmt} format cannot be read from a pipe or device" in err
+    assert "Copy the archive to a regular file first" in err
+    assert "streaming=True" not in err
+
+
+def _gz_bytes(data: bytes) -> bytes:
+    import gzip
+
+    return gzip.compress(data, mtime=0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_verbs_on_a_gz_fifo_read_the_single_member(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A single-file format has no member name of its own: it comes from the FIFO's
+    filename, and ``extract`` writes it into the destination without a wrapper.
+    """
+    payload = _gz_bytes(b"hello gz")
+
+    # Not "list.gz": the member name must be a word the verb cannot print by itself.
+    listed = tmp_path / "payload.gz"
+    named_fifo_with_writer(listed, payload)
+    assert _main_on_fifo(listed, ["list", str(listed)]) == EXIT_OK
+    assert "payload" in capsys.readouterr().out
+
+    tested = tmp_path / "test.gz"
+    named_fifo_with_writer(tested, payload)
+    argv = ["test", "--hide-progress", str(tested)]
+    assert _main_on_fifo(tested, argv) == EXIT_OK
+    assert "1 OK, 0 failed" in capsys.readouterr().err
+
+    extracted = tmp_path / "data.gz"
+    named_fifo_with_writer(extracted, payload)
+    dest = tmp_path / "out"
+    argv = ["extract", "--hide-progress", str(extracted), "-d", str(dest)]
+    assert _main_on_fifo(extracted, argv) == EXIT_OK
+    assert (dest / "data").read_bytes() == b"hello gz"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_extract_on_a_tar_fifo_without_dest_wraps_in_the_stem(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no ``-d``, a forward-only reader has no index to choose a destination
+    from, so the members go into ``./<stem>/``.
+    """
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    argv = ["extract", "--hide-progress", str(fifo)]
+    assert _main_on_fifo(fifo, argv) == EXIT_OK
+    assert (work / "pipe" / "a.txt").read_bytes() == b"hello"
+    assert (work / "pipe" / "b" / "c.txt").read_bytes() == b"see"
+    assert sorted(p.name for p in work.iterdir()) == ["pipe"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("verb", ["test", "extract"])
+def test_no_match_pattern_on_a_tar_fifo_fails(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+) -> None:
+    """A forward-only reader has no member list to check a pattern against before the
+    pass, so the empty selection is reported after it.
+    """
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    argv = [verb, "--hide-progress", str(fifo)]
+    if verb == "extract":
+        argv += ["-d", str(tmp_path / "out")]
+    argv.append("nomatch*")
+    assert _main_on_fifo(fifo, argv) == EXIT_FAIL
+    assert "pattern matched no members: 'nomatch*'" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no /dev/stdin on Windows")
+def test_list_reads_a_tar_piped_on_dev_stdin(tmp_path: Path) -> None:
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "archivey", "list", "/dev/stdin"],
+        input=_tar_bytes(_FIFO_TAR),
+        capture_output=True,
+        timeout=60,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert result.returncode == EXIT_OK, result.stderr
+    assert b"a.txt" in result.stdout
+    assert b"b/c.txt" in result.stdout
+
+
+def test_link_verify_on_a_streaming_reader_is_a_fail_not_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``test`` re-opens a link it could not verify during the pass, which needs a
+    random-access reader. No format the CLI streams leaves such a link today; if one
+    does, the usage error from ``open()`` must count as a FAIL.
+
+    A stub reaches the path: every link counts as unverified, and a regular TAR is
+    opened in streaming mode as if it were a pipe.
+    """
+    from archivey.cli import common
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:
         member = tarfile.TarInfo("a.txt")
         member.size = 5
         tf.addfile(member, io.BytesIO(b"hello"))
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, buf.getvalue())
+        link = tarfile.TarInfo("l")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "a.txt"
+        tf.addfile(link)
+    archive = tmp_path / "links.tar"
+    archive.write_bytes(buf.getvalue())
 
-    result: list[int] = []
-    worker = threading.Thread(
-        target=lambda: result.append(main(["info", str(fifo)])), daemon=True
+    monkeypatch.setattr(common, "is_read_once", lambda _path: True)
+    monkeypatch.setattr(
+        test_cmd,
+        "_link_needs_verification",
+        lambda m: m.type is MemberType.SYMLINK,
     )
-    worker.start()
-    worker.join(10)
-    if worker.is_alive():
-        # Unblock the stuck second open so the thread can finish, then fail.
-        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
-        os.close(fd)
-        worker.join(5)
-        pytest.fail("archivey info blocked on a FIFO")
-    assert result == [EXIT_FAIL]
-    captured = capsys.readouterr()
-    assert "open:" in captured.err
-    # The detected format is named plainly, not as an enum repr.
-    assert "ArchiveFormat." not in captured.err
+    assert main(["test", "--hide-progress", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "FAIL l:" in err
+    assert "1 OK, 1 failed" in err
 
 
 def test_can_reread_skips_only_read_once_paths(tmp_path: Path) -> None:
@@ -1040,22 +1323,497 @@ def test_extract_ctrl_c_mid_pass_exits_interrupted(
     assert "interrupted" in capsys.readouterr().err
 
 
-def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
-    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+def test_test_closed_stderr_pipe_mid_pass_exits_broken_pipe(
+    sample_zip: Path,
 ) -> None:
     """A stderr pipe closed during the pass gets the broken-pipe exit, not a usage
-    error about closing the reader while its member pass is active.
+    error about closing the reader while its member pass is active, and not 0: the
+    archive was only partly verified.
     """
-    from archivey.cli import main as main_mod
-
-    # The real one closes sys.stdout / sys.stderr, which pytest's capture owns.
-    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
     err = _StderrFailingAtFirstOk(
         BrokenPipeError(32, "Broken pipe"), every_later_write=True
     )
-    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_BROKEN_PIPE
     # The pipe did close mid-pass: without this, a clean run passes the test too.
     assert err.failed
+
+
+class _ProgressPipeClosed:
+    """A progress bar whose stream lost its reader: its first update raises."""
+
+    calls = 0
+
+    def __call__(self, progress: object) -> None:
+        self.calls += 1
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("verb", ["test", "extract"])
+def test_progress_pipe_closed_mid_pass_exits_141(
+    sample_zip: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    """A broken pipe raised inside the member pass is not a member failure.
+
+    ``test`` and ``extract`` each catch ``OSError`` around the pass to report a
+    failed member; a ``BrokenPipeError`` must pass through that to ``main()``. The
+    report stream here stays open, so a handler that swallowed it would print a
+    failure and exit 1 rather than fail again on the closed pipe.
+    """
+    from archivey.cli import extract_cmd
+
+    module = test_cmd if verb == "test" else extract_cmd
+    progress = _ProgressPipeClosed()
+    monkeypatch.setattr(module, "make_progress_callback", lambda **_: progress)
+    argv = [verb, str(sample_zip)]
+    if verb == "extract":
+        argv += ["-d", str(tmp_path / "out")]
+    err = io.StringIO()
+    assert main(argv, out=io.StringIO(), err=err) == EXIT_BROKEN_PIPE
+    assert progress.calls == 1
+    assert err.getvalue() == ""
+
+
+class _ClosedPipeStdout(io.StringIO):
+    """A stdout whose every write raises ``BrokenPipeError``, as a closed pipe does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes = 0
+
+    def write(self, s: str) -> int:
+        self.writes += 1
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize("verb", ["list", "info"])
+def test_closed_stdout_pipe_exits_broken_pipe(sample_zip: Path, verb: str) -> None:
+    """A verb whose stdout pipe closes exits 141 (128 + SIGPIPE), quietly."""
+    out = _ClosedPipeStdout()
+    err = io.StringIO()
+    assert main([verb, str(sample_zip)], out=out, err=err) == EXIT_BROKEN_PIPE
+    assert out.writes >= 1
+    assert err.getvalue() == ""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX only: test_reader_leaving_mid_output_exits_141 is the Windows check",
+)
+@pytest.mark.parametrize(
+    ("closed", "argv"),
+    [
+        ("stdout", ["list"]),
+        ("stderr", ["test", "-v"]),
+        ("stderr", ["test"]),
+        ("stderr", ["extract", "-v", "-d", "out"]),
+    ],
+)
+@pytest.mark.parametrize("members", [1, 2000])
+def test_closed_pipe_subprocess_exits_141_without_traceback(
+    tmp_path: Path, closed: str, argv: list[str], members: int
+) -> None:
+    """``archivey list x | head`` and ``archivey test x 2>&1 | head`` exit 141.
+
+    The pipe's read end is closed before the process starts, so the first write that
+    reaches it fails, deterministically. With 2000 members that is a write in the
+    middle of the pass; with one member it is the flush as the process ends. The
+    other stream is captured: it must hold no traceback and no "Exception ignored".
+    """
+    import subprocess
+
+    archive = _zip(
+        tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(members)}
+    )
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        if closed == "stdout":
+            streams = {"stdout": write_end, "stderr": subprocess.PIPE}
+        else:
+            streams = {"stdout": subprocess.PIPE, "stderr": write_end}
+        proc = subprocess.run(
+            [sys.executable, "-m", "archivey", *argv, str(archive)],
+            check=False,
+            cwd=tmp_path,
+            **streams,
+        )
+    finally:
+        os.close(write_end)
+    other = proc.stderr if closed == "stdout" else proc.stdout
+    assert proc.returncode == EXIT_BROKEN_PIPE, other
+    _assert_no_pipe_noise(other)
+
+
+def _assert_no_pipe_noise(output: bytes) -> None:
+    assert b"Traceback" not in output
+    assert b"Exception ignored" not in output
+    assert b"Broken pipe" not in output
+
+
+@pytest.mark.parametrize(
+    ("closed", "argv"),
+    [
+        ("stdout", ["list"]),
+        ("stderr", ["test", "-v"]),
+        ("stderr", ["extract", "-v", "-d", "out"]),
+    ],
+)
+def test_reader_leaving_mid_output_exits_141(
+    tmp_path: Path, closed: str, argv: list[str]
+) -> None:
+    """``archivey list x | head -1``: the reader takes one line, then closes its end.
+
+    Nothing is closed before the child starts, so this runs on Windows too, where a
+    write to a pipe whose reader has gone fails with ERROR_NO_DATA and CPython raises
+    ``OSError(EINVAL)`` for it, not ``BrokenPipeError``. The child has more to write
+    than a pipe holds, so it is blocked on a write, not finished, when the reader
+    leaves. On failure the message also shows what a plain write to such a pipe
+    raises on this platform.
+    """
+    import subprocess
+
+    archive = _zip(tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(10000)})
+    other_path = tmp_path / "other.txt"
+    with other_path.open("wb") as other_file:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "archivey", *argv, str(archive)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if closed == "stdout" else other_file,
+            stderr=subprocess.PIPE if closed == "stderr" else other_file,
+            cwd=tmp_path,
+        )
+        reader = proc.stdout if closed == "stdout" else proc.stderr
+        assert reader is not None
+        first = reader.readline()
+        reader.close()
+        returncode = proc.wait(timeout=120)
+    other = other_path.read_bytes()
+    assert first, other
+    if returncode != EXIT_BROKEN_PIPE:
+        pytest.fail(
+            f"exit {returncode}, other stream {other!r}; "
+            f"a plain write to a pipe whose reader left raises {_dead_pipe_probe()}"
+        )
+    _assert_no_pipe_noise(other)
+
+
+_DEAD_PIPE_PROBE = """
+import sys
+try:
+    while True:
+        sys.stdout.write("x" * 4096 + "\\n")
+        sys.stdout.flush()
+except OSError as exc:
+    sys.stderr.write(
+        f"{type(exc).__name__} errno={exc.errno} "
+        f"winerror={getattr(exc, 'winerror', None)} {exc.strerror!r}"
+    )
+"""
+
+
+def _dead_pipe_probe() -> str:
+    """What this platform raises when a pipe's reader leaves mid-write (diagnostic)."""
+    import subprocess
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _DEAD_PIPE_PROBE],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    proc.stdout.readline()
+    proc.stdout.close()
+    _, probe_err = proc.communicate(timeout=60)
+    return probe_err.decode(errors="replace")
+
+
+@pytest.mark.parametrize(
+    ("exc", "on_windows", "off_windows"),
+    [
+        (BrokenPipeError(errno.EPIPE, "Broken pipe"), True, True),
+        # What CPython raises on Windows for ERROR_NO_DATA: EINVAL, no winerror.
+        (OSError(errno.EINVAL, "Invalid argument"), True, False),
+        (OSError(errno.ENOSPC, "No space left on device"), False, False),
+    ],
+)
+def test_is_dead_pipe_reads_windows_einval_as_a_closed_pipe(
+    monkeypatch: pytest.MonkeyPatch, exc: OSError, on_windows: bool, off_windows: bool
+) -> None:
+    from archivey.cli.main import _is_dead_pipe
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _is_dead_pipe(exc) is off_windows
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _is_dead_pipe(exc) is on_windows
+
+
+@pytest.mark.parametrize("winerror", [109, 232])
+def test_is_dead_pipe_matches_windows_pipe_winerrors(
+    monkeypatch: pytest.MonkeyPatch, winerror: int
+) -> None:
+    from archivey.cli.main import _is_dead_pipe
+
+    # On POSIX the constructor ignores a fourth (winerror) argument, so set it.
+    exc = OSError(errno.EIO, "I/O error")
+    exc.winerror = winerror  # type: ignore[attr-defined]
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not _is_dead_pipe(exc)
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _is_dead_pipe(exc)
+
+
+class _EinvalStream(io.StringIO):
+    """A stream that fails as a Windows pipe does once its reader has gone."""
+
+    def __init__(self, *, at_flush: bool) -> None:
+        super().__init__()
+        self.at_flush = at_flush
+
+    def write(self, s: str) -> int:
+        if not self.at_flush:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        return super().write(s)
+
+    def flush(self) -> None:
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+
+@pytest.mark.parametrize("closed", ["out", "err"])
+@pytest.mark.parametrize("at_flush", [False, True])
+def test_windows_einval_on_output_exits_141(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    closed: str,
+    at_flush: bool,
+) -> None:
+    """On Windows, ``EINVAL`` from the CLI's own output stream is a closed pipe."""
+    from archivey.cli import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_silence_dead_streams", lambda: None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    dead = _EinvalStream(at_flush=at_flush)
+    streams = {"out": io.StringIO(), "err": io.StringIO(), closed: dead}
+    # A missing archive writes to err; list of a real one writes to out.
+    archive = tmp_path / ("a.zip" if closed == "out" else "missing.zip")
+    if closed == "out":
+        _zip(archive, {"a.txt": b"a"})
+    assert main(["list", str(archive)], **streams) == EXIT_BROKEN_PIPE
+
+
+def test_einval_on_output_is_not_a_closed_pipe_off_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    out = _EinvalStream(at_flush=False)
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_FAIL
+    assert "Invalid argument" in err.getvalue()
+
+
+class _FullDiskAtFlush(io.StringIO):
+    """A stream redirected to a full disk: writes are buffered, the flush fails."""
+
+    def flush(self) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def test_final_flush_os_error_prints_message_and_exits_1(tmp_path: Path) -> None:
+    """A full disk at the final flush: ``main`` prints one line and returns 1.
+
+    This checks the return value only. The real process, where the exit flush
+    could fail again, is ``test_full_disk_on_stdout_exits_1_with_one_line``.
+    """
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    assert main(["list", str(archive)], out=_FullDiskAtFlush(), err=err) == EXIT_FAIL
+    assert err.getvalue() == "archivey: No space left on device\n"
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_full_disk_on_stdout_exits_1_with_one_line(tmp_path: Path) -> None:
+    """``archivey list x > /dev/full`` as a real process: one line, exit 1.
+
+    Output still buffered for stdout when ``main`` returns would fail again in the
+    interpreter's exit flush, which prints "Exception ignored" and exits 120, so
+    ``main`` points a stream that cannot flush at the null device first.
+
+    One member and a buffered stdout keep all the output in the buffer until
+    ``main``'s final flush, so the error reaches ``main``'s ``except OSError`` arm.
+    A larger archive or ``PYTHONUNBUFFERED`` fails inside the verb instead, and
+    then nothing is left for the exit flush to fail on.
+    """
+    import subprocess
+
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    with open("/dev/full", "wb") as full:
+        proc = subprocess.run(
+            [sys.executable, "-m", "archivey", "list", str(archive)],
+            stdin=subprocess.DEVNULL,
+            stdout=full,
+            stderr=subprocess.PIPE,
+            cwd=tmp_path,
+            env=env,
+            timeout=120,
+            check=False,
+        )
+    stderr = proc.stderr.decode(errors="replace")
+    assert proc.returncode == EXIT_FAIL, stderr
+    assert "Exception ignored" not in stderr
+    assert stderr.splitlines() == ["archivey: No space left on device"]
+
+
+def test_final_flush_interrupted_exits_130(tmp_path: Path) -> None:
+    """Ctrl-C during the final flush: ``main`` returns 130 and prints "interrupted".
+
+    This checks the return value only. A real stream that was interrupted still
+    works, so the interpreter's exit flush writes what is left and the process
+    exits with that code.
+    """
+
+    class _InterruptedAtFlush(io.StringIO):
+        def flush(self) -> None:
+            raise KeyboardInterrupt
+
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    out = _InterruptedAtFlush()
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_INTERRUPTED
+    assert err.getvalue() == "interrupted\n"
+
+
+def test_lost_log_record_exits_141(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A warning logged to a closed stderr still exits 141.
+
+    logging's StreamHandler swallows the write error itself, so only main()'s final
+    flush sees the closed pipe. The zip's end record declares more entries than its
+    central directory holds, which ``list`` reports as a warning.
+    """
+    import logging
+
+    from archivey.cli import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_silence_dead_streams", lambda: None)
+    # Off, as for a process whose stderr is gone: handleError writes nowhere.
+    monkeypatch.setattr(logging, "raiseExceptions", False)
+    archive = _zip(tmp_path / "a.zip", {f"m{i}.txt": b"x" for i in range(3)})
+    data = bytearray(archive.read_bytes())
+    eocd = data.rindex(b"PK\x05\x06")
+    data[eocd + 8 : eocd + 12] = (7).to_bytes(2, "little") * 2
+    archive.write_bytes(bytes(data))
+    err = _PipeClosedAtFlush()
+    out = io.StringIO()
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_BROKEN_PIPE
+    # The record did reach the stream: the flush, not a print, raised.
+    assert err.getvalue()
+
+
+class _PipeClosedAtFlush(io.StringIO):
+    """A block-buffered pipe whose reader left: writes land, the flush fails."""
+
+    def flush(self) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize("stream_cls", [_ClosedPipeStdout, _PipeClosedAtFlush])
+@pytest.mark.parametrize(
+    ("argv", "closed"),
+    [
+        (["--help"], "stdout"),
+        (["--version"], "stdout"),
+        (["list", "--help"], "stdout"),
+        (["extract", "-o", "x", "a.zip"], "stderr"),
+        (["list"], "stderr"),
+    ],
+)
+def test_help_and_usage_to_closed_pipe_exit_141(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    closed: str,
+    stream_cls: type[io.StringIO],
+) -> None:
+    """argparse writes help and usage to the process streams and drops an OSError
+    from that write. A closed pipe there is still 141, so a usage error whose message
+    was lost is not reported as 2.
+    """
+    dead = stream_cls()
+    monkeypatch.setattr(sys, closed, dead)
+    assert main(argv) == EXIT_BROKEN_PIPE
+
+
+@pytest.mark.parametrize("stream_cls", [_ClosedPipeStdout, _PipeClosedAtFlush])
+def test_no_arguments_help_to_closed_stderr_exits_141(
+    stream_cls: type[io.StringIO],
+) -> None:
+    assert main([], err=stream_cls()) == EXIT_BROKEN_PIPE
+
+
+def test_error_message_to_closed_stderr_exits_141(tmp_path: Path) -> None:
+    """main()'s own error report (here a missing archive) to a closed pipe: 141."""
+    assert (
+        main(["list", str(tmp_path / "missing.zip")], err=_ClosedPipeStdout())
+        == EXIT_BROKEN_PIPE
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX only: the in-process tests above cover the same paths everywhere",
+)
+@pytest.mark.parametrize("unbuffered", ["", "1"])
+@pytest.mark.parametrize(
+    ("closed", "argv", "code_if_open"),
+    [
+        ("stdout", ["--help"], EXIT_OK),
+        ("stderr", ["extract", "-o", "x", "a.zip"], EXIT_USAGE),
+        ("stderr", [], EXIT_USAGE),
+        ("stderr", ["list", "missing.zip"], EXIT_FAIL),
+    ],
+)
+def test_help_and_usage_subprocess_closed_pipe_exits_141(
+    tmp_path: Path,
+    closed: str,
+    argv: list[str],
+    code_if_open: int,
+    unbuffered: str,
+) -> None:
+    """``archivey --help | true`` exits 141, buffered or not (``PYTHONUNBUFFERED``).
+
+    Buffered, the write that fails is the flush; unbuffered, it is argparse's own
+    write. The control run with the pipe open pins that each case does write.
+    """
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    if unbuffered:
+        env["PYTHONUNBUFFERED"] = unbuffered
+    cmd = [sys.executable, "-m", "archivey", *argv]
+    control = subprocess.run(
+        cmd, check=False, cwd=tmp_path, env=env, capture_output=True
+    )
+    assert control.returncode == code_if_open
+    assert getattr(control, closed)
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        streams = (
+            {"stdout": write_end, "stderr": subprocess.PIPE}
+            if closed == "stdout"
+            else {"stdout": subprocess.PIPE, "stderr": write_end}
+        )
+        proc = subprocess.run(cmd, check=False, cwd=tmp_path, env=env, **streams)
+    finally:
+        os.close(write_end)
+    other = proc.stderr if closed == "stdout" else proc.stdout
+    assert proc.returncode == EXIT_BROKEN_PIPE, other
+    _assert_no_pipe_noise(other)
 
 
 def test_test_summary_helper() -> None:
@@ -1082,6 +1840,14 @@ def test_archive_stem_uses_format_extension() -> None:
 
     assert _archive_stem(Path("photos.tar.gz"), format=ArchiveFormat.TAR_GZ) == "photos"
     assert _archive_stem(Path(".tar.gz"), format=ArchiveFormat.TAR_GZ) == "archive"
+    # "." and ".." are not usable folder names: they would splatter into the cwd or
+    # write into the parent directory.
+    assert _archive_stem(Path("..zip"), format=ArchiveFormat.ZIP) == "archive"
+    assert _archive_stem(Path("...zip"), format=ArchiveFormat.ZIP) == "archive"
+    assert _archive_stem(Path("...tar.gz"), format=ArchiveFormat.TAR_GZ) == "archive"
+    # The suffix-stripping fallback (name does not end in the format's extension).
+    assert _archive_stem(Path("...bin"), format=ArchiveFormat.ZIP) == "archive"
+    assert _archive_stem(Path("..bin"), format=ArchiveFormat.ZIP) == "archive"
     tar_z = ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)
     assert _archive_stem(Path("data.tar.Z"), format=tar_z) == "data"
 
@@ -1965,41 +2731,6 @@ def test_extract_stop_on_error_reports_members_extracted(
     assert not (tmp_path / "out" / "later.txt").exists()
 
 
-def test_members_for_include_check_skips_forward_only(
-    tmp_path: Path,
-) -> None:
-    """Forward-only readers must not be pre-scanned (would burn the sole pass)."""
-    import io
-    import tarfile
-
-    from archivey import open_archive
-    from archivey.cli.filters import members_for_include_check
-    from archivey.cost import StreamCapability
-
-    tar_path = tmp_path / "a.tar"
-    with tarfile.open(tar_path, "w") as tf:
-        info = tarfile.TarInfo("a.txt")
-        info.size = 1
-        tf.addfile(info, io.BytesIO(b"x"))
-
-    class _NonSeekable(io.BytesIO):
-        def seekable(self) -> bool:
-            return False
-
-        def seek(self, *args: object, **kwargs: object) -> int:
-            raise OSError("not seekable")
-
-        def tell(self) -> int:
-            raise OSError("not seekable")
-
-    with open_archive(_NonSeekable(tar_path.read_bytes()), streaming=True) as reader:
-        assert reader.cost.stream_capability is StreamCapability.FORWARD_ONLY
-        assert members_for_include_check(reader) is None
-        # Sole pass still available for extract/test.
-        pairs = list(reader.stream_members())
-        assert [m.name for m, _ in pairs] == ["a.txt"]
-
-
 # --- --abort-on / OVERWRITTEN reporting -------------------------------------
 
 
@@ -2526,6 +3257,368 @@ def test_hoist_does_not_mark_a_file_root_as_a_directory(
     assert _summary_lines(err)[0].endswith("→ a (1).txt")
 
 
+# --- a hoist leaves what a direct extraction into the cwd leaves, and says so -------
+
+
+def _tree(root: Path) -> dict[str, bytes | None]:
+    """Every entry under ``root``, relative and ``/``-separated: a file's bytes, or
+    ``None`` for a directory."""
+    return {
+        p.relative_to(root).as_posix(): None if p.is_dir() else p.read_bytes()
+        for p in sorted(root.rglob("*"))
+    }
+
+
+def _hoist_and_direct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    archive_name: str,
+    entries: dict[str, bytes],
+    mine: dict[str, bytes],
+    overwrite: str = "rename",
+    args: tuple[str, ...] = (),
+    mine_modes: dict[str, int] | None = None,
+    dir_mode: int = 0o755,
+) -> tuple[tuple[dict[str, bytes | None], str], tuple[dict[str, bytes | None], str]]:
+    """Extract ``entries`` once through the wrapper and hoist, and once with ``-d .``,
+    each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``
+    and ``args``; return each tree and stderr. Both runs must exit 0.
+
+    A name ending in ``/`` is stored as a directory, at ``dir_mode``. A root directory
+    that collides with a file is stored, because a direct extraction fails on an
+    implied one. ``mine_modes`` sets the mode of the operator's entries it names."""
+    runs = []
+    for how, extra in (("hoist", []), ("direct", ["-d", "."])):
+        cwd = tmp_path / overwrite / how
+        cwd.mkdir(parents=True)
+        for name, data in mine.items():
+            (cwd / name).parent.mkdir(parents=True, exist_ok=True)
+            (cwd / name).write_bytes(data)
+        for name, mode in (mine_modes or {}).items():
+            (cwd / name).chmod(mode)
+        archive = tmp_path / archive_name
+        with tarfile.open(archive, "w") as tf:
+            for name, data in entries.items():
+                info = tarfile.TarInfo(name.rstrip("/"))
+                if name.endswith("/"):
+                    info.type = tarfile.DIRTYPE
+                    info.mode = dir_mode
+                    tf.addfile(info)
+                else:
+                    info.size = len(data)
+                    tf.addfile(info, io.BytesIO(data))
+        monkeypatch.chdir(cwd)
+        argv = ["x", str(archive), "--overwrite", overwrite, *args, *extra]
+        assert main(argv) == EXIT_OK
+        runs.append((_tree(cwd), capsys.readouterr().err))
+    return runs[0], runs[1]
+
+
+# The lines only the hoist prints: where the wrapper went.
+_HOIST_ONLY = ("extracting into ", "moved to ", "removed wrapper")
+
+
+def _as_direct(hoist_err: str) -> list[str]:
+    """The hoist's stderr lines as ``-d .`` would print them, sorted: without the lines
+    about the wrapper, and with the hoist's ``skipped:`` (it discarded its own copy) as
+    ``not overwritten:`` (extraction did not write it).
+
+    Sorted because the order differs: the merge prints its own lines while it moves,
+    before the per-member lines, and ``-d .`` prints every line in member order. Pass
+    ``-d .``'s stderr through it too."""
+    return sorted(
+        f"not overwritten: {ln.removeprefix('skipped: ')}"
+        if ln.startswith("skipped: ")
+        else ln
+        for ln in hoist_err.split("\n")
+        if ln and not ln.startswith(_HOIST_ONLY)
+    )
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [{"foo": b"ARCHIVE"}, {"foo/": b"", "foo/x.txt": b"ARCHIVE"}],
+    ids=["file-root", "dir-root"],
+)
+def test_hoist_renames_a_root_as_a_direct_extraction_does(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entries: dict[str, bytes],
+) -> None:
+    """``foo.tar`` holding ``foo``, with the operator's own ``foo`` in the cwd: the
+    hoist renames the root to ``foo (1)``, the name ``-d .`` gives it.
+
+    It used to move the root to ``foo (2)``, as its own wrapper held ``foo (1)``.
+    """
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, "foo.tar", entries, {"foo": b"MINE"}
+    )
+    assert "extracting into foo (1)/" in hoist_err
+    # Nothing was flattened: the root moved, under a new name.
+    assert "moved to foo (1)" in hoist_err
+    assert "removed wrapper" not in hoist_err
+    assert hoisted == direct
+    assert hoisted["foo"] == b"MINE"
+    assert _report_lines(hoist_err, "renamed: ") == ["renamed: foo -> foo (1)"]
+    assert _report_lines(direct_err, "renamed: ") == ["renamed: foo -> foo (1)"]
+
+
+@pytest.mark.parametrize(
+    "mine",
+    [{}, {"top": b"MINE"}],
+    ids=["root-kept-its-name", "root-renamed"],
+)
+def test_hoist_reports_member_paths_where_they_landed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine: dict[str, bytes],
+) -> None:
+    """The per-member lines name each member where it is after the hoist.
+
+    They named it inside the wrapper (``t/top/c%02``), which the hoist removed.
+    """
+    entries = {"top/": b"", "top/c\x02": b"c", "top/a\x01b/f": b"f"}
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, "t.tar", entries, mine
+    )
+    assert "extracting into t/" in hoist_err
+    assert hoisted == direct
+    root = "top (1)" if mine else "top"
+    rewritten = _report_lines(hoist_err, "name rewritten: ")
+    assert rewritten == _report_lines(direct_err, "name rewritten: ")
+    assert sorted(rewritten) == [
+        f"name rewritten: top/a\\x01b/f -> {root}/a%01b/f",
+        f"name rewritten: top/c\\x02 -> {root}/c%02",
+    ]
+    assert _report_lines(hoist_err, "renamed: ") == _report_lines(
+        direct_err, "renamed: "
+    )
+
+
+@pytest.mark.parametrize("overwrite", ["rename", "skip", "replace"])
+@pytest.mark.parametrize(
+    ("archive_name", "entries", "mine", "args"),
+    [
+        (
+            "t.tar",
+            {"top/": b"", "top/c\x02": b"ARCHIVE"},
+            {"top/c%02": b"MINE"},
+            (),
+        ),
+        (
+            "t3.tar",
+            {"top/": b"", "top/a\x01": b"A", "top/c\x02": b"ARCHIVE"},
+            {"top/c%02": b"MINE"},
+            (),
+        ),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ()),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ("-v",)),
+        (
+            "c.tar",
+            {"/c\x02": b"ARCHIVE"},
+            {"c%02": b"MINE"},
+            ("--policy", "standard"),
+        ),
+    ],
+    ids=[
+        "collision-inside-root",
+        "collision-inside-root-after-another-line",
+        "collision-at-root",
+        "collision-at-root-verbose",
+        "collision-at-rerooted-root",
+    ],
+)
+def test_hoist_reports_what_the_merge_did_under_each_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    archive_name: str,
+    entries: dict[str, bytes],
+    mine: dict[str, bytes],
+    args: tuple[str, ...],
+) -> None:
+    """A member whose rewritten name collides with the operator's file while the
+    hoist merges: the layout and the per-member lines are those of ``-d .``.
+
+    Under ``rename`` the line names ``c%02 (1)``, where the member is; under ``skip``
+    the hoist discarded the member, so no ``name rewritten:`` line names the operator's
+    ``c%02`` as if it were the member (the hoist's ``skipped:`` line stands for
+    ``-d .``'s ``not overwritten:``). Both used to name ``c%02``.
+    """
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, archive_name, entries, mine, overwrite, args
+    )
+    assert hoisted == direct
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    if archive_name == "t3.tar" and overwrite == "rename":
+        # The order the cli spec states: the merge's own line, then the per-member ones.
+        lines = hoist_err.split("\n")
+        rewritten = [
+            i for i, ln in enumerate(lines) if ln.startswith("name rewritten: ")
+        ]
+        assert len(rewritten) == 2
+        assert lines.index("renamed: top/c%02 -> top/c%02 (1)") < min(rewritten)
+    if overwrite == "skip":
+        (where,) = mine
+        assert _report_lines(hoist_err, "skipped: ") == [f"skipped: {where}"]
+        assert _report_lines(direct_err, "not overwritten: ") == [
+            f"not overwritten: {where}"
+        ]
+
+
+def test_hoist_reports_an_existing_directory_keeping_its_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The archive's ``top/`` (0755) merges into the operator's ``top/`` (0700): the
+    operator's keeps its mode, and the hoist says so with the line ``-d .`` prints.
+
+    Only the library printed it, and after a hoist the library never meets the
+    operator's directory: the merge does.
+
+    On Windows a mode is only the read-only attribute, and 0700 is as writable as
+    0755, so the operator's directory there is a read-only one (0500, shown as 0555)."""
+    mine_mode, shown = (0o500, 0o555) if os.name == "nt" else (0o700, 0o700)
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        "t.tar",
+        {"top/": b"", "top/a.txt": b"ARCHIVE"},
+        {"top/m": b"MINE"},
+        mine_modes={"top": mine_mode},
+    )
+    assert hoisted == direct
+    line = f"kept existing directory's mode {shown:04o}: top"
+    assert _report_lines(direct_err, "kept ") == [line]
+    assert _report_lines(hoist_err, "kept ") == [line]
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    for how in ("hoist", "direct"):
+        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == shown
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates Windows modes with chmod")
+@pytest.mark.parametrize(
+    ("mine_mode", "member_mode", "kept"),
+    [
+        (0o700, 0o755, None),
+        (0o500, 0o755, 0o555),
+        (0o700, 0o555, 0o777),
+        (0o500, 0o555, None),
+    ],
+    ids=["both-writable", "mine-read-only", "member-read-only", "both-read-only"],
+)
+def test_hoist_and_direct_agree_on_a_kept_mode_under_windows_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine_mode: int,
+    member_mode: int,
+    kept: int | None,
+) -> None:
+    """Simulated on POSIX: on Windows a directory's mode is only its read-only
+    attribute, which ``os.stat`` shows as ``0o777`` or ``0o555``. The hoist compares
+    the mode extraction gave the archive's ``top/``; ``-d .`` compares the member's
+    mode as Windows stores it. Both print the line exactly when the read-only
+    attribute differs, and with the same mode. STANDARD keeps a directory's stored
+    mode; STRICT would make every one 0755."""
+    from archivey.internal import extraction
+
+    real_chmod = os.chmod
+
+    def windows_chmod(path, mode, *args, **kwargs):  # type: ignore[no-untyped-def]
+        st = os.stat(path, dir_fd=kwargs.get("dir_fd"))
+        if stat.S_ISDIR(st.st_mode):
+            mode = 0o777 if mode & stat.S_IWUSR else 0o555
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(extraction, "_WINDOWS", True)
+    monkeypatch.setattr(os, "chmod", windows_chmod)
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        "t.tar",
+        {"top/": b""},
+        {"top/m": b"MINE"},
+        args=("--policy", "standard"),
+        mine_modes={"top": mine_mode},
+        dir_mode=member_mode,
+    )
+    assert hoisted == direct
+    lines = [] if kept is None else [f"kept existing directory's mode {kept:04o}: top"]
+    assert _report_lines(direct_err, "kept ") == lines
+    assert _report_lines(hoist_err, "kept ") == lines
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    shown = 0o777 if mine_mode & stat.S_IWUSR else 0o555
+    for how in ("hoist", "direct"):
+        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == shown
+
+
+def test_stopped_hoist_names_members_left_in_the_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Under ``--overwrite error`` the hoist stops at the operator's ``c%02`` and
+    leaves the member in the wrapper: its line names ``c/c%02``, where it is, not the
+    operator's ``c%02``."""
+    archive = tmp_path / "c.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("c\x02")
+        info.size = 7
+        tf.addfile(info, io.BytesIO(b"ARCHIVE"))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "c%02").write_bytes(b"MINE")
+    monkeypatch.chdir(cwd)
+    assert main(["x", str(archive), "--overwrite", "error"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "hoist stopped; remaining files left in c/" in err
+    assert _report_lines(err, "name rewritten: ") == [
+        "name rewritten: c\\x02 -> c/c%02"
+    ]
+    assert (cwd / "c" / "c%02").read_bytes() == b"ARCHIVE"
+    assert (cwd / "c%02").read_bytes() == b"MINE"
+
+
+def test_flatten_failing_part_way_names_each_entry_where_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``s/s/a.txt`` moved up to ``s/a.txt`` before the flatten failed on ``b.txt``:
+    each is named where it is, not both inside the directory ``a.txt`` left."""
+    from archivey.cli import extract_cmd
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "s" / "s").mkdir(parents=True)
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / "s" / "s" / name).write_bytes(b"x")
+    real_rename = extract_cmd._rename
+    calls = []
+
+    def rename_once(src: Path, dest: Path) -> None:
+        calls.append(src)
+        if len(calls) > 1:
+            raise OSError(28, "No space left on device")
+        real_rename(src, dest)
+
+    monkeypatch.setattr(extract_cmd, "_rename", rename_once)
+    result = extract_cmd.maybe_hoist_single_root(
+        Path("s"), overwrite=OverwritePolicy.RENAME, err=io.StringIO()
+    )
+    assert not result.ok
+    assert (tmp_path / "s" / "a.txt").exists()
+    assert (tmp_path / "s" / "s" / "b.txt").exists()
+    target, moves = Path("s"), result.moves
+    assert extract_cmd._relative_name(Path("s/s/a.txt"), target, moves) == "s/a.txt"
+    assert extract_cmd._relative_name(Path("s/s/b.txt"), target, moves) == "s/s/b.txt"
+
+
 def test_relative_name_falls_back_to_forward_slashes() -> None:
     """A path outside the root is reported whole — ``/``-separated, never native.
 
@@ -3014,6 +4107,146 @@ def test_smart_dest_does_not_follow_symlink_to_directory(
     assert main(["x", str(z), "--overwrite", "replace"]) == EXIT_OK
     assert list(elsewhere.iterdir()) == []
     assert (tmp_path / "pkg (1)" / "b.txt").read_bytes() == b"b"
+
+
+# --- The wrapper named after the archive is always a folder this run creates ---
+
+
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_smart_dest_steps_aside_from_a_file_at_the_wrapper_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    # An archive with no extension: its stem is its own name, so the file is in the way.
+    monkeypatch.chdir(tmp_path)
+    archive = _zip(tmp_path / "backup", {"a.txt": b"a", "b.txt": b"b"})
+    assert main(["x", "--overwrite", overwrite, str(archive)]) == EXIT_OK
+    assert "extracting into backup (1)/" in capsys.readouterr().err
+    assert (tmp_path / "backup (1)" / "a.txt").read_bytes() == b"a"
+    assert archive.is_file()
+
+
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_smart_dest_never_reuses_an_existing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.txt").write_bytes(b"mine")
+    z = _zip(tmp_path / "pkg.zip", {"a.txt": b"a", "b.txt": b"b"})
+    assert main(["x", "--overwrite", overwrite, str(z)]) == EXIT_OK
+    assert sorted(p.name for p in (tmp_path / "pkg").iterdir()) == ["a.txt"]
+    assert (tmp_path / "pkg" / "a.txt").read_bytes() == b"mine"
+    assert (tmp_path / "pkg (1)" / "a.txt").read_bytes() == b"a"
+    assert (tmp_path / "pkg (1)" / "b.txt").read_bytes() == b"b"
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_hoist_runs_when_a_directory_has_the_wrapper_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    dry_run: bool,
+) -> None:
+    # Whether the single root moves up depends on the archive alone.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "bundle").mkdir()
+    (tmp_path / "bundle" / "notes.txt").write_bytes(b"mine")
+    archive = _tar(tmp_path / "bundle.tar", {"root/a.txt": b"x"})
+    args = ["x", "--overwrite", overwrite, str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "into bundle (1)/" in err
+    needle = "would move to root/" if dry_run else "moved to root/"
+    assert needle in err
+    assert "already there" not in err
+    assert sorted(p.name for p in (tmp_path / "bundle").iterdir()) == ["notes.txt"]
+    assert not (tmp_path / "bundle (1)").exists()
+    if not dry_run:
+        assert (tmp_path / "root" / "a.txt").read_bytes() == b"x"
+
+
+@pytest.mark.parametrize(
+    ("overwrite", "code", "expected", "leftover"),
+    [
+        # A colliding file stops the hoist; the rest stays in the new wrapper.
+        (
+            "error",
+            EXIT_FAIL,
+            {"src/a.txt": b"mine-a", "src/c.txt": b"mine-c"},
+            {"src (1)/src/a.txt": b"new-a", "src (1)/src/b.txt": b"new-b"},
+        ),
+        (
+            "replace",
+            EXIT_OK,
+            {"src/a.txt": b"new-a", "src/b.txt": b"new-b", "src/c.txt": b"mine-c"},
+            {},
+        ),
+        (
+            "skip",
+            EXIT_OK,
+            {"src/a.txt": b"mine-a", "src/b.txt": b"new-b", "src/c.txt": b"mine-c"},
+            {},
+        ),
+        (
+            "rename",
+            EXIT_OK,
+            {
+                "src/a.txt": b"mine-a",
+                "src/a (1).txt": b"new-a",
+                "src/b.txt": b"new-b",
+                "src/c.txt": b"mine-c",
+            },
+            {},
+        ),
+    ],
+)
+def test_hoist_merges_root_named_like_stem_into_existing_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    code: int,
+    expected: dict[str, bytes],
+    leftover: dict[str, bytes],
+) -> None:
+    # src.tar holding src/, with ./src taken: the wrapper is "src (1)/", the sole
+    # root no longer shares its name, so it is merged into ./src under the policy
+    # instead of flattened in place.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.txt").write_bytes(b"mine-a")
+    (tmp_path / "src" / "c.txt").write_bytes(b"mine-c")
+    archive = _tar(tmp_path / "src.tar", {"src/a.txt": b"new-a", "src/b.txt": b"new-b"})
+    assert main(["x", "--overwrite", overwrite, str(archive)]) == code
+    assert "into src (1)/" in capsys.readouterr().err
+    found = {
+        p.relative_to(tmp_path).as_posix(): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file() and p != archive
+    }
+    assert found == {**expected, **leftover}
+    if not leftover:
+        assert not (tmp_path / "src (1)").exists()
+
+
+def test_extract_dot_dot_stem_writes_under_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "...zip" strips to "..": the wrapper must not be the parent directory.
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    archive = _zip(cwd / "...zip", {"a.txt": b"a", "b.txt": b"b"})
+    assert main(["x", "--overwrite", "error", str(archive)]) == EXIT_OK
+    assert (cwd / "archive" / "a.txt").read_bytes() == b"a"
+    assert (cwd / "archive" / "b.txt").read_bytes() == b"b"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["work"]
 
 
 # --- S24-K6: an incomplete ``test`` run exits nonzero even with no failure ---

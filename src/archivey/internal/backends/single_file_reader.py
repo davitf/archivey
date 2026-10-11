@@ -266,27 +266,74 @@ class SingleFileReader(BaseArchiveReader):
             src.seek(pos)
 
     def _try_on_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
-        """:meth:`_on_seekable_source` for a metadata probe: ``OSError`` gives ``None``."""
+        """:meth:`_on_seekable_source` for a metadata probe that reads the source's tail.
+
+        ``OSError`` gives ``None``. So does a source whose seek may re-decode
+        (``seek_is_expensive``, any member stream): the xz index and the lzip trailer sit
+        at the end, and on a member that decompresses, reaching them decompresses the
+        whole member, then the restore decompresses it again. The test covers member
+        streams as a group, so a stored ZIP entry or a TAR member, whose seek is a slice,
+        is skipped too. Those probes only fill metadata (``size``, the lzip CRC-32); the
+        decoder still checks its own index and trailers on read.
+        """
+        src = self._source
+        assert src is not None  # always set in __init__
+        if src.seek_is_expensive:
+            return None
         try:
             return self._on_seekable_source(fn)
         except OSError:
             return None
 
     def _probe_compressed_size(self) -> int | None:
-        """Byte length of the compressed source, when one ``SEEK_END`` can answer it.
+        """Byte length of the compressed source, when it is cheap to learn.
 
-        Any seekable source answers this, which is the same rule the trailer/CRC probes
-        beside it already follow. Gating it on ``isinstance(source, Path)`` made the same
-        archive report an ``int`` from disk and ``None`` from an identical ``BytesIO``.
-        A missing path raises ``OSError`` inside ``_on_seekable_source``, and
-        ``_try_on_seekable_source`` turns it into ``None``.
+        A member stream from another archive (``seek_is_expensive``) reports its
+        advertised ``size`` (``ArchiveSource.size_hint``), seekable or not: that is the
+        length its container's header declares, and the outer archive's
+        ``seekable_members`` must not change metadata. On any other seekable source, its
+        cheap size comes first: a path's ``stat``, a ``BytesIO``'s buffer, a ``size``
+        attribute. Without one, one ``SEEK_END`` answers, so the same bytes report the
+        same size from a path, a ``BytesIO`` or an unrecognized seekable stream. A member
+        stream with no advertised length reports ``None``: a seek to its end may
+        decompress the whole member. A caller's non-seekable stream reports ``None`` too,
+        even when it has a ``size`` attribute. A missing path raises ``OSError`` inside
+        ``_on_seekable_source``, and ``_try_on_seekable_source`` turns it into ``None``.
+
+        What separates the pipe from the seekable caller stream is seekability, not
+        trust: both carry an unchecked ``size`` claim, and the seekable one's is
+        reported. On a pipe there is no ``SEEK_END`` to answer, so ``None`` is the
+        answer it always had. The value is not only metadata. Two extraction ratio
+        guards divide by a source length: the per-member guard by ``compressed_size``,
+        and the archive-wide guard by ``BaseArchiveReader.compressed_source_size``
+        (``_trusted_source_size``). Both follow this rule, so a pipe's ``size`` claim
+        reaches neither, and the live byte counter stays. Nothing here checks a
+        member stream's declared length, and a ``SEEK_END`` could not do better: a TAR
+        member stream answers it from the same declared length. A ZIP member that holds
+        fewer bytes than it declares is refused with ``TruncatedError`` only after its
+        payload is decoded, so for a nested archive ``max_extracted_bytes`` is the bound
+        that holds (spec ``safe-extraction``, "Archive-wide decompression ratio for
+        solid containers").
 
         The absolute ``SEEK_END`` is the member's length, not the handle's, because the
         source reaching a reader is already normalized to begin at offset 0 — a caller
-        stream handed in at its current ``tell()`` arrives here sliced. Worth stating:
-        read locally, ``seek(0, SEEK_END)`` on a "passed through" caller stream looks
-        like it would over-report by the start offset.
+        stream handed in at its current ``tell()`` arrives here sliced (and its size hint
+        is rebased with it). Worth stating: read locally, ``seek(0, SEEK_END)`` on a
+        "passed through" caller stream looks like it would over-report by the start
+        offset.
         """
+        src = self._source
+        assert src is not None  # always set in __init__
+        if not src.seekable():
+            # No ``SEEK_END`` here to measure the end, so only a declared length can
+            # answer. A member stream's is its container's header (``seek_is_expensive``
+            # is true exactly when the source borrows an ``ArchiveStream``; a joined set
+            # with one is seekable and never reaches here). A caller's pipe reports
+            # ``None`` even with a ``size`` attribute.
+            return src.size_hint if src.seek_is_expensive else None
+        if src.size_hint is not None:
+            return src.size_hint
+        # ``_try_on_seekable_source`` gives ``None`` for an expensive seek.
         return self._try_on_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 
     def _read_source_prefix(self, length: int) -> bytes:
@@ -308,10 +355,11 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
 
-        The source only has to *be* seekable, not be a path and not have the caller's
-        ``seekable_members`` declaration: ``_try_on_seekable_source`` gives the probe a
-        handle either way and returns ``None`` for a non-seekable source, which is the
-        only gate this needs. Returns ``None`` when the index is unavailable or corrupt.
+        The source has to be seekable, and its seek has to be cheap. It does not have to
+        be a path, and does not need the caller's ``seekable_members`` declaration:
+        ``_try_on_seekable_source`` gives the probe a handle either way, and returns
+        ``None`` for a non-seekable source or one whose seek may re-decode. Returns
+        ``None`` when the index is unavailable or corrupt.
         """
         if self._codec is not Codec.LZIP:
             return None
@@ -330,12 +378,13 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_decompressed_size(self) -> int | None:
         """Decompressed size from the stream index/trailer, when cheaply available.
 
-        Needs a seekable source, not a path and not the caller's ``seekable_members``
-        declaration: ``_try_on_seekable_source`` opens a fresh handle for a path and
-        restores a caller stream's position afterwards, and ``_metadata_config`` asks the
-        codec for its index because the *source* can seek. The codec is opened over a
-        non-owning :class:`SlicingStream` view, so closing the probe's decompressor never
-        closes a stream the caller owns.
+        Needs a seekable source whose seek is cheap. It does not have to be a path, and
+        does not need the caller's ``seekable_members`` declaration:
+        ``_try_on_seekable_source`` opens a fresh handle for a path, returns ``None`` for
+        a source whose seek may re-decode, and restores a caller stream's position
+        afterwards; ``_metadata_config`` asks the codec for its index because the
+        *source* can seek. The codec is opened over a non-owning :class:`SlicingStream`
+        view, so closing the probe's decompressor never closes a stream the caller owns.
         """
 
         # Deliberately no collector here: a degraded index reports into
@@ -387,7 +436,8 @@ class SingleFileReader(BaseArchiveReader):
         assert src is not None  # always set in __init__
         codec_source: str | BinaryIO
         # _wrap_compressed_input counts the compressed bytes the codec pulls whenever the
-        # source has no size hint, so the live ratio guard has a denominator. A path
+        # source has no trusted size (``_trusted_source_size``), so the live ratio guard
+        # has a denominator. A path
         # source always has a cheap ``stat`` size, so the path branch needs none.
         if self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a

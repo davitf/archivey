@@ -413,6 +413,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.streamtools.locked as locked
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
+    import archivey.internal.streams.streamtools.sparse as sparse
     import archivey.internal.streams.verify as verify
 
     forwards_or_owns = {
@@ -426,7 +427,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.bzip2_codec._Bzip2EmptyStreamCheck,
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
-        codecs.lzma_codec._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -452,6 +452,13 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         cli.ProcessOutputStream,  # the base of the two subprocess stdout streams
         iso_reader._PyCdlibStream,
         solid._MemberSlice,
+        # A table below it (gzip under a .tar.gz) is in stored offsets, and the map
+        # from logical to stored offsets is not a contiguous shift, so a slice's
+        # translation does not carry over. Declining costs this: ArchiveStream takes
+        # None as a resume at 0, so where a rewind warning applies (a .tar.gz), a
+        # backward seek reports its whole read position as re-decoded work, more
+        # than it costs when the member is mostly holes.
+        sparse.SparseStream,
         # The source boundary: it wraps the archive source, and every seek-point
         # table is above it.
         source_mod.ArchiveSource,
@@ -602,6 +609,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.sparse as sparse
 
     owns_via_base = {
         locked.LockedStream,
@@ -615,11 +623,11 @@ def test_delegating_stream_close_inventory() -> None:
         codecs.bzip2_codec._Bzip2EmptyStreamCheck,
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
-        codecs.lzma_codec._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
+        sparse.SparseStream,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,

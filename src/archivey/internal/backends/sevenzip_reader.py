@@ -5,7 +5,9 @@ Module split:
 - :mod:`.sevenzip_methods` — method-id registry / :class:`MethodKind`
 - :mod:`.sevenzip_parser` — signature + header property tree → :class:`SevenZipArchive`
 - :mod:`.sevenzip_pipeline` — folder coder plan/execute + encoded-header decode
-- this module — passwords, member list, solid-folder demux, CRC/encryption mapping
+- this module — passwords, member list, solid-folder demux, CRC/encryption mapping,
+  and the archive-open flow (:func:`load_sevenzip_archive`), which lives here because
+  decrypting an encoded header needs the password candidates
 
 Open path: signature → ``parse_header_block`` → (one encoded-header layer) →
 ``materialize_archive`` → list members. Member open folds the folder's packed
@@ -30,7 +32,7 @@ from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from typing import BinaryIO
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -71,15 +73,14 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
-    HEADER_PASSWORD_REJECTED,
     decode_encoded_header,
-    decode_folder_to_bytes,
     encoded_header_needs_password,
     open_folder_pipeline,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import (
     KeyDerivationBudget,
+    StreamConfig,
     stream_config_from_archivey,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -245,6 +246,112 @@ def _password_to_kdf_bytes(password: bytes) -> bytes:
         return password
 
 
+HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
+
+# Omitting max_members on the archive-level entry point means the ListingLimits
+# default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
+_DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+
+
+def load_sevenzip_archive(
+    fp: BinaryIO,
+    *,
+    passwords: _PasswordCandidates | None = None,
+    key_cache: SevenZipKeyCache | None = None,
+    stream_config: StreamConfig | None = None,
+    collector: DiagnosticCollector | None = None,
+    max_members: int | None = _DEFAULT_MAX_MEMBERS,
+) -> SevenZipArchive:
+    """Two-phase header load: parse → decode encoded → re-parse → materialize.
+
+    The one open flow: :class:`SevenZipReader` and the fuzz harnesses both call it.
+    ``fp`` starts at the signature header.
+    """
+    signature = read_signature_and_next_header(fp)
+    if not signature.header_data:
+        return empty_archive(signature)
+
+    block = parse_header_block(signature.header_data, max_members=max_members)
+    header_encrypted = False
+    if isinstance(block, EncodedHeader):
+        header_encrypted = encoded_header_needs_password(block)
+        block = _decode_encoded_header_block(
+            fp,
+            block,
+            passwords=passwords if passwords is not None else _PasswordCandidates(),
+            key_cache=key_cache if key_cache is not None else SevenZipKeyCache(),
+            stream_config=stream_config,
+            collector=collector,
+            max_members=max_members,
+        )
+    assert isinstance(block, PlainHeader)
+    return materialize_archive(signature, block, is_header_encrypted=header_encrypted)
+
+
+def _decode_encoded_header_block(
+    fp: BinaryIO,
+    encoded: EncodedHeader,
+    *,
+    passwords: _PasswordCandidates,
+    key_cache: SevenZipKeyCache,
+    stream_config: StreamConfig | None,
+    collector: DiagnosticCollector | None,
+    max_members: int | None,
+) -> PlainHeader:
+    def decode(password: bytes | None) -> bytes:
+        return decode_encoded_header(
+            fp,
+            encoded,
+            password=password,
+            key_cache=key_cache,
+            stream_config=stream_config,
+            collector=collector,
+        )
+
+    if not encoded_header_needs_password(encoded):
+        # Unencrypted self-copy or a hostile nested header stays CorruptionError.
+        return parse_decoded_header(decode(None), max_members=max_members)
+
+    def decrypt(password: bytes) -> PlainHeader:
+        # AES header decrypt has no MAC: a wrong password yields garbage that fails
+        # the codec (CorruptionError, or most often TruncatedError: wrong-key LZMA
+        # usually ends short of the declared size) or property parsing, rather
+        # than raising EncryptionError in decrypt. All are judged here, per
+        # candidate, so a wrong first candidate moves on to the next one instead of
+        # ending the attempt (D8). The cost: damaged encoded-header bytes cannot be
+        # told from a wrong key, so they read as a rejected password.
+        # UnsupportedFeatureError / PackageNotInstalledError from decode (hostile
+        # NumCyclesPower, missing cryptography) are not about the password and
+        # pass through.
+        try:
+            decoded = decode(_password_to_kdf_bytes(password))
+        except CorruptionError as exc:
+            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
+        try:
+            plain = parse_decoded_header(decoded, max_members=max_members)
+        except (
+            CorruptionError,
+            UnsupportedFeatureError,
+        ) as exc:
+            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
+        # O8: 7zAES has no password check value. Wrong-key garbage occasionally
+        # LZMA-decodes into a header that parses with zero file records (py7zr
+        # omits the encoded-header folder CRC). Legitimate writers never encrypt
+        # an empty header — treat that as a rejected password.
+        if not plain.files:
+            raise EncryptionError(HEADER_PASSWORD_REJECTED)
+        return plain
+
+    try:
+        return passwords.attempt(None, decrypt)
+    except _PasswordCandidatesExhausted as exc:
+        # Keep required-vs-rejected (D8) but restore the header surface (R1): listing
+        # needs a password is different UX from a wrong password on the header.
+        if exc.message.startswith("Password required"):
+            raise EncryptionError("Password required to decrypt the 7z header") from exc
+        raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
+
+
 def _infer_nameless_member_name(archive_name: str | None) -> str:
     return infer_member_name_from_archive(
         archive_name, strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE
@@ -379,10 +486,13 @@ class SevenZipReader(BaseArchiveReader):
         # folder decode. Valid only until the pass moves on; ``extract_all`` reads an
         # accepted link through it (``_link_data_stream``).
         self._pass_link: tuple[ArchiveMember, Callable[[], ArchiveStream]] | None = None
+        # A member's or coder's compressed data is the codec's whole input, so a
+        # byte its codec leaves unread is refused (``StreamConfig.refuse_input_after_end``).
         self._stream_config = stream_config_from_archivey(
             self._config,
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
+            refuse_input_after_end=True,
         )
         if not source.seekable():
             raise StreamNotSeekableError(
@@ -419,82 +529,14 @@ class SevenZipReader(BaseArchiveReader):
         return self._shared.view(self._origin + start, length)
 
     def _load_archive(self) -> SevenZipArchive:
-        """Two-phase header load: parse → decode encoded → re-parse → materialize."""
-        fp = self._view(0)
-        signature = read_signature_and_next_header(fp)
-        if not signature.header_data:
-            return empty_archive(signature)
-
-        max_members = self._config.listing_limits.max_members
-        block = parse_header_block(signature.header_data, max_members=max_members)
-        header_encrypted = False
-        if isinstance(block, EncodedHeader):
-            header_encrypted = encoded_header_needs_password(block)
-            block = self._decode_encoded_header_block(
-                fp, block, max_members=max_members
-            )
-        assert isinstance(block, PlainHeader)
-        return materialize_archive(
-            signature, block, is_header_encrypted=header_encrypted
+        return load_sevenzip_archive(
+            self._view(0),
+            passwords=self._passwords,
+            key_cache=self._key_cache,
+            stream_config=self._stream_config,
+            collector=self._diagnostics_collector,
+            max_members=self._config.listing_limits.max_members,
         )
-
-    def _decode_encoded_header_block(
-        self, fp: BinaryIO, encoded: EncodedHeader, *, max_members: int | None
-    ) -> PlainHeader:
-        def decode(password: bytes | None) -> bytes:
-            return decode_encoded_header(
-                fp,
-                encoded,
-                password=password,
-                key_cache=self._key_cache,
-                stream_config=self._stream_config,
-                collector=self._diagnostics_collector,
-            )
-
-        if not encoded_header_needs_password(encoded):
-            # Unencrypted self-copy or a hostile nested header stays CorruptionError.
-            return parse_decoded_header(decode(None), max_members=max_members)
-
-        def decrypt(password: bytes) -> PlainHeader:
-            # AES header decrypt has no MAC: a wrong password yields garbage that fails
-            # the codec (CorruptionError, or most often TruncatedError: wrong-key LZMA
-            # usually ends short of the declared size) or property parsing, rather
-            # than raising EncryptionError in decrypt. All are judged here, per
-            # candidate, so a wrong first candidate moves on to the next one instead of
-            # ending the attempt (D8). The cost: damaged encoded-header bytes cannot be
-            # told from a wrong key, so they read as a rejected password.
-            # UnsupportedFeatureError / PackageNotInstalledError from decode (hostile
-            # NumCyclesPower, missing cryptography) are not about the password and
-            # pass through.
-            try:
-                decoded = decode(_password_to_kdf_bytes(password))
-            except CorruptionError as exc:
-                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
-            try:
-                plain = parse_decoded_header(decoded, max_members=max_members)
-            except (
-                CorruptionError,
-                UnsupportedFeatureError,
-            ) as exc:
-                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
-            # O8: 7zAES has no password check value. Wrong-key garbage occasionally
-            # LZMA-decodes into a header that parses with zero file records (py7zr
-            # omits the encoded-header folder CRC). Legitimate writers never encrypt
-            # an empty header — treat that as a rejected password.
-            if not plain.files:
-                raise EncryptionError(HEADER_PASSWORD_REJECTED)
-            return plain
-
-        try:
-            return self._passwords.attempt(None, decrypt)
-        except _PasswordCandidatesExhausted as exc:
-            # Keep required-vs-rejected (D8) but restore the header surface (R1): listing
-            # needs a password is different UX from a wrong password on the header.
-            if exc.message.startswith("Password required"):
-                raise EncryptionError(
-                    "Password required to decrypt the 7z header"
-                ) from exc
-            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
 
     def _init_folder_caches(self, archive: SevenZipArchive) -> None:
         """Derive per-folder indexes used by listing and open.
@@ -1409,10 +1451,8 @@ class SevenZipReadBackend(ReadBackend):
 
 register_reader(SevenZipReadBackend)
 
-# Re-exports used by fuzz harnesses / older imports.
 __all__ = [
     "SevenZipReadBackend",
     "SevenZipReader",
-    "decode_folder_to_bytes",
-    "open_folder_pipeline",
+    "load_sevenzip_archive",
 ]

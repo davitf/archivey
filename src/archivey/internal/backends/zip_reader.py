@@ -167,8 +167,10 @@ from archivey.types import (
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
-# Comment decoding: try UTF-8 first, else fall back to cp437 (the ZIP appnote default,
-# which maps every byte and therefore never fails — no further fallbacks are reachable).
+# Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
+# default, which maps every byte and therefore never fails). An unflagged comment goes
+# through `_decode_unflagged_comment`, which shares the `encoding=` / fallback step
+# (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
@@ -1031,32 +1033,57 @@ class ZipReader(BaseArchiveReader):
         try:
             utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
-            if self._encoding is not None:
-                try:
-                    return raw_name.decode(
-                        self._encoding, errors="surrogateescape"
-                    ), None
-                except UnicodeError:
-                    # A codec that refuses the surrogateescape handler outright
-                    # (``idna``): fall through to the configured fallback.
-                    pass
-            fallback = self._config.zip_unflagged_fallback_encoding
-            if fallback.lower().replace("-", "").replace("_", "") in {
-                "cp437",
-                "437",
-                "ibm437",
-            }:
-                return cp437_decoded, None
-            try:
-                return raw_name.decode(fallback, errors="surrogateescape"), fallback
-            except (LookupError, UnicodeError):
-                # An unknown fallback encoding name, or a codec that refuses the
-                # surrogateescape handler outright (``idna``): keep the cp437 decode
-                # rather than fail.
-                return cp437_decoded, None
+            return self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
         if utf8_decoded == cp437_decoded:
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
+
+    def _decode_unflagged_legacy(
+        self, raw: bytes, cp437_decoded: Callable[[], str]
+    ) -> tuple[str, str | None]:
+        """Decode unflagged bytes that are not valid UTF-8: the caller's ``encoding=``,
+        else the configured legacy fallback (default cp437).
+
+        ``cp437_decoded`` is called only when the cp437 reading is the answer. Returns
+        ``(text, fallback)`` where ``fallback`` is a configured fallback other than
+        cp437 that was used, else ``None``. A byte the chosen codec does not define
+        survives as a lone surrogate.
+        """
+        if self._encoding is not None:
+            try:
+                return raw.decode(self._encoding, errors="surrogateescape"), None
+            except UnicodeError:
+                # A codec that refuses the surrogateescape handler outright
+                # (``idna``): fall through to the configured fallback.
+                pass
+        fallback = self._config.zip_unflagged_fallback_encoding
+        if fallback.lower().replace("-", "").replace("_", "") in {
+            "cp437",
+            "437",
+            "ibm437",
+        }:
+            return cp437_decoded(), None
+        try:
+            return raw.decode(fallback, errors="surrogateescape"), fallback
+        except (LookupError, UnicodeError):
+            # An unknown fallback encoding name, or a codec that refuses the
+            # surrogateescape handler outright (``idna``): keep the cp437 decode
+            # rather than fail.
+            return cp437_decoded(), None
+
+    def _decode_unflagged_comment(self, raw: bytes) -> str:
+        """Decode a comment with no UTF-8 flag the way an unflagged name is decoded.
+
+        A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
+        As for a name, ASCII skips the sniff (UTF-8 and cp437 agree on it), and the
+        cp437 decode runs only when it is the answer.
+        """
+        if raw.isascii():
+            return raw.decode("ascii")
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return self._decode_unflagged_legacy(raw, lambda: raw.decode("cp437"))[0]
 
     def _decode_member_name(self, info: zipfile.ZipInfo) -> _DecodedName:
         """The entry's name as archivey reads it: the source of ``member.name`` and of
@@ -1222,7 +1249,12 @@ class ZipReader(BaseArchiveReader):
         if _is_encrypted_entry(info):
             member.is_encrypted = True
         if info.comment:
-            member.comment = _decode_with_fallback(info.comment)
+            # APPNOTE puts the member comment under the name's UTF-8 flag.
+            member.comment = (
+                _decode_with_fallback(info.comment)
+                if info.flag_bits & 0x800
+                else self._decode_unflagged_comment(info.comment)
+            )
         member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
@@ -1542,8 +1574,9 @@ class ZipReader(BaseArchiveReader):
         size = member.size
         # The member's compressed size is the codec's input exactly, so a byte after
         # the codec's end of stream is CorruptionError (DR-3; 7-Zip: "There are some
-        # data after the end of the payload data", an error in ZIP). LZMA refuses it
-        # on its own, in 7z too (``LzmaDataAfterEndError``).
+        # data after the end of the payload data", an error in ZIP). That covers a
+        # declared size short of an LZMA or PPMd stream too: the rest of the stream is
+        # input left after the size (``DataAfterEndError``).
         config = replace(
             self._stream_config,
             expected_decompressed_size=size,
@@ -1575,11 +1608,12 @@ class ZipReader(BaseArchiveReader):
                 # usually has an end mark, but max_length still matches py7zr practice).
                 if size is not None and size >= 0:
                     params = replace(params, unpack_size=size)
-            elif method == 12:  # ZIP bzip2
-                # A member is one bzip2 stream: the standard-library decoder ends it at
-                # its end-of-stream marker, as 7-Zip, Info-ZIP and stdlib zipfile read
-                # it. rapidgzip reads on into a further stream; the declared size and
-                # CRC then decide (dev-docs/formats/zip.md §2.3).
+            elif method in (12, 93):  # ZIP bzip2, Zstd
+                # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
+                # read it, and one Zstd frame: a further stream or frame after its end
+                # is input the member does not use, refused like any other
+                # (``refuse_input_after_end``), with the accelerator on or off
+                # (dev-docs/formats/zip.md §2.3).
                 params = replace(params, single_stream=True)
             return open_codec_stream(
                 codec,
@@ -2364,7 +2398,8 @@ class ZipReader(BaseArchiveReader):
             format_version=None,
             is_solid=False,  # ZIP is never solid: each member has an independent offset
             member_count=len(self._archive.infolist()),
-            comment=_decode_with_fallback(comment) if comment else None,
+            # The archive comment has no UTF-8 flag of its own.
+            comment=self._decode_unflagged_comment(comment) if comment else None,
             is_encrypted=False,  # ZIP has per-member encryption, not header-level
             # True for a rejoined 7-Zip `.zip.NNN` set: it arrived as several files,
             # which is what a caller checking this wants to know. It says nothing
