@@ -203,10 +203,7 @@ def _public_paths(pkg: Module) -> dict[str, str]:
         if not member.is_alias or name.startswith("_"):
             continue
         with contextlib.suppress(AliasResolutionError, CyclicAliasError):
-            target = member.final_target
-            # Skip modules: the package can see itself as a member named "archivey".
-            if not target.is_module:
-                public[target.path] = f"{pkg.path}.{name}"
+            public[member.final_target.path] = f"{pkg.path}.{name}"
     return public
 
 

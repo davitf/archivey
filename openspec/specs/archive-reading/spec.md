@@ -498,10 +498,35 @@ to their own parser ceilings before spine `ListingLimits` are evaluated on
 materialization (`members()` / extract-prep). Being indexed (ZIP central
 directory) is not the same as applying `max_members` at parse.
 
-**Unguarded by design:** `stream_members()` / `streaming=True` / forward-only
-iteration MUST NOT enforce `ListingLimits` (O(1) escape hatch). Callers that
-need a full resolved list use `members()` / `members_report()` and accept the
-caps. Formats that apply `max_members` at parse (7z, RAR and ISO) fail at
+**Unguarded by design:** `stream_members()` and `for member in reader` MUST NOT
+enforce `ListingLimits`: they yield every member, however many there are. Their
+memory SHALL still be bounded by `ListingLimits`, not by the member count: the
+pass counts each member as usual, and once the totals cross a limit the reader
+stops keeping the listing. It then holds no member, name index or `tarfile`
+header list for the rest of the pass. From that point:
+
+- the pass keeps yielding every member, but a link it yields after that point
+  gets no `link_target_member`, and the pass publishes no listing at its end;
+  members yielded up to that point keep what they had, and last-entry-wins
+  `is_current` is stamped over them when the listing is discarded, so a
+  duplicate yielded later cannot mark one of them superseded;
+- `members_report()` raises the same `ResourceLimitError` as `members()` on
+  the same archive; `members_report_if_available()` returns
+  `None`, since nothing is cached. On a
+  random-access reader (TAR) so do `members()`, `get()`, `open()`,
+  `extract_all()` and another `stream_members()` pass, which would need the
+  members this pass did not keep. A streaming reader refuses a second pass
+  anyway.
+
+A random-access reader whose `stream_members()` lists the whole archive before
+the first yield (ZIP, directory, 7z, RAR) keeps that listing: its size follows an
+index the source already holds uncompressed (the ZIP central directory, which
+`zipfile` keeps too, or the directory tree), or a count checked at parse (7z,
+RAR). Callers that need a full resolved list use `members()` /
+`members_report()` and accept the caps; `ListingLimits.UNLIMITED` keeps the whole
+listing on every pass. `extract_all()` enforces the limits in both access modes,
+because it resolves hard links against the members it has listed and so keeps
+them. Formats that apply `max_members` at parse (7z, RAR and ISO) fail at
 `open_archive` instead, so `stream_members()` / `streaming=True` are not an
 escape hatch there.
 
@@ -516,6 +541,9 @@ escape hatch there.
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
 | `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR member whose extended headers and sparse map together weigh more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
+| `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
+| `stream_members()` pass past a cap (either mode), then `members_report()` / `members()` | Pass yields every member and keeps memory bounded by the caps; each later listing call raises the `ResourceLimitError` `members()` raises; `members_report_if_available()` returns `None` |
+| Second `stream_members()` on a random-access TAR after such a pass | `ResourceLimitError` |
 
 ### Requirement: Listing metadata-byte accounting
 

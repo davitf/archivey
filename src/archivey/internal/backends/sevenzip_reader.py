@@ -163,6 +163,17 @@ def _written_on_unix(attrs: int | None) -> bool:
     return attrs is not None and bool((attrs >> 16) & UNIX_FILE_TYPE_MASK)
 
 
+def _is_unix_directory(record: SevenZipFileRecord) -> bool:
+    """True when the high word's Unix mode says ``S_IFDIR`` and the record has no stream.
+
+    A record with a stream is never a directory, whatever its mode says, as in 7-Zip,
+    which extracts an entry that has data as a regular file. Typing it a directory
+    would skip its data on every read without an error.
+    """
+    attrs = record.attributes
+    return record.emptystream and attrs is not None and stat.S_ISDIR(attrs >> 16)
+
+
 def _is_windows_reparse_point(attrs: int | None) -> bool:
     """True when 7z's attribute word flags this entry as a Windows reparse point.
 
@@ -1051,14 +1062,14 @@ class SevenZipReader(BaseArchiveReader):
             if unix_mode:
                 if stat.S_ISLNK(unix_mode):
                     return MemberType.SYMLINK
-                if stat.S_ISDIR(unix_mode):
+                if _is_unix_directory(record):
                     return MemberType.DIRECTORY
                 if record.emptystream and self._special_file_type(record) is not None:
                     # A device, FIFO or socket with no stream (7-Zip and p7zip store
-                    # them that way). A record with a stream is a FILE whatever its
-                    # mode says, as 7-Zip reads it: the bytes are the content
-                    # (DR-25), and ``extra["special_file_type"]`` keeps the stored
-                    # type either way.
+                    # them that way). With a stream, the special mode does not decide
+                    # the type, as 7-Zip reads it: the bytes are the content (DR-25),
+                    # so the record is a FILE unless the reparse bit below applies.
+                    # ``extra["special_file_type"]`` keeps the stored type either way.
                     return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
@@ -1097,13 +1108,11 @@ class SevenZipReader(BaseArchiveReader):
         its data is not a link buffer (the bit is set for deduplication stubs and cloud
         placeholders too, whose content stays readable); ``None`` for any other entry.
 
-        A Unix mode of ``S_IFDIR`` in the high word types the entry a directory ahead of
-        the bit (`_member_type`), so it has no link target to settle or read.
+        A Unix mode of ``S_IFDIR`` in the high word types a stream-less entry a directory
+        ahead of the bit (`_member_type`), so it has no link target to settle or read.
         """
         attrs = record.attributes
-        if not _is_windows_reparse_point(attrs) or (
-            attrs is not None and stat.S_ISDIR(attrs >> 16)
-        ):
+        if not _is_windows_reparse_point(attrs) or _is_unix_directory(record):
             return None
         return self._member_type_ignoring_reparse(record)
 
