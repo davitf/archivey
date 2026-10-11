@@ -147,16 +147,15 @@ decoder over a cut stream returns the bytes it could decode and raises
 `TruncatedError` on the next read, so asking again in the same read would drop those
 bytes. For the same reason the random-access codec stream does not repeat its first
 error after a seek (`open_codec_stream(repeat_verdict=False)`): its views seek before
-every read. Each member stream keeps its own. A cut member therefore gives its whole
-readable prefix before `TruncatedError`, in either mode and in any read size. A
-`read()` with no size asks for the whole member, so on a cut member it raises and
-returns nothing, as the compressed-streams spec says.
+every read. Each member stream keeps its own. What a cut member's reads return is the
+contract in the TAR spec's requirement "Detect truncated TAR archives": a sized read
+gives the readable prefix and the next read raises, and a read with no size raises with
+nothing.
 
 **A random-access member view stops at the end of the archive** and then returns no
-bytes. When a member's data runs past the end, its stream turns on the fused length
-check (`expected_size`), as ISO does for a file cut by the end of the image, so a cut
-plain tar member raises `TruncatedError` after its prefix. Other members keep the bare
-`size`, which turns on no check.
+bytes. `_MemberDataView` sits on it and knows the member's stored length, so a read that
+ends short raises `TruncatedError` under the same contract. It does not need the source
+size, so a seekable source with no cheap size gets the same errors as a file.
 
 **The first header is parsed at open**, so a file that is not a tar fails there (DR-15b):
 a first block that does not parse is `CorruptionError`, and an empty file or one shorter
@@ -361,8 +360,9 @@ random access as in a streaming pass. A symlink is a path, not a reference, and 
 to the last member of that name either way.
 
 **`MemberStreams.CONCURRENT`** puts one lock around every read of the shared byte
-stream: each read the walk's buffer makes, each member read and seek, and the
-end-of-archive reads. Each view re-seeks the stream and reads under the lock. The lock
+stream: each read the walk's buffer makes, each member read with the re-seek it makes
+first, and the end-of-archive reads. A member's `seek` and `tell` change only its view's
+own position. The lock
 makes interleaved reads correct. It does not make them parallel, and on a compressed tar
 they still share one decompressor. A streaming reader takes the same lock, uncontended,
 so both modes have one critical-section shape.
@@ -522,7 +522,7 @@ ours.
 | Refuse an out-of-order or overlapping sparse map with `UnsupportedFeatureError` (maintainer decision, 2026-10-10) | GNU tar 1.35 reads such a map, so it is valid data that archivey does not serve, and DR-4 types that as unsupported. To serve it, the sparse stream would place chunks out of order, and the streaming path would buffer up to the member's logical size (DR-9). No real writer is known to produce such a map; only crafted archives hold one. Reopen if a real producer writes such maps | Reading the map as GNU tar does, which needs that placement and buffering. `CorruptionError`, as the first version of the check raised, dropped because DR-4 types a layout the reference tool reads as unsupported |
 | Refuse a sparse map whose chunks name 1 to 511 bytes fewer than the member stores (maintainer decision, 2026-10-10) | Bytes inside a member that nothing names are damage (DR-3), and every writer checked (GNU tar 1.26 to 1.35 in all five forms, bsdtar 3.7.2) writes the exact sum. Revisit if a writer is found that leaves such slack | Reading the slack silently, as GNU tar does (DR-6) |
 | A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there. Extraction under `STRICT` and `STANDARD` still writes it as `a/b`, the tree Windows would create, and rewrites a link target the same way so a link to that member follows it; the result is the same on every OS | Treating it as a separator in `name` the way the ZIP and 7z backends do |
-| A device, FIFO or socket header with a non-zero size is `CorruptionError` at the header | The typeflag is the structure, so the entry has no data. The walker follows GNU tar and libarchive: it ignores the size field of typeflags `3`, `4` and `6` and reads the next header right after this one. Non-zero declared bytes then fail as a header, and an all-zero payload reads as the end-of-archive marker, which would drop every later member without a word. Refusing at the header makes both shapes the same damage | Reporting the size and resyncing at the next header, as GNU tar does ("Skipping to next header", exit 2) and as DR-1 would prefer. Not done for a crafted-only shape |
+| A device, FIFO or socket header with a non-zero size is `CorruptionError` at the header | The typeflag is the structure, so the entry has no data. The reader refuses the header. Ignoring the size and reading the next header right after this one, as GNU tar and libarchive do, would parse non-zero declared bytes as a header, and an all-zero payload would look like the end-of-archive marker and drop every later member without a word. Refusing makes both shapes the same damage | Reporting the size and resyncing at the next header, as GNU tar does ("Skipping to next header", exit 2) and as DR-1 would prefer. Not done for a crafted-only shape |
 | Walk one header per pull | Each member is registered, and counted against the caps, before the next header is parsed, so the caps bound what the walker parses, not only what archivey keeps | Batches of headers per lock hold, which come back only if the listing benchmark needs them |
 
 ## 7. Open questions
@@ -549,9 +549,9 @@ ours.
 | Claim | Pinned by |
 | --- | --- |
 | A member seek past its end returns the target, as in every other format | `tests/test_tar.py::test_a_member_stream_seeks_past_its_end_like_a_file` |
-| A cut compressed member gives its whole readable prefix before `TruncatedError`, in any read size, streaming or random access | `tests/test_tar.py::test_a_cut_compressed_member_delivers_its_prefix_in_both_modes`; `tests/test_readahead_stream.py` |
+| A sized read of a cut compressed member gives its whole readable prefix before `TruncatedError`, in any chunk size, streaming or random access | `tests/test_tar.py::test_a_cut_compressed_member_delivers_its_prefix_in_both_modes`; `tests/test_readahead_stream.py` |
 | A `read()` with no size on a cut member raises and returns nothing, plain or compressed, in every mode | `tests/test_tar.py::test_a_whole_read_of_a_cut_member_raises_with_nothing_in_every_mode` |
-| A plain tar member cut by the end of the archive raises `TruncatedError` through `read` and `open`, with no listing first | `tests/test_tar.py::test_a_cut_plain_tar_member_raises_on_read_without_a_listing`, `::test_a_cut_plain_tar_member_delivers_its_prefix_then_raises` |
+| A plain tar member cut by the end of the archive raises `TruncatedError` through `read` and `open`, with no listing first, on a file and on a seekable source with no cheap size | `tests/test_tar.py::test_a_cut_plain_tar_member_raises_on_read_without_a_listing`, `::test_a_cut_plain_tar_member_delivers_its_prefix_then_raises` |
 | Cost matrix, plain and compressed | `tests/test_tar.py::test_plain_tar_cost`, `::test_compressed_tar_cost_and_read` |
 | No member count and no report peek before a pass | `::test_member_list_not_available_without_scan`; `tests/test_review_simplicity_consistency.py::test_tar_has_no_report_peek_before_a_pass` |
 | Random access needs a seekable source; streaming works on a pipe, plain and compressed | `::test_non_seekable_tar_fails_fast`, `::test_non_seekable_tar_streaming_opens_without_scanning`, `::test_non_seekable_plain_tar_stream_members`, `::test_non_seekable_tar_gz_streaming` |

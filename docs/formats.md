@@ -216,8 +216,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       [Single-file compressors](#single-file-compressors). A tail that does not
       decompress (a missing gzip footer) ends the check quietly rather than failing the
       listing.
-    - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
-      whatever the policy.
+    - Truncation *inside* a member's data always raises `TruncatedError`, whatever the
+      policy: in a listing or a pass when the walk reaches the cut, and from a member
+      stream on the read that reaches it. A read with a size returns the bytes before the
+      cut first; `read()` with no size raises and returns nothing.
 
 ## 7z
 

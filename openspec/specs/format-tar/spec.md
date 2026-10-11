@@ -239,8 +239,15 @@ The check SHALL raise the escalation from the member scan (so the report model r
 `error`); it SHALL NOT record the archive-level EOF only on a separate report field.
 
 Truncation *inside* a member's data or across a partial header block is out of scope of
-this end-of-marker check: it raises `TruncatedError` **during iteration**, whatever the
-diagnostic policy, in both random-access and streaming modes.
+this end-of-marker check. It raises `TruncatedError`, whatever the diagnostic policy, in
+both access modes, and whether or not the source size is known:
+
+- `members()`, `members_report()` and a `stream_members()` pass raise when the walk reaches
+  the cut. A pass that read part of the cut member raises that member's error again.
+- A member stream, from `open()`, `read()` or a pass, raises on the read that reaches the
+  cut. A sized `read(n)` returns the bytes before the cut, short, and the next read
+  raises. A `read()` with no size raises and returns nothing. `open()` and `read()` find
+  the cut themselves; they do not need a listing to reach it first.
 
 #### Scenario: TAR EOF matrix
 
