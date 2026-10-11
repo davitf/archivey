@@ -572,9 +572,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   source can be seeked — a file path and an in-memory stream both qualify, a pipe does
   not. Declaring `seekable_members=True` is not required and makes no difference:
   `seekable_members` is about `seek()` on a *member stream*, and the lzip trailer is a
-  bounded backward peek. Same for the `.xz` size, read from the stream index. For
-  multi-member lzip the value is derived by combining per-trailer CRCs with each
-  member's uncompressed size so it equals `crc32` of the concatenated payloads.
+  bounded backward peek. Same for the `.xz` size, read from the stream index. A `.xz`
+  or `.lz` opened from another archive's member stream reports neither the size nor the
+  CRC-32, seekable or not: member streams are excluded as a group. For multi-member
+  lzip the value is derived by combining per-trailer CRCs with each member's
+  uncompressed size so it equals `crc32` of the concatenated payloads.
 - `.lz` is read in lzip format version 1, which every lzip since 1.0 writes. A member
   in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
   wherever it is in the file: a member that starts with the `LZIP` magic is never

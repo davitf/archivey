@@ -152,7 +152,7 @@ What is filled in on the member, and where from:
 | --- | --- |
 | `name` | The source's filename, as in §1 |
 | `size` | xz: the stream index; lzip: the member trailers; LZMA Alone: the header, when it is not the "unknown" marker. `None` for every other codec |
-| `compressed_size` | The source's length, from one `seek(0, SEEK_END)` on any seekable source. `None` on a pipe |
+| `compressed_size` | The source's length. A member stream reports its advertised `size`, seekable or not. Any other seekable source reports its cheap size (a path's `stat`, a `BytesIO`, a `size` attribute), else one `seek(0, SEEK_END)`. `None` on a caller's pipe (also one with a `size` attribute), and on a member stream that advertises no length |
 | `modified` | gzip's `MTIME`, when non-zero. `None` for every other codec |
 | `raw_name`, `extra["gzip.original_filename"]` | gzip's `FNAME` ([`gzip.md`](gzip.md) §2.2) |
 | `hashes` | lzip only: the CRC-32 of the whole content, combined from each member's trailer ([`xz.md`](xz.md) §2.2) |
@@ -162,6 +162,33 @@ source. That peek is decided by the source's shape, not by `seekable_members`: t
 declaration is about seeking the member stream, and the peek hands nobody a stream. Tying
 it to the flag would make the same `.xz` report `size=None` on a plain open and its size
 with the flag. The peeks run with the accelerators off, since they decode nothing.
+
+Another archive's member stream, passed to `open_archive(member_stream)`, is not peeked
+(`seek_is_expensive`, the same test detection uses,
+[`topics/detection.md`](../topics/detection.md)). For a `.xz` stored deflated in a ZIP, a
+seek to its end decompresses the whole member, and the restore decompresses it again.
+The rule covers member streams as a group, so a `.xz` in a stored ZIP entry or in a TAR,
+whose seek is only a slice of the container, is not peeked either. Any such source
+reports `size=None`, no lzip `CRC32`, and a `compressed_size` only when the member stream
+advertises its length. `size` and `CRC32` are metadata: the decoder still checks the xz
+index and the lzip trailers when the member is read. The gzip codec's own ISIZE peek at
+codec open ([`gzip.md`](gzip.md) §2.3) is separate and still runs.
+
+A member stream's advertised length is the length its container's header declares, not a
+caller's claim, so it is the `compressed_size` whether the member stream is seekable or
+not. The outer archive's `seekable_members` decides only that, and metadata must not
+depend on it. A caller's own non-seekable stream reports `None` even with a `size`
+attribute. The reason is seekability, not trust: a seekable caller stream's `size` is
+reported unchecked, and a pipe has no `SEEK_END` to answer instead. `compressed_size` is
+more than metadata. Extraction has two ratio guards: the per-member one divides by
+`compressed_size`, and the archive-wide one divides by
+`BaseArchiveReader.compressed_source_size`. Both follow this rule (`safe-extraction`,
+"Archive-wide decompression ratio for solid containers"), so a pipe's `size` attribute
+reaches neither, and the live ratio applies. A member stream's declared length is
+unchecked too: a ZIP member that holds less than it declares is refused with
+`TruncatedError` only after its payload is decoded, and a TAR member answers a
+`SEEK_END` from the same declared length. For a nested archive, `max_extracted_bytes` is
+the bound that holds.
 
 `ArchiveInfo` has `member_count=1`, `format_version=None`, `comment=None` and
 `is_solid=False`.
@@ -391,7 +418,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | One reader for every standalone codec, with the codec as a descriptor class (PR #16) | A new codec is one subclass; the detector, the reader and the registry read the descriptors, so they cannot disagree about a codec | Per-codec tables in each consumer |
 | Present the stream as a one-member archive | Callers handle `.gz` and `.zip` with the same code, extraction included | A separate stream-only API; `open_stream` exists as well, for callers who want the bytes |
 | Name the member from the source's filename, not gzip's `FNAME` | It is the name the caller chose, it exists for every codec, and it is not attacker bytes | Using `FNAME` when present |
-| Read the xz index and lzip trailers whenever the source is seekable (PR #232) | Metadata must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
+| Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Metadata must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
+| Do not peek another archive's member stream, stored ZIP entries and TAR members included (PR #732; davitf, 2026-10-10: fix later) | A seek to the end of a deflated member decompresses it twice, and `seek_is_expensive`, the signal detection already uses, covers member streams only as a group. A nested `.xz` or `.lz` loses `size` and the lzip `CRC32`; both are metadata, and the decoder still checks the index and trailers on read. Reopen with a per-stream cheap-seek signal, which would keep both for a stored ZIP entry or a TAR member | Keeping the peek for member streams whose seek is a slice, which needs that signal, shared with detection |
 | Decode one byte at open, on a seekable source (PR #461) | A file that is not the claimed codec fails where the caller opened it; otherwise a `.gz` full of zeros lists one member and fails only on the read | Checking nothing until the read; decoding more, which costs every open |
 | Arm truncation at end of input and raise on the next read (PR #183) | The caller gets every byte before the cut from a sized `read(n)`, and the error cannot be missed by a caller who never calls `close()`. A `read()` of everything raises and returns nothing: a short payload returned as if whole is worse than none | Raising inside the decode, which drops the decoded prefix; raising from `close()` (ADR 0014) |
 | A truncation keeps raising after a seek back | The source did not change, so a second pass must not end cleanly | Clearing the error with the position (PR #491) |
@@ -426,7 +454,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- |
 | One backend, one member, names from the filename, `data` for a stream with none | `tests/test_single_file.py::test_one_backend_serves_multiple_formats`, `::test_exactly_one_member_no_directories`, `::test_name_strips_known_compression_extension`, `::test_name_appends_uncompressed_for_unknown_extension`, `::test_name_defaults_to_data_for_anonymous_stream` |
 | Cost and archive info | `::test_cost_is_indexed_and_direct`, `::test_archive_info` |
-| Size from the xz index and lzip trailers on any seekable source, not on a pipe | `::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `::test_cheap_size_does_not_require_a_path_source`, `::test_cheap_size_still_needs_seekability` |
+| Size from the xz index and lzip trailers on any seekable source, not on a pipe or another archive's member stream | `::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `::test_cheap_size_does_not_require_a_path_source`, `::test_cheap_size_still_needs_seekability`, `::test_member_stream_source_is_not_seeked_to_its_end` |
 | Only lzip reports a digest | `::test_lzip_exposes_stored_crc32`, `::test_other_single_file_codecs_omit_stored_digests`, `::test_gzip_never_reports_a_crc32` |
 | Validation at open, one byte deep, deferred on a pipe | `::test_open_validation_table_covers_every_single_file_codec`, `::test_undecodable_source_raises_at_open`, `::test_valid_empty_stream_still_opens_and_reads_empty`, `::test_non_seekable_source_still_defers_validation_to_the_read` |
 | A pipe needs `streaming=True` and gives one pass | `::test_non_seekable_gzip_requires_streaming_mode`, `::test_non_seekable_gzip_streams_fine` |

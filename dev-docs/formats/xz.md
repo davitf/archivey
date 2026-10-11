@@ -17,7 +17,7 @@ this page states the behaviour and links the row.
 | Write | **Not shipped** |
 | Backends | The standard library's `lzma`, always available. `streams/codecs/xz_decoder.py` and `streams/codecs/lzip_decoder.py` are archivey's own framing parsers over it |
 | Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
-| Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source |
+| Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source that is not another archive's member stream |
 | Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE`. LZMA Alone has no check at all (§4), and reports nothing |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
@@ -111,7 +111,10 @@ lzip trailers backwards from the end at open, whether or not seeking was declare
 (`SingleFileReader._probe_lzip_index` and the xz equivalent). For xz that gives the size;
 for lzip, the size and the CRC-32 of the whole content, combined from each member's
 trailer CRC with `crc32_combine`, in one walk that holds no per-member state. On a pipe,
-neither is known before the read ends.
+neither is known before the read ends. Another archive's member stream, passed to
+`open_archive(member_stream)`, is not peeked either, seekable or not: availability is
+decided by the source's shape, and member streams are excluded as a group
+([`single-file.md`](single-file.md) §2.2).
 
 **Through bytes after the end.** The walk has to start at the last stream's end, not at
 the file's. Zero bytes are skipped first. For xz, `_data_end()` in
@@ -312,7 +315,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Parse lzip natively over stdlib `lzma` (PR #7) | lzip is LZMA1 with a fixed header; its trailers give size, seeks and a CRC | A dependency |
 | LZMA Alone: zero bytes end the data unless they run to the end of the file; a stream after them is `ARCHIVE_TRAILING_DATA` (maintainer ruling, 2026-10-10). xz keeps reading past its Stream Padding | Match the official tool (DR-6): `xz --format=lzma` stops at the zeros and fails, as do the gzip, bzip2, zstd and LZ4 tools; xz defines padding between streams and LZMA Alone defines none. Zeros at the end stay silent although `xz` refuses them: one rule for every codec ([`single-file.md`](single-file.md) §6) | Reading a stream after the zeros, as `lzma.LZMAFile` does |
 | Combine the lzip trailer CRCs into one whole-content CRC-32 (PR #160) | It is a real digest of the content, known from one backward walk | Listing it only for single-member files |
-| Read the xz index and lzip trailers whenever the source is seekable (PR #232) | Size must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
+| Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Size must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
+| Do not peek another archive's member stream, stored ZIP entries and TAR members included (PR #732; davitf, 2026-10-10: fix later) | A seek to the end of a deflated member decompresses it twice, and `seek_is_expensive`, the signal detection already uses, covers member streams only as a group. A nested `.xz` or `.lz` loses `size` and the lzip `CRC32`; both are metadata, and the decoder still checks the index and trailers on read. Reopen with a per-stream cheap-seek signal, which would keep both for a stored ZIP entry or a TAR member | Keeping the peek for member streams whose seek is a slice, which needs that signal, shared with detection |
 | Cold seeks trust a self-consistent index (O17) | Verifying a seek means decoding from the start, which removes the reason to have an index; a forward read still verifies | Verifying every seek |
 | Check lzip `member_size` on the forward read (PR #407) | An unchecked member size let a seek serve another member's bytes | Trusting it |
 | Cap every declared dictionary before allocation (PR #413) | The number is the attacker's | Letting liblzma allocate what the header asks |
@@ -337,7 +341,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | Claim | Pinned by |
 | --- | --- |
-| Size from the index and trailers; not on a pipe | `tests/test_single_file.py::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `tests/test_seekable_streams.py::test_xz_try_get_size_uses_index_not_full_decode` |
+| Size from the index and trailers; not on a pipe or another archive's member stream | `tests/test_single_file.py::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `::test_member_stream_source_is_not_seeked_to_its_end`, `tests/test_seekable_streams.py::test_xz_try_get_size_uses_index_not_full_decode` |
 | The combined lzip CRC-32 | `tests/test_single_file.py::test_lzip_exposes_stored_crc32`, `::test_multi_member_lzip_exposes_combined_crc32`, `tests/test_review_simplicity_consistency.py::test_lzip_surfaces_crc32_without_declaring_seekable_members` |
 | Block and member seeks read the right bytes | `tests/test_seekable_streams.py::test_xz_backward_seek_uses_block_index`, `::test_xz_multiblock_seek_serves_the_right_bytes_across_feed_chunks`, `::test_xz_multistream_block_resume_crosses_a_stream_gap`, `::test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes` |
 | Seeks trust a self-consistent index; forward reads verify | `::test_xz_cold_seek_trusts_a_self_consistent_block_index`, `::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`, `::test_xz_block_resume_refuses_blocks_that_disagree_with_the_index`, `::test_lzip_trailer_member_size_mismatch_raises_on_forward_read` |
