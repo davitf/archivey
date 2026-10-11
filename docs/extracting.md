@@ -136,7 +136,10 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   never leaves a half-written destination file. The destination root itself is yours,
   so if it is a symlink to a directory, archivey follows it and extracts into the
   target (as `tar -C` and `unzip -d` do).
-- **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
+- **Special files** (devices, FIFOs, sockets) are never created: archivey calls no
+  `mknod`. An entry that stores no data under such a mode is `MemberType.OTHER` and is
+  skipped; an entry that stores data under such a mode is a `FILE` and its bytes are
+  written as a regular file (`MEMBER_SPECIAL_FILE_HAS_DATA` reports it). An NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
   which in practice means RAR and a directory tree read from a Windows filesystem. ZIP
@@ -193,7 +196,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.
 - **Permission hygiene:** setuid/setgid/sticky stripped except under `TRUSTED`;
-  ownership applied only under `TRUSTED` as root.
+  ownership applied only under `TRUSTED` as root. `STANDARD` keeps group and other
+  write bits, unlike `tarfile`'s `data` and `tar` filters, which both mask the stored mode
+  with `0o755`.
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
@@ -297,8 +302,8 @@ read `ExtractionResult.presented_name` and let extraction finish.
 | Policy | Intent |
 | --- | --- |
 | `STRICT` | Untrusted archives (default) |
-| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
-| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
+| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute and group or other write included (the umask does not apply, so a stored `0o666` file stays `0o666`), but strips setuid, setgid and sticky and never applies ownership. A member with no stored mode, such as every member of a ZIP written on Windows, gets `0o644` (file) or `0o755` (directory). Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
+| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal. A member with no stored mode keeps the creation default, so the umask decides, not `0o644` / `0o755` |
 
 Selective extract:
 
@@ -393,7 +398,7 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (default 1000, checked once 5 MiB has been written), and entry count (default
   262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count (default 262,144) and retained metadata
-  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
+  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
   does not list first: it checks the limits as each member arrives in its one pass, so
   members before the one that crosses a cap are already written when it raises.

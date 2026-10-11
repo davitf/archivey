@@ -306,7 +306,8 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Cut gzip whose last four bytes are forged to the length rapidgzip delivers: `seek(0, SEEK_END)`, or that seek, then `seek(0)` and a read | `TruncatedError`, as with the accelerator `OFF` |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
 | bzip2 through the accelerator with junk, a damaged stream header, or a stream whose block and end-of-stream magics are damaged, before or between streams | The bytes and the error of the accelerator `OFF`; no byte from after the skipped region reaches the caller, also after a seek past it |
-| bzip2 through the accelerator with a stream after zero padding, or a cut or damaged stream after the data | The bytes and the error of the accelerator `OFF`; past a bounded stretch (1 MiB) of padding and empty streams between two streams, the standard library takes over and decodes the stretch itself, with the same result |
+| bzip2 through the accelerator with a cut or damaged stream right after the data, or anything after zero bytes | The bytes, the error and the trailing-data report of the accelerator `OFF`; past a bounded stretch (1 MiB) of empty streams between two streams, the standard library takes over and decodes the stretch itself, with the same result |
+| gzip through rapidgzip with NUL bytes, then a further member | The first member's bytes and a trailing-data report at the further member, as with the accelerator `OFF` |
 | Two zlib streams through rapidgzip, completing read or seek to the end | The first stream, and a trailing-data report, as with the accelerator `OFF` |
 | Valid empty gzip through rapidgzip | Succeeds with zero bytes |
 

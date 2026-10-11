@@ -1241,8 +1241,13 @@ class _ForwardSlice(ReadOnlyIOStream):
             # the next read, which gets none, raises.
             return data
         if len(data) < want:
-            raise TruncatedError(
+            error = TruncatedError(
                 "TAR archive is truncated inside a member's data at offset "
                 f"{walker._stream_pos}"
             )
+            # The archive ends inside this member, so the walk ends here too, and
+            # its next call raises this same error rather than a second report of
+            # the same cut.
+            walker._failed = error
+            raise error
         return data

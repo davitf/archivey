@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from typing import TextIO
 
-from archivey.cli.common import open_for_cli, reject_salvage
+from archivey.cli.common import open_for_cli
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import format_member_line
@@ -20,13 +20,11 @@ def run_list(
     exclude: list[str],
     digests: bool,
     verbose: bool,
-    salvage: bool,
     password: str | None,
     track_io: bool,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
-    reject_salvage(salvage)
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)

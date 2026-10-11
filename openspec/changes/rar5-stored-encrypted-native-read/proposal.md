@@ -1,5 +1,9 @@
 # Read a stored encrypted RAR5 member without `unrar`
 
+> **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). No further work is
+> scheduled. The release does not need this change, and the drafted design stays here so a
+> later change can pick it up. It is tracked internally.
+
 ## Why
 
 `_can_direct_read` already serves stored RAR members, solid or split, from a direct

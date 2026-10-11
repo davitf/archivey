@@ -2295,10 +2295,17 @@ def test_gzip_multi_member_and_padding_parity() -> None:
         Codec.GZIP, io.BytesIO(m1 + m2), config=_STDLIB_GZIP
     ) as stream:
         assert stream.read() == b"firstsecond"
+    # NULs before a further member end the data, as in GNU gzip; Python's GzipFile
+    # reads on to the member (dev-docs/formats/gzip.md §6).
+    collector = DiagnosticCollector()
     with open_codec_stream(
-        Codec.GZIP, io.BytesIO(m1 + b"\x00\x00\x00\x00" + m2), config=_STDLIB_GZIP
+        Codec.GZIP,
+        io.BytesIO(m1 + b"\x00\x00\x00\x00" + m2),
+        config=_REPORTING_GZIP,
+        collector=collector,
     ) as stream:
-        assert stream.read() == b"firstsecond"
+        assert stream.read() == b"first"
+    assert _trailing_reports(collector) == [("gzip", len(m1) + 4)]
     with open_codec_stream(
         Codec.GZIP, io.BytesIO(m1 + b"\x00\x00\x00"), config=_STDLIB_GZIP
     ) as stream:
@@ -2355,20 +2362,24 @@ def test_gzip_trailing_junk_delivers_member_then_reports() -> None:
 
 
 def test_gzip_multi_member_cross_feed_edges() -> None:
-    """NUL padding / magic split across small reads must still concatenate."""
+    """Member boundaries and NUL padding split across small reads resolve as in one."""
     m1 = gzip.compress(b"aa")
     m2 = gzip.compress(b"bb")
-    # Bytewise output across a padded boundary.
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(m1 + b"\x00\x00" + m2), config=_STDLIB_GZIP
-    ) as stream:
-        buf = bytearray()
-        while True:
-            c = stream.read(1)
-            if not c:
-                break
-            buf.extend(c)
-        assert bytes(buf) == b"aabb"
+
+    def bytewise(data: bytes) -> tuple[bytes, list[tuple[str, int]]]:
+        collector = DiagnosticCollector()
+        with open_codec_stream(
+            Codec.GZIP, io.BytesIO(data), config=_REPORTING_GZIP, collector=collector
+        ) as stream:
+            buf = bytearray()
+            while c := stream.read(1):
+                buf.extend(c)
+        return bytes(buf), _trailing_reports(collector)
+
+    assert bytewise(m1 + m2) == (b"aabb", [])
+    assert bytewise(m1 + b"\x00\x00") == (b"aa", [])
+    # NULs, then a member: the data ends at the NULs.
+    assert bytewise(m1 + b"\x00\x00" + m2) == (b"aa", [("gzip", len(m1) + 2)])
     # Lone trailing partial magic at EOF → deliver member, then report it.
     collector = DiagnosticCollector()
     with open_codec_stream(

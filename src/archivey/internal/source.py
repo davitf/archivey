@@ -66,6 +66,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
+from archivey.internal.arg_checks import raise_if_text_stream
+
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
 # without a lazy import.
@@ -76,7 +78,6 @@ from archivey.internal.streams.streamtools import (
     SlicingStream,
     ensure_bufferedio,
     is_seekable,
-    raise_if_text_stream,
     read_exact,
     read_within_reach,
     source_byte_size,

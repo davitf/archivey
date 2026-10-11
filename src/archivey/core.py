@@ -5,8 +5,13 @@
 numbered-volume refuse (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``) then Info-ZIP
 ``.zNN`` (both skipped when ``format=`` is an explicit non-joinable format) →
 detect or accept format (a stub-only ``.exe`` / ``.sfx`` with no archive magic
-follows the split first volume beside it) → other multi-volume checks → backend
-capability gates (password / seekability) → normalize stream origin →
+follows the split first volume beside it) → other multi-volume checks → raw CD
+sector image refusal (ISO, seekable source) → recognised-only refusal (DMG) →
+read-once capability refusal (a non-seekable source for a format that needs seek in
+either mode; its ``password=`` / ``encoding=`` diagnostics are emitted first) →
+backend lookup and availability check (``PackageNotInstalledError``) →
+``password=`` / ``encoding=`` diagnostics → access-mode refusal (a non-seekable
+source with ``streaming=False``) → normalize stream origin →
 ``backend.open_read(...)``.
 """
 
@@ -31,15 +36,18 @@ from archivey.diagnostics import (
     UnusedArgumentContext,
 )
 from archivey.exceptions import (
-    ArchiveyUsageError,
     FormatDetectionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
+    _UsageTypeError,
+    _UsageValueError,
 )
 from archivey.internal.arg_checks import (
     check_config,
     check_encoding,
     check_path_not_empty,
+    raise_if_text_stream,
+    raise_if_write_only_stream,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
 from archivey.internal.backends.zip_detect import (
@@ -71,11 +79,7 @@ from archivey.internal.registry import (
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.streamtools import (
-    is_stream,
-    raise_if_text_stream,
-    raise_if_write_only_stream,
-)
+from archivey.internal.streams.streamtools import is_stream
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
@@ -97,6 +101,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.internal.base_reader import ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 __all__ = [
@@ -217,7 +222,9 @@ def _follow_stub_volume(
                 pass
             else:
                 if info.format.container != format.container:
-                    raise ArchiveyUsageError(
+                    # DR-15's value half: format= is a usable type, and the call
+                    # refuses this value because it conflicts with what the source is.
+                    raise _UsageValueError(
                         f"{display_path(stub)} has no archive magic; the split first "
                         f"volume beside it is {info.format.display_name}, but "
                         f"format={format!r} was requested."
@@ -385,7 +392,7 @@ def open_archive(
         # tested on the container so an unnamed pair such as (UNKNOWN, GZIP) is refused
         # too. Refused here rather than in coerce_archive_format:
         # format_availability(UNKNOWN) is a legitimate query that answers NONE.
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"open_archive(format=…) cannot open {format!r}, which names no format; "
             f"pass the archive's format, or None to auto-detect."
         )
@@ -393,7 +400,7 @@ def open_archive(
     check_encoding(encoding, call="open_archive(encoding=…)")
 
     if streaming and concurrent_members:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             "open_archive(streaming=True) cannot be combined with "
             "concurrent_members=True: a forward-only pass has one progressive decoder "
             "and cannot fan out concurrent member streams."
@@ -448,6 +455,62 @@ class _SourceSlot:
         return source
 
 
+def _note_unused_arguments(
+    backend_cls: type[ReadBackend],
+    resolved_format: ArchiveFormat,
+    *,
+    archive_name: str | None,
+    passwords: _PasswordCandidates,
+    encoding: str | None,
+    collector: DiagnosticCollector,
+) -> None:
+    """Emit the ``password=`` / ``encoding=`` hygiene diagnostics for ``backend_cls``.
+
+    Reads only class attributes, so it runs for a backend whose optional package is
+    missing too. Both access-mode refusals call it first, so a refused open reports the
+    same hygiene whichever half refuses it.
+    """
+    # `password=` and `encoding=` are *resources offered for use if needed*, not
+    # assertions about this archive, so a backend that cannot use one is a diagnostic
+    # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
+    # the assertion, and ``_open_resolved`` still refuses it for a directory path.
+    if passwords.has_concrete_passwords() and not backend_cls.SUPPORTS_PASSWORD:
+        # Every form opens alike: none is refused. Only a concrete value is recorded,
+        # because a provider callable offers a password only if asked, and a format
+        # with no encryption never asks. A caller (the CLI, a batch job) can then pass
+        # one provider everywhere without a warning on every TAR or gzip.
+        collector.emit(
+            code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+            message=(
+                f"password= was supplied for {resolved_format.display_name}, which "
+                f"carries no encryption a password could unlock; it will not be used."
+            ),
+            context=UnusedArgumentContext(
+                archive_name=archive_name,
+                argument="password",
+                format=resolved_format.display_name,
+                reason="format carries no encryption",
+            ),
+        )
+
+    if encoding is not None and not backend_cls.USES_ENCODING:
+        # Only the caller's explicit encoding: an open that passed none asked for nothing.
+        collector.emit(
+            code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+            message=(
+                f"encoding={encoding!r} was supplied for "
+                f"{resolved_format.display_name}, which decodes member names without "
+                f"it; the value will not be applied."
+            ),
+            context=UnusedArgumentContext(
+                archive_name=archive_name,
+                argument="encoding",
+                format=resolved_format.display_name,
+                reason="backend decodes member names without a caller-supplied encoding",
+            ),
+        )
+
+
 def _open_resolved(
     slot: _SourceSlot,
     resolved: ResolvedSource,
@@ -491,7 +554,8 @@ def _open_resolved(
         # Every other explicit-format conflict is refused loudly; so is this one.
         if format is not None and format != ArchiveFormat.DIRECTORY:
             assert archive_source.path is not None  # the directory form has a path
-            raise ArchiveyUsageError(
+            # DR-15's value half: format= conflicts with what the source is.
+            raise _UsageValueError(
                 f"{archive_name or display_path(archive_source.path)} is a directory, but format="
                 f"{format!r} was requested. Pass a path to an archive file, or "
                 f"format=ArchiveFormat.DIRECTORY to read the directory tree."
@@ -510,7 +574,8 @@ def _open_resolved(
             if archive_source.path is not None
             else "The source stream"
         )
-        raise ArchiveyUsageError(
+        # DR-15's value half: format= conflicts with what the source is.
+        raise _UsageValueError(
             f"{where} is not a directory, but format={format!r} was requested. Pass a "
             f"directory path, or the archive's own format (or None to auto-detect)."
         )
@@ -574,7 +639,8 @@ def _open_resolved(
 
     # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
     # of the availability check, so the answer does not depend on pycdlib; a
-    # non-seekable source is left to the seekability refusal below.
+    # non-seekable source is left to the read-once refusal below, which is also ahead
+    # of it.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
@@ -591,73 +657,66 @@ def _open_resolved(
             archive_name=archive_name,
         )
 
-    backend_cls = registry.reader_for_format(resolved_format)
-
-    # `password=` and `encoding=` are *resources offered for use if needed*, not
-    # assertions about this archive, so a backend that cannot use one is a diagnostic
-    # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
-    # the assertion, and it is still refused above for a directory path.
-    if passwords.has_concrete_passwords() and not backend_cls.SUPPORTS_PASSWORD:
-        # Every form opens alike: none is refused. Only a concrete value is recorded,
-        # because a provider callable offers a password only if asked, and a format
-        # with no encryption never asks. A caller (the CLI, a batch job) can then pass
-        # one provider everywhere without a warning on every TAR or gzip.
-        collector.emit(
-            code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
-            message=(
-                f"password= was supplied for {resolved_format.display_name}, which "
-                f"carries no encryption a password could unlock; it will not be used."
-            ),
-            context=UnusedArgumentContext(
-                archive_name=archive_name,
-                argument="password",
-                format=resolved_format.display_name,
-                reason="format carries no encryption",
-            ),
-        )
-
-    if encoding is not None and not backend_cls.USES_ENCODING:
-        # Only the caller's explicit encoding: an open that passed none asked for nothing.
-        collector.emit(
-            code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
-            message=(
-                f"encoding={encoding!r} was supplied for "
-                f"{resolved_format.display_name}, which decodes member names without "
-                f"it; the value will not be applied."
-            ),
-            context=UnusedArgumentContext(
-                archive_name=archive_name,
-                argument="encoding",
-                format=resolved_format.display_name,
-                reason="backend decodes member names without a caller-supplied encoding",
-            ),
-        )
-
     # Access-mode contract: streaming=False never implicitly buffers a pipe.
     # streaming=True still needs a front-to-back format (TAR, raw codecs); trailing
     # indexes (ZIP CD, ISO) cannot.
-    if not archive_source.is_directory and not archive_source.seekable():
-        # Capability first, mode second: for a format that needs seek in *either* mode
-        # the requested mode is not what went wrong, so both modes get the one message
-        # naming the only fix. Proposing streaming=True here would send the caller into
-        # a second refusal explaining the retry could never have worked.
-        if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
-            raise StreamNotSeekableError(
-                f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
-                f"in either access mode (its index/metadata is not at the front of "
-                f"the stream). Buffer it to disk or a BytesIO and reopen.",
-                source_format=resolved_format,
-                archive_name=archive_name,
-            )
-        if not streaming:
-            raise StreamNotSeekableError(
-                f"Random access (streaming=False) requires a seekable source. Open with "
-                f"streaming=True for a single forward pass over this "
-                f"{resolved_format.display_name} stream, "
-                f"or buffer it to disk or a BytesIO and reopen.",
-                source_format=resolved_format,
-                archive_name=archive_name,
-            )
+    source_is_read_once = (
+        not archive_source.is_directory and not archive_source.seekable()
+    )
+    # Capability first, mode second: for a format that needs seek in *either* mode
+    # the requested mode is not what went wrong, so both modes get the one message
+    # naming the only fix. Proposing streaming=True here would send the caller into
+    # a second refusal explaining the retry could never have worked. Ahead of the
+    # availability check for the same reason: a piped ISO without pycdlib would
+    # otherwise be told to install it, and only then that a pipe cannot be read.
+    #
+    # The argument-hygiene diagnostics still run first, as they do ahead of the mode
+    # half below: a refused open reports the same ``password=`` / ``encoding=``
+    # diagnostics whichever half refuses it. They read only class attributes, so they
+    # need no optional package.
+    if source_is_read_once and registry.needs_seekable_source(resolved_format):
+        refused_cls = registry.registered_reader(resolved_format)
+        assert refused_cls is not None  # needs_seekable_source is False without one
+        _note_unused_arguments(
+            refused_cls,
+            resolved_format,
+            archive_name=archive_name,
+            passwords=passwords,
+            encoding=encoding,
+            collector=collector,
+        )
+        raise StreamNotSeekableError(
+            f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
+            f"in either access mode (its index/metadata is not at the front of "
+            f"the stream). Buffer it to disk or a BytesIO and reopen.",
+            source_format=resolved_format,
+            archive_name=archive_name,
+        )
+
+    backend_cls = registry.reader_for_format(resolved_format)
+
+    # The capability half above emits these too, so either refusal half reports them.
+    _note_unused_arguments(
+        backend_cls,
+        resolved_format,
+        archive_name=archive_name,
+        passwords=passwords,
+        encoding=encoding,
+        collector=collector,
+    )
+
+    # The mode half of the access-mode refusal; the capability half is above. This one
+    # stays after the availability check: the format can be read from a pipe, so the
+    # missing package is a real step on the way, not a detour.
+    if source_is_read_once and not streaming:
+        raise StreamNotSeekableError(
+            f"Random access (streaming=False) requires a seekable source. Open with "
+            f"streaming=True for a single forward pass over this "
+            f"{resolved_format.display_name} stream, "
+            f"or buffer it to disk or a BytesIO and reopen.",
+            source_format=resolved_format,
+            archive_name=archive_name,
+        )
 
     # Mid-file seekable streams: rebase so every backend sees tell()==0 at the first
     # archive byte (done after detection, which peeked from the same origin).
@@ -757,7 +816,7 @@ def open_stream(
         # as open_archive refuses it, so a missing path or a directory does not answer
         # first; the container refusal in _resolve_stream_format would also send the
         # caller to open_archive, which refuses it as well.
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"open_stream cannot open {format!r}, which names no format; pass a "
             "StreamFormat or a raw-stream ArchiveFormat (e.g. ArchiveFormat.GZ), "
             "or None to auto-detect."
@@ -773,8 +832,9 @@ def open_stream(
         if path.is_dir():
             # Split out of the is_file() check: a directory exists, so "not found" sends
             # the caller looking for a missing file. open_archive() reads the same path
-            # happily as a directory archive, which is the likely intent.
-            raise ArchiveyUsageError(
+            # happily as a directory archive, which is the likely intent. DR-15's
+            # value half: the path is a usable type whose value this call refuses.
+            raise _UsageValueError(
                 f"{display_path(path)} is a directory, not a compressed stream; "
                 f"use open_archive() to read a directory tree"
             )
@@ -787,7 +847,7 @@ def open_stream(
         if not is_stream(source):
             raise_if_text_stream(source)
             raise_if_write_only_stream(source)
-            raise TypeError(
+            raise _UsageTypeError(
                 f"open_stream source must be a path or binary stream, got {type(source)!r}"
             )
         # The same boundary open_archive uses: full-count, borrowed, bounded, and a
@@ -831,7 +891,7 @@ def _open_stream_from_source(
     # Only an explicit format= can be UNCOMPRESSED: detection never returns a
     # RAW_STREAM/UNCOMPRESSED pair, so this is the caller's mistake, not the input's.
     if stream_format is StreamFormat.UNCOMPRESSED:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             "open_stream requires a compressed stream format "
             f"(got {stream_format!r}); use open_archive for uncompressed containers."
         )
@@ -880,7 +940,7 @@ def _resolve_stream_format(
         # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.
         outer = outer_stream_format(format)
         if outer is None:
-            raise ArchiveyUsageError(
+            raise _UsageValueError(
                 f"open_stream does not accept container format {format!r}; "
                 "pass a StreamFormat, a raw-stream ArchiveFormat "
                 "(e.g. ArchiveFormat.GZ) or a compressed tar, or use open_archive."

@@ -105,8 +105,10 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
+from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -680,7 +682,7 @@ class TarReader(BaseArchiveReader):
             yield from self._iter_with_data_random_access()
             return
         # Pull from the shared instance-held progressive pass so __iter__,
-        # stream_members, and scan_members share one cursor and finalization.
+        # stream_members, and members_report share one cursor and finalization.
         # close_previous=False: the walk's next header leaves the previous member's
         # stream unreadable, and the walk reads through whatever it left.
         with self._translated_errors():
@@ -1062,6 +1064,23 @@ class TarReader(BaseArchiveReader):
 
         # The typeflag as stored: NUL for an old-style directory.
         extra = MemberExtra({"tar.type": entry.typeflag})
+        special = special_file_type_from_tar_typeflag(entry.typeflag)
+        if special is not None:
+            if entry.size:
+                # The typeflag is structure in TAR, so a device or FIFO header has no
+                # data: GNU tar and libarchive ignore its size field and read the next
+                # header where the "data" starts. An all-zero payload would then read
+                # as the end-of-archive marker and every later member would vanish
+                # without a word, so the header is refused as damage (DR-25).
+                raise CorruptionError(
+                    f"TAR header for {quoted(name)} is a {special.replace('_', ' ')} "
+                    f"that declares {entry.size} bytes of data; a device or FIFO entry "
+                    "has no data, and tar skips such a header as damaged",
+                    archive_name=self._archive_name,
+                    member_name=name,
+                )
+            # The cross-format key says which kind the archive recorded (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if entry.pax:
             extra["tar.pax_headers"] = self._extra_pax_headers(entry)
         if entry.typeflag in _DEVICE_TYPES:
