@@ -179,6 +179,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
 - `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
+- **An old-style directory that declares data is reported.** A regular-file header
+  (typeflag NUL or `0`) whose name ends in `/` is a directory, as GNU tar and 7-Zip
+  read it. When its size field is not zero, the directory keeps that `size`,
+  `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction creates the directory and
+  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them.
+  `DiagnosticPolicy.strict()` refuses the archive.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
