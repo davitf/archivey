@@ -1540,8 +1540,7 @@ class BaseArchiveReader(ArchiveReader):
         stamp it, so a duplicate name in the prefix is superseded by a later copy in
         the prefix; a copy the pass yields after the discard cannot supersede it.
 
-        A backend that keeps its own record of the walk (TAR's ``tarfile``) extends
-        this to drop it too.
+        A backend that keeps its own record of the walk extends this to drop it too.
         """
         _apply_last_entry_wins_is_current(self._listed)
         self._listing_discarded = True
