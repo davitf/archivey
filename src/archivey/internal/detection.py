@@ -724,6 +724,9 @@ def _scan_for_sfx_payload(
     magics_by_key = [
         {entry.magic for entry in entries if entry.format == fmt} for fmt in formats
     ]
+    # One magic, one format: both lookups are keyed by magic bytes, so a magic two
+    # formats shared would route its hits to one and be dropped with either's cap.
+    assert len(by_needle) == len(entries)
     # The selector holds (format key, origin); the one FormatInfo is built from the
     # winner, so a decoy-carpeted window costs no construction per candidate.
     selector: HitSelector[tuple[int, int]] = HitSelector(

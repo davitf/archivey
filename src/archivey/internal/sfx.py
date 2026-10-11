@@ -780,6 +780,8 @@ def iter_magic_in_prefix(
     for step in (*_PEEK_STEPS, limit):
         if step <= searched:
             continue
+        # The detector never gets here today: it drops only capped formats' magics
+        # (RAR, 7z), and ZIP's is never capped, so it stays searched.
         if magics <= dropped:
             return
         data = peek_more(min(step, limit))

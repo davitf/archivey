@@ -499,6 +499,10 @@ short of a known end of source (`HitOutcome.VALID_SHORT`) is kept only as a fall
 scan goes on, and a later 7z hit that ends exactly at end of source wins over it, so a
 stub that embeds a whole small 7z archive does not hide the real payload after it. With no
 such later hit the short one is used, which keeps a 7z followed by trailing data readable.
+A held short hit SHALL be displaced only by a later `VALID` hit of the **same** format. A
+`VALID` hit of another format SHALL end the scan, and the held short hit SHALL be the
+answer: the exact-end preference is a tie-break within one format and never reorders
+formats, so the earliest accepted needle still decides between them.
 
 The window bounds where a magic may **start**, not how far its validator reads. A
 candidate that starts inside the window SHALL be judged on its whole header, read up to
@@ -537,6 +541,7 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | A window filled with one capped format's decoys | That format's needles are no longer searched after the 256th rejection; the scan does not walk the rest of its decoys |
 | Whole valid 7z in the stub, then 256 rejected 7z decoys, then the real 7z | The embedded 7z, as the fallback forced `format=SEVEN_Z` also takes; `sfx_scan` recorded *budget exhausted* |
 | Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
+| Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |
