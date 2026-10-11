@@ -56,8 +56,9 @@ class SparseStream(DelegatingStream):
         size: int,
     ) -> None:
         super().__init__(inner)
-        # A read of a zero-length chunk returns no bytes, so the read loop would
-        # not advance.
+        # A zero-length chunk's end equals its start. Keeping it can make a
+        # fragment ask the inner stream for zero bytes. Dropping it keeps the
+        # ends increasing, so adding one to the index matches the search.
         chunks = [(o, n) for o, n in zip(offsets, lengths, strict=True) if n]
         self._starts = [o for o, _ in chunks]
         self._ends = [o + n for o, n in chunks]
@@ -69,10 +70,10 @@ class SparseStream(DelegatingStream):
             total += n
         self._size = size
         self._pos = 0
-        # The chunk that contains _pos, or the next chunk when _pos is in a hole.
-        # len(self._starts) when _pos is past the last chunk. seek() sets this
-        # with a search. read() increases it by one at a chunk's end.
-        self._index = self._index_at(0)
+        # The next chunk when _pos is in a hole, or len(self._starts) when _pos
+        # is past the last chunk. A seek to a new position sets it. read() adds
+        # one at a chunk's end.
+        self._chunk_index = self._chunk_index_at(0)
         # Where the first chunk starts in the inner stream, and how far past it the
         # inner stream is now.
         self._base = inner.tell() if self._seekable else 0
@@ -93,13 +94,18 @@ class SparseStream(DelegatingStream):
             raise io.UnsupportedOperation(
                 "backward seek on a forward-only sparse stream"
             )
+        if target == self._pos:
+            return target
         self._pos = target
-        self._index = self._index_at(target)
+        self._chunk_index = self._chunk_index_at(target)
         return target
 
-    def _index_at(self, pos: int) -> int:
-        # Ends increase: the map is ordered and non-overlapping, and a zero-length
-        # chunk is dropped. The first end strictly after pos is the chunk that
+    def _chunk_index_at(self, pos: int) -> int:
+        # Position 0 needs no search. Starts are non-negative and empty chunks
+        # are dropped, so no chunk ends at or before 0. The index is 0.
+        if pos == 0:
+            return 0
+        # Ends increase. The first end strictly after pos is the chunk that
         # contains pos, or the next chunk when pos is in a hole. An end equal to
         # pos belongs to a chunk the position has already left.
         return bisect_right(self._ends, pos)
@@ -120,7 +126,7 @@ class SparseStream(DelegatingStream):
 
     def _read_some(self, want: int) -> bytes:
         """Up to ``want`` bytes from one chunk or one hole, advancing the position."""
-        i = self._index
+        i = self._chunk_index
         if i == len(self._starts):
             return self._read_hole(want, self._size)
         start = self._starts[i]
@@ -128,11 +134,12 @@ class SparseStream(DelegatingStream):
             return self._read_hole(want, start)
         end = self._ends[i]
         pos = self._pos
+        assert pos < end, "chunk index points past the chunk"
         count = min(want, end - pos)
         data = self._read_stored(self._stored[i] + pos - start, count)
         self._pos = pos + count
         if self._pos == end:
-            self._index = i + 1
+            self._chunk_index = i + 1
         return data
 
     def _read_hole(self, want: int, boundary: int) -> bytes:
