@@ -25,7 +25,6 @@ from archivey.cli.choices import from_cli_choice
 from archivey.cli.common import (
     open_for_cli,
     reject_empty_path,
-    reject_salvage,
 )
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import MemberSelection
@@ -1067,7 +1066,6 @@ def run_extract(
     exclude: list[str],
     policy: str,
     overwrite: str,
-    salvage: bool,
     password: str | None,
     track_io: bool,
     hide_progress: bool,
@@ -1079,7 +1077,6 @@ def run_extract(
     err: TextIO | None = None,
 ) -> int:
     del out  # extract reports to stderr; files go to the filesystem
-    reject_salvage(salvage)
     # On the strings, before Path() turns "" into ".". The stdin token "-" is
     # refused by open_for_cli below.
     reject_empty_path(archive, arg="archive")

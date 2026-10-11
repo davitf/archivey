@@ -199,7 +199,6 @@ def test_list_incomplete_members_report_exits_one(
             exclude=[],
             digests=False,
             verbose=False,
-            salvage=False,
             password=None,
             track_io=False,
         )
@@ -328,6 +327,23 @@ def test_salvage_reserved(sample_zip: Path) -> None:
         )
         == EXIT_USAGE
     )
+
+
+def test_top_level_errors_share_one_prefix(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A CliError, an ArchiveyError and an OSError that end the run print alike."""
+    not_an_archive = tmp_path / "plain.bin"
+    not_an_archive.write_bytes(b"not an archive at all\n" * 8)
+    runs = {
+        "CliError": ["list", str(sample_zip), "--salvage"],
+        "ArchiveyError": ["list", str(not_an_archive)],
+        "OSError": ["list", str(tmp_path / "missing.zip")],
+    }
+    for kind, argv in runs.items():
+        assert main(argv) != EXIT_OK, kind
+        err = capsys.readouterr().err
+        assert err.startswith("archivey: "), (kind, err)
 
 
 def test_include_flag_rejected(sample_zip: Path) -> None:
@@ -1227,6 +1243,34 @@ def test_test_open_failure_still_prints_summary(
     assert "FAIL:" in err
     # sample_zip has 3 file members; archive-wide FAIL consumes one slot.
     assert "0 OK, 1 failed, 2 not tested" in err
+
+
+def test_test_counts_a_truncated_tar_member_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A tar.gz cut in half fails one member. The TAR pass then raises the same error
+    again as it ends; that is the pass stopping, not a second failure (cli-2)."""
+    import random
+
+    rng = random.Random(0)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for i in range(5):
+            data = rng.randbytes(200_000)
+            info = tarfile.TarInfo(f"f{i}.bin")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    full = buf.getvalue()
+    archive = tmp_path / "trunc.tar.gz"
+    archive.write_bytes(full[: len(full) // 2])
+
+    assert main(["test", "--hide-progress", str(archive)]) == EXIT_FAIL
+    lines = capsys.readouterr().err.splitlines()
+    fails = [ln for ln in lines if ln.startswith("FAIL")]
+    assert len(fails) == 1
+    assert fails[0].startswith("FAIL f2.bin: ")
+    assert "test stopped; remaining members were not tested" in lines
+    assert lines[-1] == "2 OK, 1 failed"
 
 
 def test_test_early_abort_reports_not_tested(

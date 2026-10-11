@@ -320,17 +320,14 @@ _Runner = Callable[[argparse.Namespace, _Common], int]
 
 
 class _Selection(TypedDict):
-    """Member-selection kwargs of the verbs that read members (``--salvage`` refused)."""
+    """Member-selection kwargs of the verbs that read members."""
 
     patterns: list[str]
     exclude: list[str]
-    salvage: bool
 
 
 def _selection(args: argparse.Namespace) -> _Selection:
-    return _Selection(
-        patterns=list(args.patterns), exclude=list(args.exclude), salvage=False
-    )
+    return _Selection(patterns=list(args.patterns), exclude=list(args.exclude))
 
 
 # The runners look their run_* up by name when called, so tests can patch it.
@@ -752,10 +749,10 @@ def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO)
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not
         # escape its own message the way ArchiveyError does — and an archive-derived name
         # reaches here inside that message, not as a separate argument.
-        print(escape_member_name(exc.message), file=err)
+        print(f"archivey: {escape_member_name(exc.message)}", file=err)
         return exc.code
     except ArchiveyError as exc:
-        print(format_error_detail(exc), file=err)
+        print(f"archivey: {format_error_detail(exc)}", file=err)
         return EXIT_FAIL
     except BrokenPipeError:
         # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2), which
