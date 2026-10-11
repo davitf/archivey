@@ -43,7 +43,11 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.resume import ResumeReachedStreamEnd, planning_seek
+from archivey.internal.streams.resume import (
+    ResumeReachedStreamEnd,
+    hold_for_planned_seek,
+    planning_seek,
+)
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     ensure_bufferedio,
@@ -568,9 +572,6 @@ class DecompressorStream(ReadOnlyIOStream):
         self._index_enabled = seekable
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
-        # A report escalated by an index built for a planned seek, raised by the seek
-        # (``_build_index_for_seek``).
-        self._held_for_seek: Exception | None = None
         self._index_build_attempted = False
         # Minimum decompressed distance between points once the table has been thinned
         # (0 until then); see _thin_seek_table.
@@ -784,9 +785,9 @@ class DecompressorStream(ReadOnlyIOStream):
     def _build_index_for_seek(self, target: int) -> None:
         """Build the index now when a forward seek to ``target`` would (see ``_seek``).
 
-        A report the build escalates is held, as the seek holds it, and raised by the
-        next :meth:`seek` once that seek has moved, which is where it would have come
-        from had the seek built the index itself.
+        A report the build escalates is held, as the seek holds it, and handed to the
+        planning caller (``hold_for_planned_seek``), which raises it once its seek has
+        moved, where it would have come from had the seek built the index itself.
         """
         if (
             target <= self._pos + len(self._buffer)
@@ -797,8 +798,8 @@ class DecompressorStream(ReadOnlyIOStream):
         with self._deferring_raises() as pending:
             self._ensure_index_built()
             held = pending()
-        if held is not None and self._held_for_seek is None:
-            self._held_for_seek = held
+        if held is not None:
+            hold_for_planned_seek(held)
 
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)
@@ -1111,11 +1112,6 @@ class DecompressorStream(ReadOnlyIOStream):
         with self._deferring_raises() as pending:
             pos = self._seek(offset, whence)
             held = pending()
-            planned, self._held_for_seek = self._held_for_seek, None
-            if planned is not None:
-                # Held first, by the index build this seek's planning ran; a block
-                # raises once, so a later report from the seek itself is dropped.
-                held = planned
             if held is not None:
                 raise held
         return pos

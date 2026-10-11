@@ -22,8 +22,6 @@ re-exports it as the archivey-facing name.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from contextvars import ContextVar
 
 from archivey.internal.streams.streamtools.binaryio import ask_resume_offset
@@ -32,13 +30,19 @@ __all__ = [
     "ResumeReachedStreamEnd",
     "ask_resume_offset",
     "ask_seek_resume_offset",
+    "hold_for_planned_seek",
     "planning_seek",
 ]
 
-_PLANNING_SEEK: ContextVar[bool] = ContextVar("archivey_planning_seek", default=False)
+# Inside ``ask_seek_resume_offset``: the reports held for the planning caller.
+_PLANNING_SEEK: ContextVar[list[Exception] | None] = ContextVar(
+    "archivey_planning_seek", default=None
+)
 
 
-def ask_seek_resume_offset(inner: object | None, target: int) -> int | None:
+def ask_seek_resume_offset(
+    inner: object | None, target: int
+) -> tuple[int | None, Exception | None]:
     """``ask_resume_offset`` for a caller about to seek ``inner`` to ``target``.
 
     The plain query reads each seek-point table as it stands, so a diagnostic never
@@ -47,23 +51,36 @@ def ask_seek_resume_offset(inner: object | None, target: int) -> int | None:
     (an lzip or xz trailer read) and may then jump. While this call runs, such a
     stream builds that index first (:func:`planning_seek`). The flag rides a context
     variable, so the wrappers that forward the query need no change.
+
+    Returns the resume point and the first report that index build escalated, if
+    any. The report belongs to the seek being planned, so the caller raises it once
+    that seek has moved, as the stream's own seek would have (or drops it with the
+    plan). Nothing is left on the stream for an unrelated later call to raise.
     """
-    with _planning_seek():
-        return ask_resume_offset(inner, target)
-
-
-@contextmanager
-def _planning_seek() -> Iterator[None]:
-    token = _PLANNING_SEEK.set(True)
+    held: list[Exception] = []
+    token = _PLANNING_SEEK.set(held)
     try:
-        yield
+        resume = ask_resume_offset(inner, target)
     finally:
         _PLANNING_SEEK.reset(token)
+    return resume, held[0] if held else None
 
 
 def planning_seek() -> bool:
     """True inside :func:`ask_seek_resume_offset`: answer for the seek about to run."""
-    return _PLANNING_SEEK.get()
+    return _PLANNING_SEEK.get() is not None
+
+
+def hold_for_planned_seek(report: Exception) -> None:
+    """Hand a report escalated while planning a seek to the planning caller.
+
+    Only valid inside :func:`ask_seek_resume_offset` (:func:`planning_seek` is true).
+    The first report is kept; a block raises once.
+    """
+    held = _PLANNING_SEEK.get()
+    assert held is not None, "hold_for_planned_seek outside a planned seek"
+    if not held:
+        held.append(report)
 
 
 class ResumeReachedStreamEnd(Exception):

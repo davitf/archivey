@@ -25,16 +25,15 @@ Per ADR 0014 / ``compressed-streams``:
   seek past the frontier keeps it too when the inner would decode the skipped bytes
   anyway (its ``nearest_resume_offset`` for the target is at or before the frontier):
   the next read reads those bytes through the hashers first (``MemberVerifier.seek``),
-  so the seek itself stays lazy. A seek to or past the declared size keeps it as well: concluding hashes the gap. A
-  read that starts past the frontier, after a seek that jumped there by an index, an
-  accelerator or random access, forfeits the checksum only. Length / truncation /
-  over-run stay on and key
-  off bytes **actually read** (``_furthest_read_pos``). If a seek jumps to/past the
-  declared size without reading the intervening bytes, concluding reads the skipped
-  gap and probes one byte past the declared size (``_conclude``) rather than
-  returning ``b""`` blind, so a past-EOF ``seek(declared_size)`` still catches
-  truncation (short) *and* over-run (long). A member already concluded
-  (``_verified``) returns with no extra I/O.
+  so the seek itself stays lazy. A seek to or past the declared size keeps it as
+  well: concluding hashes the gap. A read that starts past the frontier, after a seek
+  that jumped there by an index, an accelerator or random access, forfeits the
+  checksum only. Length / truncation / over-run stay on and key off bytes **actually
+  read** (``_furthest_read_pos``). If a seek jumps to/past the declared size without
+  reading the intervening bytes, concluding reads the skipped gap and probes one byte
+  past the declared size (``_conclude``) rather than returning ``b""`` blind, so a
+  past-EOF ``seek(declared_size)`` still catches truncation (short) *and* over-run
+  (long). A member already concluded (``_verified``) returns with no extra I/O.
 - **Size-declared corruption** (digest mismatch / over-run at the declared size):
   the reaching read raises and **withholds** that chunk.
 - **Size-unknown corruption**: deliver data bytes; raise on the EOS-observing
@@ -598,6 +597,7 @@ class MemberVerifier:
         target = self._seek_target(offset, whence)
         due = self._read_through_due
         expected_size = self._expected_size
+        planned: Exception | None = None
         if (
             target is not None
             and target > self._furthest_read_pos
@@ -610,18 +610,25 @@ class MemberVerifier:
             and self.digests_enabled
             and not self._verified
         ):
-            resume = ask_seek_resume_offset(inner, target)
+            # A report the planning escalated (an index build) is this seek's: it
+            # raises once the seek has moved, as the inner's own seek raises it.
+            resume, planned = ask_seek_resume_offset(inner, target)
             if resume is not None and resume <= self._furthest_read_pos:
                 left_at = due[1] if due is not None else self._pos
                 self._read_through_due = (target, left_at)
                 self._pos = target
+                if planned is not None:
+                    raise planned
                 return target
         if due is not None and target is not None:
             # The inner is still where the deferred seek left it, not at ``_pos``: a
             # relative ``whence`` must not apply to it.
             offset, whence = target, 0
+        self._read_through_due = None
         result = inner.seek(offset, whence)
         self.note_seek(result)
+        if planned is not None:
+            raise planned
         return result
 
     def _seek_target(self, offset: int, whence: int) -> int | None:
@@ -642,8 +649,7 @@ class MemberVerifier:
         checks and propagates from the read that settles, as it would had the inner's
         own lazy seek decoded the same bytes there. With no declared size, reaching the
         end first is recorded, so the position past it skips no byte. The inner ends
-        with a seek to the target, which also raises anything an index build held for
-        the next seek (``ask_seek_resume_offset``).
+        with a seek to the target.
         """
         due = self._read_through_due
         assert due is not None
@@ -711,8 +717,12 @@ def note_raised_seek(verifier: MemberVerifier | None, inner: BinaryIO) -> int | 
     frontier the stream has left. Both wrappers that drive a verifier
     (:class:`VerifyingStream` and ``ArchiveStream``) call this from their seek.
     Returns ``None`` when ``inner`` cannot say where it is; the seek's own error is
-    the one that propagates.
+    the one that propagates. A seek the verifier deferred (``MemberVerifier.seek``)
+    raised after it moved, with the inner left where it was: the verifier's position
+    stands.
     """
+    if verifier is not None and verifier._read_through_due is not None:
+        return verifier.pos
     try:
         after = inner.tell()
     except Exception:  # noqa: BLE001 - the seek's own error propagates instead

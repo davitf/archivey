@@ -18,8 +18,9 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   `STREAM_REWIND_REDECOMPRESSES`, but it still costs.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't expect a CRC verdict after a seek that jumps.** A seek back keeps the
-  member's CRC check, and so does a forward seek in a compressed member, which decodes
-  the bytes it skips anyway: Archivey hashes them as it goes. A forward seek that jumps
+  member's CRC check, and so does a forward seek in a compressed member: the next read
+  decodes the bytes it skipped, as it would have to anyway, and Archivey hashes them as
+  it goes. A forward seek that jumps
   over bytes without decoding them (a stored member, or a seek by an index or the
   `[seekable]` accelerator) gives up the check once you read past the jump, until you
   seek back to 0. The check covers the first pass over each byte: bytes read again

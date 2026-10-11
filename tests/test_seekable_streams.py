@@ -1509,9 +1509,68 @@ def test_planning_a_seek_builds_the_index_the_seek_would() -> None:
     with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
         assert stream.read(10) == LZIP_PARTS[0][:10]
         assert ask_resume_offset(stream, target) == 0
-        planned = ask_seek_resume_offset(stream, target)
+        planned, held = ask_seek_resume_offset(stream, target)
         assert planned == target - 5
+        assert held is None
         assert ask_resume_offset(stream, target) == planned
+
+
+@pytest.mark.parametrize("wrapper", ["ArchiveStream", "VerifyingStream"])
+def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> None:
+    """A report the planning index build escalates raises from the seek it planned.
+
+    Trailing junk defeats the lzip index scan (``SEEK_INDEX_DEGRADED``) and leaves
+    no seek point, so the member verifier defers the forward seek to the next read.
+    The report must still come from this seek, with the position moved, and nothing
+    may be left behind to raise from a later read or seek.
+    """
+    from archivey import DiagnosticPolicy
+    from archivey.diagnostics import DiagnosticCode, DiagnosticDisposition
+    from archivey.exceptions import DiagnosticRaisedError
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
+    from archivey.internal.streams.verify import VerifyingStream
+    from archivey.types import HashAlgorithm, crc32_digest
+
+    data = random.Random(7).randbytes(2000)
+    compressed = make_multi_member_lzip([data]) + b"J" * (TRAILING_DATA_SEARCH + 14)
+    policy = DiagnosticPolicy.strict()
+    policy = dataclasses.replace(
+        policy,
+        overrides={
+            **policy.overrides,
+            DiagnosticCode.ARCHIVE_TRAILING_DATA: DiagnosticDisposition.COLLECT,
+        },
+    )
+    collector = DiagnosticCollector(policy=policy)
+    hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(data))}
+    stream: BinaryIO
+    if wrapper == "ArchiveStream":
+        stream = ArchiveStream(
+            lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            translate=lambda _exc: None,
+            collector=collector,
+            expected_hashes=hashes,
+            expected_size=len(data),
+        )
+    else:
+        stream = VerifyingStream(
+            LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            hashes,
+            expected_size=len(data),
+            collector=collector,
+        )
+    with stream:
+        assert stream.read(10) == data[:10]
+        with pytest.raises(DiagnosticRaisedError) as info:
+            stream.seek(500)
+        assert info.value.diagnostic.code is DiagnosticCode.SEEK_INDEX_DEGRADED
+        assert stream.tell() == 500
+        assert stream._digest_intact() is True  # deferred, not jumped
+        assert stream.read(10) == data[500:510]
+        stream.seek(5)
+        assert stream.read() == data[5:]
 
 
 @pytest.mark.parametrize("wrapper", ["ArchiveStream", "VerifyingStream"])
