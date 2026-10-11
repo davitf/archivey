@@ -461,6 +461,33 @@ def test_symlink_with_slash_target_resolves_on_windows(tmp_path: Path) -> None:
     assert (dest / "l").read_bytes() == b"x"
 
 
+# --- An existing directory keeps its mode only where a mode can differ ------------
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates Windows modes with chmod")
+def test_existing_directory_keeps_its_mode_only_where_windows_can_tell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulated on POSIX: Windows reports a writable directory as ``0o777``, and a
+    mode applied there sets only the read-only attribute. A ``0o755`` member over an
+    existing writable directory changes nothing, so nothing was kept; a ``0o555``
+    member would have made it read-only, so its mode was kept. The ``0o755`` one
+    used to report ``kept_mode=0o777`` on every existing directory."""
+    monkeypatch.setattr(extraction, "_WINDOWS", True)
+    dest = tmp_path / "out"
+    for name in ("w", "ro"):
+        (dest / name).mkdir(parents=True)
+        os.chmod(dest / name, 0o777)
+    report = open_and_extract(
+        io.BytesIO(_tar([("dir", "w/", None), ("rodir", "ro/", None)])),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+    )
+    kept = {r.member.name: r.kept_mode for r in report.results}
+    assert kept == {"w/": None, "ro/": 0o777}
+    assert stat.S_IMODE(os.stat(dest / "ro").st_mode) == 0o777
+
+
 # --- A read-only file this run wrote can be replaced --------------------------------
 
 

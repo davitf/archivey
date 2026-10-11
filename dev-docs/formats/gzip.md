@@ -102,7 +102,12 @@ Raw DEFLATE is never detected; it exists only inside a container that names it.
 
 `FCOMMENT`, `XFL`, `OS` and `FEXTRA` subfields (bgzip's `BC` block size among them) are not
 reported. `size` is `None` and `hashes` is empty (§6). A zlib stream reports nothing beyond
-the shared fields.
+the shared fields. `compressed_size` is the source's length on a seekable source, and a
+member stream's advertised length whether or not that member stream is seekable. It is
+`None` on a caller's pipe, also one with a `size` attribute, and on a member stream that
+advertises no length (a `.gz` member of another `.gz`, opened with
+`open_archive(member_stream)`), since learning it would decompress that member to its end
+([`single-file.md`](single-file.md) §2.2).
 
 ### 2.3 Member data
 

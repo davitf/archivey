@@ -408,9 +408,9 @@ def test_tar_lzma_probe_clamps_the_header_dictionary(
 ) -> None:
     written = lzma.compress(_TARBALL, format=lzma.FORMAT_ALONE)
     hostile = _declare_alone_dictionary(written, _FOUR_GIB_MINUS_ONE)
-    # A raw LZMA Alone stream has no magic: a nameless source is probed only on request.
-    config = ArchiveyConfig(always_probe_content=True)
-    info = detect_format(io.BytesIO(hostile), config=config)
+    # LZMA Alone has no magic: an unnamed source reaches its probe only on opt-in.
+    probe_all = ArchiveyConfig(always_probe_content=True)
+    info = detect_format(io.BytesIO(hostile), config=probe_all)
     assert info.format == _tar_of(StreamFormat.LZMA_ALONE)
     assert _largest_dictionary(lzma_decoders) <= 64 * 1024 + 1 + 64
 
