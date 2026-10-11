@@ -110,10 +110,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   directory with that size and reported with ``MEMBER_DIRECTORY_DATA_IGNORED``;
   extraction creates the directory, as unzip and 7-Zip do, and ``read()`` returns the
   bytes, checked against the stored CRC-32. A CRC field of 0, a directory's conventional
-  value, is no digest when the CRC is the entry's only check (unencrypted, ZipCrypto or
-  WinZip AE-1): ``DIGEST_UNVERIFIABLE`` says the bytes come back unchecked. An AE-2
-  entry stores CRC 0 by design and its HMAC checks the bytes, so nothing is reported for
-  it. Strict refuses the archive. A directory declaring size 0 over a body larger than
+  value, is no digest; when that CRC was the entry's only check (unencrypted or
+  ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back unchecked, while a WinZip
+  AES entry (AE-1 or AE-2) has its HMAC check the bytes, so nothing is reported for it.
+  Strict refuses the archive. A directory declaring size 0 over a body larger than
   an empty one of its method is reported too (``read()`` has nothing to return for it);
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
   not.

@@ -1232,18 +1232,20 @@ class ZipReader(BaseArchiveReader):
         # members with data: FILE and SYMLINK, and a directory whose header declares
         # some (``open()`` delivers it, so the read is digest-checked like a file's).
         # A directory's CRC field is 0 by convention, so a zero there over declared
-        # data is no digest, not a failing one: the member gets no crc32 and
-        # ``DIGEST_UNVERIFIABLE`` below says the read is unchecked (design principle
-        # 1: say so instead of implying the bytes were checked; DR-4: CorruptionError
-        # is for damage). AE-2 stores CRC as 0 and relies on the HMAC — do not surface
-        # a fake crc32, and do not read its zero as a missing anchor either: the HMAC
-        # checks an AE-2 directory's bytes as it checks an AE-2 file's.
+        # data is no digest, not a failing one: the member gets no crc32. Whether that
+        # leaves the read unchecked depends on the entry's other checks: a WinZip AES
+        # member (method 99, AE-1 and AE-2 alike) carries an HMAC over its bytes, so
+        # only an entry whose CRC was its only check reports ``DIGEST_UNVERIFIABLE``
+        # below (design principle 1: say so instead of implying the bytes were checked;
+        # DR-4: CorruptionError is for damage). AE-2 stores CRC 0 by design and relies
+        # on the HMAC — never surface a fake crc32 for it.
         hashes: dict[HashAlgorithm, bytes] = {}
         is_ae2 = aes_info is not None and aes_info.is_ae2
         directory_data = member_type is MemberType.DIRECTORY and info.file_size > 0
-        directory_without_crc = directory_data and info.CRC == 0 and not is_ae2
+        directory_zero_crc = directory_data and info.CRC == 0
+        directory_without_anchor = directory_zero_crc and aes_info is None
         if member_type in (MemberType.FILE, MemberType.SYMLINK) or (
-            directory_data and not directory_without_crc
+            directory_data and not directory_zero_crc
         ):
             if not is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
@@ -1334,7 +1336,7 @@ class ZipReader(BaseArchiveReader):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
-            if directory_without_crc:
+            if directory_without_anchor:
                 self._diagnostics_collector.emit(
                     code=DiagnosticCode.DIGEST_UNVERIFIABLE,
                     message=(

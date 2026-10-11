@@ -99,12 +99,12 @@ declaring no size raise `ArchiveyUsageError`, while a directory declaring data o
 delivers the bytes where the backend can decode them (ZIP decodes any method; RAR
 delivers stored, unencrypted directory data and raises `UnsupportedFeatureError` for the
 rest, since `unrar` emits nothing for a directory entry), checked against the stored
-digest like a file's when the header carries one. A ZIP directory entry whose CRC-32 is
-its only check (unencrypted, ZipCrypto or WinZip AE-1) and whose CRC-32 field is 0, the
-conventional value for a directory, carries no digest, and `DIGEST_UNVERIFIABLE`
-(`reason="no_integrity_anchor"`) SHALL say so instead of refusing the bytes as damaged;
-an AE-2 directory stores CRC 0 by design and is checked by its HMAC like an AE-2 file,
-so it carries no digest and reports nothing. `stream_members()` SHALL still yield `None`
+digest like a file's when the header carries one. A ZIP directory entry whose CRC-32
+field is 0, the conventional value for a directory, carries no digest; when that CRC was
+the entry's only check (unencrypted or ZipCrypto), `DIGEST_UNVERIFIABLE`
+(`reason="no_integrity_anchor"`) SHALL say so instead of refusing the bytes as damaged,
+and when the entry is WinZip AES (AE-1 or AE-2) its HMAC checks the bytes as it checks a
+file's, so nothing is reported. `stream_members()` SHALL still yield `None`
 for a directory. A directory whose declared size is zero SHALL also be reported when its
 body is larger than an empty one of its method takes (ZIP: 0 stored, 2 deflated, 14
 bzip2, 19 LZMA, any body for a method not in that table; RAR: any body), so a payload

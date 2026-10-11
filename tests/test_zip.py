@@ -2342,6 +2342,30 @@ def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
     with open_archive(ae1, password="secret") as ar:
         assert HashAlgorithm.CRC32 in ar.get("d/").hashes
         assert ar.read("d/") == b"hidden data!"
+    # An AE-1 entry whose CRC field is zeroed still has its HMAC: no digest, but the
+    # bytes are checked, so nothing is reported and a tampered HMAC still raises.
+    crc = struct.pack("<I", zlib.crc32(b"hidden data!"))
+    ae1_bytes = ae1.read_bytes()
+    assert ae1_bytes.count(crc) == 2  # local header and central directory
+    zeroed = tmp_path / "ae1-dir-zero-crc.zip"
+    zeroed.write_bytes(ae1_bytes.replace(crc, b"\0\0\0\0"))
+    with open_archive(zeroed, password="secret") as ar:
+        member = ar.get("d/")
+        assert member.hashes == {}
+        codes = [d.code for d in member.diagnostics]
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE not in codes
+        assert ar.read("d/") == b"hidden data!"
+    tampered_ae1 = build_aes_zip(
+        [(b"d/", b"hidden data!")],
+        password=b"secret",
+        vendor_version=1,
+        tamper_hmac=True,
+    ).replace(crc, b"\0\0\0\0")
+    (tmp_path / "ae1-dir-tampered.zip").write_bytes(tampered_ae1)
+    with open_archive(tmp_path / "ae1-dir-tampered.zip", password="secret") as ar:
+        with pytest.raises(CorruptionError, match="HMAC"):
+            ar.read("d/")
 
 
 def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
