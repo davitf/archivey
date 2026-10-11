@@ -625,10 +625,9 @@ def test_members_report_recovers_prefix_on_corrupt_header() -> None:
         assert ar.open(first).read() == b"aaa"
 
 
-def test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch() -> None:
-    # The random-access walk parses headers in batches. A header whose data runs past
-    # the end of the file raises while a batch is being filled; the members parsed
-    # before it in that batch must still reach the report, not vanish with the batch.
+def test_members_report_keeps_the_prefix_when_the_walk_raises() -> None:
+    # A header whose data runs past the end of the file raises during the walk; the
+    # members parsed before it must still reach the report.
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
         for name, payload in (

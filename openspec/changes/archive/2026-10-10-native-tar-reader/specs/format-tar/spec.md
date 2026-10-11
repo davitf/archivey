@@ -1,24 +1,160 @@
-# TAR Format Behavior
+# format-tar — native TAR reader delta
 
-## Purpose
+> Each MODIFIED block is the full requirement as it will read after the change.
 
-TAR archives (`.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`) are read
-through the unified archive APIs with archivey's own header parser, over the source
-or archivey's decompressor for the codec. TAR has no central directory: listing walks
-headers sequentially, compressed variants are solid streams, and extraction preserves
-TAR-specific hardlink and EOF semantics.
+## ADDED Requirements
 
-## Related specs
+### Requirement: Parse TAR headers natively
 
-| Spec | Relationship |
+The TAR backend SHALL parse headers with archivey's own parser, one header at a time
+and without recursion, and SHALL NOT read through stdlib `tarfile`. It SHALL read the
+encodings below, and SHALL give the same listing on every supported Python version.
+The `prefix` field SHALL be joined to the name only under the ustar magic, as GNU tar
+reads it.
+
+| Encoding | Read |
 | --- | --- |
-| `archive-reading` | Reader API, link-following semantics, declared member-stream capabilities |
-| `access-mode-and-cost` | Cost axes and streaming vs random-access method rules |
-| `safe-extraction` | Pull-based extraction coordinator, `OnError`, hardlink outcomes |
-| `diagnostics` | Timestamp and archive-EOF diagnostic values / policy |
-| `reader-concurrency` | `MemberStreams.CONCURRENT`, operation ownership, lock boundaries |
+| v7, POSIX ustar (with `prefix`), old GNU | Header fields; checksum as unsigned or signed sum |
+| Numbers | Octal (NUL- or space-terminated, empty is 0) and base-256 with a first byte of `0x80` or `0xFF` |
+| PAX `x` / `X` / `g` | Length-validated records; globals persist, an empty global value deletes the key |
+| GNU `L` / `K` | Long name and long link name |
+| GNU sparse | Old GNU `S` with extension blocks; PAX 0.0, 0.1 and 1.0 |
 
-## Requirements
+#### Scenario: native parse matrix
+
+| Case | Expected |
+| --- | --- |
+| The same archive on Python 3.11 to 3.15, any patch release | Same members, same bytes |
+| A chain of extended headers | Read in a loop; each header is charged to the member's `max_metadata_bytes` budget before it is read |
+| A member `seek` past its end | Returns the target; the next read returns `b""` |
+| A GNU incremental archive (`tar -G`), whose old GNU headers hold `atime` where ustar has `prefix` | Members listed under their own names |
+
+### Requirement: Reject TAR headers that do not parse
+
+The header walk SHALL stop on a header that does not parse, for `Detect truncated TAR
+archives` to classify. These are headers that do not parse:
+
+| Case | Example |
+| --- | --- |
+| Header block | A bad checksum; a number field that is neither octal nor base-256; a negative size |
+| PAX records | A record length that does not land on its newline |
+| Old GNU sparse | A map number, in the header or an extension block, that is neither octal nor base-256 or is past 2**63 - 1 |
+| Header chain | An extended header followed by a block that is not a header |
+
+The walk SHALL raise `TruncatedError` when the stream ends inside a header or a data
+area, or right after an extended header, and `CorruptionError` for a PAX `size` that is
+not a number. An `x`, `X`, `L` or `K` header followed by a zero block SHALL end the
+walk as an end-of-archive marker, as GNU tar reads it. A `g` header describes no member,
+so a zero block after it is an ordinary end-of-archive marker.
+
+#### Scenario: header refusal matrix
+
+| Case | Expected |
+| --- | --- |
+| A rejected header after the first member | `CorruptionError` after the members before it, in both access modes |
+| A PAX `x`, global `g` or GNU long-name header followed by the end-of-archive marker | A clean end after the members before it |
+| A PAX header followed by a block that is not a header | `CorruptionError` after the members before it |
+| The stream ends right after a PAX header or a GNU long-name header | `TruncatedError` |
+
+### Requirement: Read GNU sparse maps
+
+Every sparse map SHALL be parsed during the header walk, a PAX 1.0 map from the first
+blocks of the member's data area, and SHALL be charged to the member's
+`max_metadata_bytes` budget, 24 bytes per entry, before its entries are kept. A PAX
+map (0.0, 0.1 or 1.0) that does not parse SHALL raise `CorruptionError` during the
+listing: a number that is not decimal or is past 2**63 - 1, a 0.0 record with more than
+one number, an odd count of 0.1 numbers, or a 1.0 number longer than 20 digits, which
+GNU tar refuses too. An old GNU map that does not parse is a header that does not
+parse (`Reject TAR headers that do not parse`).
+
+A PAX member whose `GNU.sparse.major` is 1 or more SHALL be read as 1.0, whatever its
+minor version, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
+a number, with no 0.x map SHALL raise `CorruptionError`, never serve the map as content.
+
+A sparse member's map SHALL be checked before any of its data is returned: when the
+member is opened, or in a streaming pass on its first read, so a consumer that skips
+the member is unaffected. The check SHALL raise `CorruptionError` when the map has a
+negative entry, a chunk (empty or not) that ends past the logical size, or chunks that
+do not add up to exactly the bytes stored for them, or when the logical size is past
+2**63 - 1. GNU tar 1.26 to 1.35 and bsdtar write the exact sum in every encoding, so
+bytes the map does not name are damage (DR-3). An empty chunk past the logical size
+loses no bytes, but the map contradicts its own declared size (DR-1).
+
+The check SHALL raise `UnsupportedFeatureError` when a non-empty chunk starts before the
+previous non-empty chunk ends (out of order or overlapping) and the map has none of the
+damage above. GNU tar 1.35 reads such a map, placing each chunk at the offset the map
+gives, but serving the chunks in logical order on the streaming path would need
+buffering up to the logical size (DR-9). The map is valid data archivey does not serve
+(DR-4). An empty entry is exempt from the order check, because GNU tar ends a map with
+`(realsize, 0)` when the file ends in a hole and the old GNU header pads its unused
+slots with `(0, 0)`.
+
+#### Scenario: sparse map matrix
+
+| Case | Expected |
+| --- | --- |
+| A sparse member | Logical bytes with holes as zeros; never bytes past the member's stored size |
+| A sparse map out of order or overlapping | `UnsupportedFeatureError` on open |
+| A chunk, empty or not, that ends past the logical size | `CorruptionError` on open |
+| Chunks that add up to more than the member stores | `CorruptionError` on open |
+| A negative offset or length | `CorruptionError` on open |
+| A logical size past 2**63 - 1 | `CorruptionError` on open |
+| A sparse map whose chunks name 1 to 511 bytes fewer than the member stores | `CorruptionError` on open |
+| A PAX 1.0 map that does not parse | `CorruptionError` during the listing |
+| A PAX 0.1 map holding a number past 2**63 - 1 | `CorruptionError` during the listing |
+| An old GNU extension block with a number that does not parse | The walk stops on a rejected header, as `Detect truncated TAR archives` classifies it |
+| `GNU.sparse.major=2`, `GNU.sparse.minor=0` with a 1.0 map | Read as 1.0 |
+| `GNU.sparse.major=0` with no 0.x map | `CorruptionError` during the listing |
+| A PAX 1.0 map of more entries than the budget allows | `ResourceLimitError` during the listing, before the entries are read |
+
+## REMOVED Requirements
+
+### Requirement: Refuse a sparse map tarfile would misread
+
+**Reason**: The native parser reads every sparse map itself, so no map reaches
+`tarfile`. The checks move into `Read GNU sparse maps`, which also refuses 1 to 511
+stored bytes that the map does not name.
+
+**Migration**: None for callers. Every map this requirement refused is still refused
+with the same error type.
+
+## RENAMED Requirements
+
+- FROM: `### Requirement: Serialize shared tarfile handle operations for concurrent reads`
+- TO: `### Requirement: Serialize shared TAR handle operations for concurrent reads`
+
+## MODIFIED Requirements
+
+### Requirement: Serialize shared TAR handle operations for concurrent reads
+
+For random-access TAR readers that allow concurrent member streams under
+`MemberStreams.CONCURRENT`, the backend SHALL serialize every operation that touches
+the shared archive handle with one per-reader lock.
+
+The lock SHALL cover archive initialization/failure cleanup, the header walk,
+strict-EOF direct reads, member stream creation, member `read` / `readinto` / `seek` /
+`tell`, member close, archive close, and any operation that repositions or closes the
+shared handle. The lock surrounds each complete operation, not individual raw
+seek/read calls. Archivey buffering/error/lifecycle wrappers sit outside it; exception
+translation, diagnostics/logging, lifecycle release, callbacks, and finalizers run after
+the lock is released.
+
+Compressed TAR remains `SOLID`; locking guarantees correctness but not parallel
+throughput. Streaming TAR (`streaming=True`) remains one forward pass and does not gain
+random concurrent open.
+
+#### Scenario: TAR handle-lock matrix
+
+| Case | Expected |
+| --- | --- |
+| Two file members opened and read interleaved from plain RA TAR | Each yields its exact bytes in order |
+| Two file members opened and read interleaved from compressed RA TAR | Each yields exact bytes; serialization is acceptable |
+| Multiple threads open/read distinct TAR members under `MemberStreams.CONCURRENT` after materialization | No data races on the shared handle |
+| Materialization then strict EOF verification | The header walk and the EOF read use the same lock |
+| Member operation raises/closes | Translation/logging/lifecycle/callback work runs without the TAR handle lock held |
+| GNU sparse member opened | Stream yields the member's logical bytes, holes as zeros |
+| `streaming=True` TAR | Forward-only contract unchanged; no concurrent random-open behavior |
+| Contention on shared handle | Correctness guaranteed; no correctness speed threshold |
 
 ### Requirement: Report TAR format properties
 
@@ -58,7 +194,6 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | PAX `mtime` | Overrides the header's `mtime`, preserving sub-second precision / timezone information |
 | `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number is ignored) |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
-| device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a volume header, an unknown type) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from the PAX `linkpath`, else the GNU long link name, else the header's `linkname` |
 | old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
 | `extra["tar.pax_headers"]` | The member's PAX records, the global (`g`) records in force included. Read-only: a change raises `TypeError`. Members with no records of their own share one per set of global records: one copy per member cost the global records again for every 512-byte member header. Read-only so the sharing cannot be seen: a change through one member could otherwise show on the others. It is a `dict` subclass, so `json.dumps` takes it, and a copy, deep copy or pickle round trip gives a plain `dict` |
@@ -146,7 +281,7 @@ copy. Device bookkeeping MAY skip doomed attempts but is not required for correc
 | Case | Expected |
 | --- | --- |
 | Unfiltered extract-all | Hardlinks resolve in one pass; no upfront member list fetch |
-| Filter excludes source but selects link and a free member list exists | Same as with no free list (the planned single pass is optional and not implemented): the orphan is resolved in the second pass; source name not created |
+| Filter excludes source but selects link and a free member list exists | One planned pass writes source bytes to first selected link path; remaining links use `os.link`; source name not created |
 | Filter orphans links on seekable plain/compressed TAR with no free list | No speculative scan; all orphans resolved in one second pass; compressed stream decompressed at most twice total |
 | Filter does not orphan any link | Single pass; no second pass; no upfront list fetch |
 | Orphaned link on forward-only source | Per-member failure follows `OnError` |
@@ -189,13 +324,6 @@ the access mode:
   which would otherwise read as the second trailer block). Emitted with
   `observed_kind="nonzero"` after the diagnostic's normal
   count/retention/log/callback ordering, then escalated to `CorruptionError`.
-- **Device, FIFO or socket header with a non-zero size → `CorruptionError`, whatever the
-  diagnostic policy.** A typeflag `3`, `4` or `6` header parses, so the end-of-archive
-  classification below never sees it; it SHALL be refused at the header, before that
-  classification runs, in both access modes (§Map TAR member metadata). Such an entry
-  has no data: GNU tar and libarchive ignore the size field and resync at the next
-  header, while reading the declared bytes as headers would either desynchronise the
-  walk or, for an all-zero payload, end the listing on a false end marker.
 - **Damaged second trailer block → ordinary diagnostic.** When the walk stopped on a
   zero block (the first trailer block) after at least one member, and the block after
   it is full and non-null, the listing is whole and only the end-of-archive marker is
@@ -226,7 +354,7 @@ The rejected-header escalation to `CorruptionError` SHALL take precedence over
 The archive-level EOF check runs at the end of the member scan, so its escalation is a
 terminal listing error carried through the `partial-members-and-errors` report model:
 
-- `members()` is complete-or-raise — it raises the stored escalation.
+- `members()` / `scan_members()` are complete-or-raise — they raise the stored escalation.
 - `members_report()` (and `members_report_if_available()`) return the recovered prefix plus
   the terminal `error`, so a caller can still inspect the salvageable members.
 - `__iter__` (both access modes) yields the recovered members, then raises.
@@ -261,109 +389,12 @@ diagnostic policy, in both random-access and streaming modes.
 | Diagnostic code resolves to `IGNORE`, `absent`/`short` | both | `absent`/`short` | Count increments without delivery; no error | — |
 | Marker issue discovered after iteration | both | any | `reader.diagnostics` changes; frozen `ArchiveInfo` / `CostReceipt` unchanged | same |
 
-### Requirement: Serialize shared TAR handle operations for concurrent reads
-
-For random-access TAR readers that allow concurrent member streams under
-`MemberStreams.CONCURRENT`, the backend SHALL serialize every operation that touches
-the shared archive handle with one per-reader lock.
-
-The lock SHALL cover archive initialization/failure cleanup, each read of the header
-walk's buffer, strict-EOF direct reads, each member `read` / `readinto` that reaches the
-shared handle, archive close, and any operation that repositions or closes the shared
-handle. A member view's supported `seek` and `tell` change only the view's own position,
-and the next read applies it under the lock. The lock surrounds each complete
-operation, not individual raw seek/read calls. Archivey buffering/error/lifecycle
-wrappers sit outside it; exception translation, diagnostics/logging, lifecycle release,
-callbacks, and finalizers run after the lock is released. Unsupported positioning
-retains normal `io.UnsupportedOperation` behavior.
-
-Compressed TAR remains `SOLID`; locking guarantees correctness but not parallel
-throughput. Streaming TAR (`streaming=True`) remains one forward pass and does not gain
-random concurrent open.
-
-#### Scenario: TAR handle-lock matrix
-
-| Case | Expected |
-| --- | --- |
-| Two file members opened and read interleaved from plain RA TAR | Each yields its exact bytes in order |
-| Two file members opened and read interleaved from compressed RA TAR | Each yields exact bytes; serialization is acceptable |
-| Multiple threads open/read distinct TAR members under `MemberStreams.CONCURRENT` after materialization | No data races on the shared handle |
-| Materialization then strict EOF verification | The header walk and the EOF read use the same lock |
-| Member operation raises/closes | Translation/logging/lifecycle/callback work runs without the TAR handle lock held |
-| GNU sparse member opened | Stream yields the member's logical bytes, holes as zeros |
-| A member `seek` past its end | Returns the target; the next read returns `b""` |
-| `streaming=True` TAR | Forward-only contract unchanged; no concurrent random-open behavior |
-| Contention on shared handle | Correctness guaranteed; no correctness speed threshold |
-
-### Requirement: Report non-zero bytes past the trailer
-
-After a complete two-block null end-of-archive trailer, or after a damaged second
-trailer block (a zero block, then a non-null one, after at least one member), the
-backend SHALL scan the bytes that follow, up to 1 MiB past the trailer, whatever the
-configuration. The first non-zero byte in that window SHALL emit
-`ARCHIVE_TRAILING_DATA` under ordinary diagnostic disposition, with no escalation of
-its own: a warning by default, `DiagnosticRaisedError` after delivery when the code
-resolves to `RAISE` (as under `DiagnosticPolicy.strict()`), a count alone under
-`IGNORE`.
-
-The check SHALL run only after a complete two-block null trailer has been confirmed, or
-after the damaged-second-block diagnostic has been emitted. It SHALL NOT run after an
-`absent` or `short` trailer, or after a non-null block that is `CorruptionError`. After a
-damaged second block it runs from the block after that one, because on a compressed tar
-it is where the whole-stream checksum over the members already listed is usually
-reached.
-
-The 1 MiB bound is an effort limit, not a ceiling: past it the scan SHALL stop, SHALL
-NOT report trailing data, and SHALL NOT refuse the archive. It is a module constant, not
-a configuration field. On a compressed tar whose codec can carry a whole-stream checksum
-(gzip, bzip2, xz, zstd, lz4, lzip, zlib), a scan that stops at the bound with the stream
-not at its end SHALL emit `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`): that
-checksum was never checked. A tail that fails to decode — on a compressed tar, junk
-after the compressed stream or a missing footer — SHALL end the scan with no error and,
-except on bzip2 and xz (below), no diagnostic: every member was already read whole, and
-that is not trailing tar data. A whole-stream checksum that fails in the scan (gzip
-CRC-32 or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) is not such a
-tail: it covers the members already read, and SHALL raise `CorruptionError`. bzip2 and
-xz check each block, and the last block's check can also be reached in the scan, but
-those codecs report a failed check the same way as junk after the stream. On a
-`.tar.bz2` or `.tar.xz` a tail that fails to decode SHALL therefore emit
-`DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`) instead of ending the scan
-silently. Where that check is reached depends on how far the codec has read ahead
-when the last member's bytes are delivered, not on the archive: when it is reached
-during the member read, the read SHALL raise `CorruptionError` instead. Either way the
-failure SHALL NOT pass silently.
-
-The code is not a truncation: nothing is truncated, the file is *longer* than the
-listing accounts for.
-
-#### Scenario: trailing-bytes matrix
-
-| Case | Default policy | `DiagnosticPolicy.strict()` |
-| --- | --- | --- |
-| Valid tar, trailer, EOF | No diagnostic | No diagnostic |
-| Valid tar + 4 KiB of zeros (`tar` pads to 10 KiB records) | No diagnostic | No diagnostic |
-| Valid tar + 4 KiB of `b"JUNK"` | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
-| Damaged second trailer block, then junk | `ARCHIVE_EOF_MARKER_MISSING` (`"second_zero_block"`), then `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
-| `.tar.gz` with a bad CRC-32 and a damaged second trailer block | `CorruptionError` | `DiagnosticRaisedError` (the marker diagnostic is raised first) |
-| Valid tar + zeros + one non-zero byte, within 1 MiB | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
-| First non-zero byte more than 1 MiB past the trailer | No diagnostic; the scan stopped (a compressed tar: `DIGEST_UNVERIFIABLE`) | No diagnostic (a compressed tar: raises on `DIGEST_UNVERIFIABLE`) |
-| Two tars concatenated | `ARCHIVE_TRAILING_DATA`; the first is listed | `DiagnosticRaisedError` |
-| Legitimately empty tar (10240 zeros), or 32 KiB of zeros | No diagnostic; all zeros | No diagnostic |
-| A real ISO opened as TAR | Empty listing plus `ARCHIVE_TRAILING_DATA`: its zeros stop at 32768 | Raises |
-| Missing / short trailer | `ARCHIVE_EOF_MARKER_MISSING`; the scan does not run | Raises on that code |
-| `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
-| `.tar.gz`, junk after the gzip stream or a missing gzip footer | No diagnostic, no error | No diagnostic, no error |
-| `.tar.gz` / `.tar.zst` / `.tar.lz4`, a member byte damaged, stream checksum reached within 1 MiB of the trailer | `CorruptionError` | `CorruptionError` |
-| `.tar.bz2` / `.tar.xz`, the last block's check failing, reached in the trailing scan (within 1 MiB of the trailer), or junk after the stream | `DIGEST_UNVERIFIABLE` | Raises on `DIGEST_UNVERIFIABLE` |
-| `.tar.bz2` / `.tar.xz`, the same failing check reached while the last member is read (decided by the codec's read-ahead, so by member size) | `CorruptionError` from the read | `CorruptionError` from the read |
-
 ### Requirement: Decode TAR member names as UTF-8 by default
 
 When the caller does not pass `encoding=`, the TAR backend SHALL decode ustar and GNU
-long-name fields, and the other header strings (`uname`, `gname`, `linkname`), as UTF-8
-with `errors="surrogateescape"`. The result MUST NOT depend on the process locale or
-`sys.getfilesystemencoding()`. These fields do not declare an encoding, so a field whose
-bytes are valid UTF-8 SHALL be decoded as UTF-8
+long-name fields, and the other header strings (`uname`, `gname`, `linkname`), as UTF-8 with `errors="surrogateescape"`. The result MUST
+NOT depend on the process locale or `sys.getfilesystemencoding()`. These fields do not
+declare an encoding, so a field whose bytes are valid UTF-8 SHALL be decoded as UTF-8
 whatever `encoding=` says, and a caller-passed `encoding=` SHALL replace the
 surrogate-escaped UTF-8 decode, with the same error handler, only for a field whose bytes
 are not valid UTF-8. When a caller-passed `encoding=` would have given a different name
@@ -387,105 +418,3 @@ no later global header reset, declares no encoding and is decoded as a ustar fie
 | PAX `path` record holding the non-UTF-8 bytes `caf\xe9\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
 | The same PAX record, `encoding="latin-1"` | `name == "caféé.txt"` |
 | A global header with `hdrcharset=BINARY`, then a member whose PAX `path` holds UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"`; one `MEMBER_NAME_ENCODING_INFERRED` naming `latin-1`, as under the member's own `hdrcharset=BINARY` |
-
-### Requirement: Parse TAR headers natively
-
-The TAR backend SHALL parse headers with archivey's own parser, one header at a time
-and without recursion, and SHALL NOT read through stdlib `tarfile`. It SHALL read the
-encodings below, and SHALL give the same listing on every supported Python version.
-The `prefix` field SHALL be joined to the name only under the ustar magic, as GNU tar
-reads it.
-
-| Encoding | Read |
-| --- | --- |
-| v7, POSIX ustar (with `prefix`), old GNU | Header fields; checksum as unsigned or signed sum |
-| Numbers | Octal (NUL- or space-terminated, empty is 0) and base-256 with a first byte of `0x80` or `0xFF` |
-| PAX `x` / `X` / `g` | Length-validated records; globals persist, an empty global value deletes the key |
-| GNU `L` / `K` | Long name and long link name |
-| GNU sparse | Old GNU `S` with extension blocks; PAX 0.0, 0.1 and 1.0 |
-
-#### Scenario: native parse matrix
-
-| Case | Expected |
-| --- | --- |
-| The same archive on Python 3.11 to 3.15, any patch release | Same members, same bytes |
-| A chain of extended headers | Read in a loop; each header is charged to the member's `max_metadata_bytes` budget before it is read |
-| A GNU incremental archive (`tar -G`), whose old GNU headers hold `atime` where ustar has `prefix` | Members listed under their own names |
-
-### Requirement: Reject TAR headers that do not parse
-
-The header walk SHALL stop on a header that does not parse, for `Detect truncated TAR
-archives` to classify. These are headers that do not parse:
-
-| Case | Example |
-| --- | --- |
-| Header block | A bad checksum; a number field that is neither octal nor base-256; a negative size |
-| PAX records | A record length that does not land on its newline |
-| Old GNU sparse | A map number, in the header or an extension block, that is neither octal nor base-256 or is past 2**63 - 1 |
-| Header chain | An extended header followed by a block that is not a header |
-
-The walk SHALL raise `TruncatedError` when the stream ends inside a header or a data
-area, or right after an extended header, and `CorruptionError` for a PAX `size` that is
-not a number. An `x`, `X`, `L` or `K` header followed by a zero block SHALL end the
-walk as an end-of-archive marker, as GNU tar reads it. A `g` header describes no member,
-so a zero block after it is an ordinary end-of-archive marker.
-
-#### Scenario: header refusal matrix
-
-| Case | Expected |
-| --- | --- |
-| A rejected header after the first member | `CorruptionError` after the members before it, in both access modes |
-| A PAX `x`, global `g` or GNU long-name header followed by the end-of-archive marker | A clean end after the members before it |
-| A PAX header followed by a block that is not a header | `CorruptionError` after the members before it |
-| The stream ends right after a PAX header or a GNU long-name header | `TruncatedError` |
-
-### Requirement: Read GNU sparse maps
-
-Every sparse map SHALL be parsed during the header walk, a PAX 1.0 map from the first
-blocks of the member's data area, and SHALL be charged to the member's
-`max_metadata_bytes` budget, 24 bytes per entry, before its entries are kept. A PAX
-map (0.0, 0.1 or 1.0) that does not parse SHALL raise `CorruptionError` during the
-listing: a number that is not decimal or is past 2**63 - 1, a 0.0 record with more than
-one number, an odd count of 0.1 numbers, or a 1.0 number longer than 20 digits, which
-GNU tar refuses too. An old GNU map that does not parse is a header that does not
-parse (`Reject TAR headers that do not parse`).
-
-A PAX member whose `GNU.sparse.major` is 1 or more SHALL be read as 1.0, whatever its
-minor version, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
-a number, with no 0.x map SHALL raise `CorruptionError`, never serve the map as content.
-
-A sparse member's map SHALL be checked before any of its data is returned: when the
-member is opened, or in a streaming pass on its first read, so a consumer that skips
-the member is unaffected. The check SHALL raise `CorruptionError` when the map has a
-negative entry, a chunk (empty or not) that ends past the logical size, or chunks that
-do not add up to exactly the bytes stored for them, or when the logical size is past
-2**63 - 1. GNU tar 1.26 to 1.35 and bsdtar write the exact sum in every encoding, so
-bytes the map does not name are damage (DR-3). An empty chunk past the logical size
-loses no bytes, but the map contradicts its own declared size (DR-1).
-
-The check SHALL raise `UnsupportedFeatureError` when a non-empty chunk starts before the
-previous non-empty chunk ends (out of order or overlapping) and the map has none of the
-damage above. GNU tar 1.35 reads such a map, placing each chunk at the offset the map
-gives, but serving the chunks in logical order on the streaming path would need
-buffering up to the logical size (DR-9). The map is valid data archivey does not serve
-(DR-4). An empty entry is exempt from the order check, because GNU tar ends a map with
-`(realsize, 0)` when the file ends in a hole and the old GNU header pads its unused
-slots with `(0, 0)`.
-
-#### Scenario: sparse map matrix
-
-| Case | Expected |
-| --- | --- |
-| A sparse member | Logical bytes with holes as zeros; never bytes past the member's stored size |
-| A sparse map out of order or overlapping | `UnsupportedFeatureError` on open |
-| A chunk, empty or not, that ends past the logical size | `CorruptionError` on open |
-| Chunks that add up to more than the member stores | `CorruptionError` on open |
-| A negative offset or length | `CorruptionError` on open |
-| A logical size past 2**63 - 1 | `CorruptionError` on open |
-| A sparse map whose chunks name 1 to 511 bytes fewer than the member stores | `CorruptionError` on open |
-| A PAX 1.0 map that does not parse | `CorruptionError` during the listing |
-| A PAX 0.1 map holding a number past 2**63 - 1 | `CorruptionError` during the listing |
-| An old GNU extension block with a number that does not parse | The walk stops on a rejected header, as `Detect truncated TAR archives` classifies it |
-| `GNU.sparse.major=2`, `GNU.sparse.minor=0` with a 1.0 map | Read as 1.0 |
-| `GNU.sparse.major=0` with no 0.x map | `CorruptionError` during the listing |
-| A PAX 1.0 map of more entries than the budget allows | `ResourceLimitError` during the listing, before the entries are read |

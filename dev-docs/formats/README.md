@@ -16,8 +16,8 @@ Formats:
 - [`zip.md`](zip.md) — the first page, and the worked example for the shape below.
 - [`rar.md`](rar.md) — the only format whose read path crosses a process boundary.
 - [`7z.md`](7z.md) — the format whose header is a decode program.
-- [`tar.md`](tar.md) — no index, stdlib `tarfile`, and how archivey decides why a walk
-  ended.
+- [`tar.md`](tar.md) — no index, archivey's own header walker, and how archivey decides
+  why a walk ended.
 - [`iso.md`](iso.md) — a filesystem read through a library written to author it.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.
 - [`single-file.md`](single-file.md) — the stream codecs as one-member archives, with a
