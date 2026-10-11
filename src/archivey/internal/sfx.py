@@ -35,7 +35,8 @@ deliberately two-tiered — see :class:`ExecutableCue`.
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterator, Sequence
+from collections.abc import Set as AbstractSet
 from enum import Enum
 from typing import BinaryIO, Generic, NamedTuple, Protocol, TypeVar
 
@@ -55,10 +56,12 @@ SFX_MAX = 2 * 1024 * 1024
 # structural, not a ``ListingLimits`` / ``DetectionBudget`` knob: a real SFX stub does
 # not carry hundreds of format magics, and the native parsers that call this have no
 # detection budget. Each parser scans for one format, so the detector counts each
-# format's rejections apart (:class:`HitSelector`): decoys of one format do not spend
-# another's allowance, and a file of decoys means the same thing to detection as to a
-# forced ``format=``. 256 is a starting value; raise it here if a real archive needs
-# more.
+# format's rejections apart (:class:`HitSelector`) and caps only the formats whose
+# parser scans (``ReadBackend.SFX_PARSER_SCANS``: RAR and 7z). Decoys of one format
+# do not spend another's allowance, and a ZIP is never capped, because its reader
+# finds the end of central directory from the tail and runs no scan to stop. So a
+# file of decoys means the same thing to detection as to a forced ``format=``. 256 is
+# a starting value; raise it here if a real archive needs more.
 MAX_VALIDATED_CANDIDATES = 256
 
 # How far past its candidate origin a hit validator may read. The scan window bounds
@@ -272,7 +275,8 @@ class HitSelector(Generic[_T]):
     reorders formats. Every other hit, a second short one included, is a rejection.
 
     Rejections are counted per ``key``, so each format gets ``cap`` of them, as each
-    parser's own one-format scan does. Once a key reaches ``cap`` it is capped: the
+    parser's own one-format scan does. ``cap_keys`` names the keys the cap applies
+    to; ``None`` applies it to every key. Once a key reaches ``cap`` it is capped: the
     caller stops validating that key's candidates (:meth:`is_capped`), and
     :meth:`offer` ignores them. :meth:`result` then gives a ``VALID`` or short hit
     if one is held (a ``VALID_SHORT`` hit is structurally valid, not a rejection, so
@@ -281,9 +285,16 @@ class HitSelector(Generic[_T]):
     judged.
     """
 
-    def __init__(self, *, keep_damaged: bool, cap: int | None) -> None:
+    def __init__(
+        self,
+        *,
+        keep_damaged: bool,
+        cap: int | None,
+        cap_keys: Container[object] | None = None,
+    ) -> None:
         self._keep_damaged = keep_damaged
         self._cap = cap
+        self._cap_keys = cap_keys
         self._chosen: _T | None = None
         self._short: tuple[object, _T] | None = None
         self._fallback: _T | None = None
@@ -320,7 +331,11 @@ class HitSelector(Generic[_T]):
         self.rejected += 1
         count = self._rejected_by_key.get(key, 0) + 1
         self._rejected_by_key[key] = count
-        if self._cap is not None and count >= self._cap:
+        if (
+            self._cap is not None
+            and count >= self._cap
+            and (self._cap_keys is None or key in self._cap_keys)
+        ):
             self._capped_keys.add(key)
         return False
 
@@ -508,6 +523,10 @@ class _EarliestFinder:
     ``searched`` is how far a previous pass already covered. A shorter
     needle that fitted entirely in that prefix must not be re-found in the overlap
     kept for a longer sibling (RAR5's 8 bytes vs RAR4's 7, or ZIP's 4).
+
+    ``dropped`` holds magics no longer searched for; it may grow between calls. A
+    dropped needle is not searched again, so a window carpeted with its decoys costs
+    only the other needles' ``bytes.find``.
     """
 
     def __init__(
@@ -516,9 +535,11 @@ class _EarliestFinder:
         needles: Sequence[ScanNeedle],
         *,
         searched: int = 0,
+        dropped: Container[bytes] = frozenset(),
     ) -> None:
         self._data = data
         self._needles = needles
+        self._dropped = dropped
         # Per needle: the lowest index it may match at (the ``searched`` skip).
         self._floors = [max(0, searched - (len(n.magic) - 1)) for n in needles]
         # Per needle: its next match (``-1`` for none), and ``len(data)`` when that
@@ -533,7 +554,10 @@ class _EarliestFinder:
         data = self._data
         size = len(data)
         best: tuple[int, ScanNeedle] | None = None
+        dropped = self._dropped
         for i, needle in enumerate(self._needles):
+            if needle.magic in dropped:
+                continue
             found = self._next[i]
             scanned_len = self._scanned_len[i]
             if scanned_len < 0 or (found >= 0 and found < start):
@@ -732,11 +756,15 @@ def iter_magic_in_prefix(
     needles: Sequence[bytes | ScanNeedle],
     *,
     limit: int = SFX_MAX,
+    dropped: AbstractSet[bytes] = frozenset(),
 ) -> Iterator[MagicHit]:
     """Yield every in-window ``needles`` match, earliest first, as :class:`MagicHit`.
 
     Callers skip decoys (a candidate that fails its format-owned validator) and
-    keep iterating. A negative candidate origin is discarded rather than yielded.
+    keep iterating. A caller that stops looking for a magic adds it to ``dropped``
+    between yields; its later matches are not searched for, and once every needle is
+    dropped the iteration ends without reading further. A negative candidate origin
+    is discarded rather than yielded.
     Each match is yielded once: a shorter needle that sat wholly inside the previous
     peek is not re-emitted when the next step rewinds by the longest needle's overlap.
     ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them
@@ -748,12 +776,15 @@ def iter_magic_in_prefix(
         return
     searched = 0
 
+    magics = {needle.magic for needle in normalized}
     for step in (*_PEEK_STEPS, limit):
         if step <= searched:
             continue
+        if magics <= dropped:
+            return
         data = peek_more(min(step, limit))
         search_from = 0
-        finder = _EarliestFinder(data, normalized, searched=searched)
+        finder = _EarliestFinder(data, normalized, searched=searched, dropped=dropped)
         while True:
             hit = finder.find(search_from)
             if hit is None:

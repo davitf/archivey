@@ -296,6 +296,13 @@ class ReadBackend(ABC):
     # ``self`` as the first argument. The other detection tables (MAGIC, SFX_MAGIC)
     # are inert data and do not have this problem.
     SFX_HIT_VALIDATOR: ClassVar[HitValidator | None] = None
+    # Whether this backend's parser finds a payload behind a stub with its own capped
+    # forward scan (``sfx.scan_for_magic``), as the RAR and 7z parsers do. The
+    # detector applies the same rejection cap to these formats only, so detection
+    # gives up exactly where forced ``format=`` does. A format whose reader locates
+    # its directory another way (ZIP reads the end of central directory from the
+    # tail) has no scan to agree with and is never capped.
+    SFX_PARSER_SCANS: ClassVar[bool] = False
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).

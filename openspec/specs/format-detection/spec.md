@@ -507,14 +507,15 @@ presets the same bytes give the same answer at the window end, inside the window
 a non-seekable source. A header that does not fit that allowance SHALL be rejected and
 `sfx_scan` recorded as *budget exhausted*.
 
-The scan SHALL count rejected candidates per format, as each RAR and 7z parser scan counts
-its own format's, so decoys of one format do not spend another's allowance and a file of
-decoys means the same thing to detection as to a forced `format=`. After
-`MAX_VALIDATED_CANDIDATES` (256) rejected candidates of one format, that format's later
-candidates SHALL NOT be judged, and the scan SHALL record `sfx_scan` as *budget
-exhausted*, whether or not it answers. A capped scan answers with a `VALID` hit of a format
-that was not capped, or else with a held `VALID_SHORT` 7z hit as the fallback, as the 7z
-parser scan does; otherwise it gives no answer.
+The scan SHALL cap rejected candidates only for a format whose parser runs its own capped
+scan (RAR and 7z), and SHALL count them per format, as each of those parsers counts its own
+format's. Decoys of one format SHALL NOT spend another's allowance. A format whose reader
+runs no such scan SHALL NOT be capped: ZIP already locates the end of central directory
+from the tail, so a cap on ZIP candidates would refuse a file that forced `format=ZIP`
+opens. With both rules, a file of decoys means the same thing to detection as to a forced
+`format=`. After `MAX_VALIDATED_CANDIDATES` (256) rejected candidates of a capped format,
+the scan SHALL stop searching for that format's needles, so its later candidates are not
+judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it answers.
 
 #### Scenario: SFX matrix
 
@@ -531,7 +532,9 @@ parser scan does; otherwise it gives no answer.
 | Real RAR whose main header crosses the window end | `RAR`, `payload_offset` at its marker; receipt within budget |
 | A header that crosses the window end by more than a small `max_scan_bytes` allows | Rejected; `sfx_scan` recorded *budget exhausted*; the tier reads at most twice `max_scan_bytes` |
 | 256 rejected RAR decoys before the real RAR payload | No `sfx_scan` answer; `sfx_scan` recorded *budget exhausted*; forced `format=RAR` raises `CorruptionError` naming the cap |
-| 256 rejected ZIP decoys before a real RAR payload | `RAR` at its marker, as forced `format=RAR` opens it; `sfx_scan` recorded *budget exhausted* |
+| 256 rejected ZIP decoys before a real RAR payload | `RAR` at its marker, as forced `format=RAR` opens it; nothing recorded as cut short |
+| 256 rejected ZIP decoys before a real ZIP payload | `ZIP` at its local header, as forced `format=ZIP` opens it; nothing recorded as cut short |
+| A window filled with one capped format's decoys | That format's needles are no longer searched after the 256th rejection; the scan does not walk the rest of its decoys |
 | Whole valid 7z in the stub, then 256 rejected 7z decoys, then the real 7z | The embedded 7z, as the fallback forced `format=SEVEN_Z` also takes; `sfx_scan` recorded *budget exhausted* |
 | Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |

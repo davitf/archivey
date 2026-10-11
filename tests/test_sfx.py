@@ -19,7 +19,7 @@ import subprocess
 import zipapp
 import zipfile
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -1844,7 +1844,7 @@ def test_real_rar_crossing_the_scan_window_end_is_found_within_budget(
     assert within_budget(info.cost_receipt, budget)
 
 
-def test_every_validator_peek_fits_the_validator_allowance() -> None:
+def test_every_validator_peek_fits_validator_peek_max() -> None:
     """The detector lets a validator read ``VALIDATOR_PEEK_MAX`` past the window.
 
     Each validator's largest peek, on a source of unknown length, must fit in it, or
@@ -1919,72 +1919,121 @@ _ZIP_DECOY = b"PK\x03\x04" + bytes(26)
 _7Z_DECOY = MAGIC_7Z + b"\xff" * 26
 
 
+@pytest.mark.parametrize("payload", ["rar", "zip"])
 @pytest.mark.parametrize(
-    ("decoys", "capped"),
-    [(MAX_VALIDATED_CANDIDATES - 1, False), (MAX_VALIDATED_CANDIDATES, True)],
+    "decoys",
+    [MAX_VALIDATED_CANDIDATES - 1, MAX_VALIDATED_CANDIDATES],
     ids=["under-cap", "at-cap"],
 )
-def test_zip_decoys_do_not_spend_the_rar_payloads_allowance(
-    tmp_path: Path, decoys: int, capped: bool
+def test_zip_decoys_never_cap_the_scan(
+    tmp_path: Path, payload: str, decoys: int
 ) -> None:
-    """The cap counts each format's rejections apart, as each parser's scan does.
+    """ZIP decoys spend no allowance: the ZIP reader runs no scan to agree with.
 
-    ZIP decoys that reach the ZIP cap leave the RAR payload after them to be judged, so
-    auto-detection opens what forced ``format=RAR`` opens. The capped scan still says
-    it was cut short: ZIP candidates past the cap were never judged.
+    The RAR and 7z parsers stop after ``MAX_VALIDATED_CANDIDATES`` rejections of their
+    own format, so the detector caps those formats. The ZIP reader finds the end of
+    central directory from the tail and opens the file whatever precedes the
+    payload, so a cap on ZIP candidates would refuse a file forced ``format=ZIP``
+    lists. Auto-detection opens what the forced format opens, and nothing is cut
+    short.
     """
     from archivey.detection_cost import TierSkip, TierSkipReason
 
-    payload = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    if payload == "rar":
+        data, forced, names = (
+            (_RAR_FIXTURES / "stored_m0.rar").read_bytes(),
+            ArchiveFormat.RAR,
+            ["store.txt"],
+        )
+    else:
+        data, forced, names = _zip_bytes(), ArchiveFormat.ZIP, sorted(_FILES)
     stub = _STUB + _ZIP_DECOY * decoys
     path = tmp_path / "carpet"
-    path.write_bytes(stub + payload)
-    cut_short = TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+    path.write_bytes(stub + data)
 
     info = detect_format(path)
-    assert info.format == ArchiveFormat.RAR
+    assert info.format == forced
     assert info.detected_by == "sfx_scan"
     assert info.payload_offset == len(stub)
-    assert (cut_short in info.unavailable_tiers) is capped
+    assert TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED) not in (
+        info.unavailable_tiers
+    )
     with open_archive(path) as archive:
-        assert [m.name for m in archive.members()] == ["store.txt"]
-    with open_archive(path, format=ArchiveFormat.RAR) as archive:
-        assert [m.name for m in archive.members()] == ["store.txt"]
+        assert sorted(m.name for m in archive.members()) == names
+    with open_archive(path, format=forced) as archive:
+        assert sorted(m.name for m in archive.members()) == names
 
 
+@pytest.mark.parametrize("tail", ["7z", "zip"])
 @pytest.mark.parametrize("decoy", [_ZIP_DECOY, _7Z_DECOY], ids=["zip", "7z"])
 @pytest.mark.parametrize(
-    ("decoys", "capped"),
-    [(MAX_VALIDATED_CANDIDATES - 1, False), (MAX_VALIDATED_CANDIDATES, True)],
+    "decoys",
+    [MAX_VALIDATED_CANDIDATES - 1, MAX_VALIDATED_CANDIDATES],
     ids=["under-cap", "at-cap"],
 )
 def test_capped_scan_holding_a_short_hit_records_the_scan_as_cut_short(
-    tmp_path: Path, decoy: bytes, decoys: int, capped: bool
+    tmp_path: Path, decoy: bytes, decoys: int, tail: str
 ) -> None:
-    """A whole 7z in the stub, decoys, then the real 7z payload.
+    """A whole 7z in the stub, decoys, then a real 7z or ZIP payload.
 
-    The embedded 7z is ``VALID_SHORT``: only a fallback the real payload displaces.
-    ZIP decoys do not touch the 7z allowance, so the real payload is found. 7z decoys
-    that reach the 7z cap leave the short hit as the answer, as forced
+    The embedded 7z is ``VALID_SHORT``: only a fallback a later 7z displaces. A later
+    ZIP does not displace it, because the end-of-source preference never reorders
+    formats. ZIP decoys never cap the scan, so a real 7z after them is found. 7z
+    decoys that reach the 7z cap leave the short hit as the answer, as forced
     ``format=SEVEN_Z`` gives, but the receipt says the scan was cut short.
     """
     from archivey.detection_cost import TierSkip, TierSkipReason
 
     embedded = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
-    real = (_SEVENZIP_FIXTURES / "links_mid_folder_nonsolid.7z").read_bytes()
+    real = (
+        (_SEVENZIP_FIXTURES / "links_mid_folder_nonsolid.7z").read_bytes()
+        if tail == "7z"
+        else _zip_bytes()
+    )
     stub = _STUB + embedded + decoy * decoys
     path = tmp_path / "nested"
     path.write_bytes(stub + real)
     cut_short = TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+    capped = decoy == _7Z_DECOY and decoys == MAX_VALIDATED_CANDIDATES
 
     info = detect_format(path)
     assert info.format == ArchiveFormat.SEVEN_Z
     assert info.detected_by == "sfx_scan"
     assert (cut_short in info.unavailable_tiers) is capped
-    short_answer = capped and decoy == _7Z_DECOY
+    short_answer = capped or tail == "zip"
     assert info.payload_offset == (len(_STUB) if short_answer else len(stub))
     with path.open("rb") as fp:
         assert find_signature_offset(fp) == info.payload_offset
+
+
+@pytest.mark.parametrize("decoy", [_RAR5_SHORT_DECOY, _7Z_DECOY], ids=["rar", "7z"])
+def test_a_capped_formats_needles_are_no_longer_searched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decoy: bytes
+) -> None:
+    """Once a format is capped, the scan stops finding its needles.
+
+    Skipping each later hit one by one would still walk a window carpeted with one
+    format's decoys hit by hit. Counting the hits the scan yields, not the clock,
+    keeps the bound checkable.
+    """
+    from archivey.internal import detection
+
+    yielded = 0
+    real_iter = detection.iter_magic_in_prefix
+
+    def counting_iter(*args: object, **kwargs: object) -> Iterator[MagicHit]:
+        nonlocal yielded
+        for hit in real_iter(*args, **kwargs):  # type: ignore[arg-type]
+            yielded += 1
+            yield hit
+
+    monkeypatch.setattr(detection, "iter_magic_in_prefix", counting_iter)
+    path = tmp_path / "carpet"
+    path.write_bytes(_STUB + decoy * (4 * MAX_VALIDATED_CANDIDATES))
+
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+    assert yielded == MAX_VALIDATED_CANDIDATES
 
 
 def test_tight_scan_budget_bounds_the_validator_read_past_the_window(

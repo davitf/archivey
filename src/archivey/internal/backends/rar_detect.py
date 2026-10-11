@@ -50,8 +50,8 @@ def validate_rar_main_header(
 
     A short ``peek_more`` means the source ended or the budget clamped the view
     (see :class:`HitValidator`), so it is ``NOT_THIS_FORMAT``: the header was
-    never checked. ``remaining``
-    only saves a peek when the declared header cannot fit in the source.
+    never checked. ``remaining`` only saves a peek when the declared header
+    cannot fit in the source.
 
     ``peek_more`` stays outside the parse ``try`` so a workspace ``OSError``
     propagates. A truncated vint before the CRC is ``NOT_THIS_FORMAT``; after

@@ -122,14 +122,19 @@ at open with `TruncatedError`. §5 lists it.
 This step runs only when the first bytes carry a cue (`MZ`, ELF, a Mach-O header that
 parses, or `#!`). It searches up to 2 MiB for a ZIP, 7z or RAR needle, and a hit counts
 only once that format's validator passes it. The validator judges the candidate's whole
-header, which may run past the window end (§4.1). Each format may have 256 candidates
-rejected; past that, its later candidates are not judged, and the scan records `sfx_scan`
-as *budget exhausted* even when it answers. The cue decides only whether to spend the
-window. The validator decides whether a hit is real. A structurally confirmed executable (a
-`STRONG` cue) with no hit also turns off the content probes. Without that, a probe could claim the stub
-as a compressed stream and `open_archive` would return a fabricated `installer.uncompressed`
-member. A known non-archive signature (§2.5) does not start the scan, whatever cue its
-bytes raise. All of this is on [`prefixed-archives.md`](prefixed-archives.md) §2 to §5.
+header, which may run past the window end (§4.1). RAR and 7z may each have 256 candidates
+rejected, the cap their parsers' own scans stop at. Past that, the scan stops searching for
+that format's needles, so its later candidates are not judged, and it records `sfx_scan` as
+*budget exhausted* even when it answers. ZIP has no cap: the ZIP reader finds the end of
+central directory from the tail and runs no scan, so a cap would refuse a file that
+`format=ZIP` opens. A window carpeted with ZIP decoys therefore pays one validation per
+decoy ([`prefixed-archives.md`](prefixed-archives.md) §7). The cue decides only whether to
+spend the window. The validator decides whether a hit is real. A structurally confirmed
+executable (a `STRONG` cue) with no hit also turns off the content probes. Without that, a
+probe could claim the stub as a compressed stream and `open_archive` would return a
+fabricated `installer.uncompressed` member. A known non-archive signature (§2.5) does not
+start the scan, whatever cue its bytes raise. All of this is on
+[`prefixed-archives.md`](prefixed-archives.md) §2 to §5.
 
 One cost rule settled here belongs on this page because it is a budget question. **A 7z hit
 whose declared end falls short of the end of the source is kept only as a fallback, and the
@@ -138,8 +143,8 @@ scan cannot stop at the short hit's own end: a decoy inside the stub ends before
 payload starts, so that bound would open the decoy. A 7z SFX with data after the archive
 (an Authenticode signature, for example) therefore reads the whole window to detect, the
 same as a miss. The cost stays inside `max_scan_bytes` plus the validator allowance of
-§4.1. A tighter bound for PE stubs, the
-end of the stub's last section, is in [`IDEAS.md`](../IDEAS.md).
+§4.1. A tighter bound for PE stubs, the end of the stub's last section, is in
+[`IDEAS.md`](../IDEAS.md).
 
 ### 2.3 Far magic
 
@@ -373,12 +378,13 @@ exhausted*, so the tier never reads more than twice `max_scan_bytes`.
 **Probe reads at an offset are the one path whose cap is not tied to a budget field.** A
 content probe can ask for a few bytes deep in the source through `PrefixWorkspace.read_at`,
 which is how the Brotli chain walk checks later meta-block headers. On a path or a plain
-seekable stream, `read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is
-charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS` (8 links of
-24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose rewind would
-re-decode, `read_at` grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1
-MiB) and the workspace's read ceiling (the largest of the prefix, far and scan limits).
-Past that it returns nothing and records `content_probe_read_at` as `BUDGET_EXHAUSTED`.
+seekable stream, `read_at` seeks to the offset, reads, and seeks back, without growing the
+prefix. It is charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS`
+(8 links of 24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose
+rewind would re-decode, `read_at` grows the prefix instead, up to the smaller of
+`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1 MiB) and the workspace's read ceiling (the
+largest of the prefix, far and scan limits). Past that it returns nothing and records
+`content_probe_read_at` as `BUDGET_EXHAUSTED`.
 
 When the walk stops at a compressed block past the window, the Brotli probe reads and
 decodes `[0, end)`, to 4 KiB past that block's header, through the same `read_at` (a seek

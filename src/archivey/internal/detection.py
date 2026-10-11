@@ -663,6 +663,7 @@ def _scan_for_sfx_payload(
     scan_limit: int,
     peek_allowance: int,
     validators: dict[ArchiveFormat, HitValidator],
+    capped_formats: frozenset[ArchiveFormat],
     restrict_to_validated: bool,
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
@@ -671,18 +672,19 @@ def _scan_for_sfx_payload(
     candidate-internal offset (today all zero for ZIP/RAR/7z; TAR ``ustar`` → 257 once
     that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
     the raw needle position. Hits are graded by their format-owned validator (none means
-    ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback and the
-    parsers' :data:`MAX_VALIDATED_CANDIDATES` rejection cap, counted per format as each
-    parser counts its own: earliest *valid* match, not earliest needle. A format that
-    reaches the cap has its later candidates skipped, and the scan stops once every
-    searched format is capped. A capped scan records ``sfx_scan`` as cut short, even
-    when it answers: the skipped candidates were never judged. It answers with a
-    ``VALID`` hit of a format that was not capped, or with a held ``VALID_SHORT`` hit as
-    the fallback, as the parsers' scan does; otherwise nothing. A CRC-valid decoy in the
-    stub that ends early (``VALID_SHORT``) must not beat the real payload appended after
-    it, so a later ``VALID`` hit of the *same format* displaces a held short hit; a
-    ``VALID`` hit of another format ends the scan with the short hit, so the exact-end
-    preference never reorders formats. Holding a short hit, the scan keeps reading to
+    ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback: earliest
+    *valid* match, not earliest needle. ``capped_formats`` are the formats whose parser
+    runs its own capped scan; each gets the parsers' :data:`MAX_VALIDATED_CANDIDATES`
+    rejection cap, counted per format as each parser counts its own, and no other format
+    is capped. Once a format reaches the cap its needles are no longer searched for, so
+    its later candidates are not judged and a window carpeted with its decoys costs only
+    the other needles' search; the scan ends when no needle is left. A capped scan
+    records ``sfx_scan`` as cut short whether or not it answers, because the candidates
+    it did not judge could have changed the answer. A CRC-valid decoy in the stub that
+    ends early (``VALID_SHORT``) must not beat the real payload appended after it, so a
+    later ``VALID`` hit of the *same format* displaces a held short hit; a ``VALID`` hit
+    of another format ends the scan with the short hit, so the exact-end preference
+    never reorders formats. Holding a short hit, the scan keeps reading to
     ``scan_limit``: a decoy in the stub ends before the real payload starts, so nothing
     about the short hit bounds where that payload can be. That is the cost of a short
     hit with data after it (an Authenticode signature, say): up to the whole window, as
@@ -710,44 +712,53 @@ def _scan_for_sfx_payload(
         return None
     if restrict_to_validated:
         entries = [entry for entry in entries if entry.format in validators]
-    by_needle = {entry.magic: entry for entry in entries}
     needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
-    # The selector holds (format, origin); the one FormatInfo is built from the winner,
-    # so a decoy-carpeted window costs no construction per candidate.
-    selector: HitSelector[tuple[ArchiveFormat, int]] = HitSelector(
-        keep_damaged=False, cap=MAX_VALIDATED_CANDIDATES
+    # The selector is keyed by each format's index in ``formats``, not by the format:
+    # a hit costs a few dict lookups, and hashing an ``ArchiveFormat`` in each of them
+    # was most of the cost of a window carpeted with uncapped ZIP decoys.
+    formats = list(dict.fromkeys(entry.format for entry in entries))
+    by_needle = {
+        entry.magic: (formats.index(entry.format), validators.get(entry.format))
+        for entry in entries
+    }
+    magics_by_key = [
+        {entry.magic for entry in entries if entry.format == fmt} for fmt in formats
+    ]
+    # The selector holds (format key, origin); the one FormatInfo is built from the
+    # winner, so a decoy-carpeted window costs no construction per candidate.
+    selector: HitSelector[tuple[int, int]] = HitSelector(
+        keep_damaged=False,
+        cap=MAX_VALIDATED_CANDIDATES,
+        cap_keys={key for key, fmt in enumerate(formats) if fmt in capped_formats},
     )
-    searched_formats = {entry.format for entry in entries}
+    # A capped format's magics: the parser for that format would have stopped by now,
+    # so the scan stops searching for them and another format's candidates are still
+    # judged.
+    dropped: set[bytes] = set()
     # The window bounds where a magic may start, not how far its validator reads: a
     # candidate inside it is judged on its whole header, as far as the budget allows.
     view_limit = scan_limit + peek_allowance
-    for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
-        entry = by_needle[hit.needle]
-        if selector.is_capped(entry.format):
-            # The parser for this format would have stopped by now; another format's
-            # candidates are still judged.
-            continue
-        validator = validators.get(entry.format)
+    for hit in iter_magic_in_prefix(
+        peek_more, needles, limit=scan_limit, dropped=dropped
+    ):
+        key, validator = by_needle[hit.needle]
+        origin = hit.candidate_origin
         outcome = HitOutcome.VALID
         if validator is not None:
-            view = workspace.candidate_view(hit.candidate_origin, limit=view_limit)
+            view = workspace.candidate_view(origin, limit=view_limit)
             source_len = workspace.remaining_known()
-            remaining = (
-                None
-                if source_len is None
-                else max(0, source_len - hit.candidate_origin)
-            )
+            remaining = None if source_len is None else max(0, source_len - origin)
             outcome = validator(view, remaining)
-        if selector.offer(entry.format, (entry.format, hit.candidate_origin), outcome):
+        if selector.offer(key, (key, origin), outcome):
             break
-        if all(selector.is_capped(fmt) for fmt in searched_formats):
-            break
+        if selector.is_capped(key):
+            dropped |= magics_by_key[key]
     chosen, _ = selector.result()
     result = (
         None
         if chosen is None
         else FormatInfo(
-            chosen[0],
+            formats[chosen[0]],
             DetectionConfidence.PROBABLE,
             "sfx_scan",
             payload_offset=chosen[1],
@@ -1042,6 +1053,7 @@ def _detect_format_body(
                 scan_limit=min(SFX_MAX, budget.max_scan_bytes),
                 peek_allowance=validator_allowance(budget),
                 validators=registry.sfx_hit_validators(),
+                capped_formats=registry.sfx_parser_scanned_formats(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
             )
