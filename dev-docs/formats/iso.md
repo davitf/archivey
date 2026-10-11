@@ -17,7 +17,7 @@ the status — this page states the behaviour and links the row.
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
-| Refuses | Non-seekable sources · raw CD sector images (`.bin`), by name, before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
+| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`), by name, also before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
 | `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
@@ -98,7 +98,9 @@ The second magic is the 12-byte CD sync pattern at offset 0. It is claimed as IS
 that `open_archive` can refuse a raw sector image by name — Mode 1, Mode 2 Form 1 or 2,
 2352- or 2448-byte sectors — with `UnsupportedFeatureError`, before the availability check,
 so a caller without `pycdlib` is not told to install it first
-(`refuse_raw_sector_image`). The extension is `.iso`.
+(`refuse_raw_sector_image`). A non-seekable source is also refused ahead of that
+check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
+extension is `.iso`.
 
 Neither magic is validated past the match; there is no SFX scan and no validator, because
 an image cannot sit behind a prefix. A UDF-only image has `BEA01`/`NSR02` at 32 769 rather
