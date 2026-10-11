@@ -25,10 +25,10 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     ResourceLimitError,
-    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
+from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 
 _COPY = b"\x00"
@@ -711,16 +711,13 @@ def test_empty_frames_after_the_data_are_not_surplus() -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# S1, S2, S3: a coder whose stream has an end marker ends there, as 7-Zip reads it.
+# S1, S2, S3: a coder's data is one stream, and its input ends with that stream.
 #
-# Two complete streams in one coder's packed data. BZip2, LZMA (with its end marker)
-# and LZMA2 decoded the second as content, so a size and CRC covering both read clean;
-# `7z t` reports "Data Error" for every one of them. Now each ends at its first stream.
-# BZip2 and Deflate then behave as Deflate already did: a size covering both is short
-# (TruncatedError), and a size covering the first reads it, the bytes after the stream
-# ending the coder silently (`7z t` only warns: "There are some data after the end of
-# the payload data"). For LZMA and LZMA2, `7z t` says "Data Error" for any byte of the
-# coder's input after the end marker, a zero too, so that is CorruptionError here.
+# Two complete streams in one coder's packed data. The coder ends at its first stream's
+# end, and any byte of its input left after that end, a zero too, is DataAfterEndError,
+# whatever the unpack size and CRC count. 7-Zip 23.01 `7z t` fails every such coder:
+# "There are some data after the end of the payload data" for BZip2 and Deflate, "Data
+# Error" for LZMA (with its end marker) and LZMA2.
 # ---------------------------------------------------------------------------------------
 
 _LZMA1_FILTER = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
@@ -738,7 +735,7 @@ def _one_stream_coder(codec: str, data: bytes) -> tuple[bytes, bytes]:
     return _coder(_CODEC_METHODS[codec]), _compress(codec, data)
 
 
-_WARNED_AFTER_END = [
+_ENDS_ITS_STREAM = [
     pytest.param("bzip2", id="bzip2"),
     pytest.param("deflate", id="deflate"),
 ]
@@ -757,17 +754,16 @@ def _two_stream_archive(codec: str, *, declare_both: bool) -> tuple[bytes, bytes
     return _codec_archive([coder], [len(declared)], one + two, declared), first
 
 
-@pytest.mark.parametrize("codec", _WARNED_AFTER_END)
-def test_coder_ends_at_its_first_stream(codec: str) -> None:
-    data, _ = _two_stream_archive(codec, declare_both=True)
-    with pytest.raises(TruncatedError):
+@pytest.mark.parametrize("declare_both", [True, False], ids=["both", "first"])
+@pytest.mark.parametrize("codec", _ENDS_ITS_STREAM)
+def test_coder_with_a_second_stream_after_its_end_is_corrupt(
+    codec: str, declare_both: bool
+) -> None:
+    # A coder holds one stream: 7-Zip 23.01 `7z t` fails a second one with "There
+    # are some data after the end of the payload data", whatever the sizes declare.
+    data, _ = _two_stream_archive(codec, declare_both=declare_both)
+    with pytest.raises(DataAfterEndError):
         _read_only_member(data)
-
-
-@pytest.mark.parametrize("codec", _WARNED_AFTER_END)
-def test_coder_with_a_second_stream_after_its_end_reads_the_first(codec: str) -> None:
-    data, first = _two_stream_archive(codec, declare_both=False)
-    assert _read_only_member(data) == first
 
 
 @pytest.mark.parametrize("declare_both", [True, False], ids=["both", "first"])
@@ -776,7 +772,7 @@ def test_lzma_coder_with_a_second_stream_after_its_end_marker_is_corrupt(
     codec: str, declare_both: bool
 ) -> None:
     data, _ = _two_stream_archive(codec, declare_both=declare_both)
-    with pytest.raises(CorruptionError, match="after its end marker"):
+    with pytest.raises(DataAfterEndError):
         _read_only_member(data)
 
 
@@ -790,7 +786,7 @@ def test_lzma_coder_with_any_byte_after_its_end_marker_is_corrupt(
     coder, packed = _one_stream_coder(codec, payload)
     assert _read_only_member(_codec_archive([coder], [len(payload)], packed, payload))
     data = _codec_archive([coder], [len(payload)], packed + tail, payload)
-    with pytest.raises(CorruptionError, match="after its end marker"):
+    with pytest.raises(DataAfterEndError):
         _read_only_member(data)
 
 
@@ -821,22 +817,9 @@ def test_lzma_coder_behind_aes_reads_with_the_aes_padding(codec: str) -> None:
     # A small folder is decoded whole by the password check, which reports any
     # damage it meets as "wrong password or corrupt", the cause in its chain.
     seen: BaseException | None = caught.value
-    while seen is not None and "after its end marker" not in str(seen):
+    while seen is not None and not isinstance(seen, DataAfterEndError):
         seen = seen.__cause__ or seen.__context__
     assert seen is not None
-
-
-def test_lzma1_without_an_end_marker_still_reads_to_its_size() -> None:
-    # 7-Zip writes LZMA1 without an end marker: the decoder never sees an end and
-    # stops at the declared size. Pinned so the one-stream decoder does not call it
-    # truncated. The marker is cut off a stream long enough that its last byte of
-    # output comes before the marker's bits.
-    payload = _text(4000)
-    packed = lzma.compress(payload, format=lzma.FORMAT_RAW, filters=[_LZMA1_FILTER])
-    coder = _coder(_LZMA, props=_LZMA1_PROPS)
-    for cut in range(1, 6):
-        data = _codec_archive([coder], [len(payload)], packed[:-cut], payload)
-        assert _read_only_member(data) == payload
 
 
 @requires_binary("7z")
@@ -891,36 +874,17 @@ _ONE_STREAM_ACCELERATED = [
 
 
 @requires("rapidgzip")
-def test_accelerated_deflate_coder_with_a_second_stream_reads_the_first() -> None:
-    # S3: rapidgzip reads on into the second stream. The coder's unpack size is its
-    # limit, so a read past it finishes on zlib, which ends at the first stream: the
-    # accelerator reads what the standard library reads (it raised surplus before).
-    data, first = _two_stream_archive("deflate", declare_both=False)
-    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
-    assert _read_only_member(data, config=config, seekable_members=True) == first
-
-
-@requires("rapidgzip")
-def test_accelerated_bzip2_coder_with_a_second_stream_is_surplus() -> None:
-    # The bzip2 accelerator reads on into a further stream, as it does for a ZIP
-    # member (compressed-streams: the declared size and CRC give the verdict). Past
-    # the coder's size, that is surplus.
-    data, _ = _two_stream_archive("bzip2", declare_both=False)
-    config = ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
-    with pytest.raises(CorruptionError, match="past its declared unpack size"):
-        _read_only_member(data, config=config, seekable_members=True)
-
-
-@requires("rapidgzip")
+@pytest.mark.parametrize("declare_both", [True, False], ids=["both", "first"])
 @pytest.mark.parametrize(("codec", "config"), _ONE_STREAM_ACCELERATED)
-def test_accelerated_coder_reads_a_second_stream_the_declared_crc_covers(
-    codec: str, config: ArchiveyConfig
+def test_accelerated_coder_with_a_second_stream_is_corrupt(
+    codec: str, config: ArchiveyConfig, declare_both: bool
 ) -> None:
-    # The stream-boundary divergence the compressed-streams spec allows, as for ZIP:
-    # output that matches the declared size and CRC is read.
-    data, _ = _two_stream_archive(codec, declare_both=True)
-    whole = _text(3000, seed=1) + _text(2000, seed=2)
-    assert _read_only_member(data, config=config, seekable_members=True) == whole
+    # The accelerators read on into a further stream; the read hands over to the
+    # standard library there, which refuses it, so the result is the same with the
+    # accelerator on or off, whatever the sizes and CRC declare.
+    data, _ = _two_stream_archive(codec, declare_both=declare_both)
+    with pytest.raises(DataAfterEndError):
+        _read_only_member(data, config=config, seekable_members=True)
 
 
 def test_codec_in_a_bcj2_branch_decoding_past_its_unpack_size_is_corruption() -> None:
@@ -948,10 +912,9 @@ def test_codec_in_a_bcj2_branch_decoding_past_its_unpack_size_is_corruption() ->
         _read_only_member(archive(len(payload) - 1))
 
 
-def test_lzma1_surplus_is_cut_at_the_declared_size() -> None:
-    # LZMA1 has no end marker in 7z, so it stops at its declared size and output past
-    # it cannot be told from data. This pins that it reads clean and truncated, not
-    # refused: probing LZMA1 would fail valid archives.
+def test_lzma1_with_more_data_than_its_declared_size_is_corrupt() -> None:
+    # LZMA1 stops at its declared size, and the input left there must end too: the
+    # rest of this stream is input the coder does not use.
     payload = _text(4000)
     lzma1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
     packed = lzma.compress(payload, format=lzma.FORMAT_RAW, filters=[lzma1])
@@ -960,16 +923,20 @@ def test_lzma1_surplus_is_cut_at_the_declared_size() -> None:
     data = _codec_archive(
         [_coder(_LZMA, props=lzma1_props)], [len(declared)], packed, declared
     )
-    assert _read_only_member(data) == declared
+    with pytest.raises(DataAfterEndError):
+        _read_only_member(data)
 
 
-def test_past_size_check_covers_exactly_the_end_marked_codecs() -> None:
-    # The check is an allowlist. Every single-codec 7z method must be classified:
-    # checked (ends its own stream) or capped (relies on the declared size).
+def test_past_size_check_covers_every_single_codec() -> None:
+    # The check is an allowlist. Every single-codec 7z method must be on it: one that
+    # ends its own stream (output past the size is surplus), or one that stops at
+    # the size itself and reports its input's end on the read past it (LZMA1, PPMd).
     from archivey.internal.backends import sevenzip_methods, sevenzip_pipeline
     from archivey.internal.streams.codecs import Codec
 
     checked = {
+        Codec.LZMA,
+        Codec.PPMD,
         Codec.LZMA2,
         Codec.DEFLATE,
         Codec.DEFLATE64,
@@ -978,14 +945,13 @@ def test_past_size_check_covers_exactly_the_end_marked_codecs() -> None:
         Codec.LZ4,
         Codec.BROTLI,
     }
-    capped = {Codec.LZMA, Codec.PPMD}
     assert set(sevenzip_pipeline._CODEC_LABELS) == checked
     single = {
         method.codec
         for method in sevenzip_methods._METHODS
         if method.kind is sevenzip_methods.MethodKind.SINGLE
     }
-    unclassified = single - checked - capped
+    unclassified = single - checked
     assert not unclassified, f"classify these 7z codecs here: {unclassified}"
 
 
