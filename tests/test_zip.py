@@ -2311,6 +2311,38 @@ def test_corrupted_directory_data_fails_its_digest_check(tmp_path: Path) -> None
         assert ar.read("d/f.txt") == b"visible"
 
 
+def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
+    """WinZip AE-2 stores CRC 0 by design and relies on the HMAC, for a directory entry
+    as for a file: no crc32 in ``hashes``, no ``DIGEST_UNVERIFIABLE`` (the bytes are
+    checked), the read returns the bytes, and a tampered HMAC is ``CorruptionError``."""
+    path = tmp_path / "ae2-dir.zip"
+    path.write_bytes(build_aes_zip([(b"d/", b"hidden data!")], password=b"secret"))
+    with open_archive(path, password="secret") as ar:
+        member = ar.get("d/")
+        assert member.type is MemberType.DIRECTORY
+        assert member.size == 12 and member.is_encrypted
+        assert member.hashes == {}
+        codes = [d.code for d in member.diagnostics]
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE not in codes
+        assert ar.read("d/") == b"hidden data!"
+    tampered = tmp_path / "ae2-dir-bad.zip"
+    tampered.write_bytes(
+        build_aes_zip([(b"d/", b"hidden data!")], password=b"secret", tamper_hmac=True)
+    )
+    with open_archive(tampered, password="secret") as ar:
+        with pytest.raises(CorruptionError, match="HMAC"):
+            ar.read("d/")
+    # AE-1 keeps the plaintext CRC, so a directory under it carries the digest.
+    ae1 = tmp_path / "ae1-dir.zip"
+    ae1.write_bytes(
+        build_aes_zip([(b"d/", b"hidden data!")], password=b"secret", vendor_version=1)
+    )
+    with open_archive(ae1, password="secret") as ar:
+        assert HashAlgorithm.CRC32 in ar.get("d/").hashes
+        assert ar.read("d/") == b"hidden data!"
+
+
 def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
     """A directory entry's CRC field is 0 by convention, so a zero over declared data
     is no digest: the member carries none, ``DIGEST_UNVERIFIABLE`` says the read is

@@ -1236,14 +1236,16 @@ class ZipReader(BaseArchiveReader):
         # ``DIGEST_UNVERIFIABLE`` below says the read is unchecked (design principle
         # 1: say so instead of implying the bytes were checked; DR-4: CorruptionError
         # is for damage). AE-2 stores CRC as 0 and relies on the HMAC — do not surface
-        # a fake crc32.
+        # a fake crc32, and do not read its zero as a missing anchor either: the HMAC
+        # checks an AE-2 directory's bytes as it checks an AE-2 file's.
         hashes: dict[HashAlgorithm, bytes] = {}
+        is_ae2 = aes_info is not None and aes_info.is_ae2
         directory_data = member_type is MemberType.DIRECTORY and info.file_size > 0
-        directory_without_crc = directory_data and info.CRC == 0
+        directory_without_crc = directory_data and info.CRC == 0 and not is_ae2
         if member_type in (MemberType.FILE, MemberType.SYMLINK) or (
             directory_data and not directory_without_crc
         ):
-            if aes_info is None or not aes_info.is_ae2:
+            if not is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
         if decoded_name.alternate_raw_name is not None:
