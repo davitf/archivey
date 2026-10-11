@@ -42,7 +42,7 @@ def test_default_config_is_module_constant() -> None:
     assert DEFAULT_ARCHIVEY_CONFIG.use_rapidgzip is AcceleratorMode.AUTO
     assert DEFAULT_ARCHIVEY_CONFIG.extraction_limits == ExtractionLimits()
     assert DEFAULT_ARCHIVEY_CONFIG.listing_limits == ListingLimits()
-    assert ListingLimits().max_members == ExtractionLimits().max_entries == 1_048_576
+    assert ListingLimits().max_members == ExtractionLimits().max_entries == 262_144
 
 
 def test_open_archive_without_config_uses_defaults(tmp_path) -> None:

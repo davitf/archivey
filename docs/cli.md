@@ -114,16 +114,17 @@ encrypted members fail as if no password had been given.
   failure (`--stop-on-error`), `2` usage error, `3` extract
   **completed** with ≥1 safety-policy block and no member failure (safe members
   on disk; under CONTINUE or STOP), `130` interrupted by Ctrl-C (it prints
-  `interrupted`; `130` is 128 + 2, the shell's code for SIGINT). Codes `4` to
-  `127` are reserved.
+  `interrupted`; `130` is 128 + 2, the shell's code for SIGINT), `141` output
+  pipe closed (see below). Codes `4` to `127` are reserved.
 - When the pipe that stdout or stderr writes to closes (`archivey t big.zip 2>&1 |
-  head -1`), every verb stops quietly with exit `0`. For `test` that means the
-  archive was not fully verified.
+  head -1`), every verb stops quietly with exit `141` (128 + 13, the shell's code
+  for SIGPIPE; the same code on Windows). So do `--help` and a usage error whose
+  message is lost. `141` says output was lost: for `test` the archive may not have
+  been fully verified, so treat it as a result you do not have.
 - When the archive path is a pipe (FIFO) or a character device, which can be read
   only once, every verb reads it in one forward pass. That works for TAR (also
   compressed) and single-file formats such as `.gz`. ZIP, 7z, RAR and ISO need to
   seek, so for those the verb exits `1` and says to copy the input to a regular file
-  first. If the format's optional package is not installed, the verb reports that
   first.
 - Such a path can be `/dev/stdin`, so on Linux and macOS an archive piped on stdin
   can be read: `cat a.tar | archivey list /dev/stdin`. On Linux, `/proc/self/fd/N`

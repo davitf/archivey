@@ -160,20 +160,36 @@ wrapper and why. When it runs, the hoist SHALL produce the same final layout as
 extracting directly into the cwd: directories merge into existing directories, and
 per-file collisions resolve by the overwrite policy (`rename` derives the library's
 `name (N)` spelling; `replace` replaces only the individual files being extracted;
-`skip` keeps the existing file). The hoist MUST NOT delete pre-existing files or
-directories under any policy. A collision
-the policy cannot resolve without deleting data (`error`, or a dir-vs-file
-shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
-under the wrapper, and exit nonzero — mirroring the failure a direct extraction
-would have hit. When the container got the plain stem name, a sole root sharing the
-wrapper's own name (`src.tar.gz` containing `src/`) SHALL be flattened in place, not
-treated as a collision, and the wrapper SHALL then take that root's mode and times.
-When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`, the
-sole root no longer shares its name, and the hoist merges the root into the existing
-`./<archive-stem>/` under the overwrite policy like any other root. A directory stored without owner
-write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
-and search permission for the move and then puts its mode back, as a direct extraction
-into the cwd would have succeeded.
+`skip` keeps the existing file). One exception stands: an archive that stores
+`foo/x.txt` without a `foo/` directory member, extracted where the operator's file
+`foo` exists, hoists to `foo (1)/x.txt` where a direct extraction fails on `foo`,
+because the implied parent directory is created, not extracted, so no collision policy
+applies to it. The hoist MUST NOT delete pre-existing files or directories under any
+policy. A collision the policy cannot resolve without deleting data (`error`, or a
+dir-vs-file shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved
+remainder under the wrapper, and exit nonzero — mirroring the failure a direct
+extraction would have hit. When the container got the plain stem name, a sole root
+sharing the wrapper's own name (`src.tar.gz` containing `src/`) SHALL be flattened in
+place, not treated as a collision, and the wrapper SHALL then take that root's mode and
+times. When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
+the sole root no longer shares its name, and the hoist merges the root into the existing
+`./<archive-stem>/` under the overwrite policy like any other root. A directory stored
+without owner write permission (`0o555`) SHALL still be moved: the hoist gives it owner
+read, write and search permission for the move and then puts its mode back, as a direct
+extraction into the cwd would have succeeded. After a hoist, the per-member lines
+(`renamed:`, `name rewritten:`, `not overwritten:`, `kept existing directory's mode` and
+the others) SHALL name each member where it is after the move, as a direct extraction
+into the cwd names it, never a path inside the removed wrapper: a member the merge
+renamed is named under its new name, and a member the merge discarded under `skip` gets
+no line of its own beyond the hoist's `skipped:` line, since its path is the operator's
+entry. The lines the merge itself prints (`renamed:` and `skipped:` for its own
+collisions, and `kept existing directory's mode`) come before the per-member lines,
+where a direct extraction prints every line in member order: the hoist prints the same
+lines, not in the same order. `kept existing directory's mode` is printed when the
+archive's directory mode, as the platform stores it, differs from the operator's
+directory's mode, on both paths. Windows stores only a read-only attribute, so there the
+line is printed only when that attribute differs. When the hoist stops, a member left
+behind is named inside the wrapper.
 The container (`./<archive-stem>/`) SHALL always be a new directory that the run
 creates. When anything exists at the container name (a directory, a regular file, or a
 symlink, dangling or live), the name SHALL be treated as taken under every overwrite
@@ -214,6 +230,10 @@ other processed statuses are omitted from that line).
 | `archivey extract <indexed-archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
 | `archivey extract <indexed-archive> 'b/*'` where filtered set has single root `b/` | Extracts into `.` (tops on filtered set); lands as `./b/…` |
 | `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
+| `archivey extract foo.tar` holding only `foo`, with the operator's `foo` in the cwd | Wraps in `foo (1)/`, then hoists the root to `foo (1)`, as `-d .` does; prints `renamed: foo -> foo (1)` |
+| `archivey extract <no-index-archive>` with a single root `top/` holding `c\x02` | Prints `name rewritten: top/c\x02 -> top/c%02`, the path after the hoist |
+| As above, with the operator's `top/c%02` in the cwd | Prints `name rewritten: top/c\x02 -> top/c%02 (1)`, as `-d .` does |
+| `archivey extract c.tar --overwrite skip` holding `c\x02`, with the operator's `c%02` | Prints `skipped: c%02` and no `name rewritten:` line |
 | `archivey extract <no-index-archive>` with multiple top-level entries | Extracts into `./<archive-stem>/` (no hoist) |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a symlink (dangling or to a directory), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written through the link |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a regular file (for example the archive itself, when it has no extension), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; the file is untouched |
@@ -377,7 +397,8 @@ member-to-stdout verb does not silently change the meaning of
 ### Requirement: exit codes are argparse-aligned with a policy-refusal code
 
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
-verb/flag or bad arguments — the argparse default). Operational failures
+verb/flag or bad arguments — the argparse default), unless the output or message
+could not be delivered (see the codes `128` and above below). Operational failures
 (unreadable, unsupported, or corrupt archive; read/integrity failure; member
 extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
 an early abort under `--stop-on-error` on a member **failure**, or any
@@ -390,7 +411,12 @@ be used for an aborted STOP-path failure. Exit codes `4` to `127` SHALL remain
 reserved.
 Codes `128` and above follow the shell's `128 + N` convention for signal `N`
 and are not in the reserved range: a command interrupted by Ctrl-C (SIGINT)
-SHALL print `interrupted` and exit `130`.
+SHALL print `interrupted` and exit `130`. A command whose stdout or stderr pipe
+is closed by its reader SHALL stop without a message or traceback and exit `141`
+(128 + SIGPIPE), on every platform, Windows included. That holds for help and
+usage text and for error messages as well as for a verb's output: a usage error
+whose message cannot be delivered SHALL exit `141`, not `2`, because the output
+was lost.
 Documentation SHALL direct callers to treat any nonzero code other than `2` as
 a failure and MUST NOT assume `1` is the only failure code.
 
@@ -411,7 +437,8 @@ a failure and MUST NOT assume `1` is the only failure code.
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
 | Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
-| Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `0`, even when `test` had not finished verifying |
+| Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `141`, so a `test` that had not finished verifying does not report success |
+| `archivey --help \| true`, or a usage error whose stderr pipe is closed | No message or traceback; exit `141` (not `0` or `2`) |
 
 ### Requirement: read-once paths open in streaming mode
 
@@ -422,10 +449,8 @@ SHALL open it in streaming mode, because the user has no option to choose the mo
 `extract` SHALL extract them in one pass. When the format cannot be read in one
 forward pass (ZIP, 7z, RAR, ISO), the verb SHALL exit `1` with a message that names
 the format by its file extension (`zip`, `7z`, `rar`, `iso`) and tells the user to
-copy the input to a regular file first. When the format's optional package is not
-installed, the verb SHALL report the missing package first, as it does for a regular
-file. The message MUST NOT suggest `streaming=True` or a `BytesIO`, which a CLI user
-cannot pass. A block device rereads the same bytes and
+copy the input to a regular file first. The message MUST NOT suggest `streaming=True`
+or a `BytesIO`, which a CLI user cannot pass. A block device rereads the same bytes and
 opens as a regular file does.
 
 A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
@@ -440,7 +465,7 @@ separate and stays reserved (below).
 | `archivey test <tar-fifo>` | Verifies every file member in one pass; exit `0` |
 | `archivey extract <tar-fifo> -d out` | Extracts every member into `out`; exit `0` |
 | `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
-| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first. When the format's optional package is not installed (ISO without `pycdlib`), the message names the missing package instead |
+| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first |
 | `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
 
 ### Requirement: the stdin token `-` is reserved, not supported in v1
@@ -476,9 +501,12 @@ directory; `.` remains the way to name it.
 
 ### Requirement: The CLI uses only public API
 
-The `archivey.cli` package SHALL import nothing from `archivey.internal`, with one
-exception: `--track-io` imports `archivey.internal.measurement`, because the CLI is
-also a debugging tool for the library and IO measurement is not public API. What it
+The `archivey.cli` package SHALL import nothing from `archivey.internal`, with two
+exceptions. `--track-io` imports `archivey.internal.measurement`, because the CLI is
+also a debugging tool for the library and IO measurement is not public API. `extract`
+imports `is_rooted` and `numbered_name` from `archivey.internal.filters`, because its
+report and its single-root hoist must apply those naming rules exactly as extraction
+does: which stored names a re-root changed, and how a rename spells `name (N)`. What it
 needs beyond `archivey.__all__` SHALL otherwise come from a public module, such as
 `archivey.terminal` for terminal-safe display. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
@@ -492,7 +520,7 @@ renaming either field breaks the dry run's hoist line and summary.
 
 | Case | Expected |
 | --- | --- |
-| Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import`, except the one allowlisted measurement import |
+| Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import`, except the two allowlisted imports (measurement, naming rules) |
 | One is added | `tests/test_cli_uses_public_api.py` fails, naming the file and line |
 | The allowlisted import is removed | The same test fails until the allowlist entry goes too |
 

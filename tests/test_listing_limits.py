@@ -65,7 +65,7 @@ def test_huge_archive_comment_counts_toward_metadata() -> None:
 def test_defaults_allow_linux_scale_member_counts() -> None:
     # ~100k would be heavy for a unit test; assert the default numeric contract and that
     # a modest archive under defaults succeeds.
-    assert ListingLimits().max_members == 1_048_576
+    assert ListingLimits().max_members == 262_144
     assert ListingLimits().max_metadata_bytes == 64 * 2**20
     data = _zip_with_members([f"f{i}.txt" for i in range(200)])
     with open_archive(io.BytesIO(data)) as reader:
@@ -90,7 +90,7 @@ def test_stream_members_unguarded_when_members_would_fail() -> None:
 
 
 def test_matched_defaults_list_then_extract(tmp_path: Path) -> None:
-    assert ListingLimits().max_members == ExtractionLimits().max_entries == 1_048_576
+    assert ListingLimits().max_members == ExtractionLimits().max_entries == 262_144
     src = tmp_path / "a.zip"
     src.write_bytes(_zip_with_members([f"f{i}.txt" for i in range(10)]))
     dest = tmp_path / "out"

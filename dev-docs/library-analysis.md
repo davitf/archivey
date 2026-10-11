@@ -250,7 +250,8 @@ does not use it — so the `python-xz` pin that lingered in `[all]` was entirely
 ### gzip — gzip-window `DecompressorStream`, accelerated by `rapidgzip`
 
 Default decode is a gzip-window zlib decoder on `DecompressorStream` (`wbits=16+MAX_WBITS`,
-multi-member chaining with GzipFile parity: NUL padding, trailing zeros, trailing junk) —
+multi-member chaining as GNU `gzip` reads it: NUL padding only at the end, trailing junk
+reported; [`formats/gzip.md`](formats/gzip.md) §6) —
 not `gzip.GzipFile`. CRC/ISIZE outcomes come from zlib’s gzip window. For **random access**,
 the optional `rapidgzip` (`[seekable]`) builds an index for true seeking; without it, the
 stdlib path seeks by re-decompressing from the start (rewind warning). `rapidgzip` is the
