@@ -213,9 +213,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       to be a TAR archive, and it raises `CorruptionError`.
     - A **device, FIFO or socket header that declares data** (typeflag `3`, `4` or `6`
       with a non-zero size) raises `CorruptionError` at that header, before the
-      end-marker check runs. Such an entry has no data, GNU tar skips the header as
-      damaged, and `tarfile` would read an all-zero payload as the end of the archive
-      and drop every member after it.
+      end-marker check runs. Such an entry has no data, and GNU tar skips the header as
+      damaged. Reading on from the next block, an all-zero payload would look like the
+      end of the archive and drop every member after it.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes

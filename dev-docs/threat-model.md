@@ -315,13 +315,14 @@ archive declares.
   member, except on 7z, RAR and ISO, which check the caps while parsing. Their memory
   is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
   reader, and TAR in both modes) counts members as usual and stops keeping them once
-  the totals cross a cap, in `base_reader.py` `_discard_listing`, which also stops
-  `tarfile` keeping headers. The listing calls after it then raise the same
-  `ResourceLimitError` as `members()`. `extract_all()` enforces the caps in both modes,
-  because it resolves hard links against the members it keeps. Unguarded bounds memory,
-  not work: a forward-only TAR walk reads through every member it skips, for the bytes
-  present rather than the size a header declares (a member declaring more than the
-  archive holds raises `TruncatedError` at the first short read).
+  the totals cross a cap, in `base_reader.py` `_discard_listing`. The TAR walker keeps
+  nothing behind the member list, so nothing else is held. After the discard, the
+  listing calls raise the same `ResourceLimitError` as `members()`. `extract_all()`
+  enforces the caps in both modes, because it resolves hard links against the members
+  it keeps. Unguarded bounds memory, not work: a forward-only TAR walk reads through
+  every member it skips, for the bytes present rather than the size a header declares
+  (a member declaring more than the archive holds raises `TruncatedError` at the first
+  short read).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
