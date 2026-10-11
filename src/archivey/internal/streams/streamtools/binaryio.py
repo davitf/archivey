@@ -610,11 +610,14 @@ def read_within_reach(
     parts = [data]
     taken = len(data)
     while taken < size:
-        part = inner.read(min(size - taken, step))
-        if not part:
-            break
+        want = min(size - taken, step)
+        part = inner.read(want)
         parts.append(part)
         taken += len(part)
+        if len(part) < want:
+            # A short read is the end (ADR 0014). Asking again would pull a decoder's
+            # deferred error into this call and drop the bytes already joined.
+            break
     return b"".join(parts)
 
 

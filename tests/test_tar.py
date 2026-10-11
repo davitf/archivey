@@ -2485,8 +2485,17 @@ def test_small_reads_of_a_compressed_member_are_buffered(tmp_path: Path) -> None
         assert read.call_count < 30
 
 
-@pytest.mark.parametrize("kept", [2_000, 10_000])
-@pytest.mark.parametrize("chunk", [100, 1024])
+@pytest.mark.parametrize(
+    ("kept", "chunk"),
+    [
+        (2_000, 100),
+        (2_000, 1024),
+        (10_000, 100),
+        (10_000, 1024),
+        (100_000, 128 * 1024),  # past the walk's 64 KiB read step
+        (100_000, 1024 * 1024),  # extraction's copy chunk
+    ],
+)
 def test_a_cut_compressed_member_delivers_its_prefix_in_both_modes(
     tmp_path: Path, kept: int, chunk: int
 ) -> None:

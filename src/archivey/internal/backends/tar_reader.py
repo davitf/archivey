@@ -368,10 +368,10 @@ class TarReader(BaseArchiveReader):
         # (``_walker_view``) and each compressed member's view instead, so a reader
         # holds ``_owned_stream`` or ``_walker_view``, never both.
         self._owned_stream: BinaryIO | None = None
-        # A compressed tar's codec stream, in either mode. ``ensure_bufferedio`` wraps
-        # it in a buffer that detaches on close rather than closing it, so it is closed
-        # here explicitly: left to the garbage collector, a stream held by a failed
-        # open's traceback kept its rapidgzip child process running.
+        # A compressed tar's codec stream, in either mode. In random access nothing
+        # wraps it, so it is closed here explicitly (streaming's buffer also closes it;
+        # a second close is a no-op): left to the garbage collector, a stream held by a
+        # failed open's traceback kept its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
         # Random access only: the current walk's own buffered view (see _new_walker).
         self._walker_view: BinaryIO | None = None
