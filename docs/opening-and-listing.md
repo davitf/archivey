@@ -416,7 +416,8 @@ percent-encoded, as `caf%E9.txt`; only `TRUSTED` writes the stored bytes.
 a rewritten `%E9` apart from one that was stored that way: after the rewrite it
 differs from the written name in the escaped bytes. It is also set when an absolute
 name loses its root (`/etc/x` written as `etc/x`), and then differs from the written
-name only by that root.
+name only by that root. `ExtractionResult.rewrites` says which of the two happened:
+`NameRewrite.PORTABLE_NAME`, `NameRewrite.REROOTED`, or both.
 
 ## Duplicate names and is_current
 

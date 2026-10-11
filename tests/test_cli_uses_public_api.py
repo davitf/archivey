@@ -14,16 +14,13 @@ from pathlib import Path
 
 CLI_DIR = Path(__file__).resolve().parents[1] / "src" / "archivey" / "cli"
 
-# The deliberate exceptions, keyed by the hit text ``_internal_imports`` reports, minus
+# The deliberate exception, keyed by the hit text ``_internal_imports`` reports, minus
 # the line number, so each entry names exactly one import statement and nothing else.
 # ``--track-io`` reads the IO counters, which are not public API: the CLI is also a
-# debugging tool for the library, so it may see what a caller cannot. ``extract``
-# applies two naming rules exactly as extraction does (which stored names are rooted,
-# and the ``name (N)`` spelling of a rename); a copy would have to be kept in step.
+# debugging tool for the library, so it may see what a caller cannot.
 ALLOWED_INTERNAL_IMPORTS = frozenset(
     {
         "common.py: from archivey.internal.measurement import enable_measurement, io_stats",
-        "extract_cmd.py: from archivey.internal.filters import is_rooted, numbered_name",
     }
 )
 
@@ -95,3 +92,49 @@ def test_the_allowlist_admits_one_statement_not_its_file(tmp_path: Path) -> None
     assert offending == [
         "common.py:2 from archivey.internal.registry import get_registry"
     ]
+
+
+# Private attributes the CLI may read on an object that is not its own, by name. The two
+# dry-run fields are the ``cli`` spec's recorded exception; the rest are argparse's
+# (``_actions``, ``_SubParsersAction``) and the CLI's own namespace default
+# (``_reserved_message``), none of which belong to the library.
+ALLOWED_PRIVATE_ATTRIBUTES = frozenset(
+    {
+        "_dry_run_links",
+        "_dry_run_top_level",
+        "_actions",
+        "_SubParsersAction",
+        "_reserved_message",
+    }
+)
+
+
+def _private_attribute_reads(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return [
+        f"{path.name}:{node.lineno} {ast.unparse(node)}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr.startswith("_")
+        and not node.attr.startswith("__")
+        and ast.unparse(node.value) not in ("self", "cls")
+        and node.attr not in ALLOWED_PRIVATE_ATTRIBUTES
+    ]
+
+
+def test_cli_reads_no_private_library_attribute() -> None:
+    """A private field such as ``ArchiveMember._link_target_absent`` is internal state
+    even though Python lets the CLI read it; what the CLI needs has a public name
+    (here ``ArchiveMember.link_target_unrecorded``)."""
+    files = sorted(CLI_DIR.rglob("*.py"))
+    hits = [hit for path in files for hit in _private_attribute_reads(path)]
+    assert hits == [], f"archivey.cli reads private attributes: {hits}"
+
+
+def test_the_private_attribute_guard_sees_a_read(tmp_path: Path) -> None:
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "def f(member, self):\n    return member._link_target_absent, self._own\n",
+        encoding="utf-8",
+    )
+    assert _private_attribute_reads(probe) == ["probe.py:2 member._link_target_absent"]

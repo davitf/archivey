@@ -145,9 +145,14 @@ having.
 ## Which members you can open
 
 **Symbolic and hard links are followed**, so opening one gives you the target's
-bytes. A broken link raises `LinkTargetNotFoundError`, and a cycle raises rather than
-spinning. `stream_members()` is the exception: it yields links as `(member, None)`,
+bytes. `stream_members()` is the exception: it yields links as `(member, None)`,
 for the reason given above.
+
+A broken link raises `LinkTargetNotFoundError`, and so does a cycle, rather than
+spinning. Its `reason` says why: `NOT_RECORDED` when the archive records no target for
+the link (`member.link_target_unrecorded`), `UNREADABLE` when it records one this read
+could not produce, and `UNRESOLVED` when the target names no member the link can use
+or the chain of links loops.
 
 **Directories and other non-file entries cannot be opened.** `reader.open()` on one
 raises `ArchiveyUsageError` naming the type — check `member.type` first, or use the

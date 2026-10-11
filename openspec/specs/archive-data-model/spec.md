@@ -101,6 +101,12 @@ Unlike `is_junction`, `is_reparse_point` SHALL NOT be gated on `type`: it record
 the archive said about the entry, and a member whose reparse data turns out not to be a
 link keeps the flag alongside its re-typed `MemberType`.
 
+`ArchiveMember.link_target_unrecorded` SHALL be `True` exactly for a link
+(`SYMLINK` or `HARDLINK`) with `link_target is None` whose archive records no target:
+the case extraction records as `LINK_TARGET_UNAVAILABLE` (`safe-extraction`). It SHALL
+be `False` for a link whose recorded target this read could not produce, and for one
+whose data-stored target has not been read yet (`read_link_targets=False`).
+
 #### Scenario: member type matrix
 
 | Case | Expected |

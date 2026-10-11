@@ -1,9 +1,10 @@
 # API reference
 
 Everything documented here is re-exported from the top-level `archivey` package and
-listed in `archivey.__all__`, except two side modules at the end: the
+listed in `archivey.__all__`, except three side modules at the end: the
 [detection budget and receipt](#detection-cost) types in `archivey.detection_cost`, and
-the [front-end helpers](#front-end-helpers) in `archivey.terminal`. Narrative guide:
+the [front-end helpers](#front-end-helpers) in `archivey.terminal` and `archivey.paths`.
+Narrative guide:
 [Home](index.md).
 Authoritative contracts: `openspec/specs/`.
 
@@ -76,6 +77,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ExtractionResult
 ::: archivey.ExtractionProgress
 ::: archivey.ExtractionStatus
+::: archivey.NameRewrite
 ::: archivey.ExtractionPolicy
 ::: archivey.OverwritePolicy
 ::: archivey.OnError
@@ -125,6 +127,7 @@ subclasses of `ArchiveyError` and unrelated to each other.
 ::: archivey.TruncatedError
 ::: archivey.EncryptionError
 ::: archivey.LinkTargetNotFoundError
+::: archivey.LinkTargetNotFoundReason
 
 ::: archivey.ExtractionError
 ::: archivey.FilterRejectionError
@@ -158,10 +161,18 @@ are stable under the same rule as the rest of this page.
 
 ## Front-end helpers
 
-These live in the `archivey.terminal` module and are not re-exported from `archivey`.
-They are for showing archive-derived text, such as member names, to a person without
-letting it control the terminal. archivey's own command-line tool is built on them.
+These live in the `archivey.terminal` and `archivey.paths` modules and are not
+re-exported from `archivey`. archivey's own command-line tool is built on them.
+
+The `archivey.terminal` helpers are for showing archive-derived text, such as member
+names, to a person without letting it control the terminal.
 
 ::: archivey.terminal.escape_control_chars
 ::: archivey.terminal.display_path
 ::: archivey.terminal.quoted
+
+`archivey.paths` holds the naming rules extraction applies to destination paths, for a
+front end that moves or renames what extraction wrote and wants the names a direct
+extraction would have chosen.
+
+::: archivey.paths.numbered_name

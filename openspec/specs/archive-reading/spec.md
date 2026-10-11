@@ -789,7 +789,13 @@ hardlink-style target (`format-rar`). Directory lookup tries bare and `/`-suffix
 forms.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
-depth limit. Missing target → `LinkTargetNotFoundError`; cycle → `ReadError`.
+depth limit. Missing target and cycle → `LinkTargetNotFoundError` (a `ReadError`).
+Its `reason` (`LinkTargetNotFoundReason`) SHALL say why: `NOT_RECORDED` when the
+archive records no target for the link (`ArchiveMember.link_target_unrecorded`),
+`UNREADABLE` when it records one this read could not produce, and `UNRESOLVED` when the
+target is known but following it reaches no member that holds data (no such member,
+one the link may not use, or a cycle). Extraction raises the same type and reasons for
+a link it fails.
 Terminal fully-dereferenced target (when known) is `member.link_target_member`
 (see `archive-data-model`). Diagnostics for a linked open cover follow + read of
 that one `open()` operation.
@@ -800,8 +806,10 @@ that one `open()` operation.
 | --- | --- |
 | Valid chain to file data | One `ArchiveStream`; diagnostics cover follow + read of that open |
 | Hardlink → earlier file | Stream yields that file's data |
-| Missing target | `LinkTargetNotFoundError` |
-| Chain revisits member id | `ReadError` (cycle); no infinite recursion |
+| Missing target | `LinkTargetNotFoundError`, `reason == UNRESOLVED` |
+| Chain revisits member id | `LinkTargetNotFoundError` (a `ReadError`), `reason == UNRESOLVED`; no infinite recursion |
+| Link the archive records no target for | `LinkTargetNotFoundError`, `reason == NOT_RECORDED`; `member.link_target_unrecorded` |
+| Link whose stored target the reader reported out of reach (encrypted, compressed, over the length limit) | `LinkTargetNotFoundError`, `reason == UNREADABLE`; a damaged target raises the damage instead |
 | Symlink → file in archive | Stream yields target file data |
 | Symlink `dir/link` → `file` / `./file` | Lookup `dir/file`, not root-relative `file` |
 | Hardlink → `a/../b`, archive holds both `a/../b` and `b` | Resolves to the `a/../b` member; never `b` |

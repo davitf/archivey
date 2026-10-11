@@ -49,6 +49,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
@@ -2756,14 +2757,16 @@ class BaseArchiveReader(ArchiveReader):
             if current._member_id is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
+                    reason=LinkTargetNotFoundReason.UNRESOLVED,
                     member_name=current.name,
                 )
             member_id = current._member_id
             if member_id in visited:
-                # The CLI's ``_is_link_destination_error`` (``cli/test_cmd.py``)
-                # matches this exact message, since the CLI may not import a shared
-                # constant from ``internal``. Change both together.
-                raise ReadError("Link cycle detected", member_name=current.name)
+                raise LinkTargetNotFoundError(
+                    "Link cycle detected",
+                    reason=LinkTargetNotFoundReason.UNRESOLVED,
+                    member_name=current.name,
+                )
             visited.add(member_id)
             if current.link_target_member is not None:
                 current = current.link_target_member
@@ -2773,6 +2776,9 @@ class BaseArchiveReader(ArchiveReader):
             if current.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
+                    reason=LinkTargetNotFoundReason.NOT_RECORDED
+                    if current.link_target_unrecorded
+                    else LinkTargetNotFoundReason.UNREADABLE,
                     member_name=current.name,
                 )
             # open() materializes first: a half-walked index must never answer a lookup.
@@ -2781,6 +2787,7 @@ class BaseArchiveReader(ArchiveReader):
             if target is None:
                 raise LinkTargetNotFoundError(
                     "Link target not found in archive",
+                    reason=LinkTargetNotFoundReason.UNRESOLVED,
                     member_name=current.name,
                     link_target=current.link_target,
                 )

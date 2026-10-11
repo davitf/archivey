@@ -31,6 +31,7 @@ carried across a pickle.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from archivey.terminal import escape_control_chars
@@ -169,7 +170,7 @@ class ReadError(ArchiveyError):
     """The archive's data is bad or cannot be read, at open or later.
 
     Raised directly when an external decoder or a child process fails without saying
-    why, or a link chain loops; the subclasses name the common causes.
+    why; the subclasses name the common causes.
     """
 
 
@@ -193,8 +194,56 @@ class EncryptionError(ReadError):
     """Password required or wrong password."""
 
 
+class LinkTargetNotFoundReason(StrEnum):
+    """Why a link has no member to follow to: :attr:`LinkTargetNotFoundError.reason`."""
+
+    NOT_RECORDED = "not_recorded"
+    """The archive records no target for this link. Not damage: a writer such as
+    7-Zip stores some links this way, and ``ArchiveMember.link_target_unrecorded`` is
+    ``True`` for them."""
+
+    UNREADABLE = "unreadable"
+    """The archive records a target, and this read could not produce it: the data
+    holding it is damaged, encrypted, or out of reach. A diagnostic on the member
+    says which."""
+
+    UNRESOLVED = "unresolved"
+    """The target is known, but following it reaches no member that holds data: it
+    names no member of the archive, or one the link may not use (a symlink target that
+    leaves the archive root, a hardlink to a later member), or the chain of links
+    loops."""
+
+
 class LinkTargetNotFoundError(ReadError):
-    """A symlink/hardlink target, or a file copy's source, is absent from the archive."""
+    """A symlink/hardlink target, or a file copy's source, is absent from the archive.
+
+    :attr:`reason` says why, so a caller can act on the cause without reading the
+    message.
+    """
+
+    reason: LinkTargetNotFoundReason
+    """Why the link has no member to follow to."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: LinkTargetNotFoundReason,
+        source_format: ArchiveFormat | None = None,
+        archive_name: str | None = None,
+        member_name: str | None = None,
+        link_target: str | None = None,
+        format_unconfirmed: bool = False,
+    ) -> None:
+        super().__init__(
+            message,
+            source_format=source_format,
+            archive_name=archive_name,
+            member_name=member_name,
+            link_target=link_target,
+            format_unconfirmed=format_unconfirmed,
+        )
+        self.reason = reason
 
 
 class ExtractionError(ArchiveyError):
