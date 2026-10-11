@@ -2311,6 +2311,7 @@ def test_corrupted_directory_data_fails_its_digest_check(tmp_path: Path) -> None
         assert ar.read("d/f.txt") == b"visible"
 
 
+@requires("cryptography")
 def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
     """WinZip AE-2 stores CRC 0 by design and relies on the HMAC, for a directory entry
     as for a file: no crc32 in ``hashes``, no ``DIGEST_UNVERIFIABLE`` (the bytes are
