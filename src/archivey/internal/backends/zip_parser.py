@@ -77,6 +77,7 @@ _LOCAL_HEADER = struct.Struct("<4s2B4HL2L2H")
 
 _ZIP64_EXTRA_TAG = 0x0001
 _U32_MAX = 0xFFFF_FFFF
+_U64_MAX = 0xFFFF_FFFF_FFFF_FFFF
 # Classic end-record disk fields use 0xFFFF to mean "see the ZIP64 record", not disk
 # 65535.
 _ZIP64_DISK_SENTINEL = 0xFFFF
@@ -597,13 +598,15 @@ def _apply_zip64_extra(
 
     APPNOTE 4.5.3: the field holds, in this order, only the values whose header field
     is all ones: uncompressed size, compressed size, local header offset, disk number.
-    stdlib also takes a 64-bit all-ones uncompressed size as deferred, and reads the
-    first such field only. A deferred size or offset the field does not hold is
+    As in stdlib, every ``0x0001`` field in the blob is applied in turn: a value still
+    all ones after one field (a 64-bit all-ones uncompressed size counts) is read again
+    from the next. A deferred size or offset a field does not hold is
     ``CorruptionError``. The disk number is the exception: stdlib never reads it and
-    nothing consumes it yet, so when the field does not hold it, it stays ``0xFFFF``
-    ("not known") rather than refusing an archive stdlib opens; when it is the only
-    deferred value, it is the field's first four bytes, per APPNOTE. A field elsewhere
-    in the blob that is cut short is left alone: it says nothing about these four.
+    nothing consumes it yet, so when no field holds it, it stays ``0xFFFF`` ("not
+    known") rather than refusing an archive stdlib opens; it is read once, from the
+    first field with four bytes left after the other values (its first four bytes when
+    it is the only deferred value, per APPNOTE). A field elsewhere in the blob that is
+    cut short is left alone: it says nothing about these four.
     """
     if not (
         file_size == _U32_MAX
@@ -612,6 +615,7 @@ def _apply_zip64_extra(
         or disk_start == 0xFFFF
     ):
         return compressed_size, file_size, header_offset, disk_start
+    disk_deferred = disk_start == 0xFFFF
     for field in iter_extra_fields(extra):
         if field.tag != _ZIP64_EXTRA_TAG:
             continue
@@ -629,15 +633,15 @@ def _apply_zip64_extra(
             cursor += width
             return value
 
-        if file_size == _U32_MAX:
+        if file_size in (_U32_MAX, _U64_MAX):
             file_size = take(8, "uncompressed size")
         if compressed_size == _U32_MAX:
             compressed_size = take(8, "compressed size")
         if header_offset == _U32_MAX:
             header_offset = take(8, "local header offset")
-        if disk_start == 0xFFFF and cursor + 4 <= len(data):
+        if disk_deferred and cursor + 4 <= len(data):
             disk_start = take(4, "disk number")
-        return compressed_size, file_size, header_offset, disk_start
+            disk_deferred = False
     return compressed_size, file_size, header_offset, disk_start
 
 

@@ -380,6 +380,40 @@ def test_only_the_disk_number_deferred() -> None:
     assert _parse(absent)[1][0].disk_start == 0xFFFF
 
 
+def _two_zip64_fields(first: int, second: int) -> bytes:
+    return struct.pack("<HHQHHQ", 0x0001, 8, first, 0x0001, 8, second)
+
+
+@pytest.mark.parametrize(
+    ("field", "first", "attribute"),
+    [
+        ("compressed_size", 0xFFFF_FFFF, "compressed_size"),
+        ("header_offset", 0xFFFF_FFFF, "header_offset"),
+        ("file_size", 0xFFFF_FFFF_FFFF_FFFF, "file_size"),
+    ],
+)
+def test_a_value_still_deferred_reads_the_next_zip64_field(
+    field: str, first: int, attribute: str
+) -> None:
+    """stdlib applies every ZIP64 extra field: a value still all ones after the first
+    is read again from the second."""
+    data = _with_central_extra(
+        _zip({"a.txt": b"hello"}),
+        0,
+        _two_zip64_fields(first, 7),
+        **{field: 0xFFFF_FFFF},
+    )
+    assert _assert_matches_zipfile(data)
+    assert getattr(_parse(data)[1][0], attribute) == 7
+
+
+def test_the_disk_number_is_read_from_one_zip64_field_only() -> None:
+    extra = struct.pack("<HHLHHL", 0x0001, 4, 0, 0x0001, 4, 3)
+    data = _with_central_extra(_zip({"a.txt": b"hello"}), 0, extra, disk_start=0xFFFF)
+    assert _assert_matches_zipfile(data)
+    assert _parse(data)[1][0].disk_start == 0
+
+
 @pytest.mark.parametrize("zip64", [False, True], ids=["classic", "zip64"])
 @pytest.mark.parametrize("adjusted", [False, True], ids=["unadjusted", "adjusted"])
 def test_stub_prefix(
