@@ -30,7 +30,7 @@ them.
 [ prefix? ]  [ LFH · data · DD? ] × n   [ CDH ] × n   [ ZIP64 EOCD + locator ]?  [ EOCD ]
                   ▲                       │  ▲                                      │
                   └── header_offset ──────┘  └────── offset_cd ─────────────────────┤
-                                                     search backwards ≤ 65 557 B ◄──┘
+                                                     search backwards ≤ 65 558 B ◄──┘
 ```
 
 | Part | Signature | What it is |
@@ -56,9 +56,12 @@ in the format and refused here (§6); and a scan that lands on the wrong `PK\x03
 usually self-correcting, because the reader still finds the real EOCD from the tail
 (§2.1).
 
-The backwards search bound is derived, not chosen: `comment_length` is a `uint16`, so the
-record cannot begin more than 65535 + 22 bytes before the end. A larger bound cannot find
-a valid EOCD and a smaller one rejects legal archives, so it is not configurable.
+The backwards search bound is not configurable. A valid record with no trailing bytes
+begins at most 65535 + 22 bytes before the end, since `comment_length` is a `uint16`.
+Archivey searches one byte further, 65 558 bytes, which is stdlib's older window (3.11
+and early 3.12 releases; 3.13 and later 3.12 releases dropped that byte). Trailing bytes are not comment bytes, so the extra byte
+does find a record: a maximal comment followed by one junk byte. A smaller bound would
+reject legal archives.
 
 **Members are independent.** Each member has its own LFH and its own compressed byte range,
 with no cross-member state. So reaching any member is a seek rather than a walk (`DIRECT`),

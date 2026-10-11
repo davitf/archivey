@@ -13,27 +13,30 @@
 
 ## 1. Parser (PR 1)
 
-- [ ] 1.1 `internal/backends/zip_parser.py`: `EndRecord`, `find_end_record`,
+- [x] 1.1 `internal/backends/zip_parser.py`: `EndRecord`, `find_end_record`,
       `CentralEntry`, `CentralDirectoryWalk`, `LocalHeader`, `read_local_header`.
-- [ ] 1.2 ZIP64: extra field `0x0001` resolution order, ZIP64 locator and record, entry
+- [x] 1.2 ZIP64: extra field `0x0001` resolution order, ZIP64 locator and record, entry
       count past 65 535, offsets past 4 GiB (hand-built records, no large files).
-- [ ] 1.3 Stub prefix: `base` matches stdlib `concat` for an unadjusted SFX and is 0 for
+- [x] 1.3 Stub prefix: `base` matches stdlib `concat` for an unadjusted SFX and is 0 for
       an adjusted one.
-- [ ] 1.4 Disk fields and the archive extra data record raise the existing refusals,
+- [x] 1.4 Disk fields and the archive extra data record raise the existing refusals,
       including under ZIP64.
-- [ ] 1.5 Differential test: every ZIP in `tests/fixtures/`, every archive
+- [x] 1.5 Differential test: every ZIP in `tests/fixtures/`, every archive
       `tests/create_adversarial.py` builds and the sample corpus give the same entries
       as `zipfile.infolist()` wherever `zipfile` opens it, over the fields and with the
       exceptions `design.md` §"Behaviour that changes" lists; shown to fail against the
       three mutants named there.
-- [ ] 1.5a `EndRecord.trailing` counts the bytes after the record and its declared
+- [x] 1.5a `EndRecord.trailing` counts the bytes after the record and its declared
       comment; a comment cut short is not trailing (tests for both).
-- [ ] 1.6 Walk findings equal what `_end_record_findings` reports today on the existing
+- [x] 1.6 Walk findings equal what `_end_record_findings` reports today on the existing
       end-record tests.
 
 ## 2. Switch the reader (PR 2)
 
 - [ ] 2.1 `ZipReader` reads through the parser; `import zipfile` leaves `src/`.
+- [ ] 2.1a Add the newer-Python row for a comment plus trailing bytes totalling 65 536 to the
+  handbook's behaviour notes, as the design's §"Behaviour that changes" table records
+  it (the search window stays stdlib's older one).
 - [ ] 2.2 Reader-owned lock; the source is the handle for path sources too.
 - [ ] 2.3 Lazy `_iter_members`; `member_count` from a complete walk, `None` when it fails
       or stops at `max_members`.

@@ -81,9 +81,12 @@ do today, in one place:
 
 - The search is stdlib's, so prefixed and commented archives resolve to the same record:
   a comment-less record ending at end of file first, then the last `PK\x05\x06` in the
-  final 65 557 bytes.
+  final 65 558 bytes (stdlib's older `1 << 16` plus the record, one byte more than the
+  format needs; 3.13 and later 3.12 releases shrank it by that byte, and the wider window reads
+  everything either one reads).
 - The ZIP64 locator 20 bytes before it, then the ZIP64 record it points to.
-- A disk field naming another disk (`0xFFFF` is the ZIP64 sentinel), or a ZIP64 locator
+- A disk field naming another disk (`0xFFFF` is the ZIP64 sentinel; the ZIP64 record's
+  fields replace the classic ones when it is present, as in stdlib), or a ZIP64 locator
   with more than one disk, is `UnsupportedFeatureError` with `ZIP_MULTI_VOLUME_MSG`. No
   exception text is matched.
 - An archive extra data record (`PK\x06\x08`) where the directory should start is the
@@ -410,6 +413,7 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 | Bytes after the end record and its comment | Nothing reported | `ARCHIVE_TRAILING_DATA` warning; strict refuses; zero padding stays silent. 7-Zip 23.01 warns on the same input, `unzip` says nothing. Examined as TAR's tail is, in both modes: at most 1 MiB past the comment's end, first non-zero byte reported, `expected_marker="zeros_to_eof"` (§"Trailing bytes") | The 2026-10-07 ruling (davi): report trailing data after ZIP, 7z, RAR and ISO, as TAR and the codecs already do. Stage 2 |
 | A ZIP from a pipe whose data descriptor understates a STORED member, or whose directory lists two same-name members in the reverse of their file order | Not readable at all (non-seekable source refused) | That member fails at the end of the pass (`FAILED` under `OnError.CONTINUE`, a raise under `STOP`); the seekable read of the same archive writes it. The only on-disk difference between the two modes | DR-5a: only crafted archives have these shapes, and matching would mean buffering every member (ADR 0010). Stage 3 |
 | A member flagged as a Windows reparse point whose data is not a reparse buffer, in a `stream_members()` pass | Yielded as a SYMLINK with no stream, retyped to FILE after the pass: its content is lost | Typed when the pass reaches it, by reading the bounded reparse header ahead and handing back a stream of the whole member, as 7z already does; `members()` already lists it as FILE. From a pipe the reparse bit arrives with the directory, so such a member is written as a file and stays one, and only a real reparse buffer becomes a link (§"What only the central directory says") | DR-5, DR-1. Stage 3 |
+| An end record whose comment and trailing bytes total exactly 65 536 bytes (a maximal comment and one junk byte), on Python 3.13 and later 3.12 releases | `BadZipFile`, so `CorruptionError` at open | Listed; the junk is trailing data. Where stdlib keeps the older window (3.11, early 3.12) it already reads it | The wider window reads everything either stdlib window reads (§"Layout"). Stage 2 |
 | Open of an archive with a huge declared directory | All `ZipInfo` built at open | Members built as listed; `ListingLimits` stop the walk | DR-9a, DR-15b |
 
 Nothing else may change. The acceptance bar is the full suite as it stands once the
@@ -430,10 +434,14 @@ archive.
 - **Where the parser parts from stdlib on purpose**, each its own test rather than the
   comparison: a cut or overrunning extra field (stdlib refuses the archive, the parser
   keeps it), a ZIP64 extra field that is absent although a value is deferred (both
-  keep the 32-bit value), the decoy end record in a comment.
+  keep the 32-bit value), the decoy end record in a comment, and one byte of junk after
+  a maximal comment (the search keeps stdlib's older window, which 3.13 and later 3.12
+  releases shrank by one byte, so there stdlib refuses that archive and the parser
+  reads it).
 - **Interpreters:** the comparison runs on every Python in the CI matrix. stdlib's
-  version differences (the Unicode Path field from 3.12) change only whether it opens
-  an archive, never a compared field, so on each version the test compares what that
+  version differences (the Unicode Path field from 3.12, the end-record search window
+  one byte shorter from 3.13 and in later 3.12 releases) change only whether it opens an archive, never a
+  compared field, so on each version the test compares what that
   version opens and a floor on the count of compared archives stops it comparing
   nothing.
 - **Shown to fail** against three mutants: the header offset without `base`, the ZIP64
@@ -562,7 +570,7 @@ target).
 | --- | --- | --- |
 | Parse lazily, member by member | `ListingLimits` see each member as it is read; open does no work proportional to the archive (DR-15b); a damaged entry costs only the entries after it (DR-2) | Parsing the whole directory at open, as stdlib does |
 | Parser returns bytes; the reader decodes | Name decoding is policy (`encoding=`, fallback, diagnostics) that already lives in the reader and is shared in shape with RAR and TAR | Decoding in the parser, which is how stdlib ended up refusing whole archives |
-| Keep stdlib's end-record search and `concat` rule | Prefixed archives and decoy signatures in comments resolve exactly as today, and the differential test can compare against stdlib | 7-Zip's search, which differs on crafted inputs and would change detection results |
+| Keep stdlib's end-record search and `concat` rule | Prefixed archives and decoy signatures in comments resolve exactly as today (on newer Pythons one more archive opens, below), and the differential test can compare against stdlib | 7-Zip's search, which differs on crafted inputs and would change detection results |
 | Stop the walk at `cd_size`, cutting an overrunning field | Same listing as today; the overrun stays a finding | Reading the field from past the directory, which changes names on crafted input |
 | Apply central-only fields at the end of a forward pass | Matches seekable extraction on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive does (a symlink becomes a file: DR-1); spooling the archive to find the directory first |
 | Positioned reads through a `read_at(offset, n)` callable for the directory walk | The walk is lazy, so it runs between reads of member data on the same handle; a positioned read under the reader's lock leaves the handle where the member stream needs it, and the parser stays free of locking | A `LockedStream` over the handle, which serialises each call but shares one position, so every walk read would need a seek and a read as one locked step, which is `read_at` |

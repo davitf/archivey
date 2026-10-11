@@ -112,7 +112,7 @@ Three things about this path are worth knowing before you debug it:
 | If you are changing… | Start here |
 |---|---|
 | A format's parsing or metadata | `internal/backends/<fmt>_{reader,parser}.py`; spec `openspec/specs/format-<fmt>/` |
-| ZIP internals | `zip_reader.py` (stdlib central directory + archivey member data) · `zip_detect.py` (scan-hit validator) · `zipcrypto.py` · `zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
+| ZIP internals | `zip_parser.py` (native end record, central directory walk, local headers; the reader switches to it in the `native-zip-reader` change) · `zip_reader.py` (stdlib central directory + archivey member data) · `zip_detect.py` (scan-hit validator) · `zipcrypto.py` · `zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_copy_sources.py` (a solid pass keeps file-copy sources) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `tar_parser.py` (native header parser and walker; nothing reads through it yet) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
