@@ -365,40 +365,31 @@ class _DeflateEndCheckStream(DelegatingStream):
     when the size equals the output before the cut, the ``VerifyingStream`` outside
     sees a complete member.
 
-    So when rapidgzip's output ends, this wrapper decodes the end of the stream again
-    with zlib, from the newest resume point at or before that offset
-    (:func:`~archivey.internal.streams.codecs.deflate_resume.stream_end`), or from the start
-    when there is none. Raw DEFLATE has no checksum, so the resumed decode is a full
-    answer:
+    So when rapidgzip's output ends, this wrapper decodes the stream again with zlib
+    (:func:`~archivey.internal.streams.codecs.deflate_resume.stream_end`). Raw DEFLATE
+    has no checksum, so that decode is a full answer:
 
-    - zlib reaches a final block: the stream is whole. That block can end before the
-      offset, when rapidgzip read on into a second stream after it, within the size the
-      container declared (past that size, ``limit`` of ``_StdlibOnAcceleratorError``
-      hands over). The ``compressed-streams`` spec accepts that difference: the
-      declared size and CRC decide.
+    - zlib reaches a final block: the stream is whole.
     - zlib does not reach a final block (a cut or damaged stream): the read goes to the
       standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
       inside), which gives the verdict it gives with the accelerator off.
-    - With ``refuse_input_after_end`` (a ZIP member), zlib follows on through the
-      streams rapidgzip read, to the one that ends at the offset, and any byte of the
-      source after that one, a zero too, raises ``CorruptionError``, as the standard
-      library does. A second stream rapidgzip read whole still reads here (the
-      ``compressed-streams`` exception above), where the standard library refuses it:
-      telling it apart would need a decode from the start, since the resume point can
-      lie after the first stream's end.
+    - With ``refuse_input_after_end``, any byte of the source after the first stream's
+      final block, a zero too and a second stream rapidgzip read whole, raises
+      :class:`DataAfterEndError`, as the standard library does.
 
-    The check costs a decode of the output between the resume point and the end, paid by
-    the read or the seek that reaches the end, so a bare ``seek(0, SEEK_END)`` size
-    query pays it too. The child keeps its first point only once 4 MiB of output has
-    been delivered (``_MIN_QUERY_SPACING`` in ``rapidgzip_child.py``), so a stream with
-    less output than that is decoded again whole, by zlib in one thread: under ``ON``
-    such a member pays a whole standard-library decode on top of rapidgzip's (measured
-    on 2 MiB: 57 ms against 45 ms without the check, and 11 ms for zlib alone, since
-    starting the child already costs more than that). ``AUTO`` engages only from 16 MiB
-    of compressed input (``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``), where the decode is
-    the stretch after the last point: measured on an 82 MiB stream, about 2 MiB and
-    10 ms. A point at the end itself cannot be had instead: its window is the 32 KiB of
-    output before the point, and the stream keeps only the 32 KiB before the end.
+    Every shipped caller sets ``refuse_input_after_end``: raw DEFLATE is a ZIP member
+    or a 7z coder, and both readers set it. A decode from a resume point cannot see a
+    second stream (a point past the first stream's end lies in the second, which ends
+    at the offset), so under the flag zlib decodes the stream from its start. The check
+    therefore costs a standard-library decode of the whole stream on top of
+    rapidgzip's, paid by the read or the seek that reaches the end, so a bare
+    ``seek(0, SEEK_END)`` size query pays it too. For a container member the
+    accelerator speeds up seeks short of the end and the first output, not the full
+    read. Without the flag, which only a direct ``open_codec_stream`` caller reaches,
+    zlib decodes from the newest resume point at or before the end, or from the start
+    when there is none. A point at the end itself cannot be had instead: its window is
+    the 32 KiB of output before the point, and the stream keeps only the 32 KiB before
+    the end.
 
     The view is not guarded against ``OSError`` as the gzip member scan is: raw DEFLATE
     is container-only, so the view is a sibling of the handle the decode itself reads,
@@ -469,14 +460,16 @@ class _DeflateEndCheckStream(DelegatingStream):
         self._checked = True
         end = self._takeover.position
         resume_point = getattr(self._takeover.accelerator, "resume_point", None)
-        point = resume_point(end) if resume_point is not None else None
+        point = None
+        if resume_point is not None and not self._refuse_input_after_end:
+            point = resume_point(end)
         with self._views.view() as f:
             found, input_after = stream_end(
                 f, point, end, check_input_after=self._refuse_input_after_end
             )
         if found is not None:
             if input_after:
-                raise input_after_end_error("deflate")
+                raise input_after_end_error("deflate", found)
             return False
         self._takeover.switch_to_stdlib()
         return True
