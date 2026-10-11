@@ -1063,11 +1063,10 @@ class ExtractionCoordinator:
         # Extract-prep: enforce ListingLimits. Indexed backends may already have been
         # peeked via members_report_if_available(); scan-required backends (TAR,
         # directory) would otherwise walk via unguarded stream_members() and never hit
-        # listing caps. The reader decides how: most list everything first; TAR
-        # enforces the limits as members arrive in its one pass (_extraction_listing).
-        listing = (
-            contextlib.nullcontext() if forward_only else reader._extraction_listing()
-        )
+        # listing caps. The reader decides how: most list everything first; TAR and
+        # every streaming reader enforce the limits as members arrive in the one pass
+        # (_extraction_listing).
+        listing = reader._extraction_listing()
 
         # The pass is driven through the public stream_members(), which applies the
         # selection (skipped members never surface here — they are invisible to progress

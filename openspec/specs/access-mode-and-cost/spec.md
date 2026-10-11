@@ -132,12 +132,14 @@ Member selection for extraction is `extract_all(members=...)` (`safe-extraction`
 
 `members_report()` MAY run before the pass (starts+finishes it), after an
 interrupted pass (drains remainder), or after completion (returns the stored
-report). Starting the pass consumes it. It returns `MemberListReport` instead of
-raising on terminal archive-level listing errors (`archive-reading`); a caller that
-needs complete-or-raise raises `report.error`. A caller that wants each member as
-the pass reaches it, without the data, iterates `stream_members()` (or the reader)
-and ignores the streams. `members_report_if_available()` never begins/advances/consumes
-the pass.
+report). A pass that went past `ListingLimits` keeps no stored report
+(`archive-reading` §listing limits), so `members_report()` after it raises
+`ResourceLimitError`. Starting the pass consumes it. It returns
+`MemberListReport` instead of raising on terminal archive-level listing errors
+(`archive-reading`); a caller that needs complete-or-raise raises `report.error`.
+A caller that wants each member as the pass reaches it, without the data,
+iterates `stream_members()` (or the reader) and ignores the streams.
+`members_report_if_available()` never begins/advances/consumes the pass.
 
 On both access modes, `__iter__` and `stream_members` SHALL yield every
 recovered member before propagating a terminal archive-level listing error
@@ -152,6 +154,7 @@ recovered member before propagating a terminal archive-level listing error
 | Terminal archive error after prefix (either mode) | Prefix yielded; then raise |
 | Second forward-pass method after begin/complete | `ArchiveyUsageError` (all formats) |
 | Early `break` then `members_report()` | Drains remainder; fully-resolved report (prefix + `error` on terminal damage); later pass methods raise |
+| `members_report()` after a pass that went past `ListingLimits` | `ResourceLimitError` |
 | `members_report()` then `stream_members()` on fresh streaming reader | Report returned; subsequent pass raises (any index topology) |
 | `members()` on streaming | `ArchiveyUsageError` whose message points at `members_report()` and `stream_members()` |
 | `members_report()` on streaming with terminal archive error after prefix | Report with prefix + `error`; pass consumed; no raise from `members_report` |
