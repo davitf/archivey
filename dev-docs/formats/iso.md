@@ -433,8 +433,8 @@ ISO-specific only. General extraction and name hazards are §2.4.
   the read, on either version and with any `ListingLimits`, weighs every table against
   `max_metadata_bytes` before the read, and counts its entries against `max_members` as
   they are parsed. The byte budget alone let a table of the whole 64 MiB through (about
-  1.8 GB); the entry count caps one table near 240 MB at the default `max_members`,
-  about 230 bytes an entry.
+  1.8 GB); the entry count caps one table near 60 MB at the default `max_members`
+  (262,144), about 230 bytes an entry.
 - **A Rock Ridge `CE` entry sizes `pycdlib`'s read.** `pycdlib` read the continuation
   area for the length the entry declares, up to 4 GiB, and only then refused an area
   that does not fit in its logical block: a 512 MiB area was read (545 MiB peak) before

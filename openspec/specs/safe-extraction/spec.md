@@ -653,11 +653,13 @@ this run neither wrote nor created as a parent) SHALL leave that directory's mod
 ownership and times unchanged. When the member's effective mode differs from the
 directory's, the result SHALL carry the mode the directory kept in
 `ExtractionResult.kept_mode`; otherwise `kept_mode` is `None`, and the times were still
-left alone. A directory this run wrote or created is recognized under any spelling that
-reaches it, under every policy: through a directory symlink the archive created, and a
-case variant on a case-insensitive filesystem. A case variant on a filesystem that
-reports inode 0 for every entry cannot be told from another directory, and is taken for
-one that was there before the run.
+left alone. On Windows a mode sets only the read-only attribute, so the member's mode is
+compared as Windows would store it (`0o777`, or `0o555` without owner write): a `0o755`
+member over a writable directory reports no `kept_mode`. A directory this run wrote or
+created is recognized under any spelling that reaches it, under every policy: through a
+directory symlink the archive created, and a case variant on a case-insensitive
+filesystem. A case variant on a filesystem that reports inode 0 for every entry cannot be
+told from another directory, and is taken for one that was there before the run.
 
 A HARDLINK is made against the path its source member was written to only while that
 path still holds the source's content. Once a later member replaces that path, the path
@@ -1177,7 +1179,7 @@ SHALL raise `ResourceLimitError`.
 
 The system SHALL count members actually written to disk during one extraction call
 and raise `ResourceLimitError` once the count exceeds `max_entries`. The default is
-`1_048_576`; callers override through `ExtractionLimits`, and `None` disables the
+`262_144`; callers override through `ExtractionLimits`, and `None` disables the
 guard. The counter protects against inode/per-directory/syscall bombs made of many
 tiny entries and is independent of byte and ratio limits.
 
