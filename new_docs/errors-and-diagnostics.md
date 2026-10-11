@@ -86,12 +86,13 @@ you'd expect to be checked, such as a 7z member encrypted without a CRC, it reco
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that
 the next read has to decode its way through anyway. Bytes you read again after a seek back aren't
-checked a second time. A seek forward that jumps over bytes without decoding them stops the checksum
-check until you seek back to the start. That happens in a member stored without compression, in a
-`.xz` or `.lz` file, and through the `seekable` accelerator when it has a restart point past what
-you've read. The length is still checked after a jump, and damage the decompressor itself notices
-still raises. Once a read has raised, a later read that reaches the end raises the same error, even
-after a seek, so seeking back can't hand you the damaged member as if it were complete.
+checked a second time. A seek forward that jumps over bytes without decoding them, and lands before
+the end, stops the checksum check once you read on from there, until you seek back to the start.
+That happens in a member stored without compression, in a `.xz` or `.lz` file, and through the
+`seekable` accelerator when it has a restart point between what you've read and where you seek to.
+The length is still checked after a jump, and damage the decompressor itself notices still raises.
+Once a read has raised, a later read that reaches the end raises the same error, even after a seek,
+so seeking back can't hand you the damaged member as if it were complete.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 
