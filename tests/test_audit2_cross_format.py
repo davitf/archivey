@@ -1594,7 +1594,7 @@ class _LinkOpenStub:
         pytest.param(ReadError("Link cycle detected", member_name="a"), id="cycle"),
         pytest.param(
             ArchiveyUsageError(
-                "Cannot open member 'd': type is 'directory' (not a file)"
+                "Cannot open member 'd': directory entry declares no data (not a file)"
             ),
             id="directory",
         ),

@@ -33,6 +33,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticDisposition,
     DiagnosticSummary,
+    DirectoryDataContext,
     EmptyArchiveContext,
     EncryptedVerificationContext,
     ExtractionReport,
@@ -1926,6 +1927,47 @@ class BaseArchiveReader(ArchiveReader):
             logger=log,
         )
 
+    def _emit_directory_data_ignored(
+        self, member: ArchiveMember, member_id: int
+    ) -> None:
+        """Report one ``MEMBER_DIRECTORY_DATA_IGNORED`` finding, attached to ``member``.
+
+        ``member`` is a ``DIRECTORY`` whose header declares a non-zero size, or whose
+        body is larger than an empty one (a declared size of 0 over real bytes; the
+        backend decides what an empty body takes, since the Java ``jar`` tool deflates
+        one for every directory it writes). No format gives a directory entry content,
+        and every official tool creates the directory and drops the bytes silently;
+        archivey does the same on extraction but says so (DR-3). A declared size opens
+        through ``open()`` where the backend can decode the body (RAR delivers stored
+        data only); a declared size of 0 has nothing ``open()`` could return.
+        """
+        assert member.size or member.compressed_size, (
+            "only a directory with a body is reported"
+        )
+        if member.size:
+            what = f"declares {member.size} bytes of data"
+            reach = "open() delivers them where they can be decoded"
+        else:
+            what = f"declares no data but stores a {member.compressed_size}-byte body"
+            reach = "a declared size of 0 leaves nothing for open() to return"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+            message=(
+                f"Directory {quoted(member.name)} {what}; extraction creates the "
+                f"directory and does not write them ({reach})."
+            ),
+            context=DirectoryDataContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                size=member.size or 0,
+                compressed_size=member.compressed_size,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
+
     def _emit_special_file_has_data(
         self, member: ArchiveMember, member_id: int | None
     ) -> None:
@@ -2931,10 +2973,24 @@ class BaseArchiveReader(ArchiveReader):
                     link_target=current.link_target,
                 )
             current = target
-        if current.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
+        # A tombstone and a special entry are refused by type: there is nothing to
+        # deliver for them even where a header declares a size. A directory is
+        # refused by data: it has none unless its header declares some, and one that
+        # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP and
+        # RAR; a 7z directory can carry a size too until the sweep that types a
+        # member with a stream as a file lands) opens here, and only here: the bytes
+        # the backend can decode are reachable through ``open()``, while
+        # ``stream_members()`` and extraction still route by type and skip them.
+        # Both messages end in "(not a file)", which ``archivey test`` classifies by.
+        if current.type in (MemberType.ANTI, MemberType.OTHER):
             raise _UsageValueError(
-                f"Cannot open member {quoted(current.name)}: type is {current.type.value!r} "
-                f"(not a file)"
+                f"Cannot open member {quoted(current.name)}: type is "
+                f"{current.type.value!r} (not a file)"
+            )
+        if current.type is MemberType.DIRECTORY and not current.size:
+            raise _UsageValueError(
+                f"Cannot open member {quoted(current.name)}: directory entry "
+                "declares no data (not a file)"
             )
         return self._open_member(current)
 
