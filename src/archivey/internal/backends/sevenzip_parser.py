@@ -732,7 +732,9 @@ def packed_streams_end(streams: _StreamsInfo) -> int:
 
     Packed streams are contiguous from ``pack_pos``. 7-Zip writes them before the next
     header, but the format allows them after it, so the archive's end is the later of
-    the two.
+    the two. An ``ADDITIONAL_STREAMS_INFO`` block's pack data is not counted: the
+    parser skips that block, and no writer we know of emits one. Were one placed after
+    the next header, its bytes would be reported as trailing data.
     """
     return SIGNATURE_HEADER_SIZE + streams.pack_pos + sum(streams.pack_sizes or [])
 
@@ -892,6 +894,7 @@ __all__ = [
     "folder_is_encrypted",
     "folder_unpack_size",
     "materialize_archive",
+    "packed_streams_end",
     "parse_decoded_header",
     "parse_header_block",
     "read_signature_and_next_header",

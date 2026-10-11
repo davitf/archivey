@@ -76,8 +76,9 @@ entry whose name, extra field or comment length runs past the directory size the
 record gives, with `observed_kind="nonzero"`, `expected_bytes` that size and
 `observed_bytes` where the entry would end, both counted from the directory's start;
 `"zeros_to_eof"` for the trailing-bytes check after an archive's end (a TAR
-trailer, a 7z next header), whose `format` names the archive format and whose
-`observed_bytes` is the offset of the first non-zero byte past that end; `"end_of_stream"` for bytes after
+trailer, or a 7z next header or last packed stream, whichever is later), whose
+`format` names the archive format and whose `observed_bytes` is the offset of the
+first non-zero byte past that end; `"end_of_stream"` for bytes after
 a compressed stream's end, whose `format` is the codec name, such as `"gzip"`, and
 whose `observed_bytes` is the offset of the first non-zero byte after that end).
 `member_id` MAY be `None` only before registration.

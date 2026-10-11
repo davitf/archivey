@@ -146,10 +146,9 @@ included; archivey keeps an all-zero tail silent, the DR-3 rule shared with TAR.
 | 4 KiB of zeros after the next header | Nothing | Opens |
 | `b"JUNK"` after the next header, or after fewer than 1 MiB of zeros | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
 | Two 7z archives concatenated | First listed; `ARCHIVE_TRAILING_DATA` at 0 | `DiagnosticRaisedError` |
-| `b"JUNK"` after exactly 1 MiB of zeros | Nothing (past the scan bound) | Opens |
+| `b"JUNK"` at 1 MiB or more past the end | Nothing (past the scan bound) | Opens |
 | Packed stream after the next header, nothing after it | Nothing | Opens |
 | Empty archive (`NextHeaderSize` 0) followed by `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at 0 | `DiagnosticRaisedError` |
-| Non-zero byte more than 1 MiB past the end | Nothing | Opens |
 
 ### Requirement: Bound 7z header count fields before allocation
 
