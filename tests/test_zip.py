@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import stat
 import struct
 import subprocess
+import threading
 import zipfile
 import zlib
 from collections.abc import Callable
@@ -2198,26 +2200,166 @@ def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> Non
         assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize(
-    "file_type", [stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK]
-)
-def test_unix_special_file_is_other(tmp_path: Path, file_type: int) -> None:
-    """A device, FIFO or socket is OTHER, as in TAR and ISO. unzip would write an
-    empty regular file; extraction refuses the member instead."""
-    path = tmp_path / "special.zip"
+_SPECIAL_FILE_TYPES = [
+    (stat.S_IFCHR, "char_device"),
+    (stat.S_IFBLK, "block_device"),
+    (stat.S_IFIFO, "fifo"),
+    (stat.S_IFSOCK, "socket"),
+]
+
+
+def _zip_with_special_entry(path: Path, file_type: int, data: bytes) -> None:
     with zipfile.ZipFile(path, "w") as zf:
-        for name, mode in (("dev", file_type | 0o644), ("f.txt", 0o100644)):
+        for name, mode, payload in (
+            ("dev", file_type | 0o644, data),
+            ("f.txt", 0o100644, b"data"),
+        ):
             info = zipfile.ZipInfo(name)
             info.create_system = 3
             info.external_attr = mode << 16
-            zf.writestr(info, b"xyz" if name == "dev" else b"data")
+            zf.writestr(info, payload)
+
+
+@pytest.mark.parametrize(("file_type", "special"), _SPECIAL_FILE_TYPES)
+def test_unix_special_file_without_data_is_other(
+    tmp_path: Path, file_type: int, special: str
+) -> None:
+    """A device, FIFO or socket that stores no data is OTHER, as in TAR and ISO. unzip
+    would write an empty regular file; extraction refuses the member instead, and
+    ``extra["special_file_type"]`` says what the archive called it (DR-25)."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, file_type, b"")
     with open_archive(path) as ar:
         types = {m.name: m.type for m in ar.members()}
         assert types == {"dev": MemberType.OTHER, "f.txt": MemberType.FILE}
-        assert ar.get("dev").size == 3  # the stored size, not zeroed
+        dev = ar.get("dev")
+        assert dev.size == 0
+        assert dev.extra["special_file_type"] == special
+        assert "special_file_type" not in ar.get("f.txt").extra
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in ar.diagnostics.counts
         ar.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "dev").exists()
     assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+@pytest.mark.parametrize(("file_type", "special"), _SPECIAL_FILE_TYPES)
+def test_unix_special_file_with_data_is_a_file(
+    tmp_path: Path, file_type: int, special: str
+) -> None:
+    """A special-mode entry that carries data is a FILE: its bytes are the content, as
+    unzip, 7-Zip, bsdtar and zipfile all deliver them. The stored type stays visible in
+    ``extra`` and the member carries MEMBER_SPECIAL_FILE_HAS_DATA (DR-25)."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, file_type, b"xyz")
+    with open_archive(path) as ar:
+        dev = ar.get("dev")
+        assert dev.type is MemberType.FILE
+        assert dev.size == 3
+        assert dev.extra["special_file_type"] == special
+        assert ar.read(dev) == b"xyz"
+        [diag] = [
+            d
+            for d in dev.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert diag.context.to_dict() == {
+            "kind": "special_file_data",
+            "archive_name": str(path),
+            "member_name": "dev",
+            "member_id": 0,
+            "special_file_type": special,
+            "size": 3,
+        }
+        assert special.replace("_", " ") in diag.message
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "dev").read_bytes() == b"xyz"
+    assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+def test_unknown_file_type_bits_with_data_name_an_unrecognized_type(
+    tmp_path: Path,
+) -> None:
+    """File-type bits no Unix type uses (``0o070000``) are special but nameless: the
+    key says ``"unknown"`` and the message says so in words."""
+    path = tmp_path / "odd.zip"
+    _zip_with_special_entry(path, 0o070000, b"xyz")
+    with open_archive(path) as ar:
+        dev = ar.get("dev")
+        assert dev.type is MemberType.FILE
+        assert dev.extra["special_file_type"] == "unknown"
+        [diag] = [
+            d
+            for d in dev.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert "marks it as an unrecognized file type and stores 3 bytes" in (
+            diag.message
+        )
+        assert ar.read(dev) == b"xyz"
+
+
+def test_a_directory_marker_over_a_special_mode_keeps_the_key(tmp_path: Path) -> None:
+    """The trailing ``/`` is structure and wins the type (DR-25); the FIFO mode is still
+    what the archive recorded, so ``extra["special_file_type"]`` records it on the
+    DIRECTORY, and the data advisory is for FILE members only."""
+    path = tmp_path / "dir-fifo.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("d/")
+        info.create_system = 3
+        info.external_attr = (0o010755 << 16) | 0x10
+        zf.writestr(info, b"")
+    with open_archive(path) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.DIRECTORY
+        assert member.extra["special_file_type"] == "fifo"
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+
+
+def test_special_file_with_data_is_not_refused_by_strict(tmp_path: Path) -> None:
+    """MEMBER_SPECIAL_FILE_HAS_DATA is advisory: a documented writer option produces
+    the shape (``zip -FI``), so strict does not refuse it."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, stat.S_IFIFO, b"xyz")
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(path, config=config) as ar:
+        assert ar.read("dev") == b"xyz"
+
+
+@requires_binary("zip")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_info_zip_fifo_content_reads_as_a_file(tmp_path: Path) -> None:
+    """Info-ZIP's ``zip -FI`` reads a named pipe and stores its content under the pipe's
+    own FIFO mode. Every mainstream extractor writes the bytes as a regular file, and
+    libarchive carries a workaround for exactly this shape; so does archivey (DR-25)."""
+    src = tmp_path / "src"
+    src.mkdir()
+    fifo = src / "pipe1"
+    os.mkfifo(fifo)
+    archive = tmp_path / "fifo.zip"
+    # The producer thread blocks in open() until zip opens the pipe for reading.
+    feeder = threading.Thread(
+        target=fifo.write_bytes, args=(b"hello from fifo\n",), daemon=True
+    )
+    feeder.start()
+    try:
+        subprocess.run(
+            ["zip", "-q", "-FI", str(archive), "pipe1"],
+            cwd=src,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        feeder.join(timeout=30)
+    with open_archive(archive) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.FILE
+        assert member.extra["special_file_type"] == "fifo"
+        assert member.size == 16
+        assert ar.read(member) == b"hello from fifo\n"
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "pipe1").read_bytes() == b"hello from fifo\n"
 
 
 def test_device_bits_from_a_non_unix_writer_are_ignored(tmp_path: Path) -> None:
@@ -2401,24 +2543,31 @@ def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
 
 
 def test_a_special_entry_is_refused_by_type_not_by_data(tmp_path: Path) -> None:
-    """A tombstone or special entry is refused for what it is, not for lacking data,
-    so the message names the type even when the header declares a size; only the
-    directory arm reasons about data."""
+    """A tombstone or special entry is refused for what it is, not for lacking data, so
+    the message names the type; only the directory arm reasons about data. A special
+    mode over stored bytes is a ``FILE`` and reads (DR-25), so the refused shape is the
+    data-less one."""
     path = tmp_path / "device.zip"
     with zipfile.ZipFile(path, "w") as z:
-        info = zipfile.ZipInfo("dev/null")
-        info.create_system = 3
-        info.external_attr = (stat.S_IFCHR | 0o666) << 16
-        z.writestr(info, b"twelve bytes")
+        empty = zipfile.ZipInfo("dev/null")
+        empty.create_system = 3
+        empty.external_attr = (stat.S_IFCHR | 0o666) << 16
+        z.writestr(empty, b"")
+        full = zipfile.ZipInfo("dev/data")
+        full.create_system = 3
+        full.external_attr = (stat.S_IFCHR | 0o666) << 16
+        z.writestr(full, b"twelve bytes")
     with open_archive(path) as ar:
         member = ar.get("dev/null")
-        if member.type is not MemberType.OTHER:
-            pytest.skip("a special-mode entry with data is typed by its data here")
-        assert member.size == 12
+        assert member.type is MemberType.OTHER
+        assert member.size == 0
         with pytest.raises(
             ArchiveyUsageError, match="type is 'other' \\(not a file\\)"
         ):
             ar.read(member)
+        full_member = ar.get("dev/data")
+        assert full_member.type is MemberType.FILE
+        assert ar.read(full_member) == b"twelve bytes"
 
 
 def _zip_with_declared_empty_directory_body(path: Path) -> None:

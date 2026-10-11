@@ -1,5 +1,9 @@
 # Explicit archive offset, and an `AesDecryptStream` that gathers
 
+> **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). No further work is
+> scheduled. The release does not need this change, and the drafted design stays here so a
+> later change can pick it up. It is tracked internally.
+
 ## Why
 
 Two small corrections that are right on their own terms, and are also what make

@@ -261,6 +261,7 @@ def test_public_symbols_are_in_all() -> None:
         "ScanRaceContext",
         "SeekIndexContext",
         "SelectorUnmatchedContext",
+        "SpecialFileDataContext",
         "StreamRewindContext",
         "SymlinkTargetContext",
         "UnconfirmedFormatContext",

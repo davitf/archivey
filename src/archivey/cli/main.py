@@ -320,17 +320,14 @@ _Runner = Callable[[argparse.Namespace, _Common], int]
 
 
 class _Selection(TypedDict):
-    """Member-selection kwargs of the verbs that read members (``--salvage`` refused)."""
+    """Member-selection kwargs of the verbs that read members."""
 
     patterns: list[str]
     exclude: list[str]
-    salvage: bool
 
 
 def _selection(args: argparse.Namespace) -> _Selection:
-    return _Selection(
-        patterns=list(args.patterns), exclude=list(args.exclude), salvage=False
-    )
+    return _Selection(patterns=list(args.patterns), exclude=list(args.exclude))
 
 
 # The runners look their run_* up by name when called, so tests can patch it.
@@ -745,6 +742,15 @@ def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO)
         print(code, file=err)
         return EXIT_USAGE
 
+    # The line that reports the fault which ended the run starts with ``archivey: ``:
+    # the ``CliError``, ``ArchiveyError`` and ``OSError`` handlers below
+    # (``_format_os_error`` adds it for ``OSError``), ``list``'s report error,
+    # ``extract``'s stop and ``hoist failed`` lines, and the uncounted fault that ends
+    # ``test``'s pass after a member already failed. A counted failure (``test``'s
+    # ``FAIL …``), a line about one member (``extract``'s ``WARNING: Skipping …``),
+    # the notices and counts that follow the fault line (stop notices,
+    # ``N member(s) extracted before the stop``, ``files left in …/``) and
+    # ``interrupted`` keep their own shape.
     try:
         with cli_logging(verbose=bool(args.verbose), err=err):
             return _dispatch(args, out=out, err=err)
@@ -752,10 +758,10 @@ def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO)
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not
         # escape its own message the way ArchiveyError does — and an archive-derived name
         # reaches here inside that message, not as a separate argument.
-        print(escape_member_name(exc.message), file=err)
+        print(f"archivey: {escape_member_name(exc.message)}", file=err)
         return exc.code
     except ArchiveyError as exc:
-        print(format_error_detail(exc), file=err)
+        print(f"archivey: {format_error_detail(exc)}", file=err)
         return EXIT_FAIL
     except BrokenPipeError:
         # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2), which

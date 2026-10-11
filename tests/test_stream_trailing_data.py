@@ -3,8 +3,9 @@
 Every stream codec but ``.Z`` (which has no end marker) reads its data in full and
 reports what follows as one ``ARCHIVE_TRAILING_DATA``, with ``expected_marker=
 "end_of_stream"`` and the compressed offset of the first non-zero byte after the end.
-Zeros there are padding. ``DiagnosticPolicy.strict()`` makes the report an error. xz
-and lzip keep their size and index through the appended bytes.
+Zeros there are padding, for every codec but xz only where they run to the end of the
+file. ``DiagnosticPolicy.strict()`` makes the report an error. xz and lzip keep their
+size and index through the appended bytes.
 """
 
 from __future__ import annotations
@@ -587,7 +588,7 @@ def test_the_bzip2_accelerator_reports_the_same_offset(tmp_path: Path) -> None:
 # An empty bzip2 stream is what ``bzip2 -c /dev/null`` writes. A file made by
 # concatenating one with other streams is valid (``bzip2 -t`` accepts it), wherever it
 # falls, so it is part of the data and not trailing bytes. These layouts put the empty
-# streams after, before and between the data streams.
+# streams after, before and between the data streams, and zero padding at the end.
 _BZ2_EMPTY = bz2.compress(b"")
 _BZ2_LAYOUTS: dict[str, Callable[[bytes], bytes]] = {
     "data-then-empty": lambda d: bz2.compress(d) + _BZ2_EMPTY,
@@ -596,13 +597,19 @@ _BZ2_LAYOUTS: dict[str, Callable[[bytes], bytes]] = {
     "empty-between-data": lambda d: (
         bz2.compress(d[: len(d) // 2]) + _BZ2_EMPTY + bz2.compress(d[len(d) // 2 :])
     ),
-    "empty-and-padding-after-data": lambda d: (
-        bz2.compress(d) + _BZ2_EMPTY + b"\x00" * 7 + _BZ2_EMPTY + b"\x00" * 3
+    "empty-then-padding-after-data": lambda d: (
+        bz2.compress(d) + _BZ2_EMPTY * 2 + b"\x00" * 3
     ),
 }
 _BZ2_MODES = [
     pytest.param(AcceleratorMode.ON, id="accelerator", marks=requires("rapidgzip")),
     pytest.param(AcceleratorMode.OFF, id="stdlib"),
+]
+# Every accelerator mode, for a result that must not depend on it (DR-5).
+_ACCELERATOR_MODES = [
+    pytest.param(AcceleratorMode.OFF, id="off"),
+    pytest.param(AcceleratorMode.AUTO, id="auto"),
+    pytest.param(AcceleratorMode.ON, id="on", marks=requires("rapidgzip")),
 ]
 
 
@@ -678,26 +685,42 @@ def test_bytes_after_empty_bzip2_streams_are_reported_past_them(
     assert report.observed_bytes == len(data)
 
 
-@requires("rapidgzip")
+# The accelerator's scan past the data reads 64 KiB at a time. This many empty streams
+# put one across the end of its first read.
+_EMPTY_ACROSS_SCAN = (1 << 16) // len(_BZ2_EMPTY) + 1
+
+
+@pytest.mark.parametrize("mode", _BZ2_MODES)
 @pytest.mark.parametrize(
     ("tail", "reported_at"),
     [
-        # The accelerator's scan reads 64 KiB at a time; this empty stream starts 5
-        # bytes before the end of the first read.
-        pytest.param(b"\x00" * ((1 << 16) - 5) + _BZ2_EMPTY, None, id="split-by-scan"),
+        pytest.param(_BZ2_EMPTY * _EMPTY_ACROSS_SCAN, None, id="split-by-scan"),
         pytest.param(
-            b"\x00" * ((1 << 16) - 5) + _BZ2_EMPTY + _JUNK,
-            (1 << 16) - 5 + len(_BZ2_EMPTY),
+            _BZ2_EMPTY * _EMPTY_ACROSS_SCAN + _JUNK,
+            _EMPTY_ACROSS_SCAN * len(_BZ2_EMPTY),
             id="split-by-scan-then-junk",
+        ),
+        # Zero padding across the end of the first read, then an empty stream: the
+        # padding does not run to the end of the file, so what follows it is reported.
+        pytest.param(
+            b"\x00" * ((1 << 16) - 5) + _BZ2_EMPTY,
+            (1 << 16) - 5,
+            id="padding-across-scan-then-empty",
+        ),
+        pytest.param(
+            _BZ2_EMPTY * _EMPTY_ACROSS_SCAN + b"\x00" * (1 << 16),
+            None,
+            id="then-padding",
         ),
     ],
 )
 def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
-    tmp_path: Path, tail: bytes, reported_at: int | None
+    tmp_path: Path, mode: AcceleratorMode, tail: bytes, reported_at: int | None
 ) -> None:
+    """The accelerator's scan reports what the standard library does."""
     compressed = bz2.compress(_PAYLOAD)
     path = _write(tmp_path, ".bz2", compressed + tail)
-    config = ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
+    config = ArchiveyConfig(use_indexed_bzip2=mode)
     with open_archive(path, config=config, seekable_members=True) as reader:
         assert reader.read(reader.members()[0]) == _PAYLOAD
         found = [report.observed_bytes for report in _reports(reader)]
@@ -712,7 +735,7 @@ def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
         # The file ends inside what would be an empty stream: that is not one.
         pytest.param(_BZ2_EMPTY[:5], TruncatedError, id="cut-empty-stream"),
         pytest.param(
-            b"\x00" * 3 + _BZ2_EMPTY[:-1], TruncatedError, id="cut-after-padding"
+            _BZ2_EMPTY + _BZ2_EMPTY[:-1], TruncatedError, id="cut-after-empty-stream"
         ),
         # Shaped like an empty stream but not one: the combined CRC of no blocks is zero.
         pytest.param(
@@ -723,9 +746,10 @@ def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
 def test_a_damaged_stream_after_the_last_raises_in_both_modes(
     tmp_path: Path, mode: AcceleratorMode, tail: bytes, error: type[Exception]
 ) -> None:
-    """A stream header after the data starts a stream, which the standard library
-    decodes and rejects. With the accelerator on, the standard library takes over at
-    the end and gives that verdict, rather than reporting the bytes as trailing data."""
+    """A stream header right after the data starts a stream, which the standard
+    library decodes and rejects. With the accelerator on, the standard library takes
+    over at the end and gives that verdict, rather than reporting the bytes as
+    trailing data."""
     path = _write(tmp_path, ".bz2", bz2.compress(_PAYLOAD) + tail)
     config = ArchiveyConfig(use_indexed_bzip2=mode)
     with open_archive(path, config=config, seekable_members=True) as reader:
@@ -733,18 +757,160 @@ def test_a_damaged_stream_after_the_last_raises_in_both_modes(
             reader.read(reader.members()[0])
 
 
-@pytest.mark.parametrize("mode", _BZ2_MODES)
-def test_a_stream_after_zero_padding_is_read_in_both_modes(
-    tmp_path: Path, mode: AcceleratorMode
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize(
+    ("between", "reported_at"),
+    [
+        # After zero padding nothing more is decoded: a cut stream, an empty stream or
+        # a valid one is reported at its first byte, in both modes.
+        pytest.param(b"\x00" * 3 + _BZ2_EMPTY[:-1], 3, id="cut-after-padding"),
+        pytest.param(b"\x00" * 3 + _BZ2_EMPTY, 3, id="empty-after-padding"),
+        pytest.param(
+            b"\x00" * 3 + _BZ2_EMPTY + bz2.compress(b"x"), 3, id="stream-after-padding"
+        ),
+        pytest.param(
+            _BZ2_EMPTY + b"\x00" * 3 + bz2.compress(b"x"),
+            len(_BZ2_EMPTY) + 3,
+            id="empty-then-padding-then-stream",
+        ),
+    ],
+)
+def test_what_follows_zero_padding_is_trailing_data_in_every_mode(
+    tmp_path: Path, mode: AcceleratorMode, between: bytes, reported_at: int
 ) -> None:
-    """The accelerator stops at the padding; the standard library takes over at the
-    end and reads the next stream, as it does with the accelerator off."""
-    data = bz2.compress(_PAYLOAD) + b"\x00" * 16 + bz2.compress(_PAYLOAD)
-    path = _write(tmp_path, ".bz2", data)
+    compressed = bz2.compress(_PAYLOAD)
+    path = _write(tmp_path, ".bz2", compressed + between)
     config = ArchiveyConfig(use_indexed_bzip2=mode)
     with open_archive(path, config=config, seekable_members=True) as reader:
-        assert reader.read(reader.members()[0]) == _PAYLOAD * 2
-        assert _reports(reader) == []
+        assert reader.read(reader.members()[0]) == _PAYLOAD
+        (report,) = _reports(reader)
+    assert report.observed_bytes == len(compressed) + reported_at
+
+
+# NUL bytes between two streams end the data, as in `bzip2`, GNU `gzip`, `zstd`, `lz4`,
+# `xz --format=lzma` and 7-Zip: only NULs that run to the end of the file are padding
+# (dev-docs/formats/single-file.md §6). Every accelerator mode gives the same result.
+# lzip has no stream padding either. xz is not here: its format defines stream padding
+# between streams.
+_NUL_CODECS = [
+    pytest.param(".bz2", bz2.compress, id="bz2"),
+    pytest.param(".gz", gzip.compress, id="gz"),
+    pytest.param(".zst", _zstd, id="zst", marks=requires_zstd()),
+    pytest.param(".lz4", _lz4, id="lz4", marks=requires("lz4")),
+    pytest.param(
+        ".lzma", lambda d: lzma.compress(d, format=lzma.FORMAT_ALONE), id="lzma"
+    ),
+    pytest.param(".lz", make_lzip_member, id="lz"),
+]
+
+
+def _accelerator_config(
+    mode: AcceleratorMode, policy: DiagnosticPolicy | None = None
+) -> ArchiveyConfig:
+    return ArchiveyConfig(
+        use_indexed_bzip2=mode,
+        use_rapidgzip=mode,
+        diagnostic_policy=policy or DiagnosticPolicy(),
+    )
+
+
+# The second size ends the NULs at a 64 KiB boundary, the size of a compressed read, so
+# the stream after them starts a fresh read with no NUL in front of it: what was seen in
+# the read before has to carry over.
+_NUL_GAPS = [
+    pytest.param(lambda first: 4, id="gap-4"),
+    pytest.param(
+        lambda first: (1 << 16) - first % (1 << 16), id="gap-to-read-boundary"
+    ),
+]
+
+
+@pytest.mark.parametrize("seekable", [False, True], ids=["random", "seekable"])
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize("gap_for", _NUL_GAPS)
+@pytest.mark.parametrize(("suffix", "compress"), _NUL_CODECS)
+def test_a_stream_after_nul_padding_is_trailing_data(
+    tmp_path: Path,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    gap_for: Callable[[int], int],
+    mode: AcceleratorMode,
+    seekable: bool,
+) -> None:
+    """The first stream is the data; the report names the stream after the NULs."""
+    first = compress(_PAYLOAD)
+    gap = gap_for(len(first))
+    path = _write(tmp_path, suffix, first + b"\x00" * gap + compress(_PAYLOAD))
+    config = _accelerator_config(mode)
+    with open_archive(path, config=config, seekable_members=seekable) as reader:
+        assert reader.read(reader.members()[0]) == _PAYLOAD
+        (report,) = _reports(reader)
+    assert report.observed_bytes == len(first) + gap
+
+
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize(("suffix", "compress"), _NUL_CODECS)
+def test_a_seek_to_the_end_stops_at_nul_padding(
+    tmp_path: Path,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    mode: AcceleratorMode,
+) -> None:
+    path = _write(
+        tmp_path, suffix, compress(_PAYLOAD) + b"\x00" * 4 + compress(_PAYLOAD)
+    )
+    config = _accelerator_config(mode)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        with reader.open(reader.members()[0]) as stream:
+            assert stream.seek(0, io.SEEK_END) == len(_PAYLOAD)
+            assert stream.read() == b""
+            stream.seek(len(_PAYLOAD) - 10)
+            assert stream.read() == _PAYLOAD[-10:]
+        assert len(_reports(reader)) == 1
+
+
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize(("suffix", "compress"), _NUL_CODECS)
+def test_strict_refuses_a_stream_after_nul_padding(
+    tmp_path: Path,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    mode: AcceleratorMode,
+) -> None:
+    path = _write(
+        tmp_path, suffix, compress(_PAYLOAD) + b"\x00" * 4 + compress(_PAYLOAD)
+    )
+    config = _accelerator_config(mode, DiagnosticPolicy.strict())
+    with pytest.raises(DiagnosticRaisedError) as info:
+        with open_archive(path, config=config, seekable_members=True) as reader:
+            reader.read(reader.members()[0])
+    assert info.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(lambda c: b"\x00" * 4, id="nul-at-end"),
+        pytest.param(lambda c: c(b"second"), id="concatenated"),
+        pytest.param(lambda c: c(b"second") + b"\x00" * 4, id="concatenated-then-nul"),
+    ],
+)
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize(("suffix", "compress"), _NUL_CODECS)
+def test_nul_padding_at_the_end_and_direct_concatenation_stay_silent(
+    tmp_path: Path,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    mode: AcceleratorMode,
+    tail: Callable[[Callable[[bytes], bytes]], bytes],
+) -> None:
+    """The strict policy accepts NULs that end the file and streams with nothing
+    between them."""
+    path = _write(tmp_path, suffix, compress(_PAYLOAD) + tail(compress))
+    expected = _PAYLOAD + (b"second" if tail(compress).strip(b"\x00") else b"")
+    config = _accelerator_config(mode, DiagnosticPolicy.strict())
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        assert reader.read(reader.members()[0]) == expected
 
 
 @pytest.mark.parametrize(("report", "expected"), [(False, 0), (True, 1)])
@@ -1028,6 +1194,48 @@ def test_a_zero_run_is_judged_the_same_however_the_input_is_cut(chunk: int) -> N
     with pytest.raises(CorruptionError, match="Damaged stream header"):
         feed_all(first + b"\x00" + second[1:])
     assert feed_all(first + b"\x00" * 9 + second[1:]) == _SMALL
+
+
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize(
+    ("zeros", "damage"),
+    [
+        # A run as long as the magic is padding, and no stream is read after padding:
+        # a damaged magic there is trailing data, as an intact one is.
+        pytest.param(None, True, id="damaged-after-a-magic-of-zeros"),
+        # One zero then a whole magic: the window from the zero is not near the magic,
+        # so the zero is padding and the stream after it is trailing data.
+        pytest.param(1, False, id="intact-after-one-zero"),
+    ],
+)
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        pytest.param(suffix, id=suffix, marks=_CODECS[suffix][2])
+        for suffix in (".bz2", ".zst", ".lz4")
+    ],
+)
+def test_after_zero_padding_a_magic_is_not_judged(
+    tmp_path: Path,
+    suffix: str,
+    zeros: int | None,
+    damage: bool,
+    mode: AcceleratorMode,
+) -> None:
+    """Zero padding ends the data (the 2026-10-10 rulings); the damaged-magic rule
+    judges only a run of zeros shorter than the magic, with the bytes after it."""
+    compress = _CODECS[suffix][1]
+    first = compress(_SMALL)
+    second = bytearray(compress(_SMALL))
+    if damage:
+        second[0] ^= 0x40
+    gap = _MAGIC_LENGTHS[suffix] if zeros is None else zeros
+    path = _write(tmp_path, suffix, first + b"\x00" * gap + bytes(second))
+    config = _accelerator_config(mode)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        assert reader.read(reader.members()[0]) == _SMALL
+        (report,) = _reports(reader)
+    assert report.observed_bytes == len(first) + gap
 
 
 def test_the_xz_index_search_refuses_a_damaged_header_magic() -> None:

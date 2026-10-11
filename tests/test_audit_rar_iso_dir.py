@@ -293,18 +293,22 @@ def test_duplicate_named_compressed_rar5_members_read_their_own_bytes(
 
 @requires_binary("unrar")
 @pytest.mark.parametrize(
-    "attr",
+    ("attr", "unrar_reads_it"),
     [
-        0o020664,
-        # A vint wider than a C unsigned long, which stat.S_IFMT would refuse.
-        (1 << 70) | 0o020664,
+        (0o020664, True),
+        # A vint wider than a C unsigned long, which stat.S_IFMT would refuse. unrar
+        # misreads the rest of that header, so only the listing is checked.
+        ((1 << 70) | 0o020664, False),
     ],
 )
-def test_unix_special_file_is_other(tmp_path: Path, attr: int) -> None:
-    """A Unix-host entry whose mode names a device is OTHER, as in TAR and ISO.
+def test_unix_special_file_with_data_is_a_file(
+    tmp_path: Path, attr: int, unrar_reads_it: bool
+) -> None:
+    """A Unix-host entry whose mode names a device but that stores data is a FILE:
+    the data stream is the structure, the mode only an attribute (DR-25). The mode
+    survives in ``extra["special_file_type"]`` and an advisory diagnostic says so.
 
     rar skips devices when archiving, so the mode is written into a fixture's header.
-    The later member still reads its own bytes, and extraction refuses the device.
     """
     payloads = _hostile_argv_payloads()
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
@@ -316,12 +320,139 @@ def test_unix_special_file_is_other(tmp_path: Path, attr: int) -> None:
 
     with open_archive(path, config=_UNRAR_ONLY) as archive:
         members = archive.members()
+        assert [m.type for m in members] == [MemberType.FILE] * 3
+        assert members[1].size == len(payloads["-inul"])
+        assert members[1].extra["special_file_type"] == "char_device"
+        assert "special_file_type" not in members[0].extra
+        if unrar_reads_it:
+            assert archive.read(members[1]) == payloads["-inul"]
+        assert archive.read(members[2]) == payloads["@atfile"]
+        diags = [
+            d
+            for d in archive.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert len(diags) == 1
+        assert diags[0].context is not None
+        assert diags[0].context.to_dict() == {
+            "kind": "special_file_data",
+            "archive_name": str(path),
+            "member_name": "-inul",
+            "member_id": 1,
+            "special_file_type": "char_device",
+            "size": len(payloads["-inul"]),
+        }
+        if unrar_reads_it:
+            archive.extract_all(tmp_path / "out")
+            assert (tmp_path / "out" / "-inul").read_bytes() == payloads["-inul"]
+            assert (tmp_path / "out" / "@atfile").read_bytes() == payloads["@atfile"]
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_file_copy_with_a_special_mode_keeps_its_kind(tmp_path: Path) -> None:
+    """A RAR5 file copy (``rar -oi``) is typed FILE by its redirect record, so the
+    data-based rule never runs for it; ``extra["special_file_type"]`` still records
+    what its mode said, and the advisory diagnostic reports the data it names."""
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = b"".join(b"line %05d of the copied file\n" % i for i in range(200))
+    (src / "r1.bin").write_bytes(payload)
+    (src / "r2.bin").write_bytes(payload)
+    built = tmp_path / "copies.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ep1", "-oi:1000", str(built), "r1.bin", "r2.bin"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    blocks = _rar5_parse(built.read_bytes())
+    files = _rar5_file_blocks(blocks)
+    copy = next(block for block in files if block["name"] == b"r2.bin")
+    assert copy["host_os"] == 1 and copy["data"] == b""  # Unix; a redirect, no data
+    copy["attr"] = 0o010644  # FIFO
+    path = tmp_path / "fifo-copy.rar"
+    path.write_bytes(_rar5_build(blocks))
+
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        member = archive.get("r2.bin")
+        assert member.type is MemberType.FILE
+        assert member.extra["is_file_copy"] is True
+        assert member.extra["special_file_type"] == "fifo"
+        assert "special_file_type" not in archive.get("r1.bin").extra
+        assert archive.read(member) == payload
+        [diag] = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["special_file_type"] == "fifo"
+        assert diag.context.to_dict()["size"] == len(payload)
+
+
+@requires_binary("unrar")
+def test_file_copy_built_from_a_hardlink_record_keeps_its_kind(tmp_path: Path) -> None:
+    """The same shape as the live ``rar -oi`` test, built from a committed fixture so
+    it runs where CI has only ``unrar``: a RAR5 ``HARD_LINK`` redirect record differs
+    from a ``FILE_COPY`` one by its redirect type alone, so the hard link in
+    ``hardlinks_solid__.rar`` becomes a file copy with one byte changed."""
+    blocks = _rar5_parse(_fixture("hardlinks_solid__.rar").read_bytes())
+    files = _rar5_file_blocks(blocks)
+    link = next(b for b in files if b["name"] == b"subdir/hardlink_to_file1.txt")
+    assert link["host_os"] == 1 and link["data"] == b""  # Unix; a redirect, no data
+    # REDIR extra record: size, type 5 (REDIR), redirect type 4 (HARD_LINK), flags,
+    # name length, name. Redirect type 5 is FILE_COPY.
+    redir = b"\x0d\x05\x04\x00\x09file1.txt"
+    assert link["extra"].count(redir) == 1
+    link["extra"] = link["extra"].replace(redir, b"\x0d\x05\x05\x00\x09file1.txt")
+    link["attr"] = 0o010644  # FIFO
+    path = tmp_path / "fifo-copy.rar"
+    path.write_bytes(_rar5_build(blocks))
+
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        member = archive.get("subdir/hardlink_to_file1.txt")
+        assert member.type is MemberType.FILE
+        assert member.extra["is_file_copy"] is True
+        assert member.extra["special_file_type"] == "fifo"
+        assert "special_file_type" not in archive.get("file1.txt").extra
+        assert archive.read(member) == archive.read("file1.txt") == b"Hello 1!"
+        [diag] = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["special_file_type"] == "fifo"
+        assert diag.context.to_dict()["size"] == 8
+
+
+@requires_binary("unrar")
+def test_unix_special_file_without_data_is_other(tmp_path: Path) -> None:
+    """A device-mode entry with no data is OTHER, as in TAR, 7z and ISO: there is
+    nothing to read, and extraction skips it instead of creating an empty file."""
+    payloads = _hostile_argv_payloads()
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
+    files = _rar5_file_blocks(blocks)
+    assert files[1]["host_os"] == 1  # Unix
+    files[1]["attr"] = 0o010664  # FIFO
+    files[1]["data"] = b""
+    files[1]["unpacked"] = 0
+    files[1]["crc"] = struct.pack("<I", zlib.crc32(b""))
+    files[1]["flags"] &= ~2
+    path = tmp_path / "fifo.rar"
+    path.write_bytes(_rar5_build(blocks))
+
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        members = archive.members()
         assert [m.type for m in members] == [
             MemberType.FILE,
             MemberType.OTHER,
             MemberType.FILE,
         ]
-        assert members[1].size == len(payloads["-inul"])  # the stored size
+        assert members[1].extra["special_file_type"] == "fifo"
+        codes = [d.code for d in archive.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
         assert archive.read(members[2]) == payloads["@atfile"]
         archive.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "-inul").exists()

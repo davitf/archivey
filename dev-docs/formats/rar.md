@@ -229,10 +229,17 @@ whose CRC failed, so it is not proof on its own: one flipped byte turns a MAIN o
 header's type into `ENDARC` (RAR5 `5`, RAR3 `0x7b`). A CRC-failed header is taken as
 the end block only when its type reads as `ENDARC`, its shape is an end block's (RAR5:
 no extra or data area, nothing after the end-of-archive flags; RAR3: no `LONG_BLOCK`
-flag, header at most 20 bytes), and the file ends right after it. A FILE header fails
-the shape, and a MAIN header, which can pass it, has blocks after it. Anything else is
-a damaged header (the rule after this one), including a damaged end block followed by any byte,
-since RAR has no trailing-data rule to allow one. unrar 7.00 is laxer here: with the second FILE
+flag, header at most 20 bytes), and nothing but zero bytes follows it, as far as the
+trailing-data scan's 1 MiB looks; a non-zero byte past that is unseen, as after an
+intact block. A FILE header fails the shape. A MAIN header with no extra and no data
+area passes it and is kept out only by the blocks after it, so a damaged one at the end
+of the file lists as an empty archive with `ARCHIVE_EOF_MARKER_MISSING`; `rar` 7.00's
+MAIN headers carry a locator record, which fails the shape. Anything else is a damaged
+header (the rule after this one), including a damaged end block followed by a non-zero
+byte. Zeros count as nothing because `rar` pads a volume with them (§2.2, trailing
+data), so the same damage gives the same outcome on a padded and an unpadded volume.
+What that adds to the window is the tail, not a shape: the damaged MAIN case above now
+also holds when only zeros follow it. unrar 7.00 is laxer here: with the second FILE
 header's type byte flipped to `ENDARC` in either `basic_nonsolid__` fixture, `unrar l`
 lists only `file1.txt` and `unrar t` tests it OK and exits 3, dropping the other five
 members. These checks bound accidental damage, not a crafted file, and that is enough:
@@ -260,6 +267,23 @@ whose end block is the first encrypted header (no members), and any RAR5 `-hp` a
 whose encryption record has no check value. A damaged block whose type byte is itself
 the damaged byte is not recognised as `ENDARC`, so it falls under the damaged-header
 rule below.
+
+*Bytes after an intact end block.* The walk looks up to 1 MiB past the block (past any
+data area it declares, as for every other block, and past its AES padding under `-hp`,
+as the walk's `data_offset` is a ciphertext offset) and keeps the first non-zero byte's
+offset in `RarArchive.trailing_data_volumes`. The reader reports each volume's as
+`ARCHIVE_TRAILING_DATA` (`expected_marker="zeros_to_eof"`) after the members, DR-3.
+Zeros pass. An end block declaring a data area past the seekable range is
+`CorruptionError`, as a FILE header's is. `unrar t` 7.00 exits 0 on such a file; 7-Zip
+warns, for zeros too. Measured on the committed `rar` 7.00 sets
+(`tests/fixtures/rar/README.md`): a volume that comes out at exactly the `-v` size is
+padded with zeros up to it, and one that overshoots carries none. `tinyvol_hp.part1-3`
+(`-v900b -hp`, 900 bytes) has 142 zero bytes after its end block and
+`tinyvol_cut.part1-3` (`-v1500b`, 1 500 bytes) has 77; `tinyvol`, `tinyvol_m3` and
+`tinyvol_cut_solid` overshoot (917, 917, 923 bytes) and have none. So the zero rule is
+what keeps an untouched padded set clean. The 9 zero bytes at the end of
+`tinyvol_rnn.rar` (RAR 1.5-4) are inside its end block, not after it. Tests:
+`tests/test_rar_trailing_data.py`.
 
 *Ordering with a cut.* When the merged listing is also truncated (a later volume cut),
 the reader raises `TruncatedError` before it reaches this diagnostic, as it does for the
@@ -727,7 +751,7 @@ between to blame or to defer to.
 | `accessed` / `created` / `ctime` | RAR5 `0x03` time extra (`HAS_ATIME` / `HAS_CTIME`); RAR3 EXTTIME after mtime (ctime then atime; arctime is unused). Same tz convention as that generation's `modified`. No ZIP-style extra-field precedence. The RARLAB writer emits one time extra; a later extra without `HAS_CTIME` / `HAS_ATIME` does not wipe earlier values. The creation slot is `created` from a birth-time host (Win32, and RAR3 MS-DOS / OS2 / Mac / BeOS) and `ctime` from any other. A Unix RARLAB writer fills the slot from `st_ctime` (inode change), which `created` never holds, so a Unix member's slot is `ctime`, and so is an unknown host's | The extra or slot is absent; `created` also when `host_os` is Unix or unknown |
 | `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host. A Win32 host puts its attribute word in `windows_attrs`; a FAT, OS/2, Macintosh or BeOS host gets **neither** field |
 | `create_system` | RAR3 `host_os` 0–5 → FAT / OS2 / Win32 / Unix / Mac / BeOS. RAR5 stores only Windows or Unix and the parser maps those to Win32 / Unix | Never — unknown `host_os` is `CreateSystem.UNKNOWN`. Whether the creation slot is a birth time is decided from `host_os` directly, not from this field |
-| `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links, `FILE` for a file copy (`rar -oi`, "file reference"; below), `SYMLINK` for Unix/Windows symlinks and junctions (a Windows one also sets `extra["is_reparse_point"]`, and a junction `extra["is_junction"]`). A directory flag over a non-zero unpacked size (`rar` never writes one; unrar's `ReadHeader50` accepts it and its `extract.cpp` directory branch returns before the data) stays a directory and emits `MEMBER_DIRECTORY_DATA_IGNORED` (also for an unpacked size of 0 over a non-empty packed body, which `open()` then refuses as having no data). `open()` slices stored, unencrypted directory data itself; compressed or encrypted directory data raises `UnsupportedFeatureError` before any spawn, since `unrar p` emits nothing for a directory | — |
+| `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links, `FILE` for a file copy (`rar -oi`, "file reference"; below), `SYMLINK` for Unix/Windows symlinks and junctions (a Windows one also sets `extra["is_reparse_point"]`, and a junction `extra["is_junction"]`). A directory flag over a non-zero unpacked size (`rar` never writes one; unrar's `ReadHeader50` accepts it and its `extract.cpp` directory branch returns before the data) stays a directory and emits `MEMBER_DIRECTORY_DATA_IGNORED` (also for an unpacked size of 0 over a non-empty packed body, which `open()` then refuses as having no data). `open()` slices stored, unencrypted directory data itself; compressed or encrypted directory data raises `UnsupportedFeatureError` before any spawn, since `unrar p` emits nothing for a directory. A Unix-host FIFO, device or socket mode makes `OTHER` only when the unpacked size is 0; with data it is a `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` (`unrar` extracts the bytes as a regular file), DR-25. Both carry `extra["special_file_type"]`. `rar` skips such files when archiving, so only a rewritten header produces either | — |
 | `link_target` | RAR5: the redirect's target string, at list time; on a file copy, the source's stored path. A Windows symlink or junction (redirect types 2 and 3) holds a Windows path, so it goes through the normalizer ZIP and 7z reparse buffers use (`windows_reparse.normalize_windows_link_target`): `\` becomes `/`, as `unrar`'s `DosSlashToUnix` does, and a leading `\??\` or RAR 5.1's `/??/` is dropped (`\??\C:\Windows` lists as `C:/Windows`, `\??\UNC\srv\share` as `//srv/share`, `..\up\x` as `../up/x`). Extraction refuses a drive or UNC target on every OS (`safe-extraction`); `unrar` on Linux refuses the prefixed ones and `../up/x` and creates `C:/abs/y` as a relative link, measured on 7.00. A Unix symlink (type 1), a hard link and a file copy keep the stored string. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
 | `compression` | Method id → `CompressionMethod`. Stored members report `STORED`; M1–M5 report `CompressionAlgorithm.RAR` with `level` 1–5 (method byte − 0x30). A method byte outside M0–M5 stays `UNKNOWN` with `level` omitted. Unpack version is `extra["rar.extract_version"]`, not `level` | — |
 | `hashes` | `crc32` and/or `blake2sp` as bytes | A RAR5 **redirect** (see below), or an encrypted member whose digests are tweaked |
@@ -1682,7 +1706,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |
 | The >4 GiB RAR3 packed skip, and split-continuation identity checks | `::test_rar3_large_packed_member_skips_full_64bit_size`, `::test_rar3_mismatched_split_continuation_is_corruption` and the three tests after it |
 | Member-table ceiling at parse via `listing_limits.max_members` | `::test_rar_parser_max_members_at_parse`, `::test_rar_parser_omitted_max_members_matches_listing_limits_default`, `::test_rar_open_enforces_listing_limits`, `::test_rar_unlimited_lifts_member_cap`, `::test_rar_split_continuation_does_not_consume_member_slot`, `::test_qo_over_max_members_raises_not_unusable` |
-| The SFX needle validator, its `DAMAGED` verdict, and a decoy skipped for the real payload | `tests/test_sfx.py::test_rar_main_header_validator`, `::test_rar_main_header_validator_crc_fail_is_damaged`, `::test_rar_clamped_header_peek_is_valid_when_remaining_is_known`, `::test_mz_rar5_crc_fail_skips_to_the_real_payload`, `::test_shebang_script_mentioning_rar_magic_is_not_rar`, `::test_shebang_plus_real_rar_detects` |
+| The SFX needle validator, its `DAMAGED` verdict, and a decoy skipped for the real payload | `tests/test_sfx.py::test_rar_main_header_validator`, `::test_rar_main_header_validator_crc_fail_is_damaged`, `::test_rar_short_peek_is_not_a_rar_even_when_remaining_is_known`, `::test_rar_decoy_crossing_the_scan_window_end_is_rejected_like_one_inside`, `::test_mz_rar5_crc_fail_skips_to_the_real_payload`, `::test_shebang_script_mentioning_rar_magic_is_not_rar`, `::test_shebang_plus_real_rar_detects` |
 | Metadata and bytes match `rarfile` on our fixtures and on the corpus | `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes`, `::test_corpus_rar_matches_rarfile` |
 | Mutation and coverage-guided fuzzing of the header walk | `tests/fuzz_rar_parser.py::test_parse_rar_archive_fuzz_harness`, `tests/test_mutation_fuzz.py` (`basic-solid-rar5` / `basic-solid-rar4` entries), Atheris targets `rar_header` and `rar` |
 | `extract_all` over a listing cut part-way writes the members before the cut, then raises the listing's error, in both modes, under either `OnError`, with no report; a selected hard link in the prefix still gets its source's bytes; an entry unmatched in the prefix is not reported; listing limits still refuse before any write | `tests/test_extraction_damaged_listing.py` |
