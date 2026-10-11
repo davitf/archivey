@@ -1040,7 +1040,7 @@ class _RespawnStream(ReadOnlyIOStream):
     def nearest_resume_offset(self, target: int) -> int:
         """Where the output restarts to reach ``target``: the live pipe's position when
         ``target`` is at or past it, else 0 (a fresh process). A member's verifier asks
-        this to see that a forward seek decodes the skipped bytes anyway."""
+        this to see that reaching a forward target decodes the skipped bytes anyway."""
         if self._inner is not None and self._pipe_needed(target) >= self._pipe_pos:
             return self._pipe_pos
         return 0

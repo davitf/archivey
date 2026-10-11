@@ -68,8 +68,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   set them to `OFF` for untrusted input under a strict threat model.
 - **After a seek, a crafted `.xz` or `.lz` index can serve the wrong bytes with no
   error.** The integrity guarantee covers a read from start to end with no skipped
-  bytes, checked on the first pass over each byte
-  ([Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
+  bytes, checked on the first pass over each byte ([Errors and
+  diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
 - **On Windows, a directory source is less protected against concurrent changes.**
   There is no `O_NOFOLLOW`, so the walk scans subdirectories by path: a subdirectory
   swapped for a junction or symlink while the walk runs can list entries from outside

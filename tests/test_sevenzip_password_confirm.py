@@ -230,8 +230,8 @@ def test_lzma2_late_crc_full_read_after_a_refused_seek_is_not_reported(
 
 
 def test_lzma2_late_crc_seek_then_full_read_is_not_reported(tmp_path: Path) -> None:
-    # The forward seek decodes the bytes it skips, so the member's verifier hashes
-    # them and keeps the CRC: reading on to EOF checks it, and nothing is reported.
+    # The bytes the forward seek skips must be decoded anyway, so the next read hashes
+    # them and the CRC is kept: reading on to EOF checks it, and nothing is reported.
     big = _payload(_BIG, 3)
     archive = _build(tmp_path, "lzma2", {"big.bin": big}, method="LZMA2", solid=True)
     with open_archive(archive, password=_PASSWORD, seekable_members=True) as reader:

@@ -40,14 +40,14 @@ asked for a verdict at all.
   a seek back keeps the digest, and so does a forward seek whose inner decodes the
   skipped bytes anyway: the verifier asks the inner where it would resume
   (`ask_seek_resume_offset`) and, when that is at or before the frontier, leaves the
-  inner where it is and reads the gap through its hashers at the next read. That is the
-  decode the inner's seek or its next read would run, and the seek stays lazy: a later
-  seek replaces the target, and a member closed with no read decodes nothing. The digest
-  covers the first pass over each byte; bytes read again after a seek back are not
-  checked again. A seek to or past the declared size
-  defers the gap to the concluding read, which hashes it. Only a read that starts past
-  the frontier, after a jump by a seek index, an accelerator or random access, forfeits
-  the digest. The maintainer asked for this on 2026-10-10.
+  inner where it is and reads the gap through its hashers at the next read. That is
+  the decode the inner's seek or its next read would run, and the seek stays lazy: a
+  later seek replaces the target, and a member closed with no read decodes nothing.
+  The digest covers the first pass over each byte; bytes read again after a seek back
+  are not checked again. A seek to or past the declared size defers the gap to the
+  concluding read, which hashes it. Only a read that starts past the frontier, after a
+  jump by a seek index, an accelerator or random access, forfeits the digest. The
+  maintainer asked for this on 2026-10-10.
 - `close()` never raises a content error (target contract; best-effort on a few
   backends today).
 

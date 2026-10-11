@@ -290,8 +290,8 @@ def test_rar4_read_to_eof_is_not_reported() -> None:
 
 @requires_binary("unrar")
 def test_rar4_seek_then_partial_read_is_reported_as_a_partial_read() -> None:
-    # The forward seek decodes the bytes it skips (unrar's pipe), so the member's
-    # verifier hashes them and keeps the CRC: what misses it is closing early.
+    # The bytes the forward seek skips must be decoded anyway (unrar's pipe), so the
+    # next read hashes them and the CRC is kept: what misses it is closing early.
     with open_archive(_RAR4, password="password", seekable_members=True) as reader:
         with reader.open(_member(reader, "secret.txt")) as stream:
             stream.seek(8)
