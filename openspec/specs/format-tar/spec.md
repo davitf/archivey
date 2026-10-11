@@ -144,7 +144,7 @@ copy. Device bookkeeping MAY skip doomed attempts but is not required for correc
 | Case | Expected |
 | --- | --- |
 | Unfiltered extract-all | Hardlinks resolve in one pass; no upfront member list fetch |
-| Filter excludes source but selects link and a free member list exists | One planned pass writes source bytes to first selected link path; remaining links use `os.link`; source name not created |
+| Filter excludes source but selects link and a free member list exists | Same as with no free list (the planned single pass is optional and not implemented): the orphan is resolved in the second pass; source name not created |
 | Filter orphans links on seekable plain/compressed TAR with no free list | No speculative scan; all orphans resolved in one second pass; compressed stream decompressed at most twice total |
 | Filter does not orphan any link | Single pass; no second pass; no upfront list fetch |
 | Orphaned link on forward-only source | Per-member failure follows `OnError` |

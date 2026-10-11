@@ -1277,7 +1277,8 @@ class ExtractionResult:
     # Set on a DIRECTORY result whose destination was a directory that was there before
     # the run (the destination root for a ``./`` member, or any directory the caller
     # already had): that directory keeps its own mode and times, and this is the mode it
-    # kept, when the member asked for a different one. ``None`` otherwise. A ``None`` on
-    # such a directory does not mean the member's metadata was applied: its times were
-    # still left alone.
+    # kept, when the member asked for a different one. The member's mode is compared as
+    # the platform stores it, so on Windows only the read-only attribute counts.
+    # ``None`` otherwise. A ``None`` on such a directory does not mean the member's
+    # metadata was applied: its times were still left alone.
     kept_mode: int | None = None

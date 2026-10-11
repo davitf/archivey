@@ -1587,8 +1587,9 @@ class ZipReader(BaseArchiveReader):
         size = member.size
         # The member's compressed size is the codec's input exactly, so a byte after
         # the codec's end of stream is CorruptionError (DR-3; 7-Zip: "There are some
-        # data after the end of the payload data", an error in ZIP). LZMA refuses it
-        # on its own, in 7z too (``LzmaDataAfterEndError``).
+        # data after the end of the payload data", an error in ZIP). That covers a
+        # declared size short of an LZMA or PPMd stream too: the rest of the stream is
+        # input left after the size (``DataAfterEndError``).
         config = replace(
             self._stream_config,
             expected_decompressed_size=size,
@@ -1620,11 +1621,12 @@ class ZipReader(BaseArchiveReader):
                 # usually has an end mark, but max_length still matches py7zr practice).
                 if size is not None and size >= 0:
                     params = replace(params, unpack_size=size)
-            elif method == 12:  # ZIP bzip2
-                # A member is one bzip2 stream: the standard-library decoder ends it at
-                # its end-of-stream marker, as 7-Zip, Info-ZIP and stdlib zipfile read
-                # it. rapidgzip reads on into a further stream; the declared size and
-                # CRC then decide (dev-docs/formats/zip.md §2.3).
+            elif method in (12, 93):  # ZIP bzip2, Zstd
+                # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
+                # read it, and one Zstd frame: a further stream or frame after its end
+                # is input the member does not use, refused like any other
+                # (``refuse_input_after_end``), with the accelerator on or off
+                # (dev-docs/formats/zip.md §2.3).
                 params = replace(params, single_stream=True)
             return open_codec_stream(
                 codec,
