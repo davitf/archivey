@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -687,13 +687,35 @@ class DiagnosticSummary:
         return DiagnosticSummary(total_count=0, counts={}, retained=(), dropped_count=0)
 
 
-@dataclass(frozen=True, kw_only=True)
+def _coerce_policy_codes(
+    value: object, *, call: str, param: str
+) -> frozenset[DiagnosticCode]:
+    """One ``DiagnosticPolicy`` code set, refusing the two shapes that iterate wrongly."""
+    if isinstance(value, Mapping):
+        # A dict iterates as its keys, so the removed overrides={code: disposition}
+        # spelling would pass and drop every disposition: under ignore= a code the
+        # caller wanted raised would be silenced.
+        raise ArchiveyUsageError(
+            f"{call} takes a set of DiagnosticCode for {param}, not a mapping. Put the "
+            "codes to raise on in raise_on= and the codes to ignore in ignore=."
+        )
+    if isinstance(value, DiagnosticCode):
+        # A StrEnum member is a str, so the shared helper would call it a bare string.
+        raise ArchiveyUsageError(
+            f"{call} takes a set of DiagnosticCode for {param}, but got the single "
+            f"code DiagnosticCode.{value.name}. Pass a set, e.g. "
+            f"{{DiagnosticCode.{value.name}}}."
+        )
+    return coerce_enum_collection(value, DiagnosticCode, call=call, param=param)
+
+
+@dataclass(frozen=True, init=False)
 class DiagnosticPolicy:
     """Which diagnostic codes to ignore and which to raise; every other code is collected.
 
-    Matching is by code only. Both fields take any iterable of :class:`DiagnosticCode`
-    (or code names / values as strings) and hold a ``frozenset``; a code in both is
-    refused. A policy is built with set operations on the code sets, for example
+    Matching is by code only. Both arguments take any iterable of :class:`DiagnosticCode`
+    (or code names / values as strings), and the fields always hold a ``frozenset``; a
+    code in both is refused. A policy is built with set operations on the code sets, for example
     ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.X})``.
 
     Two ready-made instances:
@@ -712,21 +734,26 @@ class DiagnosticPolicy:
     STRICT: ClassVar[DiagnosticPolicy]
     PEDANTIC: ClassVar[DiagnosticPolicy]
 
-    # Typed as Collection so a list or set type-checks; __post_init__ stores a frozenset.
-    ignore: Collection[DiagnosticCode] = frozenset()
-    raise_on: Collection[DiagnosticCode] = frozenset()
+    ignore: frozenset[DiagnosticCode]
+    raise_on: frozenset[DiagnosticCode]
 
-    def __post_init__(self) -> None:
+    # A hand-written __init__ (the decorator has init=False) so the parameters can
+    # describe what a caller passes while the fields describe what every reader gets
+    # back: always a frozenset of members, so set operations work on them.
+    def __init__(
+        self,
+        *,
+        ignore: Iterable[DiagnosticCode | str] | None = None,
+        raise_on: Iterable[DiagnosticCode | str] | None = None,
+    ) -> None:
         # Converted, not only checked: ``resolve`` answers by membership, so a code
         # spelled as its name would construct fine and then never match.
         call = "DiagnosticPolicy()"
-        ignore = coerce_enum_collection(
-            self.ignore, DiagnosticCode, call=call, param="ignore="
-        )
-        raise_on = coerce_enum_collection(
-            self.raise_on, DiagnosticCode, call=call, param="raise_on="
-        )
-        both = ignore & raise_on
+        codes = {
+            param: _coerce_policy_codes(value, call=call, param=param)
+            for param, value in (("ignore=", ignore), ("raise_on=", raise_on))
+        }
+        both = codes["ignore="] & codes["raise_on="]
         if both:
             # Keyword arguments have no order, so neither can win: keeping either would
             # silently drop what the other asked for.
@@ -734,10 +761,12 @@ class DiagnosticPolicy:
             raise ArchiveyUsageError(
                 f"{call} got codes in both ignore= and raise_on=: {names}."
             )
-        object.__setattr__(self, "ignore", ignore)
-        object.__setattr__(self, "raise_on", raise_on)
+        object.__setattr__(self, "ignore", codes["ignore="])
+        object.__setattr__(self, "raise_on", codes["raise_on="])
 
     def resolve(self, code: DiagnosticCode) -> DiagnosticDisposition:
+        # The constructor refuses a code in both sets, so this order is not a
+        # precedence rule.
         if code in self.raise_on:
             return DiagnosticDisposition.RAISE
         if code in self.ignore:

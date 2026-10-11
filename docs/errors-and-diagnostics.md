@@ -144,7 +144,7 @@ about a specific condition, check `reader.diagnostics.counts` for its code after
 operation. For a program that must not proceed on an anomalous archive, set a policy:
 
 ```python
-from archivey import ArchiveyConfig, DiagnosticPolicy
+from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy
 
 config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
 ```
@@ -163,7 +163,7 @@ in `ignore`:
 DiagnosticPolicy(ignore={DiagnosticCode.PASSWORD_ARGUMENT_UNUSED})
 ```
 
-Both take any collection of codes (or their names as strings), and a code in both is
+Both take any collection of codes (or their names or values as strings), and a code in both is
 refused. The [named presets](#named-policy-presets) below cover the common cases.
 
 Two things a reader might expect here are deliberately not diagnostics: what extraction

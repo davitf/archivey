@@ -14,7 +14,9 @@ over `policy.overrides`.
 - `DiagnosticPolicy` has two keyword-only fields, `ignore` and `raise_on`. Each takes any
   iterable of codes (or their names / values) and holds a `frozenset`. A code in
   `raise_on` raises, a code in `ignore` is ignored, and every other code is collected.
-  A code in both is refused with `ArchiveyUsageError`, and so is a bare string.
+  A code in both is refused with `ArchiveyUsageError`, and so are a bare string, a
+  mapping (the removed `{code: disposition}` shape, which iterates as its keys) and a
+  single code where a set was meant.
 - `DiagnosticPolicy.STRICT` and `DiagnosticPolicy.PEDANTIC` are ordinary instances:
   `raise_on=ARCHIVE_INTEGRITY_CODES` and `raise_on=frozenset(DiagnosticCode)`. A custom
   policy is built from the same sets:

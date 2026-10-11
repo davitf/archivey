@@ -24,7 +24,8 @@ memory a decoder may use, what a damaged archive should do. Some examples of tho
 rulings:
 
 - A bad optional record in a RAR header is dropped with a diagnostic.
-  `DiagnosticPolicy.STRICT` refuses the archive instead, and a bad encryption record is always fatal.
+  `DiagnosticPolicy.STRICT` refuses the archive instead, and a bad encryption record is
+  always fatal.
 - Decoder memory is capped at 2 GiB by default, and you can change the cap through
   `DecoderLimits`.
 - The integrity guarantee covers a member read from start to end. A read that seeks is

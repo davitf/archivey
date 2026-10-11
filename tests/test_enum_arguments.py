@@ -376,10 +376,11 @@ ALIASES_NOT_WANTED = {
         "only other consumer, detect_format(budget=), was removed."
     ),
     "DiagnosticCode": (
-        "DiagnosticPolicy's ignore= and raise_on= sets stay annotated "
-        "Collection[DiagnosticCode]: __post_init__ converts each spelling, so the "
-        "stored frozensets always hold members and resolve() finds a code however it "
-        "was spelled. A Literal of every code would be long and grow with the taxonomy."
+        "DiagnosticPolicy's ignore and raise_on fields stay annotated "
+        "frozenset[DiagnosticCode], for the same reason as AcceleratorMode: __init__ "
+        "converts each spelling, so the fields always hold members. Its parameters take "
+        "Iterable[DiagnosticCode | str] instead; a Literal of every code would be long "
+        "and grow with the taxonomy."
     ),
     "StreamFormat": (
         "ArchiveFormat's stream field; see ContainerFormat. format= arguments take "

@@ -881,6 +881,35 @@ def test_policy_refuses_a_bare_string(field: str) -> None:
         DiagnosticPolicy(**{field: "archive_trailing_data"})  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("field", ["ignore", "raise_on"])
+def test_policy_refuses_a_mapping(field: str) -> None:
+    """The removed ``overrides={code: disposition}`` shape iterates as its keys, so
+    under ``ignore=`` it would silence a code the caller asked to raise on."""
+    overrides = {DiagnosticCode.ARCHIVE_TRAILING_DATA: DiagnosticDisposition.RAISE}
+    with pytest.raises(ArchiveyUsageError, match="not a mapping"):
+        DiagnosticPolicy(**{field: overrides})  # type: ignore[arg-type]
+
+
+def test_policy_refuses_a_single_code_by_name() -> None:
+    """A member where a one-element set was meant is named as a code, not a string."""
+    with pytest.raises(ArchiveyUsageError) as info:
+        DiagnosticPolicy(ignore=DiagnosticCode.ARCHIVE_TRAILING_DATA)  # type: ignore[arg-type]
+    message = str(info.value)
+    assert "single code DiagnosticCode.ARCHIVE_TRAILING_DATA" in message
+    assert "{DiagnosticCode.ARCHIVE_TRAILING_DATA}" in message
+
+
+def test_policy_fields_support_set_operations() -> None:
+    """The fields read back as frozensets, so a preset is adjusted from its own field."""
+    policy = DiagnosticPolicy(
+        raise_on=DiagnosticPolicy.STRICT.raise_on
+        - {DiagnosticCode.ARCHIVE_TRAILING_DATA}
+    )
+    assert policy.raise_on == ARCHIVE_INTEGRITY_CODES - {
+        DiagnosticCode.ARCHIVE_TRAILING_DATA
+    }
+
+
 def test_policy_refuses_an_unknown_code() -> None:
     with pytest.raises(ArchiveyUsageError):
         DiagnosticPolicy(raise_on=["no_such_code"])

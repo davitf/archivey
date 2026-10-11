@@ -247,8 +247,10 @@ The system SHALL provide a frozen `DiagnosticPolicy` with two keyword-only code 
 `COLLECT`, and `RAISE` (no logger matching).
 
 ```python
-DiagnosticPolicy(*, ignore: Collection[DiagnosticCode] = frozenset(),
-                 raise_on: Collection[DiagnosticCode] = frozenset())
+DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | str] | None = None,
+                 raise_on: Iterable[DiagnosticCode | str] | None = None)
+policy.ignore: frozenset[DiagnosticCode]
+policy.raise_on: frozenset[DiagnosticCode]
 ```
 
 Each argument SHALL accept any iterable of codes, a code's name or value as a string
@@ -256,7 +258,9 @@ included, and the field SHALL hold a `frozenset` of members, so a caller builds 
 with set operations on the public code sets. A code in both sets SHALL raise
 `ArchiveyUsageError`: keyword arguments have no order, so neither can win, and keeping
 either silently drops what the other asked for. A bare string SHALL raise
-`ArchiveyUsageError` rather than be read as a set of characters. There SHALL be no
+`ArchiveyUsageError` rather than be read as a set of characters, and so SHALL a mapping
+(it iterates as its keys, so the removed `{code: disposition}` shape would drop every
+disposition) and a single code where a set was meant. There SHALL be no
 default disposition other than `COLLECT`: "raise on everything but X" is
 `raise_on=frozenset(DiagnosticCode) - {X}`.
 
@@ -312,6 +316,8 @@ evaluates afresh.
 | Code → `IGNORE` | Count++; no retain/attach/log/callback/raise |
 | Same code in `ignore` and `raise_on` | `ArchiveyUsageError` at construction |
 | `ignore="archive_trailing_data"` (bare string) | `ArchiveyUsageError` at construction |
+| `ignore={ARCHIVE_TRAILING_DATA: RAISE}` (a mapping) | `ArchiveyUsageError` at construction, naming both sets |
+| `raise_on=STRICT.raise_on - {ARCHIVE_TRAILING_DATA}` | Same as built from `ARCHIVE_INTEGRITY_CODES`; the field is a `frozenset` |
 | `raise_on=ARCHIVE_INTEGRITY_CODES - {ARCHIVE_TRAILING_DATA}` | `STRICT` except that code, which is collected |
 | Callback reads `reader.diagnostics` | Sees current event counted/retained; no lock held |
 | Callback raises during `RAISE` | Callback error propagates; no replacement `DiagnosticRaisedError`; no `OnError.CONTINUE` |
