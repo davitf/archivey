@@ -337,15 +337,25 @@ the one library that could (2026-10-08, PR 621). `TruncatedError` became a
 
 ### DR-4a. The integrity guarantee is for a start-to-end read
 
-**Rule.** Archivey promises integrity checks only for a member read from start to end
-without seeking. Seeks trust the format's own index and are best-effort. A seek back to
+**Rule.** Archivey promises integrity checks for a member read from start to end with no
+skipped bytes. A seek keeps the member's digest unless a read then skips bytes nothing
+decoded: a seek back keeps it, a forward seek whose gap must be decoded anyway keeps it
+(the seek decodes nothing; the next read decodes the gap through the verifier), and a
+seek to the end keeps it (the concluding read hashes the gap). A seek that jumps by an
+index, an accelerator or random access, then a read past it, gives the digest up; such
+seeks trust the format's own index and are best-effort. The digest covers the first pass
+over each byte: bytes read again after a seek back are not checked again. A seek back to
 0 re-arms the check.
 
-**Why.** A seek skips the bytes that a check would cover. The format's own tools trust
-their indexes the same way.
+**Why.** A seek that jumps skips the bytes that a check would cover, and the format's
+own tools trust their indexes the same way. When the gap must be decoded anyway, the
+next read has those bytes in hand at no extra cost, so dropping the check there gave up
+integrity for nothing. Reopen if a decoder appears whose forward seek is cheap but
+cannot hand the skipped bytes up (the cost claim would break).
 
 **Rulings.** 2026-09-23 (index trust, PR 407); 2026-09-28 (PR 509); seek to 0,
-2026-10-01.
+2026-10-01; keep the digest across seeks that decode anyway, maintainer 2026-10-10
+("we'd only lose the check for indexed or accelerated seeks", PR 743).
 
 ---
 

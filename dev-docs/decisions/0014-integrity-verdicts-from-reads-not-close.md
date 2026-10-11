@@ -35,6 +35,19 @@ asked for a verdict at all.
   checks a member once. The maintainer chose to keep raising on 2026-09-26 (sweep
   finding S28-K1); letting the seek through matches the rewind rule for truncated
   streams (#491). It lives in `ArchiveStream`, so it holds for every format.
+- **A seek loses the digest only by skipping bytes.** (Since 2026-10-10; before, any
+  seek but one to 0 forfeited it.) The verifier hashes from 0 to its furthest read, so
+  a seek back keeps the digest, and so does a forward seek whose inner decodes the
+  skipped bytes anyway: the verifier asks the inner where it would resume
+  (`ask_seek_resume_offset`) and, when that is at or before the frontier, leaves the
+  inner where it is and reads the gap through its hashers at the next read. That is
+  the decode the inner's seek or its next read would run, and the seek stays lazy: a
+  later seek replaces the target, and a member closed with no read decodes nothing.
+  The digest covers the first pass over each byte; bytes read again after a seek back
+  are not checked again. A seek to or past the declared size defers the gap to the
+  concluding read, which hashes it. Only a read that starts past the frontier, after a
+  jump by a seek index, an accelerator or random access, forfeits the digest. The
+  maintainer asked for this on 2026-10-10.
 - `close()` never raises a content error (target contract; best-effort on a few
   backends today).
 

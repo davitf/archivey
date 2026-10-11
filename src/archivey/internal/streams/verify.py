@@ -19,15 +19,21 @@ Per ADR 0014 / ``compressed-streams``:
 - Verification runs on a read that **reaches the end** (declared size, or decoder
   EOS). A partial read is never verified. ``read(0)`` is a no-op (not EOF).
 - A seek to position 0 re-arms every check (fresh hashers, no frontier), so a read
-  from 0 to the end after any seeks is verified in full. Any other seek off the
-  sequential frontier forfeits the **checksum** only (incremental hashing needs
-  linear consumption). Length / truncation / over-run stay on and key
-  off bytes **actually read** (``_furthest_read_pos``). If a seek jumps to/past the
-  declared size without reading the intervening bytes, concluding reads the skipped
-  gap and probes one byte past the declared size (``_conclude``) rather than
-  returning ``b""`` blind, so a past-EOF ``seek(declared_size)`` still catches
-  truncation (short) *and* over-run (long). A member already concluded
-  (``_verified``) returns with no extra I/O.
+  from 0 to the end after any seeks is verified in full. The hashers cover the bytes
+  from 0 to the furthest position a read reached (the frontier), so a backward seek
+  keeps the **checksum**: later reads hash only what lies past the frontier. A forward
+  seek past the frontier keeps it too when the inner would decode the skipped bytes
+  anyway (its ``nearest_resume_offset`` for the target is at or before the frontier):
+  the next read reads those bytes through the hashers first (``MemberVerifier.seek``),
+  so the seek itself stays lazy. A seek to or past the declared size keeps it as
+  well: concluding hashes the gap. A read that starts past the frontier, after a seek
+  that jumped there by an index, an accelerator or random access, forfeits the
+  checksum only. Length / truncation / over-run stay on and key off bytes **actually
+  read** (``_furthest_read_pos``). If a seek jumps to/past the declared size without
+  reading the intervening bytes, concluding reads the skipped gap and probes one byte
+  past the declared size (``_conclude``) rather than returning ``b""`` blind, so a
+  past-EOF ``seek(declared_size)`` still catches truncation (short) *and* over-run
+  (long). A member already concluded (``_verified``) returns with no extra I/O.
 - **Size-declared corruption** (digest mismatch / over-run at the declared size):
   the reaching read raises and **withholds** that chunk.
 - **Size-unknown corruption**: deliver data bytes; raise on the EOS-observing
@@ -57,7 +63,10 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
 from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
-from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.resume import (
+    ask_resume_offset,
+    ask_seek_resume_offset,
+)
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_closed_file_error,
@@ -149,8 +158,8 @@ def _probe_past_declared(inner: BinaryIO) -> bytes:
     view then refuses the probe with the closed-file ``ValueError``, though the probe
     would read no source byte (``test_archive_closed_before_the_overrun_probe``). Every
     declared byte has been delivered, so the over-run verdict is what is given up. On a
-    sequential read the digests, checked after this probe, still judge the content;
-    after a seek off the frontier the checksum was forfeited already, so nothing does.
+    read the digests, checked after this probe, still judge the content, unless a
+    read skipped bytes past the frontier and forfeited them; then nothing does.
     """
     try:
         return inner.read(1)
@@ -220,12 +229,22 @@ class MemberVerifier:
         # key off this, not seek-updated ``_pos``, so ``seek(declared_size)`` on a short
         # body cannot fabricate a clean end (ADR 0014). Reaching the declared size here
         # also marks the member length-verified, so a later seek past the end is cheap.
+        # It is also the hashing frontier: while the digests are on, the hashers have
+        # seen exactly the bytes ``[0, _furthest_read_pos)``.
         self._furthest_read_pos = 0
         # Decode-error abandon: skip all end-of-stream checks on later reads.
         self._abandoned = False
-        # Seek off the frontier forfeits checksum only (ADR 0014); length stays on. A
-        # seek back to 0 re-arms it (``_rearm``).
+        # A seek that jumps past the frontier without decoding the skipped bytes
+        # forfeits the checksum only (ADR 0014); length stays on. A seek back to 0
+        # re-arms it (``_rearm``).
         self._digests_enabled = True
+        # A forward seek that read through to the end of a size-unknown member saw it
+        # end here: a position past the frontier then skips no byte (``seek``).
+        self._ended_at_frontier = False
+        # A forward seek whose skipped bytes the next read will hash first: the target
+        # (``_pos`` already holds it) and where the inner was left. ``None`` when no
+        # read-through is due.
+        self._read_through_due: tuple[int, int] | None = None
 
     def _rearm(self) -> None:
         """Put every check back to its state before the first read.
@@ -241,6 +260,8 @@ class MemberVerifier:
         self._furthest_read_pos = 0
         self._abandoned = False
         self._digests_enabled = True
+        self._ended_at_frontier = False
+        self._read_through_due = None
 
     @property
     def enabled(self) -> bool:
@@ -264,8 +285,38 @@ class MemberVerifier:
         return self._digests_enabled and not self._abandoned
 
     @property
+    def digest_intact(self) -> bool | None:
+        """Whether the stored digest has run, or will run on a read on to the end.
+
+        ``None`` when this verifier checks no digest (a length-only backstop). False
+        once a read skipped bytes past the frontier, until a seek to 0 re-arms it, and
+        while the position sits past the frontier short of the declared size (the next
+        read would skip them; a seek back to the frontier or behind it, or to the
+        declared size, whose conclusion reads the gap, keeps the digest).
+        """
+        if not self._expected:
+            return None
+        if not self.digests_enabled:
+            return False
+        if (
+            self._verified
+            or self._pos <= self._furthest_read_pos
+            or self._read_through_due is not None
+        ):
+            return True
+        if self._expected_size is None:
+            return self._ended_at_frontier
+        return self._pos >= self._expected_size
+
+    @property
     def pos(self) -> int:
         return self._pos
+
+    def tell(self, inner: BinaryIO) -> int:
+        """The caller's position: the seek target while a read-through is due."""
+        if self._read_through_due is not None:
+            return self._pos
+        return inner.tell()
 
     def _verify_digests(self) -> None:
         """Check every computable digest; raise on the first mismatch."""
@@ -281,12 +332,27 @@ class MemberVerifier:
                 )
 
     def _record_read(self, data: bytes) -> None:
-        """Advance logical position and furthest-read position after a returning read."""
+        """Advance logical position and furthest-read position after a returning read.
+
+        Only the part of ``data`` past the frontier reaches the hashers: a read after a
+        backward seek returns bytes they have already seen. A read that starts past
+        the frontier forfeits the digests.
+        """
         if not data:
             return
-        self._pos += len(data)
-        if self._pos > self._furthest_read_pos:
-            self._furthest_read_pos = self._pos
+        start = self._pos
+        end = start + len(data)
+        self._pos = end
+        frontier = self._furthest_read_pos
+        if end <= frontier:
+            return
+        self._furthest_read_pos = end
+        if start > frontier:
+            # A seek jumped past the frontier and this read skips the bytes between:
+            # the hashers can never see them (ADR 0014). Length checks stay on.
+            self._digests_enabled = False
+        elif start < frontier:
+            data = data[frontier - start :]
         self._update_digests(data)
 
     def _conclude(self, inner: BinaryIO) -> None:
@@ -302,22 +368,29 @@ class MemberVerifier:
         When a seek jumped the logical position to/past the declared size without
         reading the intervening bytes, a complete member is indistinguishable from a
         short or long one. Rather than return ``b""`` and hide the fault, read the
-        ``[_furthest_read_pos, expected_size)`` gap first — the checksum is already
-        forfeited by the seek, so this only advances the length frontier — then apply
-        the same length and over-run checks, and on success restore the inner to the
-        caller's position. Bounded by the declared size (a decompression-bomb cap).
+        ``[_furthest_read_pos, expected_size)`` gap first, through the hashers while
+        the digests are on (the gap starts at the frontier, so they stay contiguous),
+        then apply the same length and over-run checks, and on success restore the
+        inner to the caller's position. Bounded by the declared size (a
+        decompression-bomb cap).
+
+        With no declared size, a position past the frontier means a seek skipped
+        bytes the hashers never saw (unless the stream was seen to end at the
+        frontier), so the digests are not checked.
         """
         self._verified = True
         expected_size = self._expected_size
         resume: int | None = None
         if (
+            expected_size is None
+            and self._pos > self._furthest_read_pos
+            and not self._ended_at_frontier
+        ):
+            self._digests_enabled = False
+        if (
             expected_size is not None
             and self._furthest_read_pos < expected_size <= self._pos
         ):
-            # Only a seek off the frontier puts ``_pos`` past it, and ``note_seek``
-            # forfeits the digests for that seek; the gap bytes never reach the
-            # hashers, so the digest check below must not run on this path.
-            assert not self._digests_enabled
             resume = inner.tell()
             inner.seek(self._furthest_read_pos)
             try:
@@ -329,6 +402,7 @@ class MemberVerifier:
                     if not piece:
                         break
                     self._furthest_read_pos += len(piece)
+                    self._update_digests(piece)
             except BaseException:
                 # A decoder truncation/corruption error propagating from the gap read is
                 # the member's own honest verdict; the stream is faulted — abandon and let
@@ -427,6 +501,8 @@ class MemberVerifier:
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
             return b""
+        if self._read_through_due is not None:
+            self._settle_read_through(inner)
         if n < 0:
             # Complete-stream read: include the EOF verdict in this call.
             if (
@@ -497,24 +573,124 @@ class MemberVerifier:
             self._conclude(inner)
         return data
 
+    def seek(self, inner: BinaryIO, offset: int, whence: int = 0) -> int:
+        """Seek, keeping the checksum when reaching the target decodes the gap anyway.
+
+        A forward seek past the frontier on a decompressing inner decodes every byte
+        between its resume point and the target. When that resume point is at or
+        before the frontier (``nearest_resume_offset``), the skipped bytes cost the
+        same whether the inner discards them or this verifier reads them. The seek
+        then leaves the inner where it is and records the target; the next read reads
+        the gap through the hashers first (``_settle_read_through``). The seek stays
+        lazy: a later seek replaces the target, and a member closed with no read
+        decodes nothing. The hashers see the first pass over each byte only: bytes
+        read again after a seek back are not checked again.
+
+        Every other seek is passed on (``note_seek``). One to or behind the frontier
+        keeps the checksum. So does one to or past the declared size: the read that
+        concludes reads the gap through the hashers (``_conclude``), so the seek need
+        not, and a ``seek(0, SEEK_END)`` that a caller undoes stays as cheap as the
+        inner makes it. A seek past the frontier that the inner can jump (a seek
+        index, an accelerator, a stored or decrypt-only member) or cannot price
+        forfeits the checksum once a read skips the gap (``_record_read``).
+        """
+        target = self._seek_target(offset, whence)
+        due = self._read_through_due
+        expected_size = self._expected_size
+        planned: Exception | None = None
+        if (
+            target is not None
+            and target > self._furthest_read_pos
+            # Parked past the frontier (a jump, or the end already found there):
+            # reaching the frontier again would mean a rewind, not a decode forward.
+            and (self._pos <= self._furthest_read_pos or due is not None)
+            and not self._ended_at_frontier
+            and (expected_size is None or target < expected_size)
+            and self._expected
+            and self.digests_enabled
+            and not self._verified
+        ):
+            # A report the planning escalated (an index build) is this seek's: it
+            # raises once the seek has moved, as the inner's own seek raises it.
+            resume, planned = ask_seek_resume_offset(inner, target)
+            if resume is not None and resume <= self._furthest_read_pos:
+                left_at = due[1] if due is not None else self._pos
+                self._read_through_due = (target, left_at)
+                self._pos = target
+                if planned is not None:
+                    raise planned
+                return target
+        if due is not None and target is not None:
+            # The inner is still where the deferred seek left it, not at ``_pos``: a
+            # relative ``whence`` must not apply to it.
+            offset, whence = target, 0
+        self._read_through_due = None
+        result = inner.seek(offset, whence)
+        self.note_seek(result)
+        if planned is not None:
+            raise planned
+        return result
+
+    def _seek_target(self, offset: int, whence: int) -> int | None:
+        """The position a seek asks for, or ``None`` when it needs the unknown size."""
+        if whence == 0:
+            return offset
+        if whence == 1:
+            return self._pos + offset
+        if self._expected_size is not None:
+            return self._expected_size + offset
+        return None
+
+    def _settle_read_through(self, inner: BinaryIO) -> None:
+        """Read and hash from the frontier up to a deferred seek's target.
+
+        The target is short of the declared size (``seek`` sends the rest to
+        ``_conclude``), so this read never concludes. A decoder error abandons the
+        checks and propagates from the read that settles, as it would had the inner's
+        own lazy seek decoded the same bytes there. With no declared size, reaching the
+        end first is recorded, so the position past it skips no byte. The inner ends
+        with a seek to the target.
+        """
+        due = self._read_through_due
+        assert due is not None
+        target, left_at = due
+        self._read_through_due = None
+        self._pos = left_at
+        try:
+            if self._pos < self._furthest_read_pos:
+                # Behind the frontier after a backward seek: let the inner reach the
+                # frontier its own cheapest way, then read on from there.
+                self._pos = inner.seek(self._furthest_read_pos)
+            while self._pos < target:
+                piece = inner.read(min(_SIZED_DRAIN_CHUNK, target - self._pos))
+                if not piece:
+                    self._ended_at_frontier = True
+                    break
+                self._record_read(piece)
+        except BaseException:
+            self._abandon()
+            raise
+        self._pos = inner.seek(target)
+
     def note_seek(self, result: int) -> None:
-        """Update the frontier after a successful inner seek.
+        """Update the position after a successful (or raised but moved) inner seek.
 
         A seek to position 0 re-arms every check (``_rearm``): the hashers start
         again and the furthest-read and verified state is cleared, so a read from 0
         to the end is verified as a first read is, digests included. Any other seek
-        off the sequential frontier forfeits the **checksum** (incremental hashing
-        assumes linear consumption). Length / truncation / over-run checks stay
-        enabled and key off bytes actually read (``_furthest_read_pos``); a seek that
-        jumps to/past the declared size has the skipped gap read back and a byte
-        probed past the size at conclusion (``_conclude``), so ``seek(declared_size)``
-        cannot silence truncation (short) or over-run (long) (ADR 0014).
+        only moves the position: the hashers cover ``[0, frontier)``, a read from at
+        or behind the frontier hashes only what lies past it, and a read that starts
+        past it forfeits the **checksum** (``_record_read``). Length / truncation /
+        over-run checks stay enabled and key off bytes actually read
+        (``_furthest_read_pos``); a seek that jumps to/past the declared size has the
+        skipped gap read back and a byte probed past the size at conclusion
+        (``_conclude``), so ``seek(declared_size)`` cannot silence truncation (short)
+        or over-run (long) (ADR 0014).
         """
+        self._read_through_due = None
         if result == 0:
             self._rearm()
             return
-        if result != self._pos:
-            self._digests_enabled = False
         self._pos = result
 
     def finish_on_close(self, inner: BinaryIO) -> None:
@@ -541,8 +717,12 @@ def note_raised_seek(verifier: MemberVerifier | None, inner: BinaryIO) -> int | 
     frontier the stream has left. Both wrappers that drive a verifier
     (:class:`VerifyingStream` and ``ArchiveStream``) call this from their seek.
     Returns ``None`` when ``inner`` cannot say where it is; the seek's own error is
-    the one that propagates.
+    the one that propagates. A seek the verifier deferred (``MemberVerifier.seek``)
+    raised after it moved, with the inner left where it was: the verifier's position
+    stands.
     """
+    if verifier is not None and verifier._read_through_due is not None:
+        return verifier.pos
     try:
         after = inner.tell()
     except Exception:  # noqa: BLE001 - the seek's own error propagates instead
@@ -550,6 +730,22 @@ def note_raised_seek(verifier: MemberVerifier | None, inner: BinaryIO) -> int | 
     if verifier is not None:
         verifier.note_seek(after)
     return after
+
+
+def ask_digest_intact(stream: object) -> bool | None:
+    """Ask ``stream`` whether the digest its verifier checks can still run.
+
+    Duck-typed on a ``_digest_intact()`` method, as :func:`ask_resume_offset` is on
+    ``nearest_resume_offset``: :class:`VerifyingStream` and an ``ArchiveStream`` with
+    a fused verifier answer (see :attr:`MemberVerifier.digest_intact`). Private, so
+    the public ``ArchiveStream`` gains no published method. ``None`` means the stream
+    cannot say: it has no verifier, or one that checks no digest.
+    """
+    ask = getattr(stream, "_digest_intact", None)
+    if ask is None:
+        return None
+    answer = ask()
+    return answer if isinstance(answer, bool) else None
 
 
 def build_member_verifier(
@@ -641,15 +837,16 @@ class VerifyingStream(ReadOnlyIOStream):
 
     def seek(self, offset: int, whence: int = 0, /) -> int:
         try:
-            result = self._inner.seek(offset, whence)
+            return self._verifier.seek(self._inner, offset, whence)
         except Exception:
             note_raised_seek(self._verifier, self._inner)
             raise
-        self._verifier.note_seek(result)
-        return result
+
+    def _digest_intact(self) -> bool | None:
+        return self._verifier.digest_intact
 
     def tell(self) -> int:
-        return self._inner.tell()
+        return self._verifier.tell(self._inner)
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # Length backstop around a codec stream; preserve the inner's offset space.

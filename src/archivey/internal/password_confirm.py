@@ -42,7 +42,9 @@ from typing import BinaryIO, TypeVar
 
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import Codec
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools.base import DelegatingStream
+from archivey.internal.streams.verify import ask_digest_intact
 from archivey.types import ArchiveMember
 
 # Codecs measured to fail on random input, which is what a wrong key decrypts to
@@ -332,12 +334,18 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     reports. A seek that raised has not: the caller can catch it and keep reading, so
     the report stays armed.
 
-    A member's verifier forfeits its checksum on a seek off the read frontier (ADR
-    0014), so by default any position-changing seek means the digest can no longer be
-    reached, until a seek back to 0 re-arms it. Pass ``seek_forfeits=False`` for a
-    digest that survives seeks (the WinZip AES HMAC, which the decrypt stage
-    completes over the ciphertext at the end): only a read that reaches ``size``
-    counts there, wherever it started.
+    Whether the digest is lost follows the member verifier's rule (ADR 0014). The
+    inner is asked first (``ask_digest_intact``), so a watch above the verifier gets
+    its answer. A watch below it (the verifier wraps this stream) applies the same
+    rule to what passes through: a read that starts past the furthest read skips
+    bytes and loses the digest until a seek back to 0, and so does a position past
+    the furthest read but short of ``size``, which the next read would skip. A seek
+    to or behind the furthest read, or to ``size`` (the verifier's conclusion reads
+    the gap), keeps it. A forward seek the verifier keeps the digest across reaches
+    this stream as reads up to the target. Pass ``seek_forfeits=False`` for a digest
+    that survives seeks (the WinZip AES HMAC, which the decrypt stage completes over
+    the ciphertext at the end): only a read that reaches ``size`` counts there,
+    wherever it started.
     """
 
     readinto_passthrough = False
@@ -355,11 +363,23 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self._watch_size = size
         self._on_unverified: Callable[[str], None] | None = on_unverified
         self._watch_pos = 0
+        self._watch_furthest = 0
         self._delivered = False
         self._reached = size <= 0
         self._forfeited = False
         self._seek_forfeits = seek_forfeits
         super().__init__(inner)
+
+    def _digest_lost(self) -> bool:
+        """Whether a read on to the end would no longer run the digest."""
+        if self._forfeited:
+            return True
+        if not self._seek_forfeits:
+            return False
+        intact = ask_digest_intact(self._inner)
+        if intact is not None:
+            return not intact
+        return self._watch_furthest < self._watch_pos < self._watch_size
 
     def _note_position(self) -> None:
         # "Reads reached ``size``" stands for "the digest ran". That holds only for an
@@ -367,10 +387,11 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         # following empty read: ``MemberVerifier`` finishes (CRC, WinZip AES HMAC,
         # over-run probe) on that read. An inner stream that deferred the check to the
         # next read would silence this report; check a new wrap target against it.
-        if self._watch_pos >= self._watch_size and not self._forfeited:
+        if self._watch_pos >= self._watch_size and not self._digest_lost():
             self._reached = True
 
     def read(self, n: int = -1, /) -> bytes:
+        start = self._watch_pos
         try:
             data = super().read(n)
         except BaseException:
@@ -380,12 +401,21 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             raise
         if data:
             self._delivered = True
+            if (
+                start > self._watch_furthest
+                and self._seek_forfeits
+                and ask_digest_intact(self._inner) is None
+            ):
+                # This read skipped the bytes between the furthest read and ``start``.
+                # A verifier below answers for itself: it may have read them through.
+                self._forfeited = True
             self._watch_pos += len(data)
+            self._watch_furthest = max(self._watch_furthest, self._watch_pos)
             self._note_position()
         elif n != 0:
             # EOF: the inner stream has run its end-of-stream check (and a mismatch
             # would have raised above).
-            if not self._forfeited:
+            if not self._digest_lost():
                 self._reached = True
         return data
 
@@ -404,9 +434,13 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         """Track a seek: a rewind to 0 re-arms the digest, as the member's verifier does."""
         if position == 0:
             self._forfeited = False
-        elif position != self._watch_pos:
-            self._forfeited = self._seek_forfeits
+            self._watch_furthest = 0
         self._watch_pos = position
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # Below a member's verifier, which asks this to decide whether a forward seek
+        # decodes the skipped bytes anyway; the offsets are the inner's.
+        return ask_resume_offset(self._inner, target)
 
     def _note_failed_seek(self) -> None:
         """Keep the position true to where a seek that raised left the stream.
@@ -431,8 +465,16 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             return
         callback = self._on_unverified
         self._on_unverified = None
+        # Asked before the inner closes, while it can still answer.
+        reason = "partial_read"
+        if callback is not None and self._delivered and not self._reached:
+            try:
+                lost = self._digest_lost()
+            except Exception:  # noqa: BLE001 - a report at close must not raise
+                lost = self._forfeited
+            reason = "seek" if lost else "partial_read"
         try:
             super().close()
         finally:
             if callback is not None and self._delivered and not self._reached:
-                callback("seek" if self._forfeited else "partial_read")
+                callback(reason)

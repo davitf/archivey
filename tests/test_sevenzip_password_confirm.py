@@ -23,7 +23,7 @@ import pytest
 
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
-from archivey.diagnostics import DiagnosticCode, EncryptedVerificationContext
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError, EncryptionError
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_PREFIX_BYTES,
@@ -229,11 +229,9 @@ def test_lzma2_late_crc_full_read_after_a_refused_seek_is_not_reported(
         )
 
 
-def test_lzma2_late_crc_seek_then_full_read_is_reported_as_a_seek(
-    tmp_path: Path,
-) -> None:
-    # A seek that moves forfeits the CRC, so reading on to EOF after it is still
-    # unverified, and the report names the seek rather than a partial read.
+def test_lzma2_late_crc_seek_then_full_read_is_not_reported(tmp_path: Path) -> None:
+    # The bytes the forward seek skips must be decoded anyway, so the next read hashes
+    # them and the CRC is kept: reading on to EOF checks it, and nothing is reported.
     big = _payload(_BIG, 3)
     archive = _build(tmp_path, "lzma2", {"big.bin": big}, method="LZMA2", solid=True)
     with open_archive(archive, password=_PASSWORD, seekable_members=True) as reader:
@@ -241,18 +239,8 @@ def test_lzma2_late_crc_seek_then_full_read_is_reported_as_a_seek(
         with reader.open(member) as stream:
             stream.seek(1)
             assert stream.read() == big[1:]
-        (diagnostic,) = [
-            d
-            for d in reader.diagnostics.retained
-            if d.code is DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED
-        ]
-        context = diagnostic.context
-        assert isinstance(context, EncryptedVerificationContext)
-        assert context.reason == "seek"
-        assert diagnostic.message == (
-            "Encrypted 7z member 'big.bin' gave up its checksum by seeking, and no "
-            "checksum confirmed the password: the bytes read may have been decrypted "
-            "with a wrong password."
+        assert DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED not in (
+            reader.diagnostics.counts
         )
 
 

@@ -112,10 +112,16 @@ does it varies:
 
 Encrypted members seek like any other when `seekable_members=True`; the cost is the
 codec's. ZipCrypto restarts decryption from the member's start on a backward seek.
-WinZip AES and encrypted 7z restart at the target's cipher block. A seek that moves
-the position gives up a CRC check until a seek back to 0, but not WinZip AES's HMAC:
-the HMAC covers the ciphertext, so the read that reaches the member's end first reads,
-without decrypting, whatever ciphertext your seeks skipped, and then checks it.
+WinZip AES and encrypted 7z restart at the target's cipher block. A seek back keeps a
+CRC check, and so does a forward seek in a compressed member. That seek itself is
+free: the next read decodes and hashes the bytes it skipped, so that read pays for the
+gap, and a seek you undo or a stream you close before reading costs nothing. A forward
+seek that jumps (a stored member, or a seek by an index or the accelerator) gives the
+CRC up once you read past it, until a seek back to 0. The check covers the first pass
+over each byte: bytes read again after a seek back are not checked again. None of this
+touches WinZip AES's HMAC: the HMAC covers the ciphertext, so the read that reaches
+the member's end first reads, without decrypting, whatever ciphertext your seeks
+skipped, and then checks it.
 
 A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
 seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset

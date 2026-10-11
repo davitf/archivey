@@ -137,7 +137,7 @@ from archivey.internal.streams.streamtools import (
     SlicingStream,
     read_exact,
 )
-from archivey.internal.streams.verify import VerifyingStream
+from archivey.internal.streams.verify import VerifyingStream, ask_digest_intact
 from archivey.internal.timestamps import (
     TimestampIssue,
     filetime_to_datetime,
@@ -508,6 +508,10 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
             return super().seek(offset, whence)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
+
+    def _digest_intact(self) -> bool | None:
+        # The password watch above asks after a seek whether the CRC can still run.
+        return ask_digest_intact(self._inner)
 
     def _reraise(self, exc: Exception) -> NoReturn:
         if _is_candidate_integrity_failure(
