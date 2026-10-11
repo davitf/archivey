@@ -643,8 +643,9 @@ After symlink/hardlink following, if the **resolved** member is
 `DIRECTORY`, `ANTI`, or `OTHER`, `open()` / `read()` SHALL raise
 `ArchiveyUsageError` with `refused_member_type` set to that member's type, so a caller
 can tell this refusal from other usage errors without reading the message. Every other
-usage error SHALL leave `refused_member_type` `None`. They MUST NOT return empty bytes, and MUST NOT leak raw
-`IsADirectoryError` or format `CorruptionError` for directory paths. A link whose
+usage error SHALL leave `refused_member_type` `None`. They MUST NOT return empty
+bytes, and MUST NOT leak raw `IsADirectoryError` or format `CorruptionError` for
+directory paths. A link whose
 target is missing SHALL still raise `LinkTargetNotFoundError` (`ArchiveyError`).
 
 **Diagnostics (observable):** A reader-owned stream's `diagnostics` shows only
