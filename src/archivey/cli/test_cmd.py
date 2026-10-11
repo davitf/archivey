@@ -82,7 +82,10 @@ def run_test(
         # another member. A pass that raises right after a failed member read is
         # ending on the fault that member already reported, whether it raises the same
         # object (a truncated compressed TAR) or a new, equal one (a truncated plain
-        # TAR): it gets a stop notice and is not counted a second time.
+        # TAR): it gets a stop notice and is not counted a second time. Requiring the
+        # failure to be the immediately preceding read is safe: a stream that re-raises
+        # a parked fault fails the next read as well, so no member reads cleanly
+        # between the failure and the end of the pass.
         member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)

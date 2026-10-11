@@ -1162,6 +1162,11 @@ def run_extract(
                 # is reserved for a *completed* run with policy blocks and safe
                 # members on disk (blocks never abort under STOP). The
                 # ``archivey: `` prefix: see main._parse_and_dispatch.
+                # Under CONTINUE this line can repeat the detail of the
+                # ``WARNING: Skipping …`` line printed just above it, which ``test``
+                # suppresses. That is kept on purpose: the warning says a member was
+                # skipped, this line says why the run ended, and ``extract`` has no
+                # failure counter, so nothing is counted twice.
                 print(f"archivey: {format_error_detail(exc)}", file=err)
                 parts: list[str] = []
                 if members_extracted:

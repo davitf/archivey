@@ -96,10 +96,12 @@ system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
-written to **stderr**. An error line that ends the run, and the uncounted error
-that ends `test`'s read pass after a member already failed, SHALL start with
-`archivey: `; a counted failure (`test`'s `FAIL …` lines) and a line about one
-member (`extract`'s per-member warnings) keep their own shape.
+written to **stderr**. The line that reports the fault which ended the run,
+including the uncounted error that ends `test`'s read pass after a member already
+failed, SHALL start with `archivey: `. A counted failure (`test`'s `FAIL …` lines),
+a line about one member (`extract`'s per-member warnings), the notices and counts
+that follow the fault line (stop notices, `N member(s) extracted before the stop`,
+`files left in <dir>/`) and `interrupted` keep their own shape.
 
 `--track-io` SHALL report I/O accounting for the operation using the internal
 measurement hook (decode/seek counters), without patching `builtins.open`. It is
@@ -118,8 +120,9 @@ message naming the terminal archive error, and SHALL exit nonzero (`1`). `-v` /
 the shared verification stage (including CRC32 and Blake2sp where supported).
 Members with no stored digest SHALL count as OK when fully readable without
 error. `test` MUST NOT require emitting computed content hashes. By default
-`test` SHALL be quiet — printing only failures and a one-line summary
-(`N OK, M failed`) to stderr — and SHALL exit non-zero if any member fails;
+`test` SHALL be quiet — printing only failures, the stop notice when the read
+pass ends early, and a one-line summary (`N OK, M failed`) to stderr — and SHALL
+exit non-zero if any member fails;
 `-v` / `--verbose` SHALL add a per-member OK/FAIL line. When a cheap member
 index is available and the stream ends before every selected file member has
 been counted OK or failed (archive-wide error or solid/poisoned abort), the
