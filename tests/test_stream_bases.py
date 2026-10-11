@@ -411,6 +411,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.crypto as crypto
     import archivey.internal.streams.decompressor_stream as decompressor_stream
     import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.readahead as readahead
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
     import archivey.internal.streams.streamtools.sparse as sparse
@@ -429,6 +430,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.rapidgzip_select._StdlibSeekContract,
         codecs.lzma_codec._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
         counting.OutputCountingStream,
+        readahead.ReadAheadStream,  # the inner's offsets
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
         sevenzip_pipeline._DecodedPastSizeCheck,  # same offsets as the codec it wraps
@@ -611,6 +613,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.readahead as readahead
     import archivey.internal.streams.streamtools.sparse as sparse
 
     owns_via_base = {
@@ -631,6 +634,7 @@ def test_delegating_stream_close_inventory() -> None:
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
         sparse.SparseStream,
+        readahead.ReadAheadStream,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,

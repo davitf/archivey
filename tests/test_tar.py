@@ -9,6 +9,7 @@ import gzip
 import io
 import logging
 import os
+import random
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2451,9 +2452,12 @@ def test_a_concurrent_reader_closes_its_streams_under_the_handle_lock(
     assert held == [True]
 
 
-def test_a_member_stream_seeks_past_its_end_like_a_file(tmp_path: Path) -> None:
-    path = tmp_path / "a.tar"
-    with tarfile.open(path, "w") as t:
+@pytest.mark.parametrize("suffix", ["", ".gz"])
+def test_a_member_stream_seeks_past_its_end_like_a_file(
+    tmp_path: Path, suffix: str
+) -> None:
+    path = tmp_path / f"a.tar{suffix}"
+    with tarfile.open(path, f"w:{suffix[1:]}") as t:
         info = tarfile.TarInfo("a")
         info.size = 3
         t.addfile(info, io.BytesIO(b"abc"))
@@ -2462,6 +2466,7 @@ def test_a_member_stream_seeks_past_its_end_like_a_file(tmp_path: Path) -> None:
         assert stream.read() == b""
         assert stream.seek(1) == 1
         assert stream.read() == b"bc"
+        assert stream.tell() == 3
 
 
 def test_small_reads_of_a_compressed_member_are_buffered(tmp_path: Path) -> None:
@@ -2478,6 +2483,48 @@ def test_small_reads_of_a_compressed_member_are_buffered(tmp_path: Path) -> None
         with ar.open("lines") as stream:
             assert sum(1 for _ in stream) == 1000
         assert read.call_count < 30
+
+
+@pytest.mark.parametrize("kept", [2_000, 10_000])
+@pytest.mark.parametrize("chunk", [100, 1024])
+def test_a_cut_compressed_member_delivers_its_prefix_in_both_modes(
+    tmp_path: Path, kept: int, chunk: int
+) -> None:
+    """Small reads of a cut .tar.gz member deliver the recoverable prefix before the
+    TruncatedError, the same in streaming, in a random-access pass and through
+    ``open``: each buffer asks the decoder once per read, so the decoder's deferred
+    error does not drop the prefix."""
+    path = tmp_path / "a.tar.gz"
+    with tarfile.open(path, "w:gz") as t:
+        info = tarfile.TarInfo("a")
+        info.size = 200_000
+        t.addfile(info, io.BytesIO(random.Random(0).randbytes(200_000)))
+    path.write_bytes(path.read_bytes()[:kept])
+
+    def drain(stream: BinaryIO) -> int:
+        got = 0
+        with pytest.raises(TruncatedError):
+            while block := stream.read(chunk):
+                got += len(block)
+        return got
+
+    with open_archive(path, streaming=True) as ar:
+        members = ar.stream_members()
+        _, stream = next(members)
+        assert stream is not None
+        in_streaming = drain(stream)
+        members.close()
+    with open_archive(path) as ar:
+        members = ar.stream_members()
+        _, stream = next(members)
+        assert stream is not None
+        in_a_random_access_pass = drain(stream)
+        members.close()
+    with open_archive(path) as ar, ar.open("a") as stream:
+        in_random_access = drain(stream)
+    assert in_streaming > 0
+    assert in_a_random_access_pass == in_streaming
+    assert in_random_access == in_streaming
 
 
 def test_a_member_keeps_no_parsed_pax_records() -> None:

@@ -99,6 +99,7 @@ from archivey.internal.streams.codecs import (
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
     LockedStream,
+    ReadAheadStream,
     SharedView,
     SparseStream,
     ensure_bufferedio,
@@ -170,7 +171,7 @@ _EofFinding = Literal[
 # and old GNU sparse (``S``) all carry the file's data. Every other typeflag that is not
 # a directory or a link lists as OTHER, its data skipped by size.
 _FILE_TYPES = frozenset((b"0", b"\x00", b"7", b"S"))
-# The random-access walk's read-ahead. Fixed rather than io's default, which Python 3.14
+# The walk's read-ahead over a codec stream or a view. Fixed rather than io's default, which Python 3.14
 # raised from 8 KiB to 128 KiB: a larger read-ahead reads and decodes further past what
 # the listing needs, so listing costs and source reads would differ by Python version.
 _WALK_BUFFER = 8 * 1024
@@ -470,6 +471,10 @@ class TarReader(BaseArchiveReader):
                 ),
                 stamp=lambda exc: self._stamp_error_context(exc),
                 collector=self._diagnostics_collector,
+                # Random access reads it only through views that seek before each
+                # read. A repeated verdict would drop the prefix of the read that
+                # reaches the damage; each member stream repeats its own.
+                repeat_verdict=streaming,
             )
             self._owned_codec_stream = stream
             if not streaming:
@@ -479,9 +484,9 @@ class TarReader(BaseArchiveReader):
                 # walk may need none of the tail.
                 return stream
             # The walker reads 512-byte blocks: a buffer in front makes each one a copy
-            # from memory, not a decoder call. The cast is typeshed's split:
-            # BufferedIOBase is not BinaryIO there, but is at runtime.
-            self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
+            # from memory, not a decoder call. It reads the codec once per read, so a
+            # cut member's recoverable prefix comes before its TruncatedError.
+            self._owned_stream = ReadAheadStream(stream, _WALK_BUFFER)
             return self._owned_stream
         stream = self._track_source_seeks(source)
         if streaming:
@@ -502,11 +507,8 @@ class TarReader(BaseArchiveReader):
         """
         if self._streaming:
             return TarWalker(self._stream, seekable=False)
-        view = cast(
-            "BinaryIO",
-            ensure_bufferedio(
-                SharedView(self._stream, 0, lock=self._io_guard()), _WALK_BUFFER
-            ),
+        view = ReadAheadStream(
+            SharedView(self._stream, 0, lock=self._io_guard()), _WALK_BUFFER
         )
         # Only one walk runs at a time, and a pass's member streams are closed when it
         # ends, so a walk started over replaces the last one's view.
@@ -1206,8 +1208,9 @@ class TarReader(BaseArchiveReader):
             if self._compressed:
                 # The codec stream has no buffer of its own here (_open_byte_stream),
                 # so a read smaller than this would cost a decoder seek and read. The
-                # buffer sits above the view: each fill is one sized read of the codec.
-                stream = cast("BinaryIO", ensure_bufferedio(stream, _WALK_BUFFER))
+                # buffer sits above the view and reads it at most once per read, so a
+                # cut member's recoverable prefix comes before its TruncatedError.
+                stream = ReadAheadStream(stream, _WALK_BUFFER)
         if entry.sparse is not None:
             stream = SparseStream(
                 stream, entry.sparse.offsets, entry.sparse.lengths, entry.size

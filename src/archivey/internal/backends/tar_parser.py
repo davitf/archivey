@@ -636,7 +636,9 @@ class TarEntry:
     uid: int
     gid: int
     # The PAX records in force: the global records, then the member's own on top.
-    # Shared, read-only, between members that have none of their own.
+    # Shared, read-only, between members that have none of their own. The reader
+    # empties it once it has built the member from an entry with records of its own,
+    # and has_own_pax stays true.
     pax: Mapping[bytes, PaxValue]
     has_own_pax: bool
     # An AREGTYPE (NUL) entry whose final name ends in "/": a directory, whose
@@ -1227,6 +1229,10 @@ class _ForwardSlice(ReadOnlyIOStream):
         want = left if size is None or size < 0 else min(size, left)
         data = walker._read(want)
         self._done += len(data)
+        if data and len(data) < want:
+            # A short read is the end (ADR 0014). The bytes go to the caller now, and
+            # the next read, which gets none, raises.
+            return data
         if len(data) < want:
             raise TruncatedError(
                 "TAR archive is truncated inside a member's data at offset "
