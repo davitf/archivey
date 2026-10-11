@@ -277,6 +277,42 @@ end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 or a `Z
 | Image cut inside the header, the pointer table, or a block | `TruncatedError`; the member before it reads |
 | zisofs2 member, under `ZF` or `Z2`, or a `ZF` entry too short to parse | Lists with `UNKNOWN`; read raises `UnsupportedFeatureError`; the member beside it reads |
 
+### Requirement: Report bytes after the end of an ISO image
+
+An ISO image SHALL be taken to end at the furthest of: the end of its volume space (the
+primary volume descriptor's volume space size times its logical block size), the end of
+every partition its MBR lists (signature `0x55AA` at byte 510, entries neither empty nor
+of the protective type `0xEE`, 512-byte sectors), and, when a GPT header (`EFI PART`) is
+at byte 512 and both its header CRC and its entry-array CRC match, its backup header's
+sector and the last sector of every used GPT entry. A GPT whose entry size is not 128
+times a power of two, or whose entry array is larger than 512 KiB, SHALL NOT count, so
+the array read at open is at most 512 KiB. A partition or backup header reaching past
+the end of the file SHALL still count: a hybrid image cut inside its EFI partition
+reports nothing. A hybrid image appends an EFI partition and a GPT backup header after
+the volume space; those bytes are the disk image's, so they SHALL NOT be reported. 7-Zip
+23.01 warns on them; archivey departs from it here.
+
+At open, the reader SHALL look at most 1 MiB past that end, and a non-zero byte there
+SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="iso"`,
+`expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
+offset of that byte past the end. It is a warning by default and raises under
+`DiagnosticPolicy.strict()` (DR-3). Zero bytes SHALL be silent (xorriso pads 300 KiB
+of zeros by default), and a byte at 1 MiB or more past the end goes unseen. A GPT that
+fails either CRC, and an MBR without its signature, widen nothing. An MBR has no
+checksum, so its entries are taken as written, as the volume space size is.
+
+#### Scenario: ISO trailing bytes
+
+| Case | Default policy | `strict()` |
+| --- | --- | --- |
+| Image ending at its volume space, or followed by zeros | Nothing | Opens |
+| `b"JUNK"` after the volume space, or after zeros within 1 MiB | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
+| Hybrid image: EFI partition listed in the MBR or GPT after the volume space, GPT backup header at the end | Nothing | Opens |
+| Hybrid image followed by `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at the partition's or backup header's end | `DiagnosticRaisedError` |
+| `EFI PART` header with a bad header or entry CRC, or an out-of-range entry count or size, listing a partition past the file, then `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at the volume space's end | `DiagnosticRaisedError` |
+| Protective MBR entry (`0xEE`) spanning the whole medium, then `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at the volume space's end | `DiagnosticRaisedError` |
+| Non-zero byte at 1 MiB or more past the end | Nothing | Opens |
+
 ### Requirement: Weigh every parsed directory tree against one image-wide metadata budget
 
 `pycdlib` parses every directory tree of an image inside `open_archive` (the PVD tree,
