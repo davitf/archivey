@@ -81,9 +81,11 @@ do today, in one place:
 
 - The search is stdlib's, so prefixed and commented archives resolve to the same record:
   a comment-less record ending at end of file first, then the last `PK\x05\x06` in the
-  final 65 557 bytes.
+  final 65 558 bytes (stdlib's `1 << 16` plus the record, one byte more than the
+  format needs).
 - The ZIP64 locator 20 bytes before it, then the ZIP64 record it points to.
-- A disk field naming another disk (`0xFFFF` is the ZIP64 sentinel), or a ZIP64 locator
+- A disk field naming another disk (`0xFFFF` is the ZIP64 sentinel; the ZIP64 record's
+  fields replace the classic ones when it is present, as in stdlib), or a ZIP64 locator
   with more than one disk, is `UnsupportedFeatureError` with `ZIP_MULTI_VOLUME_MSG`. No
   exception text is matched.
 - An archive extra data record (`PK\x06\x08`) where the directory should start is the

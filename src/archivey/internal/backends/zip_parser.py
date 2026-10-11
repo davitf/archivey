@@ -38,7 +38,11 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_aes import iter_extra_fields
-from archivey.internal.backends.zip_detect import ZIP_MULTI_VOLUME_MSG
+from archivey.internal.backends.zip_detect import (
+    LOCAL_HEADER_SIGNATURE,
+    LOCAL_HEADER_SIZE,
+    ZIP_MULTI_VOLUME_MSG,
+)
 
 #: ``read_at(offset, n)``: up to ``n`` bytes from absolute ``offset``; fewer only at
 #: the end of the source.
@@ -48,7 +52,6 @@ EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
 ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"
 CENTRAL_HEADER_SIGNATURE = b"PK\x01\x02"
-LOCAL_HEADER_SIGNATURE = b"PK\x03\x04"
 # Archive extra data record: written in front of a central directory that PKWARE
 # Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
 ARCHIVE_EXTRA_DATA_SIGNATURE = b"PK\x06\x08"
@@ -57,10 +60,11 @@ EOCD_SIZE = 22
 ZIP64_LOCATOR_SIZE = 20
 ZIP64_EOCD_SIZE = 56
 CENTRAL_HEADER_SIZE = 46
-LOCAL_HEADER_SIZE = 30
-# The archive comment length is a uint16, so the end record starts at most this far
-# before the end of the file. Derived from the format, not chosen.
-_MAX_COMMENT = 0xFFFF
+# How far before the end of the file the end-record search starts: stdlib's window,
+# ``1 << 16`` plus the record. The comment length is a uint16, so this is one byte more
+# than the format needs; matching stdlib keeps one byte of junk after a maximal comment
+# readable, as it is today.
+_SEARCH_BACK = (1 << 16) + 22
 
 _EOCD = struct.Struct("<4s4H2LH")
 _ZIP64_LOCATOR = struct.Struct("<4sLQL")
@@ -79,9 +83,11 @@ _ZIP64_DISK_SENTINEL = 0xFFFF
 # handle; a directory no larger than one piece is read in one read.
 _WALK_CHUNK = 1 << 20
 
-# A ZIP64 field can declare any uint64; past ssize_t, ``seek`` raises a raw
-# OverflowError. Offsets past this bound are refused before anything seeks to them, the
-# same discipline as the native 7z and RAR parsers.
+# An archivey policy bound on ZIP offsets, inherited unchanged from the stdlib-based
+# reader (its ``_MAX_DATA_OFFSET``): a ZIP64 field can declare any uint64, and an
+# offset past this is refused as corrupt before anything seeks to it. It is not the
+# seek limit (that is 2**63); whether it stays a policy bound, and where that policy
+# is recorded, is for the stage that makes the reader depend on it.
 MAX_DATA_OFFSET = 1 << 40
 
 
@@ -122,7 +128,7 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     """Locate and read the end record, and the ZIP64 records when there are some.
 
     The search is stdlib's: a comment-less record ending at end of file, then the last
-    ``PK\\x05\\x06`` in the final 65 557 bytes. A decoy signature earlier in the file,
+    ``PK\\x05\\x06`` in the final 65 558 bytes. A decoy signature earlier in the file,
     in the comment or in the record's own fields therefore cannot make the two disagree.
 
     Raises ``UnsupportedFeatureError`` for a record that names another disk (a spanned
@@ -145,14 +151,16 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
         cd_offset,
         comment_declared,
     ) = _EOCD.unpack(record)
-    if _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk):
-        raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
-
     zip64 = _read_zip64_records(read_at, eocd_offset)
     if zip64 is not None:
-        records_start, entries_total, cd_size, cd_offset = zip64
+        # The ZIP64 record's disk fields replace the classic ones, as stdlib's do.
+        records_start, this_disk, cd_start_disk, entries_total, cd_size, cd_offset = (
+            zip64
+        )
     else:
         records_start = eocd_offset
+    if disk_field_is_split(this_disk) or disk_field_is_split(cd_start_disk):
+        raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
     base = records_start - cd_size - cd_offset
     end = EndRecord(
         eocd_offset=eocd_offset,
@@ -191,7 +199,7 @@ def _locate_classic_record(
         and tail[-2:] == b"\x00\x00"
     ):
         return file_size - EOCD_SIZE, tail, b""
-    window_start = max(file_size - _MAX_COMMENT - EOCD_SIZE, 0)
+    window_start = max(file_size - _SEARCH_BACK, 0)
     window = read_at(window_start, file_size - window_start)
     idx = window.rfind(EOCD_SIGNATURE)
     if idx < 0:
@@ -206,15 +214,17 @@ def _locate_classic_record(
 
 def _read_zip64_records(
     read_at: ReadAt, eocd_offset: int
-) -> tuple[int, int, int, int] | None:
-    """``(record_start, entries, cd_size, cd_offset)`` from the ZIP64 records, or ``None``.
+) -> tuple[int, int, int, int, int, int] | None:
+    """``(record_start, this_disk, cd_disk, entries, cd_size, cd_offset)``, or ``None``.
 
     ``None`` when no locator sits right before the classic record. ``record_start`` is
     where the ZIP64 end record (with any extensible data) starts, the position the stub
     offset is measured from. The checks are stdlib 3.13's: the locator's record offset
     must agree with the record's own size and directory span; when it does not but a
     record sits right before the locator, prepended data moved everything and that
-    record is read instead (with no extensible data).
+    record is read instead (with no extensible data). The directory-span check is
+    against the locator's offset in both cases, as stdlib's is: with unadjusted offsets
+    behind a stub, the stored offsets all omit the stub.
     """
     locator_offset = eocd_offset - ZIP64_LOCATOR_SIZE
     if locator_offset < 0:
@@ -234,7 +244,7 @@ def _read_zip64_records(
     extensible = adjacent - record_offset
     record = read_at(record_offset, ZIP64_EOCD_SIZE)
     if not record.startswith(ZIP64_EOCD_SIGNATURE) and record_offset != adjacent:
-        record_offset, extensible = adjacent, 0
+        extensible = 0
         record = read_at(adjacent, ZIP64_EOCD_SIZE)
     if len(record) != ZIP64_EOCD_SIZE or not record.startswith(ZIP64_EOCD_SIGNATURE):
         raise CorruptionError("ZIP64 end of central directory record not found")
@@ -243,8 +253,8 @@ def _read_zip64_records(
         record_size,
         _made_by,
         _needed,
-        _this_disk,
-        _cd_disk,
+        this_disk,
+        cd_disk,
         _entries_this_disk,
         entries_total,
         cd_size,
@@ -255,10 +265,15 @@ def _read_zip64_records(
         or record_size + 12 != ZIP64_EOCD_SIZE + extensible
     ):
         raise CorruptionError("Corrupt ZIP64 end of central directory record")
-    return adjacent - extensible, entries_total, cd_size, cd_offset
+    return adjacent - extensible, this_disk, cd_disk, entries_total, cd_size, cd_offset
 
 
-def _disk_field_is_split(value: int) -> bool:
+def disk_field_is_split(value: int) -> bool:
+    """A classic or ZIP64 end-record disk field that names another disk.
+
+    0xFFFF in a classic field means "see the ZIP64 record", not disk 65535, so it is not
+    a split; a naive ``!= 0`` check would refuse legitimate ZIP64 archives.
+    """
     return value not in (0, _ZIP64_DISK_SENTINEL)
 
 
@@ -270,6 +285,9 @@ class CentralEntry:
     index: int
     #: "Version made by": the low byte is the APPNOTE version, the high byte the host.
     version_made_by: int
+    #: "Version needed to extract" as one uint16, as ``zip_detect`` reads it and bounds
+    #: it at 10..99. APPNOTE gives its high byte no meaning and writers leave it zero;
+    #: stdlib splits it off instead.
     version_needed: int
     flags: int
     method: int
@@ -432,9 +450,10 @@ class CentralDirectoryWalk:
 
         self.entries_read = index
         # A classic record counts in 16 bits. Old 7-Zip versions stored the low 16
-        # bits of a larger count there without writing ZIP64; current 7-Zip accepts
-        # that with a note rather than a Headers Error, so the comparison is modulo
-        # 65536 there too.
+        # bits of a larger count there without writing ZIP64; current 7-Zip
+        # (ZipIn.cpp) accepts that with a "16-bit overflow for number of files in
+        # headers" note rather than a Headers Error, so the comparison is modulo
+        # 65536 too.
         if end.entries_declared != (index if end.zip64 else index & 0xFFFF):
             self.findings.append(
                 EntryCountMismatch(end.entries_declared, index, end.zip64)
@@ -572,8 +591,11 @@ def _apply_zip64_extra(
     APPNOTE 4.5.3: the field holds, in this order, only the values whose header field
     is all ones: uncompressed size, compressed size, local header offset, disk number.
     stdlib also takes a 64-bit all-ones uncompressed size as deferred, and reads the
-    first such field only. A deferred value the field does not hold is
-    ``CorruptionError``. A field elsewhere in the blob that is cut short is left alone:
+    first such field only. A deferred size or offset the field does not hold is
+    ``CorruptionError``. The disk number is the exception: stdlib never reads it and
+    nothing consumes it yet, so when the field does not hold it, it stays ``0xFFFF``
+    ("not known") rather than refusing an archive stdlib opens; when it is the only
+    deferred value, it is the field's first four bytes, per APPNOTE. A field elsewhere in the blob that is cut short is left alone:
     it says nothing about these four.
     """
     if not (
@@ -616,6 +638,7 @@ def _apply_zip64_extra(
 class LocalHeader:
     """A local file header: the copy of the member's fields in front of its data."""
 
+    #: One uint16, as ``CentralEntry.version_needed``.
     version_needed: int
     flags: int
     method: int

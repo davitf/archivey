@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
-from archivey.internal.backends import zip_reader
+from archivey.internal.backends import zip_parser, zip_reader
 from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
@@ -31,7 +31,12 @@ from archivey.internal.backends.zip_parser import (
     read_local_header,
 )
 from tests.create_adversarial import adversarial_archives
-from tests.sample_archives import CORPUS, build_archive
+from tests.sample_archives import (
+    CORPUS,
+    CorpusEntry,
+    corpus_archive_path,
+    skip_unless_runnable,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -92,47 +97,140 @@ def _assert_matches_zipfile(data: bytes) -> bool:
     return True
 
 
-def _corpus_zips(tmp_path: Path) -> Iterator[tuple[str, bytes]]:
+def _fixture_zips() -> Iterator[tuple[str, bytes]]:
     for path in sorted(FIXTURES.rglob("*.zip")):
         yield str(path.relative_to(FIXTURES)), path.read_bytes()
     for entry, data in adversarial_archives():
         if entry.fmt == "zip":
             yield f"adversarial:{entry.id}", data
-    for corpus_entry in CORPUS:
-        for key in ("zip", "zip-aes"):
-            if key not in corpus_entry.formats:
-                continue
-            path = tmp_path / f"{corpus_entry.id}.{key}.zip"
-            try:
-                build_archive(corpus_entry, key, path)
-            except ImportError:
-                continue
-            yield f"corpus:{corpus_entry.id}:{key}", path.read_bytes()
 
 
-def test_entries_match_zipfile_over_the_corpus(tmp_path: Path) -> None:
-    compared = []
-    for label, data in _corpus_zips(tmp_path):
-        if _assert_matches_zipfile(data):
-            compared.append(label)
-    # The bar is meaningless if most of the corpus silently fell out.
-    assert len(compared) >= 25, compared
+_CORPUS_ZIP_ROWS = [
+    pytest.param(entry, key, id=f"{entry.id}-{key}")
+    for entry in CORPUS
+    for key in ("zip", "zip-aes")
+    if key in entry.formats
+]
 
 
-def test_end_record_findings_match_the_reader(tmp_path: Path) -> None:
-    """The walk's findings are the ones ``_end_record_findings`` reports today."""
-    for label, data in _corpus_zips(tmp_path):
-        zf = _stdlib_infos(data)
-        if zf is None:
-            continue
-        today = zip_reader._end_record_findings(
-            io.BytesIO(data),
-            start_dir=zf.start_dir,
-            infos=zf.infolist(),
-            archive_name=None,
+def test_entries_match_zipfile_over_the_fixtures() -> None:
+    compared = [
+        label for label, data in _fixture_zips() if _assert_matches_zipfile(data)
+    ]
+    # The bar is meaningless if most of the fixtures silently fell out.
+    assert len(compared) >= 8, compared
+
+
+@pytest.mark.parametrize(("entry", "key"), _CORPUS_ZIP_ROWS)
+def test_entries_match_zipfile_over_the_corpus(
+    entry: CorpusEntry, key: str, tmp_path: Path
+) -> None:
+    skip_unless_runnable(entry, key)
+    data = corpus_archive_path(entry, key, tmp_path).read_bytes()
+    assert _assert_matches_zipfile(data), "zipfile refused a well-formed corpus archive"
+
+
+def _findings_today(data: bytes) -> list[zip_reader._EndRecordFinding]:
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    return zip_reader._end_record_findings(
+        io.BytesIO(data),
+        start_dir=zf.start_dir,
+        infos=zf.infolist(),
+        archive_name=None,
+    )
+
+
+def _as_today(
+    finding: object, end: EndRecord
+) -> tuple[str, str, int, int, int | None, str]:
+    """A walk finding in the shape of the reader's: context fields, index, and the
+    message text that carries the finding's own values."""
+    if isinstance(finding, EntryCountMismatch):
+        return (
+            "end_of_central_directory",
+            "nonzero",
+            0,
+            end.eocd_offset,
+            None,
+            f"declares {finding.declared} entries, but the central directory holds "
+            f"{finding.read}",
         )
-        _end, _entries, walk = _parse(data)
-        assert len(walk.findings) == len(today), label
+    if isinstance(finding, CommentCutShort):
+        return (
+            "end_of_central_directory",
+            "short",
+            22 + finding.declared,
+            22 + finding.available,
+            None,
+            f"declared as {finding.declared} bytes",
+        )
+    assert isinstance(finding, EntryOverrun)
+    return (
+        "central_directory",
+        "nonzero",
+        finding.cd_size,
+        finding.entry_end,
+        finding.index,
+        f"{finding.field} that runs {finding.entry_end - finding.cd_size} bytes",
+    )
+
+
+def _assert_findings_match_today(data: bytes) -> int:
+    today = _findings_today(data)
+    end, _entries, walk = _parse(data)
+    mine = [_as_today(f, end) for f in walk.findings]
+    assert len(mine) == len(today)
+    for (marker, kind, expected, observed, index, text), old in zip(
+        mine, today, strict=True
+    ):
+        ctx = old.context
+        assert (marker, kind, expected, observed, index) == (
+            ctx.expected_marker,
+            ctx.observed_kind,
+            ctx.expected_bytes,
+            ctx.observed_bytes,
+            old.entry_index,
+        )
+        assert text in old.message
+    return len(mine)
+
+
+def _with_count_and_comment_lies() -> bytes:
+    data = bytearray(_zip({"a.txt": b"1", "b.txt": b"2"}))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 5, 5)  # entry counts
+    struct.pack_into("<H", data, eocd + 20, 40)  # comment longer than the file
+    return bytes(data)
+
+
+def _with_overrun(field_offset: int) -> bytes:
+    """One entry whose name (28), extra (30) or comment (32) length runs past the end."""
+    data = bytearray(_zip({"a.txt": b"1"}))
+    cd = data.index(b"PK\x01\x02")
+    old = struct.unpack_from("<H", data, cd + field_offset)[0]
+    struct.pack_into("<H", data, cd + field_offset, old + 30)
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(_with_count_and_comment_lies, id="count-and-comment"),
+        pytest.param(lambda: _with_overrun(32), id="comment-overrun"),
+        pytest.param(lambda: _with_overrun(30), id="extra-overrun"),
+    ],
+)
+def test_end_record_findings_match_the_reader(data: object) -> None:
+    """Each walk finding is the reader's ``_end_record_findings`` finding: same kind,
+    same context values, same entry, same numbers in the message."""
+    assert _assert_findings_match_today(data()) > 0  # type: ignore[operator]
+
+
+def test_no_findings_on_well_formed_fixtures() -> None:
+    """The no-false-positive direction: neither side reports anything on a valid ZIP."""
+    for label, data in _fixture_zips():
+        if _stdlib_infos(data) is not None:
+            assert _assert_findings_match_today(data) == 0, label
 
 
 def _zip(members: dict[str, bytes], *, comment: bytes = b"", **kwargs: object) -> bytes:
@@ -181,7 +279,10 @@ def _with_central_extra(data: bytes, index: int, extra: bytes, **fields: int) ->
             comment = entry[46 + name_len + extra_len :]
             struct.pack_into("<H", fixed_and_name, 30, len(extra))
             for field, value in fields.items():
-                struct.pack_into("<L", fixed_and_name, offsets[field], value)
+                if field == "disk_start":
+                    struct.pack_into("<H", fixed_and_name, 34, value)
+                else:
+                    struct.pack_into("<L", fixed_and_name, offsets[field], value)
             entry = fixed_and_name + extra + comment
         out += entry
         pos = end
@@ -249,9 +350,39 @@ def test_zip64_extra_field_missing_a_deferred_value_is_corruption() -> None:
     assert seen == [b"a.txt"]
 
 
+def _zip64(
+    monkeypatch: pytest.MonkeyPatch, members: dict[str, bytes], **kwargs: object
+) -> bytes:
+    """A small archive that zipfile ends with ZIP64 records anyway."""
+    with monkeypatch.context() as m:
+        m.setattr(zipfile, "ZIP_FILECOUNT_LIMIT", 0)
+        data = _zip(members, **kwargs)  # type: ignore[arg-type]
+    assert b"PK\x06\x06" in data
+    return data
+
+
+def test_only_the_disk_number_deferred() -> None:
+    """The disk number alone is the ZIP64 field's first four bytes; absent, it stays
+    0xFFFF ("not known") instead of refusing an archive stdlib opens."""
+    plain = _zip({"a.txt": b"hello"})
+    held = _with_central_extra(
+        plain, 0, struct.pack("<HHL", 0x0001, 4, 0), disk_start=0xFFFF
+    )
+    assert _assert_matches_zipfile(held)
+    assert _parse(held)[1][0].disk_start == 0
+    absent = _with_central_extra(plain, 0, b"", disk_start=0xFFFF)
+    assert _assert_matches_zipfile(absent)
+    assert _parse(absent)[1][0].disk_start == 0xFFFF
+
+
+@pytest.mark.parametrize("zip64", [False, True], ids=["classic", "zip64"])
 @pytest.mark.parametrize("adjusted", [False, True], ids=["unadjusted", "adjusted"])
-def test_stub_prefix(tmp_path: Path, adjusted: bool) -> None:
+def test_stub_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adjusted: bool, zip64: bool
+) -> None:
     stub = b"MZ" + b"\x00" * 1000
+    if zip64:
+        monkeypatch.setattr(zipfile, "ZIP_FILECOUNT_LIMIT", 0)
     if adjusted:
         # zipfile appending to a file that already holds the stub writes offsets that
         # count the stub, as an SFX builder that adjusts them does.
@@ -264,6 +395,7 @@ def test_stub_prefix(tmp_path: Path, adjusted: bool) -> None:
         data = stub + _zip({"a.txt": b"hello"})
     assert _assert_matches_zipfile(data)
     end, entries, _walk = _parse(data)
+    assert end.zip64 == zip64
     assert end.base == (0 if adjusted else len(stub))
     local = read_local_header(_read_at(data), entries[0].header_offset)
     assert data[local.data_start : local.data_start + 5] == b"hello"
@@ -291,6 +423,20 @@ def test_trailing_bytes_are_counted(comment: bytes) -> None:
     assert end.trailing == 16
     assert end.comment == comment
     assert [e.name for e in entries] == [b"a.txt"]
+
+
+@pytest.mark.parametrize("junk", [1, 2])
+def test_maximal_comment_with_junk_follows_stdlib(junk: int) -> None:
+    """stdlib searches 1 << 16 bytes plus the record back: one byte of junk after a
+    65 535-byte comment still finds the record, two do not."""
+    data = _zip({"a.txt": b"hello"}, comment=b"c" * 0xFFFF) + b"j" * junk
+    if junk == 1:
+        assert _assert_matches_zipfile(data)
+        assert _parse(data)[0].trailing == 1
+    else:
+        assert _stdlib_infos(data) is None
+        with pytest.raises(CorruptionError):
+            find_end_record(_read_at(data), len(data))
 
 
 def test_comment_cut_short_is_not_trailing() -> None:
@@ -328,6 +474,31 @@ def test_zip64_sentinel_disk_field_is_not_a_disk() -> None:
     eocd = data.rindex(b"PK\x05\x06")
     struct.pack_into("<HH", data, eocd + 4, 0xFFFF, 0xFFFF)
     find_end_record(_read_at(bytes(data)), len(data))
+
+
+def _zip64_record_offset(data: bytes | bytearray) -> int:
+    return data.rindex(b"PK\x06\x06")
+
+
+def test_zip64_record_disk_fields_refuse_a_spanned_part(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ZIP64 record's disk fields replace the classic ones, as in stdlib."""
+    data = bytearray(_zip64(monkeypatch, {"a.txt": b"hello"}))
+    struct.pack_into("<LL", data, _zip64_record_offset(data) + 16, 2, 2)
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 4, 0xFFFF, 0xFFFF)
+    with pytest.raises(UnsupportedFeatureError, match="multi-volume|spanned|split"):
+        find_end_record(_read_at(bytes(data)), len(data))
+
+
+def test_zip64_record_disk_fields_win_over_classic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = bytearray(_zip64(monkeypatch, {"a.txt": b"hello"}))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 4, 2, 2)
+    assert _assert_matches_zipfile(bytes(data))
 
 
 def test_zip64_locator_with_several_disks_refuses() -> None:
@@ -374,21 +545,14 @@ def test_a_cut_extra_field_does_not_refuse_the_archive() -> None:
 
 
 def test_findings_count_comment_and_overrun() -> None:
-    data = bytearray(_zip({"a.txt": b"1", "b.txt": b"2"}))
-    eocd = data.rindex(b"PK\x05\x06")
-    struct.pack_into("<HH", data, eocd + 8, 5, 5)  # entry counts
-    struct.pack_into("<H", data, eocd + 20, 40)  # comment longer than the file
-    _end, entries, walk = _parse(bytes(data))
+    _end, entries, walk = _parse(_with_count_and_comment_lies())
     assert len(entries) == 2
     assert walk.findings == [
         EntryCountMismatch(declared=5, read=2, zip64=False),
         CommentCutShort(declared=40, available=0),
     ]
 
-    data = bytearray(_zip({"a.txt": b"1"}))
-    cd = data.index(b"PK\x01\x02")
-    struct.pack_into("<H", data, cd + 32, 30)  # a comment past the directory's end
-    _end, entries, walk = _parse(bytes(data))
+    _end, entries, walk = _parse(_with_overrun(32))
     (overrun,) = [f for f in walk.findings if isinstance(f, EntryOverrun)]
     assert overrun.field == "comment" and overrun.index == 0
 
@@ -407,7 +571,7 @@ def test_the_walk_reads_forward_in_large_pieces() -> None:
     assert len(list(CentralDirectoryWalk(counting, end))) == 3000
     offsets = [offset for offset, _n in calls]
     assert offsets == sorted(offsets)
-    assert len(calls) <= end.cd_size // (1 << 16) + 2
+    assert len(calls) <= end.cd_size // zip_parser._WALK_CHUNK + 2
 
 
 def test_local_header() -> None:
