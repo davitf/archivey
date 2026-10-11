@@ -293,7 +293,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | A backward seek in a default `xz` or `lzip` file re-decodes from the start | **format** | One block or one member (§1). Write with `xz -T` / `--block-size`, or `plzip -B` |
 | The rewind warning says "this codec has no random-access index" for a multi-block xz or lzip file | **archivey** | The message is shared by every codec; the seek did re-decode, from the nearest point. Tracked internally |
-| A file `xz -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the stream are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
+| A file `xz -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the stream are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
 | More than 1 MiB after the last stream loses `size` and seeks | **archivey** | The index search is bounded (§2.2) |
 | `size` is `None` on a pipe | **format** | The index is at the end |
 | An `xz` block with a filter this liblzma lacks raises `UnsupportedFeatureError` | **library** | Not damage (§2.3) |

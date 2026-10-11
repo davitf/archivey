@@ -323,7 +323,7 @@ An explicit `format=` skips detection, so it never produces a conflict. The dete
 inside `format=` stub checks and inside the empty-listing rescan runs under
 `probe_config(config)`: the library default config with the caller's budget. Those
 detections are internal, so their diagnostics must not reach the caller's `on_diagnostic`,
-and a `strict()` policy must not raise inside them.
+and a `STRICT` policy must not raise inside them.
 
 ## 4. Cost and source kinds
 

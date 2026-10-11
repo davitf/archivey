@@ -332,7 +332,7 @@ the access mode:
   `expected_marker="second_zero_block"` and `observed_kind="nonzero"` under ordinary
   diagnostic disposition, with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`. GNU tar ("A lone zero
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`. GNU tar ("A lone zero
   block") and 7-Zip list the same archive with a warning. The backend SHALL tell this
   case from a rejected header by why the walk stopped, not by the bytes read, so it
   holds in streaming too. With no member before the zero block
@@ -345,7 +345,7 @@ the access mode:
   byte-identical, so no reader can tell them apart. It SHALL follow ordinary diagnostic
   disposition with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`.
 
 The rejected-header escalation to `CorruptionError` SHALL take precedence over
 `DiagnosticRaisedError`, including when the diagnostic disposition is `IGNORE` or

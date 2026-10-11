@@ -125,7 +125,7 @@ def test_strict_collects_and_pedantic_raises() -> None:
     with open_archive(
         _COLLISION,
         password="secret",
-        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
     ) as reader:
         with reader.open(_member(reader, "stored.txt")) as stream:
             stream.read(1)
@@ -134,7 +134,7 @@ def test_strict_collects_and_pedantic_raises() -> None:
     with open_archive(
         _COLLISION,
         password="secret",
-        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic()),
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC),
     ) as reader:
         stream = reader.open(_member(reader, "stored.txt"))
         stream.read(1)

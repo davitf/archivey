@@ -453,7 +453,7 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 | Probe hit upgraded to `TAR_BROTLI` via an inner-TAR header, decode fails | Corroborated: `format_unconfirmed is False` |
 | Probe-only result, decode succeeds | Success; no error and no diagnostic |
 | Decode fails after bytes were already delivered | Error still raised; message does not claim zero output |
-| `DiagnosticPolicy.pedantic()`, probe-only decode fails | Same typed error with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
+| `DiagnosticPolicy.PEDANTIC`, probe-only decode fails | Same typed error with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
 | Format came from exact magic, decode fails | Untouched — this requirement does not apply |
 
 ### Requirement: A decode failure on an extension-only format names its provenance
@@ -475,7 +475,7 @@ open that no byte confirmed (an extension-only empty listing), which `strict` ex
 stop; a probe-only identification is an advisory about what the file is (see
 `diagnostics`). So a `strict` policy resolves the extension code to RAISE; on a failed
 read the emit SHALL then surface the same typed error via `escalate_as`, as the probe
-code does under `pedantic()`, never `DiagnosticRaisedError`. It is emitted at most once
+code does under `PEDANTIC`, never `DiagnosticRaisedError`. It is emitted at most once
 per reader for a failed read.
 
 A filename that agrees with a content-probe hit still corroborates it: that failure stays
@@ -486,7 +486,7 @@ unstamped, as above.
 | Case | Expected |
 | --- | --- |
 | 40 000 zero bytes named `backup.gz`, opened | `CorruptionError`; `format_unconfirmed is True`; message says "extension only"; `EXTENSION_FORMAT_UNCONFIRMED` with `chosen_by="extension"` |
-| Same file under `DiagnosticPolicy.strict()` | The same typed `CorruptionError`, not `DiagnosticRaisedError` |
+| Same file under `DiagnosticPolicy.STRICT` | The same typed `CorruptionError`, not `DiagnosticRaisedError` |
 | A real gzip file cut short (exact magic) | Unchanged: `format_unconfirmed is False`; no unconfirmed diagnostic |
 | A real Brotli stream named `x.br`, cut to less than the detection budget's completion window | **Changed**: the probe re-checks the whole source and declines, so the extension decides; `TruncatedError` or `CorruptionError` with `format_unconfirmed is True` and one `EXTENSION_FORMAT_UNCONFIRMED`. It used to be unstamped |
 
@@ -603,7 +603,7 @@ The parameters covered:
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
 | `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
-| `DiagnosticPolicy(...)` | `default`, and the keys and values of `overrides` |
+| `DiagnosticPolicy(...)` | `ignore`, `raise_on` |
 
 A member SHALL be reachable by its `value`, by its member **name**, in any case, and
 with `-` and `_` used interchangeably, so the dash spelling the CLI's `--help`
@@ -640,8 +640,8 @@ vocabulary rather than two that can drift.
 | `extract_all(dest, overwrite="nonsense")` | `ArchiveyUsageError` naming `overwrite` and the valid spellings; nothing written to `dest` |
 | `ArchiveyConfig(use_rapidgzip="on")` | Field holds `AcceleratorMode.ON`, not the string |
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
-| `DiagnosticPolicy(default="raise")` | Field holds `DiagnosticDisposition.RAISE`; a diagnostic the policy covers raises |
-| `DiagnosticPolicy(overrides={"ARCHIVE_TRAILING_DATA": "raise"})` | The key is `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
+| `DiagnosticPolicy(raise_on=["ARCHIVE_TRAILING_DATA"])` | The field holds `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
+| `DiagnosticPolicy(ignore="archive_trailing_data")` | `ArchiveyUsageError` naming the list spelling |
 | `ArchiveyConfig(detection_budget="fast")` | Detection under that config uses the FAST preset |
 | `ArchiveyConfig(detection_budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
 | `coerce to OverwritePolicy` given `AbortOn.BLOCKED_MEMBER` | `ArchiveyUsageError` reporting a wrong **type**, though `AbortOn` is a `str` subclass |

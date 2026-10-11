@@ -22,7 +22,6 @@ import pytest
 from archivey import ArchiveyConfig, ListingLimits, MemberType, OnError, open_archive
 from archivey.diagnostics import (
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
 )
 from archivey.exceptions import CorruptionError, ResourceLimitError
@@ -235,12 +234,8 @@ def test_an_entry_unmatched_in_the_prefix_is_not_reported(
     # The entry could match a member past the damage, which was never listed, so it
     # is not reported unmatched: under RAISE the caller gets the listing's error, not
     # DiagnosticRaisedError, and the prefix member is still written.
-    overrides = (
-        {DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: DiagnosticDisposition.RAISE}
-        if raise_unmatched
-        else {}
-    )
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(overrides=overrides))
+    raise_on = {DiagnosticCode.MEMBER_SELECTOR_UNMATCHED} if raise_unmatched else set()
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(raise_on=raise_on))
     contents, error_type, message = _listing(data)
     first = sorted(prefix)[0]
     dest = tmp_path / "out"

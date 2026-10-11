@@ -740,7 +740,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     empty-listing advisory): it spends what the caller allowed, but its diagnostics
     are judged by the default policy and never reach the caller's ``on_diagnostic``,
     as with any collector-less emission. Passing the caller's config instead would
-    deliver a discarded probe's findings as the reader's, and a ``strict()`` policy
+    deliver a discarded probe's findings as the reader's, and a ``STRICT`` policy
     would raise inside the probe.
     """
     if config is None or (

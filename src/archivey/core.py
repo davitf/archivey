@@ -375,9 +375,9 @@ def open_archive(
     records nothing, because those formats can use a password. Diagnostics also log
     at ``WARNING`` by default, so a job passing a password list will log once per
     archive of a format without encryption; silence it with
-    ``ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(overrides={
-    DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: DiagnosticDisposition.IGNORE}))``, which
-    keeps the count without the log line.
+    ``ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(ignore={
+    DiagnosticCode.PASSWORD_ARGUMENT_UNUSED}))``, which keeps the count without the log
+    line.
     """
     # Safety net for `from archivey.core import open_archive` (package __init__ also
     # imports backends so list_supported_formats works on a bare `import archivey`).

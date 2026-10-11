@@ -2105,14 +2105,10 @@ def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> Non
 def test_encoding_inference_is_escalatable() -> None:
     # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
     # refuses to trust the guess can escalate it to an error.
-    from archivey import DiagnosticDisposition, DiagnosticPolicy
+    from archivey import DiagnosticPolicy
     from archivey.exceptions import DiagnosticRaisedError
 
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: DiagnosticDisposition.RAISE
-        }
-    )
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED})
     cfg = ArchiveyConfig(diagnostic_policy=policy)
     with pytest.raises(DiagnosticRaisedError):
         with open_archive(

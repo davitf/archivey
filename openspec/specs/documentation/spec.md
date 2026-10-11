@@ -222,7 +222,7 @@ End-user documentation SHALL state that:
   via `ARCHIVE_EOF_MARKER_MISSING`, not raised, because it is indistinguishable from a
   tar truncated at a member boundary.
 - Setting `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or using
-  `DiagnosticPolicy.strict()`) makes that ambiguous residual raise
+  `DiagnosticPolicy.STRICT`) makes that ambiguous residual raise
   `DiagnosticRaisedError`, for inventory / dedupe / validators that need a provably
   complete listing. Docs SHALL NOT describe this as "the only way archivey catches
   corruption" — a rejected header is caught by default.

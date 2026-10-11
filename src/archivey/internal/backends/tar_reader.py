@@ -27,7 +27,7 @@ After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
   damaged second trailer block → ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
-fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
+fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
 
 Note: after the header walk, ``tarfile`` has typically already consumed the
 *first* trailer zero-block; the end check therefore inspects the *next* 512 bytes.
@@ -1587,7 +1587,7 @@ class TarReader(BaseArchiveReader):
         end-of-archive marker itself is damaged: every member before it is listed and
         whole, as GNU tar and 7-Zip list them with a warning, so it is
         ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary policy
-        (``DiagnosticPolicy.strict()`` refuses it), and the scan past the trailer runs
+        (``DiagnosticPolicy.STRICT`` refuses it), and the scan past the trailer runs
         from the block after it. A zero block and then a non-null one with no member
         before them is ``CorruptionError``.
         """

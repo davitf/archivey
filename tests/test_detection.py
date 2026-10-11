@@ -1621,7 +1621,7 @@ def test_empty_listing_rescan_detects_under_the_config_budget(
 
 
 def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> None:
-    """Under ``strict()`` the rescan's own findings neither reach the caller nor raise
+    """Under ``STRICT`` the rescan's own findings neither reach the caller nor raise
     inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
     empty archive and nothing else, because detection does identify it as ZIP."""
     from archivey import open_archive
@@ -1634,7 +1634,7 @@ def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> Non
     path.write_bytes(buf.getvalue())
     seen: list[Diagnostic] = []
     config = ArchiveyConfig(
-        diagnostic_policy=DiagnosticPolicy.strict(), on_diagnostic=seen.append
+        diagnostic_policy=DiagnosticPolicy.STRICT, on_diagnostic=seen.append
     )
     with open_archive(path, format=ArchiveFormat.ZIP, config=config) as reader:
         assert list(reader) == []

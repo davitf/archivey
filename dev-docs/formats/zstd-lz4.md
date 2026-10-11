@@ -214,7 +214,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | An `lz4 -l` file cut between two blocks reads short with no error | **format** | The legacy stream has no end mark (§2.3) |
 | An LZ4 file starting with a skippable frame is not detected by content | **archivey** | The skippable-frame walk is zstd's only |
 | A damaged `--no-check` file reads with no error | **format** | No checksum (§1) |
-| A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
+| A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
 | A backward seek re-decodes from the start | **format** / **archivey** | No seek table for either (§7) |
 
 ## 6. Decisions

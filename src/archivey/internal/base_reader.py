@@ -1137,7 +1137,7 @@ class BaseArchiveReader(ArchiveReader):
         if self._unconfirmed_failure_emitted:
             return
 
-        # Under pedantic() (default=RAISE), a bare emit would raise DiagnosticRaisedError
+        # Under PEDANTIC (RAISE on every code), a bare emit would raise DiagnosticRaisedError
         # mid-raise and destroy the typed TruncatedError/CorruptionError/
         # ResourceLimitError. escalate_as keeps that type when RAISE fires; under
         # COLLECT we leave it unset so the already-stamped ``exc`` is re-raised by the

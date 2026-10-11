@@ -2018,7 +2018,7 @@ def test_a_strict_policy_refuses_a_cut_rock_ridge_area() -> None:
     from archivey.exceptions import ArchiveyError
 
     data = _cut_after(_build_rr_iso(_two_rr_files), b"aaa")
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(ArchiveyError):
         with open_archive(io.BytesIO(data), config=strict) as ar:
             ar.members()

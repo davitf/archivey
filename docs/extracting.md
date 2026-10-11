@@ -154,7 +154,7 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   too: extraction reads a link's data before writing it, so an omission legible only in
   that data is seen in time. The omission is the archive's, and it is reported as
   `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an archive-integrity code,
-  so `DiagnosticPolicy.strict()` still refuses such an archive outright. A link whose
+  so `DiagnosticPolicy.STRICT` still refuses such an archive outright. A link whose
   target the archive *does* carry but this read could not reach — encrypted,
   compressed, split across volumes with a part missing, or damaged — is a per-member
   failure instead, because recording it as an outcome would drop a member the archive
@@ -168,7 +168,7 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   archive allocate gigabytes while you only listed it. The target is left unset — never
   truncated, which would point the link somewhere the archive did not say — and reported
   as `SYMLINK_TARGET_UNAVAILABLE` with `reason="target_too_long"`. Like the unreachable
-  targets above, the link is a per-member failure, and `DiagnosticPolicy.strict()`
+  targets above, the link is a per-member failure, and `DiagnosticPolicy.STRICT`
   refuses the archive.
 - **Deceptive names:** a member name (or link target) containing a Unicode bidi
   **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with

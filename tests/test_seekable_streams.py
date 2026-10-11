@@ -1388,14 +1388,18 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
 
     The codec builds its decompressor itself, so before the collector rode on
     ``StreamConfig`` this report went to a throwaway collector: no ``on_diagnostic``,
-    nothing in ``reader.diagnostics``, and no raise under ``strict()``. The scan looks
+    nothing in ``reader.diagnostics``, and no raise under ``STRICT``. The scan looks
     back past appended bytes for the end of the data, so the junk here is longer than
     that search; the read then reports it as trailing data too.
     """
-    import dataclasses
 
-    from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
-    from archivey.diagnostics import DiagnosticCode, DiagnosticDisposition
+    from archivey import (
+        ARCHIVE_INTEGRITY_CODES,
+        ArchiveyConfig,
+        DiagnosticPolicy,
+        open_archive,
+    )
+    from archivey.diagnostics import DiagnosticCode
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
 
@@ -1417,13 +1421,8 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
 
     # Strict about the index only: the appended bytes are this test's means, not its
     # subject.
-    policy = DiagnosticPolicy.strict()
-    policy = dataclasses.replace(
-        policy,
-        overrides={
-            **policy.overrides,
-            DiagnosticCode.ARCHIVE_TRAILING_DATA: DiagnosticDisposition.COLLECT,
-        },
+    policy = DiagnosticPolicy(
+        raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.ARCHIVE_TRAILING_DATA}
     )
     strict = ArchiveyConfig(diagnostic_policy=policy)
     with open_archive(path, config=strict, seekable_members=True) as reader:
@@ -1455,7 +1454,7 @@ def _strict_collector() -> Any:
     from archivey import DiagnosticPolicy
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
-    return DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    return DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
 
 
 @pytest.mark.parametrize("n", [-1, 700])
@@ -1538,7 +1537,7 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
 
 @pytest.mark.parametrize("n", [-1, 700])
 def test_every_thinning_of_one_stream_escalates(small_seek_cap: int, n: int) -> None:
-    """Recorded once per stream, but strict() raises in every call that thins.
+    """Recorded once per stream, but STRICT raises in every call that thins.
 
     A call raises at most once, so two thinnings inside one whole-stream read give
     one raise; in 700-byte reads each thinning lands in its own call.

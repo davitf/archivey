@@ -103,7 +103,7 @@ def test_forward_only_format_still_proposes_streaming(fmt: ArchiveFormat) -> Non
     assert excinfo.value.source_format is fmt
 
 
-_PEDANTIC = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
+_PEDANTIC = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC)
 
 
 def test_seek_only_refusal_reports_an_unused_password_first() -> None:
