@@ -486,10 +486,13 @@ class SevenZipReader(BaseArchiveReader):
         # folder decode. Valid only until the pass moves on; ``extract_all`` reads an
         # accepted link through it (``_link_data_stream``).
         self._pass_link: tuple[ArchiveMember, Callable[[], ArchiveStream]] | None = None
+        # A member's or coder's compressed data is the codec's whole input, so a
+        # byte its codec leaves unread is refused (``StreamConfig.refuse_input_after_end``).
         self._stream_config = stream_config_from_archivey(
             self._config,
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
+            refuse_input_after_end=True,
         )
         if not source.seekable():
             raise StreamNotSeekableError(
