@@ -1321,11 +1321,13 @@ def _tar_slash_entry_with_data(
     final_name: str = "d/",
     size_field: bytes | None = None,
     data: bytes = b"hello directory",
+    tail: bytes | None = None,
 ) -> bytes:
     """A ustar entry with the given typeflag and ``data`` (15 bytes by default), then a
-    regular file ``after.txt``. GNU tar 1.35 and 7-Zip list ``d/`` as a directory and
-    skip its data when the typeflag is NUL (old-style ``AREGTYPE``) or ``0``; they
-    report an error when it is ``5`` (``DIRTYPE``), which carries no data.
+    regular file ``after.txt`` and a good trailer, or ``tail`` in their place. GNU tar
+    1.35 and 7-Zip list ``d/`` as a directory and skip its data when the typeflag is
+    NUL (old-style ``AREGTYPE``) or ``0``; they report an error when it is ``5``
+    (``DIRTYPE``), which carries no data.
 
     ``wrapper`` puts a PAX ``path`` record (``"pax"``) or a GNU long name (``"gnu"``)
     holding ``final_name`` before the header, whose own name field is ``own_name``.
@@ -1345,16 +1347,25 @@ def _tar_slash_entry_with_data(
             "././@LongLink", tarfile.GNUTYPE_LONGNAME, len(long_name)
         )
         prefix += long_name.ljust(512, b"\0")
-    after = tarfile.TarInfo("after.txt")
-    after.size = 6
+    if tail is None:
+        after = tarfile.TarInfo("after.txt")
+        after.size = 6
+        tail = (
+            after.tobuf(format=tarfile.USTAR_FORMAT)
+            + b"after\n".ljust(512, b"\0")
+            + b"\0" * 1024
+        )
     return (
         prefix
         + _raw_tar_header(own_name, typeflag, len(data), size_field=size_field)
         + (data.ljust(512, b"\0") if data else b"")
-        + after.tobuf(format=tarfile.USTAR_FORMAT)
-        + b"after\n".ljust(512, b"\0")
-        + b"\0" * 1024
+        + tail
     )
+
+
+_DAMAGED_TRAILER = b"\0" * 512 + b"j" * 512
+"""A zero block, then a block that is neither a header nor zero: the end-of-archive
+marker with its second block damaged, which GNU tar lists past with a warning."""
 
 
 def _stream_all(data: bytes, streaming: bool) -> list[tuple[str, MemberType, Any]]:
@@ -1670,38 +1681,82 @@ def test_old_style_directory_with_data_extracts(
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(
-    "payload", [b"hello directory", b"\0" * 512], ids=["bytes", "zero_block"]
+    "payload",
+    [
+        b"hello directory",
+        b"\0" * 512,
+        b"\0" * 1024,
+        b"\0" * 1536,
+        b"\0" * 512 + b"x" * 512,
+    ],
+    ids=[
+        "bytes",
+        "zero_block",
+        "two_zero_blocks",
+        "three_zero_blocks",
+        "zero_then_bytes",
+    ],
 )
 def test_dirtype_with_data_is_corruption(payload: bytes, streaming: bool) -> None:
     # A DIRTYPE header has no data area, so tarfile reads the declared blocks as the
-    # next header: a non-zero payload does not parse, an all-zero one reads as a lone
-    # end-of-archive block with after.txt behind it. Both end the walk inside the
-    # declared blocks, and the error names the directory header. GNU tar 1.35
-    # reports "Skipping to next header" on the first and "A lone zero block" on the
-    # second, dropping after.txt; 7-Zip stops.
+    # next header: a non-zero payload does not parse, a zero one reads as the
+    # end-of-archive marker (a lone block, or a complete two-block marker) with
+    # after.txt behind it. The end check then finds after.txt's header right after
+    # the declared span, which shows the blocks were there, and names the directory
+    # header. GNU tar 1.35 reports "Skipping to next header" on the first payload
+    # and "A lone zero block" on the second, dropping after.txt, and lists d/ alone
+    # with no word on two or more zero blocks; 7-Zip stops.
     data = _tar_slash_entry_with_data(tarfile.DIRTYPE, data=payload)
     with raises_corruption_not_truncation(match="directory that declares"):
         _stream_all(data, streaming)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_dirtype_with_size_and_no_blocks_lists_whole(streaming: bool) -> None:
-    # A DIRTYPE header whose size field is not zero but whose data blocks are not
-    # there (a writer carried st_size into the header): the next header follows at
-    # once, so GNU tar, bsdtar and 7-Zip list every member, and so does archivey, with
-    # no size on the directory and nothing to report.
+def test_dirtype_with_size_before_damaged_trailer_is_the_trailer_warning(
+    streaming: bool,
+) -> None:
+    # A DIRTYPE header whose size field is set, with no blocks behind it, as the last
+    # member before a damaged trailer: the bytes are the same as a zero payload with
+    # junk after it, and nothing shows the declared blocks were there, so it is the
+    # damaged-marker warning a file in its place gets. GNU tar lists d/ and warns of
+    # a lone zero block; 7-Zip lists it with a warning.
     data = _tar_slash_entry_with_data(
-        tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 4096
+        tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 4096, tail=_DAMAGED_TRAILER
     )
-    assert _stream_all(data, streaming) == [
-        ("d/", MemberType.DIRECTORY, None),
-        ("after.txt", MemberType.FILE, b"after\n"),
-    ]
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-        directory = ar.members()[0]
-        assert directory.size is None
+        assert ar.members()[0].size is None
+        assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
         assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
-        assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in ar.diagnostics.counts
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS, ids=["AREGTYPE", "REGTYPE"])
+def test_old_style_directory_with_data_before_lone_zero_block_lists(
+    typeflag: bytes, streaming: bool
+) -> None:
+    # An old-style directory that declares data as the last member before a lone zero
+    # block with a member behind it. Its header is a regular file's, so tarfile skipped
+    # its block and the listing reported it; the end check must not take the header
+    # behind the zero block for one hidden by a DIRTYPE span, which would name the
+    # directory. The listing stands, with the directory's data reported and the lone
+    # zero block the damaged-marker warning and trailing-data report a file in its
+    # place gets (GNU tar: "A lone zero block").
+    after = tarfile.TarInfo("after.txt")
+    after.size = 6
+    tail = (
+        b"\0" * 512
+        + after.tobuf(format=tarfile.USTAR_FORMAT)
+        + b"after\n".ljust(512, b"\0")
+        + b"\0" * 1024
+    )
+    data = _tar_slash_entry_with_data(typeflag, tail=tail)
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.members()[0].size == 15
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
