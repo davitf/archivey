@@ -595,8 +595,8 @@ def _apply_zip64_extra(
     ``CorruptionError``. The disk number is the exception: stdlib never reads it and
     nothing consumes it yet, so when the field does not hold it, it stays ``0xFFFF``
     ("not known") rather than refusing an archive stdlib opens; when it is the only
-    deferred value, it is the field's first four bytes, per APPNOTE. A field elsewhere in the blob that is cut short is left alone:
-    it says nothing about these four.
+    deferred value, it is the field's first four bytes, per APPNOTE. A field elsewhere
+    in the blob that is cut short is left alone: it says nothing about these four.
     """
     if not (
         file_size == _U32_MAX
