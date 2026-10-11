@@ -259,6 +259,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   CRC at EOF is the only check, and a stream closed before EOF skips it.
 - **Header-encrypted wrong password:** a decoded header with zero file records is
   rejected as `EncryptionError` (never a silent empty listing).
+- **Bytes after the archive's end** (its next header or its last packed stream,
+  whichever is later) are reported as `ARCHIVE_TRAILING_DATA` with `format="7z"`: a
+  warning under the default policy, raised under `strict()`. Zero padding passes,
+  although 7-Zip warns "There are data after the end of archive" for zeros too. The
+  check looks at most 1 MiB past the end, as the TAR one does. A code-signed
+  self-extracting `.exe` carries its signature after the archive, so it gets the
+  warning, and `strict()` refuses it.
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
   values 25–62 raise `UnsupportedFeatureError`.
 - Writing is not shipped in the current release (`py7zr` is a **dev oracle** only).
