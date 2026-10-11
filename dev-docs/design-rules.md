@@ -507,7 +507,19 @@ give the caller a way to see the gap before any cost is paid.
 **Rulings.** `read_link_targets` defaults to `True`; with `False`, `extract_all`'s
 filter runs before a link target is read (PR 404). The same field decides whether solid
 7z link targets are read at listing (2026-10-06). Checksum checks run on possibly
-encrypted stored members before any byte is served.
+encrypted stored members before any byte is served. A seekable ZIP opened with
+`streaming=True` reads the central directory first, so every member is complete when
+yielded; only a non-seekable source walks local headers and completes members at the end
+of the pass (davi, 2026-10-10, native ZIP reader design). The reasons given with the
+question: the tail read costs one seek, and a member that is complete when yielded needs
+no fixing later. Reopen if a seekable source where the tail read is expensive (a remote
+object) turns out to matter more than complete members. A member that archivey will
+still update in place says so on the member itself, with a field (working name
+`member_state_final`), not on the cost receipt, which describes cost; it covers
+data-stored link targets not yet read, `is_current` in any forward-only pass, and a ZIP
+read from a pipe (davi, 2026-10-10). Reopen if callers need to know which fields are
+still provisional rather than only that some are, or if a format turns up where the
+field would be false for most members of an ordinary read.
 
 **Do not** recommend "lazy by default, complete on request".
 
@@ -822,7 +834,8 @@ accelerator usefulness". Only a `unar` that passes the RAR5 probe is used
 replacement, record the limitation where users will find it and fix it in the rewrite.
 
 **Rulings.** A ZIP name with the UTF-8 flag but invalid UTF-8 keeps refusing the archive
-until the post-0.2.0 zipfile replacement (2026-10-06).
+until the zipfile replacement (2026-10-06). The replacement, the native ZIP reader, moved
+into 0.2.0 on 2026-10-10 (davi); its names stage ends the refusal.
 
 ### DR-21a. Don't ship what can't be tested
 
