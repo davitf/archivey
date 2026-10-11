@@ -166,9 +166,9 @@ def _written_on_unix(attrs: int | None) -> bool:
 def _is_unix_directory(record: SevenZipFileRecord) -> bool:
     """True when the high word's Unix mode says ``S_IFDIR`` and the record has no stream.
 
-    A record with a stream is a file whatever its mode says, as in 7-Zip, which never
-    makes a directory of an entry that has data. Typing it a directory would skip its
-    data on every read without an error.
+    A record with a stream is never a directory, whatever its mode says, as in 7-Zip,
+    which extracts an entry that has data as a regular file. Typing it a directory
+    would skip its data on every read without an error.
     """
     attrs = record.attributes
     return record.emptystream and attrs is not None and stat.S_ISDIR(attrs >> 16)
@@ -1066,10 +1066,10 @@ class SevenZipReader(BaseArchiveReader):
                     return MemberType.DIRECTORY
                 if record.emptystream and self._special_file_type(record) is not None:
                     # A device, FIFO or socket with no stream (7-Zip and p7zip store
-                    # them that way). A record with a stream is a FILE whatever its
-                    # mode says, as 7-Zip reads it: the bytes are the content
-                    # (DR-25), and ``extra["special_file_type"]`` keeps the stored
-                    # type either way.
+                    # them that way). With a stream, the special mode does not decide
+                    # the type, as 7-Zip reads it: the bytes are the content (DR-25),
+                    # so the record is a FILE unless the reparse bit below applies.
+                    # ``extra["special_file_type"]`` keeps the stored type either way.
                     return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
