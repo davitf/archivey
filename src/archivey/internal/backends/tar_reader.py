@@ -1323,6 +1323,7 @@ class TarReader(BaseArchiveReader):
         # walk costs is a backward seek, on a compressed tar a decode from the start.
         tar_iter = iter(self._tar)
         index = 0
+        last_info: tarfile.TarInfo | None = None
         ended = False
         byte_cap = self._config.listing_limits.max_metadata_bytes
         text_bytes = 0
@@ -1369,9 +1370,10 @@ class TarReader(BaseArchiveReader):
             for info in batch:
                 yield self._to_member(info, index)
                 index += 1
+                last_info = info
             if failure is not None:
                 raise failure
-        self._verify_tar_eof(any_members=index > 0)
+        self._verify_tar_eof(any_members=index > 0, last_info=last_info)
 
     def _register_member(
         self,
@@ -1502,6 +1504,7 @@ class TarReader(BaseArchiveReader):
             # the current member without deadlock (streaming is single-owner).
             tar_iter = iter(self._tar)
             index = 0
+            last_info: tarfile.TarInfo | None = None
             while True:
                 with lock:
                     if index:
@@ -1515,7 +1518,8 @@ class TarReader(BaseArchiveReader):
                         break
                 yield self._to_member(info, index)
                 index += 1
-        self._verify_tar_eof(any_members=index > 0)
+                last_info = info
+        self._verify_tar_eof(any_members=index > 0, last_info=last_info)
 
     def _read_through_member_data(self) -> None:
         """Read what is left of the last member's data area, before the next header.
@@ -1576,9 +1580,20 @@ class TarReader(BaseArchiveReader):
                 close_previous=False,
             )
 
-    def _verify_tar_eof(self, *, any_members: bool) -> None:
+    def _verify_tar_eof(
+        self, *, any_members: bool, last_info: tarfile.TarInfo | None
+    ) -> None:
         """Verify the two-block null end-of-archive marker and surface a rejected header
         as corruption.
+
+        ``last_info`` is the last member header the walk parsed, or None. When it is a
+        ``DIRTYPE`` header that declares a size and the walk ends right after it on a
+        header that does not parse, or on a lone zero block with other bytes behind
+        it, the declared blocks are what tarfile read there (a directory has no data
+        area, so it skipped none), and :meth:`_refuse_directory_blocks` names that
+        header instead of the generic marker report. The same header followed by a
+        header that parses is GNU tar's, bsdtar's and 7-Zip's clean case, listed with
+        no size and no report.
 
         What tarfile stopped on decides first (:class:`_TarFile`). When its last header
         parse rejected the header — a corrupt member header after the first, which
@@ -1606,6 +1621,7 @@ class TarReader(BaseArchiveReader):
         """
         stopped_on = self._tar.stopped_on if isinstance(self._tar, _TarFile) else None
         if stopped_on == "rejected_header":
+            self._refuse_directory_blocks(last_info)
             self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
         fileobj = self._tar.fileobj
@@ -1622,9 +1638,11 @@ class TarReader(BaseArchiveReader):
                 return
             if stopped_on == "zero_block":
                 # One zero block, then a damaged one: the marker is damaged, not the
-                # listing. The scan past it still runs, because on a compressed tar it
-                # is where the codec's whole-stream checksum over the members just
+                # listing, unless the zero block is a directory's declared data.
+                # The scan past it still runs, because on a compressed tar it is
+                # where the codec's whole-stream checksum over the members just
                 # listed is usually reached.
+                self._refuse_directory_blocks(last_info)
                 self._emit_eof_marker("damaged_second_block", observed_bytes=512)
                 self._verify_nothing_but_zeros_to_eof()
                 return
@@ -1637,6 +1655,39 @@ class TarReader(BaseArchiveReader):
             return
         self._emit_eof_marker(
             "absent" if len(chunk) == 0 else "short", observed_bytes=len(chunk)
+        )
+
+    def _refuse_directory_blocks(self, last_info: tarfile.TarInfo | None) -> None:
+        """Raise ``CorruptionError`` when the walk ended inside the blocks a ``DIRTYPE``
+        header declared.
+
+        A directory entry has no data area, so tarfile reads the next header straight
+        after a ``DIRTYPE`` header whatever size it declares. When that read hits a
+        header that does not parse, or a zero block followed by other bytes, the
+        declared blocks were there: non-zero ones desynchronise the walk, zero ones
+        read as the end-of-archive marker and drop every later member (GNU tar lists
+        the directory, warns of a lone zero block and stops). Either way the archive
+        is damaged at that header, which this names (DR-3: the blocks are not dropped
+        without a word). An old-style directory is not this case: its header is a
+        regular file's, so its blocks were skipped and reported at listing.
+        """
+        if (
+            last_info is None
+            or last_info.type != tarfile.DIRTYPE
+            or not last_info.size
+            or getattr(last_info, "old_style_directory", False)
+        ):
+            return
+        name = normalize_member_name(
+            last_info.name, MemberType.DIRECTORY, backslash_is_separator=False
+        )
+        raise CorruptionError(
+            f"TAR header for {quoted(name)} is a directory that declares "
+            f"{last_info.size} bytes of data, and the archive ends where the next "
+            "header should be: a directory entry has no data area, so the declared "
+            "blocks were read as headers",
+            archive_name=self._archive_name,
+            member_name=name,
         )
 
     def _verify_nothing_but_zeros_to_eof(self) -> None:
@@ -1905,7 +1956,12 @@ class TarReader(BaseArchiveReader):
         # The typeflag as stored: NUL or ``0`` for an old-style directory, whose
         # ``type`` is DIRTYPE.
         old_style_directory = getattr(info, "old_style_directory", False)
-        stored_type = info.stored_typeflag if old_style_directory else info.type  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        if old_style_directory:
+            # Only a _TarInfo marks one, and it records the stored byte with it.
+            assert isinstance(info, _TarInfo)
+            stored_type = info.stored_typeflag
+        else:
+            stored_type = info.type
         extra = MemberExtra({"tar.type": stored_type})
         special = special_file_type_from_tar_typeflag(info.type)
         if special is not None:
@@ -1927,20 +1983,10 @@ class TarReader(BaseArchiveReader):
                 )
             # The cross-format key says which kind the archive recorded (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
-        if info.type == tarfile.DIRTYPE and info.size and not old_style_directory:
-            # A DIRTYPE header has no data area either, and tarfile skips no blocks
-            # for it: a non-zero payload desynchronises the walk, an all-zero one
-            # reads as the end-of-archive marker and drops every later member. The
-            # same refusal as above makes both shapes the same damage. An old-style
-            # directory is the opposite case: its header is a regular file's, so its
-            # blocks were skipped and are reported below.
-            raise CorruptionError(
-                f"TAR header for {quoted(name)} is a directory that declares "
-                f"{info.size} bytes of data; a directory entry has no data, and tar "
-                "skips such a header as damaged",
-                archive_name=self._archive_name,
-                member_name=name,
-            )
+        # A DIRTYPE header that declares a size is not refused here: it has no data
+        # area, so GNU tar, bsdtar and 7-Zip read the next header right after it and
+        # list the directory with no size, as this does. Only when the walk ends on
+        # what should have been that next header does _verify_tar_eof name it.
         if info.pax_headers:
             extra["tar.pax_headers"] = self._extra_pax_headers(info.pax_headers)
         if info.isdev():

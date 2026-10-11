@@ -200,12 +200,17 @@ One loop, no recursion. `next_entry(budget) -> TarEntry | TarEnd`.
 4. A member header: resolve it, return the `TarEntry`.
 
 Which types have a data area follows `tarfile`, so no listing changes: links, devices,
-FIFOs and directories (`1` to `6`) have none, and data declared on them is read as the
-next header. GNU tar does the same for a directory and fails with "Skipping to next
-header" on the others, which is the `CorruptionError` archivey gives today. So a
-`DIRTYPE` header that declares a size keeps PR 706's answer: its data is read as the next
-header, which does not parse, and the listing raises `CorruptionError`. Every other
-typeflag, known or not, has its data skipped by size.
+FIFOs and directories (`1` to `6`) have none, and the next header is read straight after
+theirs whatever size they declare, as GNU tar, bsdtar and 7-Zip do. A device, FIFO or
+socket header with a non-zero size is refused at the header, as the reader does today. A
+`DIRTYPE` header with a non-zero size is not: when the next header parses, the directory
+lists with no size; when the walk ends there, on a header that does not parse or on a lone
+zero block with other bytes behind it, the declared blocks were present and the listing
+raises `CorruptionError` naming the directory header (the format-tar spec delta's rule).
+The walker has no block behaviour to inherit from `tarfile` here, so it applies the rule
+itself: after a `DIRTYPE` header with a size, a header that fails to parse or a lone zero
+block is that error, not the generic end-of-archive report. Every other typeflag, known or
+not, has its data skipped by size.
 
 On a seekable stream the walker checks that the last byte of the previous member's data
 area exists before reading the next header, as `tarfile` does, so a member cut short

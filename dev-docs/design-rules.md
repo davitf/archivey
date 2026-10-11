@@ -468,7 +468,7 @@ anti item, a stream-less `OTHER`, a directory with none), not a member by its ty
 
 Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format), PR 731
 (directory data in ZIP and RAR, and `open()` by data) and PR 763 (directory data in TAR;
-a `DIRTYPE` header with a size refused like a device header's).
+a `DIRTYPE` header whose declared blocks end the walk is `CorruptionError`).
 
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar

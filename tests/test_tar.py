@@ -1468,6 +1468,8 @@ def test_old_style_slash_name_without_data_is_a_plain_directory(
         assert directory.size is None
         assert directory.extra["tar.type"] == typeflag
         assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
+    # Random access only: open() takes a member by name, which a streaming walk has
+    # no index for.
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         with pytest.raises(ArchiveyUsageError, match="declares no data"):
             ar.open(ar.members()[0])
@@ -1671,14 +1673,35 @@ def test_old_style_directory_with_data_extracts(
     "payload", [b"hello directory", b"\0" * 512], ids=["bytes", "zero_block"]
 )
 def test_dirtype_with_data_is_corruption(payload: bytes, streaming: bool) -> None:
-    # A DIRTYPE header has no data area and tarfile skips no blocks for it, so the
-    # header is refused as damaged: a non-zero payload would be read as the next
-    # header and an all-zero one as the end-of-archive marker, dropping after.txt
-    # without a word. GNU tar 1.35 reports an error ("Skipping to next header") and
-    # keeps listing; 7-Zip stops.
+    # A DIRTYPE header has no data area, so tarfile reads the declared blocks as the
+    # next header: a non-zero payload does not parse, an all-zero one reads as a lone
+    # end-of-archive block with after.txt behind it. Both end the walk inside the
+    # declared blocks, and the error names the directory header. GNU tar 1.35
+    # reports "Skipping to next header" on the first and "A lone zero block" on the
+    # second, dropping after.txt; 7-Zip stops.
     data = _tar_slash_entry_with_data(tarfile.DIRTYPE, data=payload)
     with raises_corruption_not_truncation(match="directory that declares"):
         _stream_all(data, streaming)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_size_and_no_blocks_lists_whole(streaming: bool) -> None:
+    # A DIRTYPE header whose size field is not zero but whose data blocks are not
+    # there (a writer carried st_size into the header): the next header follows at
+    # once, so GNU tar, bsdtar and 7-Zip list every member, and so does archivey, with
+    # no size on the directory and nothing to report.
+    data = _tar_slash_entry_with_data(
+        tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 4096
+    )
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        directory = ar.members()[0]
+        assert directory.size is None
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
+        assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in ar.diagnostics.counts
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
