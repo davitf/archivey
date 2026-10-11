@@ -586,7 +586,7 @@ change would be indistinguishable from an unprefixed archive.
 | `UNKNOWN` | a prefix that is neither executable nor shebang. How the offset was found is `detected_by`, not a kind. Archivey does not maintain a non-archive file-type list, so a JPEG prefix is `UNKNOWN` rather than a recognised other format |
 
 `payload_offset is None` (origin not established — a forced `format=ZIP` whose reader
-self-adjusted) is a different axis, owned by `archive-origin-reporting` on `ArchiveInfo`,
+self-adjusted) is a different axis, for a later change on `ArchiveInfo`,
 and SHALL NOT grow a fifth `PrefixKind` member.
 
 #### Scenario: prefix kinds
