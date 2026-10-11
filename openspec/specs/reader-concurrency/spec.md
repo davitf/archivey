@@ -32,7 +32,7 @@ honored on every format; `AccessCost` / `solid_block_count` only describe
 expense.
 
 **Post-materialization worker seam.** After one owner has completed `members()`
-or `scan_members()` and the reader has published its member list/name index,
+or `members_report()` and the reader has published its member list/name index,
 concurrent calls from multiple threads to `open(member_or_name)` SHALL be
 supported. Streams from different opens SHALL have independent logical
 positions/state: workers MAY concurrently call `read`, `readinto`, and `close`
@@ -74,18 +74,18 @@ redundant decompression.
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
 `stream_members`, `extract_all`) and `members_report_if_available` initialization
 remain single-owner and cannot overlap one another or the random worker seam. Under
-`CONCURRENT`, first-touch materialization through `members()`, `members_report()` or
-`scan_members()` is coordinated (wait/share) and `reader.close()` drains
-in-flight worker calls rather than rejecting them. The base reader SHALL
-represent ownership with an explicit unforgeable root token, not thread
-identity. Private helpers MAY receive that token to enter child scopes:
-materialization may perform link-data reads; a random worker `open()` may do
-name lookup/link following and late link-data reads; `extract_all` may inspect
-available members/source counters and drive one or more `stream_members`
-passes; and a pass may advance and perform I/O/close on its yielded stream. An
-unrelated/reentrant public call has no token even on the owner thread and is
-rejected. The later conflicting operation SHALL raise `ArchiveyUsageError`
-before changing state; the earlier root and children remain usable.
+`CONCURRENT`, first-touch materialization through `members()` or `members_report()`
+is coordinated (wait/share) and `reader.close()` drains in-flight worker calls
+rather than rejecting them. The base reader SHALL represent ownership with an
+explicit unforgeable root token, not thread identity. Private helpers MAY receive
+that token to enter child scopes: materialization may perform link-data reads; a
+random worker `open()` may do name lookup/link following and late link-data reads;
+`extract_all` may inspect available members/source counters and drive one or more
+`stream_members` passes; and a pass may advance and perform I/O/close on its
+yielded stream. An unrelated/reentrant public call has no token even on the owner
+thread and is rejected. The later conflicting operation SHALL raise
+`ArchiveyUsageError` before changing state; the earlier root and children remain
+usable.
 
 Random `open()` and each operation on a random-open stream SHALL hold a
 short-lived worker token only while that call executes. An idle open stream owns

@@ -9,8 +9,13 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from archivey.reader import ForwardArchiveReader
+    from archivey.types import ArchiveMember
 
 # Per-test OS-resource leak oracle (child processes, owning streams, pipe fds).
 pytest_plugins = ("leak_oracle",)
@@ -20,6 +25,17 @@ ARCHIVEY_TEST_CACHE = os.environ.get(
     "ARCHIVEY_TEST_CACHE",
     str(Path(__file__).parent.parent / ".pytest_cache" / "archivey-archives"),
 )
+
+
+def complete_listing(reader: ForwardArchiveReader) -> list[ArchiveMember]:
+    """The member list from ``members_report()``, raising its error if incomplete.
+
+    The complete-or-raise listing that works on a streaming reader too.
+    """
+    report = reader.members_report()
+    if report.error is not None:
+        raise report.error
+    return list(report.members)
 
 
 class ReadSizeSpy:

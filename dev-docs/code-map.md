@@ -81,7 +81,7 @@ Three things about this path are worth knowing before you debug it:
 
 - **A reader lists its members once, and every method hands out the same objects.**
   `BaseArchiveReader` owns one member list (`_listed`) filled by one pull over the
-  backend's `_iter_members()`. The peek, `members()`, `scan_members()`, `get()`,
+  backend's `_iter_members()`. The peek, `members()`, `members_report()`, `get()`,
   `stream_members()` and `extract_all()` all read that list; `_pull_member` stamps,
   checks and accounts each member exactly once, so per-member work needs no dedupe. The
   walk runs once when it completes. A random-access walk that fails without terminal
@@ -103,7 +103,9 @@ Three things about this path are worth knowing before you debug it:
   in handbook [`topics/exception-handlers.md`](topics/exception-handlers.md).
 - **`ArchiveyUsageError` is deliberately outside the `ArchiveyError` tree** (ADR 0012), so
   a caller-misuse fault cannot be produced by a translator that can only return archive
-  errors.
+  errors. A wrong argument raises one of its two private subclasses, `_UsageTypeError`
+  or `_UsageValueError`, which are also `TypeError` / `ValueError` (DR-15); mode misuse
+  and closed readers raise it plain.
 
 ---
 

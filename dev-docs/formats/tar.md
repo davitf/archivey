@@ -212,9 +212,9 @@ slower on ordinary listings. When the walk fails partway through a batch, the he
 already parsed are handed out first, so `members_report()` keeps its salvaged prefix.
 tarfile still keeps every header it has parsed in `TarFile.members`, so a listing holds
 each header twice: once as tarfile's `TarInfo` and once as the `ArchiveMember`. On a
-streaming reader, `scan_members()` and `members_report()` count members against the cap
-as they arrive and raise at the one past it. `stream_members()` and forward-only
-iteration are not capped, by design, and there both lists grow for the whole pass.
+streaming reader, `members_report()` counts members against the cap as they arrive and
+raises at the one past it. `stream_members()` and forward-only iteration are not
+capped, by design, and there both lists grow for the whole pass.
 
 **Member metadata** is mapped in `_to_member`:
 
@@ -477,7 +477,7 @@ extraction checks (§2.4).
 | GNU tar extracts a sparse file and archivey refuses it with `UnsupportedFeatureError` | **archivey** | The sparse map is out of order or overlapping. tarfile stitches such chunks into one run, a wrong answer, so archivey refuses the map (§2.3). Only crafted archives are known to hold one. By design (§6); there is no plan to support it, and it is revisited if a real archive appears |
 | A `0` (`REGTYPE`) entry named `d/` that holds data lists as the file `d`; GNU tar 1.35 and 7-Zip make it a directory | **archivey** | The `AREGTYPE` form of the same entry is a directory (§2.2), and so is a ZIP entry `d/` with data (tracked internally) |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
-| A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
+| A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `members_report()` |
 | `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
 
 ## 6. Decisions

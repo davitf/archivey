@@ -86,7 +86,11 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
-from archivey.internal.arg_checks import check_config, check_path_not_empty
+from archivey.internal.arg_checks import (
+    check_config,
+    check_path_not_empty,
+    require_source,
+)
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import (
     DETECTION_LIMIT,
@@ -118,7 +122,6 @@ from archivey.internal.streams.codecs.brotli_framing import (
 )
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
-    require_source,
     source_name,
 )
 from archivey.internal.volumes import first_volume_for_stub, resolve_source
