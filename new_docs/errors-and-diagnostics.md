@@ -101,3 +101,26 @@ calls `logging.basicConfig()` prints a line for each. To handle them as they hap
 function as `on_diagnostic=` in `archivey.ArchiveyConfig`. Archivey calls it with each
 [`Diagnostic`](api.md#archivey.Diagnostic) as it's recorded, the same record the summaries keep. An
 exception it raises stops the operation and reaches your code.
+
+## Raising or quieting a diagnostic
+
+```python
+config = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.strict())
+```
+
+With `DiagnosticPolicy.strict()`, the diagnostics that say the archive itself is unusual, such as a
+name that displays as a different one, raise `DiagnosticRaisedError` from the call that found them.
+The ones about your own arguments, such as an unused password, are only recorded as before.
+`DiagnosticPolicy.pedantic()` raises on every code, including codes a later release adds.
+
+```python
+config = archivey.ArchiveyConfig(
+    diagnostic_policy=archivey.DiagnosticPolicy(
+        overrides={archivey.DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: "ignore"},
+    ),
+)
+```
+
+To change one code, pass it in `overrides`. With `"ignore"`, it's no longer logged, passed to the
+callback or kept, but `counts` still counts it. `"raise"` makes that one code raise. The
+[reference](api.md#archivey.DiagnosticCode) lists every code.
