@@ -146,7 +146,8 @@ quadratic seek loops, note that it fires on **every** qualifying seek, not only 
 first — the report still records one entry.
 
 The flag changes what member streams can *do*, and nothing else. It does not change what
-`members()` reports: the xz index and lzip trailer are read from any seekable source, so
+`members()` reports: whether the xz index and lzip trailer are read depends on the
+source's shape (any seekable source except another archive's member stream), so
 `member.size` and `member.hashes` are the same with and without it.
 
 Under `ArchiveyConfig.use_rapidgzip=AUTO` (the default), rapidgzip is selected only when

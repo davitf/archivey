@@ -391,8 +391,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 
 - **Extraction bombs** — total extracted bytes (default 2 GiB), compression ratio
   (default 1000, checked once 5 MiB has been written), and entry count (default
-  1,048,576) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
-- **Listing materialization** — member count (default 1,048,576) and retained metadata
+  262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+- **Listing materialization** — member count (default 262,144) and retained metadata
   bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
   does not list first: it checks the limits as each member arrives in its one pass, so
@@ -424,9 +424,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   first: a duplicate name, or a glob under `rar_allow_glob_member_concatenation`.
 - **Key-derivation work** — RAR5 and 7z headers say how many hashing rounds turn a
   password into a key, and an archive can salt every member so each needs its own
-  (`DecoderLimits.max_key_derivation_rounds`, default `2**27` rounds in total per open
-  archive: about half a minute of hashing when spent on RAR5 derivations at their
-  2^24-round maximum, closer to a minute for RAR3 and about a quarter of one for 7z).
+  (`DecoderLimits.max_key_derivation_rounds`, default `2**25` rounds in total per open
+  archive: about ten seconds of hashing when spent on RAR5 derivations at their
+  2^24-round maximum, about a quarter of a minute for RAR3 and a few seconds for 7z).
   Keys the reader already derived are reused for free, so an ordinary encrypted
   archive spends one or two derivations; each wrong candidate password counts. Trips
   raise `ResourceLimitError` before the derivation starts.

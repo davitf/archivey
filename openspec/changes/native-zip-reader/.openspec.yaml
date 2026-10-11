@@ -1,0 +1,8 @@
+schema: library
+created: 2026-10-10
+
+# The design and the stage plan. Each stage PR edits the live specs it moves (format-zip,
+# and for streaming also backend-registry and access-mode-and-cost) and the handbook page
+# directly, as the ZIP fix PRs do, so this change carries no spec delta of its own.
+# proposal.md §Impact gives the reason.
+skip_specs: true
