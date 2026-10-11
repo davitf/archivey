@@ -69,6 +69,11 @@ class DetectionBudget:
     ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
     against in full (see ``format-detection``); ``0`` turns the check off.
 
+    ``max_scan_bytes`` bounds where the SFX scan looks for a magic. A candidate found
+    there is judged on its whole header, which may extend past the window by up to
+    132 KiB or ``max_scan_bytes``, whichever is smaller; a header that does not fit is
+    rejected, and ``sfx_scan`` recorded as cut short.
+
     Content-probe header reads at an offset are not a budget field: the Brotli chain walk
     caps them itself, at ``CHAIN_MAX_LINKS`` (8) header reads of 24 bytes. The Brotli
     chain decode that follows reads ``[0, end)``: it is charged to ``max_decode_input``

@@ -7,7 +7,7 @@ decodes no more than its :class:`~archivey.detection_cost.DetectionBudget` decla
 from __future__ import annotations
 
 from archivey.detection_cost import DetectionBudget, DetectionCostReceipt
-from archivey.internal.sfx import VALIDATOR_PEEK_MAX
+from archivey.internal.detection import validator_allowance
 from archivey.internal.streams.codecs.brotli_framing import (
     CHAIN_HEADER_READ,
     CHAIN_MAX_LINKS,
@@ -34,15 +34,18 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     decode reads ``[0, n)`` only when ``n`` is within that ceiling, and takes what the
     prefix holds from the prefix. A trailer block is the same kind of extra read:
     :func:`trailer_allowance` bytes, once. So is an SFX hit validator reading the
-    header of a candidate near the scan window's end: up to ``VALIDATOR_PEEK_MAX``
-    bytes past ``max_scan_bytes``.
+    header of a candidate near the scan window's end: up to
+    :func:`~archivey.internal.detection.validator_allowance` bytes past
+    ``max_scan_bytes``, and only when the receipt shows a scan ran.
 
     ``prefix_bytes`` is the one counter not compared: it bills overlapping requests in
     full, so ``unique_bytes_read`` stands in for it.
 
     The budget applies per pass: every limit is multiplied by ``receipt.passes``, so a
     receipt that followed a stub to its sibling volume is judged against two budgets,
-    the work each pass was allowed.
+    the work each pass was allowed. The validator allowance is multiplied too: the
+    second pass reads the sibling volume, a different source with its own prefix, so
+    each pass can pay it.
     """
     # ``passes`` is 1 or 2 from ``detect_format``; a receipt built by hand can carry
     # anything, and fewer than one pass is judged as one.
@@ -51,10 +54,10 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     read_ceiling = max(
         budget.max_prefix_bytes, budget.max_far_bytes, budget.max_scan_bytes
     )
+    sfx_allowance = validator_allowance(budget) if receipt.scanned_bytes > 0 else 0
     return (
         receipt.unique_bytes_read
-        <= n
-        * (read_ceiling + probe_allowance + trailer_allowance() + VALIDATOR_PEEK_MAX)
+        <= n * (read_ceiling + probe_allowance + trailer_allowance() + sfx_allowance)
         and receipt.far_bytes <= n * budget.max_far_bytes
         and receipt.scanned_bytes <= n * budget.max_scan_bytes
         and receipt.decode_input <= n * budget.max_decode_input

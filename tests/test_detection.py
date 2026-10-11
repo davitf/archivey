@@ -1231,7 +1231,10 @@ def test_stub_volume_fallback_keeps_the_stub_pass_cost(tmp_path: Path) -> None:
     assert receipt.scanned_bytes == BALANCED_BUDGET.max_scan_bytes
     assert receipt.unique_bytes_read > BALANCED_BUDGET.max_scan_bytes
     # Two passes, said as data, and each within its budget. The receipt is the stub
-    # pass's work plus the volume pass's, not the stub pass's alone.
+    # pass's work plus the volume pass's, not the stub pass's alone. That the oracle
+    # needs both budgets is pinned on hand-built receipts, in
+    # ``test_within_budget_judges_each_pass_against_its_own_budget``: the volume pass
+    # here reads less than the SFX validator allowance, so a one-pass check passes too.
     assert receipt.passes == 2
     assert within_budget(receipt, BALANCED_BUDGET)
     # The same stub alone, named so the extension answers after its scan misses.

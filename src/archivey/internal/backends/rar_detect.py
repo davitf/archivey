@@ -2,8 +2,9 @@
 
 Seven or eight bytes of ``Rar!\\x1a\\x07`` in a stub are not a RAR unless the main
 header after them checks out. Both SFX scans hand :func:`validate_rar_main_header` a
-candidate-relative view that holds every byte the header needs (the detector's view
-reaches ``VALIDATOR_PEEK_MAX`` past its window), so a short peek is the source ending.
+candidate-relative view that holds every byte the header needs, up to the detector's
+budget past its window. A short peek is the source ending, or the budget clamping the
+view, which the detector records; either way the header was not checked.
 """
 
 from __future__ import annotations
@@ -47,8 +48,9 @@ def validate_rar_main_header(
     fails is :attr:`HitOutcome.DAMAGED`. RAR 4 requires a parseable MAIN block
     (type ``0x73``) with a matching 16-bit header CRC.
 
-    A short ``peek_more`` means the source ended (see :class:`HitValidator`),
-    so it is ``NOT_THIS_FORMAT``: the header was never checked. ``remaining``
+    A short ``peek_more`` means the source ended or the budget clamped the view
+    (see :class:`HitValidator`), so it is ``NOT_THIS_FORMAT``: the header was
+    never checked. ``remaining``
     only saves a peek when the declared header cannot fit in the source.
 
     ``peek_more`` stays outside the parse ``try`` so a workspace ``OSError``

@@ -120,8 +120,11 @@ at open with `TruncatedError`. §5 lists it.
 ### 2.2 The SFX scan
 
 This step runs only when the first bytes carry a cue (`MZ`, ELF, a Mach-O header that
-parses, or `#!`). It searches up to 2 MiB for a ZIP, 7z or RAR needle, and every hit must
-pass that format's validator before it counts. The cue decides only whether to spend the
+parses, or `#!`). It searches up to 2 MiB for a ZIP, 7z or RAR needle, and a hit counts
+only once that format's validator passes it. The validator judges the candidate's whole
+header, which may run past the window end (§4.1). Each format may have 256 candidates
+rejected; past that, its later candidates are not judged, and the scan records `sfx_scan`
+as *budget exhausted* even when it answers. The cue decides only whether to spend the
 window. The validator decides whether a hit is real. A structurally confirmed executable (a
 `STRONG` cue) with no hit also turns off the content probes. Without that, a probe could claim the stub
 as a compressed stream and `open_archive` would return a fabricated `installer.uncompressed`
@@ -134,7 +137,8 @@ scan goes on reading to the end of the window** for a later 7z that does end the
 scan cannot stop at the short hit's own end: a decoy inside the stub ends before the real
 payload starts, so that bound would open the decoy. A 7z SFX with data after the archive
 (an Authenticode signature, for example) therefore reads the whole window to detect, the
-same as a miss. The cost stays inside `max_scan_bytes`. A tighter bound for PE stubs, the
+same as a miss. The cost stays inside `max_scan_bytes` plus the validator allowance of
+§4.1. A tighter bound for PE stubs, the
 end of the stub's last section, is in [`IDEAS.md`](../IDEAS.md).
 
 ### 2.3 Far magic
@@ -358,9 +362,15 @@ probe's output is bounded by the codec's own drain.
 its own request from the budget (`min(SFX_MAX, max_scan_bytes)`, the far window, what is
 left of the decode allowance), and `PrefixWorkspace` meters what they read. A limit held
 as a module constant somewhere else shadows the field meant to bound it: a `FAST`
-detection overruns its own preset, and nothing in the receipt says why.
+detection overruns its own preset, and nothing in the receipt says why. The SFX hit
+validators follow the same rule. A candidate that starts inside the scan window is judged
+on its whole header, read up to `validator_allowance(budget)` past the window end: the
+smaller of `VALIDATOR_PEEK_MAX` (132 KiB, the largest header any validator reads) and
+`max_scan_bytes`. Under the presets that is the constant. Under a smaller scan budget a
+header that does not fit is rejected, and the clamped view records `sfx_scan` as *budget
+exhausted*, so the tier never reads more than twice `max_scan_bytes`.
 
-**Probe reads at an offset are the one path with fixed caps.** A content probe can ask for
+**Probe reads at an offset are the one path whose cap is not tied to a budget field.** A content probe can ask for
 a few bytes deep in the source through `PrefixWorkspace.read_at`, which is how the Brotli
 chain walk checks later meta-block headers. On a path or a plain seekable stream,
 `read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is

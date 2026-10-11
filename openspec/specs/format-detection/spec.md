@@ -502,11 +502,19 @@ such later hit the short one is used, which keeps a 7z followed by trailing data
 
 The window bounds where a magic may **start**, not how far its validator reads. A
 candidate that starts inside the window SHALL be judged on its whole header, read up to
-`VALIDATOR_PEEK_MAX` past the window end, so the same bytes give the same answer at the
-window end, inside the window, and on a non-seekable source. After
-`MAX_VALIDATED_CANDIDATES` (256) rejected candidates the scan SHALL stop with no answer
-and record `sfx_scan` as *budget exhausted*: the same cap the RAR and 7z parser scans
-apply, so a file of decoys means the same thing to detection as to a forced `format=`.
+the smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes` past the window end, so under the
+presets the same bytes give the same answer at the window end, inside the window, and on
+a non-seekable source. A header that does not fit that allowance SHALL be rejected and
+`sfx_scan` recorded as *budget exhausted*.
+
+The scan SHALL count rejected candidates per format, as each RAR and 7z parser scan counts
+its own format's, so decoys of one format do not spend another's allowance and a file of
+decoys means the same thing to detection as to a forced `format=`. After
+`MAX_VALIDATED_CANDIDATES` (256) rejected candidates of one format, that format's later
+candidates SHALL NOT be judged, and the scan SHALL record `sfx_scan` as *budget
+exhausted*, whether or not it answers. A capped scan answers with a `VALID` hit of a format
+that was not capped, or else with a held `VALID_SHORT` 7z hit as the fallback, as the 7z
+parser scan does; otherwise it gives no answer.
 
 #### Scenario: SFX matrix
 
@@ -521,7 +529,10 @@ apply, so a file of decoys means the same thing to detection as to a forced `for
 | Stub containing a decoy needle the validator rejects | The scan resumes past it and finds the real payload |
 | RAR decoy whose header (bad CRC) crosses the window end | Rejected, as at any offset inside the window and on a pipe |
 | Real RAR whose main header crosses the window end | `RAR`, `payload_offset` at its marker; receipt within budget |
-| 256 rejected decoys before the real payload | No `sfx_scan` answer; `sfx_scan` recorded *budget exhausted*; forced `format=RAR` raises `CorruptionError` naming the cap |
+| A header that crosses the window end by more than a small `max_scan_bytes` allows | Rejected; `sfx_scan` recorded *budget exhausted*; the tier reads at most twice `max_scan_bytes` |
+| 256 rejected RAR decoys before the real RAR payload | No `sfx_scan` answer; `sfx_scan` recorded *budget exhausted*; forced `format=RAR` raises `CorruptionError` naming the cap |
+| 256 rejected ZIP decoys before a real RAR payload | `RAR` at its marker, as forced `format=RAR` opens it; `sfx_scan` recorded *budget exhausted* |
+| Whole valid 7z in the stub, then 256 rejected 7z decoys, then the real 7z | The embedded 7z, as the fallback forced `format=SEVEN_Z` also takes; `sfx_scan` recorded *budget exhausted* |
 | Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |

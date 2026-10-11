@@ -103,8 +103,8 @@ def validate_zip_local_header(
 
     When ``remaining`` is known, name/extra existence is a length compare,
     so the check does not read up to 128 KiB of name and extra. When
-    ``remaining`` is unknown, the check peeks them, and a short peek means
-    the source ended: ``NOT_THIS_FORMAT``.
+    ``remaining`` is unknown, the check peeks them, and a short peek (the
+    source ended, or the budget clamped the view) is ``NOT_THIS_FORMAT``.
     """
     header = peek_more(_LOCAL_HEADER_SIZE)
     if len(header) < _LOCAL_HEADER_SIZE or header[:4] != _LOCAL_HEADER_MAGIC:

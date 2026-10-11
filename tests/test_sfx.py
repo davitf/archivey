@@ -72,7 +72,7 @@ from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
-from tests.detection_cost_util import within_budget
+from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
 from tests.test_detection_workspace import InstrumentedBytesIO
 
@@ -1886,10 +1886,10 @@ _RAR5_SHORT_DECOY = RAR5_ID + b"\x00\x00\x00\x00\x0a" + bytes(10)
 def test_detector_and_parser_stop_at_the_same_rejected_candidate_cap(
     tmp_path: Path, decoys: int, found: bool
 ) -> None:
-    """Both SFX scans give up after ``MAX_VALIDATED_CANDIDATES`` rejected candidates.
+    """Both SFX scans give up after ``MAX_VALIDATED_CANDIDATES`` rejected RAR candidates.
 
-    A file of decoys means the same thing to detection as to forced ``format=RAR``,
-    and a capped detection records ``sfx_scan`` as cut short.
+    A file of RAR decoys means the same thing to detection as to forced
+    ``format=RAR``, and a capped detection records ``sfx_scan`` as cut short.
     """
     from archivey.detection_cost import TierSkip, TierSkipReason
 
@@ -1911,3 +1911,116 @@ def test_detector_and_parser_stop_at_the_same_rejected_candidate_cap(
         assert cut_short in info.unavailable_tiers
         with pytest.raises(CorruptionError, match="candidate"):
             open_archive(path, format=ArchiveFormat.RAR)
+
+
+# A ZIP local header with ``version_needed`` 0: rejected after its 30 bytes.
+_ZIP_DECOY = b"PK\x03\x04" + bytes(26)
+# A 7z signature header with a wrong start-header CRC: rejected after its 32 bytes.
+_7Z_DECOY = MAGIC_7Z + b"\xff" * 26
+
+
+@pytest.mark.parametrize(
+    ("decoys", "capped"),
+    [(MAX_VALIDATED_CANDIDATES - 1, False), (MAX_VALIDATED_CANDIDATES, True)],
+    ids=["under-cap", "at-cap"],
+)
+def test_zip_decoys_do_not_spend_the_rar_payloads_allowance(
+    tmp_path: Path, decoys: int, capped: bool
+) -> None:
+    """The cap counts each format's rejections apart, as each parser's scan does.
+
+    ZIP decoys that reach the ZIP cap leave the RAR payload after them to be judged, so
+    auto-detection opens what forced ``format=RAR`` opens. The capped scan still says
+    it was cut short: ZIP candidates past the cap were never judged.
+    """
+    from archivey.detection_cost import TierSkip, TierSkipReason
+
+    payload = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    stub = _STUB + _ZIP_DECOY * decoys
+    path = tmp_path / "carpet"
+    path.write_bytes(stub + payload)
+    cut_short = TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.RAR
+    assert info.detected_by == "sfx_scan"
+    assert info.payload_offset == len(stub)
+    assert (cut_short in info.unavailable_tiers) is capped
+    with open_archive(path) as archive:
+        assert [m.name for m in archive.members()] == ["store.txt"]
+    with open_archive(path, format=ArchiveFormat.RAR) as archive:
+        assert [m.name for m in archive.members()] == ["store.txt"]
+
+
+@pytest.mark.parametrize("decoy", [_ZIP_DECOY, _7Z_DECOY], ids=["zip", "7z"])
+@pytest.mark.parametrize(
+    ("decoys", "capped"),
+    [(MAX_VALIDATED_CANDIDATES - 1, False), (MAX_VALIDATED_CANDIDATES, True)],
+    ids=["under-cap", "at-cap"],
+)
+def test_capped_scan_holding_a_short_hit_records_the_scan_as_cut_short(
+    tmp_path: Path, decoy: bytes, decoys: int, capped: bool
+) -> None:
+    """A whole 7z in the stub, decoys, then the real 7z payload.
+
+    The embedded 7z is ``VALID_SHORT``: only a fallback the real payload displaces.
+    ZIP decoys do not touch the 7z allowance, so the real payload is found. 7z decoys
+    that reach the 7z cap leave the short hit as the answer, as forced
+    ``format=SEVEN_Z`` gives, but the receipt says the scan was cut short.
+    """
+    from archivey.detection_cost import TierSkip, TierSkipReason
+
+    embedded = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    real = (_SEVENZIP_FIXTURES / "links_mid_folder_nonsolid.7z").read_bytes()
+    stub = _STUB + embedded + decoy * decoys
+    path = tmp_path / "nested"
+    path.write_bytes(stub + real)
+    cut_short = TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.SEVEN_Z
+    assert info.detected_by == "sfx_scan"
+    assert (cut_short in info.unavailable_tiers) is capped
+    short_answer = capped and decoy == _7Z_DECOY
+    assert info.payload_offset == (len(_STUB) if short_answer else len(stub))
+    with path.open("rb") as fp:
+        assert find_signature_offset(fp) == info.payload_offset
+
+
+def test_tight_scan_budget_bounds_the_validator_read_past_the_window(
+    tmp_path: Path,
+) -> None:
+    """A validator reads at most ``max_scan_bytes`` past a small window.
+
+    A RAR5 decoy just inside an 8 KiB window declares a 60 000-byte header. Judging it
+    would read seven times the scan budget, so the view stops at the allowance, the
+    candidate is rejected, and ``sfx_scan`` is recorded as cut short.
+    """
+    from archivey.detection_cost import TierSkip, TierSkipReason
+    from archivey.internal.detection import validator_allowance
+
+    budget = DetectionBudget(
+        max_prefix_bytes=4096,
+        max_far_bytes=4096,
+        max_scan_bytes=8192,
+        max_decode_input=4096,
+        max_decode_output=4096,
+        completion_window_bytes=0,
+    )
+    assert validator_allowance(budget) == budget.max_scan_bytes
+    body = bytearray(b"MZ" + b"\x00" * 200_000)
+    at = budget.max_scan_bytes - 20
+    body[at : at + len(_RAR5_LONG_DECOY)] = _RAR5_LONG_DECOY
+    path = tmp_path / "edge.rar"
+    path.write_bytes(bytes(body))
+
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.detected_by == "extension"
+    assert TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED) in (
+        info.unavailable_tiers
+    )
+    receipt = info.cost_receipt
+    assert receipt is not None
+    # The window, the allowance past it, and the trailer block the cheap tier reads.
+    assert receipt.unique_bytes_read <= 2 * budget.max_scan_bytes + trailer_allowance()
+    assert within_budget(receipt, budget)

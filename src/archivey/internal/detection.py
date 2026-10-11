@@ -107,7 +107,6 @@ from archivey.internal.sfx import (
     HitOutcome,
     HitSelector,
     HitValidator,
-    ScanMiss,
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
@@ -644,12 +643,25 @@ def _warn_on_conflict(
     )
 
 
+def validator_allowance(budget: DetectionBudget) -> int:
+    """Bytes an SFX hit validator may read past the scan window under ``budget``.
+
+    :data:`VALIDATOR_PEEK_MAX` covers every validator's largest header, but a constant
+    would let a small ``max_scan_bytes`` read many times its own size. Taking the
+    smaller of the two keeps the tier's reads within twice ``max_scan_bytes``; a
+    header that does not fit is rejected and the tier recorded as cut short. Zero
+    when the scan is off.
+    """
+    return min(VALIDATOR_PEEK_MAX, budget.max_scan_bytes)
+
+
 def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
     workspace: PrefixWorkspace,
     *,
     scan_limit: int,
+    peek_allowance: int,
     validators: dict[ArchiveFormat, HitValidator],
     restrict_to_validated: bool,
 ) -> FormatInfo | None:
@@ -658,28 +670,34 @@ def _scan_for_sfx_payload(
     ``entries`` are the backends' ``SFX_MAGIC`` declarations. Each needle carries its
     candidate-internal offset (today all zero for ZIP/RAR/7z; TAR ``ustar`` → 257 once
     that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
-    the raw needle position. Hits are graded by their format-owned validator (none
-    means ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback and the
-    parsers' :data:`MAX_VALIDATED_CANDIDATES` rejection cap: earliest *valid* match, not
-    earliest needle. A scan that reaches the cap answers nothing and records
-    ``sfx_scan`` as cut short, as the parsers' scan reports ``ScanMiss.CAPPED``. A CRC-valid decoy in the stub
-    that ends early (``VALID_SHORT``) must not beat the real payload appended after
+    the raw needle position. Hits are graded by their format-owned validator (none means
+    ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback and the
+    parsers' :data:`MAX_VALIDATED_CANDIDATES` rejection cap, counted per format as each
+    parser counts its own: earliest *valid* match, not earliest needle. A format that
+    reaches the cap has its later candidates skipped, and the scan stops once every
+    searched format is capped. A capped scan records ``sfx_scan`` as cut short, even
+    when it answers: the skipped candidates were never judged. It answers with a
+    ``VALID`` hit of a format that was not capped, or with a held ``VALID_SHORT`` hit as
+    the fallback, as the parsers' scan does; otherwise nothing. A CRC-valid decoy in the
+    stub that ends early (``VALID_SHORT``) must not beat the real payload appended after
     it, so a later ``VALID`` hit of the *same format* displaces a held short hit; a
-    ``VALID`` hit of another format ends the scan with the short hit, so the
-    exact-end preference never reorders formats. Holding a short hit, the scan keeps
-    reading to ``scan_limit``: a decoy in the stub ends before the real payload
-    starts, so nothing about the short hit bounds where that payload can be. That is the cost of a short hit with data after it
-    (an Authenticode signature, say): up to the whole window, as a miss already
-    pays. ``PROBABLE`` rather than ``CERTAIN``: an exact
-    magic found at a *searched-for* offset is a weaker claim than one found at the
-    offset the format specifies.
+    ``VALID`` hit of another format ends the scan with the short hit, so the exact-end
+    preference never reorders formats. Holding a short hit, the scan keeps reading to
+    ``scan_limit``: a decoy in the stub ends before the real payload starts, so nothing
+    about the short hit bounds where that payload can be. That is the cost of a short
+    hit with data after it (an Authenticode signature, say): up to the whole window, as
+    a miss already pays. ``PROBABLE`` rather than ``CERTAIN``: an exact magic found at a
+    *searched-for* offset is a weaker claim than one found at the offset the format
+    specifies.
 
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
     This is the one place that records the ``sfx_scan`` tier as cut short, or as not
     enabled when the window is zero. The window bounds where a needle may start; a
-    validator may read :data:`VALIDATOR_PEEK_MAX` past it, so a candidate near the end
-    is judged on its whole header, and those bytes are charged to the prefix.
+    validator may read ``peek_allowance`` (:func:`validator_allowance`) past it, so a
+    candidate near the end is judged on its whole header, and those bytes are charged
+    to the prefix. A header that does not fit is rejected, and the clamped view makes
+    the scan record ``sfx_scan`` as cut short.
 
     ``restrict_to_validated`` is the shebang cue: a script is text, so magics appear
     as literals. Search only formats that have a hit validator — derived from
@@ -699,11 +717,16 @@ def _scan_for_sfx_payload(
     selector: HitSelector[tuple[ArchiveFormat, int]] = HitSelector(
         keep_damaged=False, cap=MAX_VALIDATED_CANDIDATES
     )
+    searched_formats = {entry.format for entry in entries}
     # The window bounds where a magic may start, not how far its validator reads: a
-    # candidate inside it is judged on its whole header (``VALIDATOR_PEEK_MAX``).
-    view_limit = scan_limit + VALIDATOR_PEEK_MAX
+    # candidate inside it is judged on its whole header, as far as the budget allows.
+    view_limit = scan_limit + peek_allowance
     for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
         entry = by_needle[hit.needle]
+        if selector.is_capped(entry.format):
+            # The parser for this format would have stopped by now; another format's
+            # candidates are still judged.
+            continue
         validator = validators.get(entry.format)
         outcome = HitOutcome.VALID
         if validator is not None:
@@ -717,7 +740,9 @@ def _scan_for_sfx_payload(
             outcome = validator(view, remaining)
         if selector.offer(entry.format, (entry.format, hit.candidate_origin), outcome):
             break
-    chosen, miss = selector.result()
+        if all(selector.is_capped(fmt) for fmt in searched_formats):
+            break
+    chosen, _ = selector.result()
     result = (
         None
         if chosen is None
@@ -737,8 +762,9 @@ def _scan_for_sfx_payload(
     cut_short = scan_limit < SFX_MAX and (source_len is None or source_len > scan_limit)
     # Take the flag on its own line: the call clears it, so it must always run.
     clamped = workspace.take_clamped_view_read()
-    # A capped scan stopped before the end of its window, so its miss is cut short too.
-    if clamped or miss is ScanMiss.CAPPED or (result is None and cut_short):
+    # A capped scan skipped candidates it never judged, so it is cut short even when it
+    # answers: a held short hit is only the fallback the skipped ones could have beaten.
+    if clamped or selector.capped or (result is None and cut_short):
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     return result
 
@@ -1014,6 +1040,7 @@ def _detect_format_body(
                 peek_more,
                 workspace,
                 scan_limit=min(SFX_MAX, budget.max_scan_bytes),
+                peek_allowance=validator_allowance(budget),
                 validators=registry.sfx_hit_validators(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
