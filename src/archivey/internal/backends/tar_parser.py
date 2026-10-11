@@ -1226,9 +1226,16 @@ class _ForwardSlice(ReadOnlyIOStream):
                 "TAR member data is no longer readable: the walk has moved on"
             )
         left = self._length - self._done
-        want = left if size is None or size < 0 else min(size, left)
+        whole = size is None or size < 0
+        want = left if whole else min(size, left)
         data = walker._read(want)
         self._done += len(data)
+        if whole and data and len(data) < want:
+            # A read with no size asks for the whole member, so the error at the cut
+            # belongs in this call and the bytes before it are not returned. The next
+            # read raises a decoder's deferred error, or gets no bytes.
+            self._done += len(walker._read(want - len(data)))
+            data = b""
         if data and len(data) < want:
             # A short read is the end (ADR 0014). The bytes go to the caller now, and
             # the next read, which gets none, raises.

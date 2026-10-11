@@ -1283,6 +1283,41 @@ def test_truncated_tar_raises() -> None:
             ar.members()
 
 
+def _cut_plain_tar() -> tuple[bytes, bytes]:
+    """A plain tar holding ``a`` (300,000 bytes) then ``b``, cut inside ``a``'s data."""
+    payload = random.Random(16).randbytes(300_000)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        for name, data in (("a", payload), ("b", b"after")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()[:150_000], payload
+
+
+def test_a_cut_plain_tar_member_raises_on_read_without_a_listing() -> None:
+    # The lookup stops at the first match, so the walk never reaches the cut: the
+    # member read itself has to find it.
+    cut, payload = _cut_plain_tar()
+    with open_archive(io.BytesIO(cut), format=ArchiveFormat.TAR) as ar:
+        with pytest.raises(TruncatedError):
+            ar.read("a")
+
+
+@pytest.mark.parametrize("chunk", [1024, 64 * 1024, 1024 * 1024])
+def test_a_cut_plain_tar_member_delivers_its_prefix_then_raises(chunk: int) -> None:
+    cut, payload = _cut_plain_tar()
+    got = bytearray()
+    with open_archive(io.BytesIO(cut), format=ArchiveFormat.TAR) as ar:
+        member = ar.get("a")
+        assert member.size == len(payload)
+        with ar.open(member) as stream, pytest.raises(TruncatedError):
+            while block := stream.read(chunk):
+                got += block
+    assert len(got) > 0
+    assert payload.startswith(bytes(got))
+
+
 def test_corrupt_tar_header_raises() -> None:
     raw = bytearray(_build_tar())
     # Corrupt the checksum field (offset 148, 8 bytes) of the first header.
@@ -2534,6 +2569,41 @@ def test_a_cut_compressed_member_delivers_its_prefix_in_both_modes(
     assert in_streaming > 0
     assert in_a_random_access_pass == in_streaming
     assert in_random_access == in_streaming
+
+
+@pytest.mark.parametrize("suffix", [".tar", ".tar.gz"])
+@pytest.mark.parametrize("size", [-1, None])
+def test_a_whole_read_of_a_cut_member_raises_with_nothing_in_every_mode(
+    tmp_path: Path, suffix: str, size: int | None
+) -> None:
+    """``read()`` with no size asks for the whole member, so a cut member raises and
+    returns nothing, the same in streaming, in a random-access pass and through
+    ``open``. Sized reads deliver the prefix first (the test above)."""
+    path = tmp_path / f"a{suffix}"
+    with tarfile.open(path, "w:gz" if suffix == ".tar.gz" else "w") as t:
+        info = tarfile.TarInfo("a")
+        info.size = 200_000
+        t.addfile(info, io.BytesIO(random.Random(0).randbytes(200_000)))
+    path.write_bytes(path.read_bytes()[:100_000])
+
+    def read_whole(stream: BinaryIO) -> None:
+        with pytest.raises(TruncatedError):
+            stream.read(size)
+
+    with open_archive(path, streaming=True) as ar:
+        members = ar.stream_members()
+        _, stream = next(members)
+        assert stream is not None
+        read_whole(stream)
+        members.close()
+    with open_archive(path) as ar:
+        members = ar.stream_members()
+        _, stream = next(members)
+        assert stream is not None
+        read_whole(stream)
+        members.close()
+    with open_archive(path) as ar, ar.open("a") as stream:
+        read_whole(stream)
 
 
 def test_a_member_keeps_no_parsed_pax_records() -> None:

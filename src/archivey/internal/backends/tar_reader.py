@@ -1195,17 +1195,24 @@ class TarReader(BaseArchiveReader):
                     None, member.name, open_fn=_refuse, size=member.size
                 )
         stream: BinaryIO
+        # Whether the member's data runs past the end of the archive.
+        cut = False
         if self._streaming or in_walk:
             stream = self._walker.open_data(entry)
         else:
             # A view of its own: reads re-seek the shared stream under the handle lock,
             # so members, and the walk, read independently.
-            stream = SharedView(
+            view = SharedView(
                 self._stream,
                 entry.data_offset,
                 entry.stored_size,
                 lock=self._io_guard(),
             )
+            # The view stops at the end of the archive and then returns b"". The length
+            # check is enabled for a cut member alone, so it reads what is there and
+            # then raises TruncatedError. Every other member keeps the bare ``size``.
+            cut = view.size is not None and view.size < entry.stored_size
+            stream = view
             if self._compressed:
                 # The codec stream has no buffer of its own here (_open_byte_stream),
                 # so a read smaller than this would cost a decoder seek and read. The
@@ -1219,7 +1226,13 @@ class TarReader(BaseArchiveReader):
         if self._streaming:
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
-        return self._wrap_member_stream(stream, member.name, size=member.size)
+        return self._wrap_member_stream(
+            stream,
+            member.name,
+            size=member.size,
+            expected_size=member.size if cut else None,
+            verify_member=member if cut else None,
+        )
 
     def _get_archive_info(self) -> ArchiveInfo:
         stream_cap = self._source_stream_capability()
