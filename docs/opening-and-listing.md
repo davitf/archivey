@@ -69,7 +69,7 @@ do the job.
 
 | What you need | Open with | Limitations |
 |---|---|---|
-| Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then `stream_members()` or `extract_all()` (`for member in reader` walks the members without their data) | No random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. `scan_members()` and `members_report()` still list the archive, but they use up the pass to do it. [More below](#streaming-for-one-pass) |
+| Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then `stream_members()` or `extract_all()` (`for member in reader` walks the members without their data) | No random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. `members_report()` still lists the archive, but it uses up the pass to do it. [More below](#streaming-for-one-pass) |
 | Read one member, or a few, by name; list the archive and then read from it | Nothing (the defaults) | One member stream open at a time. On a solid archive, opening members out of archive order can decode the same block again ([details](access-and-cost.md#solid-archives-prefer-one-forward-pass)) |
 | Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True` | Some extra work as you read, which depends on the codec: the stream may read the format's own index (xz, lzip), keep track of points it can seek back to, or hand a gzip or bzip2 member of 16 MiB compressed or more to the `[seekable]` accelerator when it is installed. A seek backwards may decompress the member again from its start; how far back it has to go depends on those same mechanisms, and the `[seekable]` extra only helps a large gzip or bzip2 member unless you force it on. Any seek that moves the position gives up the check of the member's stored checksum, until a seek back to the start re-arms it. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
 | Several member streams open at once, for example a thread pool that reads different members | `concurrent_members=True`; call `members()` once before you fan out | A second overlapping `open()` no longer raises, so the check that catches an accidental overlap is gone. Reads from several members at once can make the reader seek back and forth in the archive, and decompress data again: on a solid archive, each stream decodes its block from the start. Reads are correct but not always faster: on formats that share one file handle, each read takes a lock, and workers can wait on it. Opening the archive several times, one reader per worker without this option, can be cheaper; it can also cost more, because each reader parses the archive's index again. Cannot be combined with `streaming=True`. [Details](access-and-cost.md#concurrent-member-streams) |
@@ -99,10 +99,9 @@ Its other limitations:
   `for member in reader` are deliberately outside `ListingLimits`: they yield every
   member. Past a limit the reader stops keeping the members it has yielded, so memory
   stays bounded and a link yielded after that point has no `link_target_member`.
-  `scan_members()`, `members_report()` and `extract_all()` enforce the limits as
-  `members()` does, so after such a pass `scan_members()` and `members_report()` raise
-  `ResourceLimitError`. 7z, RAR and ISO check `max_members` when the archive is opened.
-  See [Limits](extracting.md#limits).
+  `members_report()` and `extract_all()` enforce the limits as `members()` does, so
+  after such a pass `members_report()` raises `ResourceLimitError`. 7z, RAR and ISO
+  check `max_members` when the archive is opened. See [Limits](extracting.md#limits).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).
@@ -304,11 +303,10 @@ A *wrong* password on an archive that really is encrypted still fails loudly wit
 
 ## Damaged archives
 
-`members()` and `scan_members()` give you the whole listing or raise — if the archive
-is damaged partway through, you get an error, never a quietly shortened list.
-`members_report()` is the other half of that deal: it hands back the members it did
-manage to read *together with* the error that stopped it. Iterating yields members up
-to the damage and then raises.
+`members()` gives you the whole listing or raises — if the archive is damaged partway
+through, you get an error, never a quietly shortened list. `members_report()` is the
+other half of that deal: it hands back the members it did manage to read *together with*
+the error that stopped it. Iterating yields members up to the damage and then raises.
 
 [Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) has the
 recipe and what each failure means.

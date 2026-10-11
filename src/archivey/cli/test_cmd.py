@@ -8,7 +8,7 @@ from contextlib import closing
 from typing import TextIO, TypeVar, cast
 
 from archivey import ArchiveReader, ExtractionProgress
-from archivey.cli.common import open_for_cli, reject_salvage
+from archivey.cli.common import open_for_cli
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
@@ -39,7 +39,6 @@ def run_test(
     patterns: list[str],
     exclude: list[str],
     verbose: bool,
-    salvage: bool,
     password: str | None,
     track_io: bool,
     hide_progress: bool = False,
@@ -47,7 +46,6 @@ def run_test(
     err: TextIO | None = None,
 ) -> int:
     del out  # test writes summaries to stderr only
-    reject_salvage(salvage)
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     selection = MemberSelection(patterns, exclude)
@@ -80,6 +78,15 @@ def run_test(
         files_done = 0
         pending_links: list[ArchiveMember] = []
         pass_ended_early = False
+        # The error the member read that just ran raised, or None once the pass yields
+        # another member. A pass that raises right after a failed member read is
+        # ending on the fault that member already reported, whether it raises the same
+        # object (a truncated compressed TAR) or a new, equal one (a truncated plain
+        # TAR): it gets a stop notice and is not counted a second time. Requiring the
+        # failure to be the immediately preceding read is safe: a stream that re-raises
+        # a parked fault fails the next read as well, so no member reads cleanly
+        # between the failure and the end of the pass.
+        member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
             # count as FAIL and still reach the summary (F4). Once the generator raises,
@@ -96,10 +103,19 @@ def run_test(
                     except StopIteration:
                         break
                     except (ArchiveyError, OSError) as exc:
-                        failed += 1
                         pass_ended_early = True
-                        print(f"FAIL: {format_error_detail(exc)}", file=err)
+                        if member_error is None:
+                            failed += 1
+                            print(f"FAIL: {format_error_detail(exc)}", file=err)
+                        else:
+                            if not _same_fault(exc, member_error):
+                                print(f"archivey: {format_error_detail(exc)}", file=err)
+                            print(
+                                "test stopped; remaining members were not tested",
+                                file=err,
+                            )
                         continue
+                    member_error = None
 
                     if stream is None and _link_needs_verification(member):
                         # Verified after the pass: the reader refuses an open() while
@@ -158,6 +174,7 @@ def run_test(
                         raise
                     except (ArchiveyError, OSError) as exc:
                         failed += 1
+                        member_error = exc
                         print(
                             f"FAIL {escape_member_name(member.name)}: "
                             f"{format_error_detail(exc)}",
@@ -224,6 +241,25 @@ def run_test(
     # An untested remainder or an unchecked digest is an incomplete verification.
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
     return EXIT_FAIL if failed or not_tested or not_verified else EXIT_OK
+
+
+def _same_fault(exc: BaseException, reported: BaseException) -> bool:
+    """Whether ``exc`` reports the same fault as ``reported``, already printed.
+
+    The member name is left out of the comparison: a pass that re-raises a member's
+    fault builds its error without one.
+    """
+    if exc is reported:
+        return True
+    if type(exc) is not type(reported):
+        return False
+    if isinstance(exc, ArchiveyError) and isinstance(reported, ArchiveyError):
+        return (exc.message, exc.archive_name, exc.source_format) == (
+            reported.message,
+            reported.archive_name,
+            reported.source_format,
+        )
+    return str(exc) == str(reported)
 
 
 _T = TypeVar("_T")

@@ -43,6 +43,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
+from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -989,6 +990,12 @@ def _bz2_without_markers(fill: bytes) -> bytes:
 
 _BZ2_LAYOUT_CASES = {
     "junk-before-the-first-stream": b"BZh9" + bytes(40) + _bz2_stream(b"A"),
+    # Zero bytes before the first stream, or after an empty one, end the data with the
+    # accelerator off. rapidgzip 0.16 fails its header check on the first and stops at
+    # the zeros on the second, so the layout walk's zero rejection is not what decides
+    # either; these pin the result, whichever path gives it.
+    "zeros-before-the-first-stream": bytes(40) + _bz2_stream(b"A"),
+    "empty-stream-then-zeros-then-stream": _BZ2_EMPTY + bytes(4) + _bz2_stream(b"A"),
     "junk-stream-between-streams": _bz2_stream(b"A")
     + b"BZh9"
     + bytes(40)
@@ -1009,7 +1016,7 @@ _BZ2_LAYOUT_CASES = {
 
 def _bz2_intact_prefix(data: bytes) -> bytes:
     """The output of the whole streams at the start of ``data``, up to the first
-    damage, skipping zero padding between them."""
+    damage or zero byte between them."""
     out = bytearray()
     while data:
         decompressor = bz2.BZ2Decompressor()
@@ -1020,7 +1027,9 @@ def _bz2_intact_prefix(data: bytes) -> bytes:
         if not decompressor.eof:
             break
         out += chunk
-        data = decompressor.unused_data.lstrip(b"\0")
+        data = decompressor.unused_data
+        if data.startswith(b"\0"):
+            break
     return bytes(out)
 
 
@@ -1091,12 +1100,14 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
     # as SEEK_SET.
     [(0, io.SEEK_END), (1500, io.SEEK_SET), (2500, io.SEEK_SET), (1500, io.SEEK_CUR)],
 )
-def test_bzip2_accelerator_seeks_past_padding_as_off(
+def test_bzip2_accelerator_seek_to_its_end_reports_what_follows_padding(
     tail: Callable[[bytes], bytes], target: int, whence: int
 ) -> None:
-    # The decoder stops at zero padding, so its end is short of the stream after it. A
-    # seek that reaches that end must not hand out a position from it: the end check
-    # runs first, and the standard library seeks to the real one.
+    # Both engines end the data at zero padding, whatever follows it: a valid stream, a
+    # cut one or a bare header. A seek that reaches the decoder's end runs the end
+    # check, which reports what follows the padding as trailing data. It does not hand
+    # the end to the standard library, as it does for a stream header right after the
+    # data with no zeros before it. The 1500 and 2500 targets land past the end.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     # Every offset of the second stream holds a different byte from its neighbours, so
     # a read from the wrong place does not pass.
@@ -1114,6 +1125,8 @@ def test_bzip2_accelerator_seeks_past_padding_as_off(
                 outcome.append(type(exc))
             outcomes.append(outcome)
     assert outcomes[1] == outcomes[0]
+    if (target, whence) == (0, io.SEEK_END):
+        assert outcomes[0][0] == 1000
 
 
 _BZ2_SEEK_CASES = {
@@ -1134,7 +1147,7 @@ def test_bzip2_accelerator_seeks_into_damage_as_off(
 ) -> None:
     # A seek gets the verdict a read would, as with the accelerator off, by three
     # paths: past a skipped region it hands over there; at the decoder's end it runs
-    # the end check (padding or empty streams between streams, trailing data); at the
+    # the end check (empty streams after the last stream, padding, trailing data); at the
     # end of a stream the decoder read as empty it falls back. A caller sizing the
     # stream with seek(0, SEEK_END) gets the error, not a plausible size.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
@@ -1184,24 +1197,33 @@ def test_bzip2_accelerator_reads_a_container_coders_single_stream_as_off(
 
 
 @pytest.mark.parametrize(
-    ("between", "accelerated"),
+    "between",
     [
-        pytest.param(b"", 2000, id="adjacent"),
-        pytest.param(_BZ2_EMPTY, 2000, id="empty-stream"),
+        pytest.param(b"", id="adjacent"),
+        pytest.param(_BZ2_EMPTY, id="empty-stream"),
+        pytest.param(b"BZh9" + bytes(40), id="header-and-zeros"),
+        pytest.param(_bz2_without_markers(b"B"), id="damaged-stream"),
     ],
 )
-def test_bzip2_accelerator_container_single_stream_differences(
-    between: bytes, accelerated: int | type[Exception]
+@pytest.mark.parametrize(
+    "refuse_input_after_end", [False, True], ids=["bounded", "exact"]
+)
+def test_bzip2_accelerator_ends_a_container_coders_single_stream_as_off(
+    between: bytes, refuse_input_after_end: bool
 ) -> None:
-    # The accepted differences for a container coder's single stream
-    # (dev-docs/formats/bzip2.md §5): with no zero padding after the first stream, the
-    # decoder reads a further stream. The accelerator off reads the first alone.
+    # A container coder's data is one stream: the accelerator hands over where a
+    # further stream starts, so both modes read the first alone. With
+    # refuse_input_after_end (a ZIP member, a 7z coder), both refuse what follows it.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _bz2_stream(b"X") + between + _bz2_stream(b"Y")
     params = CodecParams(single_stream=True)
     results: list[int | type[Exception]] = []
     for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
-        config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
+        config = StreamConfig(
+            use_indexed_bzip2=mode,
+            seekable=True,
+            refuse_input_after_end=refuse_input_after_end,
+        )
         try:
             with open_codec_stream(
                 Codec.BZIP2, io.BytesIO(data), config=config, params=params
@@ -1209,7 +1231,8 @@ def test_bzip2_accelerator_container_single_stream_differences(
                 results.append(len(s.read()))
         except CorruptionError as exc:
             results.append(type(exc))
-    assert results == [1000, accelerated]
+    expected = DataAfterEndError if refuse_input_after_end else 1000
+    assert results == [expected, expected]
 
 
 @pytest.mark.parametrize("single_stream", [True, False])

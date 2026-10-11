@@ -67,7 +67,7 @@ def test_huge_archive_comment_counts_toward_metadata() -> None:
 def test_defaults_allow_linux_scale_member_counts() -> None:
     # ~100k would be heavy for a unit test; assert the default numeric contract and that
     # a modest archive under defaults succeeds.
-    assert ListingLimits().max_members == 1_048_576
+    assert ListingLimits().max_members == 262_144
     assert ListingLimits().max_metadata_bytes == 64 * 2**20
     data = _zip_with_members([f"f{i}.txt" for i in range(200)])
     with open_archive(io.BytesIO(data)) as reader:
@@ -92,7 +92,7 @@ def test_stream_members_unguarded_when_members_would_fail() -> None:
 
 
 def test_matched_defaults_list_then_extract(tmp_path: Path) -> None:
-    assert ListingLimits().max_members == ExtractionLimits().max_entries == 1_048_576
+    assert ListingLimits().max_members == ExtractionLimits().max_entries == 262_144
     src = tmp_path / "a.zip"
     src.write_bytes(_zip_with_members([f"f{i}.txt" for i in range(10)]))
     dest = tmp_path / "out"
@@ -164,8 +164,8 @@ def test_tar_listing_stops_reading_headers_at_max_members(tmp_path: Path) -> Non
         assert len(tar.members) <= 6
 
 
-def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
-    """scan_members on a streaming reader must enforce caps and not publish a cache."""
+def test_streaming_members_report_enforces_listing_limits(tmp_path: Path) -> None:
+    """members_report on a streaming reader raises on caps and publishes no cache."""
     import tarfile
 
     tar_path = tmp_path / "a.tar"
@@ -178,7 +178,7 @@ def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     with open_archive(tar_path, config=cfg, streaming=True) as reader:
         with pytest.raises(ResourceLimitError, match="max_members"):
-            reader.scan_members()
+            reader.members_report()
         # Cache must stay unpublished after a limit trip.
         assert reader._materialized is None
         assert reader.members_report_if_available() is None
@@ -480,8 +480,6 @@ def test_listing_after_an_unguarded_pass_past_the_caps_raises(
         names = [m.name for m, _ in reader.stream_members()]
         assert names == [f"f{i:06d}" for i in range(50)]
         with pytest.raises(ResourceLimitError, match="max_members"):
-            reader.scan_members()
-        with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members_report()
         # The scan-free peek keeps its contract: nothing is cached, so no report.
         assert reader.members_report_if_available() is None
@@ -498,7 +496,7 @@ def test_listing_after_an_unguarded_pass_past_the_caps_raises(
                 next(iter(reader.stream_members()))
 
 
-def test_scan_members_after_an_interrupted_unguarded_pass_past_the_caps_raises(
+def test_members_report_after_an_interrupted_unguarded_pass_past_the_caps_raises(
     tmp_path: Path,
 ) -> None:
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 50)
@@ -508,7 +506,7 @@ def test_scan_members_after_an_interrupted_unguarded_pass_past_the_caps_raises(
             if i == 10:
                 break
         with pytest.raises(ResourceLimitError, match="max_members"):
-            reader.scan_members()
+            reader.members_report()
 
 
 def test_unguarded_pass_within_the_caps_keeps_the_listing(tmp_path: Path) -> None:
@@ -516,7 +514,9 @@ def test_unguarded_pass_within_the_caps_keeps_the_listing(tmp_path: Path) -> Non
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     with open_archive(tar_path, config=cfg, streaming=True) as reader:
         yielded = [m for m, _ in reader.stream_members()]
-        assert reader.scan_members() == yielded
+        report = reader.members_report()
+        assert report.error is None
+        assert list(report.members) == yielded
 
 
 def _tar_of(path: Path, entries: list[tuple[str, str | None]]) -> Path:

@@ -39,6 +39,7 @@ from archivey.diagnostics import (
     MemberListReport,
     MemberTimestampContext,
     NameEncodingContext,
+    SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
     raw_name_to_base64,
@@ -122,6 +123,7 @@ from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
+    EXTRA_SPECIAL_FILE_TYPE,
     AbortOn,
     AbortOnStr,
     ArchiveFormat,
@@ -296,6 +298,13 @@ class ReadBackend(ABC):
     # ``self`` as the first argument. The other detection tables (MAGIC, SFX_MAGIC)
     # are inert data and do not have this problem.
     SFX_HIT_VALIDATOR: ClassVar[HitValidator | None] = None
+    # Whether this backend's parser finds a payload behind a stub with its own capped
+    # forward scan (``sfx.scan_for_magic``), as the RAR and 7z parsers do. The
+    # detector applies the same rejection cap to these formats only, so detection
+    # gives up exactly where forced ``format=`` does. A format whose reader locates
+    # its directory another way (ZIP reads the end of central directory from the
+    # tail) has no scan to agree with and is never capped.
+    SFX_PARSER_SCANS: ClassVar[bool] = False
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
@@ -405,7 +414,7 @@ class BaseArchiveReader(ArchiveReader):
     Access-mode enforcement (independent of the flag above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
     ``ArchiveyUsageError`` — uniformly, not per-backend. Only a single pass of
-    ``__iter__``/``stream_members``/``extract_all`` is allowed; ``scan_members()`` may
+    ``__iter__``/``stream_members``/``extract_all`` is allowed; ``members_report()`` may
     finish or return that pass. ``members_report_if_available()`` is a scan-free,
     index-only peek. ``member in reader`` is identity-based and scan-free, so it works in
     either mode; there is no ``__len__``/``__getitem__`` (name lookup is ``get()``).
@@ -417,7 +426,7 @@ class BaseArchiveReader(ArchiveReader):
       it** (correctness, not just efficiency). Streaming backends that override
       ``_iter_with_data()`` **MUST** route their forward metadata pass through the shared
       instance-held progressive pass (``_begin_forward_pass``) so
-      ``scan_members()`` can finish an interrupted pass and the resolved cache is
+      ``members_report()`` can finish an interrupted pass and the resolved cache is
       finalized on completion. A backend whose own pass walks a cached list (7z, solid
       RAR) iterates ``_listed_members()``, which does that in streaming and drains the
       shared walk in random access, so its members are the reader's own objects.
@@ -1914,6 +1923,42 @@ class BaseArchiveReader(ArchiveReader):
             logger=log,
         )
 
+    def _emit_special_file_has_data(
+        self, member: ArchiveMember, member_id: int | None
+    ) -> None:
+        """Report ``MEMBER_SPECIAL_FILE_HAS_DATA`` for a ``FILE`` whose stored type is a
+        device, FIFO or socket (``extra["special_file_type"]`` is set), attached to
+        ``member``. ``member_id`` is the walk position, as for
+        :meth:`_emit_timestamp_invalid`, or ``None`` when neither the caller nor the
+        member has one (a re-type in :meth:`_apply_reparse_data`)."""
+        special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
+        assert isinstance(special, str)
+        size = member.size
+        stored = "data" if size is None else f"{size} bytes"
+        # "unknown" stands for file-type bits no Unix type uses; the four named
+        # kinds read as nouns.
+        kind = (
+            "an unrecognized file type"
+            if special == "unknown"
+            else f"a {special.replace('_', ' ')}"
+        )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+            message=(
+                f"Member {quoted(member.name)} is listed as a file: the archive marks "
+                f"it as {kind} and stores {stored} for it."
+            ),
+            context=SpecialFileDataContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                special_file_type=special,
+                size=size,
+            ),
+            member=member,
+            attach_to_member=True,
+        )
+
     def _emit_name_encoding_inferred(
         self,
         member: ArchiveMember,
@@ -2209,6 +2254,18 @@ class BaseArchiveReader(ArchiveReader):
         )
         if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
             member.type = fallback_type
+            if (
+                fallback_type is MemberType.FILE
+                and EXTRA_SPECIAL_FILE_TYPE in member.extra
+            ):
+                # The entry's mode named a device, FIFO or socket and it was typed a
+                # link provisionally, so the backend's own emit (gated on FILE while
+                # the member is typed) did not run. It is a data-bearing FILE from
+                # here, and the data-model spec asks for the advisory with the key.
+                self._emit_special_file_has_data(
+                    member,
+                    member_id if member_id is not None else member._member_id,
+                )
             reason = "reparse_data_unrecognized"
             message = (
                 f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
@@ -2415,8 +2472,8 @@ class BaseArchiveReader(ArchiveReader):
         if self._streaming and self._forward_pass_started:
             raise ArchiveyUsageError(
                 f"{op} is not available after a streaming reader's forward pass has "
-                f"started. Call scan_members() for the resolved member list, or "
-                f"members_report_if_available() for an index-only peek.",
+                f"started. Call members_report() to finish the pass and get the member "
+                f"list, or members_report_if_available() for an index-only peek.",
             )
 
     def _enter_forward_pass(self, op: str) -> None:
@@ -2432,15 +2489,30 @@ class BaseArchiveReader(ArchiveReader):
         A ``streaming=True`` reader is forward-only: only a single pass of
         ``__iter__``/``stream_members`` (or one ``extract_all``) is allowed. This is
         uniform and format-independent — it does **not** depend on whether a backend
-        happens to have an index loaded (use :meth:`scan_members` or
-        :meth:`members_report_if_available` for member listing instead).
+        happens to have an index loaded. The message names the route that fits
+        ``op``: for member data (``get()``, ``open()``/``read()``), iterate
+        :meth:`stream_members` and read each stream as the pass reaches it; for the
+        listing (``members()``), use :meth:`members_report` (which applies
+        ``ListingLimits``), iterate :meth:`stream_members` (which ``ListingLimits`` does
+        not cap), or peek with :meth:`members_report_if_available`.
         """
         self._state.require_open(op)
         if self._streaming:
+            if op == "members()":
+                advice = (
+                    "Call members_report() for the member list (it uses up the "
+                    "forward pass and applies ListingLimits; raise report.error for "
+                    "complete-or-raise), iterate stream_members() and ignore the "
+                    "streams (not capped by ListingLimits), or call "
+                    "members_report_if_available() for an index-only peek."
+                )
+            else:
+                advice = (
+                    "Iterate stream_members() and read each member's stream as the "
+                    "pass reaches it."
+                )
             raise ArchiveyUsageError(
-                f"{op} is not available on a streaming (forward-only) reader. "
-                f"Iterate with stream_members(), call scan_members() for the resolved "
-                f"member list, or members_report_if_available() for an index-only peek.",
+                f"{op} is not available on a streaming (forward-only) reader. {advice}",
             )
 
     @property
@@ -2615,25 +2687,21 @@ class BaseArchiveReader(ArchiveReader):
             self._state.release_pass(token)
 
     def members_report(self) -> MemberListReport:
-        return self._members_report("members_report")
-
-    def _members_report(self, op: str) -> MemberListReport:
-        """``members_report()``, with usage errors naming ``op``, the method called."""
-        self._state.require_open(f"{op}()")
+        self._state.require_open("members_report()")
         if not self._streaming:
             if self._state.concurrent:
-                token = self._state.acquire_worker(op)
+                token = self._state.acquire_worker("members_report")
                 try:
                     return self._materialize_members().report
                 finally:
                     self._state.release_worker(token)
-            token = self._state.acquire_pass(op)
+            token = self._state.acquire_pass("members_report")
             try:
                 return self._materialize_members().report
             finally:
                 self._state.release_pass(token)
 
-        token = self._state.acquire_pass(op)
+        token = self._state.acquire_pass("members_report")
         try:
             published = self._published_within_limits(enforce=True)
             if published is not None:
@@ -2655,12 +2723,6 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_pass(token)
 
-    def scan_members(self) -> list[ArchiveMember]:
-        report = self._members_report("scan_members")
-        if report.error is not None:
-            raise report.error
-        return list(report.members)
-
     def members_report_if_available(self) -> MemberListReport | None:
         """Return the member-list report if it is available **without scanning**, else
         ``None``. Safe to call on any reader (including a streaming one).
@@ -2669,7 +2731,7 @@ class BaseArchiveReader(ArchiveReader):
         backend's upfront index when ``_MEMBER_LIST_UPFRONT`` is set. It never triggers
         a forward scan, never reads member data, and never consumes the forward pass.
         Link targets stored in member data (e.g. ZIP symlinks) may be unset; use
-        :meth:`members` or :meth:`scan_members` for a fully-resolved list. The members
+        :meth:`members` or :meth:`members_report` for a fully-resolved list. The members
         are the reader's own objects, the same ones every other listing method and pass
         returns, so a later ``members()`` fills those link fields in place.
 
@@ -3262,7 +3324,7 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
 
     A generator would be closed (and its post-loop tail skipped) when a consumer
     breaks out of ``for member in reader``; this iterator survives early exit so
-    :meth:`BaseArchiveReader.scan_members` can drain the remainder.
+    :meth:`BaseArchiveReader.members_report` can drain the remainder.
 
     The cursor reads ``_listed`` and pulls from the walk only when it reaches the end
     of what has been walked, so a peek that drained the walk ahead of it hands the pass
@@ -3286,7 +3348,7 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         if self._error is not None:
             # The pass previously failed. A plain retry could step past the end of a
             # PARTIAL listing and finalize it as the complete, resolved member cache —
-            # scan_members() would then silently return a truncated listing after the
+            # members_report() would then silently return a truncated listing after the
             # caller caught the original error. Fail loud and keep the cache unpublished.
             err = ReadError(
                 "The archive scan previously failed "

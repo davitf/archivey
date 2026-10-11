@@ -89,23 +89,29 @@ above 2 SHALL raise `CorruptionError` (7-Zip: "Data Error"). Under ZipCrypto the
 settings are decrypted data, so both SHALL raise `CorruptionError` there, which the
 password confirmation counts as the candidate failing (see below).
 
-A member's compressed size is its codec's input exactly. Any byte of it after the
-codec's end of stream, a zero byte or a second stream included (a Zstd skippable
-frame too), SHALL raise `CorruptionError`, for every method and for encrypted members
-too, as 7-Zip reports an error for it (DR-3), and under ZipCrypto the password
-confirmation counts it as the candidate failing, as above. An LZMA member raises
-`LzmaDataAfterEndError`, its subclass. A PPMd member is checked when its end mark
-follows right at the declared size, as 7-Zip writes it; a PPMd stream without an end
-mark cannot be told from input past its size, and reads clean.
+A member's compressed data SHALL be one stream of its codec and nothing else, as 7-Zip
+23.01 reads it (DR-3). A byte of it the codec leaves after the stream's end, a zero
+byte too, and a further stream there (a second Zstd frame, a skippable one too), SHALL
+raise `CorruptionError` (`DataAfterEndError`) once the output before it is read,
+whatever the declared size and CRC cover, for every method and for encrypted members
+too, with an accelerator on or off; under ZipCrypto the password confirmation counts it
+as the candidate failing, as above. An LZMA member without the end-marker flag
+(general-purpose bit 1) and a PPMd member end at their declared size: their input
+SHALL end there too (after an end marker right at that size for LZMA, and after PPMd8's
+end mark, which a member SHALL carry), so a declared size short of the stream's data
+SHALL raise `CorruptionError`, not `TruncatedError`. One zero byte after LZMA data
+without an end marker reads, as 7-Zip's encoder sometimes flushes it past the
+decoder's last read.
 
 #### Scenario: ZIP codec-layer decoding
 
 | Case | Expected |
 | --- | --- |
 | STORED / DEFLATE / BZIP2 / LZMA member, unencrypted | Decodes via the shared codec layer; CRC verified through `VerifyingStream` |
-| LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error"; with bit 1 clear, only a marker right at the declared size is checked |
-| DEFLATE, Deflate64, BZIP2, Zstd or PPMd member with compressed data after its end of stream (a zero byte, junk, or a second stream), inside the declared compressed size | `CorruptionError`, as 7-Zip reports "There are some data after the end of the payload data" (PPMd: "Data Error"), under the accelerators too; a PPMd member is checked only when an end mark follows right at the declared size |
-| DEFLATE member under rapidgzip holding two streams whose output the declared size and CRC both cover | Both streams' content (the `compressed-streams` accelerator exception); `CorruptionError` with the accelerator off |
+| LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error" |
+| LZMA member without an end marker (bit 1 clear), with junk after its data or a declared size 1000 bytes short of it | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
+| PPMd member with junk or zero bytes after its end mark, a declared size 1000 bytes short of its data, or no end mark | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
+| DEFLATE, Deflate64, BZIP2 or Zstd member with junk, zero bytes or a second stream (a Zstd frame, a skippable one too) after its stream, accelerator off or on | `CorruptionError` (7-Zip: "There are some data after the end of the payload data") |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
@@ -209,7 +215,7 @@ rules:
 | --- | --- |
 | `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
-| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version |
+| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER` when the entry stores no data, `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` when it does, `extra["special_file_type"]` whatever the type, a directory-marked or reparse-flagged entry over such a mode included); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
 | `is_encrypted` | `flag_bits & 0x1 != 0`, or `compress_type == 99` (WinZip AES) whatever bit 0 says |
 

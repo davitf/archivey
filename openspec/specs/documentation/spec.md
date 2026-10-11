@@ -117,7 +117,8 @@ The end-user guide SHALL document the dual listing contract on
 `docs/errors-and-diagnostics.md`, with `docs/opening-and-listing.md` carrying a
 short pointer to it:
 
-- `members()` / `scan_members()` — complete listing or raise (assert completeness).
+- `members()` — complete listing or raise (assert completeness); on a streaming
+  reader, `members_report()` and raise its `error`.
 - `members_report()` → `MemberListReport` — recovered members plus `error` when the
   archive ends in a terminal listing failure (VISION damaged-input recipe).
 - `__iter__` / `stream_members` — yield recovered members then raise on the same
@@ -136,7 +137,7 @@ scope and separately reserved.
 | Case | Expected |
 | --- | --- |
 | Reader wants inventory of a possibly damaged tar | Reaches the `members_report()` recipe (check `error`, use report `.members`) — pointer on `opening-and-listing.md`, recipe on `errors-and-diagnostics.md` |
-| Reader wants “fail if not complete” | Directed to `members()` / `scan_members()` |
+| Reader wants “fail if not complete” | Directed to `members()`, or to raising `members_report().error` on a streaming reader |
 | Reader only wants to read a healthy archive | Meets the one-line "we raise rather than return short data" promise in the flow, and is not made to read the contract |
 | Reader looks for salvage/best-effort | Pointed to reserved/future salvage — not `members_report` |
 

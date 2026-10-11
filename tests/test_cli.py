@@ -15,12 +15,10 @@ from pathlib import Path
 import pytest
 
 from archivey import (
-    ArchiveFormat,
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
-    FormatSupport,
-    format_availability,
+    OverwritePolicy,
     open_archive,
 )
 from archivey.cli import test_cmd
@@ -198,7 +196,6 @@ def test_list_incomplete_members_report_exits_one(
             exclude=[],
             digests=False,
             verbose=False,
-            salvage=False,
             password=None,
             track_io=False,
         )
@@ -327,6 +324,23 @@ def test_salvage_reserved(sample_zip: Path) -> None:
         )
         == EXIT_USAGE
     )
+
+
+def test_top_level_errors_share_one_prefix(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A CliError, an ArchiveyError and an OSError that end the run print alike."""
+    not_an_archive = tmp_path / "plain.bin"
+    not_an_archive.write_bytes(b"not an archive at all\n" * 8)
+    runs = {
+        "CliError": ["list", str(sample_zip), "--salvage"],
+        "ArchiveyError": ["list", str(not_an_archive)],
+        "OSError": ["list", str(tmp_path / "missing.zip")],
+    }
+    for kind, argv in runs.items():
+        assert main(argv) != EXIT_OK, kind
+        err = capsys.readouterr().err
+        assert err.startswith("archivey: "), (kind, err)
 
 
 def test_include_flag_rejected(sample_zip: Path) -> None:
@@ -649,12 +663,6 @@ _SEEK_ONLY_PAYLOADS = {
     "rar": b"Rar!\x1a\x07\x01\x00" + bytes(1024),
     "iso": bytes(0x8001) + b"CD001\x01" + bytes(4096),
 }
-_SEEK_ONLY_FORMATS = {
-    "zip": ArchiveFormat.ZIP,
-    "7z": ArchiveFormat.SEVEN_Z,
-    "rar": ArchiveFormat.RAR,
-    "iso": ArchiveFormat.ISO,
-}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
@@ -671,10 +679,6 @@ def test_verbs_on_a_seek_only_fifo_say_to_copy_it_to_a_file(
     message must name the format as the user knows it (``7z``, not the enum's
     ``SEVEN_Z``) and what a CLI user can do, not a ``streaming=True`` they cannot pass.
     """
-    # ISO needs pycdlib; without it the open fails on the missing package before the
-    # seekability check, as in tests/test_non_seekable_refusal.py.
-    if format_availability(_SEEK_ONLY_FORMATS[fmt]).support is FormatSupport.NONE:
-        pytest.skip(f"{fmt} has no usable backend here")
     fifo = tmp_path / f"pipe.{fmt}"
     named_fifo_with_writer(fifo, _SEEK_ONLY_PAYLOADS[fmt])
     argv = [verb, str(fifo)]
@@ -1226,6 +1230,71 @@ def test_test_open_failure_still_prints_summary(
     assert "FAIL:" in err
     # sample_zip has 3 file members; archive-wide FAIL consumes one slot.
     assert "0 OK, 1 failed, 2 not tested" in err
+
+
+@pytest.mark.parametrize(("mode", "suffix"), [("w:gz", ".tar.gz"), ("w", ".tar")])
+def test_test_counts_a_truncated_tar_member_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, suffix: str
+) -> None:
+    """A TAR cut in half fails one member. The TAR pass then raises the same fault
+    again as it ends (the same object for a compressed TAR, an equal new one for a
+    plain TAR); that is the pass stopping, not a second failure."""
+    import random
+
+    rng = random.Random(0)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode=mode) as tf:
+        for i in range(5):
+            data = rng.randbytes(200_000)
+            info = tarfile.TarInfo(f"f{i}.bin")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    full = buf.getvalue()
+    archive = tmp_path / f"trunc{suffix}"
+    archive.write_bytes(full[: len(full) // 2])
+
+    assert main(["test", "--hide-progress", str(archive)]) == EXIT_FAIL
+    lines = capsys.readouterr().err.splitlines()
+    fails = [ln for ln in lines if ln.startswith("FAIL")]
+    assert len(fails) == 1
+    assert fails[0].startswith("FAIL f2.bin: ")
+    assert "test stopped; remaining members were not tested" in lines
+    # The pass-end error repeats the member's fault, so its detail is not printed again.
+    assert not [ln for ln in lines if ln.startswith("archivey: ")]
+    assert lines[-1] == "2 OK, 1 failed"
+
+
+def test_test_prints_a_different_pass_end_fault_without_counting_it(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that ends right after a failed member read, on a fault the member did not
+    report, prints that fault's detail and the stop notice, and counts one failure."""
+    from archivey.exceptions import ReadError
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    real = BaseArchiveReader.stream_members
+
+    class _Failing(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise ReadError("member fault")
+
+    def _fail_then_end(self: BaseArchiveReader, members: object = None) -> object:
+        for member, stream in real(self, members):  # type: ignore[arg-type]
+            if stream is None:
+                continue
+            stream.close()
+            yield member, _Failing()
+            raise ReadError("a different fault")
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _fail_then_end)
+    assert main(["test", "--hide-progress", str(sample_zip)]) == EXIT_FAIL
+    lines = capsys.readouterr().err.splitlines()
+    assert len([ln for ln in lines if ln.startswith("FAIL")]) == 1
+    assert "archivey: a different fault" in lines
+    assert "test stopped; remaining members were not tested" in lines
+    assert lines[-1] == "0 OK, 1 failed, 2 not tested"
 
 
 def test_test_early_abort_reports_not_tested(
@@ -2506,7 +2575,10 @@ def test_extract_stop_on_error_aborts_on_failure(
     assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "extraction stopped" in err
-    assert "1 member(s) extracted before the stop" in err
+    lines = err.splitlines()
+    stop = lines.index("1 member(s) extracted before the stop")
+    # The error that ended the run carries the prefix every run-ending line has.
+    assert lines[stop - 1].startswith("archivey: ")
     assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
     assert not (tmp_path / "out" / "b.txt").exists()
     assert not (tmp_path / "out" / "c.txt").exists()
@@ -3157,6 +3229,9 @@ def test_hoist_escapes_the_wrapper_when_the_move_fails(
     assert main(["x", str(archive)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert _report_lines(err, "files left in ") == ["files left in wev\\u2028il/"]
+    assert _report_lines(err, "archivey: hoist failed: ") == [
+        "archivey: hoist failed: refused"
+    ]
     assert "\u2028" not in err
 
 
@@ -3254,6 +3329,368 @@ def test_hoist_does_not_mark_a_file_root_as_a_directory(
     assert (tmp_path / "a (1).txt").read_bytes() == b"ARCHIVE"
     assert _report_lines(err, "moved to ") == ["moved to a (1).txt"]
     assert _summary_lines(err)[0].endswith("→ a (1).txt")
+
+
+# --- a hoist leaves what a direct extraction into the cwd leaves, and says so -------
+
+
+def _tree(root: Path) -> dict[str, bytes | None]:
+    """Every entry under ``root``, relative and ``/``-separated: a file's bytes, or
+    ``None`` for a directory."""
+    return {
+        p.relative_to(root).as_posix(): None if p.is_dir() else p.read_bytes()
+        for p in sorted(root.rglob("*"))
+    }
+
+
+def _hoist_and_direct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    archive_name: str,
+    entries: dict[str, bytes],
+    mine: dict[str, bytes],
+    overwrite: str = "rename",
+    args: tuple[str, ...] = (),
+    mine_modes: dict[str, int] | None = None,
+    dir_mode: int = 0o755,
+) -> tuple[tuple[dict[str, bytes | None], str], tuple[dict[str, bytes | None], str]]:
+    """Extract ``entries`` once through the wrapper and hoist, and once with ``-d .``,
+    each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``
+    and ``args``; return each tree and stderr. Both runs must exit 0.
+
+    A name ending in ``/`` is stored as a directory, at ``dir_mode``. A root directory
+    that collides with a file is stored, because a direct extraction fails on an
+    implied one. ``mine_modes`` sets the mode of the operator's entries it names."""
+    runs = []
+    for how, extra in (("hoist", []), ("direct", ["-d", "."])):
+        cwd = tmp_path / overwrite / how
+        cwd.mkdir(parents=True)
+        for name, data in mine.items():
+            (cwd / name).parent.mkdir(parents=True, exist_ok=True)
+            (cwd / name).write_bytes(data)
+        for name, mode in (mine_modes or {}).items():
+            (cwd / name).chmod(mode)
+        archive = tmp_path / archive_name
+        with tarfile.open(archive, "w") as tf:
+            for name, data in entries.items():
+                info = tarfile.TarInfo(name.rstrip("/"))
+                if name.endswith("/"):
+                    info.type = tarfile.DIRTYPE
+                    info.mode = dir_mode
+                    tf.addfile(info)
+                else:
+                    info.size = len(data)
+                    tf.addfile(info, io.BytesIO(data))
+        monkeypatch.chdir(cwd)
+        argv = ["x", str(archive), "--overwrite", overwrite, *args, *extra]
+        assert main(argv) == EXIT_OK
+        runs.append((_tree(cwd), capsys.readouterr().err))
+    return runs[0], runs[1]
+
+
+# The lines only the hoist prints: where the wrapper went.
+_HOIST_ONLY = ("extracting into ", "moved to ", "removed wrapper")
+
+
+def _as_direct(hoist_err: str) -> list[str]:
+    """The hoist's stderr lines as ``-d .`` would print them, sorted: without the lines
+    about the wrapper, and with the hoist's ``skipped:`` (it discarded its own copy) as
+    ``not overwritten:`` (extraction did not write it).
+
+    Sorted because the order differs: the merge prints its own lines while it moves,
+    before the per-member lines, and ``-d .`` prints every line in member order. Pass
+    ``-d .``'s stderr through it too."""
+    return sorted(
+        f"not overwritten: {ln.removeprefix('skipped: ')}"
+        if ln.startswith("skipped: ")
+        else ln
+        for ln in hoist_err.split("\n")
+        if ln and not ln.startswith(_HOIST_ONLY)
+    )
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [{"foo": b"ARCHIVE"}, {"foo/": b"", "foo/x.txt": b"ARCHIVE"}],
+    ids=["file-root", "dir-root"],
+)
+def test_hoist_renames_a_root_as_a_direct_extraction_does(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entries: dict[str, bytes],
+) -> None:
+    """``foo.tar`` holding ``foo``, with the operator's own ``foo`` in the cwd: the
+    hoist renames the root to ``foo (1)``, the name ``-d .`` gives it.
+
+    It used to move the root to ``foo (2)``, as its own wrapper held ``foo (1)``.
+    """
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, "foo.tar", entries, {"foo": b"MINE"}
+    )
+    assert "extracting into foo (1)/" in hoist_err
+    # Nothing was flattened: the root moved, under a new name.
+    assert "moved to foo (1)" in hoist_err
+    assert "removed wrapper" not in hoist_err
+    assert hoisted == direct
+    assert hoisted["foo"] == b"MINE"
+    assert _report_lines(hoist_err, "renamed: ") == ["renamed: foo -> foo (1)"]
+    assert _report_lines(direct_err, "renamed: ") == ["renamed: foo -> foo (1)"]
+
+
+@pytest.mark.parametrize(
+    "mine",
+    [{}, {"top": b"MINE"}],
+    ids=["root-kept-its-name", "root-renamed"],
+)
+def test_hoist_reports_member_paths_where_they_landed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine: dict[str, bytes],
+) -> None:
+    """The per-member lines name each member where it is after the hoist.
+
+    They named it inside the wrapper (``t/top/c%02``), which the hoist removed.
+    """
+    entries = {"top/": b"", "top/c\x02": b"c", "top/a\x01b/f": b"f"}
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, "t.tar", entries, mine
+    )
+    assert "extracting into t/" in hoist_err
+    assert hoisted == direct
+    root = "top (1)" if mine else "top"
+    rewritten = _report_lines(hoist_err, "name rewritten: ")
+    assert rewritten == _report_lines(direct_err, "name rewritten: ")
+    assert sorted(rewritten) == [
+        f"name rewritten: top/a\\x01b/f -> {root}/a%01b/f",
+        f"name rewritten: top/c\\x02 -> {root}/c%02",
+    ]
+    assert _report_lines(hoist_err, "renamed: ") == _report_lines(
+        direct_err, "renamed: "
+    )
+
+
+@pytest.mark.parametrize("overwrite", ["rename", "skip", "replace"])
+@pytest.mark.parametrize(
+    ("archive_name", "entries", "mine", "args"),
+    [
+        (
+            "t.tar",
+            {"top/": b"", "top/c\x02": b"ARCHIVE"},
+            {"top/c%02": b"MINE"},
+            (),
+        ),
+        (
+            "t3.tar",
+            {"top/": b"", "top/a\x01": b"A", "top/c\x02": b"ARCHIVE"},
+            {"top/c%02": b"MINE"},
+            (),
+        ),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ()),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ("-v",)),
+        (
+            "c.tar",
+            {"/c\x02": b"ARCHIVE"},
+            {"c%02": b"MINE"},
+            ("--policy", "standard"),
+        ),
+    ],
+    ids=[
+        "collision-inside-root",
+        "collision-inside-root-after-another-line",
+        "collision-at-root",
+        "collision-at-root-verbose",
+        "collision-at-rerooted-root",
+    ],
+)
+def test_hoist_reports_what_the_merge_did_under_each_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    archive_name: str,
+    entries: dict[str, bytes],
+    mine: dict[str, bytes],
+    args: tuple[str, ...],
+) -> None:
+    """A member whose rewritten name collides with the operator's file while the
+    hoist merges: the layout and the per-member lines are those of ``-d .``.
+
+    Under ``rename`` the line names ``c%02 (1)``, where the member is; under ``skip``
+    the hoist discarded the member, so no ``name rewritten:`` line names the operator's
+    ``c%02`` as if it were the member (the hoist's ``skipped:`` line stands for
+    ``-d .``'s ``not overwritten:``). Both used to name ``c%02``.
+    """
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, archive_name, entries, mine, overwrite, args
+    )
+    assert hoisted == direct
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    if archive_name == "t3.tar" and overwrite == "rename":
+        # The order the cli spec states: the merge's own line, then the per-member ones.
+        lines = hoist_err.split("\n")
+        rewritten = [
+            i for i, ln in enumerate(lines) if ln.startswith("name rewritten: ")
+        ]
+        assert len(rewritten) == 2
+        assert lines.index("renamed: top/c%02 -> top/c%02 (1)") < min(rewritten)
+    if overwrite == "skip":
+        (where,) = mine
+        assert _report_lines(hoist_err, "skipped: ") == [f"skipped: {where}"]
+        assert _report_lines(direct_err, "not overwritten: ") == [
+            f"not overwritten: {where}"
+        ]
+
+
+def test_hoist_reports_an_existing_directory_keeping_its_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The archive's ``top/`` (0755) merges into the operator's ``top/`` (0700): the
+    operator's keeps its mode, and the hoist says so with the line ``-d .`` prints.
+
+    Only the library printed it, and after a hoist the library never meets the
+    operator's directory: the merge does.
+
+    On Windows a mode is only the read-only attribute, and 0700 is as writable as
+    0755, so the operator's directory there is a read-only one (0500, shown as 0555)."""
+    mine_mode, shown = (0o500, 0o555) if os.name == "nt" else (0o700, 0o700)
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        "t.tar",
+        {"top/": b"", "top/a.txt": b"ARCHIVE"},
+        {"top/m": b"MINE"},
+        mine_modes={"top": mine_mode},
+    )
+    assert hoisted == direct
+    line = f"kept existing directory's mode {shown:04o}: top"
+    assert _report_lines(direct_err, "kept ") == [line]
+    assert _report_lines(hoist_err, "kept ") == [line]
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    for how in ("hoist", "direct"):
+        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == shown
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates Windows modes with chmod")
+@pytest.mark.parametrize(
+    ("mine_mode", "member_mode", "kept"),
+    [
+        (0o700, 0o755, None),
+        (0o500, 0o755, 0o555),
+        (0o700, 0o555, 0o777),
+        (0o500, 0o555, None),
+    ],
+    ids=["both-writable", "mine-read-only", "member-read-only", "both-read-only"],
+)
+def test_hoist_and_direct_agree_on_a_kept_mode_under_windows_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine_mode: int,
+    member_mode: int,
+    kept: int | None,
+) -> None:
+    """Simulated on POSIX: on Windows a directory's mode is only its read-only
+    attribute, which ``os.stat`` shows as ``0o777`` or ``0o555``. The hoist compares
+    the mode extraction gave the archive's ``top/``; ``-d .`` compares the member's
+    mode as Windows stores it. Both print the line exactly when the read-only
+    attribute differs, and with the same mode. STANDARD keeps a directory's stored
+    mode; STRICT would make every one 0755."""
+    from archivey.internal import extraction
+
+    real_chmod = os.chmod
+
+    def windows_chmod(path, mode, *args, **kwargs):  # type: ignore[no-untyped-def]
+        st = os.stat(path, dir_fd=kwargs.get("dir_fd"))
+        if stat.S_ISDIR(st.st_mode):
+            mode = 0o777 if mode & stat.S_IWUSR else 0o555
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(extraction, "_WINDOWS", True)
+    monkeypatch.setattr(os, "chmod", windows_chmod)
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        "t.tar",
+        {"top/": b""},
+        {"top/m": b"MINE"},
+        args=("--policy", "standard"),
+        mine_modes={"top": mine_mode},
+        dir_mode=member_mode,
+    )
+    assert hoisted == direct
+    lines = [] if kept is None else [f"kept existing directory's mode {kept:04o}: top"]
+    assert _report_lines(direct_err, "kept ") == lines
+    assert _report_lines(hoist_err, "kept ") == lines
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    shown = 0o777 if mine_mode & stat.S_IWUSR else 0o555
+    for how in ("hoist", "direct"):
+        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == shown
+
+
+def test_stopped_hoist_names_members_left_in_the_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Under ``--overwrite error`` the hoist stops at the operator's ``c%02`` and
+    leaves the member in the wrapper: its line names ``c/c%02``, where it is, not the
+    operator's ``c%02``."""
+    archive = tmp_path / "c.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("c\x02")
+        info.size = 7
+        tf.addfile(info, io.BytesIO(b"ARCHIVE"))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "c%02").write_bytes(b"MINE")
+    monkeypatch.chdir(cwd)
+    assert main(["x", str(archive), "--overwrite", "error"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "hoist stopped; remaining files left in c/" in err
+    assert _report_lines(err, "name rewritten: ") == [
+        "name rewritten: c\\x02 -> c/c%02"
+    ]
+    assert (cwd / "c" / "c%02").read_bytes() == b"ARCHIVE"
+    assert (cwd / "c%02").read_bytes() == b"MINE"
+
+
+def test_flatten_failing_part_way_names_each_entry_where_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``s/s/a.txt`` moved up to ``s/a.txt`` before the flatten failed on ``b.txt``:
+    each is named where it is, not both inside the directory ``a.txt`` left."""
+    from archivey.cli import extract_cmd
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "s" / "s").mkdir(parents=True)
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / "s" / "s" / name).write_bytes(b"x")
+    real_rename = extract_cmd._rename
+    calls = []
+
+    def rename_once(src: Path, dest: Path) -> None:
+        calls.append(src)
+        if len(calls) > 1:
+            raise OSError(28, "No space left on device")
+        real_rename(src, dest)
+
+    monkeypatch.setattr(extract_cmd, "_rename", rename_once)
+    result = extract_cmd.maybe_hoist_single_root(
+        Path("s"), overwrite=OverwritePolicy.RENAME, err=io.StringIO()
+    )
+    assert not result.ok
+    assert (tmp_path / "s" / "a.txt").exists()
+    assert (tmp_path / "s" / "s" / "b.txt").exists()
+    target, moves = Path("s"), result.moves
+    assert extract_cmd._relative_name(Path("s/s/a.txt"), target, moves) == "s/a.txt"
+    assert extract_cmd._relative_name(Path("s/s/b.txt"), target, moves) == "s/s/b.txt"
 
 
 def test_relative_name_falls_back_to_forward_slashes() -> None:

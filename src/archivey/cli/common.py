@@ -62,11 +62,6 @@ def reject_empty_path(value: str, *, arg: str) -> None:
         )
 
 
-def reject_salvage(salvage: bool) -> None:
-    if salvage:
-        raise CliError("--salvage is not implemented yet", code=EXIT_USAGE)
-
-
 @contextmanager
 def open_for_cli(
     archive: str | Path,
