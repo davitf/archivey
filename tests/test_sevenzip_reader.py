@@ -2889,7 +2889,6 @@ def _special_file_with_data_record(attributes: int) -> SevenZipFileRecord:
     return replace(
         _created_slot_record(attributes),
         emptystream=False,
-        is_empty_file=False,
         folder_index=0,
         file_in_folder=0,
         uncompressed_size=5,
