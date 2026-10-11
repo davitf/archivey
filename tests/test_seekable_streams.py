@@ -1495,14 +1495,94 @@ def test_a_raise_mid_read_keeps_the_decoded_bytes(small_seek_cap: int, n: int) -
         assert stream.seek(0, io.SEEK_END) == len(full)
 
 
+def test_planning_a_seek_builds_the_index_the_seek_would() -> None:
+    """The plain resume query reads the table as it stands; one for a planned seek
+    builds the index a forward seek would build first, so the answer is the point
+    that seek will jump to."""
+    from archivey.internal.streams.resume import (
+        ask_resume_offset,
+        ask_seek_resume_offset,
+    )
+
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    target = sum(len(part) for part in LZIP_PARTS[:10]) + 5
+    with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read(10) == LZIP_PARTS[0][:10]
+        assert ask_resume_offset(stream, target) == 0
+        planned, held = ask_seek_resume_offset(stream, target)
+        assert planned == target - 5
+        assert held is None
+        assert ask_resume_offset(stream, target) == planned
+
+
+@pytest.mark.parametrize("wrapper", ["ArchiveStream", "VerifyingStream"])
+def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> None:
+    """A report the planning index build escalates raises from the seek it planned.
+
+    Trailing junk defeats the lzip index scan (``SEEK_INDEX_DEGRADED``) and leaves
+    no seek point, so the member verifier defers the forward seek to the next read.
+    The report must still come from this seek, with the position moved, and nothing
+    may be left behind to raise from a later read or seek.
+    """
+    from archivey import DiagnosticPolicy
+    from archivey.diagnostics import DiagnosticCode, DiagnosticDisposition
+    from archivey.exceptions import DiagnosticRaisedError
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
+    from archivey.internal.streams.verify import VerifyingStream
+    from archivey.types import HashAlgorithm, crc32_digest
+
+    data = random.Random(7).randbytes(2000)
+    compressed = make_multi_member_lzip([data]) + b"J" * (TRAILING_DATA_SEARCH + 14)
+    policy = DiagnosticPolicy.strict()
+    policy = dataclasses.replace(
+        policy,
+        overrides={
+            **policy.overrides,
+            DiagnosticCode.ARCHIVE_TRAILING_DATA: DiagnosticDisposition.COLLECT,
+        },
+    )
+    collector = DiagnosticCollector(policy=policy)
+    hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(data))}
+    stream: BinaryIO
+    if wrapper == "ArchiveStream":
+        stream = ArchiveStream(
+            lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            translate=lambda _exc: None,
+            collector=collector,
+            expected_hashes=hashes,
+            expected_size=len(data),
+        )
+    else:
+        stream = VerifyingStream(
+            LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            hashes,
+            expected_size=len(data),
+            collector=collector,
+        )
+    with stream:
+        assert stream.read(10) == data[:10]
+        with pytest.raises(DiagnosticRaisedError) as info:
+            stream.seek(500)
+        assert info.value.diagnostic.code is DiagnosticCode.SEEK_INDEX_DEGRADED
+        assert stream.tell() == 500
+        assert stream._digest_intact() is True  # deferred, not jumped
+        assert stream.read(10) == data[500:510]
+        stream.seek(5)
+        assert stream.read() == data[5:]
+
+
 @pytest.mark.parametrize("wrapper", ["ArchiveStream", "VerifyingStream"])
 def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     small_seek_cap: int, wrapper: str
 ) -> None:
     """Both verifying wrappers learn where a seek that raised left the stream.
 
-    The raise comes after the inner seek moved, so the verifier must drop the
-    digest and track the new position, or reading on reports a false truncation.
+    The raise comes after the inner seek moved, so the verifier must track the new
+    position and drop the digest on the read that skips the gap, or reading on
+    reports a false truncation or mismatch. The target lies past an index point, so
+    the seek jumps rather than decoding the gap through the verifier.
     """
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.streams.archive_stream import ArchiveStream
@@ -1531,9 +1611,9 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
         )
     with stream:
         with pytest.raises(DiagnosticRaisedError):
-            stream.seek(500)
-        assert stream.tell() == 500
-        assert stream.read() == full[500:]
+            stream.seek(4000)
+        assert stream.tell() == 4000
+        assert stream.read() == full[4000:]
 
 
 @pytest.mark.parametrize("n", [-1, 700])

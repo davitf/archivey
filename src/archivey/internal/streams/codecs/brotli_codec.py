@@ -66,6 +66,7 @@ class BrotliCodec(StreamCodec):
             source,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
+            refuse_input_after_end=config.refuse_input_after_end,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

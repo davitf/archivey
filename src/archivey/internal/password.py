@@ -9,7 +9,12 @@ from contextvars import ContextVar
 from typing import TypeGuard, TypeVar
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
-from archivey.exceptions import ArchiveyUsageError, EncryptionError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    EncryptionError,
+    _UsageTypeError,
+    _UsageValueError,
+)
 from archivey.internal.arg_checks import describe_value
 from archivey.types import ArchiveMember
 
@@ -90,7 +95,7 @@ def _to_bytes(password: str | bytes) -> bytes:
     try:
         return password.encode("utf-8", errors="surrogateescape")
     except UnicodeEncodeError:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             "The password contains a lone surrogate code point, which is neither "
             "text nor an escaped byte, so it cannot be encoded for any archive format."
         ) from None
@@ -147,7 +152,7 @@ class _PasswordCandidates:
             candidates_list: list[bytes] = []
             for item in password:
                 if not isinstance(item, (str, bytes)):
-                    raise ArchiveyUsageError(
+                    raise _UsageTypeError(
                         f"password= sequence items must be str or bytes, but one was "
                         f"{describe_value(item)}."
                     )
@@ -159,7 +164,7 @@ class _PasswordCandidates:
             # surfaced at the first encrypted member as `'int' object is not callable` —
             # a raw TypeError, from a call the caller never wrote, about an argument
             # they passed several operations earlier.
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 f"password= takes a str, bytes, a sequence of those, a provider "
                 f"callable, or None, but got {describe_value(password)}."
             )
@@ -274,7 +279,7 @@ class _PasswordCandidates:
             # ours: without this, its return value reached the cipher and failed as
             # `TypeError: a bytes-like object is required`, naming neither the
             # provider nor the password.
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 f"The password provider returned {describe_value(raw)}; it must "
                 f"return a str, bytes, or None."
             )

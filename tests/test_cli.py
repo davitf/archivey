@@ -15,13 +15,10 @@ from pathlib import Path
 import pytest
 
 from archivey import (
-    ArchiveFormat,
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
-    FormatSupport,
     OverwritePolicy,
-    format_availability,
     open_archive,
 )
 from archivey.cli import test_cmd
@@ -199,7 +196,6 @@ def test_list_incomplete_members_report_exits_one(
             exclude=[],
             digests=False,
             verbose=False,
-            salvage=False,
             password=None,
             track_io=False,
         )
@@ -328,6 +324,23 @@ def test_salvage_reserved(sample_zip: Path) -> None:
         )
         == EXIT_USAGE
     )
+
+
+def test_top_level_errors_share_one_prefix(
+    sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A CliError, an ArchiveyError and an OSError that end the run print alike."""
+    not_an_archive = tmp_path / "plain.bin"
+    not_an_archive.write_bytes(b"not an archive at all\n" * 8)
+    runs = {
+        "CliError": ["list", str(sample_zip), "--salvage"],
+        "ArchiveyError": ["list", str(not_an_archive)],
+        "OSError": ["list", str(tmp_path / "missing.zip")],
+    }
+    for kind, argv in runs.items():
+        assert main(argv) != EXIT_OK, kind
+        err = capsys.readouterr().err
+        assert err.startswith("archivey: "), (kind, err)
 
 
 def test_include_flag_rejected(sample_zip: Path) -> None:
@@ -650,12 +663,6 @@ _SEEK_ONLY_PAYLOADS = {
     "rar": b"Rar!\x1a\x07\x01\x00" + bytes(1024),
     "iso": bytes(0x8001) + b"CD001\x01" + bytes(4096),
 }
-_SEEK_ONLY_FORMATS = {
-    "zip": ArchiveFormat.ZIP,
-    "7z": ArchiveFormat.SEVEN_Z,
-    "rar": ArchiveFormat.RAR,
-    "iso": ArchiveFormat.ISO,
-}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
@@ -672,10 +679,6 @@ def test_verbs_on_a_seek_only_fifo_say_to_copy_it_to_a_file(
     message must name the format as the user knows it (``7z``, not the enum's
     ``SEVEN_Z``) and what a CLI user can do, not a ``streaming=True`` they cannot pass.
     """
-    # ISO needs pycdlib; without it the open fails on the missing package before the
-    # seekability check, as in tests/test_non_seekable_refusal.py.
-    if format_availability(_SEEK_ONLY_FORMATS[fmt]).support is FormatSupport.NONE:
-        pytest.skip(f"{fmt} has no usable backend here")
     fifo = tmp_path / f"pipe.{fmt}"
     named_fifo_with_writer(fifo, _SEEK_ONLY_PAYLOADS[fmt])
     argv = [verb, str(fifo)]
@@ -1227,6 +1230,71 @@ def test_test_open_failure_still_prints_summary(
     assert "FAIL:" in err
     # sample_zip has 3 file members; archive-wide FAIL consumes one slot.
     assert "0 OK, 1 failed, 2 not tested" in err
+
+
+@pytest.mark.parametrize(("mode", "suffix"), [("w:gz", ".tar.gz"), ("w", ".tar")])
+def test_test_counts_a_truncated_tar_member_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, suffix: str
+) -> None:
+    """A TAR cut in half fails one member. The TAR pass then raises the same fault
+    again as it ends (the same object for a compressed TAR, an equal new one for a
+    plain TAR); that is the pass stopping, not a second failure."""
+    import random
+
+    rng = random.Random(0)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode=mode) as tf:
+        for i in range(5):
+            data = rng.randbytes(200_000)
+            info = tarfile.TarInfo(f"f{i}.bin")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    full = buf.getvalue()
+    archive = tmp_path / f"trunc{suffix}"
+    archive.write_bytes(full[: len(full) // 2])
+
+    assert main(["test", "--hide-progress", str(archive)]) == EXIT_FAIL
+    lines = capsys.readouterr().err.splitlines()
+    fails = [ln for ln in lines if ln.startswith("FAIL")]
+    assert len(fails) == 1
+    assert fails[0].startswith("FAIL f2.bin: ")
+    assert "test stopped; remaining members were not tested" in lines
+    # The pass-end error repeats the member's fault, so its detail is not printed again.
+    assert not [ln for ln in lines if ln.startswith("archivey: ")]
+    assert lines[-1] == "2 OK, 1 failed"
+
+
+def test_test_prints_a_different_pass_end_fault_without_counting_it(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that ends right after a failed member read, on a fault the member did not
+    report, prints that fault's detail and the stop notice, and counts one failure."""
+    from archivey.exceptions import ReadError
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    real = BaseArchiveReader.stream_members
+
+    class _Failing(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise ReadError("member fault")
+
+    def _fail_then_end(self: BaseArchiveReader, members: object = None) -> object:
+        for member, stream in real(self, members):  # type: ignore[arg-type]
+            if stream is None:
+                continue
+            stream.close()
+            yield member, _Failing()
+            raise ReadError("a different fault")
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _fail_then_end)
+    assert main(["test", "--hide-progress", str(sample_zip)]) == EXIT_FAIL
+    lines = capsys.readouterr().err.splitlines()
+    assert len([ln for ln in lines if ln.startswith("FAIL")]) == 1
+    assert "archivey: a different fault" in lines
+    assert "test stopped; remaining members were not tested" in lines
+    assert lines[-1] == "0 OK, 1 failed, 2 not tested"
 
 
 def test_test_early_abort_reports_not_tested(
@@ -2507,7 +2575,10 @@ def test_extract_stop_on_error_aborts_on_failure(
     assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "extraction stopped" in err
-    assert "1 member(s) extracted before the stop" in err
+    lines = err.splitlines()
+    stop = lines.index("1 member(s) extracted before the stop")
+    # The error that ended the run carries the prefix every run-ending line has.
+    assert lines[stop - 1].startswith("archivey: ")
     assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
     assert not (tmp_path / "out" / "b.txt").exists()
     assert not (tmp_path / "out" / "c.txt").exists()
@@ -3158,6 +3229,9 @@ def test_hoist_escapes_the_wrapper_when_the_move_fails(
     assert main(["x", str(archive)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert _report_lines(err, "files left in ") == ["files left in wev\\u2028il/"]
+    assert _report_lines(err, "archivey: hoist failed: ") == [
+        "archivey: hoist failed: refused"
+    ]
     assert "\u2028" not in err
 
 

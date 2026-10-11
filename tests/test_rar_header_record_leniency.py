@@ -24,9 +24,9 @@ from archivey import (
     DiagnosticCode,
     DiagnosticPolicy,
     DiagnosticRaisedError,
-    MemberHeaderRecordContext,
     open_archive,
 )
+from archivey.diagnostics import MemberHeaderRecordContext
 from archivey.exceptions import TruncatedError
 from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import (

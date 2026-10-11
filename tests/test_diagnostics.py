@@ -930,6 +930,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         # Fires only on a stream abandoned before EOF; in strict it would turn a peek
         # at a ZipCrypto member into DiagnosticRaisedError.
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
+        # ``zip -FI`` writes the shape and the bytes are delivered; nothing hidden.
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
     }
 
 

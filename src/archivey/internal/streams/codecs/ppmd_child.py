@@ -9,7 +9,8 @@ end in zeros at a chunk boundary. ``PpmdDecoder`` avoids the question for member
 enough to hand pyppmd whole; larger ones decode through :class:`PpmdChildDecoder`.
 
 :class:`PpmdChildDecoder` has the same surface as ``pyppmd.Ppmd7Decoder`` /
-``Ppmd8Decoder`` as ``PpmdDecoder`` uses it (``decode``, ``eof``, ``needs_input``), so
+``Ppmd8Decoder`` as ``PpmdDecoder`` uses it (``decode``, ``eof``, ``needs_input``,
+``unused_data``), so
 all the decoding logic stays in ``PpmdDecoder``; the child only owns the native object.
 The child runs ``ppmd_worker.py`` as a script, which imports nothing from ``archivey``.
 """
@@ -30,7 +31,12 @@ from archivey.internal.streams.child_process import (
     reap,
     spawn,
 )
-from archivey.internal.streams.codecs.ppmd_worker import OPEN, REPLY, REQUEST
+from archivey.internal.streams.codecs.ppmd_worker import (
+    OPEN,
+    REPLY,
+    REQUEST,
+    UNUSED_DATA_REQUEST,
+)
 
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
@@ -139,8 +145,8 @@ class PpmdChildDecoder:
 
     One child per instance. ``decode`` blocks for the child's reply. After the child
     dies, every later ``decode`` raises the same error again, and :meth:`close` still
-    reaps it. ``eof``, ``needs_input`` and ``unused_size`` (the length of the
-    decoder's ``unused_data``) are the values the child reported with its last reply.
+    reaps it. ``eof`` and ``needs_input`` are the values the child reported with its
+    last reply; ``unused_data`` asks the child for its decoder's.
     """
 
     def __init__(
@@ -148,8 +154,6 @@ class PpmdChildDecoder:
     ) -> None:
         self.eof = False
         self.needs_input = True
-        # ``len(unused_data)`` of the child's decoder, as of its last reply.
-        self.unused_size = 0
         # Set when a reply was cut short (see ``_receive``).
         self._interrupted = False
         # Set when the child died: what every later ``decode`` raises again.
@@ -231,7 +235,7 @@ class PpmdChildDecoder:
         proc = self._proc
         assert proc is not None and proc.stdout is not None
         try:
-            status, eof, needs_input, unused, size = REPLY.unpack(
+            status, eof, needs_input, size = REPLY.unpack(
                 _read_exact(proc.stdout, REPLY.size)
             )
             payload = _read_exact(proc.stdout, size)
@@ -245,7 +249,6 @@ class PpmdChildDecoder:
             raise
         self.eof = bool(eof)
         self.needs_input = bool(needs_input)
-        self.unused_size = unused
         if status == 0:
             return payload
         name, _, message = payload.decode("utf-8", "replace").partition("\n")
@@ -255,8 +258,16 @@ class PpmdChildDecoder:
         raise known(message)
 
     def decode(self, data: bytes | bytearray | memoryview, length: int) -> bytes:
+        return self._request(length, bytes(data))
+
+    @property
+    def unused_data(self) -> bytes:
+        """The child decoder's ``unused_data``: its input left past ``eof``."""
+        return self._request(UNUSED_DATA_REQUEST, b"")
+
+    def _request(self, length: int, data: bytes) -> bytes:
         try:
-            self._send(REQUEST.pack(length, len(data)), bytes(data))
+            self._send(REQUEST.pack(length, len(data)), data)
             return self._receive()
         except PpmdChildError as exc:
             if is_crash(exc.returncode):

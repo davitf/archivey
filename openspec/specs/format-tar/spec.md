@@ -58,6 +58,7 @@ rules:
 | PAX `mtime` | Overrides `TarInfo.mtime`, preserving sub-second precision / timezone information |
 | `uname`, `gname`, `uid`, `gid` | Directly from `TarInfo` |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
+| device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a GNU dumpdir, a volume header) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from `linkname` |
 | `extra["tar.pax_headers"]` | The member's PAX records, the global (`g`) records in force included. Read-only: a change raises `TypeError`. Members with no records of their own share one per set of global records: one copy per member cost the global records again for every 512-byte member header. Read-only so the sharing cannot be seen: a change through one member could otherwise show on the others. It is a `dict` subclass, so `json.dumps` takes it, and a copy, deep copy or pickle round trip gives a plain `dict` |
 | old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
@@ -143,7 +144,7 @@ copy. Device bookkeeping MAY skip doomed attempts but is not required for correc
 | Case | Expected |
 | --- | --- |
 | Unfiltered extract-all | Hardlinks resolve in one pass; no upfront member list fetch |
-| Filter excludes source but selects link and a free member list exists | One planned pass writes source bytes to first selected link path; remaining links use `os.link`; source name not created |
+| Filter excludes source but selects link and a free member list exists | Same as with no free list (the planned single pass is optional and not implemented): the orphan is resolved in the second pass; source name not created |
 | Filter orphans links on seekable plain/compressed TAR with no free list | No speculative scan; all orphans resolved in one second pass; compressed stream decompressed at most twice total |
 | Filter does not orphan any link | Single pass; no second pass; no upfront list fetch |
 | Orphaned link on forward-only source | Per-member failure follows `OnError` |
@@ -189,6 +190,13 @@ on seeing the bytes tarfile read, and SHALL NOT key the decision on
   which would otherwise read as the second trailer block). Emitted with
   `observed_kind="nonzero"` after the diagnostic's normal
   count/retention/log/callback ordering, then escalated to `CorruptionError`.
+- **Device, FIFO or socket header with a non-zero size → `CorruptionError`, whatever the
+  diagnostic policy.** A typeflag `3`, `4` or `6` header parses, so the end-of-archive
+  classification below never sees it; it SHALL be refused at the header, before that
+  classification runs, in both access modes (§Map TAR member metadata). Such an entry
+  has no data: GNU tar and libarchive ignore the size field and resync at the next
+  header, while reading the declared bytes as headers would either desynchronise the
+  walk or, for an all-zero payload, end the listing on a false end marker.
 - **Damaged second trailer block → ordinary diagnostic.** When tarfile stopped on a
   zero block (the first trailer block) after at least one member, and the block after
   it is full and non-null, the listing is whole and only the end-of-archive marker is
@@ -219,7 +227,7 @@ The rejected-header escalation to `CorruptionError` SHALL take precedence over
 The archive-level EOF check runs at the end of the member scan, so its escalation is a
 terminal listing error carried through the `partial-members-and-errors` report model:
 
-- `members()` / `scan_members()` are complete-or-raise — they raise the stored escalation.
+- `members()` is complete-or-raise — it raises the stored escalation.
 - `members_report()` (and `members_report_if_available()`) return the recovered prefix plus
   the terminal `error`, so a caller can still inspect the salvageable members.
 - `__iter__` (both access modes) yields the recovered members, then raises.

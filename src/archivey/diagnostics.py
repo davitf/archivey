@@ -24,7 +24,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
 
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import ArchiveyError, _UsageValueError
+from archivey.internal.arg_checks import check_instance
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
@@ -74,10 +75,12 @@ class DiagnosticCode(StrEnum):
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
+    MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
+    MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -258,11 +261,17 @@ class ArchiveEofContext(_JsonSafeContext):
       size the end record gives, and that field is cut short. ``expected_bytes`` is
       that directory size and ``observed_bytes`` where the entry would end, both
       counted from the directory's start; ``observed_kind`` is ``"nonzero"``.
-    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the TAR
-      trailer within the first MiB past it, so the file carries something the listing
-      did not account for. The trailer was complete, or its second block was damaged
-      and reported as ``"second_zero_block"`` first. ``observed_bytes`` is that byte's
-      offset past the trailer.
+    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
+      archive's end within the first MiB past it, so the file carries something the
+      listing did not account for. ``format`` names where the end was: ``"tar"`` for
+      the TAR trailer (complete, or its second block damaged and reported as
+      ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
+      header and its last packed stream, ``"rar"`` for a RAR volume's end-of-archive
+      block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
+      its MBR or GPT lists and the GPT backup header. ``observed_bytes`` is that byte's
+      offset past the end. RAR emits one per volume, and its offset counts from that
+      volume's end block, unlike member offsets, which count across the whole set; the
+      message names the volume.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
       which are neither another stream nor padding the format allows. ``format`` names
@@ -358,6 +367,25 @@ class DigestContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class DirectoryDataContext(_JsonSafeContext):
+    """A directory entry declares member data, which extraction does not write.
+
+    ``size`` is the declared uncompressed size and ``compressed_size`` the stored
+    one (``None`` where the format does not record it). The directory is still
+    created. A declared size is reachable through ``open()`` / ``read()`` where the
+    backend can decode the body (RAR delivers stored data only); a ``size`` of 0 over
+    a non-empty body has nothing ``open()`` could return.
+    """
+
+    kind: Literal["directory_data"] = "directory_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    size: int = 0
+    compressed_size: int | None = None
+
+
+@dataclass(frozen=True)
 class EncryptedVerificationContext(_JsonSafeContext):
     """An encrypted member's stream closed before its digest checked the password.
 
@@ -366,11 +394,11 @@ class EncryptedVerificationContext(_JsonSafeContext):
     ``pw_verify``), ``"confirm_budget_exhausted"`` (confirmation survived its bounded
     prefix without reaching a checksum) or ``"no_password_check"`` (the member carries
     no password check at all, as RAR3/4 data does, so nothing accepted the password
-    before decoding). ``reason`` names why the digest was not
-    reached: ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek gave up
-    a CRC; a WinZip AES HMAC survives seeks, so for an AES member it means only that a
-    failed seek left the position unknown). No password or key material is ever
-    carried.
+    before decoding). ``reason`` names why the digest was not reached:
+    ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek that jumped past
+    the bytes read so far gave up a CRC; a WinZip AES HMAC survives seeks, so for an
+    AES member it means only that a failed seek left the position unknown). No
+    password or key material is ever carried.
 
     The code answers a question a member stream cannot answer for itself yet. Retire it
     when member streams report their verification state (``dev-docs/IDEAS.md``,
@@ -434,6 +462,27 @@ class SelectorUnmatchedContext(_JsonSafeContext):
     entry_kind: Literal["name", "member"] = "name"
 
 
+@dataclass(frozen=True)
+class SpecialFileDataContext(_JsonSafeContext):
+    """A member whose stored type is a device, FIFO or socket carries data, so it is
+    listed as a ``FILE`` (design rule DR-25).
+
+    Info-ZIP's ``zip -FI`` stores a named pipe's content under the pipe's own FIFO mode,
+    and unzip, 7-Zip, bsdtar and ``zipfile`` all write such an entry as a regular file,
+    so archivey does too: the bytes are the content. ``special_file_type`` is what the
+    archive called the entry (the same value as ``extra["special_file_type"]``) and
+    ``size`` the bytes it stores. Advisory: nothing is hidden or misread, so it is not
+    in :data:`ARCHIVE_INTEGRITY_CODES`.
+    """
+
+    kind: Literal["special_file_data"] = "special_file_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    special_file_type: str = ""
+    size: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -448,10 +497,12 @@ DiagnosticContext = (
     | MemberHeaderRecordContext
     | SymlinkTargetContext
     | DigestContext
+    | DirectoryDataContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
     | SelectorUnmatchedContext
+    | SpecialFileDataContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -474,10 +525,12 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
     }
 )
 
@@ -497,12 +550,13 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The membership of :meth:`DiagnosticPolicy.strict`. Eight codes are deliberately **out**,
+The membership of :meth:`DiagnosticPolicy.strict`. Nine codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -529,6 +583,9 @@ and the reasons are part of the contract rather than an oversight:
 - ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
   archive. A job that passes one fixed list of names to many archives would otherwise
   raise on every archive that lacks one of them.
+- ``MEMBER_SPECIAL_FILE_HAS_DATA`` — a documented writer option (Info-ZIP ``zip -FI``)
+  produces the shape, and the member's bytes are delivered and checked like any file's,
+  so nothing is hidden; strict would refuse an ordinary archive (DR-25).
 """
 
 
@@ -709,6 +766,17 @@ class DiagnosticPolicy:
                 self.default, DiagnosticDisposition, call=call, param="default="
             ),
         )
+        # Without this, ``overrides=0`` failed in ``dict()`` as "'int' object is not
+        # iterable", naming neither the class nor the argument.
+        # The field has a real default, so ``None`` is a wrong type here, not a way
+        # of asking for one. ``_freeze_mapping`` keeps its ``None`` arm for
+        # ``DiagnosticSummary.counts``.
+        check_instance(
+            self.overrides,
+            Mapping,
+            call="DiagnosticPolicy(overrides=…)",
+            allow_none=False,
+        )
         overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
         for key, value in _freeze_mapping(self.overrides).items():
             code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
@@ -718,7 +786,7 @@ class DiagnosticPolicy:
             if overrides.setdefault(code, disposition) is not disposition:
                 # Two spellings of one code (its name and the member) that disagree:
                 # keeping either would silently drop what the other asked for.
-                raise ArchiveyUsageError(
+                raise _UsageValueError(
                     f"{call} got two dispositions for overrides= key "
                     f"{code.value!r}: {overrides[code].value!r} and "
                     f"{disposition.value!r}."
@@ -860,10 +928,12 @@ __all__ = [
     "DiagnosticPolicy",
     "DiagnosticSummary",
     "DigestContext",
+    "DirectoryDataContext",
     "EmptyArchiveContext",
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",
     "MemberTimestampContext",
@@ -873,6 +943,7 @@ __all__ = [
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",
+    "SpecialFileDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",

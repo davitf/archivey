@@ -289,9 +289,6 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.sevenzip_reader._ReadAheadStream": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs.lzma_codec._LzmaEndAtSize": (
-        "DelegatingStream.__init__ first, then plain assignments"
-    ),
     "archivey.internal.external.unar.UnarOutputStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),

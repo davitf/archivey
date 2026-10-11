@@ -87,16 +87,24 @@ class ZlibDecoder(BaseDecoder):
 
 
 class GzipDecoder(BaseDecoder):
-    """gzip-window inflate with GzipFile-parity multi-member chaining.
+    """gzip-window inflate with multi-member chaining.
 
-    Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. After each member,
-    strips leading NUL padding from ``unused_data`` / retained input, then:
-    empty → clean EOF; ``1f 8b`` → new ``decompressobj`` and continue; anything
-    else (trailing junk, or a partial magic at true EOF) ends the data there and sets
-    :attr:`trailing_bytes`, which the stream reports. ``gzip.GzipFile`` raises on the
-    same bytes; archivey reads the members and reports what follows them.
+    Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. Right after a member,
+    ``1f 8b`` starts a new ``decompressobj`` and the data goes on. NUL bytes there are
+    padding only when nothing but NULs follows them to the end of the input, as GNU
+    ``gzip`` reads them (tape and block padding). Anything else (junk, a partial magic
+    at true EOF, or any byte after NULs, a further member too) ends the data there and
+    sets :attr:`trailing_bytes`, counted from the first non-NUL byte, which the stream
+    reports.
+
+    Python's ``gzip`` differs on two of these: ``GzipFile`` raises on junk, and it
+    skips NULs before a further member and reads that member. GNU ``gzip`` and 7-Zip
+    stop at the NULs, and rapidgzip raises there ("Invalid gzip/zlib wrapper"). Archivey
+    stops at the NULs too, as GNU ``gzip`` does; ``dev-docs/formats/gzip.md`` §6 says
+    why.
+
     Cross-``feed`` NUL runs and a lone trailing ``1f`` are retained until the next
-    header (or ``flush``) resolves them.
+    byte (or ``flush``) resolves them.
 
     Mid-member ``max_length`` remainder stays in ``decompressobj.unconsumed_tail``
     (same as :class:`ZlibDecoder`); ``_retained`` is only for post-member bytes.
@@ -108,6 +116,8 @@ class GzipDecoder(BaseDecoder):
         # Never store unconsumed_tail here — that lives on the decompressobj.
         self._retained = b""
         self._between_members = False
+        # Between members, NUL bytes have been skipped: only more NULs may follow.
+        self._padded = False
         self._finished = False
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
@@ -134,13 +144,16 @@ class GzipDecoder(BaseDecoder):
 
     def _resolve_between(self, data: bytes) -> bytes:
         """Strip NULs; start next member, retain partial magic, arm junk, or wait."""
-        i = 0
-        while i < len(data) and data[i] == 0:
-            i += 1
-        data = data[i:]
+        rest = data.lstrip(b"\x00")
+        self._padded = self._padded or len(rest) < len(data)
+        data = rest
         if not data:
             self._between_members = True
             self._retained = b""
+            return b""
+        if self._padded:
+            # A byte after NUL padding: the data ended at the padding.
+            self._arm_trailing_junk(data)
             return b""
         if data.startswith(_GZIP_MAGIC):
             self._decomp = zlib.decompressobj(_GZIP_WBITS)

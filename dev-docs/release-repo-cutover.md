@@ -4,11 +4,15 @@ Maintainer runbook for promoting this repository (formerly `archivey-2`, the v2
 clean-slate reimplementation) to the canonical **`archivey`** name for public
 release, while retiring the v1 repos.
 
-**Status (2026-07-25):** rename is done — this repo is `davitf/archivey`; the
-prior v1 release repo is `davitf/archivey-old` (runbook step 1 originally said
-`archivey-v1`; the name used in practice is `archivey-old`). Remaining steps
-below are discovery metadata, Pages, PyPI Trusted Publishing, and local-clone
-remote tidy-up. Delete this page once the full cutover is complete.
+**Status (2026-10-10):** steps 2, 4 and 6 are done: this repo is `davitf/archivey`,
+Pages is enabled with `https://davitf.github.io/archivey/` as the repo homepage, and
+`CLAUDE.md` and `AGENTS.md` no longer name `archivey-2`. Steps 1 and 5 are half done:
+the prior v1 release repo was renamed `davitf/archivey-old` (the runbook originally
+said `archivey-v1`) but is not archived yet, and `publish.yml` no longer routes on the
+old name, while the PyPI Trusted Publisher and the `pypi` environment are unconfirmed.
+Still to do or confirm before the first release: archiving `archivey-old` (step 1), the
+description and topics (step 3), the Trusted Publisher and the `pypi` environment (step
+5), and steps 7 and 8. Delete this page once the full cutover is complete.
 
 ## Why rename rather than push-into or delete
 
@@ -33,7 +37,8 @@ branch protection, and sets up automatic URL/redirect handling.
 The only asset unique to the old `archivey` is its **31 stars** (no issues/PRs/watchers
 to strand). We accept losing those — they are rebuildable via the public-release
 announcement, whereas the v2 PR history is not reconstructable. `archivey-dev` has no
-external footprint; its 76 PRs are the intentionally-private messy AI history.
+external footprint; its 76 PRs are the messy AI history, deliberately kept out of the
+release.
 
 ## Cutover steps
 
@@ -42,14 +47,14 @@ Do these in order — the `archivey` name must be free before this repo can take
 1. **Free the name.** Rename `davitf/archivey` → `davitf/archivey-old`
    (Settings → General → Repository name), then **Archive** it (Settings → Danger Zone).
    Do *not* delete — that destroys the 31 stars / 3 forks / alpha tags and frees the name
-   to strangers. *(Done 2026-07-25 as `archivey-old`.)*
+   to strangers. *(Renamed 2026-07-25 as `archivey-old`; not archived yet.)*
 2. **Promote v2.** Rename `davitf/archivey-2` → `davitf/archivey`.
    ⚠️ The redirect from the *old* v1 `archivey` is disabled the moment the name is reused,
    so old v1 deep-links now resolve to v2. *(Done 2026-07-25.)*
 3. **Re-apply discovery metadata** on the new `archivey`:
     - Description: `Python library for reading zip, tar, rar, 7z and other archives`
     - Topics: `python` `compression` `zip` `tar` `rar` `decompression` `archive` `7zip`
-4. **GitHub Pages.** Settings → Pages → Source = **GitHub Actions**. `mkdocs.yml`'s
+4. **GitHub Pages.** *(Enabled.)* Settings → Pages → Source = **GitHub Actions**. `mkdocs.yml`'s
    `site_url` is already `https://davitf.github.io/archivey/`, so no code change; re-set a
    custom domain if one was used.
 5. **PyPI publishing** (see `.github/workflows/publish.yml`):

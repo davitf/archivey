@@ -1,3 +1,7 @@
+> **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). No further work is
+> scheduled. The release does not need this change, and the drafted design stays here so a
+> later change can pick it up. It is tracked internally. What already shipped is recorded below.
+
 > **Scope cut on 2026-09-25.** `detection-evidence-ledger` was decided against and archived,
 > so everything here that exposes or renders a ledger is withdrawn: the always-present
 > ledger field, `DECLARED_BY_CALLER` / `DECLARED_BY_CONTAINER`, `confidence` and

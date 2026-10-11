@@ -69,7 +69,7 @@ def test_stream_members_mixed_collection(tmp_path: Path) -> None:
     assert selected == ["keep.txt", "skip.txt"]
 
 
-class _CallableNames(list):  # noqa: FURB189 - a Collection that is also callable
+class _CallableNames(list):
     """A selector that satisfies both arms of the ``members=`` union.
 
     ``Collection`` is not final, so an object can be a collection of names *and*

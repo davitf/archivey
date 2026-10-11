@@ -150,7 +150,9 @@ class ZstdCodec(StreamCodec):
             source,
             lambda: zstd.ZstdDecompressor(options=options),
             codec_name="zstd",
-            magic=_ZSTD_STREAMS,
+            # A container coder that is one stream (a ZIP member) reads no further
+            # frame: one there is input after the end (``CodecParams.single_stream``).
+            magic=stream_magic() if params.single_stream else _ZSTD_STREAMS,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,

@@ -99,8 +99,10 @@ from archivey.internal.streams.streamtools import (
     read_within_reach,
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
+from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -280,7 +282,7 @@ _HeaderStop = Literal["zero_block", "rejected_header"]
 
 
 class _TarFile(tarfile.TarFile):
-    """A ``TarFile`` that remembers why its walk stopped.
+    """A ``TarFile`` that remembers why its walk stopped, and can stop keeping headers.
 
     ``TarFile.next()`` returns ``None`` both on a zero block (the first end-of-archive
     block) and on a header it rejects after the first member, and swallows the error
@@ -298,9 +300,19 @@ class _TarFile(tarfile.TarFile):
     private ``_fromtarfile`` and bypasses the override; earlier patch releases run it
     through ``fromtarfile`` and so through the override, innermost first, and the
     outermost call still runs last.
+
+    ``TarFile.next()`` appends every header it parses to ``members``: in random-access
+    mode, and on Python before 3.13 in streaming mode too. With ``keep_members`` off,
+    ``next()`` empties that list instead, so an unguarded pass past ``ListingLimits``
+    keeps no header (``_discard_listing``). ``TarFile.__iter__`` then always finds its
+    index past the list's end and parses the next header, which is the order it would
+    have served anyway.
     """
 
     stopped_on: _HeaderStop | None = None
+    keep_members: bool = True
+    # Set by ``TarFile.__init__``; typeshed does not declare it.
+    members: list[tarfile.TarInfo]
 
     header_depth: int = 0
     """How many :meth:`_TarInfo.fromtarfile` calls are running. A GNU long name or a
@@ -324,6 +336,12 @@ class _TarFile(tarfile.TarFile):
         if self._global_records is None:
             self._global_records = _GlobalPaxRecords(self.pax_headers)
         return self._global_records
+
+    def next(self) -> tarfile.TarInfo | None:
+        info = super().next()
+        if not self.keep_members:
+            self.members.clear()
+        return info
 
 
 class _GlobalPaxRecords(dict[str, str]):
@@ -838,7 +856,8 @@ def _member_type(info: tarfile.TarInfo) -> MemberType:
         return MemberType.HARDLINK
     if info.isfile():
         return MemberType.FILE
-    # Character/block devices, FIFOs, contiguous files, GNU long-name placeholders, …
+    # Character/block devices, FIFOs, GNU dumpdirs and volume headers, vendor types, …
+    # (a contiguous file, typeflag 7, is a regular file to tarfile and so a FILE).
     return MemberType.OTHER
 
 
@@ -1136,7 +1155,7 @@ class TarReader(BaseArchiveReader):
         streaming: bool,
         *,
         member_streams: MemberStreams,
-    ) -> tarfile.TarFile:
+    ) -> _TarFile:
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
             codec_source: str | BinaryIO
@@ -1212,7 +1231,7 @@ class TarReader(BaseArchiveReader):
         name: str | None = None,
         fileobj: BinaryIO | None = None,
         streaming: bool = False,
-    ) -> tarfile.TarFile:
+    ) -> _TarFile:
         # mode="r:" reads an *uncompressed* tar stream with random access; mode="r|" is
         # forward-only (required for non-seekable sources). We feed either the raw file
         # (plain tar) or our own decompressor (compressed tar), never tarfile's native
@@ -1299,7 +1318,9 @@ class TarReader(BaseArchiveReader):
         # header parsing with member construction measured about 1.3x slower on an
         # ordinary 100 000-member listing; at 1 024 the difference is within noise.
         # ``iter(self._tar)`` rather than bare next() calls, because it serves headers
-        # tarfile already loaded from its own list before reading more.
+        # tarfile already loaded from its own list before reading more. Once a pass
+        # discards the listing (``_TarFile.keep_members`` off) that list stays empty,
+        # and the iterator parses each next header itself, in the same order.
         #
         # A member is opened while this walk runs only in a one-pass
         # stream_members() (_iter_with_data_random_access), which parses one header
@@ -1447,6 +1468,12 @@ class TarReader(BaseArchiveReader):
         finally:
             self._one_header_at_a_time = False
 
+    def _discard_listing(self) -> None:
+        """Discard the listing, and stop ``tarfile`` keeping the headers it parses."""
+        super()._discard_listing()
+        self._tar.keep_members = False
+        self._tar.members.clear()
+
     def _extraction_listing(self) -> AbstractContextManager[None]:
         """Enforce ``ListingLimits`` as members arrive in the extraction's one pass.
 
@@ -1543,7 +1570,7 @@ class TarReader(BaseArchiveReader):
             yield from self._iter_with_data_random_access()
             return
         # Pull from the shared instance-held progressive pass so __iter__,
-        # stream_members, and scan_members share one cursor and finalization.
+        # stream_members, and members_report share one cursor and finalization.
         # close_previous=False: tarfile invalidates the prior extractfile handle on
         # advance; tracking previous would be incorrect.
         # The driver's finally closes the last stream inside this translation context
@@ -1897,6 +1924,26 @@ class TarReader(BaseArchiveReader):
             else info.type
         )
         extra = MemberExtra({"tar.type": stored_type})
+        special = special_file_type_from_tar_typeflag(info.type)
+        if special is not None:
+            if info.size:
+                # The typeflag is structure in TAR, so a device or FIFO header has no
+                # data: GNU tar and libarchive ignore its size field and resync at the
+                # next header ("Skipping to next header", exit 2). tarfile does not
+                # skip the declared blocks either, so a non-zero size usually
+                # desynchronises the walk and already surfaced as CorruptionError; an
+                # all-zero payload instead reads as the end-of-archive marker and the
+                # declared size would vanish without a word. Refused here, at the
+                # header, so both shapes are the same damage (DR-25).
+                raise CorruptionError(
+                    f"TAR header for {quoted(name)} is a {special.replace('_', ' ')} "
+                    f"that declares {info.size} bytes of data; a device or FIFO entry "
+                    "has no data, and tar skips such a header as damaged",
+                    archive_name=self._archive_name,
+                    member_name=name,
+                )
+            # The cross-format key says which kind the archive recorded (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if info.pax_headers:
             extra["tar.pax_headers"] = self._extra_pax_headers(info.pax_headers)
         if info.isdev():

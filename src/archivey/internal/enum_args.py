@@ -5,7 +5,9 @@ member's **value** spelled as a string, and converts it at the boundary.
 ``reader.extract_all(dest, overwrite="skip")`` is the same call as
 ``reader.extract_all(dest, overwrite=OverwritePolicy.SKIP)``, and an unrecognised
 spelling raises :class:`~archivey.ArchiveyUsageError` there and then, naming what would
-have worked.
+have worked. The class raised is the private subclass that is also a ``ValueError``; a
+value of the wrong type (an ``int``, a member of another enum) gets the one that is also
+a ``TypeError``.
 
 **Why coerce rather than refuse.** The CLI and a throwaway script both hold strings, and
 the CLI was already doing this by hand (``ExtractionPolicy(policy)`` in
@@ -48,7 +50,7 @@ from collections.abc import Iterable
 from enum import Enum
 from typing import TypeVar
 
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import _UsageTypeError, _UsageValueError
 
 __all__ = [
     "coerce_enum",
@@ -149,7 +151,7 @@ def coerce_enum(
         # ``StrEnum`` (``AbortOn``, ``StreamFormat``, …), so a member of the *wrong*
         # class is a string too, and would otherwise be reported as a bad spelling
         # rather than as the wrong type — which is what it is.
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{call} takes {_takes(enum_cls, also_accepts)} for {param}, but got "
             f"{type(value).__name__}.{value.name}. "
             f"Accepted: {_accepted(enum_cls)}."
@@ -158,11 +160,11 @@ def coerce_enum(
         member = _lookup(enum_cls).get(normalize_spelling(value))
         if member is not None:
             return member
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{call} got {value!r} for {param}, which is not a valid "
             f"{enum_cls.__name__} value. Accepted: {_accepted(enum_cls)}."
         )
-    raise ArchiveyUsageError(
+    raise _UsageTypeError(
         f"{call} takes {_takes(enum_cls, also_accepts)} (or its name as a string) for "
         f"{param}, but got {value!r} ({type(value).__name__}). "
         f"Accepted: {_accepted(enum_cls)}."
@@ -186,12 +188,12 @@ def coerce_enum_collection(
     if values is None:
         return frozenset()
     if isinstance(values, (str, bytes)):
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{call} takes a collection of {enum_cls.__name__} for {param}, but got "
             f"the bare string {values!r}. Pass a list or set, e.g. [{values!r}]."
         )
     if not isinstance(values, Iterable):
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{call} takes a collection of {enum_cls.__name__} for {param}, but got "
             f"{values!r} ({type(values).__name__})."
         )

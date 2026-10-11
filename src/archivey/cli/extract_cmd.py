@@ -18,6 +18,7 @@ from archivey import (
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
+    NameRewrite,
     OnError,
     OverwritePolicy,
 )
@@ -25,7 +26,6 @@ from archivey.cli.choices import from_cli_choice
 from archivey.cli.common import (
     open_for_cli,
     reject_empty_path,
-    reject_salvage,
 )
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import MemberSelection
@@ -34,10 +34,7 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
-
-# Two naming rules the CLI must apply exactly as extraction does; the ``cli`` spec's
-# public-API requirement records the exception.
-from archivey.internal.filters import is_rooted, numbered_name
+from archivey.paths import numbered_name
 from archivey.reader import ForwardArchiveReader
 from archivey.types import (
     ArchiveFormat,
@@ -633,7 +630,8 @@ def maybe_hoist_single_root(
             moves=_Moves.of(moved, wrapper, stopped=True),
         )
     except OSError as exc:
-        print(f"hoist failed: {format_error_detail(exc)}", file=err)
+        # The ``archivey: `` prefix: see main._parse_and_dispatch.
+        print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
         print(f"files left in {escape_path(wrapper)}/", file=err)
         return _HoistResult(
             wrapper,
@@ -869,11 +867,10 @@ def _report_extraction(
             # A re-root is the exception: a ``tar -P`` backup re-roots every member, so
             # re-roots are counted and reported once, as GNU tar does, and listed per
             # member only under --verbose. A portable rewrite on top of a re-root goes
-            # with it: the result carries one ``presented_name`` for both, and the CLI
-            # cannot tell them apart from the path (a hoist, a trailing ``/`` or a
-            # collision suffix all change it too), so the verbose line shows both.
+            # with it: the result carries one ``presented_name`` for both, so the
+            # verbose line shows both under the re-root's label.
             if result.presented_name is not None:
-                rerooted_name = is_rooted(result.presented_name)
+                rerooted_name = NameRewrite.REROOTED in result.rewrites
                 if rerooted_name:
                     rerooted += 1
                 if not rerooted_name or verbose:
@@ -1067,7 +1064,6 @@ def run_extract(
     exclude: list[str],
     policy: str,
     overwrite: str,
-    salvage: bool,
     password: str | None,
     track_io: bool,
     hide_progress: bool,
@@ -1079,7 +1075,6 @@ def run_extract(
     err: TextIO | None = None,
 ) -> int:
     del out  # extract reports to stderr; files go to the filesystem
-    reject_salvage(salvage)
     # On the strings, before Path() turns "" into ".". The stdin token "-" is
     # refused by open_for_cli below.
     reject_empty_path(archive, arg="archive")
@@ -1162,8 +1157,14 @@ def run_extract(
                 # DiagnosticRaisedError): report what was already written, then
                 # the stop notice. Exit 1 always on abort (Q8 Option A): exit 3
                 # is reserved for a *completed* run with policy blocks and safe
-                # members on disk (blocks never abort under STOP).
-                print(format_error_detail(exc), file=err)
+                # members on disk (blocks never abort under STOP). The
+                # ``archivey: `` prefix: see main._parse_and_dispatch.
+                # Under CONTINUE this line can repeat the detail of the
+                # ``WARNING: Skipping …`` line printed just above it, which ``test``
+                # suppresses. That is kept on purpose: the warning says a member was
+                # skipped, this line says why the run ended, and ``extract`` has no
+                # failure counter, so nothing is counted twice.
+                print(f"archivey: {format_error_detail(exc)}", file=err)
                 parts: list[str] = []
                 if members_extracted:
                     parts.append(f"{members_extracted} member(s) extracted")

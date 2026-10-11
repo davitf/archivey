@@ -394,6 +394,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
     import archivey.internal.backends.sevenzip_reader as sevenzip_reader
+    import archivey.internal.backends.tar_parser as tar_parser
     import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.backends.zip_reader as zip_reader
@@ -427,7 +428,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.bzip2_codec._Bzip2EmptyStreamCheck,
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
-        codecs.lzma_codec._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -482,6 +482,10 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         tar_reader._BoundedTarFileobj,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
+        # A member's stored bytes, read forward from a forward-only walk's stream
+        # (for .tar.gz, the decompressed stream). TAR stores member data as is, so
+        # no codec above it has a table, and a forward-only walk resumes nowhere.
+        tar_parser._ForwardSlice,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
@@ -624,7 +628,6 @@ def test_delegating_stream_close_inventory() -> None:
         codecs.bzip2_codec._Bzip2EmptyStreamCheck,
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
-        codecs.lzma_codec._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,

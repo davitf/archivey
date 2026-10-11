@@ -87,6 +87,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     MemberHeaderRecordContext,
     NameEncodingContext,
@@ -119,8 +120,11 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
+from archivey.internal.trailing_scan import first_nonzero_offset
+from archivey.internal.unix_mode import special_file_type
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -704,6 +708,83 @@ def _install_pycdlib_path_table_bound() -> None:
 
     setattr(ptr_mod.PathTableRecord, "parse", parse_entry)
     _PYCDLIB_PATH_TABLE_BOUND_INSTALLED = True
+
+
+# MBR and GPT count in 512-byte sectors, whatever the ISO's logical block size. A GPT
+# lists 128 entries of 128 bytes in the usual layout; UEFI allows any entry size of 128
+# times a power of two. A header whose entry array is larger than 512 KiB is not taken,
+# so the array read at open is at most that, on top of the trailing scan's 1 MiB.
+_PARTITION_SECTOR = 512
+_MIN_GPT_ENTRY_SIZE = 128
+_MAX_GPT_ARRAY = 512 * 1024
+_MIN_GPT_HEADER_SIZE = 92
+# An MBR entry of this type says "a GPT describes this disk" and spans the whole
+# medium, often as 0xFFFFFFFF sectors; it lists no partition of its own.
+_MBR_PROTECTIVE = 0xEE
+
+
+def _image_end(fp: BinaryIO, *, volume_end: int, image_length: int) -> int:
+    """Where an ISO image ends: its volume space or its furthest listed partition.
+
+    A hybrid image (``xorriso -append_partition``, isohybrid) is a disk image as well
+    as an ISO: its MBR, and often a GPT, sit in the system area and list partitions
+    that can lie past the ISO 9660 volume space, such as an EFI system partition, with
+    the GPT's backup header at the very end. Those bytes are the disk's, not
+    something appended to it, so the end is the furthest of the volume space, every
+    MBR partition, every GPT partition, and the GPT backup header. A GPT counts only
+    when its header CRC and its entry-array CRC both match, so a damaged GPT, or
+    ``EFI PART`` alone, widens nothing. An MBR has no checksum: its non-empty,
+    non-protective entries are taken as written (``0x55AA`` present), as a crafted
+    volume space would be. The result can pass the image's length; the caller compares
+    it with ``image_length``. ``fp``'s position is not kept.
+    """
+    end = volume_end
+    fp.seek(0)
+    head = fp.read(2 * _PARTITION_SECTOR)
+    if len(head) >= _PARTITION_SECTOR and head[510:512] == b"\x55\xaa":
+        for slot in range(4):
+            entry = head[446 + 16 * slot : 446 + 16 * (slot + 1)]
+            if entry[4] in (0, _MBR_PROTECTIVE):
+                continue
+            first, count = struct.unpack_from("<II", entry, 8)
+            end = max(end, (first + count) * _PARTITION_SECTOR)
+    return max(end, _gpt_end(fp, head[_PARTITION_SECTOR:], image_length=image_length))
+
+
+def _gpt_end(fp: BinaryIO, gpt: bytes, *, image_length: int) -> int:
+    """The end of the furthest GPT partition or backup header; 0 when none is valid."""
+    if len(gpt) < _MIN_GPT_HEADER_SIZE or gpt[:8] != b"EFI PART":
+        return 0
+    header_size, header_crc = struct.unpack_from("<II", gpt, 12)
+    if not _MIN_GPT_HEADER_SIZE <= header_size <= len(gpt):
+        return 0
+    header = bytearray(gpt[:header_size])
+    header[16:20] = bytes(4)
+    if zlib.crc32(header) != header_crc:
+        return 0
+    (backup_lba,) = struct.unpack_from("<Q", gpt, 32)
+    (entries_lba,) = struct.unpack_from("<Q", gpt, 72)
+    entry_count, entry_size, entries_crc = struct.unpack_from("<III", gpt, 80)
+    multiple, remainder = divmod(entry_size, _MIN_GPT_ENTRY_SIZE)
+    if not (
+        multiple > 0
+        and remainder == 0
+        and multiple & (multiple - 1) == 0  # 128 times a power of two
+        and entry_count * entry_size <= _MAX_GPT_ARRAY
+        and entries_lba * _PARTITION_SECTOR < image_length
+    ):
+        return 0
+    fp.seek(entries_lba * _PARTITION_SECTOR)
+    table = fp.read(entry_count * entry_size)
+    if len(table) != entry_count * entry_size or zlib.crc32(table) != entries_crc:
+        return 0
+    end = (backup_lba + 1) * _PARTITION_SECTOR
+    for at in range(0, len(table), entry_size):
+        if table[at : at + 16] == bytes(16):
+            continue  # unused entry
+        _first, last = struct.unpack_from("<QQ", table, at + 32)
+        end = max(end, (last + 1) * _PARTITION_SECTOR)
+    return end
 
 
 def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
@@ -1485,6 +1566,7 @@ class IsoReader(BaseArchiveReader):
                     else:
                         self._namespace = "iso9660"
                         self._path_kw = "iso_path"
+                    self._report_trailing_data()
         except BaseException:
             # No reader is returned for anyone to close, and the exception's traceback
             # keeps this frame alive for as long as the caller holds it (inventory/fuzz
@@ -1494,6 +1576,46 @@ class IsoReader(BaseArchiveReader):
             # ``open_fp``.
             self._release_archive_handles()
             raise
+
+    def _report_trailing_data(self) -> None:
+        """Report a non-zero byte after the end of the image, as DR-3 asks.
+
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``.
+        Zero padding is silent. The image ends at the furthest of its volume space and
+        the partitions its MBR or GPT lists (:func:`_image_end`): a hybrid ISO, the
+        layout Linux installer images use, appends an EFI partition and a GPT backup
+        after the volume space, and those bytes belong to the disk image. 7-Zip warns
+        on them; archivey does not. Called inside the handle guard.
+        """
+        end = _image_end(
+            self._iso_fp,
+            volume_end=self._iso.pvd.space_size * self._iso.logical_block_size,
+            image_length=self._image_length,
+        )
+        if end >= self._image_length:
+            return
+        self._iso_fp.seek(end)
+        found = first_nonzero_offset(self._iso_fp)
+        if found is None:
+            return
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            message=(
+                "ISO image continues past its end: a non-zero byte appears "
+                f"{found} bytes after the volume space and any partitions its "
+                "partition table lists. The listing does not account for it (this "
+                "file may hold something appended to the image)."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="iso",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found,
+                observed_kind="nonzero",
+            ),
+        )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
@@ -1908,13 +2030,24 @@ class IsoReader(BaseArchiveReader):
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
 
+        special = special_file_type(raw_mode) if raw_mode is not None else None
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
         elif record.is_dir():
             member_type = MemberType.DIRECTORY
-        elif raw_mode is not None and not stat.S_ISREG(raw_mode):
-            # A Rock Ridge PX mode names a device, FIFO or socket: never a regular file,
-            # whatever bytes sit at the extent.
+        elif (
+            special is not None or (raw_mode is not None and not stat.S_ISREG(raw_mode))
+        ) and self._file_size(record) == 0:
+            # A Rock Ridge PX mode names a device, FIFO or socket, and the extent is
+            # empty (genisoimage and xorriso write a FIFO so): OTHER. A non-empty extent
+            # under such a mode is a FILE whose bytes are the content (DR-25), with
+            # ``extra["special_file_type"]`` keeping the stored type. ``== 0``, not
+            # ``not``: ``_file_size`` is ``None`` for a non-empty extent whose length
+            # was lost, and that record is a FILE with ``size=None`` like a regular one.
+            # Defence, not tested behaviour: the lost length needs a record pycdlib
+            # walked that its parent directory's bytes on disc do not list with a
+            # length reaching the image end (``_layout``), and no image the suite can
+            # build does that, so no test tells ``== 0`` from ``not``.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
@@ -1943,6 +2076,11 @@ class IsoReader(BaseArchiveReader):
             if version is not None
             else MemberExtra()
         )
+        if special is not None:
+            # Only a mode that names a special or unknown file type: a non-regular mode
+            # that is a directory's (``S_IFDIR`` on a file record) still makes OTHER
+            # above but recorded no special file, so it gets no key.
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
         mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
@@ -1997,6 +2135,8 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        if special is not None and member.type is MemberType.FILE:
+            self._emit_special_file_has_data(member, index)
         # The message names the normalized name, so it is built here, not in
         # ``_timestamps``.
         for field, source, value_repr in invalid_dates:

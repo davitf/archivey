@@ -14,16 +14,18 @@ beside their arguments:
 * :meth:`archivey.reader.ArchiveReader.open` — the member argument (needs the
   reader to tell "wrong type" from "not this reader's member")
 
-What this module covers: ``config=``, ``limits=``, ``encoding=``, the
-``on_progress=`` / ``filter=`` callbacks, the numeric limit fields, and the empty
-string as a path. There is no useful conversion from a wrong one of these, so the
-answer is an error.
+What this module covers: ``config=``, ``limits=``, ``encoding=``, ``extract_all``'s
+``dest``, the ``on_progress=`` / ``filter=`` callbacks, the numeric limit fields, the
+empty string as a path, and the ``source`` refusals (``require_source``,
+``reject_source``, ``raise_if_text_stream``, ``raise_if_write_only_stream``). There is
+no useful conversion from a wrong one of these, so the answer is an error.
 
 Every check answers with :class:`~archivey.ArchiveyUsageError`, which sits outside
 ``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot swallow a
-caller bug. The exception is :func:`check_path_not_empty`, which raises
-``ValueError``: the path parameters already answer a wrong type with ``TypeError``,
-and a wrong value of the right type is a ``ValueError`` (DR-15).
+caller bug. The class raised is one of its two private subclasses, so the error is also
+a ``TypeError`` (wrong type) or a ``ValueError`` (a right type whose value is refused:
+a ``str`` that names no usable codec, a negative or non-finite limit, an empty path),
+as DR-15 asks.
 
 What this module is for is narrower than "validate everything". The error contract
 already permits a short list of raw exceptions to reach a caller — ``KeyError`` for
@@ -46,10 +48,12 @@ from __future__ import annotations
 
 import codecs
 import math
+import os
 from dataclasses import fields
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import _UsageTypeError, _UsageValueError
+from archivey.internal.streams import streamtools
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -57,6 +61,7 @@ if TYPE_CHECKING:
 __all__ = [
     "check_callable",
     "check_config",
+    "check_dest",
     "check_encoding",
     "check_extraction_limits",
     "check_instance",
@@ -64,6 +69,10 @@ __all__ = [
     "check_limit_fields",
     "check_path_not_empty",
     "describe_value",
+    "raise_if_text_stream",
+    "raise_if_write_only_stream",
+    "reject_source",
+    "require_source",
 ]
 
 
@@ -104,7 +113,7 @@ def check_instance(
     """
     if isinstance(value, expected) or (value is None and allow_none):
         return
-    raise ArchiveyUsageError(
+    raise _UsageTypeError(
         f"{call} takes {_article(expected.__name__)} {expected.__name__}"
         f"{' or None' if allow_none else ''}, "
         f"but got {describe_value(value, expected=expected)}."
@@ -137,17 +146,43 @@ def check_callable(value: object, *, call: str) -> None:
     """
     if value is None or callable(value):
         return
-    raise ArchiveyUsageError(
+    raise _UsageTypeError(
         f"{call} takes a callable or None, but got {describe_value(value)}."
+    )
+
+
+def check_dest(value: object, *, call: str) -> str:
+    """Return ``value`` as a ``str`` path, or raise ``ArchiveyUsageError``.
+
+    ``Path(0)`` would otherwise raise ``expected str, bytes or os.PathLike object, not
+    int``, which names neither the call nor the argument. The resolved value is checked,
+    not the protocol: a path-like whose ``__fspath__`` returns bytes (which ``os`` and
+    ``shutil`` accept) makes ``Path()`` fail the same way.
+
+    The caller uses the returned ``str`` for every later check and for ``Path()``, so
+    a path-like whose ``__fspath__`` returns ``""`` reaches the empty-path check as
+    ``""`` rather than as an object that check cannot see into.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, os.PathLike):
+        try:
+            resolved = os.fspath(value)
+        except TypeError:  # ``__fspath__`` returned neither str nor bytes
+            resolved = None
+        if isinstance(resolved, str):
+            return resolved
+    raise _UsageTypeError(
+        f"{call} takes a directory path (str or Path), but got {describe_value(value)}."
     )
 
 
 def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None:
     """Raise ``ArchiveyUsageError`` unless ``value`` names a usable byte codec.
 
-    This is the one check here that is about a *value* rather than a type, and it is
-    worth the lookup because all three ways of getting it wrong failed differently and
-    none of them named the argument:
+    This check is about a *value* rather than a type, and it is worth the lookup
+    because all three ways of getting it wrong failed differently and none of them
+    named the argument:
 
     * an unregistered name (``"utf8-"``, a typo) raised ``LookupError``;
     * a text-only codec (``"rot13"``, ``"base64"``) raised a different ``LookupError``,
@@ -161,7 +196,7 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
     if value is None and allow_none:
         return
     if not isinstance(value, str):
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{call} takes a codec name as a str"
             f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
         )
@@ -173,14 +208,51 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
     try:
         info = codecs.lookup(value)
     except LookupError:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{call} got {value!r}, which is not a codec Python knows. {advice}"
         ) from None
     if not info._is_text_encoding:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{call} got {value!r}, which is a byte-to-byte transform rather than a "
             f"character encoding, so it cannot decode a member name. {advice}"
         )
+
+
+# The source refusals live in ``streamtools``, which imports nothing from archivey and
+# so raises a plain ``TypeError``. These wrappers re-raise the same message as the
+# usage error, for the entry points that refuse a caller's ``source``.
+
+
+def require_source(obj: object) -> None:
+    """:func:`streamtools.require_source`, raising the usage error."""
+    try:
+        streamtools.require_source(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
+
+
+def reject_source(obj: object) -> NoReturn:
+    """:func:`streamtools.reject_source`, raising the usage error."""
+    try:
+        streamtools.reject_source(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
+
+
+def raise_if_text_stream(obj: object) -> None:
+    """:func:`streamtools.raise_if_text_stream`, raising the usage error."""
+    try:
+        streamtools.raise_if_text_stream(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
+
+
+def raise_if_write_only_stream(obj: object) -> None:
+    """:func:`streamtools.raise_if_write_only_stream`, raising the usage error."""
+    try:
+        streamtools.raise_if_write_only_stream(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
 
 
 def _article(name: str) -> str:
@@ -223,7 +295,7 @@ def check_limit(
     if value is None:
         if allow_none:
             return
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{cls}.{field_name} is not optional and takes "
             f"{'a number' if allow_float else 'an int'}, but got None."
         )
@@ -237,19 +309,19 @@ def check_limit(
         number = None
 
     if number is None:
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{cls}.{field_name} takes {'a number' if allow_float else 'an int'}"
             f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
         )
     if isinstance(number, float) and not math.isfinite(number):
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{cls}.{field_name} takes a finite number, but got {value!r}. A NaN "
             f"compares false against everything and an infinity is never exceeded, so "
             f"either one would leave this guard switched off without saying so; pass "
             f"None if that is what you want."
         )
     if number < 0:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{cls}.{field_name} cannot be negative, but got {value!r}."
             + (" Pass None to disable this guard." if allow_none else "")
         )
@@ -295,7 +367,7 @@ def check_limit_fields(limits: DataclassInstance, *, cls: str) -> None:
 
 
 def check_path_not_empty(value: object, *, call: str) -> None:
-    """Raise ``ValueError`` if ``value`` is the empty string.
+    """Raise ``ArchiveyUsageError`` (also a ``ValueError``) if ``value`` is ``""``.
 
     ``Path("")`` is ``Path(".")``, so an empty string (typically an unset environment
     variable) would otherwise name the current directory: a source opens it as a
@@ -303,7 +375,7 @@ def check_path_not_empty(value: object, *, call: str) -> None:
     Only ``str`` is checked; an empty ``Path`` cannot be told apart from ``Path(".")``.
     """
     if isinstance(value, str) and not value:
-        raise ValueError(
+        raise _UsageValueError(
             f"{call} got an empty path; an empty string would name the current "
             f'directory. Pass "." to mean the current directory.'
         )

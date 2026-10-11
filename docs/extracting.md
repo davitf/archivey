@@ -67,8 +67,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   fuzzed, but they are native code with no time bound (see the hardening notes below);
   set them to `OFF` for untrusted input under a strict threat model.
 - **After a seek, a crafted `.xz` or `.lz` index can serve the wrong bytes with no
-  error.** The integrity guarantee covers a read from start to end with no seek
-  ([Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
+  error.** The integrity guarantee covers a read from start to end with no skipped
+  bytes, checked on the first pass over each byte ([Errors and
+  diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
 - **On Windows, a directory source is less protected against concurrent changes.**
   There is no `O_NOFOLLOW`, so the walk scans subdirectories by path: a subdirectory
   swapped for a junction or symlink while the walk runs can list entries from outside
@@ -82,7 +83,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   letter or a UNC prefix) is refused under `STRICT`. `STANDARD` and `TRUSTED` drop the
   root and extract it inside the destination (`/etc/x` → `etc/x`, `C:/x` → `x`), as
   GNU tar, bsdtar, unzip and 7-Zip do, and record the stored name in
-  `ExtractionResult.presented_name`. A drive letter with no separator after it (`a:b`)
+  `ExtractionResult.presented_name`, with `NameRewrite.REROOTED` in
+  `ExtractionResult.rewrites`. A drive letter with no separator after it (`a:b`)
   is refused at every policy: it
   is also an ordinary POSIX name, so there is no root to drop. Your
   `filter` runs before these checks, so it sees every member and can rename an unsafe
@@ -136,7 +138,14 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   never leaves a half-written destination file. The destination root itself is yours,
   so if it is a symlink to a directory, archivey follows it and extracts into the
   target (as `tar -C` and `unzip -d` do).
-- **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
+- **A directory entry that declares data** is created as a directory and the bytes are
+  not written, as every official tool does; `MEMBER_DIRECTORY_DATA_IGNORED` reports it
+  and `reader.read()` on the directory returns them where the format's reader can
+  decode them.
+- **Special files** (devices, FIFOs, sockets) are never created: archivey calls no
+  `mknod`. An entry that stores no data under such a mode is `MemberType.OTHER` and is
+  skipped; an entry that stores data under such a mode is a `FILE` and its bytes are
+  written as a regular file (`MEMBER_SPECIAL_FILE_HAS_DATA` reports it). An NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
   which in practice means RAR and a directory tree read from a Windows filesystem. ZIP
@@ -147,7 +156,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   record — this was a Windows symlink or junction rather than a POSIX one — and is set
   from metadata in every format that states it.
 - **A link for which the archive records no target** (a stored target that is the empty
-  string counts, and lists as `link_target=None`) is recorded
+  string counts, and lists as `link_target=None`) lists with
+  `member.link_target_unrecorded` set to `True`, and is recorded
   `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts.
   Nothing can be written for it, and nothing about the extraction went wrong, so it is
   not a failure and `OnError.STOP` does not abort on it. That holds in a streaming read
@@ -193,7 +203,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.
 - **Permission hygiene:** setuid/setgid/sticky stripped except under `TRUSTED`;
-  ownership applied only under `TRUSTED` as root.
+  ownership applied only under `TRUSTED` as root. `STANDARD` keeps group and other
+  write bits, unlike `tarfile`'s `data` and `tar` filters, which both mask the stored mode
+  with `0o755`.
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
@@ -292,13 +304,14 @@ resolution.
 it fires on a *successful* safety rewrite, and no policy or preset implies it. Set it
 only if any on-disk name differing from the archive's is unacceptable to you — a
 mirroring tool, a forensic extract, a byte-fidelity check. To merely *audit* rewrites,
-read `ExtractionResult.presented_name` and let extraction finish.
+read `ExtractionResult.presented_name` and `ExtractionResult.rewrites` and let
+extraction finish.
 
 | Policy | Intent |
 | --- | --- |
 | `STRICT` | Untrusted archives (default) |
-| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
-| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
+| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute and group or other write included (the umask does not apply, so a stored `0o666` file stays `0o666`), but strips setuid, setgid and sticky and never applies ownership. A member with no stored mode, such as every member of a ZIP written on Windows, gets `0o644` (file) or `0o755` (directory). Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
+| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal. A member with no stored mode keeps the creation default, so the umask decides, not `0o644` / `0o755` |
 
 Selective extract:
 
@@ -365,7 +378,7 @@ Archive order and identity matter more than “the” name.
 | Need to know | Detail |
 | --- | --- |
 | Safe ≠ unlimited | Traversal, symlink escapes, and bombs are blocked; huge/hostile archives can still raise `ResourceLimitError` unless you raise limits. |
-| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8 and the characters Windows refuses in a name (`<`, `>`, `"`, `?`, `*`, the vertical bar and the control characters, so `what?.txt` is written `what%3F.txt`), and write a `\` in a TAR name or link target as a separator, as Windows does; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
+| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8 and the characters Windows refuses in a name (`<`, `>`, `"`, `?`, `*`, the vertical bar and the control characters, so `what?.txt` is written `what%3F.txt`), and write a `\` in a TAR name or link target as a separator, as Windows does; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling; `ExtractionResult.rewrites` holds `NameRewrite.PORTABLE_NAME`. |
 | Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — the clobbered member's result is revised to `OVERWRITTEN`. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
 | Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename), for a directory member landing on a file as for a file. It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
 | `RENAME` and directories | When a file or symlink, yours or the run's, holds a directory member's name, archivey writes the directory as `name (1)/` and keeps the file. The members inside it follow it: `dd/f` lands at `dd (1)/f`, and its result reports `requested_path` `dd/f` and `path` `dd (1)/f`. The CLI reports the directory's rename once, not once per member. |
@@ -382,7 +395,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z, RAR and ISO): `open_archive` itself raises. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`, and to `extract_all()` in both access modes. `stream_members()` and `for member in reader` are intentionally unguarded, but their memory stays bounded by the limits: past them the reader stops keeping the listing, and listing calls afterwards raise `ResourceLimitError`. The exceptions are formats that already apply `max_members` at parse (7z, RAR and ISO): `open_archive` itself raises. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -393,12 +406,13 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (default 1000, checked once 5 MiB has been written), and entry count (default
   262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count (default 262,144) and retained metadata
-  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
-  extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
-  does not list first: it checks the limits as each member arrives in its one pass, so
-  members before the one that crosses a cap are already written when it raises.
-  `stream_members()` / `streaming=True`
-  stay unguarded by design, except on 7z, RAR and ISO where `max_members` is checked
+  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
+  extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction,
+  and any extraction from a streaming reader, does not list first: it checks the limits
+  as each member arrives in its one pass, so members before the one that crosses a cap
+  are already written when it raises. `stream_members()` and `for member in reader`
+  stay unguarded by design (past a cap the reader stops keeping the listing, so memory
+  stays bounded), except on 7z, RAR and ISO where `max_members` is checked
   at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z, RAR or
   ISO. For 7z and RAR that parse bound is a member count, not a byte budget:
   `max_metadata_bytes` still fires when the list is materialized. RAR also checks it at

@@ -338,7 +338,7 @@ def test_zip_ppmd_restore_method_above_2_is_corrupt(restore: int) -> None:
 # DR-3: bytes inside a member's compressed size after the codec's end of stream are
 # hidden data, so the member is CorruptionError. 7-Zip reports them as an error ("There
 # are some data after the end of the payload data", or "Data Error" for PPMd), a zero
-# byte too. LZMA (method 14) is pinned in test_audit2_zip.py (LzmaDataAfterEndError).
+# byte too. LZMA (method 14) is pinned in test_audit2_zip.py and test_surplus_input.py.
 
 _TAILS = [
     pytest.param(b"\x00", id="zero"),
@@ -452,19 +452,21 @@ def test_zip_zstd_member_with_a_skippable_frame_is_corrupt(skippable: bytes) -> 
 def test_framed_stream_refuses_a_second_stream_after_the_end(
     chunk: int | None,
 ) -> None:
-    # The shared framed path, with the concatenation magic a bare .bz2 file uses: a
-    # second stream is input after the first one's end.
+    # The shared framed path. With the concatenation magic a bare .bz2 file uses, a
+    # second stream is content; with a single stream's magic (a container coder's,
+    # CodecParams.single_stream) it is input after the first one's end.
     import bz2
 
     from archivey.internal.streams.codecs.framed_decoder import (
         FramedDecompressorStream,
+        StreamStart,
         stream_magic,
     )
 
     data = bz2.compress(_PAYLOAD) + bz2.compress(b"second")
-    magic = stream_magic((b"B", b"Z", b"h", b"123456789"))
+    concatenated = stream_magic((b"B", b"Z", b"h", b"123456789"))
 
-    def read(refuse: bool) -> bytes:
+    def read(magic: StreamStart, refuse: bool) -> bytes:
         stream = FramedDecompressorStream(
             io.BytesIO(data),
             bz2.BZ2Decompressor,
@@ -476,9 +478,10 @@ def test_framed_stream_refuses_a_second_stream_after_the_end(
             return stream.read()
         return b"".join(iter(lambda: stream.read(chunk), b""))
 
-    assert read(refuse=False) == _PAYLOAD + b"second"
+    assert read(concatenated, refuse=False) == _PAYLOAD + b"second"
+    assert read(concatenated, refuse=True) == _PAYLOAD + b"second"
     with pytest.raises(CorruptionError, match="left after its end"):
-        read(refuse=True)
+        read(stream_magic(), refuse=True)
 
 
 @requires_binary("7z")
@@ -590,12 +593,13 @@ def test_zip_winzip_aes_member_with_input_after_its_stream_is_corrupt(
 @requires("pyppmd")
 @pytest.mark.parametrize("in_child", [False, True], ids=["in-process", "child"])
 @pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
-def test_zip_ppmd_member_without_an_end_mark_reads_clean(
+def test_zip_ppmd_member_without_an_end_mark_is_corrupt(
     in_child: bool, chunk: int | None
 ) -> None:
-    # A PPMd8 stream may end with no end mark; at the declared size it reads clean.
-    # Read in 7-byte chunks, this payload's end-mark probe parks the worker, which
-    # close() then has to quiesce.
+    # A ZIP PPMd8 member carries an end mark; without one its input cannot be told
+    # from a declared size cut short of the stream, and 7-Zip 23.01 fails it ("Data
+    # Error"). Read in 7-byte chunks, this payload's end-mark probe parks the worker,
+    # which close() then has to quiesce.
     import pyppmd
 
     enc = pyppmd.Ppmd8Encoder(6, 16 << 20, 0)
@@ -606,8 +610,10 @@ def test_zip_ppmd_member_without_an_end_mark_reads_clean(
         io.BytesIO(data), config=ArchiveyConfig(decoder_limits=limits)
     ) as ar:
         (member,) = ar.members()
-        if chunk is None:
-            assert ar.read(member) == _PAYLOAD
-        else:
-            with ar.open(member) as stream:
-                assert b"".join(iter(lambda: stream.read(chunk), b"")) == _PAYLOAD
+        with pytest.raises(CorruptionError, match="no end mark"):
+            if chunk is None:
+                ar.read(member)
+            else:
+                with ar.open(member) as stream:
+                    while stream.read(chunk):
+                        pass

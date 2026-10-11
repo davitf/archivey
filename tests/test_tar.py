@@ -35,6 +35,7 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
+    CorruptionError,
     DiagnosticRaisedError,
     ReadError,
     ResourceLimitError,
@@ -1838,7 +1839,7 @@ def test_symlink_duplicate_name_last_wins_random_access() -> None:
 
 
 # ---------------------------------------------------------------------------
-# scan_members(), post-pass cache, one-pass-only streaming
+# members_report(), post-pass cache, one-pass-only streaming
 # ---------------------------------------------------------------------------
 
 
@@ -1852,10 +1853,12 @@ def _build_forward_symlink_tar() -> bytes:
     )
 
 
-def test_streaming_scan_members_resolves_forward_symlink() -> None:
+def test_streaming_members_report_resolves_forward_symlink() -> None:
     source = NonSeekableBytesIO(_build_forward_symlink_tar())
     with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
-        members = ar.scan_members()
+        report = ar.members_report()
+    assert report.error is None
+    members = report.members
     link = next(m for m in members if m.name == "forward_link")
     assert link.link_target_member is not None
     assert link.link_target_member.name == "target.txt"
@@ -1897,13 +1900,15 @@ def test_streaming_stream_members_materializes_resolved_cache() -> None:
         assert collected[0].link_target_member.name == "target.txt"
 
 
-def test_scan_members_finishes_interrupted_pass(tmp_path: Path) -> None:
+def test_members_report_finishes_interrupted_pass(tmp_path: Path) -> None:
     source = NonSeekableBytesIO(_build_forward_symlink_tar())
     with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
         for member in ar:
             if member.name == "forward_link":
                 break
-        members = ar.scan_members()
+        report = ar.members_report()
+        assert report.error is None
+        members = report.members
         assert [m.name for m in members] == ["forward_link", "target.txt"]
         link = next(m for m in members if m.name == "forward_link")
         assert link.link_target_member is not None
@@ -1945,7 +1950,7 @@ def test_streaming_second_pass_raises_tar_and_zip(
             list(ar)
 
 
-def test_scan_members_random_access_parity(plain_tar: Path, tmp_path: Path) -> None:
+def test_members_report_random_access_parity(plain_tar: Path, tmp_path: Path) -> None:
     import zipfile
 
     zip_path = tmp_path / "scan.zip"
@@ -1956,11 +1961,11 @@ def test_scan_members_random_access_parity(plain_tar: Path, tmp_path: Path) -> N
     (simple_dir / "a.txt").write_bytes(b"x")
     for source in (plain_tar, zip_path, simple_dir):
         with open_archive(source) as ar:
-            assert ar.scan_members() == ar.members()
+            assert list(ar.members_report().members) == ar.members()
             assert [m.name for m in ar] == [m.name for m in ar.members()]
 
 
-def test_scan_members_before_pass_consumes_streaming_reader(
+def test_members_report_before_pass_consumes_streaming_reader(
     plain_tar: Path, tmp_path: Path
 ) -> None:
     import zipfile
@@ -1973,7 +1978,7 @@ def test_scan_members_before_pass_consumes_streaming_reader(
     (simple_dir / "a.txt").write_bytes(b"x")
     for source in (plain_tar, zip_path, simple_dir):
         with open_archive(source, streaming=True) as ar:
-            names = {m.name for m in ar.scan_members()}
+            names = {m.name for m in ar.members_report()}
             assert len(names) > 0
             with pytest.raises(ArchiveyUsageError):
                 list(ar.stream_members())
@@ -2051,9 +2056,9 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_error_mid_streaming_pass_poisons_scan_members() -> None:
+def test_error_mid_streaming_pass_poisons_members_report() -> None:
     """End-to-end N1 repro: a RAISE-disposition diagnostic fires mid-pass; the caller
-    catches it; ``scan_members()`` must then fail loud instead of silently returning
+    catches it; ``members_report()`` must then fail loud instead of silently returning
     the two-member prefix as the complete resolved list."""
     from archivey.diagnostics import (
         DiagnosticCode,
@@ -2089,7 +2094,7 @@ def test_error_mid_streaming_pass_poisons_scan_members() -> None:
                 seen.append(member.name)
         assert seen == ["a.bin", "b.bin"]
         with pytest.raises(ReadError, match="previously failed"):
-            reader.scan_members()
+            reader.members_report()
         assert reader.members_report_if_available() is None
 
 
@@ -2810,3 +2815,83 @@ def test_a_pass_reads_no_member_data_the_consumer_does_not_reach(
         assert reads_after(2) >= big
     else:
         assert reads_after(2) < 1 * 2**20  # random access seeks past the data
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "special"),
+    [
+        (tarfile.CHRTYPE, "char_device"),
+        (tarfile.BLKTYPE, "block_device"),
+        (tarfile.FIFOTYPE, "fifo"),
+    ],
+)
+def test_special_entries_are_other_and_name_their_type(
+    tmp_path: Path, typeflag: bytes, special: str
+) -> None:
+    """A device or FIFO header is OTHER (the typeflag is the structure, and GNU tar
+    stores no data under it), and ``extra["special_file_type"]`` says which kind."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        info = tarfile.TarInfo("dev")
+        info.type = typeflag
+        info.mode = 0o660
+        info.devmajor, info.devminor = 1, 3
+        t.addfile(info)
+        reg = tarfile.TarInfo("reg.txt")
+        reg.size = 2
+        t.addfile(reg, io.BytesIO(b"hi"))
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["dev"].type is MemberType.OTHER
+        assert by_name["dev"].extra["special_file_type"] == special
+        assert "special_file_type" not in by_name["reg.txt"].extra
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+        ar.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "dev").exists()
+    assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
+
+
+def test_a_sized_fifo_header_is_corruption() -> None:
+    """A device or FIFO header that declares data is damage: GNU tar and libarchive
+    ignore the size field of typeflags 3/4/6 and read the next header where the
+    "data" starts. tarfile does the same, so an all-null payload reads as the end
+    marker and every later member silently disappears; archivey refuses the header
+    instead of dropping members."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        info = tarfile.TarInfo("pipe")
+        info.type = tarfile.FIFOTYPE
+        info.size = 512
+        t.addfile(info, io.BytesIO(b"\0" * 512))
+        reg = tarfile.TarInfo("reg.txt")
+        reg.size = 2
+        t.addfile(reg, io.BytesIO(b"hi"))
+    with (
+        open_archive(io.BytesIO(buf.getvalue())) as ar,
+        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
+    ):
+        ar.members()
+    with (
+        open_archive(
+            NonSeekableBytesIO(buf.getvalue()), format=ArchiveFormat.TAR, streaming=True
+        ) as ar,
+        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
+    ):
+        list(ar.stream_members())
+
+
+def test_other_entries_that_are_not_special_files_get_no_special_file_type() -> None:
+    """A GNU dumpdir (``D``) is OTHER but not a device, FIFO or socket, so it has no
+    ``extra["special_file_type"]``: the key means "the archive recorded a special
+    file" in every format, not "the member is OTHER"."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        info = tarfile.TarInfo("dump")
+        info.type = b"D"
+        t.addfile(info)
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.OTHER
+        assert member.extra["tar.type"] == b"D"
+        assert "special_file_type" not in member.extra

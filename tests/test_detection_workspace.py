@@ -25,6 +25,7 @@ import io
 import os
 import zipfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -41,8 +42,10 @@ from archivey.detection_cost import (
     TierSkipReason,
 )
 from archivey.internal import detection_workspace
+from archivey.internal.detection import validator_allowance
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
+    VALIDATOR_PEEK_MAX,
     ScanNeedle,
     candidate_origin_for_hit,
     iter_magic_in_prefix,
@@ -604,7 +607,8 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
 
 def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
-    # is the Brotli walk plus one trailer block.
+    # is the Brotli walk, one trailer block, and an SFX validator's header read past
+    # the scan window.
     from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.codecs.brotli_framing import (
         CHAIN_HEADER_READ,
@@ -612,7 +616,10 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     )
 
     scan = BALANCED_BUDGET.max_scan_bytes
-    allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance()
+    assert validator_allowance(BALANCED_BUDGET) == VALIDATOR_PEEK_MAX
+    allowance = (
+        CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance() + VALIDATOR_PEEK_MAX
+    )
     at_cap = DetectionCostReceipt(
         unique_bytes_read=scan + allowance,
         scanned_bytes=scan,
@@ -623,6 +630,62 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
         scanned_bytes=scan,
     )
     assert not within_budget(over, BALANCED_BUDGET)
+
+
+def test_within_budget_grants_the_validator_allowance_only_to_a_scan() -> None:
+    """The SFX validator allowance needs a scan that ran, and scales with its field.
+
+    A receipt with no scanned bytes gets only the probe and trailer allowances, and a
+    budget whose scan is smaller than ``VALIDATOR_PEEK_MAX`` gets its scan size.
+    """
+    from archivey.detection_cost import DetectionCostReceipt
+    from archivey.internal.streams.codecs.brotli_framing import (
+        CHAIN_HEADER_READ,
+        CHAIN_MAX_LINKS,
+    )
+
+    base = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance()
+    for budget in (BALANCED_BUDGET, _tight_budget()):
+        ceiling = max(
+            budget.max_prefix_bytes, budget.max_far_bytes, budget.max_scan_bytes
+        )
+        no_scan = DetectionCostReceipt(unique_bytes_read=ceiling + base + 1)
+        assert not within_budget(no_scan, budget)
+        assert within_budget(replace(no_scan, unique_bytes_read=ceiling + base), budget)
+        scanned = replace(no_scan, scanned_bytes=budget.max_scan_bytes)
+        sfx = validator_allowance(budget)
+        assert sfx == min(VALIDATOR_PEEK_MAX, budget.max_scan_bytes)
+        assert within_budget(
+            replace(scanned, unique_bytes_read=ceiling + base + sfx), budget
+        )
+        assert not within_budget(
+            replace(scanned, unique_bytes_read=ceiling + base + sfx + 1), budget
+        )
+    assert validator_allowance(_tight_budget()) == _tight_budget().max_scan_bytes
+    assert validator_allowance(replace(BALANCED_BUDGET, max_scan_bytes=0)) == 0
+
+
+def test_within_budget_judges_each_pass_against_its_own_budget() -> None:
+    """``passes`` multiplies every limit: two passes' work fits two budgets, not one."""
+    from archivey.detection_cost import DetectionCostReceipt
+
+    budget = BALANCED_BUDGET
+    two_passes = DetectionCostReceipt(
+        unique_bytes_read=2 * budget.max_scan_bytes,
+        scanned_bytes=2 * budget.max_scan_bytes,
+        far_bytes=2 * budget.max_far_bytes,
+        passes=2,
+    )
+    assert within_budget(two_passes, budget)
+    assert not within_budget(replace(two_passes, passes=1), budget)
+    # Each counter on its own is held to ``passes`` budgets.
+    for field in ("unique_bytes_read", "scanned_bytes", "far_bytes"):
+        one_counter = replace(
+            DetectionCostReceipt(passes=2),
+            **{field: getattr(two_passes, field)},
+        )
+        assert within_budget(one_counter, budget), field
+        assert not within_budget(replace(one_counter, passes=1), budget), field
 
 
 def test_read_at_on_path_seeks_without_buffering_prefix(tmp_path: Path) -> None:

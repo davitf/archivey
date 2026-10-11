@@ -232,11 +232,11 @@ def stream_end(
     decode that reaches the end is as good as a full one. Output is counted and
     dropped, in bounded pieces.
 
-    The second value is False unless ``check_input_after`` is set. Then a stream that
-    ends below ``cap`` is followed by the next one, as rapidgzip reads on into it,
-    until a stream ends at ``cap``, and the second value is whether ``source`` holds
-    any byte after that stream, a zero too. The result then does not depend on where
-    ``point`` lies.
+    The second value is False unless ``check_input_after`` is set. Then it is whether
+    ``source`` holds any byte after the stream's end, a zero too, a further stream
+    included. Only a decode from the start (``point`` of ``None``) can say that of the
+    stream's first end: a resume point can lie in a further stream that rapidgzip read
+    on into.
     """
     produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
     if point is not None:
@@ -250,21 +250,16 @@ def stream_end(
         source.seek(0)
     data = b""
     try:
-        while True:
-            while not decomp.eof:
-                if produced > cap:
-                    return None, False
+        while not decomp.eof:
+            if produced > cap:
+                return None, False
+            if not data:
+                data = source.read(1 << 16)
                 if not data:
-                    data = source.read(1 << 16)
-                    if not data:
-                        return None, False
-                    data, bit = _splice(bit, data), 0
-                produced += len(decomp.decompress(data, 1 << 20))
-                data = decomp.unconsumed_tail
-            if not check_input_after or produced >= cap:
-                break
-            data = decomp.unused_data
-            decomp = zlib.decompressobj(-15)
+                    return None, False
+                data, bit = _splice(bit, data), 0
+            produced += len(decomp.decompress(data, 1 << 20))
+            data = decomp.unconsumed_tail
     except zlib.error:
         return None, False
     if produced > cap:
