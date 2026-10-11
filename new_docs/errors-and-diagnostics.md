@@ -36,8 +36,8 @@ the format has no reliable signature and only a check of the contents suggested 
 Brotli data. The file may not be in that format at all, such as a file of zeros named `backup.gz`,
 rather than a damaged one.
 
-Mistakes in the calling code raise `ArchiveyUsageError` instead, which isn't an `ArchiveyError`, so
-a catch-all for archive problems never hides a bug. The ones you're most likely to meet are calling
+Mistakes in the calling code raise `ArchiveyUsageError`, which isn't an `ArchiveyError`, so a
+catch-all for archive problems never hides a bug. The ones you're most likely to meet are calling
 `members()`, `open()` or `read()` on a reader opened with `streaming=True`, and opening a second
 member stream while another is still open, without `concurrent_members=True`. [Choosing how to
 read](reading.md) explains both. A source that isn't a path or a file object raises `TypeError`, and
@@ -81,10 +81,9 @@ after a seek, so seeking back can't hand you the damaged member as if it were co
 
 ## Diagnostics
 
-A diagnostic is a record of something worth knowing that didn't stop the operation, such as a
-password that wasn't needed or a member name with characters that make it display as a different
-name. Each has a `code` to check for, a `message` meant for people, and details such as the member's
-name. Archivey keeps them in a few places, depending on what you called:
+Each diagnostic has a `code` to check for, a `message` meant for people, and details such as the
+member's name, for example a name with characters that make it display as a different one. Archivey
+keeps them in a few places, depending on what you called:
 
 | After | Read them from |
 |---|---|
