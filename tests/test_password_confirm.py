@@ -500,8 +500,8 @@ class _TellFails(io.BytesIO):
 def test_a_seek_error_that_moved_forfeits_the_digest(
     inner_type: type[io.BytesIO], seek_forfeits: bool, expected: list[str]
 ) -> None:
-    # A failed seek that moved the stream (or left its position unknown) forfeits the
-    # digest the inner drops on a seek, so reading on to the end still reports.
+    # A failed seek that moved past the furthest read (or left the position unknown)
+    # forfeits the digest the inner drops on a skip, so reading on to the end reports.
     calls = _Calls()
     watch = UnverifiedPasswordReadWatch(
         inner_type(b"0123456789"),
@@ -511,7 +511,7 @@ def test_a_seek_error_that_moved_forfeits_the_digest(
     )
     watch.read(3)
     with pytest.raises(RuntimeError):
-        watch.seek(1)
+        watch.seek(5)
     watch.read()
     watch.close()
     assert calls.reasons == expected
@@ -526,12 +526,40 @@ def test_watch_readinto_counts_as_a_read() -> None:
 
 
 def test_a_seek_forfeits_the_digest_when_the_inner_drops_it() -> None:
-    # A fused verifier stops hashing on a seek off the frontier, so reading on to the
-    # end after a skip still never reaches the digest.
+    # A fused verifier stops hashing on a read that skips bytes past its frontier, so
+    # reading on to the end after a skip still never reaches the digest.
     watch, calls = _watch(b"0123456789")
     watch.read(1)
     watch.seek(5)
     assert watch.read() == b"56789"
+    watch.close()
+    assert calls.reasons == ["seek"]
+
+
+def test_a_backward_seek_keeps_the_digest() -> None:
+    # The fused verifier has hashed up to its furthest read, so a read after a seek
+    # back hashes only what lies past it, and a read on to the end reaches the digest.
+    watch, calls = _watch(b"0123456789")
+    watch.read(6)
+    watch.seek(2)
+    assert watch.read() == b"23456789"
+    watch.close()
+    assert calls.count == 0
+
+
+def test_a_skip_undone_before_a_read_keeps_the_digest() -> None:
+    # Only a read that skips bytes loses the digest: a jump ahead that the caller
+    # undoes before reading skips nothing. Closing there is still a partial read.
+    watch, calls = _watch(b"0123456789")
+    watch.read(3)
+    watch.seek(7)
+    watch.seek(3)
+    watch.close()
+    assert calls.reasons == ["partial_read"]
+    # Closing while parked past the furthest read short of the end names the seek.
+    watch, calls = _watch(b"0123456789")
+    watch.read(3)
+    watch.seek(7)
     watch.close()
     assert calls.reasons == ["seek"]
 

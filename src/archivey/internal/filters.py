@@ -85,9 +85,6 @@ def is_rooted(name: str) -> bool:
     Narrower than :func:`_is_absolute`, on purpose. A drive-relative ``C:x`` is also an
     ordinary POSIX name (``a:b``), so it has no root to drop: rewriting it to ``x``
     would put the member where another member named ``x`` belongs. It stays refused.
-
-    The CLI imports this to tell a re-root from a portable rewrite in its report: a
-    rooted ``presented_name`` means a re-root ran, so the two must agree.
     """
     if name[:1] in ("/", "\\"):
         return True
@@ -550,11 +547,11 @@ def _sanitize_portable_name(name: str) -> str:
     The escaping is therefore reversible within a rewritten name, not across names: a
     stored ``%FF`` is returned verbatim and a raw ``0xFF`` byte is also written ``%FF``.
     The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can:
-    after this rewrite it differs from the written name in the escaped bytes. A set
-    ``presented_name`` alone is not enough, since an absolute-name re-root sets it too,
-    and then it differs from the written name only by the root it lost. The collision
-    map sees both spellings as one key, so the second is resolved by the
-    ``OverwritePolicy`` rather than silently overwriting the first.
+    after this rewrite it differs from the written name in the escaped bytes, and
+    ``ExtractionResult.rewrites`` holds ``NameRewrite.PORTABLE_NAME``. A set
+    ``presented_name`` alone is not enough, since an absolute-name re-root sets it
+    too. The collision map sees both spellings as one key, so the second is resolved
+    by the ``OverwritePolicy`` rather than silently overwriting the first.
     """
     if not any(_needs_escape(c) for c in name):
         return name
@@ -842,17 +839,3 @@ def collision_key(name: str, policy: ExtractionPolicy) -> str:
     if policy is ExtractionPolicy.TRUSTED:
         return rel
     return unicodedata.normalize("NFC", rel).casefold()
-
-
-def numbered_name(name: str, n: int, *, is_dir: bool) -> str:
-    """``name`` as an ``OverwritePolicy.RENAME`` rename spells it with counter ``n``.
-
-    The counter goes before the final suffix so the extension is preserved
-    (``photo.jpg`` -> ``photo (1).jpg``); a directory has no suffix and the counter goes
-    after the whole name. Extraction and the CLI's single-root hoist both use it, so a
-    hoist renames to the name a direct extraction would have chosen.
-    """
-    if is_dir:
-        return f"{name} ({n})"
-    path = Path(name)
-    return f"{path.stem} ({n}){path.suffix}"

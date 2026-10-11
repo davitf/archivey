@@ -18,6 +18,7 @@ from archivey import (
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
+    NameRewrite,
     OnError,
     OverwritePolicy,
 )
@@ -33,10 +34,7 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
-
-# Two naming rules the CLI must apply exactly as extraction does; the ``cli`` spec's
-# public-API requirement records the exception.
-from archivey.internal.filters import is_rooted, numbered_name
+from archivey.paths import numbered_name
 from archivey.reader import ForwardArchiveReader
 from archivey.types import (
     ArchiveFormat,
@@ -869,11 +867,10 @@ def _report_extraction(
             # A re-root is the exception: a ``tar -P`` backup re-roots every member, so
             # re-roots are counted and reported once, as GNU tar does, and listed per
             # member only under --verbose. A portable rewrite on top of a re-root goes
-            # with it: the result carries one ``presented_name`` for both, and the CLI
-            # cannot tell them apart from the path (a hoist, a trailing ``/`` or a
-            # collision suffix all change it too), so the verbose line shows both.
+            # with it: the result carries one ``presented_name`` for both, so the
+            # verbose line shows both under the re-root's label.
             if result.presented_name is not None:
-                rerooted_name = is_rooted(result.presented_name)
+                rerooted_name = NameRewrite.REROOTED in result.rewrites
                 if rerooted_name:
                     rerooted += 1
                 if not rerooted_name or verbose:

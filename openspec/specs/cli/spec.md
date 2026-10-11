@@ -513,26 +513,31 @@ directory; `.` remains the way to name it.
 
 ### Requirement: The CLI uses only public API
 
-The `archivey.cli` package SHALL import nothing from `archivey.internal`, with two
-exceptions. `--track-io` imports `archivey.internal.measurement`, because the CLI is
-also a debugging tool for the library and IO measurement is not public API. `extract`
-imports `is_rooted` and `numbered_name` from `archivey.internal.filters`, because its
-report and its single-root hoist must apply those naming rules exactly as extraction
-does: which stored names a re-root changed, and how a rename spells `name (N)`. What it
+The `archivey.cli` package SHALL import nothing from `archivey.internal`, with one
+exception. `--track-io` imports `archivey.internal.measurement`, because the CLI is
+also a debugging tool for the library and IO measurement is not public API. What it
 needs beyond `archivey.__all__` SHALL otherwise come from a public module, such as
-`archivey.terminal` for terminal-safe display. The CLI is the example other
+`archivey.terminal` for terminal-safe display and `archivey.paths` for the `name (N)`
+spelling its single-root hoist shares with extraction. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
 without touching any public name. `extract --dry-run` also reads one private field,
 `ExtractionReport._dry_run_top_level` and `ExtractionReport._dry_run_links`: the
 entries the dry run left at the top of its scratch copy of the destination, and the
 symlinks in that copy. A dry run writes nothing the CLI could look at instead, and
-renaming either field breaks the dry run's hoist line and summary.
+renaming either field breaks the dry run's hoist line and summary. Apart from those two
+fields, the CLI SHALL NOT read a private attribute of a library object, and SHALL NOT
+decide anything from a library exception's message: `extract` tells a re-root from a
+portable rewrite by `ExtractionResult.rewrites`, and `test` tells a link the archive
+left without a target by `ArchiveMember.link_target_unrecorded`, and an error about
+where a link points by its type (`LinkTargetNotFoundError`) or its marker
+(`ArchiveyUsageError.refused_member_type`). Argparse's own attributes and messages are
+not the library's, and the CLI's parser reads both.
 
 #### Scenario: CLI import boundary
 
 | Case | Expected |
 | --- | --- |
-| Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import`, except the two allowlisted imports (measurement, naming rules) |
+| Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import`, except the allowlisted measurement import |
 | One is added | `tests/test_cli_uses_public_api.py` fails, naming the file and line |
 | The allowlisted import is removed | The same test fails until the allowlist entry goes too |
 

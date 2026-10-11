@@ -75,6 +75,7 @@ class DiagnosticCode(StrEnum):
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
+    MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
@@ -366,6 +367,25 @@ class DigestContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class DirectoryDataContext(_JsonSafeContext):
+    """A directory entry declares member data, which extraction does not write.
+
+    ``size`` is the declared uncompressed size and ``compressed_size`` the stored
+    one (``None`` where the format does not record it). The directory is still
+    created. A declared size is reachable through ``open()`` / ``read()`` where the
+    backend can decode the body (RAR delivers stored data only); a ``size`` of 0 over
+    a non-empty body has nothing ``open()`` could return.
+    """
+
+    kind: Literal["directory_data"] = "directory_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    size: int = 0
+    compressed_size: int | None = None
+
+
+@dataclass(frozen=True)
 class EncryptedVerificationContext(_JsonSafeContext):
     """An encrypted member's stream closed before its digest checked the password.
 
@@ -374,11 +394,11 @@ class EncryptedVerificationContext(_JsonSafeContext):
     ``pw_verify``), ``"confirm_budget_exhausted"`` (confirmation survived its bounded
     prefix without reaching a checksum) or ``"no_password_check"`` (the member carries
     no password check at all, as RAR3/4 data does, so nothing accepted the password
-    before decoding). ``reason`` names why the digest was not
-    reached: ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek gave up
-    a CRC; a WinZip AES HMAC survives seeks, so for an AES member it means only that a
-    failed seek left the position unknown). No password or key material is ever
-    carried.
+    before decoding). ``reason`` names why the digest was not reached:
+    ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek that jumped past
+    the bytes read so far gave up a CRC; a WinZip AES HMAC survives seeks, so for an
+    AES member it means only that a failed seek left the position unknown). No
+    password or key material is ever carried.
 
     The code answers a question a member stream cannot answer for itself yet. Retire it
     when member streams report their verification state (``dev-docs/IDEAS.md``,
@@ -477,6 +497,7 @@ DiagnosticContext = (
     | MemberHeaderRecordContext
     | SymlinkTargetContext
     | DigestContext
+    | DirectoryDataContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
@@ -504,6 +525,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
@@ -528,6 +550,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
     }
 )
@@ -905,10 +928,12 @@ __all__ = [
     "DiagnosticPolicy",
     "DiagnosticSummary",
     "DigestContext",
+    "DirectoryDataContext",
     "EmptyArchiveContext",
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",
     "MemberTimestampContext",
@@ -918,6 +943,7 @@ __all__ = [
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",
+    "SpecialFileDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",

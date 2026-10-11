@@ -106,6 +106,17 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   the declared size. One zero byte after LZMA data without an end marker reads, because
   7-Zip's encoder sometimes writes it. A standalone compressed file reports bytes after
   its stream as a warning instead (see [Single-file compressors](#single-file-compressors)).
+- A directory entry that declares data (APPNOTE gives a directory none) is listed as a
+  directory with that size and reported with ``MEMBER_DIRECTORY_DATA_IGNORED``;
+  extraction creates the directory, as unzip and 7-Zip do, and ``read()`` returns the
+  bytes, checked against the stored CRC-32. A CRC field of 0, a directory's conventional
+  value, is no digest; when that CRC was the entry's only check (unencrypted or
+  ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back unchecked, while a WinZip
+  AES entry (AE-1 or AE-2) has its HMAC check the bytes, so nothing is reported for it.
+  Strict refuses the archive. A directory declaring size 0 over a body larger than
+  an empty one of its method is reported too (``read()`` has nothing to return for it);
+  the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
+  not.
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
@@ -291,6 +302,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way
   `extra["special_file_type"]` names the kind. `rar` itself skips such files when
   archiving.
+- A directory entry that declares data (`rar` never writes one) is reported with
+  `MEMBER_DIRECTORY_DATA_IGNORED`; extraction creates the directory, as `unrar` does.
+  `read()` returns the bytes when they are stored and not encrypted; compressed or
+  encrypted directory data raises `UnsupportedFeatureError`, because `unrar` emits
+  nothing for a directory entry.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
   archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
