@@ -516,11 +516,12 @@ entries the dry run left at the top of its scratch copy of the destination, and 
 symlinks in that copy. A dry run writes nothing the CLI could look at instead, and
 renaming either field breaks the dry run's hoist line and summary. Apart from those two
 fields, the CLI SHALL NOT read a private attribute of a library object, and SHALL NOT
-decide anything from an exception's message: `extract` tells a re-root from a portable
-rewrite by `ExtractionResult.rewrites`, and `test` tells a link the archive left
-without a target by `ArchiveMember.link_target_unrecorded`, and an error about where a
-link points by its type (`LinkTargetNotFoundError`) or its marker
-(`ArchiveyUsageError.refused_member_type`).
+decide anything from a library exception's message: `extract` tells a re-root from a
+portable rewrite by `ExtractionResult.rewrites`, and `test` tells a link the archive
+left without a target by `ArchiveMember.link_target_unrecorded`, and an error about
+where a link points by its type (`LinkTargetNotFoundError`) or its marker
+(`ArchiveyUsageError.refused_member_type`). Argparse's own attributes and messages are
+not the library's, and the CLI's parser reads both.
 
 #### Scenario: CLI import boundary
 

@@ -37,7 +37,8 @@ from archivey.types import ArchiveMember, MemberType
 
 
 def _tar(path: Path, entries: list[tuple[str, str, bytes | str]]) -> Path:
-    """A TAR of ``(name, kind, payload)``: ``kind`` is ``file``, ``dir`` or ``sym``."""
+    """A TAR of ``(name, kind, payload)``: ``kind`` is ``file``, ``dir``, ``sym`` or
+    ``hard``."""
     with tarfile.open(path, "w") as tf:
         for name, kind, payload in entries:
             info = tarfile.TarInfo(name)
@@ -50,8 +51,8 @@ def _tar(path: Path, entries: list[tuple[str, str, bytes | str]]) -> Path:
                 info.mode = 0o755
                 tf.addfile(info)
             else:
-                assert kind == "sym" and isinstance(payload, str)
-                info.type = tarfile.SYMTYPE
+                assert kind in ("sym", "hard") and isinstance(payload, str)
+                info.type = tarfile.SYMTYPE if kind == "sym" else tarfile.LNKTYPE
                 info.linkname = payload
                 tf.addfile(info)
     return path
@@ -72,6 +73,8 @@ def _zip_symlinks(path: Path, links: dict[str, bytes]) -> Path:
 # --- archivey.paths.numbered_name ---
 
 
+# Nothing collects doctests, so the ``>>>`` examples in ``numbered_name``'s docstring
+# are prose. Each of the three is a case below, which is what pins it: change both.
 @pytest.mark.parametrize(
     ("name", "n", "is_dir", "expected"),
     [
@@ -208,23 +211,43 @@ def test_a_filter_rename_of_a_rerooted_name_is_no_rewrite(tmp_path: Path) -> Non
     assert result.rewrites == frozenset()
 
 
-def test_rewrites_survive_a_later_revision_of_the_result(tmp_path: Path) -> None:
-    """A result revised after the member was written (here, ``OVERWRITTEN`` when a
-    later member replaces it) keeps the rewrites it recorded."""
+def test_rewrites_survive_when_a_streamed_copy_is_superseded(tmp_path: Path) -> None:
+    """A streamed copy taken back when a later copy of its name arrives keeps the
+    rewrites it recorded (``_supersede_written_copy`` rebuilds the result)."""
     archive = _tar(
-        tmp_path / "a.tar", [("/etc/x", "file", b"1"), ("/ETC/X", "file", b"2")]
+        tmp_path / "a.tar", [("/etc/x", "file", b"1"), ("/etc/x", "file", b"2")]
     )
-    with open_archive(archive) as reader:
-        report = reader.extract_all(
-            tmp_path / "out",
-            policy=ExtractionPolicy.STANDARD,
-            overwrite=OverwritePolicy.REPLACE,
-        )
+    with open_archive(archive, streaming=True) as reader:
+        report = reader.extract_all(tmp_path / "out", policy=ExtractionPolicy.STANDARD)
     first, second = report.results
-    assert first.status is ExtractionStatus.OVERWRITTEN
+    assert first.status is ExtractionStatus.SUPERSEDED
     assert second.status is ExtractionStatus.EXTRACTED
     assert first.rewrites == second.rewrites == {NameRewrite.REROOTED}
-    assert (first.presented_name, second.presented_name) == ("/etc/x", "/ETC/X")
+    assert first.presented_name == second.presented_name == "/etc/x"
+
+
+def test_rewrites_survive_the_second_pass_for_an_orphaned_hardlink(
+    tmp_path: Path,
+) -> None:
+    """A hardlink whose source the filter dropped is written in the second pass, which
+    rebuilds its result (``_revise_result``); the first pass's rewrites stay on it."""
+    archive = _tar(
+        tmp_path / "a.tar",
+        [("file.txt", "file", b"data"), ("/etc/hard.txt", "hard", "file.txt")],
+    )
+
+    def drop_source(member: ArchiveMember) -> ArchiveMember | None:
+        return None if member.name == "file.txt" else member
+
+    with open_archive(archive) as reader:
+        report = reader.extract_all(
+            tmp_path / "out", policy=ExtractionPolicy.STANDARD, filter=drop_source
+        )
+    (result,) = report.results
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert result.member.type is MemberType.HARDLINK
+    assert result.rewrites == {NameRewrite.REROOTED}
+    assert result.presented_name == "/etc/hard.txt"
 
 
 # --- ArchiveMember.link_target_unrecorded ---

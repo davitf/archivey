@@ -1593,13 +1593,13 @@ class ExtractionCoordinator:
         on_disk = disk_spelled(portable)
         if on_disk is not portable:
             self._current.spelled_from = portable
-        rerooted = (
+        reroot_rewrite = (
             frozenset({NameRewrite.REROOTED})
             if rerooted_from is not None
             else frozenset()
         )
         if portable.name == transformed.name:
-            return on_disk, rerooted_from, rerooted
+            return on_disk, rerooted_from, reroot_rewrite
         # The pre-rewrite spelling is the caller filter's output when there is one, which
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
@@ -1614,7 +1614,7 @@ class ExtractionCoordinator:
         return (
             on_disk,
             rerooted_from or transformed.name,
-            rerooted | {NameRewrite.PORTABLE_NAME},
+            reroot_rewrite | {NameRewrite.PORTABLE_NAME},
         )
 
     def _source_refused(self, link: ArchiveMember) -> bool:
@@ -2613,11 +2613,13 @@ class ExtractionCoordinator:
     def _revise_result(self, index: int, new: ExtractionResult) -> None:
         """Overwrite a recorded result, carrying forward first-pass facts it omits.
 
-        The second pass rebuilds a result from scratch, but two fields were decided in
-        the first pass (before the member was deferred) and are still true: the
-        ``presented_name`` rewrite, and the ``requested_path`` the member asked for. A
-        rebuild that does not supply them must not erase them — results are the sole
-        record, so a dropped field is a fact lost rather than a fact reported elsewhere.
+        The second pass rebuilds a result from scratch, but two facts were decided in
+        the first pass (before the member was deferred) and are still true: the name
+        rewrite, and the ``requested_path`` the member asked for. The rewrite is two
+        fields, ``presented_name`` and the ``rewrites`` that produced it, so neither is
+        carried without the other. A rebuild that does not supply them must not erase
+        them — results are the sole record, so a dropped field is a fact lost rather
+        than a fact reported elsewhere.
         Unlike ``_set_result`` it moves no progress tally: ``_report_progress`` is
         called only from the main member loop, which has finished by the second pass.
         """

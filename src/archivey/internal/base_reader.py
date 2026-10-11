@@ -2749,17 +2749,16 @@ class BaseArchiveReader(ArchiveReader):
 
         The cycle policy differs from :meth:`_resolve_link` on purpose. That one is
         listing bookkeeping and leaves ``link_target_member`` unset on a cycle or dead
-        end; this one is a caller asking for bytes, so it raises ``ReadError`` /
-        ``LinkTargetNotFoundError``. Do not unify them.
+        end; this one is a caller asking for bytes, so it raises
+        ``LinkTargetNotFoundError`` (a ``ReadError``). Do not unify them.
         """
         current = member
         while current.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            if current._member_id is None:
-                raise LinkTargetNotFoundError(
-                    "Link target is unknown",
-                    reason=LinkTargetNotFoundReason.UNRESOLVED,
-                    member_name=current.name,
-                )
+            # Every hop is registered: ``open()`` refuses a member whose ``_archive_id``
+            # is not this reader's, ``_register_member`` sets that id together with
+            # ``_member_id``, and ``link_target_member`` / ``_find_link_target`` hand
+            # back registered members.
+            assert current._member_id is not None, current.name
             member_id = current._member_id
             if member_id in visited:
                 raise LinkTargetNotFoundError(
