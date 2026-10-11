@@ -164,13 +164,18 @@ class FramedDecoder(BaseDecoder):
         )
 
     def _next_stream(self, data: bytes) -> bytes:
-        """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
-        if data:
-            # Any byte after a stream's end, zero padding or another stream too
-            # (a skippable zstd frame included), is input a container may refuse
-            # (``input_after_end``).
-            self._input_after_end = True
+        """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``.
+
+        A further stream continues the output only where ``magic`` accepts it; a
+        container coder that is one stream (``CodecParams.single_stream``) accepts
+        none, so a further stream there (a skippable zstd frame too) is input after
+        the end, like any other byte that starts no stream.
+        """
         rest = data.lstrip(b"\x00") if self._zero_padding else data
+        if len(rest) < len(data):
+            # Zero padding is input after a stream's end, which a
+            # ``refuse_input_after_end`` stream refuses (``input_after_end``).
+            self._input_after_end = True
         width = self._magic_start.width if self._magic_start is not None else 0
         # A run of ``width`` zeros or more is padding whatever its length, so no more
         # than ``width`` of them are kept: the decision then does not depend on where

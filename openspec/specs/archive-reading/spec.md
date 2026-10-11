@@ -475,7 +475,7 @@ per-call listing-limits override.
 ```python
 @dataclass(frozen=True)
 class ListingLimits:
-    max_members: int | None = 1_048_576
+    max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
     UNLIMITED: ClassVar["ListingLimits"]
 ```
@@ -502,7 +502,7 @@ escape hatch there.
 
 | Case | Expected |
 | --- | --- |
-| Default config, archive with ≤1_048_576 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
+| Default config, archive with ≤262_144 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
@@ -1094,19 +1094,19 @@ class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
     max_ratio: float | None = 1000.0
     ratio_activation_threshold: int = 5 * 2**20
-    max_entries: int | None = 1_048_576
+    max_entries: int | None = 262_144
     UNLIMITED: ClassVar["ExtractionLimits"]
 
 @dataclass(frozen=True)
 class ListingLimits:
-    max_members: int | None = 1_048_576
+    max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20
     UNLIMITED: ClassVar["ListingLimits"]
 
 @dataclass(frozen=True)
 class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
-    max_key_derivation_rounds: int | None = 2**27
+    max_key_derivation_rounds: int | None = 2**25
     max_ppmd_in_process_input: int | None = 16 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
