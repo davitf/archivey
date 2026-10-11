@@ -24,6 +24,8 @@ from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     DiagnosticRaisedError,
+    LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
 )
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 
@@ -71,6 +73,8 @@ def _instance(cls: type[BaseException]) -> BaseException:
         kwargs["diagnostic"] = _diagnostic()
     else:
         kwargs["format_unconfirmed"] = True
+    if issubclass(cls, LinkTargetNotFoundError):
+        kwargs["reason"] = LinkTargetNotFoundReason.NOT_RECORDED
     return cls(message, **kwargs)
 
 

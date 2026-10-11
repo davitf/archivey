@@ -498,10 +498,35 @@ to their own parser ceilings before spine `ListingLimits` are evaluated on
 materialization (`members()` / extract-prep). Being indexed (ZIP central
 directory) is not the same as applying `max_members` at parse.
 
-**Unguarded by design:** `stream_members()` / `streaming=True` / forward-only
-iteration MUST NOT enforce `ListingLimits` (O(1) escape hatch). Callers that
-need a full resolved list use `members()` / `members_report()` and accept the
-caps. Formats that apply `max_members` at parse (7z, RAR and ISO) fail at
+**Unguarded by design:** `stream_members()` and `for member in reader` MUST NOT
+enforce `ListingLimits`: they yield every member, however many there are. Their
+memory SHALL still be bounded by `ListingLimits`, not by the member count: the
+pass counts each member as usual, and once the totals cross a limit the reader
+stops keeping the listing. It then holds no member, name index or `tarfile`
+header list for the rest of the pass. From that point:
+
+- the pass keeps yielding every member, but a link it yields after that point
+  gets no `link_target_member`, and the pass publishes no listing at its end;
+  members yielded up to that point keep what they had, and last-entry-wins
+  `is_current` is stamped over them when the listing is discarded, so a
+  duplicate yielded later cannot mark one of them superseded;
+- `members_report()` raises the same `ResourceLimitError` as `members()` on
+  the same archive; `members_report_if_available()` returns
+  `None`, since nothing is cached. On a
+  random-access reader (TAR) so do `members()`, `get()`, `open()`,
+  `extract_all()` and another `stream_members()` pass, which would need the
+  members this pass did not keep. A streaming reader refuses a second pass
+  anyway.
+
+A random-access reader whose `stream_members()` lists the whole archive before
+the first yield (ZIP, directory, 7z, RAR) keeps that listing: its size follows an
+index the source already holds uncompressed (the ZIP central directory, which
+`zipfile` keeps too, or the directory tree), or a count checked at parse (7z,
+RAR). Callers that need a full resolved list use `members()` /
+`members_report()` and accept the caps; `ListingLimits.UNLIMITED` keeps the whole
+listing on every pass. `extract_all()` enforces the limits in both access modes,
+because it resolves hard links against the members it has listed and so keeps
+them. Formats that apply `max_members` at parse (7z, RAR and ISO) fail at
 `open_archive` instead, so `stream_members()` / `streaming=True` are not an
 escape hatch there.
 
@@ -516,6 +541,9 @@ escape hatch there.
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
 | `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR member whose extended headers and sparse map together weigh more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
+| `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
+| `stream_members()` pass past a cap (either mode), then `members_report()` / `members()` | Pass yields every member and keeps memory bounded by the caps; each later listing call raises the `ResourceLimitError` `members()` raises; `members_report_if_available()` returns `None` |
+| Second `stream_members()` on a random-access TAR after such a pass | `ResourceLimitError` |
 
 ### Requirement: Listing metadata-byte accounting
 
@@ -648,8 +676,11 @@ valid chunks; `read()` raises without returning bytes.
 
 After symlink/hardlink following, if the **resolved** member is
 `DIRECTORY`, `ANTI`, or `OTHER`, `open()` / `read()` SHALL raise
-`ArchiveyUsageError`. They MUST NOT return empty bytes, and MUST NOT leak raw
-`IsADirectoryError` or format `CorruptionError` for directory paths. A link whose
+`ArchiveyUsageError` with `refused_member_type` set to that member's type, so a caller
+can tell this refusal from other usage errors without reading the message. Every other
+usage error SHALL leave `refused_member_type` `None`. They MUST NOT return empty
+bytes, and MUST NOT leak raw `IsADirectoryError` or format `CorruptionError` for
+directory paths. A link whose
 target is missing SHALL still raise `LinkTargetNotFoundError` (`ArchiveyError`).
 
 **Diagnostics (observable):** A reader-owned stream's `diagnostics` shows only
@@ -668,8 +699,9 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | Reader-owned stream emits rewind diagnostic | Visible on stream and reader snapshots; retained once |
 | `read("readme.txt")` | Full uncompressed `bytes` |
 | `open(member)` from a different reader | `ValueError` |
-| `open`/`read` directory (ZIP/TAR/ISO/directory/7z) | `ArchiveyUsageError` |
-| `open`/`read` `MemberType.ANTI` or `OTHER` | `ArchiveyUsageError` |
+| `open`/`read` directory (ZIP/TAR/ISO/directory/7z) | `ArchiveyUsageError`, `refused_member_type == DIRECTORY` |
+| `open`/`read` `MemberType.ANTI` or `OTHER` | `ArchiveyUsageError`, `refused_member_type` is that type |
+| `open`/`read` a symlink that resolves to a directory | `ArchiveyUsageError`, `refused_member_type == DIRECTORY` |
 | Symlink resolves to a file | Follow succeeds; returns file stream/bytes |
 | Symlink target missing in archive | `LinkTargetNotFoundError` |
 
@@ -796,7 +828,13 @@ hardlink-style target (`format-rar`). Directory lookup tries bare and `/`-suffix
 forms.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
-depth limit. Missing target → `LinkTargetNotFoundError`; cycle → `ReadError`.
+depth limit. Missing target and cycle → `LinkTargetNotFoundError` (a `ReadError`).
+Its `reason` (`LinkTargetNotFoundReason`) SHALL say why: `NOT_RECORDED` when the
+archive records no target for the link (`ArchiveMember.link_target_unrecorded`),
+`UNREADABLE` when it records one this read could not produce, and `UNRESOLVED` when the
+target is known but following it reaches no member that holds data (no such member,
+one the link may not use, or a cycle). Extraction raises the same type and reasons for
+a link it fails.
 Terminal fully-dereferenced target (when known) is `member.link_target_member`
 (see `archive-data-model`). Diagnostics for a linked open cover follow + read of
 that one `open()` operation.
@@ -807,8 +845,10 @@ that one `open()` operation.
 | --- | --- |
 | Valid chain to file data | One `ArchiveStream`; diagnostics cover follow + read of that open |
 | Hardlink → earlier file | Stream yields that file's data |
-| Missing target | `LinkTargetNotFoundError` |
-| Chain revisits member id | `ReadError` (cycle); no infinite recursion |
+| Missing target | `LinkTargetNotFoundError`, `reason == UNRESOLVED` |
+| Chain revisits member id | `LinkTargetNotFoundError` (a `ReadError`), `reason == UNRESOLVED`; no infinite recursion |
+| Link the archive records no target for | `LinkTargetNotFoundError`, `reason == NOT_RECORDED`; `member.link_target_unrecorded` |
+| Link whose stored target the reader reported out of reach (encrypted, compressed, over the length limit) | `LinkTargetNotFoundError`, `reason == UNREADABLE`; a damaged target raises the damage instead |
 | Symlink → file in archive | Stream yields target file data |
 | Symlink `dir/link` → `file` / `./file` | Lookup `dir/file`, not root-relative `file` |
 | Hardlink → `a/../b`, archive holds both `a/../b` and `b` | Resolves to the `a/../b` member; never `b` |

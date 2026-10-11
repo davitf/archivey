@@ -215,7 +215,7 @@ rules:
 | --- | --- |
 | `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
-| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER` when the entry stores no data, `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` when it does, `extra["special_file_type"]` whatever the type, a directory-marked or reparse-flagged entry over such a mode included); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version |
+| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER` when the entry stores no data, `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` when it does, `extra["special_file_type"]` whatever the type, a directory-marked or reparse-flagged entry over such a mode included); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version. A directory marker with `file_size > 0`, or with `file_size == 0` and a body larger than an empty one of its method (0 stored, 2 deflated, 14 bzip2, 19 LZMA; any body for another method), stays `DIRECTORY` and emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; one declaring data carries the central-directory CRC-32 in `hashes` and `open()` on it decodes and verifies the data like a file's, unless the CRC field is 0, in which case it carries no digest: where that CRC was the entry's only check (unencrypted, ZipCrypto) `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) is reported and the bytes are delivered unchecked, while a WinZip AES entry (AE-1 with a zeroed field, or AE-2, which stores 0 by design) is verified by its HMAC, with no digest and no report |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
 | `is_encrypted` | `flag_bits & 0x1 != 0`, or `compress_type == 99` (WinZip AES) whatever bit 0 says |
 
@@ -352,9 +352,10 @@ candidate failure (defined below) on the caller's `read`, `readinto` or forward
 the member may be corrupt, not `CorruptionError`; for an `LZMA` or `PPMd` member, whose
 codec header is read when the member opens, the open raises it. It SHALL NOT be marked
 as a wrong-password verdict: nothing in the archive tells a colliding wrong password
-from a damaged member. A seek off the read frontier forfeits the CRC until a seek to 0
-(`compressed-streams`, ADR 0014), so a STORED member's seek does not raise; closing that stream emits
-`ENCRYPTED_MEMBER_UNVERIFIED`.
+from a damaged member. A STORED member's forward seek jumps, so a read after it loses
+the CRC until a seek to 0 (`compressed-streams`, ADR 0014) and that seek does not raise;
+closing that stream emits `ENCRYPTED_MEMBER_UNVERIFIED`. A compressed member's forward
+seek keeps the CRC, as `compressed-streams` describes.
 
 ZIP's two per-open checks are the `archive-reading` ladder's **cheap key check** rung:
 ZipCrypto's one header verification byte (2⁻⁸) and WinZip AES's two-byte `pw_verify`

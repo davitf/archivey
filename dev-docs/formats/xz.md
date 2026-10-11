@@ -28,7 +28,9 @@ this page states the behaviour and links the row.
 has one entry. Bytes after the last xz stream are ignored rather than refused, although
 `xz -t` refuses them, and they cost the index (§3). An xz file's own check value is not in
 `member.hashes`. And a seek trusts the file's index: a crafted index that is consistent
-with itself can make a seek return the wrong bytes with no error (§4).
+with itself can make a seek return the wrong bytes with no error (§4). After a seek back
+by such an index, a member digest still passes: it covers the first pass over each byte,
+not bytes read again.
 
 ## 1. Shape
 

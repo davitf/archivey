@@ -335,7 +335,6 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         emptystream=False,
         is_anti=False,
         is_directory=False,
-        is_empty_file=False,
         attributes=None,
         creation_time=None,
         last_access_time=None,

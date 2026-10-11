@@ -294,17 +294,20 @@ maintainer.
   re-exported: its `__module__` is what `pickle` records. `tests/test_public_api.py`
   enforces this; `ArchiveStream` is the one listed exception.
 - **The CLI uses only public API.** Nothing under `src/archivey/cli/` imports from
-  `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. Two
-  imports are allowlisted in that test. `--track-io` imports
-  `archivey.internal.measurement`: the CLI is also a debugging tool for the library, and
-  IO measurement is deliberately not public API. `extract` imports two naming rules
-  from `archivey.internal.filters` that its report and hoist must apply exactly as
-  extraction does. Otherwise, the CLI needing something internal means the public API
-  has a gap. Close the gap through the ordinary `__all__` decision above, or
-  in a public module that is not re-exported (`archivey.terminal` holds the display
-  helpers any front end needs), or do without: the library's enum-spelling helpers are
-  internal, so the CLI derives its option choices from the enums and maps a parsed
-  choice back to its member itself (`src/archivey/cli/choices.py`).
+  `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. One
+  import is allowlisted in that test: `--track-io` imports
+  `archivey.internal.measurement`, because the CLI is also a debugging tool for the
+  library, and IO measurement is deliberately not public API. Otherwise, the CLI
+  needing something internal means the public API has a gap. That includes a private
+  attribute of a library object it would read, or a library exception's message it
+  would match (argparse's attributes and messages are not the library's). The same
+  test's second allowlist holds the two `ExtractionReport` dry-run fields, for the
+  reason the `cli` spec records. Close the gap through the ordinary `__all__` decision
+  above, or in a public module that is not re-exported (`archivey.terminal` holds the
+  display helpers any front end needs, and `archivey.paths` the `name (N)` rename
+  spelling), or do without: the library's enum-spelling helpers are internal, so the
+  CLI derives its option choices from the enums and maps a parsed choice back to its
+  member itself (`src/archivey/cli/choices.py`).
 - **Report from what the run left behind, not a re-derivation of it.** When code has to
   report what an operation did or would do (a dry run, a preview, a summary line), read
   the answer from what the operation left behind, such as the tree it wrote, rather than
