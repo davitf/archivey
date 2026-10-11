@@ -742,6 +742,12 @@ def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO)
         print(code, file=err)
         return EXIT_USAGE
 
+    # An error line that ends a run starts with ``archivey: ``: the three handlers
+    # below (``_format_os_error`` adds it for the OSError one), ``list``'s report
+    # error, ``extract``'s stop and ``hoist failed`` lines, and the uncounted fault
+    # that ends ``test``'s pass after a member already failed. A counted failure
+    # (``test``'s ``FAIL …``) and a line about one member (``extract``'s
+    # ``WARNING: Skipping …``) keep their own shape.
     try:
         with cli_logging(verbose=bool(args.verbose), err=err):
             return _dispatch(args, out=out, err=err)

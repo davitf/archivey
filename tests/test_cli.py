@@ -1232,23 +1232,25 @@ def test_test_open_failure_still_prints_summary(
     assert "0 OK, 1 failed, 2 not tested" in err
 
 
+@pytest.mark.parametrize(("mode", "suffix"), [("w:gz", ".tar.gz"), ("w", ".tar")])
 def test_test_counts_a_truncated_tar_member_once(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, suffix: str
 ) -> None:
-    """A tar.gz cut in half fails one member. The TAR pass then raises the same error
-    again as it ends; that is the pass stopping, not a second failure (cli-2)."""
+    """A TAR cut in half fails one member. The TAR pass then raises the same fault
+    again as it ends (the same object for a compressed TAR, an equal new one for a
+    plain TAR); that is the pass stopping, not a second failure."""
     import random
 
     rng = random.Random(0)
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    with tarfile.open(fileobj=buf, mode=mode) as tf:
         for i in range(5):
             data = rng.randbytes(200_000)
             info = tarfile.TarInfo(f"f{i}.bin")
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
     full = buf.getvalue()
-    archive = tmp_path / "trunc.tar.gz"
+    archive = tmp_path / f"trunc{suffix}"
     archive.write_bytes(full[: len(full) // 2])
 
     assert main(["test", "--hide-progress", str(archive)]) == EXIT_FAIL
@@ -1257,7 +1259,42 @@ def test_test_counts_a_truncated_tar_member_once(
     assert len(fails) == 1
     assert fails[0].startswith("FAIL f2.bin: ")
     assert "test stopped; remaining members were not tested" in lines
+    # The pass-end error repeats the member's fault, so its detail is not printed again.
+    assert not [ln for ln in lines if ln.startswith("archivey: ")]
     assert lines[-1] == "2 OK, 1 failed"
+
+
+def test_test_prints_a_different_pass_end_fault_without_counting_it(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that ends right after a failed member read, on a fault the member did not
+    report, prints that fault's detail and the stop notice, and counts one failure."""
+    from archivey.exceptions import ReadError
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    real = BaseArchiveReader.stream_members
+
+    class _Failing(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise ReadError("member fault")
+
+    def _fail_then_end(self: BaseArchiveReader, members: object = None) -> object:
+        for member, stream in real(self, members):  # type: ignore[arg-type]
+            if stream is None:
+                continue
+            stream.close()
+            yield member, _Failing()
+            raise ReadError("a different fault")
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _fail_then_end)
+    assert main(["test", "--hide-progress", str(sample_zip)]) == EXIT_FAIL
+    lines = capsys.readouterr().err.splitlines()
+    assert len([ln for ln in lines if ln.startswith("FAIL")]) == 1
+    assert "archivey: a different fault" in lines
+    assert "test stopped; remaining members were not tested" in lines
+    assert lines[-1] == "0 OK, 1 failed, 2 not tested"
 
 
 def test_test_early_abort_reports_not_tested(
@@ -2538,7 +2575,10 @@ def test_extract_stop_on_error_aborts_on_failure(
     assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "extraction stopped" in err
-    assert "1 member(s) extracted before the stop" in err
+    lines = err.splitlines()
+    stop = lines.index("1 member(s) extracted before the stop")
+    # The error that ended the run carries the prefix every run-ending line has.
+    assert lines[stop - 1].startswith("archivey: ")
     assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
     assert not (tmp_path / "out" / "b.txt").exists()
     assert not (tmp_path / "out" / "c.txt").exists()
@@ -3189,6 +3229,9 @@ def test_hoist_escapes_the_wrapper_when_the_move_fails(
     assert main(["x", str(archive)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert _report_lines(err, "files left in ") == ["files left in wev\\u2028il/"]
+    assert _report_lines(err, "archivey: hoist failed: ") == [
+        "archivey: hoist failed: refused"
+    ]
     assert "\u2028" not in err
 
 

@@ -632,7 +632,8 @@ def maybe_hoist_single_root(
             moves=_Moves.of(moved, wrapper, stopped=True),
         )
     except OSError as exc:
-        print(f"hoist failed: {format_error_detail(exc)}", file=err)
+        # The ``archivey: `` prefix: see main._parse_and_dispatch.
+        print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
         print(f"files left in {escape_path(wrapper)}/", file=err)
         return _HoistResult(
             wrapper,
@@ -1159,8 +1160,9 @@ def run_extract(
                 # DiagnosticRaisedError): report what was already written, then
                 # the stop notice. Exit 1 always on abort (Q8 Option A): exit 3
                 # is reserved for a *completed* run with policy blocks and safe
-                # members on disk (blocks never abort under STOP).
-                print(format_error_detail(exc), file=err)
+                # members on disk (blocks never abort under STOP). The
+                # ``archivey: `` prefix: see main._parse_and_dispatch.
+                print(f"archivey: {format_error_detail(exc)}", file=err)
                 parts: list[str] = []
                 if members_extracted:
                     parts.append(f"{members_extracted} member(s) extracted")
