@@ -115,11 +115,11 @@ has not been seen to abort on a cut or corrupt stream (40 runs of the truncation
 corpus mutation harness and `scripts/accelerator_crash_search.py` produced Python
 exceptions only). It is isolated as a precaution: it comes from the same library as the
 DEFLATE decoder, which does abort on input archivey cannot always avoid. Native code alone
-is not the reason; the standard library's decoders run in-process. A child that crashes on the data hands the read to the standard
-library, like any data error (§2.3 below). The child costs about 45 ms per stream, which
-the 1 MiB `AUTO` threshold accounts for: a full read broke even near 0.6 MiB compressed with
-4 cores and near 2 MiB with one (`scripts/bench_bzip2_child.py`). The guards below sit
-around the child's stream.
+is not the reason; the standard library's decoders run in-process. A child that crashes on
+the data hands the read to the standard library, like any data error (§2.3 below). The child
+costs about 45 ms per stream, which the 1 MiB `AUTO` threshold accounts for: a full read
+broke even near 0.6 MiB compressed with 4 cores and near 2 MiB with one
+(`scripts/bench_bzip2_child.py`). The guards below sit around the child's stream.
 
 - **A corrupt source must not read as empty.** The bundled decoder returns no output and no
   error for input that is not bzip2 at all: 40 000 zero bytes, a zero-byte file, a bare

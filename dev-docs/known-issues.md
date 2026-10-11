@@ -251,9 +251,9 @@ over the accelerated bzip2 path ran out of memory after about 36 000 inputs.
 
 **Evidence.**
 `tests/test_accelerator_corruption.py::test_indexed_bzip2_frees_a_stream_source_after_close`
-pins that the caller's stream is freed. In-process, Python objects measured with `tracemalloc` over 1 000 opens after
-200 warm-up opens of a 4 kB `.bz2`: 0 bytes per open from a path, about 1.7 kB from an
-`io.BytesIO`. Native memory measured by RSS over 3 000 opens: 2 to 5 kB per open, noisy,
+pins that the caller's stream is freed. In-process, Python objects measured with `tracemalloc` over
+1 000 opens after 200 warm-up opens of a 4 kB `.bz2`: 0 bytes per open from a path, about 1.7 kB
+from an `io.BytesIO`. Native memory measured by RSS over 3 000 opens: 2 to 5 kB per open, noisy,
 for every source.
 
 ## Intermittent `pyppmd` native aborts on PPMd streams (open upstream)

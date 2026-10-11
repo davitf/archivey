@@ -518,10 +518,10 @@ without them, and fails when the bytes or the verdict differ. The default is
 `AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
 a caller asks for seeking, so turning them off is something you do yourself. Both
 decoders run in a child process, so a native abort there costs only the member; a busy
-loop in that child is not bounded by a timeout. Third-party C++ can busy-loop on crafted input in a way Python
-timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
-latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
-set to `AcceleratorMode.OFF`) or enforce their own resource limits.
+loop in that child is not bounded by a timeout. Third-party C++ can busy-loop on crafted
+input in a way Python timeouts cannot cleanly interrupt. Callers processing untrusted
+archives under a hard latency budget should turn accelerators off (`use_rapidgzip` and
+`use_indexed_bzip2` set to `AcceleratorMode.OFF`) or enforce their own resource limits.
 
 **External tools:** RAR member *data* is decompressed by an external program: RARLAB
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB

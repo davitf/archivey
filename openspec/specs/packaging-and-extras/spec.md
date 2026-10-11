@@ -109,7 +109,8 @@ Optional packages that re-enable the GIL when imported (today `pyppmd`, `inflate
 `brotli` and `rapidgzip`) MUST NOT be imported by `import archivey` or by listing formats
 and their availability. The system SHALL import each one only when it opens a stream that
 decodes with it in this process, so having one installed does not by itself re-enable the
-GIL. rapidgzip decodes only in a child process, so the caller's process never imports it. A package that is installed but fails to import SHALL be treated as absent.
+GIL. rapidgzip decodes only in a child process, so the caller's process never imports it. A
+package that is installed but fails to import SHALL be treated as absent.
 
 The system SHALL keep `[all]` as the conventional superset; it MUST resolve to
 `[recommended]` + `[seekable]`.

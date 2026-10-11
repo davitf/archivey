@@ -11,8 +11,9 @@ interpreter finalizes trips their guard and aborts the process with SIGABRT (exi
 
 We found that ``join_threads()`` does NOT stop the thread — only ``close()`` does — and fixed
 archivey's ``weakref.finalize`` guard to close the object (since removed: archivey now
-runs rapidgzip only in a child process, ``rapidgzip_worker.py``). In isolation that makes leaked / cyclically-collected /
-never-closed streams shut down cleanly on Linux **and** macOS.
+runs rapidgzip only in a child process, ``rapidgzip_worker.py``). In isolation that
+makes leaked / cyclically-collected / never-closed streams shut down cleanly on Linux
+**and** macOS.
 
 But the *full* test suite on macOS still aborts at shutdown once accelerators are active
 in-process, even with that guard — and our isolated subprocess canary

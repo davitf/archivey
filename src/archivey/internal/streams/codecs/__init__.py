@@ -25,9 +25,9 @@ The package, one module per codec plus the shared pieces:
 - ``registry`` — :data:`STREAM_CODECS`, lookups, :func:`resolve_codec`,
   :func:`open_codec_stream`.
 - ``rapidgzip_select`` / ``stdlib_takeover`` — the rapidgzip accelerator: choosing it,
-  opening it in a child process, and handing a failed decode to the standard library. Checks that parse one format (the gzip ISIZE
-  backstop, the zlib Adler-32 check, the bzip2 empty-stream check) live in that codec's
-  module.
+  opening it in a child process, and handing a failed decode to the standard library.
+  Checks that parse one format (the gzip ISIZE backstop, the zlib Adler-32 check, the
+  bzip2 empty-stream check) live in that codec's module.
 - ``<name>_codec`` — one module per codec family: its :class:`StreamCodec`.
 - The engines beside them: ``<name>_decoder`` (``deflate``, ``brotli``, ``ppmd``,
   ``deflate64``, ``xz``, ``lzip``, ``unix_compress``, ``lzma_filter``), ``framed_decoder``
