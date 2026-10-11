@@ -343,7 +343,9 @@ class MemberType(Enum):
 
     ``ANTI`` is a deletion/tombstone (solid 7z incremental updates), not a payload
     file — ``is_file`` is false and extraction skips it. ``OTHER`` covers device
-    nodes, FIFOs, sockets, etc., and is always rejected by safe extraction.
+    nodes, FIFOs, sockets, etc. that store no data, and is always rejected by safe
+    extraction. A special-mode entry that does carry data is a ``FILE`` with
+    ``extra["special_file_type"]`` saying what the archive called it (DR-25).
     """
 
     FILE = "file"
@@ -477,6 +479,16 @@ EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
 # CompressionMethod.level, which carries the method-byte offset instead.
 EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 
+# What the archive called a member whose stored type is a device, FIFO, socket or an
+# unknown file type: set on every such member, the stream-less ``OTHER`` and the
+# data-bearing ``FILE`` alike (design rule DR-25). Not namespaced: TAR, ZIP, 7z, RAR
+# and ISO all carry one.
+EXTRA_SPECIAL_FILE_TYPE: Final = "special_file_type"
+
+SpecialFileType = Literal["fifo", "char_device", "block_device", "socket", "unknown"]
+"""Values of ``extra["special_file_type"]``: the stored type of a device, FIFO or socket
+entry as the format recorded it, or ``"unknown"`` for file-type bits no Unix type uses."""
+
 
 class _ReadOnlyDict(dict[str, str]):
     """A ``dict`` that refuses changes, the value of ``extra["tar.pax_headers"]``.
@@ -551,6 +563,18 @@ class MemberExtra(dict[str, object]):
     * ``is_file_copy`` (``bool``) — RAR. A ``FILE`` member whose bytes the archive
       stores once under an earlier member (a RAR5 file reference, ``rar -oi``).
       ``link_target`` names that source and ``link_target_member`` is it.
+    * ``special_file_type`` (``"fifo" | "char_device" | "block_device" | "socket" |
+      "unknown"``) — every format. What the entry's stored Unix mode (ZIP, 7z, RAR,
+      Rock Ridge) or TAR typeflag named when that is a device, FIFO or socket;
+      ``"unknown"`` is a mode whose file-type bits no Unix type uses. Set whatever type
+      the member ends up with: the stream-less ``OTHER`` such an entry usually is, the
+      ``FILE`` it becomes when it carries data (its bytes are the content, as unzip,
+      7-Zip, bsdtar and ``zipfile`` deliver them), a RAR file copy, or the
+      ``DIRECTORY`` or ``SYMLINK`` a structural marker made of it (a ZIP name ending
+      in ``/``, an ISO directory record, a reparse-point bit) over such a mode. The
+      key says what the mode named; the type says what the archive's structure
+      decided. Absent on an ``OTHER`` member that is not a special file (a GNU
+      dumpdir in TAR). TAR keeps ``tar.type`` as well.
     * ``alternate_raw_name`` (``bytes``) — ZIP. The other stored spelling of the
       name, when the archive stores two and ``raw_name`` is the one ``name`` was
       decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra
@@ -594,6 +618,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["is_file_copy"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["special_file_type"], /) -> SpecialFileType: ...
     @overload
     def __getitem__(self, key: Literal["alternate_raw_name"], /) -> bytes: ...
     @overload
@@ -676,15 +702,32 @@ class ArchiveMember:
     """Normalized member path, ``/``-separated, decoded for display and lookup."""
 
     raw_name: bytes | None = None
-    """The member name exactly as stored in the archive, undecoded, or ``None`` when
-    the format stores no name or the bytes cannot be recovered from the decoded one.
+    """The member name exactly as stored in the archive, undecoded. ``None`` when the
+    format has no name field for this member or the bytes cannot be recovered from the
+    decoded name; ``b""`` when the format has the field and the member left it empty
+    (7z).
 
-    ``name`` is ``raw_name`` decoded and normalized. Where the archive stores the
-    name twice, ``raw_name`` is the spelling the name was decoded from: a ZIP name
-    taken from its Info-ZIP Unicode Path extra field (0x7075) has that field's UTF-8
-    bytes here, and the header's bytes in ``extra["alternate_raw_name"]``. One
-    exception remains: an ISO Rock Ridge name that is not UTF-8 and takes its Joliet
-    name keeps the Rock Ridge bytes here."""
+    ``name`` is ``raw_name`` decoded and normalized, then put through the format's own
+    naming rules. Where the archive stores the name twice, ``raw_name`` is the spelling
+    the name was decoded from: a ZIP name taken from its Info-ZIP Unicode Path extra
+    field (0x7075) has that field's UTF-8 bytes here, and the header's bytes in
+    ``extra["alternate_raw_name"]``.
+
+    The naming rules that make ``name`` differ from ``raw_name`` decoded:
+
+    - ISO: in a plain ISO 9660 image, ``name`` drops the ``;N`` version suffix (and
+      the ``.`` before an empty extension) that ``raw_name`` keeps; the version is in
+      ``extra["iso.version"]``. A superseded version keeps its stored spelling. A Rock
+      Ridge name that is not UTF-8 and takes its Joliet name keeps the Rock Ridge
+      bytes here.
+    - A gzip file's member is named after the archive source (``"data"`` when the
+      source has no file name); ``raw_name`` holds the original file name from the
+      gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those
+      bytes decoded as Latin-1.
+    - A 7z member stored with no name is named after the archive source, and
+      ``raw_name`` is ``b""``.
+    - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
+      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""
@@ -1251,7 +1294,8 @@ class ExtractionResult:
     # Set on a DIRECTORY result whose destination was a directory that was there before
     # the run (the destination root for a ``./`` member, or any directory the caller
     # already had): that directory keeps its own mode and times, and this is the mode it
-    # kept, when the member asked for a different one. ``None`` otherwise. A ``None`` on
-    # such a directory does not mean the member's metadata was applied: its times were
-    # still left alone.
+    # kept, when the member asked for a different one. The member's mode is compared as
+    # the platform stores it, so on Windows only the read-only attribute counts.
+    # ``None`` otherwise. A ``None`` on such a directory does not mean the member's
+    # metadata was applied: its times were still left alone.
     kept_mode: int | None = None

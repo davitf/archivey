@@ -143,12 +143,13 @@ from archivey.internal.timestamps import (
     filetime_to_datetime,
     unix32_to_datetime,
 )
-from archivey.internal.unix_mode import is_special_file_mode
+from archivey.internal.unix_mode import special_file_type
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_ALTERNATE_RAW_NAME,
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -1161,15 +1162,19 @@ class ZipReader(BaseArchiveReader):
         )
         is_reparse_point = reparse_fallback is not None
 
+        special = special_file_type(full_mode) if is_unix else None
         if is_reparse_point:
             member_type = MemberType.SYMLINK
         elif stored_as_directory:
             member_type = MemberType.DIRECTORY
         elif is_unix and stat.S_ISLNK(full_mode):
             member_type = MemberType.SYMLINK
-        elif is_unix and is_special_file_mode(full_mode):
-            # A device, FIFO or socket. unzip writes these as empty regular files, but
-            # every format types them OTHER, so extraction refuses them everywhere.
+        elif special is not None and info.file_size == 0:
+            # A device, FIFO or socket with no data. unzip writes these as empty regular
+            # files, but every format types them OTHER, so extraction refuses them
+            # everywhere. With data the entry is a FILE: ``zip -FI`` stores a named
+            # pipe's content under the pipe's FIFO mode, and every extractor writes the
+            # bytes (DR-25). ``extra["special_file_type"]`` keeps the stored type.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
@@ -1209,6 +1214,10 @@ class ZipReader(BaseArchiveReader):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
+        if special is not None:
+            # Whatever the type decided above, the key records what the mode said, so
+            # a reparse point that settles or re-types to FILE keeps it (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if decoded_name.alternate_raw_name is not None:
             extra[EXTRA_ALTERNATE_RAW_NAME] = decoded_name.alternate_raw_name
         if is_reparse_point:
@@ -1291,6 +1300,14 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if special is not None and member.type is MemberType.FILE:
+            # The gate is kept in the shape the 7z reader needs, where a reparse point
+            # with a special mode can settle or re-type to FILE. In ZIP the two
+            # attribute families cannot coexist: the mode is read only from a Unix
+            # creator and the reparse bit only from a DOS/Windows one, so a member
+            # with `special` set is never a reparse point and `member.type` is
+            # `member_type` here.
+            self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))
@@ -1570,8 +1587,9 @@ class ZipReader(BaseArchiveReader):
         size = member.size
         # The member's compressed size is the codec's input exactly, so a byte after
         # the codec's end of stream is CorruptionError (DR-3; 7-Zip: "There are some
-        # data after the end of the payload data", an error in ZIP). LZMA refuses it
-        # on its own, in 7z too (``LzmaDataAfterEndError``).
+        # data after the end of the payload data", an error in ZIP). That covers a
+        # declared size short of an LZMA or PPMd stream too: the rest of the stream is
+        # input left after the size (``DataAfterEndError``).
         config = replace(
             self._stream_config,
             expected_decompressed_size=size,
@@ -1603,11 +1621,12 @@ class ZipReader(BaseArchiveReader):
                 # usually has an end mark, but max_length still matches py7zr practice).
                 if size is not None and size >= 0:
                     params = replace(params, unpack_size=size)
-            elif method == 12:  # ZIP bzip2
-                # A member is one bzip2 stream: the standard-library decoder ends it at
-                # its end-of-stream marker, as 7-Zip, Info-ZIP and stdlib zipfile read
-                # it. rapidgzip reads on into a further stream; the declared size and
-                # CRC then decide (dev-docs/formats/zip.md §2.3).
+            elif method in (12, 93):  # ZIP bzip2, Zstd
+                # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
+                # read it, and one Zstd frame: a further stream or frame after its end
+                # is input the member does not use, refused like any other
+                # (``refuse_input_after_end``), with the accelerator on or off
+                # (dev-docs/formats/zip.md §2.3).
                 params = replace(params, single_stream=True)
             return open_codec_stream(
                 codec,

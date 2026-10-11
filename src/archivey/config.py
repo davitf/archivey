@@ -189,7 +189,7 @@ class ExtractionLimits:
     guard off.
     """
 
-    max_entries: int | None = 1_048_576
+    max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.
 
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
@@ -217,7 +217,7 @@ ExtractionLimits.UNLIMITED = ExtractionLimits(
 
 @dataclass(frozen=True)
 class ListingLimits:
-    """Caps for materializing a member list (``members`` / ``scan_members`` / extract prep).
+    """Caps for materializing a member list (``members`` / ``members_report`` / extract prep).
 
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
@@ -238,13 +238,15 @@ class ListingLimits:
     more than the whole ``max_metadata_bytes``, before reading it.
     """
 
-    max_members: int | None = 1_048_576
+    max_members: int | None = 262_144
     """Most members a listing may hold.
 
-    Each listed member costs roughly 1 KB of memory whatever its name, so the default
-    allows about 1 GB at open on 7z, RAR and ISO, where a tiny compressed header can
-    declare that many members. A current Linux kernel source tree has about 90 000 files;
-    lower this when opening untrusted archives.
+    Each listed member costs about 1.5 KiB of memory (measured by
+    ``scripts/measure_limit_costs.py``), so the default allows about 384 MiB at open on
+    7z, RAR and ISO, where a tiny compressed header can declare that many members. A
+    current Linux kernel source tree has about 90 000 files, a third of the default;
+    raise this for archives with more members, and lower it when opening untrusted
+    archives on a server with less memory to spare.
     """
 
     max_metadata_bytes: int | None = 64 * 2**20
@@ -409,7 +411,7 @@ class DecoderLimits:
             wants the same move for a different reason: 256 MiB still takes
             everything the PPMd and LZMA presets produce.
         max_key_derivation_rounds: Total rounds of password-to-key derivation one
-            open archive may run. The default is ``2**27``.
+            open archive may run. The default is ``2**25``.
 
             RAR5 and 7z let the archive choose how expensive a key is to derive:
             RAR5's ``kdf_count`` asks for ``2**kdf_count`` PBKDF2-HMAC-SHA256
@@ -431,8 +433,8 @@ class DecoderLimits:
             whose cost is fixed at ``2**18`` SHA-1 rounds, counts at that
             number; ZIP AES (a fixed 1000 rounds) is not counted.
 
-            ``2**27`` is eight derivations at the ``2**24`` maximum, about half
-            a minute of hashing; 256 at 7-Zip's ``2**19``; 4096 at rar's
+            ``2**25`` is two derivations at the ``2**24`` maximum, about ten
+            seconds of hashing; 64 at 7-Zip's ``2**19``; 1024 at rar's
             ``2**15``. Exceeding it raises
             :class:`~archivey.exceptions.ResourceLimitError` before the
             derivation that would cross it starts. Code that opens archives it
@@ -471,7 +473,7 @@ class DecoderLimits:
     """
 
     max_decoder_memory: int | None = 2 * 2**30
-    max_key_derivation_rounds: int | None = 2**27
+    max_key_derivation_rounds: int | None = 2**25
     max_ppmd_in_process_input: int | None = 16 * 2**20
 
     UNLIMITED: ClassVar[DecoderLimits]

@@ -81,8 +81,9 @@ binds.
   easy to use right the first time.** Between designs that meet principles 1 and 2, pick
   the easier to explain and use.
 - [DR-15](#dr-15-usage-errors-are-for-what-the-types-cannot-rule-out). **Usage errors are
-  for what the types cannot rule out.** A wrong argument raises `TypeError` or
-  `ValueError`; `ArchiveyUsageError` is for misuse the signature cannot express.
+  for what the types cannot rule out.** A wrong argument raises an `ArchiveyUsageError`
+  that is also a `TypeError` or `ValueError`; a plain `ArchiveyUsageError` is for misuse
+  the signature cannot express.
 - [DR-15a](#dr-15a-translate-archive-problems-let-io-problems-through). **Translate
   archive problems; let I/O problems through.** Archive-content errors become archivey
   errors; I/O failures pass through.
@@ -423,7 +424,15 @@ already expect from their tools (2026-10-02, extraction re-audit).
 (2026-10-02, PR 532). The RAR end-block CRC keeps listing like `unrar t` (PR 561).
 Absolute member names re-root inside the destination like every mainstream extractor
 (2026-09-30, PR 524). A zero-filled TAR is valid because `tar -b 64` writes one
-(ADR 0015).
+(ADR 0015). A bare `.bz2` or `.gz` stops at zero bytes between streams or members, as
+`bzip2` 1.0.8 and GNU `gzip` do: what follows them is trailing data, and only zeros that
+end the file are silent padding. Every reader measured but Python's `gzip` stops there,
+and no writer produces the shape (2026-10-10; `formats/bzip2.md` and `formats/gzip.md`
+§6). The same day the rule was extended to zstd, LZ4 and LZMA Alone, whose tools stop
+there too; xz keeps reading past the Stream Padding its format defines. Zeros at the end
+stay silent for every codec, although `zstd`, `lz4` and `xz --format=lzma` refuse them:
+one cross-codec rule, after the tape and block padding GNU `gzip` and `bzip2` accept
+(`formats/single-file.md` §6).
 
 **Limits.** When this rule and DR-5 disagree, that is a
 [real decision](#when-consistency-and-the-official-tool-disagree): weigh the factors,
@@ -507,7 +516,19 @@ give the caller a way to see the gap before any cost is paid.
 **Rulings.** `read_link_targets` defaults to `True`; with `False`, `extract_all`'s
 filter runs before a link target is read (PR 404). The same field decides whether solid
 7z link targets are read at listing (2026-10-06). Checksum checks run on possibly
-encrypted stored members before any byte is served.
+encrypted stored members before any byte is served. A seekable ZIP opened with
+`streaming=True` reads the central directory first, so every member is complete when
+yielded; only a non-seekable source walks local headers and completes members at the end
+of the pass (davi, 2026-10-10, native ZIP reader design). The reasons given with the
+question: the tail read costs one seek, and a member that is complete when yielded needs
+no fixing later. Reopen if a seekable source where the tail read is expensive (a remote
+object) turns out to matter more than complete members. A member that archivey will
+still update in place says so on the member itself, with a field (working name
+`member_state_final`), not on the cost receipt, which describes cost; it covers
+data-stored link targets not yet read, `is_current` in any forward-only pass, and a ZIP
+read from a pipe (davi, 2026-10-10). Reopen if callers need to know which fields are
+still provisional rather than only that some are, or if a format turns up where the
+field would be false for most members of an ordinary read.
 
 **Do not** recommend "lazy by default, complete on request".
 
@@ -539,12 +560,9 @@ encrypted stored members before any byte is served.
 - ISO path-table entries count against `max_members` (2026-10-06, PR 612).
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
-- Default numbers (decided 2026-10-07, **not yet applied**): `max_members` and
-  `max_entries` 262,144; `max_key_derivation_rounds` 2**25. These replace the 2026-10-01
-  decision to keep 1,048,576 and 2**27, after measuring per-member listing cost. Until
-  the change lands, the shipped defaults are still 1,048,576 and 2**27. It has to land
-  in `config.py`, the archive-reading and safe-extraction specs, `docs/extracting.md`
-  and the threat model together.
+- Default numbers (decided 2026-10-07): `max_members` and `max_entries` 262,144;
+  `max_key_derivation_rounds` 2**25. These replace the 2026-10-01 decision to keep
+  1,048,576 and 2**27, after measuring per-member listing cost.
 
 **Reopen if** a measured real archive class hits a default.
 
@@ -722,12 +740,29 @@ that the error make the fix obvious.
 
 ### DR-15. Usage errors are for what the types cannot rule out
 
-**Rule.** A wrong argument type or value raises `TypeError` or `ValueError`.
-`ArchiveyUsageError` is for misuse the signature cannot express, such as calling a
-method in the wrong mode. Translate only known third-party exceptions; never add a
-catch-all.
+**Rule.** A wrong argument type raises a `TypeError`. An argument of a usable type whose
+value the call refuses raises a `ValueError`; that includes a value refused only after
+looking at what it names, such as a `format=` that conflicts with what the source is, a
+directory passed to `open_stream()`, or a volume sequence that is not the parts of one
+set. Both are also `ArchiveyUsageError`s: the boundary helpers
+(`internal/arg_checks.py`, `enum_args.py`, `format_args.py`, the `*Limits` field checks)
+raise the private `_UsageTypeError` or `_UsageValueError` from `archivey/exceptions.py`,
+so `except TypeError`, `except ValueError` and `except ArchiveyUsageError` all catch a
+bad argument. A plain `ArchiveyUsageError` is for misuse the signature cannot express,
+such as calling a method in the wrong mode or using a closed reader. Translate only
+known third-party exceptions; never add a catch-all.
 
-**Rulings.** 2026-09-25, recorded in the ADR 0012 amendment.
+The source and destination paths follow the same rule: `open_archive(0)` is a type
+error, and an empty string, which `Path("")` would read as the current directory, is a
+value error.
+
+**Rulings.**
+- 2026-09-25, recorded in the ADR 0012 amendment: wrong argument types keep
+  `TypeError` and `ValueError`.
+- 2026-10-10: the two private subclasses above, rather than making `ArchiveyUsageError`
+  itself a `TypeError`, because mode misuse and closed readers also raise it and are not
+  type errors. The subclasses are not exported; callers catch the builtin or
+  `ArchiveyUsageError`.
 
 ### DR-15a. Translate archive problems; let I/O problems through
 
@@ -825,7 +860,8 @@ accelerator usefulness". Only a `unar` that passes the RAR5 probe is used
 replacement, record the limitation where users will find it and fix it in the rewrite.
 
 **Rulings.** A ZIP name with the UTF-8 flag but invalid UTF-8 keeps refusing the archive
-until the post-0.2.0 zipfile replacement (2026-10-06).
+until the zipfile replacement (2026-10-06). The replacement, the native ZIP reader, moved
+into 0.2.0 on 2026-10-10 (davi); its names stage ends the refusal.
 
 ### DR-21a. Don't ship what can't be tested
 
@@ -1001,23 +1037,6 @@ Questions no rule here settles yet.
 
 - **The official tool for ZIP and ISO.** DR-6 names none. Asked on 2026-10-02 and not
   answered.
-- **bzip2 after zero padding.** For a bare `.bz2` file holding a stream, zero bytes,
-  then another stream, archivey reads both streams with the accelerator on and off:
-  the accelerator stops at the zeros, and the standard library takes over at the end
-  and reads the rest. A ZIP or 7z coder's bzip2 data is one stream, and there both
-  modes already stop at the padding. `bzip2` 1.0.8 writes the first payload only,
-  warns "trailing garbage after EOF ignored" and exits 0. The open question is
-  whether the bare-file case should also stop there, in both modes, and report the
-  rest as trailing data (DR-6). For stopping: nothing hides, since the rest is
-  reported as trailing data and only the zeros are silent (DR-3); and with the
-  accelerator, reading the rest costs a second decode of the file from the start.
-  Against: under the default policy a warning would be the only sign of a payload not
-  delivered (DR-1, DR-2); the shape is unusual but not crafted, so real files reach
-  it (DR-5a); and `xz` reads past zero padding between streams, a weak precedent
-  because the xz format defines that padding and bzip2 defines none. When raised on
-  2026-10-08, a third factor was that only the standard-library path read both
-  streams; PR 634 closed that. Where it is measured: `formats/bzip2.md` §2.3, §5 and
-  §6, and the seekable-streams spec. Raised 2026-10-08, restated 2026-10-10.
 - **The stricter `DecoderLimits` preset.** The numbers are chosen (256 MiB, 2**24); the
   name, and whether it should be a mode rather than numbers, are open.
 - **`size` of a stream-less `OTHER` member.** TAR reports `None`; ZIP, 7z and RAR keep

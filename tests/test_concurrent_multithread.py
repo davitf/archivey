@@ -690,10 +690,10 @@ def test_members_report_if_available_concurrent_on_upfront_index(
 
 
 @pytest.mark.concurrent_reader
-def test_scan_members_shares_the_worker_slot_with_open(tmp_path: Path) -> None:
-    """Under CONCURRENT, scan_members() admits alongside another thread's open().
+def test_members_report_shares_the_worker_slot_with_open(tmp_path: Path) -> None:
+    """Under CONCURRENT, members_report() admits alongside another thread's open().
 
-    It takes the same worker slot as members() and members_report(), so an open() in
+    It takes the same worker slot as members(), so an open() in
     flight on another thread does not block it; an exclusive pass would raise
     ArchiveyUsageError.
     """
@@ -723,7 +723,7 @@ def test_scan_members_shares_the_worker_slot_with_open(tmp_path: Path) -> None:
         t.start()
         try:
             assert entered.wait(timeout=5)
-            assert [m.name for m in reader.scan_members()] == expected
+            assert [m.name for m in reader.members_report()] == expected
             assert [m.name for m in reader.members()] == expected
         finally:
             release.set()

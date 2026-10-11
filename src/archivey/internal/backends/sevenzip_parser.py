@@ -269,6 +269,9 @@ class SevenZipArchive:
     is_solid: bool
     is_header_encrypted: bool
     has_encrypted_folders: bool
+    #: Signature-relative end of the archive: the later of the next header's end and
+    #: the end of the last packed stream, an encoded header's own streams included.
+    end_offset: int
 
 
 @dataclass(slots=True)
@@ -325,6 +328,10 @@ class SignatureInfo:
     major_version: int
     minor_version: int
     header_data: bytes  # empty when nextHeaderSize == 0
+    # The end of the next header, counted from the signature header. The archive ends
+    # here or at its last packed stream, whichever is later (the reader takes the max
+    # once the header has parsed).
+    end_offset: int
 
 
 @dataclass(slots=True)
@@ -629,7 +636,12 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
         # crc32(b"") is 0, so this is the only value an empty next header can carry.
         if fields.next_header_crc != crc32(b""):
             raise CorruptionError("7z empty next-header CRC mismatch")
-        return SignatureInfo(fields.major_version, fields.minor_version, b"")
+        return SignatureInfo(
+            fields.major_version,
+            fields.minor_version,
+            b"",
+            SIGNATURE_HEADER_SIZE + fields.next_header_offset,
+        )
 
     try:
         fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
@@ -640,7 +652,12 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     header_data = _read_stream_exact(fp, fields.next_header_size, "7z next header")
     if crc32(header_data) != fields.next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
-    return SignatureInfo(fields.major_version, fields.minor_version, header_data)
+    return SignatureInfo(
+        fields.major_version,
+        fields.minor_version,
+        header_data,
+        SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size,
+    )
 
 
 def parse_header_block(
@@ -709,13 +726,30 @@ def _require_header_consumed(cur: _Cursor) -> None:
         raise CorruptionError(f"7z header has {cur.remaining()} bytes after its END")
 
 
+def packed_streams_end(streams: _StreamsInfo) -> int:
+    """Where a header's packed streams end, counted from the signature header.
+
+    Packed streams are contiguous from ``pack_pos``. 7-Zip writes them before the next
+    header, but the format allows them after it, so the archive's end is the later of
+    the two. An ``ADDITIONAL_STREAMS_INFO`` block's pack data is not counted: the
+    parser skips that block, and no writer we know of emits one. Were one placed after
+    the next header, its bytes would be reported as trailing data.
+    """
+    return SIGNATURE_HEADER_SIZE + streams.pack_pos + sum(streams.pack_sizes or [])
+
+
 def materialize_archive(
     signature: SignatureInfo,
     plain: PlainHeader,
     *,
     is_header_encrypted: bool = False,
+    encoded_streams_end: int = 0,
 ) -> SevenZipArchive:
-    """Build the final archive object from a fully decoded plain header."""
+    """Build the final archive object from a fully decoded plain header.
+
+    ``encoded_streams_end`` is :func:`packed_streams_end` of the encoded header the
+    plain header was decoded from, if any; it counts toward ``end_offset``.
+    """
     streams = plain.streams
     pack_sizes = streams.pack_sizes or []
     pack_positions = streams.pack_positions or _pack_positions(pack_sizes)
@@ -748,6 +782,9 @@ def materialize_archive(
         is_solid=any(n > 1 for n in num_unpackstreams_folders),
         is_header_encrypted=is_header_encrypted,
         has_encrypted_folders=any(folder_is_encrypted(folder) for folder in folders),
+        end_offset=max(
+            signature.end_offset, packed_streams_end(streams), encoded_streams_end
+        ),
     )
 
 
@@ -768,6 +805,7 @@ def empty_archive(signature: SignatureInfo) -> SevenZipArchive:
         is_solid=False,
         is_header_encrypted=False,
         has_encrypted_folders=False,
+        end_offset=signature.end_offset,
     )
 
 
@@ -855,6 +893,7 @@ __all__ = [
     "folder_is_encrypted",
     "folder_unpack_size",
     "materialize_archive",
+    "packed_streams_end",
     "parse_decoded_header",
     "parse_header_block",
     "read_signature_and_next_header",

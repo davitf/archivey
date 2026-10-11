@@ -327,6 +327,7 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         is_solid=False,
         is_header_encrypted=False,
         has_encrypted_folders=True,
+        end_offset=4,
     )
     reader._init_folder_caches(reader._archive)  # noqa: SLF001
     record = SevenZipFileRecord(

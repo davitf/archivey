@@ -202,6 +202,19 @@ class BackendRegistry:
                 mapping[sig.format] = validator
         return mapping
 
+    def sfx_parser_scanned_formats(self) -> frozenset[ArchiveFormat]:
+        """Formats whose parser runs its own capped SFX scan.
+
+        Collected from ``ReadBackend.SFX_PARSER_SCANS``. The detector applies the
+        rejection cap to these formats only.
+        """
+        return frozenset(
+            sig.format
+            for cls in self._reader_classes
+            if cls.SFX_PARSER_SCANS
+            for sig in cls.SFX_MAGIC
+        )
+
     def trailer_entries(self) -> list[TrailerSignature]:
         """Trailer magic declared by registered backends.
 
@@ -340,6 +353,33 @@ class BackendRegistry:
             backend_cls.UNSUPPORTED_MESSAGE
             or f"Reading {fmt.display_name} is not supported."
         )
+
+    def needs_seekable_source(self, fmt: ArchiveFormat) -> bool:
+        """Whether ``fmt`` cannot be read from a non-seekable source in either mode.
+
+        ``format_availability(fmt).required_source`` for a registered format, which is
+        read from the backend class, never from its optional package, so the answer
+        is the same whether or not that package imports. ``open_archive`` refuses a
+        read-once source with it before ``reader_for_format``, so a pipe is not told to
+        install a package it still could not be read with. ``False`` for a format with
+        no backend: ``reader_for_format`` names that absence instead.
+        """
+        if fmt not in self._readers:
+            return False
+        # One derivation of the flag, shared with ``format_availability``, so the
+        # refusal and the queryable ``required_source`` cannot drift apart.
+        return (
+            self.format_availability(fmt).required_source is StreamCapability.SEEKABLE
+        )
+
+    def registered_reader(self, fmt: ArchiveFormat) -> type[ReadBackend] | None:
+        """The backend class registered for ``fmt``, without the availability check.
+
+        Its class attributes (``SUPPORTS_PASSWORD``, ``USES_ENCODING``, ...) are
+        readable whether or not its optional package imports. ``None`` when no backend
+        is registered. Use ``reader_for_format`` to get a class that can open.
+        """
+        return self._readers.get(fmt)
 
     def reader_for_format(self, fmt: ArchiveFormat) -> type[ReadBackend]:
         availability = self.format_availability(fmt)

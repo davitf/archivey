@@ -270,9 +270,9 @@ def _assert_truncated_listing(
     with open_archive(
         io.BytesIO(data), password=password, streaming=streaming
     ) as reader:
-        # members() is random-access only; scan_members() is the streaming listing.
+        # members() is random-access only; a streaming pass raises at the damage.
         with pytest.raises(TruncatedError):
-            reader.scan_members() if streaming else reader.members()
+            list(reader) if streaming else reader.members()
 
 
 @requires("cryptography")
@@ -1145,10 +1145,11 @@ def _assert_damaged_after_the_listing(data: bytes, members: int) -> None:
 def test_rar_damaged_endarc_followed_by_bytes_is_corruption_after_the_listing(
     fixture: str, version: int
 ) -> None:
-    """A damaged end block is taken as one only where the file ends right after
-    it, which a header with members after it cannot fake. Otherwise it is a damaged
-    header like any other: the members before it list, then CorruptionError."""
-    data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version) + b"\0"
+    """A damaged end block is taken as one only where nothing but zero padding
+    follows it, which a header with members after it cannot fake. Otherwise it is a
+    damaged header like any other: the members before it list, then CorruptionError.
+    Zeros after it are covered in test_rar_trailing_data.py."""
+    data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version) + b"\x01"
     _assert_damaged_after_the_listing(data, 6)
 
 

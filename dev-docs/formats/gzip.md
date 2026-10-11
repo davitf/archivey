@@ -102,7 +102,12 @@ Raw DEFLATE is never detected; it exists only inside a container that names it.
 
 `FCOMMENT`, `XFL`, `OS` and `FEXTRA` subfields (bgzip's `BC` block size among them) are not
 reported. `size` is `None` and `hashes` is empty (§6). A zlib stream reports nothing beyond
-the shared fields.
+the shared fields. `compressed_size` is the source's length on a seekable source, and a
+member stream's advertised length whether or not that member stream is seekable. It is
+`None` on a caller's pipe, also one with a `size` attribute, and on a member stream that
+advertises no length (a `.gz` member of another `.gz`, opened with
+`open_archive(member_stream)`), since learning it would decompress that member to its end
+([`single-file.md`](single-file.md) §2.2).
 
 ### 2.3 Member data
 
@@ -110,10 +115,12 @@ the shared fields.
 `GzipDecoder`: `zlib.decompressobj(16 + MAX_WBITS)`, which parses each member's header and
 checks its CRC-32 and ISIZE. It is not `gzip.GzipFile`, because `GzipFile.read()` of a
 truncated file discards the prefix it decoded and it validates only on read. After each
-member the decoder follows `GzipFile`'s rules for what comes next: NUL bytes are skipped
-(tape padding) and `1f 8b` starts the next member. Anything else ends the stream there:
-every member before it is delivered and the bytes are reported as `ARCHIVE_TRAILING_DATA`
-([`single-file.md`](single-file.md) §2.3), where `GzipFile` would raise. zlib and raw
+member, `1f 8b` right after it starts the next member. NUL bytes are padding when they
+run to the end of the file (tape and block padding), as GNU `gzip` reads them. Anything
+else ends the stream there, and so does any byte after NULs, a further member too (§6):
+every member before it is delivered and the bytes from the first non-NUL one are reported
+as `ARCHIVE_TRAILING_DATA` ([`single-file.md`](single-file.md) §2.3). `GzipFile` would
+raise on junk, and reads a member after NULs. zlib and raw
 DEFLATE use `ZlibDecoder` with `wbits=15` and `-15`. Truncation is certain on this path:
 a member that did not reach its trailer arms a `TruncatedError` at the end of input.
 
@@ -393,7 +400,9 @@ cases switch to the standard library engine at the position already delivered
 further member does it through the truncation check. A seek meets these errors too:
 `rapidgzip`'s seek through a valid file with NUL padding after it fails on the padding,
 which `gzip -t` and the standard library accept, so a seek that fails on data switches as
-a read does. The standard library engine then decodes
+a read does. NULs followed by a further member are the same case: `rapidgzip` raises
+"Invalid gzip/zlib wrapper" there, and the standard library ends the data at the NULs and
+reports the member as trailing data (§6). The standard library engine then decodes
 the rest and finds the junk or the cut, so a file with bytes after it reads in full and
 reports once, and a truncated one still raises `TruncatedError`. The switch decodes again
 from the start of the stream up to that position; it is paid only by a file that fails
@@ -418,7 +427,8 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `pigz`, `pigz -i` | Reads. `-i` resets the window at each block, which archivey does not use for seeking |
 | `bgzip` (BGZF, the genomics format) | Reads, as a run of 64 KiB members; no `FNAME`. The block size in `FEXTRA` is not used for seeking |
 | Two `gzip` files concatenated | Reads both payloads |
-| A member followed by NUL padding | Reads; the padding is skipped |
+| A member followed by NUL padding | Reads; the padding is skipped. GNU `gzip -dc` does the same, silently |
+| A member, 4 NUL bytes, a member (crafted: no known writer emits this) | Reads the first payload, then `ARCHIVE_TRAILING_DATA` at the second member's first byte, with or without `rapidgzip`; `DiagnosticPolicy.strict()` raises. GNU `gzip -dc` writes the first payload, warns "decompression OK, trailing garbage ignored" and exits 0. 7-Zip and `bsdcat` stop after the first member; `rapidgzip` raises "Invalid gzip/zlib wrapper". Python's `gzip` reads both members (§6) |
 | A member followed by `junk` | Reads the whole payload, then `ARCHIVE_TRAILING_DATA`, with or without `rapidgzip`. `gzip -t` calls it "trailing garbage ignored" and exits 2 |
 | GNU gzip of `café.txt` | `extra["gzip.original_filename"] == "cafÃ©.txt"`, `raw_name == b"caf\xc3\xa9.txt"` |
 | `zlib.compress` | Detected by the probe, `PROBABLE`; reads |
@@ -503,7 +513,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | Never list the gzip trailer CRC-32 (PR #441) | A digest is worth having to skip a decode or to verify one. The trailer covers only the last member, proving there is one member means reading the whole file at every open (a full download for a remote source), the chance magic made large files "multi-member" anyway, and after a read the decoder has already checked every CRC | Scanning for a second member at open; adding the CRC after a full read, which changes `hashes` under a caller who already read it |
 | Decode with `zlib`'s gzip window under archivey's engine, not `gzip.GzipFile` (PR #183) | Sized reads recover the prefix of a truncated file, and the engine's seek table and rewind report apply | `GzipFile`, which drops the prefix on `read()` and cannot report rewinds |
-| Follow `GzipFile` after a member for NULs and the next member; report other bytes instead of raising | NULs and a next member are what `GzipFile` accepts; other bytes follow the rule every codec shares ([`single-file.md`](single-file.md) §6) | Raising, as `GzipFile` does |
+| After a member, `1f 8b` starts the next member; NULs are padding only when they run to the end of the file; any other byte, and any byte after NULs, a member too, ends the data and is reported (maintainer ruling, 2026-10-10) | Match the official tool (DR-6): GNU `gzip` stops at NULs before a member with "trailing garbage ignored", and 7-Zip, `bsdcat` and `rapidgzip` stop there too. No known writer emits the shape. Bytes after the data follow the rule every codec shares ([`single-file.md`](single-file.md) §6). Python's `gzip` is the one reader that reads on: `GzipFile._read_eof` skips NULs one byte at a time with no limit, and `gzip.decompress` strips them from `unused_data[8:]`, then both read a further member. Its comment says gzip files "can be padded with zeroes and still have archives" and cites the gzip.org FAQ 8 page, which is no longer reachable. That FAQ was about tape and block padding at the end of a file (`tar` and `dd` pad to a block size), which GNU `gzip` accepts silently and archivey does too; a member after the NULs is beyond what it describes | Raising on junk, as `GzipFile` does; reading a member after NULs, as Python's `gzip` does |
 | Switch to the standard library when `rapidgzip` fails on bytes after the stream | `rapidgzip` cannot tell junk from a next member or from damage; the standard library can | Refusing the file under `rapidgzip`, so the result would depend on the accelerator |
 | One accelerator library, `rapidgzip`, for gzip, zlib, raw DEFLATE and bzip2 (ADR 0008) | `indexed_gzip` or `indexed_bzip2` next to it corrupt the heap on macOS | Several accelerator packages |
 | Run `rapidgzip` in a child process for the DEFLATE family (PR #493) | Its abort on a cut stream is uncatchable in-process | In-process with guards, which cannot catch `std::terminate`; decoding with the standard library first and handing `rapidgzip` only proven input, which decoded the whole member at the first backward seek |
@@ -544,7 +554,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | Claim | Pinned by |
 | --- | --- |
-| Multi-member, NUL padding, trailing junk after the payload | `tests/test_codecs.py::test_gzip_multi_member_and_padding_parity`, `::test_gzip_trailing_junk_delivers_member_then_reports`, `tests/test_stream_trailing_data.py::test_rapidgzip_reads_to_the_end_and_reports`, `::test_gzip_multi_member_cross_feed_edges` |
+| Multi-member, NUL padding, trailing junk after the payload | `tests/test_codecs.py::test_gzip_multi_member_and_padding_parity`, `::test_gzip_trailing_junk_delivers_member_then_reports`, `::test_gzip_multi_member_cross_feed_edges`, `tests/test_stream_trailing_data.py::test_rapidgzip_reads_to_the_end_and_reports` |
+| A member after NULs is trailing data, and strict refuses it, with `rapidgzip` off, `AUTO` and on, for a read and a seek; NULs at the end and members with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
 | A truncated stream gives its prefix to sized reads and raises | `::test_truncated_gzip_large_read_recovers_prefix_like_read1`, `::test_truncated_zlib_deflate_large_read_recovers_prefix`, `::test_truncated_gzip_readall_raises` |
 | `FNAME`, Latin-1, `MTIME` | `tests/test_single_file.py::test_gzip_stored_filename_surfaced`, `::test_gzip_stored_filename_non_ascii_is_latin1`, `::test_gzip_mtime_surfaced` |
 | No size, no CRC, no scan at open | `::test_gz_size_is_always_none`, `::test_gzip_never_reports_a_crc32`, `::test_gzip_open_does_not_scan_for_a_second_member` |

@@ -81,7 +81,7 @@ Three things about this path are worth knowing before you debug it:
 
 - **A reader lists its members once, and every method hands out the same objects.**
   `BaseArchiveReader` owns one member list (`_listed`) filled by one pull over the
-  backend's `_iter_members()`. The peek, `members()`, `scan_members()`, `get()`,
+  backend's `_iter_members()`. The peek, `members()`, `members_report()`, `get()`,
   `stream_members()` and `extract_all()` all read that list; `_pull_member` stamps,
   checks and accounts each member exactly once, so per-member work needs no dedupe. The
   walk runs once when it completes. A random-access walk that fails without terminal
@@ -103,7 +103,9 @@ Three things about this path are worth knowing before you debug it:
   in handbook [`topics/exception-handlers.md`](topics/exception-handlers.md).
 - **`ArchiveyUsageError` is deliberately outside the `ArchiveyError` tree** (ADR 0012), so
   a caller-misuse fault cannot be produced by a translator that can only return archive
-  errors.
+  errors. A wrong argument raises one of its two private subclasses, `_UsageTypeError`
+  or `_UsageValueError`, which are also `TypeError` / `ValueError` (DR-15); mode misuse
+  and closed readers raise it plain.
 
 ---
 
@@ -115,7 +117,7 @@ Three things about this path are worth knowing before you debug it:
 | ZIP internals | `zip_reader.py` (stdlib central directory + archivey member data) · `zip_detect.py` (scan-hit validator) · `zipcrypto.py` · `zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_copy_sources.py` (a solid pass keeps file-copy sources) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
-| TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
+| TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `tar_parser.py` (native header parser and walker; nothing reads through it yet) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
 | ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal, the `pycdlib` cycle guard); handbook [`formats/iso.md`](formats/iso.md) |
 | Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
 | A codec, or adding one | `streams/codecs/`: one `<name>_codec.py` per codec (`registry.py` lists them), its engine beside it (`<name>_decoder.py`, framing and resume helpers, the PPMd and rapidgzip child processes and workers), and the rapidgzip modules for the accelerator; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |

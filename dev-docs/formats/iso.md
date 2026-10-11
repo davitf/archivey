@@ -17,7 +17,7 @@ the status — this page states the behaviour and links the row.
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
-| Refuses | Non-seekable sources · raw CD sector images (`.bin`), by name, before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
+| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`), by name, also before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
 | `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
@@ -98,7 +98,9 @@ The second magic is the 12-byte CD sync pattern at offset 0. It is claimed as IS
 that `open_archive` can refuse a raw sector image by name — Mode 1, Mode 2 Form 1 or 2,
 2352- or 2448-byte sectors — with `UnsupportedFeatureError`, before the availability check,
 so a caller without `pycdlib` is not told to install it first
-(`refuse_raw_sector_image`). The extension is `.iso`.
+(`refuse_raw_sector_image`). A non-seekable source is also refused ahead of that
+check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
+extension is `.iso`.
 
 Neither magic is validated past the match; there is no SFX scan and no validator, because
 an image cannot sit behind a prefix. A UDF-only image has `BEA01`/`NSR02` at 32 769 rather
@@ -228,8 +230,10 @@ What is ISO-specific in turning a record into a member:
   relocated directory whose `..` carries `PL`), not by its name, and its subtrees appear
   where they belong.
 - **Type.** An `SL` record makes a symlink, the directory flag a directory, and a `PX`
-  mode naming a device, FIFO or socket makes `OTHER`, whatever bytes sit at the extent.
-  Everything else is a `FILE`. There is no `HARDLINK`: records sharing an extent are
+  mode naming a device, FIFO or socket makes `OTHER` when the extent is empty (what
+  genisoimage and xorriso write). Over a non-empty extent such a mode gives a `FILE`
+  whose bytes are the content, with `MEMBER_SPECIAL_FILE_HAS_DATA` (DR-25); both carry
+  `extra["special_file_type"]`. Everything else is a `FILE`. There is no `HARDLINK`: records sharing an extent are
   independent files. Records with the hidden flag are listed like any other.
 - **Size.** The sum of the lengths of every extent record of the file. `compression` is
   one `STORED` entry. Directories and links have `size=None`.
@@ -433,8 +437,8 @@ ISO-specific only. General extraction and name hazards are §2.4.
   the read, on either version and with any `ListingLimits`, weighs every table against
   `max_metadata_bytes` before the read, and counts its entries against `max_members` as
   they are parsed. The byte budget alone let a table of the whole 64 MiB through (about
-  1.8 GB); the entry count caps one table near 240 MB at the default `max_members`,
-  about 230 bytes an entry.
+  1.8 GB); the entry count caps one table near 60 MB at the default `max_members`
+  (262,144), about 230 bytes an entry.
 - **A Rock Ridge `CE` entry sizes `pycdlib`'s read.** `pycdlib` read the continuation
   area for the length the entry declares, up to 4 GiB, and only then refused an area
   that does not fit in its logical block: a 512 MiB area was read (545 MiB peak) before
@@ -506,6 +510,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Without `encoding=`, a non-UTF-8 Rock Ridge name takes its Joliet name when the ASCII runs line up | The Joliet tree usually holds the name converted correctly when the image was written; matching by extent plus the ASCII check never borrows another file's name | Escaping and leaving it to `encoding=`, which needs the caller to know the charset; matching by position or by name, which the separate trees do not support |
 | Patch `pycdlib`'s `collections` once, at import | A crafted image otherwise hangs `open_fp` forever, and the patch is confined to `pycdlib`'s namespace and inert on valid trees | A per-open swap, which races between threads; a watchdog timeout |
 | `created` holds only a `TF` creation time | `created` never holds `st_ctime`; the attribute-change time goes to `ctime` | Falling back to the attribute-change time, as before PR #470 |
+| Bytes after the image's end are `ARCHIVE_TRAILING_DATA`, and the end counts the partitions the MBR or GPT lists | Ruled by davitf, 2026-10-10 ("count partitions"). DR-3 reports bytes outside an archive. A hybrid installer image appends an EFI partition and a GPT backup header after the volume space (`xorriso -append_partition`, measured); they belong to the disk image, and a warning on every distro ISO would teach callers to ignore it. A GPT counts only when both its CRCs match, so damage in transfer, or `EFI PART` alone, widens nothing; a protective MBR entry (`0xEE`, often spanning the whole medium) is skipped. An MBR has no checksum, so a crafted MBR or a crafted valid GPT can cover appended bytes, but whoever writes the image can already hide them by declaring a larger volume space. A partition or backup header reaching past the end of the file still counts: a hybrid cut inside its EFI partition would otherwise report its own partition bytes. UEFI allows GPT entry sizes of 128 times a power of two, all accepted; the array read is bounded at 512 KiB | Ending the image at the volume space, as 7-Zip does (it warns on hybrid images); no check; trusting `EFI PART` without its CRCs |
 | A clamped file lists its declared length, read back from the directory record, and fails its read at the cut | A partial download keeps every file before the cut readable, and the listing says what the file should hold; the lookup runs only for records ending exactly at the image end | `size=None` for clamped files; refusing at open when the volume space size exceeds the source, which also refuses the files that survived |
 
 ## 7. Open questions
@@ -533,6 +538,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- |
 | Detection by far magic; a bootable image is not taken by a probe; a short source falls through | `tests/test_detection.py::test_iso_detected_via_extended_window`, `::test_bootable_iso_is_not_claimed_by_the_content_probe`, `::test_zeroed_system_area_iso_still_detected`, `::test_stream_too_short_for_iso_falls_through`; `tests/test_iso.py::test_iso_detected_by_extended_window` |
 | Raw sector images refused by name, without `pycdlib` | `tests/test_iso_raw_sectors.py` |
+| Bytes after the volume space reported, zeros silent, strict refuses, 1 MiB bound; MBR and GPT partitions after the volume space (hand-built, and `xorriso` hybrids; `xorriso` is installed by `setup-dev-env.sh` and on the Linux `all` CI legs) are part of the image; a GPT with a bad CRC or out-of-range fields, a protective MBR entry, or an MBR without its signature widens nothing; a valid GPT partition reaching past the file (entry sizes 128, 1024, 4096) still counts, the test that fails if such a partition is dropped | `tests/test_iso_trailing_data.py` |
 | Cost, seekable-only, write refused, password unused | `tests/test_iso.py::test_iso_cost`, `::test_non_seekable_iso_rejected`, `::test_write_rejected`, `::test_password_is_accepted_and_recorded` |
 | Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey | `::test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded`, `::test_a_zisofs_member_seeks_across_blocks`, `::test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone`, `::test_a_damaged_zisofs_block_is_corruption`, `::test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption`, `::test_a_zisofs_block_that_does_not_end_at_its_pointer_is_corruption`, `::test_a_zisofs_member_cut_by_the_image_end_is_truncated`, `::test_a_malformed_rock_ridge_entry_costs_its_own_member_only`, `::test_a_symlink_whose_entries_are_cut_withholds_its_target`, `::test_a_strict_policy_refuses_a_cut_rock_ridge_area`, `::test_pycdlib_used_directly_is_not_filtered`, `::test_the_filter_knows_every_entry_pycdlib_parses` |
 | Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`, `::test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes`, `::test_a_latin1_rock_ridge_name_takes_its_joliet_name`, `::test_encoding_wins_over_the_joliet_name`, `::test_following_link_targets_reads_each_directory_once`, `::test_empty_files_sharing_an_extent_are_matched_in_linear_time`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
