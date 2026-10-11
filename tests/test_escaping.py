@@ -520,6 +520,9 @@ _CLI_PRINT_ALLOWED = {
     "common.py: stats.source_seek_count": "int counter",
     "extract_cmd.py: ', '.join(parts)": "counts, built two lines above",
     "extract_cmd.py: result.kept_mode": "int mode, printed as octal",
+    "extract_cmd.py: stat.S_IMODE(os.stat(dest).st_mode)": (
+        "int mode of the operator's directory, printed as octal"
+    ),
     "extract_cmd.py: dest_label": (
         "the hoist's label, built with escape_path in maybe_hoist_single_root"
     ),
@@ -588,12 +591,18 @@ class _PrintTracer:
             return self.leaves(node.left, scope, seen) + self.leaves(
                 node.right, scope, seen
             )
+        if isinstance(node, ast.BoolOp):  # ``a or b`` prints whichever operand wins
+            return [
+                leaf
+                for value in node.values
+                for leaf in self.leaves(value, scope, seen)
+            ]
         if isinstance(node, ast.Call):
             name = _call_name(node)
             if name in _CLI_RENDERERS:
                 return []
             local = (
-                self.functions.get(name) if isinstance(node.func, ast.Name) else None
+                self._function(name, scope) if isinstance(node.func, ast.Name) else None
             )
             if local is None:
                 return [node]
@@ -608,6 +617,24 @@ class _PrintTracer:
         if isinstance(node, ast.Name):
             return self._name_leaves(node, scope, seen)
         return [node]
+
+    def _function(
+        self, name: str, scope: ast.AST
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """The function a bare ``name(...)`` in *scope* calls: one defined in *scope*'s
+        own body, else a module-level one.
+
+        A def nested deeper (inside a branch, a loop or another function) is not looked
+        at: a call to one resolves to the module-level function of that name if there is
+        one, and is otherwise left unresolved, which reports it as unescaped. The nested
+        helper the CLI has, ``shown``, sits in its function's body."""
+        for child in getattr(scope, "body", []):
+            if (
+                isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and child.name == name
+            ):
+                return child
+        return self.functions.get(name)
 
     def _name_leaves(
         self, node: ast.Name, scope: ast.AST, seen: frozenset[str]
