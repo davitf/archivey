@@ -78,8 +78,12 @@ A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=
 naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:
 silently overruling it returns a reader over the directory tree to a caller who
 asserted a different format, so every read downstream succeeds on the wrong data.
-`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. This is the
-assertion half of the rule above, not a special case.
+`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. The mirror
+conflict, a `format=` with a `DIRECTORY` container on a stream or on a path that exists
+and is not a directory, SHALL raise the same `ArchiveyUsageError`. A path the
+operating system cannot stat SHALL raise the OS's own error (`FileNotFoundError`,
+`NotADirectoryError`, …), the same class it raises under every other `format=`. This
+is the assertion half of the rule above, not a special case.
 
 **Diagnostics at open (observable):** On success, advisory events from automatic
 detection (if any) appear in this reader's cumulative `diagnostics` for its
@@ -105,6 +109,9 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 | Directory path, no `format=` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError`, naming the path and the requested format |
+| File path or stream, `format=ArchiveFormat.DIRECTORY` or an unnamed pair such as `(DIRECTORY, GZIP)` | `ArchiveyUsageError`, naming the source and the requested format |
+| Path that does not exist, `format=ArchiveFormat.DIRECTORY` | `FileNotFoundError`, as under `format=ArchiveFormat.ZIP` or `None`; not `ArchiveyUsageError` |
+| Path under a file (`a.txt/sub`), `format=ArchiveFormat.DIRECTORY` | The OS's own error, the class it raises under `format=ArchiveFormat.ZIP` or `None` (`NotADirectoryError` on POSIX, `FileNotFoundError` on Windows) |
 
 ### Requirement: Declared member-stream capabilities
 
@@ -348,19 +355,27 @@ ergonomics as `ExtractionReport` vs its results).
 Members in the report SHALL be identity-stamped for this reader (`member in
 reader`) so `open(member)` works for recovered `FILE` members. An incomplete
 report (`error` set) MUST NOT be treated as a successful complete materialization:
-subsequent `members()` / `scan_members()` / `get(name)` MUST still raise the
-terminal error rather than return a silent partial list.
+subsequent `members()` / `get(name)` MUST still raise the terminal error rather
+than return a silent partial list.
 `members_report_if_available()` SHALL return a `MemberListReport | None`: the stored
 report when one exists without scanning — complete (`error is None`) **or**
 incomplete (`error` set) from a prior pass — or the upfront index as a complete
 report for backends that carry one; `None` only when nothing is materialized and a
 scan would be required. Returning an incomplete report to a caller MUST NOT change
-the complete-or-raise behaviour of `members()` / `scan_members()` / `get(name)`;
-the report self-labels via `error` and those methods still raise.
+the complete-or-raise behaviour of `members()` / `get(name)`; the report self-labels
+via `error` and those methods still raise.
 
 On `streaming=True`, `members_report()` MAY start or finish the single forward
-pass (like `scan_members`) and thereby consume it; it still returns a report
-instead of raising on terminal archive-level listing errors.
+pass and thereby consume it; it still returns a report instead of raising on
+terminal archive-level listing errors. It is the streaming reader's listing
+method: a caller that needs complete-or-raise there raises `report.error` itself.
+
+`members_report()` returns, rather than raises, only terminal archive damage found
+while listing (`CorruptionError`, including `TruncatedError`). Every other failure
+SHALL raise: `ResourceLimitError` from `ListingLimits`, `ArchiveyUsageError` on
+misuse (closed reader, an overlapping call), and any other error the listing hits
+(`EncryptionError`, `DiagnosticRaisedError`, the `ReadError` of a pass that failed
+earlier, an I/O error).
 
 #### Scenario: members_report / MemberListReport matrix
 
@@ -382,7 +397,6 @@ instead of raising on terminal archive-level listing errors.
 ```python
 def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
 def members(self) -> list[ArchiveMember]: ...          # materialize (RA only)
-def scan_members(self) -> list[ArchiveMember]: ...      # fully-resolved, either mode
 def members_report(self) -> MemberListReport: ...         # prefix + error report
 def members_report_if_available(self) -> MemberListReport | None: ...  # report peek
 ```
@@ -397,27 +411,28 @@ complete** materialization, later `__iter__` calls MUST use the cache. In
 **streaming**, no cache-replay: `__iter__` is part of the single forward pass (see
 `access-mode-and-cost`).
 
-`members()` and `scan_members()` SHALL remain **complete-or-raise**: they return
-a fully-resolved `list[ArchiveMember]` only when the listing completes; on a
-terminal archive-level listing error they SHALL raise that error and MUST NOT
-return a partial list. Prefer `members_report()` when both the prefix and the
-error are required.
+`members()` SHALL remain **complete-or-raise**: it returns a fully-resolved
+`list[ArchiveMember]` only when the listing completes; on a terminal
+archive-level listing error it SHALL raise that error and MUST NOT return a
+partial list. Prefer `members_report()` when both the prefix and the error are
+required.
 
-`scan_members()` SHALL return the fully-resolved list (`link_target_member` filled
-where the target exists, incl. forward-pointing and last-wins symlinks)
-when complete. In RA it equals `members()`. On `streaming=True` it returns the
-cache if the pass completed successfully, else **finishes that pass** (from
-start or draining an interrupted one), resolves links, and returns the list —
-or raises on terminal archive-level listing error. It is the only
-complete-or-raise method permitted after an iteration method has started;
-running it consumes/finishes the pass.
+`members_report()` SHALL carry the fully-resolved members (`link_target_member`
+filled where the target exists, incl. forward-pointing and last-wins symlinks)
+when complete. In RA its members are the ones `members()` returns. On
+`streaming=True` it returns the stored report if the pass already ended, else
+**finishes that pass** (from start or draining an interrupted one), resolves
+links, and returns the report. It is the only listing method that runs after an
+iteration method has started; running it consumes/finishes the pass. There is no
+separate complete-or-raise list method for a streaming reader: the caller raises
+`report.error`, or iterates `stream_members()` and ignores the streams.
 
 A live forward pass leaves forward-pointing symlinks unresolved at yield time.
 Completing a pass **successfully** via `__iter__`, `stream_members`,
-`extract_all`, or `scan_members` SHALL store a complete `MemberListReport`
+`extract_all`, or `members_report` SHALL store a complete `MemberListReport`
 (`error is None`) finalized in place on already-yielded objects so
 `members_report_if_available()` returns it. An abandoned pass (early `break`, no
-`scan_members()`) SHALL NOT finalize. A pass that ends in a terminal
+`members_report()`) SHALL NOT finalize. A pass that ends in a terminal
 archive-level listing error after a prefix SHALL store an incomplete report
 (`error` set) — never a complete one (see `MemberListReport` requirement).
 
@@ -438,8 +453,8 @@ of `error` (completeness).
 With `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
 `ArchiveyUsageError` uniformly. Only one forward pass
 (`__iter__`/`stream_members` or one `extract_all`) is allowed, with
-`scan_members()` / `members_report()` to finish/return it and
-`members_report_if_available()` anytime.
+`members_report()` to finish/return it and `members_report_if_available()`
+anytime.
 Canonical access-mode × method table: `access-mode-and-cost`.
 
 #### Scenario: iteration / access-mode matrix
@@ -448,9 +463,8 @@ Canonical access-mode × method table: `access-mode-and-cost`.
 | --- | --- | --- |
 | `__iter__` | Yields in order; after successful complete materialization, from cache; terminal archive error → yield prefix then raise | Single-use forward pass; terminal archive error → yield prefix then raise; second `__iter__`/`stream_members`/`extract_all` → `ArchiveyUsageError` |
 | `members()` | Full scan if needed; complete list or raise (no partial return) | `ArchiveyUsageError` |
-| `scan_members()` | Same fully-resolved list as `members()` when complete; raise on terminal archive error | Finishes/drains pass; complete list or raise; pass consumed |
-| `members_report()` | Always returns `MemberListReport` (prefix + `error`) | Always returns report; may consume the pass |
-| `scan_members()` after early `break` | n/a | Drains remainder; complete list or raise on terminal error |
+| `members_report()` | Returns `MemberListReport` (prefix + `error`) on terminal archive damage; raises on limits and usage errors | Same; may consume the pass |
+| `members_report()` after early `break` | n/a | Drains remainder; report (prefix + `error` on terminal damage); pass consumed |
 | `members_report_if_available()` after completed **successful** pass | Complete report (`error is None`) if indexed/cached | Complete report (not `None`); forward-link finalization visible on yielded objects |
 | `members_report_if_available()` after incomplete (error) pass already ran | Incomplete report (prefix + `error`) | Incomplete report (prefix + `error`) |
 | `members_report_if_available()` after abandoned pass / before any materialization | `None` (unless upfront index) | `None` |
@@ -461,14 +475,14 @@ Canonical access-mode × method table: `access-mode-and-cost`.
 
 The system SHALL define frozen `ListingLimits` and apply them from the reader's
 open `ArchiveyConfig.listing_limits` when registering members into a
-materialized or resolved member list (`members()`, `scan_members()`, and any
+materialized or resolved member list (`members()`, `members_report()`, and any
 path that materializes via `_materialize_members` / equivalent). There is no
 per-call listing-limits override.
 
 ```python
 @dataclass(frozen=True)
 class ListingLimits:
-    max_members: int | None = 1_048_576
+    max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
     UNLIMITED: ClassVar["ListingLimits"]
 ```
@@ -486,7 +500,7 @@ directory) is not the same as applying `max_members` at parse.
 
 **Unguarded by design:** `stream_members()` / `streaming=True` / forward-only
 iteration MUST NOT enforce `ListingLimits` (O(1) escape hatch). Callers that
-need a full resolved list use `members()` / `scan_members()` and accept the
+need a full resolved list use `members()` / `members_report()` and accept the
 caps. Formats that apply `max_members` at parse (7z, RAR and ISO) fail at
 `open_archive` instead, so `stream_members()` / `streaming=True` are not an
 escape hatch there.
@@ -495,12 +509,12 @@ escape hatch there.
 
 | Case | Expected |
 | --- | --- |
-| Default config, archive with ≤1_048_576 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
+| Default config, archive with ≤262_144 members and metadata under 64 MiB | `members()` / `members_report()` succeed |
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR member whose extended headers and sparse map together weigh more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -526,7 +540,7 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 A field filled in after its member was registered SHALL be weighed when it is filled
 in, under the same enforcement as registration. The case that exists is a symlink
 target stored as member data (ZIP, 7z, RAR3/4), which is read only once every member is
-registered: a target resolved while materializing `members()` / `scan_members()` SHALL
+registered: a target resolved while materializing `members()` / `members_report()` SHALL
 count toward `max_metadata_bytes` before that list is published.
 
 A field that is expanded before any member is registered MAY be weighed by the size
@@ -538,13 +552,22 @@ from the running total above; the decoded comments are weighed again at registra
 
 A TAR sparse member's map is retained on `_raw` (the member's data is read through it),
 and the archive sizes it: a few kilobytes of compressed PAX sparse 1.0 map hold millions
-of entries. It SHALL be weighed at registration, 24 bytes per entry.
+of entries. It SHALL be weighed at registration, 24 bytes per entry. The parser builds
+the whole map before the member can be registered, so the map SHALL also be weighed
+while it is parsed, from its entry count (a PAX sparse 1.0 map's count line, a 0.1
+map's commas, a 0.0 map's offset records) before its entries are parsed, or as each
+old GNU extension block adds entries: a map weighing more than its member has left
+SHALL raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 A TAR extended header (PAX `x` / `g`, GNU long name or link name) is read whole by the
 parser before any member is registered, so its declared size SHALL be weighed first: one
 that declares more than is left of `max_metadata_bytes` in an enforcing listing, or more
 than the whole cap in any walk (`stream_members()` and `streaming=True` included), SHALL
-raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data.
+raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data. The
+headers ahead of one member form a chain the parser holds whole until the member is
+built, so each header of the chain, and the member's sparse map, SHALL be weighed
+against what the headers before it in the chain left, not against the member's whole
+share.
 
 #### Scenario: metadata accounting matrix
 
@@ -558,6 +581,8 @@ raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data.
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR compressed old-style comments whose declared sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
+| TAR chain of extended headers ahead of one member, each under the cap, together over it | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
+| TAR sparse map whose entries weigh more than the member has left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before its entries are parsed |
 
 ### Requirement: Name lookup and member identity
 
@@ -571,7 +596,11 @@ def __contains__(self, member: ArchiveMember) -> bool: ...  # identity, O(1), an
 
 `get()` looks up by normalized name; duplicates → **last** (sequential extraction
 winner). On `streaming=True` SHALL raise `ArchiveyUsageError` regardless of
-loaded index. For a no-scan peek use `members_report_if_available()`.
+loaded index. A `name` that is not a `str` (a `bytes` name, an `ArchiveMember`)
+SHALL raise `ArchiveyUsageError`: answering `default` for it would report a member
+that exists as absent. `open()` refuses a `bytes` name the same way; it accepts an
+`ArchiveMember`, which `get()` does not, because `get()` looks up by name. For a
+no-scan peek use `members_report_if_available()`.
 
 `member in reader` is identity membership (yielded by this reader), O(1), any mode.
 Non-`ArchiveMember` (notably a name string) SHALL raise `TypeError` pointing to
@@ -585,6 +614,7 @@ would consume a streaming pass.
 | `get` existing name | That `ArchiveMember` |
 | `get` missing | `default` / `None`; `open`/`read` of missing name → `KeyError` |
 | `get` on `streaming=True` | `ArchiveyUsageError` |
+| `get(b"file.txt")`, `get(0)`, `get(member)` | `ArchiveyUsageError`; never `default`, never `unhashable type` |
 | `member in ar` (yielded by `ar`) | `True`; foreign member → `False`; no scan |
 | `"file.txt" in ar` | `TypeError` → use `get()`; never iterate |
 
@@ -597,10 +627,18 @@ immutable operation-filtered diagnostic snapshot:
 class ArchiveStream(BinaryIO):
     @property
     def diagnostics(self) -> DiagnosticSummary: ...
+    @property
+    def name(self) -> str: ...  # member streams only; else AttributeError
 
 def read(self, member: str | ArchiveMember) -> bytes: ...
 def open(self, member: str | ArchiveMember) -> ArchiveStream: ...
 ```
+
+A stream from `open()` or `stream_members()` SHALL have `name` equal to the member's
+`name`, as `zipfile`'s `ZipExtFile` does, so `open_archive(reader.open(member))` matches
+the member's extension during detection (`format-detection`: a probe-only format runs its
+probe only for a matching name). It is a member name, not a filesystem path. A stream with
+no member (`open_stream`) SHALL raise `AttributeError` for `name`, as `io.BytesIO` does.
 
 Unknown name → `KeyError`; foreign `ArchiveMember` → `ValueError`. `read()`
 materializes the full payload without extraction bomb checks (small trusted
@@ -625,6 +663,8 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | Case | Expected |
 | --- | --- |
 | `open("data.bin")` succeeds | `ArchiveStream` as `BinaryIO`; `stream.diagnostics` = that operation only |
+| `open("dir/inner.zz").name` | `"dir/inner.zz"`; `open_archive` on it detects `ZLIB` by name and probe |
+| `open_stream(src).name` | `AttributeError` |
 | Reader-owned stream emits rewind diagnostic | Visible on stream and reader snapshots; retained once |
 | `read("readme.txt")` | Full uncompressed `bytes` |
 | `open(member)` from a different reader | `ValueError` |
@@ -695,6 +735,16 @@ Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and leave the
 active pass/stream valid. (Unlike random `open()`, whose independently owned
 streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 
+Reader close is the one exception, and only while the pass is suspended at a yield
+(the caller holds the iterator and is not inside a `next()` call). `close()` and
+`with`-exit then close the reader, as `zipfile.ZipFile.close()` does with member
+handles open, in this order: the backend's pass is wound down (its last yielded
+stream closed, then its pass-scoped resources such as a solid block or an `unrar`
+pipe released), then any other member stream still open is closed, and only then is
+the archive torn down. Resuming that iterator SHALL raise `ArchiveyUsageError`. A
+pass that is executing (inside `next()`, e.g. a selector on another thread) still
+makes `close()` raise (maintainer's ruling, 2026-10-10).
+
 #### Scenario: stream_members matrix
 
 | Case | Expected |
@@ -707,6 +757,8 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 | Advance after one yield | Prior stream closed/invalidated first |
 | Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
+| `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
+| `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
 | Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config), either access mode | The link's target is resolved; its folder is decoded up to the link once |
 | Pass to the end without `members()`, either access mode, over a ZIP, 7z, RAR4 or RAR5 holding symlinks (default config) | Each yielded symlink ends with the same `link_target` a `members()` call would set, unset where that read cannot produce one |
@@ -798,6 +850,12 @@ be idempotent.
   concurrent external close with I/O is unsupported.
 - `__exit__` always calls `close()`. Close failure propagates on normal exit;
   during body-exception unwind the body exception remains via normal chaining.
+- A `stream_members()` or streaming-iteration pass suspended at a yield does not
+  block `close()`: the reader closes and resuming that iterator raises
+  `ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see the
+  `stream_members()` requirement). So a `with` block whose body kept such an
+  iterator alive exits cleanly, and a body exception is never replaced by a
+  close-time usage error.
 
 **Under `MemberStreams.CONCURRENT`:** `reader.close()` drains in-flight worker
 `open()`/`read()` before transitioning to closed (see `reader-concurrency`).
@@ -814,7 +872,8 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | Open stream, then close reader (no concurrent I/O) | New reader ops → `ArchiveyUsageError`; the stream is closed by that `close()`; backend released after it |
 | Idle open stream + `reader.close()` | Close succeeds and closes the stream; a later read raises; `stream.close()` is a no-op |
 | Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
-| `close()` raises (active pass/worker) | Reader stays open; member streams untouched |
+| `close()` raises (executing pass/worker) | Reader stays open; member streams untouched |
+| `close()` while a pass is suspended at a yield | Reader closed; yielded stream closed; resuming the pass → `ArchiveyUsageError` |
 | Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
 | `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
@@ -1030,19 +1089,19 @@ class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
     max_ratio: float | None = 1000.0
     ratio_activation_threshold: int = 5 * 2**20
-    max_entries: int | None = 1_048_576
+    max_entries: int | None = 262_144
     UNLIMITED: ClassVar["ExtractionLimits"]
 
 @dataclass(frozen=True)
 class ListingLimits:
-    max_members: int | None = 1_048_576
+    max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20
     UNLIMITED: ClassVar["ListingLimits"]
 
 @dataclass(frozen=True)
 class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
-    max_key_derivation_rounds: int | None = 2**27
+    max_key_derivation_rounds: int | None = 2**25
     max_ppmd_in_process_input: int | None = 16 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
@@ -1063,6 +1122,7 @@ class ArchiveyConfig:
     decoder_limits: DecoderLimits = DecoderLimits()
     spool_limits: SpoolLimits = SpoolLimits()
     detection_budget: DetectionBudget = BALANCED_BUDGET
+    always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
@@ -1103,6 +1163,10 @@ auto-detection itself, and under `format=` the stub-volume check and the rescan 
 confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
 fields beside it: a preset member or its name is converted at construction, so the field
 always holds a budget.
+`always_probe_content` SHALL decide whether `detect_format` and `open_archive` run every
+content probe or only the probe of the format the source's extension names
+(`format-detection`); `open_stream` SHALL run every probe whatever it holds. Like the other
+switches it SHALL be a real `bool`.
 `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set and across attempts: a copy refused once SHALL stay refused for that reader
@@ -1137,6 +1201,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`) |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
+| `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, no child process possible | `ResourceLimitError` on the first read |
@@ -1300,14 +1365,14 @@ outside this requirement: the header parser has already allocated them, and
 
 A reader SHALL build one `ArchiveMember` object per archive member and hand out that same
 object from every listing method and pass: `members_report_if_available()`,
-`members_report()`, `members()`, `scan_members()`, `get()`, `__iter__`,
-`stream_members()` and `extract_all()`. Each member SHALL be registered (its
-`member_id` and its reader's identity stamped, its presentation checks run and its listing-limit
-accounting done) exactly once, before any of those methods returns or yields it.
-Typing-time and presentation diagnostics for a member SHALL therefore be emitted once
-per reader, whichever methods are called and in whatever order, so
-`DiagnosticSummary.counts` stays exact. A typing-time diagnostic's context SHALL carry,
-as `member_id`, the id the member is registered with, on every backend.
+`members_report()`, `members()`, `get()`, `__iter__`, `stream_members()` and
+`extract_all()`. Each member SHALL be registered (its `member_id` and its reader's
+identity stamped, its presentation checks run and its listing-limit accounting done)
+exactly once, before any of those methods returns or yields it. Typing-time and
+presentation diagnostics for a member SHALL therefore be emitted once per reader,
+whichever methods are called and in whatever order, so `DiagnosticSummary.counts` stays
+exact. A typing-time diagnostic's context SHALL carry, as `member_id`, the id the member
+is registered with, on every backend.
 
 A backend's member walk SHALL run at most once per reader when it completes. A walk that
 fails before completing, without terminal archive damage, MAY be repeated on the next
@@ -1379,13 +1444,13 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   writing the link, as under `False` below, rather than failing it as a link with no
   target.
 - `False`: the reader SHALL NOT read member data for a link target as a side effect of
-  listing (the peek, `members()`, `scan_members()`, `members_report()`, `get()`,
-  `__iter__`) or of a pass advancing (`stream_members()`, including the child pass
-  `extract_all` drives). Such a link keeps `link_target=None`, no
-  `SYMLINK_TARGET_UNAVAILABLE` is emitted for it, and the skipped read is not recorded as
-  an attempt. This covers RAR3/4 stored targets too, although that read needs no
-  decompression or password. Under `False`, a `link_target` set by listing then means
-  exactly that the header carries it, whatever the compression method.
+  listing (the peek, `members()`, `members_report()`, `get()`, `__iter__`) or of a pass
+  advancing (`stream_members()`, including the child pass `extract_all` drives). Such a
+  link keeps `link_target=None`, no `SYMLINK_TARGET_UNAVAILABLE` is emitted for it, and
+  the skipped read is not recorded as an attempt. This covers RAR3/4 stored targets too,
+  although that read needs no decompression or password. Under `False`, a `link_target`
+  set by listing then means exactly that the header carries it, whatever the compression
+  method.
   Header-carried targets (RAR5, TAR, ISO) are unaffected.
 - Under `False` the reader SHALL read a link's target only when the caller asks for that
   member:
@@ -1402,13 +1467,25 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   and a filled target SHALL NOT be read again. A report taken afterwards therefore shows
   targets for the links read this way and `None` for the rest. `False` is a promise about
   what the reader reads on its own, not about what a member ends up holding.
-- Under either setting, a read made for extraction can show that the member is not a
-  link: a reparse-flagged member whose data is no reparse buffer, which listing would
-  have re-typed to a file. `extract_all` SHALL then re-type it the same way, call its
-  `filter` again on the re-typed member, and write it as a file. In random access it
-  opens the member for its content. A streaming pass has already passed that content,
-  so it SHALL fail the member under `OnError`; it SHALL NOT report it as a link with no
-  target.
+- A reparse-flagged member whose data is no reparse buffer is re-typed to a file, as
+  listing would type it, except a directory-shaped entry: that one stays a link with no
+  target and gets no stream, because `open()` refuses a directory anyway. The two
+  bullets below re-type only the members this allows.
+- Under either setting, a read made for extraction, in a pass that has not yet read
+  the member's data, can show that the member is not a link: a reparse-flagged member
+  whose data is no reparse buffer. `extract_all` SHALL then re-type it as above, call
+  its `filter` again on the re-typed member, and write it as a file. In random access
+  it opens the member for its content. A streaming pass has already passed that
+  content, so it SHALL fail the member under `OnError`; it SHALL NOT report it as a
+  link with no target.
+- Exception to the bullet above: a 7z `stream_members()` pass under
+  `read_link_targets=True` reads a reparse-flagged member's data when it reaches the
+  member, in either access mode, so the pass has read that data before extraction sees
+  the member. When that data is no reparse buffer, the pass SHALL re-type the member
+  there, as above, and yield it with a stream of its whole content. It SHALL NOT yield
+  it as a link with no stream and re-type it after: the folder decoder cannot go back,
+  so that content would be lost with no error. `extract_all` over such a pass
+  therefore writes the member as a file in both access modes.
 
 #### Scenario: link-target setting matrix
 
@@ -1425,6 +1502,9 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | ZIP symlink, `read_link_targets=False`, password supplied, `reader.open("link")` | The target is read, then the link is followed |
 | Streaming `extract_all()` over a ZIP symlink, default config | The target is read before the link is written; the link is extracted |
 | ZIP member flagged as a reparse point whose data is no reparse buffer, `read_link_targets=False`, `extract_all()` | The filter sees it as a link, then again as a file; random access writes its content; a streaming pass fails it under `OnError` |
+| 7z member flagged as a reparse point whose data is no reparse buffer, default config, `stream_members()` in either access mode | Yielded as `FILE` with a stream of all its content; the next member in the folder reads correctly |
+| Same 7z archive, default config, streaming `extract_all()` | Written as a file |
+| Same 7z archive, `read_link_targets=False`, `stream_members()` | Yielded as `SYMLINK` with no stream, as `members()` lists it; not re-typed later |
 
 ### Requirement: A damaged data-stored link target leaves the listing intact
 

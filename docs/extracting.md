@@ -136,7 +136,10 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   never leaves a half-written destination file. The destination root itself is yours,
   so if it is a symlink to a directory, archivey follows it and extracts into the
   target (as `tar -C` and `unzip -d` do).
-- **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
+- **Special files** (devices, FIFOs, sockets) are never created: archivey calls no
+  `mknod`. An entry that stores no data under such a mode is `MemberType.OTHER` and is
+  skipped; an entry that stores data under such a mode is a `FILE` and its bytes are
+  written as a regular file (`MEMBER_SPECIAL_FILE_HAS_DATA` reports it). An NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
   which in practice means RAR and a directory tree read from a Windows filesystem. ZIP
@@ -193,7 +196,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.
 - **Permission hygiene:** setuid/setgid/sticky stripped except under `TRUSTED`;
-  ownership applied only under `TRUSTED` as root.
+  ownership applied only under `TRUSTED` as root. `STANDARD` keeps group and other
+  write bits, unlike `tarfile`'s `data` and `tar` filters, which both mask the stored mode
+  with `0o755`.
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
@@ -297,8 +302,8 @@ read `ExtractionResult.presented_name` and let extraction finish.
 | Policy | Intent |
 | --- | --- |
 | `STRICT` | Untrusted archives (default) |
-| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
-| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
+| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute and group or other write included (the umask does not apply, so a stored `0o666` file stays `0o666`), but strips setuid, setgid and sticky and never applies ownership. A member with no stored mode, such as every member of a ZIP written on Windows, gets `0o644` (file) or `0o755` (directory). Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
+| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal. A member with no stored mode keeps the creation default, so the umask decides, not `0o644` / `0o755` |
 
 Selective extract:
 
@@ -370,7 +375,7 @@ Archive order and identity matter more than “the” name.
 | Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename), for a directory member landing on a file as for a file. It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
 | `RENAME` and directories | When a file or symlink, yours or the run's, holds a directory member's name, archivey writes the directory as `name (1)/` and keeps the file. The members inside it follow it: `dd/f` lands at `dd (1)/f`, and its result reports `requested_path` `dd/f` and `path` `dd (1)/f`. The CLI reports the directory's rename once, not once per member. |
 | `REPLACE` and directories | `REPLACE` removes an existing directory only when it is empty. A non-empty one fails that member with `ExtractionError`, so a later member cannot delete files the run already wrote or files you already had. When the run wrote the empty directory it removes, that directory's result is revised to `OVERWRITTEN`, like any clobbered member. Its `collided_with` stays `None` and `AbortOn.NAME_COLLISION` does not fire, because directories are not in the collision map. |
-| Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. |
+| Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. The member's mode is compared as the platform stores it, so on Windows only the read-only attribute counts: a `0o755` member over a writable directory reports no `kept_mode`. |
 | Directory modes and times | archivey sets a directory's stored mode and modification time once the run ends, deepest directory first, as GNU tar does. So a directory stored without write or search permission (`0o555`, `0o644`) still gets its members, and writing them does not change its time. This also happens when the run stops early on an error. |
 | Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `COM¹`, `CONIN$`, `file:ads`, …). |
 | Links on Windows | A symlink target's `/` is written as `\`, so `sub/file` resolves as on POSIX. Creating a symlink needs Developer Mode or an elevated process; without it each symlink member fails with an `ExtractionError` that says so. NTFS allows 1024 names for one file; a hard link past that is written as a copy, and those copied bytes count toward `max_extracted_bytes` and the archive-wide `max_ratio`. |
@@ -391,9 +396,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 
 - **Extraction bombs** — total extracted bytes (default 2 GiB), compression ratio
   (default 1000, checked once 5 MiB has been written), and entry count (default
-  1,048,576) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
-- **Listing materialization** — member count (default 1,048,576) and retained metadata
-  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
+  262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+- **Listing materialization** — member count (default 262,144) and retained metadata
+  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
   does not list first: it checks the limits as each member arrives in its one pass, so
   members before the one that crosses a cap are already written when it raises.
@@ -424,9 +429,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   first: a duplicate name, or a glob under `rar_allow_glob_member_concatenation`.
 - **Key-derivation work** — RAR5 and 7z headers say how many hashing rounds turn a
   password into a key, and an archive can salt every member so each needs its own
-  (`DecoderLimits.max_key_derivation_rounds`, default `2**27` rounds in total per open
-  archive: about half a minute of hashing when spent on RAR5 derivations at their
-  2^24-round maximum, closer to a minute for RAR3 and about a quarter of one for 7z).
+  (`DecoderLimits.max_key_derivation_rounds`, default `2**25` rounds in total per open
+  archive: about ten seconds of hashing when spent on RAR5 derivations at their
+  2^24-round maximum, about a quarter of a minute for RAR3 and a few seconds for 7z).
   Keys the reader already derived are reused for free, so an ordinary encrypted
   archive spends one or two derivations; each wrong candidate password counts. Trips
   raise `ResourceLimitError` before the derivation starts.
@@ -492,10 +497,14 @@ the reader's lifetime.
 That read can show the member is not a link at all. A member flagged as a Windows
 reparse point whose data is not a reparse buffer is a file, and listing would have
 presented it as one. When extraction is the first to read it, under
-`read_link_targets=False` or in a streaming pass, `extract_all` re-types it and calls
-your `filter` a second time, now with the file, so a filter can see such a member twice.
-In random access it then writes the file's content. A streaming pass has already gone
-past that content, so the member fails under `on_error` instead.
+`read_link_targets=False` or in a streaming pass that has not read it yet,
+`extract_all` re-types it and calls your `filter` a second time, now with the file, so a
+filter can see such a member twice. In random access it then writes the file's content.
+A streaming pass has already gone past that content, so the member fails under
+`on_error` instead. A 7z `stream_members()` pass under the default
+`read_link_targets=True` is the exception: it reads the member's data when it reaches
+the member, re-types it there and yields the file with its content, so `extract_all`
+writes it as a file in either access mode.
 
 A hard link to a symlink, directly or through other hard links, goes the other way: your
 `filter` sees the HARDLINK the archive lists, and its result keeps that member, but what

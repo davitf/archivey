@@ -6,11 +6,10 @@ import argparse
 import errno
 import functools
 import os
-import re
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import Any, NamedTuple, NoReturn, TextIO, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 import archivey
 from archivey import (
@@ -23,7 +22,13 @@ from archivey import (
 )
 from archivey.cli.choices import cli_choices
 from archivey.cli.errors import CliError
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import (
+    EXIT_BROKEN_PIPE,
+    EXIT_FAIL,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    EXIT_USAGE,
+)
 from archivey.cli.extract_cmd import run_extract
 from archivey.cli.format import (
     escape_member_name,
@@ -36,6 +41,9 @@ from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import display_path, quoted
+
+if TYPE_CHECKING:
+    from _typeshed import SupportsWrite
 
 _TOP_EPILOG = """\
 examples:
@@ -61,6 +69,11 @@ _VERB_FLAG_HINTS = {
     "-t": "t",
     "-i": "i",
 }
+# Letters a tar flag bundle is made of: the verb letters above, tar's lowercase
+# modifiers (-v, -f, the -z/-j/-J/-a compressors, -k, -p, -m, -h) and GNU tar's
+# uppercase short options (-Z compress, -C, -O, -P, -S, -W and the rest). Other
+# lowercase letters stay out so a mistyped long option (``-exclude``) is no bundle.
+_TAR_BUNDLE_LETTERS = frozenset("xltivfzjJakpmh" + "ABCFGKLMNOPRSTUVWXZ")
 
 
 # The include-pattern positional's metavar; ``_ArchiveyArgumentParser.error`` matches it.
@@ -150,14 +163,39 @@ class _ArchiveyArgumentParser(argparse.ArgumentParser):
             message += _unrecognized_hints(message[len(unrecognized) :].split())
         super().error(message)
 
+    def _print_message(
+        self, message: str, file: SupportsWrite[str] | None = None
+    ) -> None:
+        # argparse drops an OSError from writing help or usage, so a reader that
+        # closed the pipe would see exit 0 or 2 for output it never got. Let a
+        # broken pipe reach main(), which exits 141 for it.
+        if message:
+            try:
+                (file or sys.stderr).write(message)
+            except OSError as exc:
+                if _is_dead_pipe(exc):
+                    raise _as_broken_pipe(exc) from exc
+            except AttributeError:
+                pass
+
 
 def _unrecognized_hints(tokens: list[str]) -> str:
     """Hints for unrecognized options: a tar-style verb flag, a verb's own flag."""
     opts = [tok.split("=", 1)[0] for tok in tokens]
     hints = ""
-    # Tar users type -x/-l/-t, often bundled (-xvf); verbs here are bare words. Only a
-    # single-dash bundle of letters counts, so ``--my-list`` is not ``-l``.
-    bundles = [o[1:] for o in opts if re.fullmatch(r"-[A-Za-z]+", o)]
+    # Tar users type -x/-l/-t, often bundled (-xvf, -zxf); verbs here are bare words.
+    # Only a single-dash bundle of tar letters counts, so ``--my-list`` is not ``-l``
+    # and a mistyped long option such as ``-exclude`` or ``-file`` is not ``-x``/``-i``.
+    # A bundle is one letter (``-x``) or names the archive with ``f`` (``-xvf``), so a
+    # word such as ``-max`` or ``-tail`` gets no hint either.
+    bundles = [
+        o[1:]
+        for o in opts
+        if len(o) > 1
+        and o[0] == "-"
+        and set(o[1:]) <= _TAR_BUNDLE_LETTERS
+        and (len(o) == 2 or "f" in o[1:])
+    ]
     flags = [f"-{ch}" for bundle in bundles for ch in bundle]
     verb = next((_VERB_FLAG_HINTS[f] for f in flags if f in _VERB_FLAG_HINTS), None)
     if verb is not None:
@@ -282,17 +320,14 @@ _Runner = Callable[[argparse.Namespace, _Common], int]
 
 
 class _Selection(TypedDict):
-    """Member-selection kwargs of the verbs that read members (``--salvage`` refused)."""
+    """Member-selection kwargs of the verbs that read members."""
 
     patterns: list[str]
     exclude: list[str]
-    salvage: bool
 
 
 def _selection(args: argparse.Namespace) -> _Selection:
-    return _Selection(
-        patterns=list(args.patterns), exclude=list(args.exclude), salvage=False
-    )
+    return _Selection(patterns=list(args.patterns), exclude=list(args.exclude))
 
 
 # The runners look their run_* up by name when called, so tests can patch it.
@@ -419,7 +454,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-d",
         "--dest",
         default=None,
-        help="destination directory (default: smart enclosing dir; use -d . for cwd)",
+        help=(
+            "destination directory. By default, extract into a new folder named "
+            "after the archive, or into the current directory when the archive holds "
+            "a single top-level folder. Pass -d . to extract into the current "
+            "directory in any case."
+        ),
     )
     p_extract.add_argument(
         "--policy",
@@ -576,20 +616,39 @@ def _parse_cli_args(
     (``archivey x a.zip -d out '*.py'``). Fold those tokens back so the
     documented flag/pattern order works.
 
-    Tokens after an explicit ``--`` are always positionals — including names
-    that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
+    Tokens after the first ``--`` are always positionals, including ``--`` itself
+    and names that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
     """
-    args, rest = parser.parse_known_args(argv_list)
-    after_double_dash = bool(rest and rest[0] == "--")
-    if after_double_dash:
-        rest = rest[1:]
+    # The separator is handled here, not by argparse: 3.11 and 3.12 drop a ``--``
+    # from every positional group they consume, so ``x a.zip -- --`` lost the
+    # pattern ``--`` there while ``x a.zip -d out -- --`` kept it. argparse sees
+    # one ``--`` and opaque stand-ins for the tail, which it cannot strip or read
+    # as options, and the stand-ins are swapped back after parsing. A real argv word
+    # can never collide with a stand-in, because a process argv cannot carry ``\0``:
+    # execve rejects an embedded NUL, and os.exec*/subprocess raise ValueError.
+    cut = argv_list.index("--") if "--" in argv_list else len(argv_list)
+    head, tail = argv_list[:cut], argv_list[cut + 1 :]
+    stand_ins = {f"\0archivey-tail-{i}\0": tok for i, tok in enumerate(tail)}
+    args, rest = parser.parse_known_args(
+        [*head, "--", *stand_ins.keys()] if tail else head
+    )
+    for name, value in vars(args).items():
+        if isinstance(value, str) and value in stand_ins:
+            setattr(args, name, stand_ins[value])
+        elif isinstance(value, list):
+            setattr(args, name, [stand_ins.get(v, v) for v in value])
+    # A ``--`` left in ``rest`` is the one passed above; tail tokens are positionals.
+    rest = [tok for tok in rest if tok != "--"]
+    unknown_opts = [
+        tok
+        for tok in rest
+        if tok not in stand_ins and tok.startswith("-") and tok != "-"
+    ]
+    if unknown_opts:
+        parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
+    rest = [stand_ins.get(tok, tok) for tok in rest]
     if not rest:
         return args
-    if not after_double_dash:
-        # Without ``--``, dash-prefixed leftovers are unknown options (not patterns).
-        unknown_opts = [tok for tok in rest if tok.startswith("-") and tok != "-"]
-        if unknown_opts:
-            parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
     if not hasattr(args, "patterns"):
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     args.patterns = list(args.patterns or ()) + list(rest)
@@ -604,20 +663,70 @@ def main(
 ) -> int:
     """CLI entry point. Returns a process exit code.
 
-    ``out`` and ``err`` carry the operation's own output. argparse's usage errors
-    (unknown flags, a missing archive) still print to the process ``sys.stderr``.
+    ``out`` and ``err`` carry the operation's own output. argparse's help and usage
+    errors (unknown flags, a missing archive) still print to the process
+    ``sys.stdout`` and ``sys.stderr``.
     """
     # Archive text (member names, comments) is printable but may not be encodable: a
     # cp1252 console, PYTHONIOENCODING=ascii. The interpreter's stderr already escapes
     # what it cannot encode; stdout raises, so it gets the same errors handler here.
-    out_stream = cast(
+    # Both streams also go through _DeadPipeWriter, so a closed pipe is a
+    # BrokenPipeError on Windows too.
+    escaping = cast(
         TextIO, _BackslashReplacingWriter(out if out is not None else sys.stdout)
     )
-    err_stream = err if err is not None else sys.stderr
+    out_stream = cast(TextIO, _DeadPipeWriter(escaping))
+    err_stream = cast(TextIO, _DeadPipeWriter(err if err is not None else sys.stderr))
+    try:
+        exit_code = _parse_and_dispatch(argv, out=out_stream, err=err_stream)
+        # Flush here, not at interpreter exit, so a reader that closed the pipe
+        # after the last write is still a broken pipe handled below. Without out=
+        # and err=, these are the process streams, so this also flushes argparse's
+        # buffered help and usage text. It also carries a lost log record to 141:
+        # logging's StreamHandler swallows its own write error, which leaves the
+        # record in the buffer, so this flush is where the closed pipe surfaces.
+        out_stream.flush()
+        err_stream.flush()
+        return exit_code
+    except BrokenPipeError:
+        # The verb's output, help and usage text, and the error messages
+        # _parse_and_dispatch prints are all written inside this try. Not 0: the
+        # reader left before all the output arrived, so `test` may not have
+        # verified the whole archive and `list` may not have printed it all. A
+        # usage error whose message is lost also lands here, as 141 rather than 2.
+        _silence_dead_streams()
+        return EXIT_BROKEN_PIPE
+    except OSError as exc:
+        # The final flush failed for another reason (a full disk, a quota, a
+        # network share that went away). _parse_and_dispatch handles the same
+        # error the same way when a write inside the verb raises it.
+        _report_quietly(escape_member_name(_format_os_error(exc)), err_stream)
+        # The output that failed to flush is still buffered; without this, the
+        # interpreter's exit flush fails on it again and exits 120.
+        _silence_dead_streams()
+        return EXIT_FAIL
+    except KeyboardInterrupt:
+        _report_quietly("interrupted", err_stream)
+        return EXIT_INTERRUPTED
+
+
+def _report_quietly(message: str, err: TextIO) -> None:
+    """Print ``message`` to ``err``, dropping a second error from that stream."""
+    try:
+        print(message, file=err)
+        err.flush()
+    except OSError:
+        # err may be the stream whose flush just failed; the exit code still
+        # says what happened.
+        pass
+
+
+def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO) -> int:
+    """Parse ``argv`` and run the verb; ``BrokenPipeError`` is left to ``main``."""
     raw = list(sys.argv[1:] if argv is None else argv)
 
     if not raw:
-        build_parser().print_help(err_stream)
+        build_parser().print_help(err)
         return EXIT_USAGE
 
     argv_list = _inject_default_list(raw)
@@ -630,30 +739,39 @@ def main(
             return EXIT_OK
         if isinstance(code, int):
             return code
-        print(code, file=err_stream)
+        print(code, file=err)
         return EXIT_USAGE
 
+    # The line that reports the fault which ended the run starts with ``archivey: ``:
+    # the ``CliError``, ``ArchiveyError`` and ``OSError`` handlers below
+    # (``_format_os_error`` adds it for ``OSError``), ``list``'s report error,
+    # ``extract``'s stop and ``hoist failed`` lines, and the uncounted fault that ends
+    # ``test``'s pass after a member already failed. A counted failure (``test``'s
+    # ``FAIL …``), a line about one member (``extract``'s ``WARNING: Skipping …``),
+    # the notices and counts that follow the fault line (stop notices,
+    # ``N member(s) extracted before the stop``, ``files left in …/``) and
+    # ``interrupted`` keep their own shape.
     try:
-        with cli_logging(verbose=bool(args.verbose), err=err_stream):
-            return _dispatch(args, out=out_stream, err=err_stream)
+        with cli_logging(verbose=bool(args.verbose), err=err):
+            return _dispatch(args, out=out, err=err)
     except CliError as exc:
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not
         # escape its own message the way ArchiveyError does — and an archive-derived name
         # reaches here inside that message, not as a separate argument.
-        print(escape_member_name(exc.message), file=err_stream)
+        print(f"archivey: {escape_member_name(exc.message)}", file=err)
         return exc.code
     except ArchiveyError as exc:
-        print(format_error_detail(exc), file=err_stream)
+        print(f"archivey: {format_error_detail(exc)}", file=err)
         return EXIT_FAIL
     except BrokenPipeError:
-        # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2).
-        _silence_broken_pipe()
-        return EXIT_OK
+        # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2), which
+        # would print to the closed pipe and return 1. main() turns it into 141.
+        raise
     except OSError as exc:
-        print(escape_member_name(_format_os_error(exc)), file=err_stream)
+        print(escape_member_name(_format_os_error(exc)), file=err)
         return EXIT_FAIL
     except KeyboardInterrupt:
-        print("interrupted", file=err_stream)
+        print("interrupted", file=err)
         return EXIT_INTERRUPTED
 
 
@@ -683,13 +801,100 @@ class _BackslashReplacingWriter:
         return getattr(self._stream, name)
 
 
-def _silence_broken_pipe() -> None:
-    """Avoid a secondary BrokenPipeError when the interpreter flushes closed pipes."""
-    for stream in (sys.stdout, sys.stderr):
+# What a write to a pipe whose reader has gone raises on Windows. CPython writes
+# through the C runtime, which maps ERROR_BROKEN_PIPE (109) to EPIPE, so that one is
+# already a BrokenPipeError, but maps ERROR_NO_DATA (232) to EINVAL: a plain OSError,
+# "Invalid argument", with no winerror attached. The winerror codes are matched in
+# case a write path sets them (compare internal/extraction.py's _typed_os_error).
+_WINDOWS_DEAD_PIPE_WINERRORS = frozenset({109, 232})
+
+
+def _is_dead_pipe(exc: OSError) -> bool:
+    """Whether ``exc``, raised writing or flushing an output stream, is a closed pipe.
+
+    Only for errors from the CLI's own output streams: ``EINVAL`` is far too broad to
+    read as a closed pipe anywhere else, and even here it counts only on Windows.
+    """
+    if isinstance(exc, BrokenPipeError):
+        return True
+    if sys.platform != "win32":
+        return False
+    if getattr(exc, "winerror", None) in _WINDOWS_DEAD_PIPE_WINERRORS:
+        return True
+    return exc.errno == errno.EINVAL
+
+
+def _as_broken_pipe(exc: OSError) -> BrokenPipeError:
+    if isinstance(exc, BrokenPipeError):
+        return exc
+    return BrokenPipeError(errno.EPIPE, exc.strerror or "Broken pipe")
+
+
+class _DeadPipeWriter:
+    """An output stream whose closed-pipe errors are all ``BrokenPipeError``.
+
+    On Windows a write to a pipe whose reader has gone can raise ``OSError(EINVAL)``
+    instead (see ``_is_dead_pipe``). Translating it at the stream keeps the match
+    to the CLI's own output: the ``except BrokenPipeError`` arms in ``main()`` and
+    in the verbs then cover Windows too, and an ``EINVAL`` from archive I/O is
+    still reported as the error it is.
+    """
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
         try:
-            stream.close()
-        except BrokenPipeError:
+            return self._stream.write(text)
+        except OSError as exc:
+            if _is_dead_pipe(exc):
+                raise _as_broken_pipe(exc) from exc
+            raise
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        except OSError as exc:
+            if _is_dead_pipe(exc):
+                raise _as_broken_pipe(exc) from exc
+            raise
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
+
+
+def _silence_dead_streams() -> None:
+    """Point a standard stream that cannot flush at the null device, with no message.
+
+    The interpreter flushes ``sys.stdout`` and ``sys.stderr`` as it exits. Output
+    still buffered for a closed pipe or a full disk would fail again there
+    (``BrokenPipeError``, ``EINVAL`` on Windows, ``ENOSPC``), print "Exception
+    ignored" and exit 120. A stream that still flushes is left as it is.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.flush()
+            continue
+        except (OSError, ValueError):
+            # Wider than BrokenPipeError on purpose. ValueError is an in-process
+            # caller's closed sys.stdout (a closed StringIO); any other OSError
+            # (ENOSPC on a redirected stdout) would fail the exit flush the same
+            # way. The exit code is already set, so that second error is dropped.
             pass
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+        except OSError:
+            # No descriptor to spare means the other stream cannot get one
+            # either, so stop rather than try again for it.
+            return
+        try:
+            os.dup2(devnull, stream.fileno())
+        except (OSError, ValueError):
+            pass
+        finally:
+            os.close(devnull)
 
 
 if __name__ == "__main__":

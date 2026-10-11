@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import stat
 import struct
 import subprocess
+import threading
 import zipfile
 import zlib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,6 +24,7 @@ from archivey import (
     ArchiveyConfig,
     CompressionAlgorithm,
     DiagnosticCode,
+    DiagnosticPolicy,
     MemberType,
     open_archive,
 )
@@ -523,7 +527,7 @@ def test_zip_index_only_listing_leaves_symlink_unresolved(tmp_path: Path) -> Non
         assert link.link_target is None
         assert link.link_target_member is None
 
-        resolved = ar.scan_members()
+        resolved = ar.members()
         link_resolved = next(m for m in resolved if m.name == "link")
         assert link_resolved.link_target == "target.txt"
         assert link_resolved.link_target_member is not None
@@ -965,6 +969,23 @@ def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
         assert ar.read("a.txt") == b"hello"
 
 
+@pytest.mark.parametrize(
+    ("this_disk", "cd_start_disk"),
+    [(2, 0), (0, 2)],
+    ids=["this_disk", "cd_start_disk"],
+)
+def test_zip64_end_record_nonzero_disk_fields_rejected(
+    this_disk: int, cd_start_disk: int
+) -> None:
+    # The ZIP64 end record's disk fields replace the classic record's 0xFFFF sentinels,
+    # so a split set's last part is refused there too.
+    raw = _genuine_zip64_bytes(
+        zip64_this_disk=this_disk, zip64_cd_start_disk=cd_start_disk
+    )
+    with pytest.raises(UnsupportedFeatureError, match="(?i)multi-volume"):
+        open_archive(io.BytesIO(raw))
+
+
 def test_plain_prefixed_and_empty_zip_still_open(tmp_path: Path) -> None:
     plain = tmp_path / "plain.zip"
     plain.write_bytes(_stdlib_zip_bytes("a.txt", b"hi"))
@@ -1127,10 +1148,10 @@ def _overlapping_entries_zip() -> bytes:
     """A Fifield-style overlap bomb: many central-directory entries whose data spans
     overlap a single shared compressed kernel (https://www.bamsoftware.com/hacks/zipbomb/).
 
-    stdlib zipfile's "Overlapped entries (possible zip bomb)" guard fires when a member is
-    opened — before any byte flows through archivey's read-time translator — so this pins
-    that the *open-time* stdlib exception is translated to a CorruptionError like every
-    other backend error, rather than leaking as a raw zipfile.BadZipFile.
+    Member data never goes through ``zipfile.ZipFile.open``, so stdlib's own overlap guard
+    does not run. archivey computes each entry's data bound itself (``_member_data_ends``)
+    and raises ``zipfile.BadZipFile("Overlapped entries ...")`` when a member opens,
+    which the member-open translator maps to ``CorruptionError``.
     """
     import zlib
 
@@ -1209,6 +1230,48 @@ def test_overlapping_entries_bomb_translated_to_corruption() -> None:
                 ar.read(member)
             assert "Overlapped entries" in str(excinfo.value)
             assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
+
+
+def test_overlap_guard_does_not_depend_on_stdlib_end_offsets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Python before 3.11.8 sets no `ZipInfo._end_offset`. Simulate that: the guard must
+    # still refuse every overlapping member.
+    real = zipfile.ZipFile._RealGetContents  # type: ignore[attr-defined]
+
+    def without_end_offsets(self: zipfile.ZipFile) -> None:
+        real(self)
+        for info in self.filelist:
+            with contextlib.suppress(AttributeError):
+                del info._end_offset  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(zipfile.ZipFile, "_RealGetContents", without_end_offsets)
+    with open_archive(io.BytesIO(_overlapping_entries_zip())) as ar:
+        overlapping = [m for m in ar.members() if m.name != "f7"]
+        for member in overlapping:
+            with raises_corruption_not_truncation(match="Overlapped entries"):
+                ar.read(member)
+        assert ar.read("f7") == b"\x00" * (1024 * 1024)
+
+
+def test_entries_sharing_one_local_header_read_only_once() -> None:
+    # Two central directory entries that point at the same local header. The first in
+    # directory order reads; the second is an overlap. stdlib raises on 3.11, on 3.12
+    # before 3.12.10 and on 3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read
+    # both. archivey keeps refusing: many entries over one local header is the
+    # overlapping-entry amplification shape (DR-9a).
+    raw = bytearray(_stdlib_zip_bytes("a.txt", b"hello"))
+    cd = raw.index(b"PK\x01\x02")
+    eocd = raw.rindex(b"PK\x05\x06")
+    entry = bytes(raw[cd:eocd])
+    raw[eocd:eocd] = entry
+    eocd += len(entry)
+    struct.pack_into("<HHI", raw, eocd + 8, 2, 2, 2 * len(entry))
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        first, second = ar.members()
+        assert ar.read(first) == b"hello"
+        with raises_corruption_not_truncation(match="Overlapped entries"):
+            ar.read(second)
 
 
 # ---------------------------------------------------------------------------
@@ -1340,6 +1403,86 @@ _STUB = b"#!/bin/sh\necho stub\n" + bytes(64)
 def test_encrypted_central_directory_is_unsupported(prefix: bytes) -> None:
     with pytest.raises(UnsupportedFeatureError, match="central directory"):
         open_archive(io.BytesIO(prefix + _zip_with_encrypted_directory()))
+
+
+def _end_rec_data_with_location(rebased: bool) -> Any:
+    """``zipfile._EndRecData`` with one of the two ``_ECD_LOCATION`` layouts stdlib has
+    shipped for a ZIP64 archive, whatever the running Python's patch level.
+
+    CPython 3.11.14, 3.12.12, 3.13.10 and 3.14.1 rebased ``_ECD_LOCATION`` onto the
+    ZIP64 end record (``endrec[_ECD_LOCATION] = offset - extrasz`` in
+    ``_EndRecData64``). Earlier patch levels leave it on the classic record, and
+    ``_RealGetContents`` subtracts the 76 bytes of the ZIP64 record and locator itself.
+    The rebased value is written for archives with no ZIP64 extensible data, which is
+    every fixture here. It is taken from the classic record's location, which every
+    release stores as an absolute position before calling ``_EndRecData64``. The
+    ``offset`` argument is not used: pre-rebase releases pass it relative to the end
+    of the file.
+    """
+    real_end_rec_data64 = zipfile._EndRecData64  # type: ignore[attr-defined]
+
+    def end_rec_data64(fpin: Any, offset: int, endrec: list[Any]) -> list[Any]:
+        classic_location = endrec[zipfile._ECD_LOCATION]  # type: ignore[attr-defined]
+        endrec = real_end_rec_data64(fpin, offset, endrec)
+        if endrec[zipfile._ECD_SIGNATURE] == b"PK\x06\x06":  # type: ignore[attr-defined]
+            endrec[zipfile._ECD_LOCATION] = (  # type: ignore[attr-defined]
+                classic_location - 20 - 56 if rebased else classic_location
+            )
+        return endrec
+
+    def end_rec_data(fp: Any) -> Any:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(zipfile, "_EndRecData64", end_rec_data64)
+            return zipfile._EndRecData(fp)  # type: ignore[attr-defined]
+
+    return end_rec_data
+
+
+_ZIP64_LOCATION_LAYOUTS = pytest.mark.parametrize(
+    "rebased", [True, False], ids=["rebased", "pre-rebase"]
+)
+
+
+@_ZIP64_LOCATION_LAYOUTS
+def test_encrypted_zip64_central_directory_is_unsupported(
+    rebased: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A ZIP64 archive keeps the directory size in the ZIP64 end record; the classic
+    # record holds only 0xFFFFFFFF there. The check reads where stdlib reads, under
+    # either layout of the end record's location (only archivey's read is swapped).
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    monkeypatch.setattr(
+        zip_reader, "_end_rec_data", _end_rec_data_with_location(rebased)
+    )
+    raw = bytearray(_genuine_zip64_bytes())
+    cd = raw.index(b"PK\x01\x02")
+    cd_end = raw.index(b"PK\x06\x06")
+    body = cd_end - cd - 8
+    raw[cd:cd_end] = b"PK\x06\x08" + struct.pack("<I", body) + bytes([0xA5]) * body
+    with pytest.raises(UnsupportedFeatureError, match="central directory"):
+        open_archive(io.BytesIO(bytes(raw)))
+
+
+@_ZIP64_LOCATION_LAYOUTS
+def test_record_inside_a_damaged_zip64_directory_is_not_read_as_encryption(
+    rebased: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A damaged ZIP64 directory with an archive extra data record signature 76 bytes
+    # in: where the directory start lands if the ZIP64 record and locator are not
+    # subtracted on the pre-rebase layout. Those bytes are directory content, so this
+    # stays corruption.
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    monkeypatch.setattr(
+        zip_reader, "_end_rec_data", _end_rec_data_with_location(rebased)
+    )
+    raw = bytearray(_genuine_zip64_bytes(name=b"n" * 100))
+    cd = raw.index(b"PK\x01\x02")
+    raw[cd : cd + 4] = b"XXXX"
+    raw[cd + 76 : cd + 80] = b"PK\x06\x08"
+    with raises_corruption_not_truncation():
+        open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.ZIP)
 
 
 def test_record_at_the_stale_declared_offset_is_not_read_as_encryption() -> None:
@@ -1861,6 +2004,107 @@ def test_invalid_utf8_default_fallback_is_cp437_without_diagnostic() -> None:
     assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
 
 
+# Comments carry no encoding of their own: APPNOTE puts a member comment under the
+# same UTF-8 flag as its name, and the archive comment under none. An unflagged
+# comment therefore decodes as an unflagged name does.
+_CP1251_ARCHIVE_COMMENT = "Привет мир"
+_CP1251_MEMBER_COMMENT = "Ответ"
+
+
+def _commented_zip(archive_comment: bytes, member_comment: bytes) -> bytes:
+    """An ASCII-named member, so stdlib leaves the UTF-8 flag clear on it."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("a.txt")
+        info.comment = member_comment
+        z.writestr(info, b"x")
+        z.comment = archive_comment
+    assert zipfile.ZipFile(buf).infolist()[0].flag_bits & 0x800 == 0
+    return buf.getvalue()
+
+
+@requires_binary("zip")
+def test_unflagged_comments_decode_with_explicit_encoding(tmp_path: Path) -> None:
+    # Info-ZIP zip stores the comment bytes it reads as they are, with no flag.
+    path = tmp_path / "comments.zip"
+    (tmp_path / "a.txt").write_bytes(b"hi\n")
+    subprocess.run(["zip", "-q", path.name, "a.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["zip", "-q", "-z", path.name],
+        cwd=tmp_path,
+        input=_CP1251_ARCHIVE_COMMENT.encode("cp1251"),
+        check=True,
+    )
+    subprocess.run(
+        ["zip", "-q", "-c", path.name, "a.txt"],
+        cwd=tmp_path,
+        input=_CP1251_MEMBER_COMMENT.encode("cp1251") + b"\n",
+        check=True,
+    )
+    with zipfile.ZipFile(path) as z:
+        assert z.infolist()[0].flag_bits & 0x800 == 0
+        assert z.comment == _CP1251_ARCHIVE_COMMENT.encode("cp1251")
+    with open_archive(path, encoding="cp1251") as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
+        assert member.comment == _CP1251_MEMBER_COMMENT
+
+
+def test_unflagged_comments_take_the_configured_fallback() -> None:
+    data = _commented_zip(
+        _CP1251_ARCHIVE_COMMENT.encode("cp1251"),
+        _CP1251_MEMBER_COMMENT.encode("cp1251"),
+    )
+    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1251")
+    with open_archive(io.BytesIO(data), config=cfg) as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
+        assert member.comment == _CP1251_MEMBER_COMMENT
+
+
+def test_unflagged_comments_default_to_cp437() -> None:
+    data = _commented_zip(
+        _CP1251_ARCHIVE_COMMENT.encode("cp1251"),
+        _CP1251_MEMBER_COMMENT.encode("cp1251"),
+    )
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT.encode("cp1251").decode(
+            "cp437"
+        )
+        assert member.comment == _CP1251_MEMBER_COMMENT.encode("cp1251").decode("cp437")
+
+
+def test_unflagged_utf8_comments_win_over_explicit_encoding() -> None:
+    data = _commented_zip(
+        _CP1251_ARCHIVE_COMMENT.encode(), _CP1251_MEMBER_COMMENT.encode()
+    )
+    with open_archive(io.BytesIO(data), encoding="cp1251") as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
+        assert member.comment == _CP1251_MEMBER_COMMENT
+        # A comment is not a name: no name diagnostic is reported for it.
+        assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in ar.diagnostics.counts
+
+
+def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> None:
+    # stdlib sets the UTF-8 flag for a non-ASCII name; the flag covers the comment too.
+    # The comment bytes are not valid UTF-8, so the flagged reading (UTF-8, else cp437)
+    # and the unflagged one (UTF-8, else encoding=) differ.
+    stored = _CP1251_MEMBER_COMMENT.encode("cp1251")
+    path = tmp_path / "flagged.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        info = zipfile.ZipInfo("café.txt")
+        info.comment = stored
+        z.writestr(info, b"x")
+    with zipfile.ZipFile(path) as z:
+        assert z.infolist()[0].flag_bits & 0x800
+    with open_archive(path, encoding="cp1251") as ar:
+        (member,) = ar.members()
+    assert member.comment == stored.decode("cp437")
+    assert member.comment != _CP1251_MEMBER_COMMENT
+
+
 def test_encoding_inference_is_escalatable() -> None:
     # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
     # refuses to trust the guess can escalate it to an error.
@@ -1954,26 +2198,166 @@ def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> Non
         assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize(
-    "file_type", [stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK]
-)
-def test_unix_special_file_is_other(tmp_path: Path, file_type: int) -> None:
-    """A device, FIFO or socket is OTHER, as in TAR and ISO. unzip would write an
-    empty regular file; extraction refuses the member instead."""
-    path = tmp_path / "special.zip"
+_SPECIAL_FILE_TYPES = [
+    (stat.S_IFCHR, "char_device"),
+    (stat.S_IFBLK, "block_device"),
+    (stat.S_IFIFO, "fifo"),
+    (stat.S_IFSOCK, "socket"),
+]
+
+
+def _zip_with_special_entry(path: Path, file_type: int, data: bytes) -> None:
     with zipfile.ZipFile(path, "w") as zf:
-        for name, mode in (("dev", file_type | 0o644), ("f.txt", 0o100644)):
+        for name, mode, payload in (
+            ("dev", file_type | 0o644, data),
+            ("f.txt", 0o100644, b"data"),
+        ):
             info = zipfile.ZipInfo(name)
             info.create_system = 3
             info.external_attr = mode << 16
-            zf.writestr(info, b"xyz" if name == "dev" else b"data")
+            zf.writestr(info, payload)
+
+
+@pytest.mark.parametrize(("file_type", "special"), _SPECIAL_FILE_TYPES)
+def test_unix_special_file_without_data_is_other(
+    tmp_path: Path, file_type: int, special: str
+) -> None:
+    """A device, FIFO or socket that stores no data is OTHER, as in TAR and ISO. unzip
+    would write an empty regular file; extraction refuses the member instead, and
+    ``extra["special_file_type"]`` says what the archive called it (DR-25)."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, file_type, b"")
     with open_archive(path) as ar:
         types = {m.name: m.type for m in ar.members()}
         assert types == {"dev": MemberType.OTHER, "f.txt": MemberType.FILE}
-        assert ar.get("dev").size == 3  # the stored size, not zeroed
+        dev = ar.get("dev")
+        assert dev.size == 0
+        assert dev.extra["special_file_type"] == special
+        assert "special_file_type" not in ar.get("f.txt").extra
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in ar.diagnostics.counts
         ar.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "dev").exists()
     assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+@pytest.mark.parametrize(("file_type", "special"), _SPECIAL_FILE_TYPES)
+def test_unix_special_file_with_data_is_a_file(
+    tmp_path: Path, file_type: int, special: str
+) -> None:
+    """A special-mode entry that carries data is a FILE: its bytes are the content, as
+    unzip, 7-Zip, bsdtar and zipfile all deliver them. The stored type stays visible in
+    ``extra`` and the member carries MEMBER_SPECIAL_FILE_HAS_DATA (DR-25)."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, file_type, b"xyz")
+    with open_archive(path) as ar:
+        dev = ar.get("dev")
+        assert dev.type is MemberType.FILE
+        assert dev.size == 3
+        assert dev.extra["special_file_type"] == special
+        assert ar.read(dev) == b"xyz"
+        [diag] = [
+            d
+            for d in dev.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert diag.context.to_dict() == {
+            "kind": "special_file_data",
+            "archive_name": str(path),
+            "member_name": "dev",
+            "member_id": 0,
+            "special_file_type": special,
+            "size": 3,
+        }
+        assert special.replace("_", " ") in diag.message
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "dev").read_bytes() == b"xyz"
+    assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+def test_unknown_file_type_bits_with_data_name_an_unrecognized_type(
+    tmp_path: Path,
+) -> None:
+    """File-type bits no Unix type uses (``0o070000``) are special but nameless: the
+    key says ``"unknown"`` and the message says so in words."""
+    path = tmp_path / "odd.zip"
+    _zip_with_special_entry(path, 0o070000, b"xyz")
+    with open_archive(path) as ar:
+        dev = ar.get("dev")
+        assert dev.type is MemberType.FILE
+        assert dev.extra["special_file_type"] == "unknown"
+        [diag] = [
+            d
+            for d in dev.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert "marks it as an unrecognized file type and stores 3 bytes" in (
+            diag.message
+        )
+        assert ar.read(dev) == b"xyz"
+
+
+def test_a_directory_marker_over_a_special_mode_keeps_the_key(tmp_path: Path) -> None:
+    """The trailing ``/`` is structure and wins the type (DR-25); the FIFO mode is still
+    what the archive recorded, so ``extra["special_file_type"]`` records it on the
+    DIRECTORY, and the data advisory is for FILE members only."""
+    path = tmp_path / "dir-fifo.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("d/")
+        info.create_system = 3
+        info.external_attr = (0o010755 << 16) | 0x10
+        zf.writestr(info, b"")
+    with open_archive(path) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.DIRECTORY
+        assert member.extra["special_file_type"] == "fifo"
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+
+
+def test_special_file_with_data_is_not_refused_by_strict(tmp_path: Path) -> None:
+    """MEMBER_SPECIAL_FILE_HAS_DATA is advisory: a documented writer option produces
+    the shape (``zip -FI``), so strict does not refuse it."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, stat.S_IFIFO, b"xyz")
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(path, config=config) as ar:
+        assert ar.read("dev") == b"xyz"
+
+
+@requires_binary("zip")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_info_zip_fifo_content_reads_as_a_file(tmp_path: Path) -> None:
+    """Info-ZIP's ``zip -FI`` reads a named pipe and stores its content under the pipe's
+    own FIFO mode. Every mainstream extractor writes the bytes as a regular file, and
+    libarchive carries a workaround for exactly this shape; so does archivey (DR-25)."""
+    src = tmp_path / "src"
+    src.mkdir()
+    fifo = src / "pipe1"
+    os.mkfifo(fifo)
+    archive = tmp_path / "fifo.zip"
+    # The producer thread blocks in open() until zip opens the pipe for reading.
+    feeder = threading.Thread(
+        target=fifo.write_bytes, args=(b"hello from fifo\n",), daemon=True
+    )
+    feeder.start()
+    try:
+        subprocess.run(
+            ["zip", "-q", "-FI", str(archive), "pipe1"],
+            cwd=src,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        feeder.join(timeout=30)
+    with open_archive(archive) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.FILE
+        assert member.extra["special_file_type"] == "fifo"
+        assert member.size == 16
+        assert ar.read(member) == b"hello from fifo\n"
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "pipe1").read_bytes() == b"hello from fifo\n"
 
 
 def test_device_bits_from_a_non_unix_writer_are_ignored(tmp_path: Path) -> None:

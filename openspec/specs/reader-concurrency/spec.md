@@ -32,7 +32,7 @@ honored on every format; `AccessCost` / `solid_block_count` only describe
 expense.
 
 **Post-materialization worker seam.** After one owner has completed `members()`
-or `scan_members()` and the reader has published its member list/name index,
+or `members_report()` and the reader has published its member list/name index,
 concurrent calls from multiple threads to `open(member_or_name)` SHALL be
 supported. Streams from different opens SHALL have independent logical
 positions/state: workers MAY concurrently call `read`, `readinto`, and `close`
@@ -74,18 +74,18 @@ redundant decompression.
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
 `stream_members`, `extract_all`) and `members_report_if_available` initialization
 remain single-owner and cannot overlap one another or the random worker seam. Under
-`CONCURRENT`, first-touch materialization through `members()`, `members_report()` or
-`scan_members()` is coordinated (wait/share) and `reader.close()` drains
-in-flight worker calls rather than rejecting them. The base reader SHALL
-represent ownership with an explicit unforgeable root token, not thread
-identity. Private helpers MAY receive that token to enter child scopes:
-materialization may perform link-data reads; a random worker `open()` may do
-name lookup/link following and late link-data reads; `extract_all` may inspect
-available members/source counters and drive one or more `stream_members`
-passes; and a pass may advance and perform I/O/close on its yielded stream. An
-unrelated/reentrant public call has no token even on the owner thread and is
-rejected. The later conflicting operation SHALL raise `ArchiveyUsageError`
-before changing state; the earlier root and children remain usable.
+`CONCURRENT`, first-touch materialization through `members()` or `members_report()`
+is coordinated (wait/share) and `reader.close()` drains in-flight worker calls
+rather than rejecting them. The base reader SHALL represent ownership with an
+explicit unforgeable root token, not thread identity. Private helpers MAY receive
+that token to enter child scopes: materialization may perform link-data reads; a
+random worker `open()` may do name lookup/link following and late link-data reads;
+`extract_all` may inspect available members/source counters and drive one or more
+`stream_members` passes; and a pass may advance and perform I/O/close on its
+yielded stream. An unrelated/reentrant public call has no token even on the owner
+thread and is rejected. The later conflicting operation SHALL raise
+`ArchiveyUsageError` before changing state; the earlier root and children remain
+usable.
 
 Random `open()` and each operation on a random-open stream SHALL hold a
 short-lived worker token only while that call executes. An idle open stream owns
@@ -102,14 +102,27 @@ This is not a blanket thread-safety guarantee for every reader method.
 
 **`stream_members()` is separate.** A `stream_members()` pass owns the reader's
 one-pass data path. It MUST NOT overlap random `open()` work or any other
-forward/data pass. Advancing the iterator closes/invalidates the previously
-yielded stream before yielding the next; this iterator-owned lifecycle does not
-apply to independent streams returned by random `open()`. The yielded stream
-carries a child scope so its I/O is permitted during the pass. Exhaustion,
-exceptions, explicit generator close, and generator abandonment/finalization
-SHALL close the current yielded stream and release the pass scope/token exactly
-once. A caller needing simultaneous streams SHALL materialize and use random
-`open()`.
+forward/data pass. Advancing the iterator closes/invalidates the previously yielded
+stream before yielding the next; this iterator-owned lifecycle does not apply to
+independent streams returned by random `open()`. The yielded stream carries a child
+scope so its I/O is permitted during the pass. Exhaustion, exceptions, explicit
+generator close, and generator abandonment/finalization SHALL close the current
+yielded stream and release the pass scope/token exactly once. While the generator is
+suspended at a yield the pass is not executing, so `reader.close()` does not refuse:
+it closes the reader, winds the backend's pass down (last yielded stream, then
+pass-scoped resources), closes any other open member stream, and only then tears the
+archive down, holding a lease from the close transition until the member streams are
+closed, so no stream close can start teardown early. Teardown runs even when the
+wind-down fails, and the failure then propagates out of whatever finished the step. A
+`close()` interrupted inside that step (`KeyboardInterrupt`) leaves it to the next
+`close()`, or, when none comes, to the generator's own close or finalization; a
+concurrent `close()` that returned while another was in the step does not stop either.
+A failure in a step finished that way comes out of that `close()`, out of the
+generator's own `close()`, or, when the collected generator finished it, through
+`sys.unraisablehook`: the caller sees nothing. Resuming the
+generator then raises `ArchiveyUsageError` (maintainer's ruling, 2026-10-10). A pass
+that is executing still makes a non-`CONCURRENT` `close()` raise. A caller needing
+simultaneous streams SHALL materialize and use random `open()`.
 
 **Cost is informational.** `AccessCost.SOLID` / `solid_block_count` tell callers
 that simultaneous random streams may repeat decompression. They never disable
@@ -305,4 +318,7 @@ prevent final teardown from racing each call.
 | Lazy first I/O → `_open_member` raises | Translated error; lease released; later I/O → closed-stream `ValueError`; close no-op |
 | Teardown raises on explicit/final-stream close | Closer irrevocably closed; error once; `TEARDOWN_COMPLETE`; no retry |
 | Inner-close + teardown both fail on final member close | Lease/state released once; `ExceptionGroup` of both |
+| `close()` under a suspended `stream_members()` pass: wind-down + member-stream close both fail | Both steps run; teardown runs; `ExceptionGroup` of both ("winding down the pass and closing member streams both failed") |
+| `close()` under a suspended `stream_members()` pass: wind-down (or member-stream close) + teardown both fail | Teardown runs once; `TEARDOWN_COMPLETE`; `ExceptionGroup` of the close-time failure and the teardown failure ("close-time cleanup and archive teardown both failed") |
+| `close()` under a suspended `stream_members()` pass interrupted inside its wind-down step | `READER_CLOSED`; the next `close()`, or else closing or collecting the pass generator, finishes the step; pass wound down once; `TEARDOWN_COMPLETE`; source closed. A failure in the recovered step or its teardown comes out of that `close()`, out of the generator's `close()`, or, for a collected generator, through `sys.unraisablehook` |
 | Idle leased stream after `reader.close()` | Later stream I/O via lease-bound worker entry until stream close |

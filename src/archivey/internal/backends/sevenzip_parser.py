@@ -24,8 +24,7 @@ Plain header (property-tagged nesting)::
 
 Call graph: ``read_signature_and_next_header`` → ``parse_header_block`` → (maybe
 ``EncodedHeader``) → ``materialize_archive``. End-to-end open with encoded-header
-decode lives in :func:`sevenzip_pipeline.parse_sevenzip_archive` /
-:class:`SevenZipReader`.
+decode lives in :func:`sevenzip_reader.load_sevenzip_archive`.
 
 In-memory header walking uses a byte cursor over ``memoryview`` (not ``BytesIO``);
 ``read_signature_and_next_header`` stays on the real file stream.
@@ -124,6 +123,9 @@ class _Property(IntEnum):
     ENCODED_HEADER = 0x17
     START_POS = 0x18
     DUMMY = 0x19
+
+
+_PROPERTY_IDS = frozenset(_Property)
 
 
 @dataclass(slots=True)
@@ -268,6 +270,9 @@ class SevenZipArchive:
     is_solid: bool
     is_header_encrypted: bool
     has_encrypted_folders: bool
+    #: Signature-relative end of the archive: the later of the next header's end and
+    #: the end of the last packed stream, an encoded header's own streams included.
+    end_offset: int
 
 
 @dataclass(slots=True)
@@ -324,6 +329,10 @@ class SignatureInfo:
     major_version: int
     minor_version: int
     header_data: bytes  # empty when nextHeaderSize == 0
+    # The end of the next header, counted from the signature header. The archive ends
+    # here or at its last packed stream, whichever is later (the reader takes the max
+    # once the header has parsed).
+    end_offset: int
 
 
 @dataclass(slots=True)
@@ -382,7 +391,8 @@ def _require_folder_graph_count(count: int, limit: int, what: str) -> None:
 def _require_header_count(count: int, header_size: int, what: str) -> None:
     if count > header_size:
         raise CorruptionError(
-            f"7z {what} count {count} exceeds the {header_size}-byte header"
+            f"7z {what} count {count} exceeds the {header_size}-byte header "
+            f"(each item needs at least one byte of metadata)"
         )
 
 
@@ -627,7 +637,12 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
         # crc32(b"") is 0, so this is the only value an empty next header can carry.
         if fields.next_header_crc != crc32(b""):
             raise CorruptionError("7z empty next-header CRC mismatch")
-        return SignatureInfo(fields.major_version, fields.minor_version, b"")
+        return SignatureInfo(
+            fields.major_version,
+            fields.minor_version,
+            b"",
+            SIGNATURE_HEADER_SIZE + fields.next_header_offset,
+        )
 
     try:
         fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
@@ -638,7 +653,12 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     header_data = _read_stream_exact(fp, fields.next_header_size, "7z next header")
     if crc32(header_data) != fields.next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
-    return SignatureInfo(fields.major_version, fields.minor_version, header_data)
+    return SignatureInfo(
+        fields.major_version,
+        fields.minor_version,
+        header_data,
+        SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size,
+    )
 
 
 def parse_header_block(
@@ -649,6 +669,10 @@ def parse_header_block(
     ``max_members`` is ``ListingLimits.max_members`` from the reader config
     (``None`` disables). Omitting it applies the ``ListingLimits`` default, as the
     RAR parser's entry points do; header size still bounds bombs either way.
+
+    An undefined first property ID here is ``UnsupportedFeatureError``, as it may be a
+    future 7z feature; ``parse_decoded_header`` makes the same bytes a
+    ``CorruptionError``, because a decoded blob can only be damage or a wrong key.
     """
     if not header_data:
         return PlainHeader(_StreamsInfo(), [], None)
@@ -656,12 +680,63 @@ def parse_header_block(
     cur = _Cursor(header_data)
     prop = _read_property(cur, "7z header")
     if prop == _Property.END:
+        _require_header_consumed(cur)
         return PlainHeader(_StreamsInfo(), [], None)
     if prop == _Property.HEADER:
         return _parse_plain_header(cur, max_members=max_members)
     if prop != _Property.ENCODED_HEADER:
         raise CorruptionError(f"Expected 7z HEADER or ENCODED_HEADER, got 0x{prop:02x}")
-    return EncodedHeader(_read_streams_info(cur, max_members=max_members))
+    encoded = EncodedHeader(_read_streams_info(cur, max_members=max_members))
+    _require_header_consumed(cur)
+    return encoded
+
+
+def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHeader:
+    """Parse the plaintext that one encoded-header layer decoded to.
+
+    7-Zip requires ``kHeader`` here (7zIn.cpp, ReadDatabase2). Empty output or a bare
+    ``kEnd`` would otherwise parse as an archive with no members, and a second
+    ``kEncodedHeader`` is hostile (a COPY payload that is itself; O14).
+
+    The first property ID is judged before the body is parsed, so a nested encoded
+    header with a malformed body is still this ``CorruptionError`` and not the error
+    its body would raise (an unknown ID, or the listing limit).
+    """
+    kind: _Property | None = None
+    if decoded:
+        try:
+            kind = _read_property(_Cursor(decoded), "7z header")
+        except UnsupportedFeatureError:
+            kind = None  # an unknown ID is not kHeader either
+    if kind == _Property.ENCODED_HEADER:
+        raise CorruptionError("Encoded 7z header decoded to another encoded header")
+    if kind != _Property.HEADER:
+        raise CorruptionError("Encoded 7z header did not decode to a 7z HEADER")
+    block = parse_header_block(decoded, max_members=max_members)
+    assert isinstance(block, PlainHeader)
+    return block
+
+
+def _require_header_consumed(cur: _Cursor) -> None:
+    """Refuse bytes after the header's final ``kEnd``.
+
+    7-Zip reports them as a headers error. Without this check, ``kHeader kEnd``
+    followed by any bytes lists as an empty archive.
+    """
+    if cur.remaining():
+        raise CorruptionError(f"7z header has {cur.remaining()} bytes after its END")
+
+
+def packed_streams_end(streams: _StreamsInfo) -> int:
+    """Where a header's packed streams end, counted from the signature header.
+
+    Packed streams are contiguous from ``pack_pos``. 7-Zip writes them before the next
+    header, but the format allows them after it, so the archive's end is the later of
+    the two. An ``ADDITIONAL_STREAMS_INFO`` block's pack data is not counted: the
+    parser skips that block, and no writer we know of emits one. Were one placed after
+    the next header, its bytes would be reported as trailing data.
+    """
+    return SIGNATURE_HEADER_SIZE + streams.pack_pos + sum(streams.pack_sizes or [])
 
 
 def materialize_archive(
@@ -669,8 +744,13 @@ def materialize_archive(
     plain: PlainHeader,
     *,
     is_header_encrypted: bool = False,
+    encoded_streams_end: int = 0,
 ) -> SevenZipArchive:
-    """Build the final archive object from a fully decoded plain header."""
+    """Build the final archive object from a fully decoded plain header.
+
+    ``encoded_streams_end`` is :func:`packed_streams_end` of the encoded header the
+    plain header was decoded from, if any; it counts toward ``end_offset``.
+    """
     streams = plain.streams
     pack_sizes = streams.pack_sizes or []
     pack_positions = streams.pack_positions or _pack_positions(pack_sizes)
@@ -703,6 +783,9 @@ def materialize_archive(
         is_solid=any(n > 1 for n in num_unpackstreams_folders),
         is_header_encrypted=is_header_encrypted,
         has_encrypted_folders=any(folder_is_encrypted(folder) for folder in folders),
+        end_offset=max(
+            signature.end_offset, packed_streams_end(streams), encoded_streams_end
+        ),
     )
 
 
@@ -723,40 +806,38 @@ def empty_archive(signature: SignatureInfo) -> SevenZipArchive:
         is_solid=False,
         is_header_encrypted=False,
         has_encrypted_folders=False,
+        end_offset=signature.end_offset,
     )
 
 
-def encoded_folder_slices(
+def encoded_header_slice(
     encoded: EncodedHeader,
-) -> list[tuple[SevenZipFolder, int, int, int]]:
-    """Return ``(folder, absolute_offset, compressed_size, uncompressed_size)`` slices.
+) -> tuple[SevenZipFolder, int, int, int]:
+    """Return ``(folder, absolute_offset, compressed_size, uncompressed_size)``.
 
-    Offsets are absolute from the start of the archive file.
+    The offset is absolute from the start of the archive file. An encoded header has
+    exactly one folder. 7-Zip writes one, and refuses more than one (7zIn.cpp,
+    ReadDatabase2, ``dataVector.Size() > 1``). Zero folders is refused here under
+    DR-1, as an empty header must not list as an empty archive; the 7-Zip binary
+    also refuses that shape ("Headers Error"), though not at that check.
     """
     streams = encoded.streams
     folders = streams.folders or []
-    pack_sizes = streams.pack_sizes or []
-    pack_positions = streams.pack_positions or _pack_positions(pack_sizes)
-    pack_stream_index = 0
-    slices: list[tuple[SevenZipFolder, int, int, int]] = []
-
-    for folder in folders:
-        pack_count = len(folder.packed_indices)
-        if pack_count != 1:
-            raise UnsupportedFeatureError(
-                "Encoded 7z headers with multi-pack folders are not supported"
-            )
-        if pack_stream_index >= len(pack_sizes):
-            raise CorruptionError("Encoded 7z header references a missing pack stream")
-
-        compressed_size = pack_sizes[pack_stream_index]
-        uncompressed_size = folder_unpack_size(folder)
-        absolute_offset = (
-            SIGNATURE_HEADER_SIZE + streams.pack_pos + pack_positions[pack_stream_index]
+    if len(folders) != 1:
+        raise CorruptionError(
+            f"Encoded 7z header has {len(folders)} folders; it must have exactly one"
         )
-        slices.append((folder, absolute_offset, compressed_size, uncompressed_size))
-        pack_stream_index += pack_count
-    return slices
+    (folder,) = folders
+    if len(folder.packed_indices) != 1:
+        raise UnsupportedFeatureError(
+            "Encoded 7z headers with multi-pack folders are not supported"
+        )
+    pack_sizes = streams.pack_sizes or []
+    if not pack_sizes:
+        raise CorruptionError("Encoded 7z header references a missing pack stream")
+    pack_positions = streams.pack_positions or _pack_positions(pack_sizes)
+    absolute_offset = SIGNATURE_HEADER_SIZE + streams.pack_pos + pack_positions[0]
+    return folder, absolute_offset, pack_sizes[0], folder_unpack_size(folder)
 
 
 def folder_unpack_size(folder: SevenZipFolder) -> int:
@@ -790,7 +871,6 @@ def compression_method_for_coder(coder: SevenZipCoder) -> CompressionMethod:
     return CompressionMethod(algo, properties=coder.properties)
 
 
-# Re-export for callers that historically imported these from the parser.
 __all__ = [
     "MAGIC_7Z",
     "MAX_NEXT_HEADER_SIZE",
@@ -808,13 +888,14 @@ __all__ = [
     "check_bind_pairs",
     "check_packed_indices",
     "compression_method_for_coder",
-    "crc32",
     "empty_archive",
-    "encoded_folder_slices",
+    "encoded_header_slice",
     "find_signature_offset",
     "folder_is_encrypted",
     "folder_unpack_size",
     "materialize_archive",
+    "packed_streams_end",
+    "parse_decoded_header",
     "parse_header_block",
     "read_signature_and_next_header",
     "unpack_signature_header",
@@ -829,6 +910,7 @@ def _parse_plain_header(cur: _Cursor, *, max_members: int | None) -> PlainHeader
     while True:
         prop = _read_property(cur, "7z plain header")
         if prop == _Property.END:
+            _require_header_consumed(cur)
             return PlainHeader(streams, files, comment)
         if prop == _Property.ARCHIVE_PROPERTIES:
             _skip_archive_properties(cur)
@@ -848,6 +930,8 @@ def _parse_plain_header(cur: _Cursor, *, max_members: int | None) -> PlainHeader
 
 def _read_streams_info(cur: _Cursor, *, max_members: int | None) -> _StreamsInfo:
     streams = _StreamsInfo()
+    # Strict at this level, as 7-Zip's ReadStreamsInfo is: it skips no unknown ID
+    # here, only inside the three sections (see _read_section_property).
     prop = _read_property(cur, "7z streams info")
 
     if prop == _Property.PACK_INFO:
@@ -856,13 +940,13 @@ def _read_streams_info(cur: _Cursor, *, max_members: int | None) -> _StreamsInfo
         # Coder-graph quantity, not a member count (BCJ2 has four per folder).
         _require_header_count(num_streams, len(cur.buf), "pack stream")
         pack_sizes: list[int] | None = None
-        prop = _read_property(cur, "7z PACK_INFO")
+        prop = _read_section_property(cur, "7z PACK_INFO")
         if prop == _Property.SIZE:
             pack_sizes = [cur.uint64() for _ in range(num_streams)]
-            prop = _read_property(cur, "7z PACK_INFO")
+            prop = _read_section_property(cur, "7z PACK_INFO")
         if prop == _Property.CRC:
             _read_digests(cur, num_streams)
-            prop = _read_property(cur, "7z PACK_INFO")
+            prop = _read_section_property(cur, "7z PACK_INFO")
         if prop != _Property.END:
             raise CorruptionError(f"Expected END in 7z PACK_INFO, got 0x{prop:02x}")
         pack_sizes = pack_sizes or []
@@ -899,7 +983,7 @@ def _read_streams_info(cur: _Cursor, *, max_members: int | None) -> _StreamsInfo
 
 
 def _read_unpack_info(cur: _Cursor, *, max_members: int | None) -> list[SevenZipFolder]:
-    prop = _read_property(cur, "7z UNPACK_INFO")
+    prop = _read_section_property(cur, "7z UNPACK_INFO")
     if prop != _Property.FOLDER:
         raise CorruptionError(f"Expected FOLDER in 7z UNPACK_INFO, got 0x{prop:02x}")
 
@@ -912,7 +996,7 @@ def _read_unpack_info(cur: _Cursor, *, max_members: int | None) -> list[SevenZip
         )
 
     folders = [_read_folder(cur) for _ in range(num_folders)]
-    prop = _read_property(cur, "7z UNPACK_INFO")
+    prop = _read_section_property(cur, "7z UNPACK_INFO")
     if prop != _Property.CODERS_UNPACK_SIZE:
         raise CorruptionError(
             f"Expected CODERS_UNPACK_SIZE in 7z UNPACK_INFO, got 0x{prop:02x}"
@@ -925,13 +1009,13 @@ def _read_unpack_info(cur: _Cursor, *, max_members: int | None) -> list[SevenZip
             for _ in range(coder.num_out_streams)
         ]
 
-    prop = _read_property(cur, "7z UNPACK_INFO")
+    prop = _read_section_property(cur, "7z UNPACK_INFO")
     if prop == _Property.CRC:
         defined, crcs = _read_digests(cur, len(folders))
         for index, folder in enumerate(folders):
             folder.digest_defined = defined[index]
             folder.crc = crcs[index]
-        prop = _read_property(cur, "7z UNPACK_INFO")
+        prop = _read_section_property(cur, "7z UNPACK_INFO")
 
     if prop != _Property.END:
         raise CorruptionError(f"Expected END in 7z UNPACK_INFO, got 0x{prop:02x}")
@@ -1028,7 +1112,7 @@ def _read_substreams_info(
     *,
     max_members: int | None,
 ) -> tuple[list[int], list[int], list[int | None]]:
-    prop = _read_property(cur, "7z SUBSTREAMS_INFO")
+    prop = _read_section_property(cur, "7z SUBSTREAMS_INFO")
     if prop == _Property.NUM_UNPACK_STREAM:
         # Remaining bytes do not bound this field: kSize/kCRC may be absent,
         # and the else branch does ``digests.extend([None] * count)`` with no
@@ -1050,7 +1134,7 @@ def _read_substreams_info(
                 total_unpack_streams, header_size, max_members, "unpack stream"
             )
             num_unpackstreams_folders.append(count)
-        prop = _read_property(cur, "7z SUBSTREAMS_INFO")
+        prop = _read_section_property(cur, "7z SUBSTREAMS_INFO")
     else:
         num_unpackstreams_folders = [1] * len(folders)
 
@@ -1070,7 +1154,7 @@ def _read_substreams_info(
                         "7z substream sizes exceed folder unpack size"
                     )
                 unpack_sizes.append(last_size)
-        prop = _read_property(cur, "7z SUBSTREAMS_INFO")
+        prop = _read_section_property(cur, "7z SUBSTREAMS_INFO")
     else:
         for folder_index, folder in enumerate(folders):
             count = num_unpackstreams_folders[folder_index]
@@ -1102,7 +1186,7 @@ def _read_substreams_info(
                         crcs[digest_index] if defined[digest_index] else None
                     )
                     digest_index += 1
-        prop = _read_property(cur, "7z SUBSTREAMS_INFO")
+        prop = _read_section_property(cur, "7z SUBSTREAMS_INFO")
     else:
         for folder_index, folder in enumerate(folders):
             count = num_unpackstreams_folders[folder_index]
@@ -1120,20 +1204,11 @@ def _read_files_info(
     cur: _Cursor, *, max_members: int | None
 ) -> tuple[list[SevenZipFileRecord], str | None]:
     num_files = cur.uint64()
-    # Bound the file count against the header size before pre-allocating one object per
-    # claimed file. See threat-model O1 / review L1. CRC does NOT make the header
-    # trustworthy: an attacker crafting the archive computes a matching CRC.
-    header_size = len(cur.buf)
-    if num_files > header_size:
-        raise CorruptionError(
-            f"7z file count {num_files} exceeds the {header_size}-byte header "
-            f"(each file needs at least one byte of metadata)"
-        )
-    if max_members is not None and num_files > max_members:
-        raise ResourceLimitError(
-            f"Listing limit reached: max_members={max_members} "
-            f"(7z header claims {num_files} files)"
-        )
+    # Bound the file count against the header size and the listing budget before
+    # pre-allocating one object per claimed file. See threat-model O1 / review L1.
+    # CRC does NOT make the header trustworthy: an attacker crafting the archive
+    # computes a matching CRC.
+    _require_member_scaled_count(num_files, len(cur.buf), max_members, "file")
     files = [_FileProps() for _ in range(num_files)]
     num_empty_streams = 0
     comment: str | None = None
@@ -1403,7 +1478,7 @@ def _folder_compressed_sizes(
     for folder in folders:
         pack_count = len(folder.packed_indices)
         if pack_index + pack_count > len(pack_sizes):
-            # Same verdict as encoded_folder_slices: a folder naming pack streams
+            # Same verdict as encoded_header_slice: a folder naming pack streams
             # the PackInfo does not hold is corrupt, not "compressed size unknown".
             raise CorruptionError("7z header references a missing pack stream")
         sizes.append(sum(pack_sizes[pack_index : pack_index + pack_count]))
@@ -1422,7 +1497,10 @@ def _pack_positions(pack_sizes: list[int]) -> list[int]:
 
 def _skip_archive_properties(cur: _Cursor) -> None:
     while True:
-        prop = _read_property(cur, "7z archive properties")
+        # A number, as in FILES_INFO: 7-Zip skips every archive property by its size
+        # (7zIn.cpp, ReadArchiveProperties), so an ID it does not know is no reason to
+        # refuse the archive.
+        prop = cur.uint64()
         if prop == _Property.END:
             return
         size = cur.uint64()
@@ -1480,19 +1558,20 @@ def _read_boolean(cur: _Cursor, count: int, *, check_all: bool = False) -> list[
     return result
 
 
-def _read_utf16(cur: _Cursor) -> str:
-    """Read one null-terminated UTF-16LE string.
+def _read_section_property(cur: _Cursor, context: str) -> _Property:
+    """Read a property ID inside PACK_INFO, UNPACK_INFO or SUBSTREAMS_INFO.
 
-    Unused on the current ``kName`` path (prefer :func:`_decode_utf16_names`); kept
-    as a single-name helper for tests / future properties.
+    7-Zip reads the ID as a number and skips an ID it does not know by its size
+    (7zIn.cpp: ``WaitId`` and the ``SkipData()`` that ends each of ReadPackInfo,
+    ReadUnpackInfo and ReadSubStreamsInfo), as FILES_INFO does here. A known ID out of
+    place is still refused by the caller. ``cur.slice`` bounds the skipped payload by
+    the header buffer.
     """
-    chunks = bytearray()
-    for _ in range(_MAX_UTF16_CHARS):
-        unit = cur.read(2, "7z UTF-16 name")
-        if unit == b"\x00\x00":
-            return bytes(chunks).decode("utf-16le", errors="surrogatepass")
-        chunks.extend(unit)
-    raise CorruptionError("7z UTF-16 string is not null-terminated")
+    while True:
+        value = cur.uint64()
+        if value in _PROPERTY_IDS:
+            return _Property(value)
+        cur.slice(cur.uint64(), f"{context} property payload")
 
 
 def _read_property(cur: _Cursor, context: str) -> _Property:

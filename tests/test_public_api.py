@@ -278,9 +278,9 @@ def test_niche_names_live_only_in_their_submodule() -> None:
     )
     assert unlisted == []
     contexts = [name for name in archivey.diagnostics.__all__ if is_payload(name)]
-    # The 17 payload classes the module defines; update the count when one is added
+    # The 18 payload classes the module defines; update the count when one is added
     # or removed, so the loop below cannot pass on a shrunken list.
-    assert len(contexts) == 17, contexts
+    assert len(contexts) == 18, contexts
     for name in [*contexts, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE"]:
         assert not hasattr(archivey, name), name
     assert archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE > 0

@@ -51,7 +51,9 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     disk_spelled,
+    numbered_name,
     reroot_absolute,
+    resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
@@ -94,6 +96,20 @@ _DRY_RUN_PREFIX = "archivey-dry-run-"
 # on POSIX.
 _WINDOWS = os.name == "nt"
 
+
+def _dir_mode_as_stored(mode: int) -> int:
+    """The mode ``os.stat`` reports for a directory after ``os.chmod(path, mode)``.
+
+    On Windows a mode carries only the read-only attribute, taken from the owner-write
+    bit, and ``os.stat`` reports a directory as ``0o777`` or, read-only, ``0o555``.
+    Comparing the member's mode as given would report every existing directory as
+    having kept its mode there (``0o755`` against ``0o777``) when applying the
+    member's would have changed nothing."""
+    if not _WINDOWS:
+        return mode
+    return 0o777 if mode & stat.S_IWUSR else 0o555
+
+
 # Win32 error codes matched on ``OSError.winerror``, which exists only on Windows.
 _ERROR_INVALID_NAME = 123
 _ERROR_FILENAME_EXCED_RANGE = 206
@@ -127,13 +143,13 @@ def _at_link_limit(exc: OSError) -> bool:
 def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
     """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
 
-    Resolved through the real filesystem, so links on the way are followed. A
-    cyclic or adversarial link makes ``resolve()`` raise ELOOP or ``RuntimeError``,
-    which counts as an escape: fail safe rather than crash.
+    Resolved through the real filesystem, so links on the way are followed. A link
+    that cannot be resolved counts as an escape: fail safe rather than crash. That
+    includes a symlink loop, on every Python version (``resolve_or_raise_on_loop``).
     """
     try:
-        resolved = (link_path.parent / target).resolve()
-    except (OSError, RuntimeError):
+        resolved = resolve_or_raise_on_loop(link_path.parent / target)
+    except OSError:
         return True
     return not (resolved == dest_root or resolved.is_relative_to(dest_root))
 
@@ -904,8 +920,8 @@ class ExtractionCoordinator:
             return self._run(reader, dest)
         given = Path(os.path.abspath(dest))
         try:
-            resolved = given.resolve()
-        except (OSError, RuntimeError):
+            resolved = resolve_or_raise_on_loop(given)
+        except OSError:
             resolved = given
         # Resolved, so a path built from the resolved root (``dest_root``) and one built
         # from ``dest`` translate the same way (macOS's /var -> /private/var). The pass
@@ -1027,7 +1043,7 @@ class ExtractionCoordinator:
                 unmatched_pending = selector
         # Created only after that report, so a refusal leaves no directory behind.
         created_root = self._ensure_dest_root(dest)
-        dest_root = dest.resolve()
+        dest_root = resolve_or_raise_on_loop(dest)
         members_total = len(all_members) if all_members is not None else None
         self._state = _RunState(
             dest=dest,
@@ -1803,7 +1819,7 @@ class ExtractionCoordinator:
                 # the same rule as --no-overwrite-dir.
                 wanted = self._effective_mode(transformed)
                 current = stat.S_IMODE(os.stat(dest_path).st_mode)
-                if wanted is not None and wanted != current:
+                if wanted is not None and _dir_mode_as_stored(wanted) != current:
                     kept_mode = current
             else:
                 self._defer_directory_metadata(dest_path, transformed)
@@ -2077,8 +2093,8 @@ class ExtractionCoordinator:
         if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
-                resolved = os.fspath(Path(parent).resolve())
-            except (OSError, RuntimeError):
+                resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
+            except OSError:
                 return None
             prefix = root if root.endswith(os.sep) else root + os.sep
             if os.path.normcase(resolved) == os.path.normcase(root):
@@ -2132,9 +2148,8 @@ class ExtractionCoordinator:
     def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
 
-        The counter goes before the final suffix so the extension is preserved
-        (``photo.jpg`` → ``photo (1).jpg``); a directory has no suffix and appends to the
-        whole segment.
+        :func:`numbered_name` spells each candidate (``photo.jpg`` → ``photo (1).jpg``),
+        the same spelling the CLI's single-root hoist uses.
 
         The search resumes after the last ``N`` this run handed out for the same
         collision key, rather than starting at 1 each time: restarting made ``k``
@@ -2145,15 +2160,12 @@ class ExtractionCoordinator:
         deterministic, which is what the spec asks. ``_release_claim`` resets the
         counters, so a name freed by an anti-item is found again."""
         parent = requested.parent
-        if transformed.type == MemberType.DIRECTORY:
-            stem, suffix = requested.name, ""
-        else:
-            stem, suffix = requested.stem, requested.suffix
+        is_dir = transformed.type == MemberType.DIRECTORY
         rename_next = self._state.rename_next
         counter_key = self._collision_key(requested)
         n = rename_next.get(counter_key, 1)
         while True:
-            candidate = parent / f"{stem} ({n}){suffix}"
+            candidate = parent / numbered_name(requested.name, n, is_dir=is_dir)
             candidate_key = self._collision_key(candidate)
             if candidate_key not in self._state.collision_map and not self._occupied(
                 candidate
@@ -2385,12 +2397,12 @@ class ExtractionCoordinator:
         # escape the planning check cannot see. We can't do this "just before" creating the
         # link because there is no link to resolve until it exists; and resolving the *bare
         # target string* would only repeat check_universal. So: create, resolve, and unlink
-        # if it escaped. A cyclic/adversarial link makes resolve() raise ELOOP/RuntimeError,
-        # which we also treat as an escape (fail safe rather than crash). This is the third
-        # of the three defense-in-depth layers named in the `safe-extraction` spec
-        # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
-        # check_universal. A *later* member can still change what this link resolves
-        # to; the caller records the link in ``links`` for that.
+        # if it escaped. A link that cannot be resolved, a symlink loop included on
+        # every Python version, also counts as an escape (fail safe rather than crash).
+        # This is the third of the three defense-in-depth layers named in the
+        # `safe-extraction` spec ("Symlink Escape Re-Validated at Extraction Time");
+        # layers 1-2 are in check_universal. A *later* member can still change what
+        # this link resolves to; the caller records the link in ``links`` for that.
         if _symlink_escapes(dest_path, on_disk, self._state.dest_root):
             try:
                 dest_path.unlink()
@@ -2438,10 +2450,13 @@ class ExtractionCoordinator:
             )
 
         if source.member_id in self._state.source_paths:
+            # Taken before ``_make_room``: under REPLACE a link can land on one of its
+            # own source's paths, which ``_make_room`` then forgets.
+            candidates = list(self._state.source_paths[source.member_id])
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
-            self._place_link(source.member_id, dest_path, transformed)
+            self._place_link(source.member_id, candidates, dest_path, transformed)
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
@@ -2698,11 +2713,17 @@ class ExtractionCoordinator:
             orphan.report_stored_spelling(exc)
             raise
         try:
+            # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link
+            # of the group that failed after its ``_make_room`` can have taken the
+            # last path; ``_place_link`` then fails this link as well. No archive
+            # reaches that alone: the earlier link has to fail in ``os.link`` or
+            # ``os.replace``, which needs the filesystem to change under the run.
+            candidates = list(self._state.source_paths.get(source_id, ()))
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
-                self._place_link(source_id, resolved, orphan.transformed)
+                self._place_link(source_id, candidates, resolved, orphan.transformed)
                 self._state.written_paths.add(resolved)
                 result = ExtractionResult(
                     orphan.original, resolved, ExtractionStatus.EXTRACTED, None
@@ -3237,17 +3258,22 @@ class ExtractionCoordinator:
                 emit_progress()
 
     def _place_link(
-        self, source_id: int, new_path: Path, member: ArchiveMember
+        self,
+        source_id: int,
+        candidates: list[Path],
+        new_path: Path,
+        member: ArchiveMember,
     ) -> None:
-        """Create ``new_path`` as a hardlink to the source's content, trying the recorded
-        on-disk paths newest first; when none takes the link for a reason of its own
-        (see ``_link_refused_here``), copy from an existing path. Appends ``new_path``
-        so a later same-device link can reuse it — which is what keeps a fan-out across
-        one device boundary to a single copy per device rather than one per link, and a
-        fan-out past the link-count limit to one copy per full file. When
-        ``new_path`` already named the source's file, the append does not record it
-        twice: the name existed, so ``_prepare_destination`` dropped it from the list
-        (``_forget_source_path``) before this method ran.
+        """Create ``new_path`` as a hardlink to the source's content, trying
+        ``candidates`` (the source's recorded on-disk paths, taken before
+        ``_make_room`` cleared ``new_path``) newest first; when none takes the link for
+        a reason of its own (see ``_link_refused_here``), copy from an existing path.
+        Records ``new_path`` under ``source_id`` so a later same-device link can reuse
+        it — which is what keeps a fan-out across one device boundary to a single copy
+        per device rather than one per link, and a fan-out past the link-count limit to
+        one copy per full file. When ``new_path`` already named the source's file, it
+        is not recorded twice: the name existed, so ``_prepare_destination`` dropped it
+        from the list (``_forget_source_path``) before this method ran.
 
         The first path at the link-count limit ends the search with a copy. The paths
         recorded before it are older names of the same file, of a file that filled up
@@ -3268,9 +3294,18 @@ class ExtractionCoordinator:
         unlink an existing destination first and leave a hole if the link then fails.
         ``os.replace`` moves the link itself and never follows the entry it replaces, so
         a destination symlink is replaced rather than written through."""
-        existing = self._state.source_paths[source_id]
+        if new_path in candidates and _is_regular_file(new_path):
+            # The link landed on a path that already holds its source's content (a
+            # case-folded name under REPLACE). The callers' ``_make_room`` ran with
+            # ``atomic=True``, which leaves an existing file for the swap rather than
+            # unlinking it, so the file is still in place and there is nothing to link.
+            self._state.source_paths.setdefault(source_id, []).append(new_path)
+            return
         # Each path was a regular file this run wrote, and ``_forget_source_path``
-        # drops one once another member replaces it. Checked again here because
+        # drops one once another member replaces it. ``candidates`` was taken before
+        # the callers' ``_make_room``, so the one path that can be stale here is
+        # ``new_path``: the early return above takes it while it is a regular file,
+        # and the check below skips it when it is not. Checked again here because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,
@@ -3281,7 +3316,7 @@ class ExtractionCoordinator:
             linked = False
             at_link_limit = False
             copy_from: Path | None = None
-            for candidate in reversed(existing):
+            for candidate in reversed(candidates):
                 if not _is_regular_file(candidate):
                     continue
                 if copy_from is None:
@@ -3328,7 +3363,7 @@ class ExtractionCoordinator:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
-        existing.append(new_path)
+        self._state.source_paths.setdefault(source_id, []).append(new_path)
 
     def _swap_into_place(self, tmp: Path, dest: Path) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step

@@ -94,14 +94,29 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
   restore method 2. Under ZipCrypto both read as the password-or-damage
   ``EncryptionError`` instead, because those settings are encrypted.
+- A member's compressed data must hold one stream of its codec and nothing else, as
+  7-Zip checks. Bytes after the stream (junk, zero bytes, a second DEFLATE, bzip2 or
+  Zstd stream) raise ``CorruptionError`` once the data before them has been read, for
+  every compression method, whatever the member's declared size and CRC cover; so does
+  an LZMA member without an end marker, or a PPMd member, whose declared size stops
+  short of its data. Under ZipCrypto they read as the password-or-damage
+  ``EncryptionError`` instead, caused by that ``CorruptionError``, because the bytes are
+  encrypted. The same holds for a 7z coder, except that a 7z Zstd or LZ4 coder reads
+  concatenated frames as one stream, so a further frame is content that counts against
+  the declared size. One zero byte after LZMA data without an end marker reads, because
+  7-Zip's encoder sometimes writes it. A standalone compressed file reports bytes after
+  its stream as a warning instead (see [Single-file compressors](#single-file-compressors)).
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
   directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.strict()`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
-- An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
-  extraction skips it. The mode is read only when "version made by" says Unix.
+- An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as
+  `MemberType.OTHER`, so extraction skips it. One that stores data is a `FILE` (`zip -FI`
+  writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in
+  both cases `extra["special_file_type"]` names the stored kind. The mode is read only
+  when "version made by" says Unix.
 - **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise uses the
@@ -110,7 +125,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   inferred for an unflagged name, a `member_name_encoding_inferred` diagnostic records it.
   So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
   Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
-  name. One signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
+  name. Comments decode the same way: a member comment follows its name's flag, and the
+  archive comment, which has no flag, decodes as an unflagged name. A byte the chosen
+  encoding does not define stays in the comment as a surrogate escape, as in a name. One
+  signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
   the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
@@ -181,6 +199,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       runs from the block after the damaged one. This needs at least one member before
       the zero block: a file that is only a zero block and then other bytes is not shown
       to be a TAR archive, and it raises `CorruptionError`.
+    - A **device, FIFO or socket header that declares data** (typeflag `3`, `4` or `6`
+      with a non-zero size) raises `CorruptionError` at that header, before the
+      end-marker check runs. Such an entry has no data, GNU tar skips the header as
+      damaged, and `tarfile` would read an all-zero payload as the end of the archive
+      and drop every member after it.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes
@@ -210,8 +233,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   runs about 15 times slower than on real code.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
-- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix lists as
-  `MemberType.OTHER`, so extraction skips it. The mode is trusted for this only when the
+- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix has no data stream
+  and lists as `MemberType.OTHER`, so extraction skips it; `extra["special_file_type"]`
+  names the kind. An entry that owns a data stream under such a mode is a `FILE` with
+  `MEMBER_SPECIAL_FILE_HAS_DATA` reported. The mode is trusted for this only when the
   attribute's `0x8000` Unix-extension bit is set.
 - **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
   hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
@@ -244,6 +269,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   CRC at EOF is the only check, and a stream closed before EOF skips it.
 - **Header-encrypted wrong password:** a decoded header with zero file records is
   rejected as `EncryptionError` (never a silent empty listing).
+- **Bytes after the archive's end** (its next header or its last packed stream,
+  whichever is later) are reported as `ARCHIVE_TRAILING_DATA` with `format="7z"`: a
+  warning under the default policy, raised under `strict()`. Zero padding passes,
+  although 7-Zip warns "There are data after the end of archive" for zeros too. The
+  check looks at most 1 MiB past the end, as the TAR one does. A code-signed
+  self-extracting `.exe` carries its signature after the archive, so it gets the
+  warning, and `strict()` refuses it.
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
   values 25–62 raise `UnsupportedFeatureError`.
 - Writing is not shipped in the current release (`py7zr` is a **dev oracle** only).
@@ -254,8 +286,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   exception is a compressed RAR 1.5 / 2.x comment, which the selected program
   (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
   `comment` is `None`.
-- An entry from a Unix host whose mode is a device, FIFO or socket lists as
-  `MemberType.OTHER`, so extraction skips it. `rar` itself skips such files when
+- An entry from a Unix host whose mode is a device, FIFO or socket and that stores no
+  data lists as `MemberType.OTHER`, so extraction skips it; one that stores data is a
+  `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way
+  `extra["special_file_type"]` names the kind. `rar` itself skips such files when
   archiving.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
@@ -332,11 +366,28 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   reads normally, and archivey emits `ARCHIVE_EOF_MARKER_MISSING` with
   `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
   is what `unrar t` does: each member tests OK, then it reports one error. A damaged
-  header counts as the end block only if it has an end block's shape and the file ends
-  right after it; any other damaged header still raises `CorruptionError`. The damaged
-  block's next-volume flag is not trusted, so a volume set goes on to the next volume
-  only when a member's own header says its data continues there. With encrypted headers
-  this needs the password proven, as above; before that it is `EncryptionError`.
+  header counts as the end block only if it has an end block's shape and nothing but
+  zeros follows it within 1 MiB (`rar` pads a volume cut at exactly the `-v` size with
+  zeros); any other damaged header lists the members before it and then raises
+  `CorruptionError`. The damaged block's next-volume flag is not trusted, so a volume
+  set goes on to the next volume only when a member's own header says its data
+  continues there. With encrypted headers this needs the password proven, as above;
+  before that it is `EncryptionError`.
+- **Bytes after the end-of-archive block** are reported as `ARCHIVE_TRAILING_DATA`
+  with `format="rar"`, once per volume that has them: a warning under the default
+  policy, raised under `strict()`. Zero padding passes, because `rar` pads volumes
+  with zeros, and the check looks at most 1 MiB past the block. `unrar` says nothing
+  about such bytes; 7-Zip warns "There are data after the end of archive", for zeros
+  too.
+- **A damaged member header lists the members before it.** When a header after the main
+  header fails its checksum, the members before it are listed and read normally, and
+  the listing then ends with `CorruptionError`. No later member of the damaged header's
+  volume is listed: its size field cannot be trusted, so archivey does not know where the
+  next header starts. `unrar` searches on and lists them too. In a volume set, a member
+  before the damage whose data continues is still followed into the next volume, whose
+  members are listed before the error. A damaged main header still raises
+  `CorruptionError` at open. With encrypted headers this needs the password proven, as
+  above; before that it is `EncryptionError`.
 - **A volume set with a volume missing lists what it has.** Whether the missing volume
   is the first, one in the middle or the last, the members whose headers are in the
   volumes present are listed, opened from any of them, and those wholly inside them read
@@ -410,11 +461,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `rar_allow_glob_member_concatenation`, as it does for a member name that holds `*`
   or `?`.
 - **Comments.** A RAR 1.5-4 comment is 8-bit text that does not say which code page
-  it is in. Archivey reads it up to the first NUL, as UTF-8 if it is valid and as
-  windows-1252 otherwise. The one exception is a RAR 2.9-4 comment flagged as
-  Unicode, which is UTF-16LE. `encoding=` does not apply to comments, so a DOS
-  comment written in cp437 is decoded as windows-1252 even when you pass
-  `encoding="cp437"`.
+  it is in. Archivey reads it up to the first NUL, as UTF-8 if it is valid, otherwise
+  with the `encoding=` you passed, and otherwise as windows-1252. A byte that code page
+  does not define stays in the comment as a surrogate escape, as in a name. The one
+  exception is a RAR 2.9-4 comment flagged as Unicode, which is UTF-16LE. A RAR5
+  comment is UTF-8.
 - **Several members under one name.** `unrar` emits every member a name selects, in
   archive order: two members with the same name, or two names `unrar` reads the same
   way. Archivey skips to the one you asked for, so each read returns that member's own
@@ -478,13 +529,19 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   it does a 7z name (see 7z above).
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
-- Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
+- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty
   extension), and `extra["iso.version"]` keeps the number. When a directory holds
   several versions of one name, the highest takes the bare name and the others list
   under their stored identifier (`FOO.;1`) with `is_current=False`, the same shape as
-  RAR file-version history. Entries within a directory list in on-disc record order.
-- A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
-  skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
+  RAR file-version history. Plain directory names have no version and keep any `;N`. Two
+  files stored with the same identifier both list, the later one current, as in ZIP
+  and TAR. That includes a file and its associated file (such as the resource fork on a
+  Mac hybrid image), which list as two members with one name and nothing to tell the
+  fork apart. Entries within a directory list in on-disc record order.
+- A Rock Ridge device node, FIFO or socket over an empty extent lists as
+  `MemberType.OTHER`, so extraction skips it; over a non-empty extent it is a `FILE` with
+  `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way `extra["special_file_type"]` names
+  the kind. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
 - A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an
   ordinary file, with the catalog's bytes as its data, as a mounted image shows it.
@@ -543,9 +600,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   source can be seeked — a file path and an in-memory stream both qualify, a pipe does
   not. Declaring `seekable_members=True` is not required and makes no difference:
   `seekable_members` is about `seek()` on a *member stream*, and the lzip trailer is a
-  bounded backward peek. Same for the `.xz` size, read from the stream index. For
-  multi-member lzip the value is derived by combining per-trailer CRCs with each
-  member's uncompressed size so it equals `crc32` of the concatenated payloads.
+  bounded backward peek. Same for the `.xz` size, read from the stream index. A `.xz`
+  or `.lz` opened from another archive's member stream reports neither the size nor the
+  CRC-32, seekable or not: member streams are excluded as a group. For multi-member
+  lzip the value is derived by combining per-trailer CRCs with each member's
+  uncompressed size so it equals `crc32` of the concatenated payloads.
 - `.lz` is read in lzip format version 1, which every lzip since 1.0 writes. A member
   in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
   wherever it is in the file: a member that starts with the `LZIP` magic is never
@@ -553,7 +612,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
   not `CorruptionError`: a gzip member with a method other than deflate or a reserved
   flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
-  dictionary, and a `.Z` file with a code width over 16 bits.
+  dictionary, and a `.Z` file with a code width over 16 bits. A damaged byte in one of
+  those same fields raises the same error, because nothing tells the two apart; the
+  message says a damaged header reads the same way (see
+  [Errors and diagnostics](errors-and-diagnostics.md)).
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable
@@ -562,25 +624,31 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   bits after the last complete code raise `TruncatedError` on the next `read()` after
   delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
   non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
-- **Bytes after the compressed stream** (a signature or checksum appended to a
-  download, a tool that pads its output) do not stop the read. For gzip, zlib, bzip2,
-  xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then
-  emits one `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of the first
-  appended byte. It is a warning under the default policy; under
-  `DiagnosticPolicy.strict()` the read that reaches it raises `DiagnosticRaisedError`.
-  Zero bytes after the end are padding and report nothing, as for TAR. A second stream
-  of the same codec (a concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more
-  data, not trailing bytes. `.xz` and `.lz` keep their size and seeks when the
-  appended bytes are within 1 MiB, unless they are crafted to hold thousands of fake
-  end markers; further out the index is not found and the size reads as unknown.
-  A damaged end marker on the last of several `.xz` streams or `.lz` members is
-  corruption, not appended bytes: the size reads as unknown, and the read or seek
-  that reaches the damage raises `CorruptionError`.
-  Brotli has no end marker the library reports, so archivey finds the end by decoding
-  the source again, which needs a seekable source: from a pipe, bytes after a Brotli
-  stream raise `CorruptionError`. The check applies to a bare compressed file and to a
-  compressed tar; inside a ZIP or 7z member the container's sizes decide. `.Z` is not
-  covered: it has no end marker, so appended bytes decode as more data.
+- **Bytes after the compressed stream** (a signature or checksum appended to a download,
+  a tool that pads its output) do not stop the read. For gzip, zlib, bzip2, xz, lzip,
+  LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then emits one
+  `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of the first appended
+  byte. It is a warning under the default policy; under `DiagnosticPolicy.strict()` the
+  read that reaches it raises `DiagnosticRaisedError`. Zero bytes after the end are
+  padding and report nothing, as for TAR. A second stream of the same codec (a
+  concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more data, not trailing
+  bytes. For every codec but `.xz`, zero bytes are padding only at the end of the file:
+  a stream after them is reported as trailing bytes and not read, as GNU `gzip`,
+  `bzip2`, `zstd` and `lz4` do. `.xz` defines padding between streams and reads past it.
+  For `.xz`, `.lz`, `.zst`, `.lz4` and `.bz2`, bytes after a stream that hold at least
+  half of the codec's stream magic, but not all of it, are a later stream with a damaged
+  header: the read raises `CorruptionError` rather than return the first stream alone.
+  `.xz` and `.lz` keep their size and seeks when the appended bytes are within 1 MiB,
+  unless they are crafted to hold thousands of fake end markers; further out the index
+  is not found and the size reads as unknown. A damaged end marker on the last of
+  several `.xz` streams or `.lz` members is corruption, not appended bytes: the size
+  reads as unknown, and the read or seek that reaches the damage raises
+  `CorruptionError`. Brotli has no end marker the library reports, so archivey finds the
+  end by decoding the source again, which needs a seekable source: from a pipe, bytes
+  after a Brotli stream raise `CorruptionError`. The check applies to a bare compressed
+  file and to a compressed tar; inside a ZIP or 7z member such bytes raise
+  `CorruptionError` (see [ZIP](#zip)). `.Z` is not covered: it has no end marker, so
+  appended bytes decode as more data.
 - `open_archive` decodes the first byte of a seekable source, so a file that is not
   the codec its name or detection claims (a `.gz` full of zeros, an empty `.bz2`) raises
   `CorruptionError` or `TruncatedError` from `open_archive` rather than from the first
@@ -672,10 +740,21 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
   a source too small for it never pays) → the 512-byte `koly` block at the end of a
   seekable source (a UDIF disk image; see Disk images) → content probes for the formats
-  with no magic → the extension. A bzip2 or xz header that is the first block of such
+  with no magic (see the next item) → the extension. A bzip2 or xz header that is the first block of such
   an image loses to that block. A step that matches nothing falls through to the next;
   nothing is ever rejected for failing an earlier one. A pipe is not rewound to read
   the block at the end.
+- **Content probes run only for a matching name by default.** LZMA Alone, zlib and
+  Brotli have no magic, so a trial decode of the first bytes (a content probe) is the
+  only thing that recognises them, and ordinary binary files sometimes pass one. By
+  default `open_archive` and `detect_format` run a probe only when the name ends in one of
+  that format's extensions: `.lzma` or `.tlz` for LZMA Alone, `.zz` or `.zlib` for zlib,
+  `.br` or `.brotli` for Brotli, and the `.tar.` form of each except `.tlz`. A matching probe confirms the name and still finds a TAR inside. A source with
+  no name, or another extension, runs no probe: a nameless raw stream of these formats
+  raises `FormatDetectionError`, and one named for another format gets that format's
+  guess. If you read such sources, give the file its format's extension, pass `format=`,
+  use `open_stream()` (which always runs every probe), or set
+  `ArchiveyConfig(always_probe_content=True)`.
 - **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
   size — may precede the first real frame, so detection walks past them by their declared
   sizes within the peeked bytes and matches the regular frame behind. Skippable frames
@@ -705,7 +784,8 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   later (a two-byte magic such as gzip's reported below `CERTAIN`, say). Branch on
   `format`, not on `confidence`. **`detected_by` is an open set**: new detection steps
   may add values, so handle an unknown one rather than matching every value.
-- **Brotli** has no magic, so detection uses a content probe plus framing checks
+- **Brotli** has no magic, so detection uses a content probe (when it runs; see above)
+  plus framing checks
   **when the source length is known** (paths, `BytesIO`, and short non-seekable
   peeks): a first meta-block that *declares* more bytes than the source holds is
   rejected; when the source is 64 KiB or less, the whole of it is decoded and a stream

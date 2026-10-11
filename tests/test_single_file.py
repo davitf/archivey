@@ -16,6 +16,8 @@ import io
 import logging
 import lzma
 import random
+import tarfile
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -41,13 +43,21 @@ from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
+    MemberSeek,
     NonSeekableBytesIO,
     ShortReadBytesIO,
+    SizedNonSeekable,
+    assert_no_member_tail_seek,
     make_lzip_member,
     make_multiblock_xz,
     make_unix_compress,
+    spy_member_seeks,
     xz_cli_available,
 )
+
+# LZMA Alone, zlib and Brotli have no magic: a source not named for its format (a
+# BytesIO, or the ``.bi5`` samples) reaches them only with every content probe on.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 def _gzip_bytes(
@@ -244,7 +254,9 @@ def test_bz2_size_none_before_full_read() -> None:
 
 
 def test_zlib_size_none() -> None:
-    with open_archive(io.BytesIO(zlib.compress(b"x" * 1000))) as ar:
+    with open_archive(
+        io.BytesIO(zlib.compress(b"x" * 1000)), config=_ALWAYS_PROBE
+    ) as ar:
         assert ar.members()[0].size is None
 
 
@@ -313,6 +325,146 @@ def test_cheap_size_still_needs_seekability(suffix: str = ".lz") -> None:
     stream = NonSeekableBytesIO(make_lzip_member(payload))
     with open_archive(stream, streaming=True) as ar:
         assert next(iter(ar)).size is None
+
+
+def test_compressed_size_on_a_non_seekable_source_ignores_its_size_claim() -> None:
+    # A pipe has no ``SEEK_END`` to measure its length, so it reports ``None``, the same
+    # as a pipe without the attribute. A seekable stream's ``size`` attribute is
+    # reported, so this is about seekability, not about trusting the claim.
+    data = gzip.compress(b"payload" * 500)
+    stream = SizedNonSeekable(data, size=123_456_789)
+    with open_archive(stream, streaming=True) as ar:
+        assert next(iter(ar)).compressed_size is None
+
+
+# ---------------------------------------------------------------------------
+# A member stream as the source: a seek to its end may decode the whole member
+# ---------------------------------------------------------------------------
+
+
+def _container_of(kind: str, name: str, data: bytes) -> io.BytesIO:
+    """``data`` as the one member ``name`` of a ZIP (deflated or stored) or a TAR."""
+    buf = io.BytesIO()
+    if kind == "tar":
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    else:
+        method = zipfile.ZIP_DEFLATED if kind == "zip_deflated" else zipfile.ZIP_STORED
+        with zipfile.ZipFile(buf, "w", method) as zf:
+            zf.writestr(name, data)
+    buf.seek(0)
+    return buf
+
+
+def _spy_reader_init_seeks(patch: pytest.MonkeyPatch) -> list[MemberSeek]:
+    """The ``ArchiveStream`` seeks made inside ``SingleFileReader.__init__``.
+
+    That is where the metadata probes run. Detection before it and the codec open after
+    it have their own rules (detection's: ``tests/test_detection_workspace.py``). The
+    record and the tail rule are the shared ones in ``tests/streams_util.py``, so a
+    change to what counts as a tail seek reaches both.
+    """
+    seeks = spy_member_seeks(patch)
+    in_init: list[MemberSeek] = []
+    real_init = SingleFileReader.__init__
+
+    def init(self: SingleFileReader, *args: object, **kwargs: object) -> None:
+        start = len(seeks)
+        try:
+            real_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        finally:
+            in_init.extend(seeks[start:])
+
+    patch.setattr(SingleFileReader, "__init__", init)
+    return in_init
+
+
+@pytest.mark.parametrize("container", ["zip_deflated", "zip_stored", "tar"])
+@pytest.mark.parametrize(
+    ("name", "make"),
+    [
+        ("m.gz", gzip.compress),
+        ("m.xz", lzma.compress),
+        ("m.lz", make_lzip_member),
+    ],
+)
+def test_member_stream_source_is_not_seeked_to_its_end(
+    monkeypatch: pytest.MonkeyPatch, container: str, name: str, make
+) -> None:
+    # A compressed file inside another archive, opened as a member stream. The member
+    # advertises its length, so compressed_size needs no seek. The xz index and lzip
+    # trailer sit at the end, so those probes are skipped: size=None and no CRC32.
+    #
+    # Every member stream counts as one whose seek may re-decode, as a group. For a
+    # deflated ZIP entry that is true; for a stored ZIP entry or a TAR member, whose
+    # seek is a slice of the container, it is the price of the coarse rule. The
+    # stored and TAR rows pin that loss as the contract (spec: "size matrix").
+    data = make(random.Random(7).randbytes(64 * 1024))
+    with (
+        open_archive(
+            _container_of(container, name, data), seekable_members=True
+        ) as outer,
+        outer.open(name) as member,
+        monkeypatch.context() as patch,
+    ):
+        assert member.seekable()
+        member_id = id(member)
+        seeks = _spy_reader_init_seeks(patch)
+        with open_archive(member) as nested:
+            (inner,) = nested.members()
+    assert inner.compressed_size == len(data)
+    assert inner.size is None
+    assert HashAlgorithm.CRC32 not in inner.hashes
+    # The whole record, so a spy that stops seeing the member fails here: .gz reads
+    # its header prefix (one seek, back to 0); .xz / .lz seek nothing at open.
+    expected = [MemberSeek(member_id, 0, 0)] if name == "m.gz" else []
+    assert seeks == expected
+    assert_no_member_tail_seek(seeks, {member_id: len(data)})
+
+
+@pytest.mark.parametrize("container", ["zip_deflated", "zip_stored", "tar"])
+def test_non_seekable_member_stream_reports_its_advertised_compressed_size(
+    container: str,
+) -> None:
+    # The default nesting shape: the outer archive is opened without
+    # seekable_members, so the member stream is not seekable. Its advertised length is
+    # the one its container's header declares, not a caller's claim, so it is still the
+    # compressed size. Metadata must not depend on the outer seekable_members.
+    data = gzip.compress(b"payload" * 10)
+    with (
+        open_archive(_container_of(container, "x.gz", data)) as outer,
+        outer.open("x.gz") as member,
+    ):
+        assert not member.seekable()
+        with open_archive(member, streaming=True) as nested:
+            sizes = [m.compressed_size for m in nested]
+    assert sizes == [len(data)]
+
+
+def test_member_stream_source_without_a_length_reports_no_compressed_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The outer .gz cannot advertise its member's length, so the inner reader has no
+    # cheap size. It reports None rather than seeking the member to its end.
+    inner_gz = gzip.compress(random.Random(7).randbytes(64 * 1024))
+    with (
+        open_archive(
+            io.BytesIO(gzip.compress(inner_gz)), seekable_members=True
+        ) as outer,
+        outer.open(outer.members()[0]) as member,
+        monkeypatch.context() as patch,
+    ):
+        assert member.seekable()
+        assert getattr(member, "size", None) is None
+        member_id = id(member)
+        seeks = _spy_reader_init_seeks(patch)
+        with open_archive(member) as nested:
+            assert nested.format == ArchiveFormat.GZ
+            assert nested.members()[0].compressed_size is None
+    assert seeks, "the spy saw no seek during the reader's open"
+    assert_no_member_tail_seek(seeks, {member_id: len(inner_gz)})
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +680,7 @@ def test_bpo21872_lzma_alone_samples_decode_whole(name: str) -> None:
     expected_size, expected_digest = _BPO21872_SAMPLES[name]
     path = _BPO21872_DIR / name
 
-    with open_archive(path) as ar:
+    with open_archive(path, config=_ALWAYS_PROBE) as ar:
         member = ar.members()[0]
         # These carry a real known size in the header, which stdlib never writes.
         assert member.size == expected_size
@@ -537,7 +689,7 @@ def test_bpo21872_lzma_alone_samples_decode_whole(name: str) -> None:
     assert hashlib.sha256(whole).hexdigest() == expected_digest
 
     for chunk_size in (1, 8192, 65536):
-        with open_archive(path) as ar:
+        with open_archive(path, config=_ALWAYS_PROBE) as ar:
             stream = ar.open(ar.members()[0])
             got = bytearray()
             while True:
@@ -671,7 +823,7 @@ def test_brotli_roundtrip() -> None:
     import brotli
 
     data = brotli.compress(b"brotli payload")
-    with open_archive(io.BytesIO(data)) as ar:
+    with open_archive(io.BytesIO(data), config=_ALWAYS_PROBE) as ar:
         assert ar.format == ArchiveFormat.BROTLI
         assert ar.read(ar.members()[0]) == b"brotli payload"
 
@@ -907,7 +1059,8 @@ def test_open_validation_table_covers_every_single_file_codec() -> None:
     # makes it fail here until the tables below cover it too.
     from archivey.internal.streams.codecs import SINGLE_FILE_CODECS
 
-    suffixes = {ext for codec in SINGLE_FILE_CODECS for ext in codec.extensions}
+    # The canonical extension only: an alias (``.brotli``) is the same codec.
+    suffixes = {codec.extensions[0] for codec in SINGLE_FILE_CODECS if codec.extensions}
     assert suffixes == set(_SINGLE_FILE_CODECS)
 
 
@@ -959,7 +1112,7 @@ def _assert_zeros_read_as_empty_lzma(
 def test_undecodable_bytesio_raises_at_open(suffix: str) -> None:
     # A seekable stream source takes the SharedSource branch rather than the path one.
     compress, _marks = _SINGLE_FILE_CODECS[suffix]
-    with open_archive(io.BytesIO(compress(b"probe"))) as ar:
+    with open_archive(io.BytesIO(compress(b"probe")), config=_ALWAYS_PROBE) as ar:
         fmt = ar.format
     if suffix == ".lzma":
         _assert_zeros_read_as_empty_lzma(io.BytesIO(b"\x00" * 40_000), format=fmt)

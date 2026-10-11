@@ -5,18 +5,12 @@ from __future__ import annotations
 import sys
 from collections.abc import Generator, Iterator
 from contextlib import closing
-from typing import TextIO, TypeVar
+from typing import TextIO, TypeVar, cast
 
 from archivey import ArchiveReader, ExtractionProgress
-from archivey.cli.common import open_for_cli, reject_salvage
+from archivey.cli.common import open_for_cli
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
-from archivey.cli.filters import (
-    count_selected,
-    member_predicate,
-    members_for_include_check,
-    unmatched_include_patterns,
-    warn_unmatched_includes,
-)
+from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
@@ -45,7 +39,6 @@ def run_test(
     patterns: list[str],
     exclude: list[str],
     verbose: bool,
-    salvage: bool,
     password: str | None,
     track_io: bool,
     hide_progress: bool = False,
@@ -53,28 +46,25 @@ def run_test(
     err: TextIO | None = None,
 ) -> int:
     del out  # test writes summaries to stderr only
-    reject_salvage(salvage)
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
-    pred = member_predicate(patterns, exclude)
+    selection = MemberSelection(patterns, exclude)
+    pred = selection.predicate
 
     ok = 0
     failed = 0
     members_total: int | None = None
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         indexed = reader.members_report_if_available()
-        # None on forward-only readers: do not consume the sole pass before streaming.
-        members_for_filter = members_for_include_check(reader) if patterns else None
-        if patterns and members_for_filter is not None:
-            unmatched = unmatched_include_patterns(patterns, members_for_filter)
-            if unmatched:
-                warn_unmatched_includes(unmatched, err=err)
-            if count_selected(members_for_filter, pred) == 0:
-                return EXIT_FAIL
-
         total_bytes: int | None = None
         if indexed is not None:
-            selected = [m for m in indexed if pred is None or pred(m)]
+            # A complete free index settles the patterns before the run. One that ends
+            # in damage settles nothing, but its members still give the totals. When
+            # the patterns are not settled, the run's own pass offers each member to
+            # them (see the end of the pass).
+            selected = selection.settle_from(indexed, err=err)
+            if selection.settled and selection.selects_nothing:
+                return EXIT_FAIL
             file_members = [m for m in selected if m.is_file]
             members_total = len(file_members)
             sizes = [m.size for m in file_members if m.size is not None]
@@ -86,8 +76,17 @@ def run_test(
         )
         bytes_done = 0
         files_done = 0
-        saw_selected = False
         pending_links: list[ArchiveMember] = []
+        pass_ended_early = False
+        # The error the member read that just ran raised, or None once the pass yields
+        # another member. A pass that raises right after a failed member read is
+        # ending on the fault that member already reported, whether it raises the same
+        # object (a truncated compressed TAR) or a new, equal one (a truncated plain
+        # TAR): it gets a stop notice and is not counted a second time. Requiring the
+        # failure to be the immediately preceding read is safe: a stream that re-raises
+        # a parked fault fails the next read as well, so no member reads cleanly
+        # between the failure and the end of the pass.
+        member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
             # count as FAIL and still reach the summary (F4). Once the generator raises,
@@ -104,11 +103,20 @@ def run_test(
                     except StopIteration:
                         break
                     except (ArchiveyError, OSError) as exc:
-                        failed += 1
-                        print(f"FAIL: {format_error_detail(exc)}", file=err)
+                        pass_ended_early = True
+                        if member_error is None:
+                            failed += 1
+                            print(f"FAIL: {format_error_detail(exc)}", file=err)
+                        else:
+                            if not _same_fault(exc, member_error):
+                                print(f"archivey: {format_error_detail(exc)}", file=err)
+                            print(
+                                "test stopped; remaining members were not tested",
+                                file=err,
+                            )
                         continue
+                    member_error = None
 
-                    saw_selected = True
                     if stream is None and _link_needs_verification(member):
                         # Verified after the pass: the reader refuses an open() while
                         # stream_members() is running.
@@ -160,8 +168,13 @@ def run_test(
                             )
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
+                    except BrokenPipeError:
+                        # The -v line or the progress bar lost its reader: not a
+                        # member failure. main() exits 141 for it, with no message.
+                        raise
                     except (ArchiveyError, OSError) as exc:
                         failed += 1
+                        member_error = exc
                         print(
                             f"FAIL {escape_member_name(member.name)}: "
                             f"{format_error_detail(exc)}",
@@ -186,8 +199,14 @@ def run_test(
             members_total += len(unverified)
         for link in unverified:
             try:
-                _verify_link(reader, link)
-            except (ArchiveyError, OSError) as exc:
+                # Only 7z and RAR4 leave a link to verify, and neither opens in the
+                # streaming mode the CLI uses for a pipe, so ``reader`` is open for
+                # random access here. The cast states that for the type checker only.
+                # If that stops holding, ``open()`` on the streaming reader raises
+                # ``ArchiveyUsageError``, which is caught here so the link counts as
+                # a FAIL instead of ending the run with a traceback.
+                _verify_link(cast(ArchiveReader, reader), link)
+            except (ArchiveyError, ArchiveyUsageError, OSError) as exc:
                 failed += 1
                 print(
                     f"FAIL {escape_member_name(link.name)}: {format_error_detail(exc)}",
@@ -198,9 +217,11 @@ def run_test(
                 if verbose:
                     print(f"OK   {escape_member_name(link.name)}", file=err)
 
-        # Streaming + patterns: no pre-scan — empty selection if nothing was yielded.
-        if patterns and members_for_filter is None and not saw_selected:
-            warn_unmatched_includes(patterns, err=err)
+        # Without a complete index, the pass that just ran offered every member to the
+        # patterns. Only the generator raising ends that pass early and leaves later
+        # members unseen; a failure inside one member's read does not. So the
+        # patterns are judged after any pass that reached its end.
+        if not selection.settled and not pass_ended_early and selection.report(err=err):
             return EXIT_FAIL
 
         # Read before the reader closes; each such diagnostic was already logged with
@@ -220,6 +241,25 @@ def run_test(
     # An untested remainder or an unchecked digest is an incomplete verification.
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
     return EXIT_FAIL if failed or not_tested or not_verified else EXIT_OK
+
+
+def _same_fault(exc: BaseException, reported: BaseException) -> bool:
+    """Whether ``exc`` reports the same fault as ``reported``, already printed.
+
+    The member name is left out of the comparison: a pass that re-raises a member's
+    fault builds its error without one.
+    """
+    if exc is reported:
+        return True
+    if type(exc) is not type(reported):
+        return False
+    if isinstance(exc, ArchiveyError) and isinstance(reported, ArchiveyError):
+        return (exc.message, exc.archive_name, exc.source_format) == (
+            reported.message,
+            reported.archive_name,
+            reported.source_format,
+        )
+    return str(exc) == str(reported)
 
 
 _T = TypeVar("_T")

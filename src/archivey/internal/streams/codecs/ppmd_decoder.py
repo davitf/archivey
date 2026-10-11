@@ -6,7 +6,7 @@ import os
 from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
-from archivey.exceptions import ResourceLimitError, TruncatedError
+from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
@@ -62,6 +62,17 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 # past that the member goes to a child process, where a crash costs the member only.
 
 _DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
+
+# Input after a member's declared output that a ``refuse_input_after_end`` decoder
+# collects before its end check: room for an end mark and its range-coder flush.
+# Measured on pyppmd 1.3.1 and 7-Zip 23.01, that is at most 3 bytes for PPMd8 and 1
+# for PPMd7; the bound leaves slack over it, so that a producer that flushes a little
+# more reaches the end check rather than being refused for its length. More is input
+# the member does not use (see ``PpmdDecoder._check_end``).
+_PPMD_TAIL_MAX = 16
+
+# The five bytes 7-Zip's PPMd7 range coder writes for a stream with no symbols.
+_PPMD7_EMPTY_STREAM = b"\x00" * 5
 
 # Output asked of pyppmd per call once a held member is handed over at compressed EOF
 # (a truncated member, or a password check's capped input): the stream drains the rest
@@ -120,6 +131,11 @@ class PpmdDecoder(BaseDecoder):
     :data:`_PPMD_EXTRA_NUL_MAX_OUTPUT`; unsized PPMd8 gets **no** post-eof drain at all
     (its end mark terminates valid decodes; a drain would only fabricate trailing bytes).
 
+    ``refuse_input_after_end`` (``StreamConfig.refuse_input_after_end``: a ZIP member,
+    a 7z coder) checks that the member's input ends where its declared output does, as
+    7-Zip does (:meth:`_check_end`); a byte it leaves is ``DataAfterEndError`` through
+    the stream.
+
     **Invariant:** ``pack_size`` must measure the same byte stream that
     ``feed()`` accumulates into ``_fed_compressed`` (the PPMd coder's compressed
     input — after ZIP method-98 header stripping / as the 7z pack ``SlicingStream``
@@ -138,6 +154,7 @@ class PpmdDecoder(BaseDecoder):
         unpack_size: int | None = None,
         pack_size: int | None = None,
         in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
+        refuse_input_after_end: bool = False,
     ) -> None:
         if variant != 8 and unpack_size is None:
             raise ValueError(
@@ -191,6 +208,14 @@ class PpmdDecoder(BaseDecoder):
         # no decoder to go on with.
         self._refusal: str | None = None
         self._decomp: _PpmdNativeDecoder | None = None
+        self._refuse_input_after_end = refuse_input_after_end
+        # Input fed after the output reached ``unpack_size``, before the end check
+        # (``_check_end``), and whether that check has run.
+        self._tail = b""
+        self._end_checked = False
+        # Set when the end check's one-symbol probe left the worker waiting for input
+        # (a PPMd8 stream with no end mark), so ``_quiesce_worker`` must still run.
+        self._probe_parked = False
 
     def _open_native(self, *, in_child: bool) -> None:
         """Create the decoder ``_decomp``, in this process or in a child one.
@@ -241,6 +266,7 @@ class PpmdDecoder(BaseDecoder):
             unpack_size=self._unpack_size,
             pack_size=self._pack_size,
             in_process_max_input=self._in_process_max_input,
+            refuse_input_after_end=self._refuse_input_after_end,
         )
 
     @property
@@ -423,6 +449,8 @@ class PpmdDecoder(BaseDecoder):
                 chunk = self._release_held(in_child=False)
             else:
                 return DecodeOut(b"")
+        if self._at_declared_size():
+            return self._feed_after_size(chunk)
         # Honour both the container unpack_size cap and the stream-layer read budget.
         unpack_cap = self._max_length()
         if max_length >= 0 and unpack_cap >= 0:
@@ -458,7 +486,86 @@ class PpmdDecoder(BaseDecoder):
             # All input is in, so a short return is the end: ask pyppmd nothing more
             # on the drain; the stream's next ``flush`` settles the member.
             self._draining = False
+        self._maybe_check_end()
         return DecodeOut(out)
+
+    def _at_declared_size(self) -> bool:
+        """Whether a ``refuse_input_after_end`` member has all its output, its input
+        handed over to the native decoder."""
+        return (
+            self._refuse_input_after_end
+            and self._unpack_size is not None
+            and self._decomp is not None
+            and self._produced >= self._unpack_size
+        )
+
+    def _feed_after_size(self, chunk: bytes) -> DecodeOut:
+        """Take input fed after the declared output: an end mark, or surplus."""
+        if chunk:
+            if self._end_checked:
+                self._input_after_end = True
+                return DecodeOut(b"")
+            self._tail += chunk
+            if len(self._tail) > _PPMD_TAIL_MAX:
+                self._end_checked = True
+                self._input_after_end = True
+                return DecodeOut(b"")
+        self._maybe_check_end()
+        return DecodeOut(b"")
+
+    def _maybe_check_end(self) -> None:
+        """Run the end check once the output is complete and all input is in."""
+        if (
+            self._end_checked
+            or not self._at_declared_size()
+            or not (self._compressed_eof or self._pack_complete() is True)
+        ):
+            return
+        self._end_checked = True
+        if not self._check_end():
+            self._input_after_end = True
+
+    def _check_end(self) -> bool:
+        """Whether the input ends where the declared output does, as 7-Zip checks.
+
+        The input given to pyppmd past the last symbol is ``unused_data``, and the
+        input fed after the output was complete is :attr:`_tail`. pyppmd 1.3.1 builds
+        ``unused_data`` on its first read after ``eof`` and keeps it, and ``eof`` can
+        rise early and stay up (``ppmd_child``), so it is read here only, once the
+        output is complete. The extra NUL fed at compressed EOF (:meth:`_inject_nul_once`)
+        is not the member's input, and may be left over. A PPMd7 stream (7z) has no
+        end mark: it ends where its range
+        coder's code is zero, which is what pyppmd's ``eof`` reports, and every byte
+        of its input is used by then (7-Zip's range decoder, which pyppmd runs, reads
+        ahead eagerly). Measured on 7-Zip 23.01 and py7zr output: ``eof``, and no
+        ``unused_data``. A PPMd8 stream (ZIP) ends with an end mark, which one more
+        one-symbol decode reaches without output; 7-Zip refuses a member without
+        one. A member that declares no output has the empty stream's bytes, or
+        nothing, as its whole input.
+        """
+        native = self._native
+        if self._variant != 8:
+            if self._produced == 0:
+                return self._tail in (b"", _PPMD7_EMPTY_STREAM)
+            return native.eof and self._unused_ok(native) and not self._tail
+        if not native.eof:
+            out = native.decode(self._tail, 1)
+            self._tail = b""
+            if out:
+                return False
+            if not native.eof:
+                # No end mark: the worker waits for input that is not coming.
+                self._probe_parked = True
+                self._pending_error = CorruptionError(
+                    "PPMd8 stream has no end mark after its declared size"
+                )
+                return True
+        return self._unused_ok(native) and not self._tail
+
+    def _unused_ok(self, native: _PpmdNativeDecoder) -> bool:
+        """Whether pyppmd's leftover input is none, or only the injected NUL."""
+        unused = _unused(native)
+        return not unused or (self._nul_injected and unused == b"\0")
 
     def flush(self) -> DecodeOut:
         self._check_refusal()
@@ -499,6 +606,7 @@ class PpmdDecoder(BaseDecoder):
         self._draining = False
         max_length = self._max_length()
         if max_length == 0:
+            self._maybe_check_end()
             return DecodeOut(b"")
         out = b""
         if not self._native.eof and getattr(self._native, "needs_input", False):
@@ -519,6 +627,7 @@ class PpmdDecoder(BaseDecoder):
                 self._produced += len(drained)
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")
+        self._maybe_check_end()
         return DecodeOut(out)
 
     @property
@@ -560,8 +669,9 @@ class PpmdDecoder(BaseDecoder):
         try:
             # A fully-decoded member exited its worker on budget / the end mark;
             # only an incomplete (truncated / abandoned) decode can leave one
-            # parked. Skip the happy path so valid closes cost nothing.
-            if self.finished:
+            # parked, or the end check's probe of a PPMd8 stream with no end mark.
+            # Skip the happy path so valid closes cost nothing.
+            if self.finished and not self._probe_parked:
                 return
             for _ in range(_PPMD_QUIESCE_MAX_CALLS):
                 # ``not needs_input`` is the "worker not parked" signal — the last
@@ -612,6 +722,7 @@ def PpmdDecompressorStream(
     unpack_size: int | None = None,
     pack_size: int | None = None,
     in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
+    refuse_input_after_end: bool = False,
     collector: DiagnosticCollector | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
@@ -633,7 +744,14 @@ def PpmdDecompressorStream(
             unpack_size=unpack_size,
             pack_size=pack_size,
             in_process_max_input=in_process_max_input,
+            refuse_input_after_end=refuse_input_after_end,
         ),
         collector=collector,
         codec_name="ppmd",
+        refuse_input_after_end=refuse_input_after_end,
     )
+
+
+def _unused(native: _PpmdNativeDecoder) -> bytes:
+    """pyppmd's input left after the stream's end (only meaningful at ``eof``)."""
+    return bytes(getattr(native, "unused_data", b"") or b"")

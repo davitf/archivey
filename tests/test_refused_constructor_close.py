@@ -236,6 +236,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
     ),
+    "archivey.internal.streams.streamtools.sparse.SparseStream": (
+        "DelegatingStream.__init__ first; close() reads nothing assigned after it"
+    ),
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
@@ -283,8 +286,8 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.sevenzip_pipeline._DecodedPastSizeCheck": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs.lzma_codec._LzmaEndAtSize": (
-        "DelegatingStream.__init__ first, then plain assignments"
+    "archivey.internal.backends.sevenzip_reader._ReadAheadStream": (
+        "plain assignments only"
     ),
     "archivey.internal.external.unar.UnarOutputStream": (
         "assigns every field close() reads before DelegatingStream.__init__"

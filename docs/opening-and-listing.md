@@ -39,8 +39,12 @@ archivey.open_stream("access.log.gz")  # a stream: the decompressed bytes
 ```
 
 `open_archive` works on a plain `.gz` too — you get an archive with exactly one
-member, named after the file. Use `open_stream` when you just want the bytes and
-know there is no tar inside.
+member, named after the file. Use `open_stream` when you just want the decompressed
+bytes. On a `.tar.gz`, `.tar.xz` and the other compressed tars, `open_stream` removes
+the compression only and gives you the tar bytes, as `gzip.open` does, whether it
+detects the format or you pass `format=ArchiveFormat.TAR_GZ`. To read the files inside,
+use `open_archive`. `open_stream` refuses a ZIP, 7z, RAR, ISO or plain
+`.tar`, because there is no compression layer around them to remove.
 
 ## Which options to set
 
@@ -65,7 +69,7 @@ do the job.
 
 | What you need | Open with | Limitations |
 |---|---|---|
-| Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then `stream_members()` or `extract_all()` (`for member in reader` walks the members without their data) | No random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. `scan_members()` and `members_report()` still list the archive, but they use up the pass to do it. [More below](#streaming-for-one-pass) |
+| Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then `stream_members()` or `extract_all()` (`for member in reader` walks the members without their data) | No random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. `members_report()` still lists the archive, but it uses up the pass to do it. [More below](#streaming-for-one-pass) |
 | Read one member, or a few, by name; list the archive and then read from it | Nothing (the defaults) | One member stream open at a time. On a solid archive, opening members out of archive order can decode the same block again ([details](access-and-cost.md#solid-archives-prefer-one-forward-pass)) |
 | Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True` | Some extra work as you read, which depends on the codec: the stream may read the format's own index (xz, lzip), keep track of points it can seek back to, or hand a gzip or bzip2 member of 16 MiB compressed or more to the `[seekable]` accelerator when it is installed. A seek backwards may decompress the member again from its start; how far back it has to go depends on those same mechanisms, and the `[seekable]` extra only helps a large gzip or bzip2 member unless you force it on. Any seek that moves the position gives up the check of the member's stored checksum, until a seek back to the start re-arms it. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
 | Several member streams open at once, for example a thread pool that reads different members | `concurrent_members=True`; call `members()` once before you fan out | A second overlapping `open()` no longer raises, so the check that catches an accidental overlap is gone. Reads from several members at once can make the reader seek back and forth in the archive, and decompress data again: on a solid archive, each stream decodes its block from the start. Reads are correct but not always faster: on formats that share one file handle, each read takes a lock, and workers can wait on it. Opening the archive several times, one reader per worker without this option, can be cheaper; it can also cost more, because each reader parses the archive's index again. Cannot be combined with `streaming=True`. [Details](access-and-cost.md#concurrent-member-streams) |
@@ -93,9 +97,8 @@ Its other limitations:
 
 - **Listing limits on the pass.** On a streaming reader, `stream_members()`,
   `for member in reader` and `extract_all()` are deliberately outside `ListingLimits`.
-  `scan_members()` and `members_report()` enforce the limits as `members()` does, and
-  7z, RAR and ISO check `max_members` when the archive is opened. See
-  [Limits](extracting.md#limits).
+  `members_report()` enforces the limits as `members()` does, and 7z, RAR and ISO check
+  `max_members` when the archive is opened. See [Limits](extracting.md#limits).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).
@@ -113,7 +116,10 @@ Its other limitations:
 | A sequence of paths or streams | The volumes of one multi-volume archive — see below |
 
 Passing a `format=` that says anything other than a directory, for a path that is one,
-raises `ArchiveyUsageError` rather than quietly reading the directory tree instead.
+raises `ArchiveyUsageError` rather than quietly reading the directory tree instead. The
+reverse, `format=ArchiveFormat.DIRECTORY` for a file or a stream, raises
+`ArchiveyUsageError` too. A path that cannot be reached at all raises the operating
+system's own error, such as `FileNotFoundError`, whatever `format=` says.
 
 **A seekable stream is read from wherever it currently is**, through to the end.
 Archivey treats the current position as byte 0 of the archive, so an archive stored
@@ -294,11 +300,10 @@ A *wrong* password on an archive that really is encrypted still fails loudly wit
 
 ## Damaged archives
 
-`members()` and `scan_members()` give you the whole listing or raise — if the archive
-is damaged partway through, you get an error, never a quietly shortened list.
-`members_report()` is the other half of that deal: it hands back the members it did
-manage to read *together with* the error that stopped it. Iterating yields members up
-to the damage and then raises.
+`members()` gives you the whole listing or raises — if the archive is damaged partway
+through, you get an error, never a quietly shortened list. `members_report()` is the
+other half of that deal: it hands back the members it did manage to read *together with*
+the error that stopped it. Iterating yields members up to the damage and then raises.
 
 [Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) has the
 recipe and what each failure means.
@@ -370,6 +375,13 @@ reading where your `encoding=` would have given a different name, a
 differs from Python's `zipfile`
 `metadata_encoding` and from `unzip -O`, which apply the encoding to every ZIP name
 without the flag.
+
+Comments follow the same rule. A ZIP member comment decodes as its name would (the
+UTF-8 flag covers both), and the archive comment, which has no flag, decodes as a name
+without one. A RAR 1.5-4 comment decodes as UTF-8 when it is valid, otherwise with your
+`encoding=`, and otherwise as windows-1252. In both formats a byte the chosen encoding
+does not define becomes a surrogate escape, as in a name, so a comment can raise
+`UnicodeEncodeError` where a name can.
 
 The cost is that a legacy name whose bytes happen to form valid UTF-8 is read as UTF-8.
 For example, the Latin-1 name `Ã©.txt` is stored as the bytes `c3 a9 2e 74 78 74`,

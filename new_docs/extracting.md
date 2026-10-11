@@ -55,8 +55,8 @@ permissions gets written as it is:
 | `policy` | Names | Permissions |
 |---|---|---|
 | `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders always `rwxr-xr-x` |
-| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits |
-| `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root |
+| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
+| `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
 
 `overwrite` decides what happens when a file is already where a member would go:
 
@@ -118,6 +118,7 @@ Some members are refused under every policy, and others depend on it:
 | `caf\xe9.txt`, a name that isn't valid UTF-8 | Written as `caf%E9.txt` | Written as `caf%E9.txt` | Written as is |
 | `README`, then `readme` | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
 | A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
+| A file with mode `rw-rw-rw-` | Written as `rw-r--r--` | Written as is | Written as is |
 
 `"strict"` and `"standard"` treat `README` and `readme` as the same file on every system, since
 macOS and Windows can't tell them apart by default. An archive that writes more in total than
@@ -159,7 +160,7 @@ expands too much fails like any other member.
 
 ## Archives you trust
 
-By default, an extraction stops after 2 GiB of output, after a million entries, or when data
+By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
 expands more than 1000 times. The expansion check starts after the first 5 MiB. To extract
 something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
 

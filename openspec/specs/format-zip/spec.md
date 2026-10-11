@@ -89,12 +89,29 @@ above 2 SHALL raise `CorruptionError` (7-Zip: "Data Error"). Under ZipCrypto the
 settings are decrypted data, so both SHALL raise `CorruptionError` there, which the
 password confirmation counts as the candidate failing (see below).
 
+A member's compressed data SHALL be one stream of its codec and nothing else, as 7-Zip
+23.01 reads it (DR-3). A byte of it the codec leaves after the stream's end, a zero
+byte too, and a further stream there (a second Zstd frame, a skippable one too), SHALL
+raise `CorruptionError` (`DataAfterEndError`) once the output before it is read,
+whatever the declared size and CRC cover, for every method and for encrypted members
+too, with an accelerator on or off; under ZipCrypto the password confirmation counts it
+as the candidate failing, as above. An LZMA member without the end-marker flag
+(general-purpose bit 1) and a PPMd member end at their declared size: their input
+SHALL end there too (after an end marker right at that size for LZMA, and after PPMd8's
+end mark, which a member SHALL carry), so a declared size short of the stream's data
+SHALL raise `CorruptionError`, not `TruncatedError`. One zero byte after LZMA data
+without an end marker reads, as 7-Zip's encoder sometimes flushes it past the
+decoder's last read.
+
 #### Scenario: ZIP codec-layer decoding
 
 | Case | Expected |
 | --- | --- |
 | STORED / DEFLATE / BZIP2 / LZMA member, unencrypted | Decodes via the shared codec layer; CRC verified through `VerifyingStream` |
-| LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error"; with bit 1 clear, only a marker right at the declared size is checked |
+| LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error" |
+| LZMA member without an end marker (bit 1 clear), with junk after its data or a declared size 1000 bytes short of it | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
+| PPMd member with junk or zero bytes after its end mark, a declared size 1000 bytes short of its data, or no end mark | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
+| DEFLATE, Deflate64, BZIP2 or Zstd member with junk, zero bytes or a second stream (a Zstd frame, a skippable one too) after its stream, accelerator off or on | `CorruptionError` (7-Zip: "There are some data after the end of the payload data") |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
@@ -159,8 +176,10 @@ field `0x0017` SHALL list with `is_encrypted=True`, and opening it SHALL raise
 Listing a symlink of this kind SHALL leave `link_target` unset and emit
 `SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When stdlib
 cannot read the central directory and an archive extra data record
-(`PK\x06\x08`) sits where stdlib reads the directory (the EOCD position minus
-the recorded directory size), opening the archive SHALL
+(`PK\x06\x08`) sits where stdlib reads the directory (the position of the end
+record that follows the directory, minus the directory size that record gives; for
+a ZIP64 archive both come from the ZIP64 end record, on every Python patch level),
+opening the archive SHALL
 raise `UnsupportedFeatureError` naming Strong Encryption rather than
 `CorruptionError`.
 
@@ -196,7 +215,7 @@ rules:
 | --- | --- |
 | `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
-| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints |
+| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER` when the entry stores no data, `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` when it does, `extra["special_file_type"]` whatever the type, a directory-marked or reparse-flagged entry over such a mode included); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
 | `is_encrypted` | `flag_bits & 0x1 != 0`, or `compress_type == 99` (WinZip AES) whatever bit 0 says |
 
@@ -229,6 +248,9 @@ halts with `DiagnosticRaisedError`.
 | Creation time stored (NTFS or Extended Timestamp third time), FAT / OS2 / NTFS / VFAT host | `created` holds it (the Extended Timestamp wins); `ctime is None` |
 | Creation time stored, Unix or any other host | `created is None`; `ctime` holds it (7-Zip and libarchive on Linux and macOS store `st_ctime`) |
 | `flag_bits & 0x1`, or method 99 with bit 0 clear | `member.is_encrypted is True` |
+| Unix-origin entry named `a\` | `FILE` named `a\` on every host OS |
+| DOS-origin entry named `a\` | `DIRECTORY` named `a/` on every host OS; any data it declares is not reachable (no `open()`, extraction writes an empty directory) and `size` still reports it |
+| Header name without a trailing `/`, Unicode Path field `dir/` | `DIRECTORY` named `dir/` on every Python version |
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 | Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |
@@ -257,8 +279,9 @@ any other missing path.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
 rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:
-Info-ZIP `.zNN` segment names, non-zero classic EOCD disk fields (`0xFFFF` is the
-ZIP64 sentinel, not a disk number), and ZIP64 locator `disks > 1`. Info-ZIP
+Info-ZIP `.zNN` segment names, non-zero EOCD disk fields (the ZIP64 end record's
+when there is one; a classic `0xFFFF` is the ZIP64 sentinel, not a disk number), and
+ZIP64 locator `disks > 1`. Info-ZIP
 `zip -s` writes a genuinely spanned
 set addressed by `(disk, offset-within-disk)`, which stdlib `zipfile` cannot
 resolve; a linear join lists correctly and then reads only whichever members
@@ -478,3 +501,21 @@ when a field with a matching CRC holds invalid UTF-8, and the open fails with
 | The field's CRC does not match the stored bytes, or its version is not 1, or its name is empty | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
 | The field in the local header only | Field ignored |
 | The CRC matches, the name is not valid UTF-8 | Field ignored on Python 3.11; `CorruptionError` at open on 3.12+ (stdlib) |
+
+### Requirement: Decode ZIP comments as unflagged names are decoded
+
+APPNOTE puts a member comment under the same bit 11 as its name, and gives the archive
+comment no flag. A member comment whose bit 11 is clear, and the archive comment, SHALL
+decode as an unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
+`encoding=`, else `zip_unflagged_fallback_encoding` (default cp437). The `encoding=` and
+fallback steps SHALL be the ones a name uses. A byte the chosen codec leaves undefined
+SHALL survive as a lone surrogate, as it does in a name. A member comment whose bit 11 is
+set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and SHALL
+ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
+`MEMBER_NAME_ENCODING_INFERRED`.
+
+#### Scenario: A flagged member comment ignores `encoding=`
+
+- **WHEN** a member with bit 11 set has a comment whose bytes are not valid UTF-8, and
+  the archive is opened with `encoding="cp1251"`
+- **THEN** the comment is the cp437 reading of the bytes, not the cp1251 one

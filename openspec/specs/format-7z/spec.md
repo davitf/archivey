@@ -77,6 +77,9 @@ stays in `ArchiveInfo.comment`, and only a comment with an odd byte count is a
 | Archive stores a comment | `ArchiveInfo.comment` contains the comment |
 | Archive contains anti-items | Member list remains correct |
 | `FILES_INFO` holds an unknown property (ID `0x1A` or higher) | Property skipped; members read |
+| `ARCHIVE_PROPERTIES` holds a property of any ID | Property skipped by its size; members read |
+| `PACK_INFO`, `UNPACK_INFO` or `SUBSTREAMS_INFO` holds a property ID that 7z does not define | Property skipped by its size, as 7-Zip does; members read |
+| Bytes follow the header's final `kEnd` | `CorruptionError`, as 7-Zip reports a headers error; never an empty archive |
 | Stored name `dir\file.txt` | `name == "dir/file.txt"`; `raw_name` is the stored bytes, backslash included |
 | Stored name holds a lone surrogate (`hi` U+D800) | Every member lists; `name == "hi\ud800"`; never `CorruptionError` |
 | Comment holds a lone surrogate (`note` U+D800) | Archive opens; `ArchiveInfo.comment == "note\ud800"` |
@@ -117,6 +120,35 @@ naming that there was no match.
 | Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError` naming that there was no match |
 | Forced `format=SEVEN_Z`, `MAX_VALIDATED_CANDIDATES` (256) candidates rejected, none VALID | `CorruptionError` naming that the candidate cap was reached |
 | Packed streams after an SFX signature | Pack/header seeks use signature origin; members readable |
+
+### Requirement: Report bytes after the end of a 7z archive
+
+A 7z archive SHALL be taken to end at the later of the end of its next header
+(signature header plus `NextHeaderOffset` plus `NextHeaderSize`) and the end of its
+last packed stream (signature header plus `PackPos` plus the pack sizes), both counted
+from the signature origin and including an encoded header's packed stream. After the
+header has parsed, the reader SHALL look at most 1 MiB past that end, and a non-zero
+byte there SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="7z"`,
+`expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
+offset of that byte past the end. It is a warning by default and raises under
+`DiagnosticPolicy.strict()` (DR-3). Zero bytes after the end SHALL be silent. A
+non-zero byte at 1 MiB or more past the end goes unseen: the bound is an effort limit,
+as for the TAR trailer scan. A self-extractor's tail (the certificate table of a
+code-signed one) is reported the same way, measured from the archive's own end, not the
+file's. 7-Zip 23.01 warns "There are data after the end of archive" for any tail, zeros
+included; archivey keeps an all-zero tail silent, the DR-3 rule shared with TAR.
+
+#### Scenario: 7z trailing bytes
+
+| Case | Default policy | `strict()` |
+| --- | --- | --- |
+| Archive ends at its next header | Nothing | Opens |
+| 4 KiB of zeros after the next header | Nothing | Opens |
+| `b"JUNK"` after the next header, or after fewer than 1 MiB of zeros | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
+| Two 7z archives concatenated | First listed; `ARCHIVE_TRAILING_DATA` at 0 | `DiagnosticRaisedError` |
+| `b"JUNK"` at 1 MiB or more past the end | Nothing (past the scan bound) | Opens |
+| Packed stream after the next header, nothing after it | Nothing | Opens |
+| Empty archive (`NextHeaderSize` 0) followed by `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at 0 | `DiagnosticRaisedError` |
 
 ### Requirement: Bound 7z header count fields before allocation
 
@@ -164,18 +196,23 @@ bound only. A folder, unpack-stream, or file count over
 
 ### Requirement: Bound encoded-header decode work
 
-The system SHALL decode at most one encoded-header layer (7-Zip writes one). A
-decoded blob that is itself `kEncodedHeader` SHALL raise `CorruptionError`.
-Unpack sizes across folders of one encoded header SHALL be summed against the
-next-header size cap (`_MAX_NEXT_HEADER_SIZE`) before concatenation, not only
-per folder.
+The system SHALL decode at most one encoded-header layer (7-Zip writes one). An
+encoded header SHALL have exactly one folder, as 7-Zip requires; zero folders or more
+than one SHALL raise `CorruptionError`. The folder's unpack size SHALL be checked
+against the next-header size cap (`MAX_NEXT_HEADER_SIZE`) before decoding. The
+decoded blob SHALL start with `kHeader`: a blob that is itself `kEncodedHeader`, empty,
+or a bare `kEnd` SHALL raise `CorruptionError` and SHALL NOT open as an archive with no
+members. For a header-encrypted archive these failures count as a rejected password
+(`EncryptionError`), because a wrong key cannot be told from damaged bytes.
 
 #### Scenario: encoded-header decode bound matrix
 
 | Case | Expected |
 | --- | --- |
 | COPY encoded header whose packed bytes are that same header | `CorruptionError` at open; no hang |
-| Two encoded-header folders whose unpack sizes each fit the cap but sum past it | `CorruptionError` at decode; no concatenated buffer past the next-header cap |
+| Encoded-header folder claims an unpack size past the next-header cap | `CorruptionError` before decoding |
+| Encoded header with zero folders, or with two folders that together hold a valid plain header | `CorruptionError` at open |
+| Unencrypted encoded header that decodes to nothing, or to a bare `kEnd` | `CorruptionError` at open; never an empty archive |
 | Legitimate single-layer encoded header (including header-encrypted) | Decode once; parse the resulting plain HEADER |
 
 ### Requirement: 7z anti-items are MemberType.ANTI
@@ -275,21 +312,31 @@ byte of output past the declared size, and SHALL NOT decode the folder a second 
 The decoder MAY read the rest of the coder's packed input to produce that byte (a tail
 of streams that decode to nothing), so the check's input cost is bounded by the coder's
 packed size, the same bound as decoding the folder. A decoder error on that one byte
-(input after the end of the stream, such as AES padding after an LZMA2 end marker) is
-not surplus output. LZMA1 and PPMd coders, which 7-Zip writes without an end marker,
-SHALL stop at their declared size, so their surplus output is not detected.
+is not surplus output, except input left after the stream's end (below). LZMA1 and PPMd
+coders, which 7-Zip writes without an end marker, SHALL stop at their declared size
+and decode nothing past it; the check's read past the size is where they report input
+left after that size.
 
-A BZip2, LZMA (with an end marker), LZMA2 or Deflate coder's data SHALL be one stream,
-as 7-Zip reads it: the decoder SHALL end at the first stream's end and SHALL NOT decode
-a further stream after it as output. For BZip2 and Deflate the bytes after that end
-SHALL end the coder without a diagnostic, as AES padding does. For LZMA and LZMA2 any
-byte of the coder's input after the end marker, a zero byte included, SHALL raise
-`CorruptionError`, as 7-Zip reports a data error; the coder's input is its declared
-input size, so AES padding past it is not such a byte. An LZMA1 coder capped at its
-declared size SHALL apply this check when an end marker follows right at that size,
-and SHALL read clean when none does. Under the rapidgzip accelerator, a Deflate
-coder SHALL hand over to the standard-library decoder at its declared unpack size, so
-it reads what the standard library reads when that size stops after the first stream.
+A coder's data SHALL be one stream, as 7-Zip reads it: the decoder SHALL end at the
+first stream's end and SHALL NOT decode a further stream after it as output. Any byte
+of the coder's input after that end, a zero byte included, and a further stream there,
+SHALL raise `CorruptionError` once the output before it is read, whatever the unpack
+size and CRC count, as 7-Zip 23.01 reports a data error ("Data Error", or "There are
+some data after the end of the payload data"). The exception is Zstd and LZ4, whose
+decoders read concatenated frames as one stream: a further frame is output that counts
+against the unpack size (below), and only bytes after the last frame that start no
+frame SHALL raise. The coder's input is its declared input
+size (its pack size, or the size the coder before it declares), so AES padding past it
+is not such a byte. An LZMA1 or PPMd coder ends at its declared size: its input SHALL
+end there too, or after an end marker right at that size, and a declared size short of
+the data the stream holds SHALL raise `CorruptionError`, not `TruncatedError`, since
+the input is too long rather than short. One zero byte after an LZMA1 stream without an
+end marker reads: 7-Zip's encoder sometimes flushes it past the decoder's last read.
+What cannot be told from a valid stream is a declared size that cuts off only zero
+bytes of LZMA1 data, or the last few symbols of PPMd data where pyppmd's end flag has
+already risen: there the hidden data is zeros, or a few bits. Under the rapidgzip
+accelerator, a Deflate or BZip2 coder SHALL hand over to the standard-library decoder
+where a further stream starts, so the verdict is the standard library's.
 
 #### Scenario: coder-chain matrix
 
@@ -316,18 +363,18 @@ it reads what the standard library reads when that size stops after the first st
 | Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli coder decodes past its declared unpack size, also before a Delta or BCJ filter or in a BCJ2 branch | `CorruptionError` |
 | Same, behind AES, in a folder the password check decodes whole (one inside its 64 KiB prefix) | `EncryptionError`, with the surplus `CorruptionError` in its cause chain |
 | Same, behind AES, in a folder the password check does not decode whole | `CorruptionError` |
-| LZMA1 coder whose data decodes past its declared unpack size | Reads clean, cut at the declared size |
+| LZMA1 or PPMd coder whose data decodes 1000 bytes past its declared unpack size | `CorruptionError`, not `TruncatedError` (`7z t`: Data Error) |
+| LZMA1 or PPMd coder with junk, zero bytes or a further stream after its data | `CorruptionError` (`7z t`: Data Error) |
 | AES then Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli, decrypted input ending in AES padding | Original bytes return; the padding is not surplus |
 | Two Zstd frames or LZ4 frames in one coder | Original bytes when the unpack size counts both; `CorruptionError` when it stops after the first |
-| Two BZip2 or Deflate streams in one coder; unpack size and CRC count both | `TruncatedError` (the coder ends after the first; `7z t`: Data Error) |
-| Same; unpack size and CRC count the first | The first stream's bytes (`7z t` warns of data after the payload) |
+| Two BZip2 or Deflate streams in one coder, whatever the unpack size and CRC count | `CorruptionError` (`7z t`: data after the end of the payload data) |
+| BZip2, Deflate or Deflate64 coder with junk or zero bytes after its stream | `CorruptionError` (`7z t`: data after the end of the payload data) |
 | Two LZMA (end-marked) or LZMA2 streams in one coder, whatever the unpack size counts | `CorruptionError` (`7z t`: Data Error) |
 | LZMA (end-marked) or LZMA2 coder whose input has one more byte after the end marker, a zero too | `CorruptionError` (`7z t`: Data Error) |
 | AES then LZMA or LZMA2, decrypted input ending in AES padding | Original bytes; the pad is past the coder's input size |
-| LZMA1 coder without an end marker, with input after its data | Reads clean, cut at the declared size (`7z t`: Data Error; not detectable through liblzma) |
-| 7-Zip's own LZMA, LZMA:eos, LZMA2, `-mhe=on`, solid, `-ms=off` and BCJ2 archives | Read clean |
-| Two BZip2 or Deflate streams under rapidgzip (`use_rapidgzip` or `use_indexed_bzip2` `ON`), size and CRC counting the first | Deflate: the first stream's bytes; BZip2: `CorruptionError` (surplus) |
-| Same under rapidgzip, size and CRC counting both | Both streams' bytes (the accelerator divergence `compressed-streams` allows) |
+| LZMA1 coder without an end marker, with input after its data | `CorruptionError` (`7z t`: Data Error), except one zero byte |
+| 7-Zip's own LZMA, LZMA:eos, LZMA2, PPMd, `-mhe=on`, solid, `-ms=off` and BCJ2 archives | Read clean |
+| Two BZip2 or Deflate streams under rapidgzip (`use_rapidgzip` or `use_indexed_bzip2` `ON`), whatever the size and CRC count | `CorruptionError`, as with the accelerator off |
 
 ### Requirement: Reject unsupported codecs without fallback
 
@@ -576,7 +623,7 @@ per reader, and not past the end of its last link member. The one exception is e
 the caller abandons before the folder's last link, as the abandoned-pass bullet says. The
 consumer's own reads are covered by the bullets below.
 
-- Random-access listing (`members()`, `scan_members()`) SHALL decode no more of the
+- Random-access listing (`members()`, `members_report()`) SHALL decode no more of the
   folder for link targets than the end of its last link member.
 - A `stream_members()` pass, in either access mode, SHALL read link targets through its
   own folder decode, and a pass that reaches its end SHALL leave every link target it

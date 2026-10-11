@@ -5,7 +5,9 @@ Module split:
 - :mod:`.sevenzip_methods` — method-id registry / :class:`MethodKind`
 - :mod:`.sevenzip_parser` — signature + header property tree → :class:`SevenZipArchive`
 - :mod:`.sevenzip_pipeline` — folder coder plan/execute + encoded-header decode
-- this module — passwords, member list, solid-folder demux, CRC/encryption mapping
+- this module — passwords, member list, solid-folder demux, CRC/encryption mapping,
+  and the archive-open flow (:func:`load_sevenzip_archive`), which lives here because
+  decrypting an encoded header needs the password candidates
 
 Open path: signature → ``parse_header_block`` → (one encoded-header layer) →
 ``materialize_archive`` → list members. Member open folds the folder's packed
@@ -26,13 +28,14 @@ import io
 import re
 import stat
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from typing import BinaryIO
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
 )
@@ -66,24 +69,25 @@ from archivey.internal.backends.sevenzip_parser import (
     folder_is_encrypted,
     folder_unpack_size,
     materialize_archive,
+    packed_streams_end,
+    parse_decoded_header,
     parse_header_block,
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
-    HEADER_PASSWORD_REJECTED,
     decode_encoded_header,
-    decode_folder_to_bytes,
     encoded_header_needs_password,
     open_folder_pipeline,
-    parse_decoded_header,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import (
     KeyDerivationBudget,
+    StreamConfig,
     stream_config_from_archivey,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -112,6 +116,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
 from archivey.internal.streams.streamtools import (
     ReadableStream,
+    ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
     SolidBlockReader,
@@ -119,9 +124,12 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
-from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
+from archivey.internal.trailing_scan import first_nonzero_offset
+from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, special_file_type
+from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -133,6 +141,7 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
+    SpecialFileType,
     crc32_digest,
 )
 
@@ -243,6 +252,119 @@ def _password_to_kdf_bytes(password: bytes) -> bytes:
         return password
 
 
+HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
+
+# Omitting max_members on the archive-level entry point means the ListingLimits
+# default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
+_DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+
+
+def load_sevenzip_archive(
+    fp: BinaryIO,
+    *,
+    passwords: _PasswordCandidates | None = None,
+    key_cache: SevenZipKeyCache | None = None,
+    stream_config: StreamConfig | None = None,
+    collector: DiagnosticCollector | None = None,
+    max_members: int | None = _DEFAULT_MAX_MEMBERS,
+) -> SevenZipArchive:
+    """Two-phase header load: parse → decode encoded → re-parse → materialize.
+
+    The one open flow: :class:`SevenZipReader` and the fuzz harnesses both call it.
+    ``fp`` starts at the signature header.
+    """
+    signature = read_signature_and_next_header(fp)
+    if not signature.header_data:
+        return empty_archive(signature)
+
+    block = parse_header_block(signature.header_data, max_members=max_members)
+    header_encrypted = False
+    encoded_streams_end = 0
+    if isinstance(block, EncodedHeader):
+        header_encrypted = encoded_header_needs_password(block)
+        encoded_streams_end = packed_streams_end(block.streams)
+        block = _decode_encoded_header_block(
+            fp,
+            block,
+            passwords=passwords if passwords is not None else _PasswordCandidates(),
+            key_cache=key_cache if key_cache is not None else SevenZipKeyCache(),
+            stream_config=stream_config,
+            collector=collector,
+            max_members=max_members,
+        )
+    assert isinstance(block, PlainHeader)
+    return materialize_archive(
+        signature,
+        block,
+        is_header_encrypted=header_encrypted,
+        encoded_streams_end=encoded_streams_end,
+    )
+
+
+def _decode_encoded_header_block(
+    fp: BinaryIO,
+    encoded: EncodedHeader,
+    *,
+    passwords: _PasswordCandidates,
+    key_cache: SevenZipKeyCache,
+    stream_config: StreamConfig | None,
+    collector: DiagnosticCollector | None,
+    max_members: int | None,
+) -> PlainHeader:
+    def decode(password: bytes | None) -> bytes:
+        return decode_encoded_header(
+            fp,
+            encoded,
+            password=password,
+            key_cache=key_cache,
+            stream_config=stream_config,
+            collector=collector,
+        )
+
+    if not encoded_header_needs_password(encoded):
+        # Unencrypted self-copy or a hostile nested header stays CorruptionError.
+        return parse_decoded_header(decode(None), max_members=max_members)
+
+    def decrypt(password: bytes) -> PlainHeader:
+        # AES header decrypt has no MAC: a wrong password yields garbage that fails
+        # the codec (CorruptionError, or most often TruncatedError: wrong-key LZMA
+        # usually ends short of the declared size) or property parsing, rather
+        # than raising EncryptionError in decrypt. All are judged here, per
+        # candidate, so a wrong first candidate moves on to the next one instead of
+        # ending the attempt (D8). The cost: damaged encoded-header bytes cannot be
+        # told from a wrong key, so they read as a rejected password.
+        # UnsupportedFeatureError / PackageNotInstalledError from decode (hostile
+        # NumCyclesPower, missing cryptography) are not about the password and
+        # pass through.
+        try:
+            decoded = decode(_password_to_kdf_bytes(password))
+        except CorruptionError as exc:
+            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
+        try:
+            plain = parse_decoded_header(decoded, max_members=max_members)
+        except (
+            CorruptionError,
+            UnsupportedFeatureError,
+        ) as exc:
+            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
+        # O8: 7zAES has no password check value. Wrong-key garbage occasionally
+        # LZMA-decodes into a header that parses with zero file records (py7zr
+        # omits the encoded-header folder CRC). Legitimate writers never encrypt
+        # an empty header — treat that as a rejected password.
+        if not plain.files:
+            raise EncryptionError(HEADER_PASSWORD_REJECTED)
+        return plain
+
+    try:
+        return passwords.attempt(None, decrypt)
+    except _PasswordCandidatesExhausted as exc:
+        # Keep required-vs-rejected (D8) but restore the header surface (R1): listing
+        # needs a password is different UX from a wrong password on the header.
+        if exc.message.startswith("Password required"):
+            raise EncryptionError("Password required to decrypt the 7z header") from exc
+        raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
+
+
 def _infer_nameless_member_name(archive_name: str | None) -> str:
     return infer_member_name_from_archive(
         archive_name, strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE
@@ -283,6 +405,47 @@ class _LazyFolder:
             self._solid.close()
             self._solid = None
             self._index = None
+
+
+class _ReadAheadStream(ReadOnlyIOStream):
+    """A member's content when its first bytes were already read from its stream.
+
+    Gives ``head``, then the rest of ``rest``. ``rest`` is the member's own stream,
+    which verifies the member's size and CRC once it is read to its end. Owns
+    ``rest``. Forward-only, like the folder decode under it.
+
+    ``read(n)`` is full-count, as ``ArchiveStream`` requires of its inner stream: it
+    returns ``n`` bytes unless the member ends (ADR 0014). A read that crosses the end
+    of ``head`` takes the remainder from ``rest`` in the same call. One call is
+    enough, because ``rest`` is full-count too.
+    """
+
+    def __init__(self, head: bytes, rest: BinaryIO) -> None:
+        super().__init__()
+        self._rest = rest
+        self._head = head
+
+    def read(self, n: int = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if not self._head:
+            return self._rest.read(n)
+        if n < 0:
+            data = self._head + self._rest.read()
+            self._head = b""
+            return data
+        data, self._head = self._head[:n], self._head[n:]
+        if len(data) < n:
+            data += self._rest.read(n - len(data))
+        return data
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            self._rest.close()
+        finally:
+            super().close()
 
 
 class SevenZipReader(BaseArchiveReader):
@@ -336,10 +499,13 @@ class SevenZipReader(BaseArchiveReader):
         # folder decode. Valid only until the pass moves on; ``extract_all`` reads an
         # accepted link through it (``_link_data_stream``).
         self._pass_link: tuple[ArchiveMember, Callable[[], ArchiveStream]] | None = None
+        # A member's or coder's compressed data is the codec's whole input, so a
+        # byte its codec leaves unread is refused (``StreamConfig.refuse_input_after_end``).
         self._stream_config = stream_config_from_archivey(
             self._config,
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
+            refuse_input_after_end=True,
         )
         if not source.seekable():
             raise StreamNotSeekableError(
@@ -365,6 +531,7 @@ class SevenZipReader(BaseArchiveReader):
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+        self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
         """A source view whose ``start`` is measured from the signature header.
@@ -376,82 +543,52 @@ class SevenZipReader(BaseArchiveReader):
         return self._shared.view(self._origin + start, length)
 
     def _load_archive(self) -> SevenZipArchive:
-        """Two-phase header load: parse → decode encoded → re-parse → materialize."""
-        fp = self._view(0)
-        signature = read_signature_and_next_header(fp)
-        if not signature.header_data:
-            return empty_archive(signature)
-
-        max_members = self._config.listing_limits.max_members
-        block = parse_header_block(signature.header_data, max_members=max_members)
-        header_encrypted = False
-        if isinstance(block, EncodedHeader):
-            header_encrypted = encoded_header_needs_password(block)
-            block = self._decode_encoded_header_block(
-                fp, block, max_members=max_members
-            )
-        assert isinstance(block, PlainHeader)
-        return materialize_archive(
-            signature, block, is_header_encrypted=header_encrypted
+        return load_sevenzip_archive(
+            self._view(0),
+            passwords=self._passwords,
+            key_cache=self._key_cache,
+            stream_config=self._stream_config,
+            collector=self._diagnostics_collector,
+            max_members=self._config.listing_limits.max_members,
         )
 
-    def _decode_encoded_header_block(
-        self, fp: BinaryIO, encoded: EncodedHeader, *, max_members: int | None
-    ) -> PlainHeader:
-        def decode(password: bytes | None) -> bytes:
-            return decode_encoded_header(
-                fp,
-                encoded,
-                password=password,
-                key_cache=self._key_cache,
-                stream_config=self._stream_config,
-                collector=self._diagnostics_collector,
-            )
+    def _report_trailing_data(self) -> None:
+        """Report a non-zero byte after the end of a 7z archive.
 
-        if not encoded_header_needs_password(encoded):
-            # Unencrypted self-copy or a hostile nested header stays CorruptionError.
-            return parse_decoded_header(decode(None), max_members=max_members)
-
-        def decrypt(password: bytes) -> PlainHeader:
-            # AES header decrypt has no MAC: a wrong password yields garbage that fails
-            # the codec (CorruptionError, or most often TruncatedError: wrong-key LZMA
-            # usually ends short of the declared size) or property parsing, rather
-            # than raising EncryptionError in decrypt. All are judged here, per
-            # candidate, so a wrong first candidate moves on to the next one instead of
-            # ending the attempt (D8). The cost: damaged encoded-header bytes cannot be
-            # told from a wrong key, so they read as a rejected password.
-            # UnsupportedFeatureError / PackageNotInstalledError from decode (hostile
-            # NumCyclesPower, missing cryptography) are not about the password and
-            # pass through.
-            try:
-                decoded = decode(_password_to_kdf_bytes(password))
-            except CorruptionError as exc:
-                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
-            try:
-                plain = parse_decoded_header(decoded, max_members=max_members)
-            except (
-                CorruptionError,
-                UnsupportedFeatureError,
-            ) as exc:
-                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
-            # O8: 7zAES has no password check value. Wrong-key garbage occasionally
-            # LZMA-decodes into a header that parses with zero file records (py7zr
-            # omits the encoded-header folder CRC). Legitimate writers never encrypt
-            # an empty header — treat that as a rejected password.
-            if not plain.files:
-                raise EncryptionError(HEADER_PASSWORD_REJECTED)
-            return plain
-
+        The end is the later of the next header's end and the last packed stream's.
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``
+        (DR-3). Zero padding is silent under DR-3; 7-Zip warns about any tail, zeros
+        included. Runs after the header has parsed, so a wrong header password or a
+        damaged header is reported as that, not as this. A self-extractor's tail (the
+        certificate table of a code-signed one) is reported too: it is outside the
+        archive whatever wrote it.
+        """
+        fp = self._view(self._archive.end_offset)
         try:
-            return self._passwords.attempt(None, decrypt)
-        except _PasswordCandidatesExhausted as exc:
-            # Keep required-vs-rejected (D8) but restore the header surface (R1): listing
-            # needs a password is different UX from a wrong password on the header.
-            if exc.message.startswith("Password required"):
-                raise EncryptionError(
-                    "Password required to decrypt the 7z header"
-                ) from exc
-            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
+            found = first_nonzero_offset(fp)
+        finally:
+            fp.close()
+        if found is None:
+            return
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            message=(
+                "7z archive continues past its end: a non-zero byte appears "
+                f"{found} bytes after the end of its next header and packed streams. "
+                "The listing does not account for it (this file may hold something "
+                "appended to the archive)."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="7z",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found,
+                observed_kind="nonzero",
+            ),
+            logger=backends_logger,
+        )
 
     def _init_folder_caches(self, archive: SevenZipArchive) -> None:
         """Derive per-folder indexes used by listing and open.
@@ -562,7 +699,11 @@ class SevenZipReader(BaseArchiveReader):
             if not member.is_file:
                 if member.type is MemberType.SYMLINK and raw.folder_index is not None:
                     _enter_folder(raw.folder_index)
-                    self._reach_pass_link(member, raw.folder_index, folder.get)
+                    content = self._reach_pass_link(
+                        member, raw.folder_index, folder.get
+                    )
+                    if content is not None:
+                        return self._register_public_stream(content)
                 return None
             # Registered like the base class's lazy pass streams, so the pass takes
             # the one live-stream slot and is refused beside a live ``open()``.
@@ -606,7 +747,7 @@ class SevenZipReader(BaseArchiveReader):
         member: ArchiveMember,
         folder_index: int,
         folder_reader: Callable[[int, ArchiveMember], SolidBlockReader],
-    ) -> None:
+    ) -> ArchiveStream | None:
         """A data pass has reached ``member``, a symlink whose target is its data.
 
         The pass yields no stream for it, and its folder decoder only moves when a later
@@ -616,6 +757,9 @@ class SevenZipReader(BaseArchiveReader):
         through its own decoder, and keeps them for finalization. Otherwise the pass
         only offers its decoder for this one member, which is how ``extract_all``
         reads an accepted link without a second decode.
+
+        Returns the member's content when those bytes show it is a file and not a link
+        (see ``_capture_link_data``); the pass yields that stream with it.
         """
 
         def opener() -> ArchiveStream:
@@ -628,37 +772,70 @@ class SevenZipReader(BaseArchiveReader):
             and member.link_target is None
             and not member._link_target_resolved
         ):
-            self._capture_link_data(member, opener)
-        else:
-            self._pass_link = (member, opener)
+            return self._capture_link_data(member, opener, in_pass=True)
+        self._pass_link = (member, opener)
+        return None
 
     def _capture_link_data(
-        self, member: ArchiveMember, opener: Callable[[], ArchiveStream]
-    ) -> None:
+        self,
+        member: ArchiveMember,
+        opener: Callable[[], ArchiveStream],
+        *,
+        in_pass: bool = False,
+    ) -> ArchiveStream | None:
         """Read ``member``'s link bytes now and keep them for its resolution.
 
         Reads what ``_read_link_target_data`` would (and nothing for a member it refuses
         by size), so resolving over the kept bytes answers exactly as a direct read.
         A read that fails is kept as its exception and raised again then.
+
+        ``in_pass``: the caller is a data pass about to yield ``member``. If the bytes
+        are a reparse point's and are not a link buffer, the member is resolved now,
+        which re-types it to a file, as listing does. The pass then has to yield its
+        content: its decoder is past these bytes and cannot go back. So this returns
+        a stream that gives the bytes already read and then the rest of the member.
+        Deciding only at EOF dropped that content without an error.
         """
         member_id = member._member_id
         assert member_id is not None
         if member_id in self._link_data:
-            return
+            return None
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
         is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
         if self._link_data_refused_by_size(member, is_reparse_point=is_reparse_point):
-            return
-        try:
-            with opener() as stream:
+            return None
+        with ExitStack() as owned:
+            stream = owned.enter_context(opener())
+            try:
                 data = self._read_bounded_link_data(
                     stream, is_reparse_point=is_reparse_point
                 )
-        except ArchiveyError as exc:
-            self._link_data[member_id] = exc
-            return
-        self._link_data[member_id] = data
+            except ArchiveyError as exc:
+                self._link_data[member_id] = exc
+                return None
+            self._link_data[member_id] = data
+            if not (
+                in_pass
+                and is_reparse_point
+                and bool(data)
+                and parse_reparse_data(data) is None
+            ):
+                return None
+            self._resolve_link_target(member)
+            if member.type is not MemberType.FILE:
+                # A directory-shaped entry stays a link (`_apply_reparse_data`).
+                return None
+            content = self._wrap_member_stream(
+                _ReadAheadStream(data, stream),
+                member.name,
+                size=member.size,
+                track_output=False,
+                seekable=False,
+            )
+            # The returned stream owns ``stream`` now.
+            owned.pop_all()
+            return content
 
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Sweep each folder holding one of ``members`` once, up to its last link.
@@ -786,6 +963,11 @@ class SevenZipReader(BaseArchiveReader):
             if _is_windows_reparse_point(attrs)
             else MemberExtra()
         )
+        special = self._special_file_type(record)
+        if special is not None:
+            # Whatever the type decided above, the key records what the mode said, so
+            # a reparse point that settles or re-types to FILE keeps it (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         ctime = None
         if created is not None and written_on_unix:
             created, ctime = None, created
@@ -822,6 +1004,12 @@ class SevenZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if special is not None and member.type is MemberType.FILE:
+            # member.type, not member_type: the settle above can re-type a reparse
+            # point with no reparse data to the fallback FILE. A reparse point whose
+            # data turns out not to be a link buffer is re-typed later, when the
+            # target is resolved, and `_apply_reparse_data` emits for it then.
+            self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             self._emit_timestamp_invalid(member, index, issue)
         # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
@@ -865,17 +1053,12 @@ class SevenZipReader(BaseArchiveReader):
                     return MemberType.SYMLINK
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
-                if attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION and is_special_file_mode(
-                    unix_mode
-                ):
-                    # A device, FIFO or socket (7-Zip and p7zip store them with no
-                    # data). Unlike the symlink and directory tests above, this one
-                    # also needs 0x8000. A Windows attribute above 0xFFFF can land on
-                    # a low file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as
-                    # S_IFCHR, while no defined attribute reaches S_IFDIR (0x4000) or
-                    # S_IFLNK (0xA000). Misreading a Windows file as a device would
-                    # make it unextractable, so a high word without the flag stays
-                    # FILE here.
+                if record.emptystream and self._special_file_type(record) is not None:
+                    # A device, FIFO or socket with no stream (7-Zip and p7zip store
+                    # them that way). A record with a stream is a FILE whatever its
+                    # mode says, as 7-Zip reads it: the bytes are the content
+                    # (DR-25), and ``extra["special_file_type"]`` keeps the stored
+                    # type either way.
                     return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
@@ -884,6 +1067,26 @@ class SevenZipReader(BaseArchiveReader):
                 # when the data turns out not to be a link buffer.
                 return MemberType.SYMLINK
         return self._member_type_ignoring_reparse(record)
+
+    @staticmethod
+    def _special_file_type(record: SevenZipFileRecord) -> SpecialFileType | None:
+        """The stored special type (device, FIFO, socket) of ``record``, from the Unix
+        mode in its attribute high word, or ``None``.
+
+        Unlike the symlink and directory tests, this needs the ``0x8000`` Unix-extension
+        bit as well as the mode. A Windows attribute above 0xFFFF can land on a low
+        file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as S_IFCHR, while no
+        defined attribute reaches S_IFDIR (0x4000) or S_IFLNK (0xA000). Misreading a
+        Windows file as a device would make it unextractable, so a high word without the
+        flag is not special.
+        """
+        attrs = record.attributes
+        if attrs is None or not attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION:
+            return None
+        unix_mode = attrs >> 16
+        if not unix_mode:
+            return None
+        return special_file_type(unix_mode)
 
     def _member_type_ignoring_reparse(self, record: SevenZipFileRecord) -> MemberType:
         """What the entry is by everything except the reparse-point attribute bit."""
@@ -1291,6 +1494,7 @@ class SevenZipReadBackend(ReadBackend):
     )
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SFX_HIT_VALIDATOR = staticmethod(validate_sevenzip_signature_header)
+    SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None
@@ -1326,10 +1530,8 @@ class SevenZipReadBackend(ReadBackend):
 
 register_reader(SevenZipReadBackend)
 
-# Re-exports used by fuzz harnesses / older imports.
 __all__ = [
     "SevenZipReadBackend",
     "SevenZipReader",
-    "decode_folder_to_bytes",
-    "open_folder_pipeline",
+    "load_sevenzip_archive",
 ]

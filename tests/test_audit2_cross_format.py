@@ -73,19 +73,25 @@ def _vint(buf: bytes, pos: int) -> tuple[int, int]:
 
 
 def _rar5_blocks(data: bytes) -> list[tuple[int, int, int, int]]:
-    """``(block_pos, block_type, header_end, data_size)`` for every RAR5 block."""
+    """``(block_pos, block_type, header_end, data_size)`` for every RAR5 block.
+
+    Volume padding after the end block (``-v`` sets) walks as zero-typed blocks, and
+    a tail too short to hold a header ends the walk."""
     pos = 8
     blocks = []
     while pos < len(data):
-        header_size, start = _vint(data, pos + 4)
-        p = start
-        block_type, p = _vint(data, p)
-        flags, p = _vint(data, p)
-        data_size = 0
-        if flags & 0x01:
-            _, p = _vint(data, p)
-        if flags & 0x02:
-            data_size, p = _vint(data, p)
+        try:
+            header_size, start = _vint(data, pos + 4)
+            p = start
+            block_type, p = _vint(data, p)
+            flags, p = _vint(data, p)
+            data_size = 0
+            if flags & 0x01:
+                _, p = _vint(data, p)
+            if flags & 0x02:
+                data_size, p = _vint(data, p)
+        except IndexError:
+            break
         blocks.append((pos, block_type, start + header_size, data_size))
         pos = start + header_size + data_size
     return blocks
@@ -264,9 +270,9 @@ def _assert_truncated_listing(
     with open_archive(
         io.BytesIO(data), password=password, streaming=streaming
     ) as reader:
-        # members() is random-access only; scan_members() is the streaming listing.
+        # members() is random-access only; a streaming pass raises at the damage.
         with pytest.raises(TruncatedError):
-            reader.scan_members() if streaming else reader.members()
+            list(reader) if streaming else reader.members()
 
 
 @requires("cryptography")
@@ -388,29 +394,35 @@ _WRONG_PASSWORD_CASE = pytest.param(
 )
 
 
-@requires("cryptography")
-@pytest.mark.parametrize(
-    ("password", "error", "message"),
-    [
-        pytest.param(
-            _HP_PASSWORD,
-            CorruptionError,
-            "RAR3 FILE header CRC mismatch",
-            id="right-password",
-        ),
-        _WRONG_PASSWORD_CASE,
-    ],
-)
-def test_rar4_header_encrypted_damage_after_a_proven_key_is_corruption(
-    password: str, error: type[Exception], message: str
-) -> None:
-    """Once a CRC16 match has proved the password, a later header whose CRC16 does
-    not match is damage. Bit 0 of byte 164 is in the second FILE header's
-    ciphertext, past the first encrypted header that proved the key."""
+def _rar4_hp_second_header_damaged() -> bytes:
+    """Bit 0 of byte 164 is in the second FILE header's ciphertext, past the first
+    encrypted header, whose CRC16 match proves the key."""
     data = bytearray(_hp_fixture("encrypted_header__rar4.rar"))
     data[164] ^= 1
-    with pytest.raises(error, match=message):
-        parse_rar_archive(io.BytesIO(bytes(data)), password=password)
+    return bytes(data)
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_damage_after_a_proven_key_is_corruption() -> None:
+    """Once a CRC16 match has proved the password, a later header whose CRC16 does
+    not match is damage: the members before it list, then CorruptionError."""
+    data = _rar4_hp_second_header_damaged()
+    archive = parse_rar_archive(io.BytesIO(data), password=_HP_PASSWORD)
+    assert [m.filename for m in archive.members] == ["file1.txt"]
+    assert archive.damaged is not None
+    assert "RAR3 FILE header CRC mismatch" in archive.damaged
+    with open_archive(io.BytesIO(data), password=_HP_PASSWORD) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == ["file1.txt"]
+        assert isinstance(report.error, CorruptionError)
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_damage_with_a_wrong_password_is_a_wrong_password() -> (
+    None
+):
+    with pytest.raises(EncryptionError, match=r"wrong password\?"):
+        parse_rar_archive(io.BytesIO(_rar4_hp_second_header_damaged()), password="nope")
 
 
 @requires("cryptography")
@@ -480,39 +492,41 @@ def test_rar4_header_encrypted_later_volume_cut_in_its_first_header_is_truncated
     )
 
 
-@requires("cryptography")
-@pytest.mark.parametrize(
-    ("password", "error", "message"),
-    [
-        pytest.param(
-            _HP_PASSWORD,
-            CorruptionError,
-            "RAR3 FILE header CRC mismatch",
-            id="right-password",
-        ),
-        _WRONG_PASSWORD_CASE,
-    ],
-)
-def test_rar4_header_encrypted_end_block_proves_the_key_for_the_next_volume(
-    password: str, error: type[Exception], message: str
-) -> None:
-    """Volume 1's only encrypted header is its end block. Its CRC16 match proves the
-    password like any other header's, so damage in volume 2's first encrypted header
-    is corruption, not a wrong password.
-
-    Volume 1 is the fixture's MARK and MAIN (20 bytes) and its end block, re-encrypted
-    to carry the next-volume flag. Volume 2 is the fixture with bit 0 of byte 60
-    flipped, inside its first encrypted header's ciphertext (salt at 20)."""
+def _rar4_hp_set_damaged_in_volume2() -> tuple[bytes, bytes]:
+    """Volume 1 is the fixture's MARK and MAIN (20 bytes) and its end block,
+    re-encrypted to carry the next-volume flag. Volume 2 is the fixture with bit 0 of
+    byte 60 flipped, inside its first encrypted header's ciphertext (salt at 20)."""
     complete = _hp_fixture("encrypted_header__rar4.rar")
     volume1 = _rar3_reencrypt_header(
         complete[:20] + complete[-24:], 20, 16, _rar3_endarc_next_volume
     )
     volume2 = bytearray(complete)
     volume2[60] ^= 1
-    with pytest.raises(error, match=message):
-        parse_rar_volumes(
-            [io.BytesIO(volume1), io.BytesIO(bytes(volume2))], password=password
-        )
+    return volume1, bytes(volume2)
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_end_block_proves_the_key_for_the_next_volume() -> None:
+    """Volume 1's only encrypted header is its end block. Its CRC16 match proves the
+    password like any other header's, so damage in volume 2's first encrypted header
+    is corruption, not a wrong password."""
+    volume1, volume2 = _rar4_hp_set_damaged_in_volume2()
+    archive = parse_rar_volumes(
+        [io.BytesIO(volume1), io.BytesIO(volume2)], password=_HP_PASSWORD
+    )
+    assert archive.members == []
+    assert archive.damaged is not None
+    assert "RAR3 FILE header CRC mismatch" in archive.damaged
+    assert "(volume 2 of the set" in archive.damaged
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_set_damage_with_a_wrong_password_is_a_wrong_password() -> (
+    None
+):
+    volume1, volume2 = _rar4_hp_set_damaged_in_volume2()
+    with pytest.raises(EncryptionError, match=r"wrong password\?"):
+        parse_rar_volumes([io.BytesIO(volume1), io.BytesIO(volume2)], password="nope")
 
 
 @requires("cryptography")
@@ -650,13 +664,16 @@ _RAR5_ENDARC = 5
 
 
 def _endarc_block(data: bytes, version: int) -> tuple[int, int]:
-    """``(block_pos, header_end)`` of the end-of-archive block, the writer's last."""
+    """``(block_pos, header_end)`` of the end-of-archive block: the last block of
+    that type. A RAR5 ``-v`` volume can be padded after it, and the padding walks
+    as further blocks, so the last block is not always the end block."""
     if version == 4:
         block_pos, block_type, header_end, _size = _rar4_blocks(data)[-1]
         assert block_type == _RAR4_ENDARC  # precondition
     else:
-        block_pos, block_type, header_end, _size = _rar5_blocks(data)[-1]
-        assert block_type == _RAR5_ENDARC  # precondition
+        ends = [b for b in _rar5_blocks(data) if b[1] == _RAR5_ENDARC]
+        assert ends  # precondition
+        block_pos, _type, header_end, _size = ends[-1]
     return block_pos, header_end
 
 
@@ -853,6 +870,98 @@ def test_rar_volume_set_damaged_endarc_in_every_volume_reports_each_volume(
         assert diagnostic.context.observed_bytes == offset
 
 
+def _flip_endarc_type(data: bytes, version: int) -> bytes:
+    """Overwrite the end block's type byte with a FILE header's, so its CRC fails
+    and the walk does not take it for an end block: a damaged header after the
+    last member."""
+    block_pos, _header_end = _endarc_block(data, version)
+    if version == 4:
+        type_at, file_type = block_pos + 2, 0x74
+    else:
+        type_at, file_type = block_pos + 4 + 1, 2  # CRC32, one-byte size vint
+    out = bytearray(data)
+    out[type_at] = file_type
+    return bytes(out)
+
+
+@pytest.mark.parametrize(
+    ("names", "version"),
+    [
+        pytest.param(("tinyvol.part1.rar", "tinyvol.part2.rar"), 5, id="rar5"),
+        pytest.param(("tinyvol_rnn.rar", "tinyvol_rnn.r00"), 4, id="rar4"),
+    ],
+)
+def test_rar_volume_set_damaged_header_follows_a_split_member(
+    tmp_path: Path, names: tuple[str, str], version: int
+) -> None:
+    """Volume 1's last header is damaged and not recognised as an end block, but
+    the member header before it (CRC intact) says its data continues. The walk
+    follows it into volume 2, as for a recognised damaged end block and a missing
+    middle volume (DR-2): the next volume's first header is at its own offset 0,
+    so the damaged header's size is not needed to find it. The whole set lists and
+    reads, then CorruptionError names volume 1. Fails if the walk drops the
+    next-volume signal of a volume that ended at a damaged header. The member is
+    stored, so the read joins the volumes natively and needs no unrar."""
+    for name in names:
+        (tmp_path / name).write_bytes((_RAR_FIXTURES / name).read_bytes())
+    with open_archive(tmp_path / names[0]) as reader:
+        listed = [m.name for m in reader.members()]
+        expected = {m.name: reader.read(m) for m in reader.members() if m.is_file}
+    first = tmp_path / names[0]
+    first.write_bytes(_flip_endarc_type(first.read_bytes(), version))
+    with open_archive(first) as reader:
+        report = reader.members_report()
+        assert {m.name: reader.read(m) for m in report if m.is_file} == expected
+    assert isinstance(report.error, CorruptionError)
+    assert not isinstance(report.error, TruncatedError)
+    assert "header CRC mismatch" in str(report.error)
+    assert "(volume 1 of the set" in str(report.error)
+    # Without volume 2 the split member cannot be read, and both faults are named.
+    (tmp_path / names[1]).unlink()
+    with open_archive(first) as reader:
+        report = reader.members_report()
+    assert [m.name for m in report] == listed
+    assert isinstance(report.error, TruncatedError)
+    assert "volume 2 is missing" in str(report.error)
+    assert "header CRC mismatch" in str(report.error)
+
+
+def test_rar_volume_set_damaged_header_lists_the_next_volumes_members(
+    tmp_path: Path,
+) -> None:
+    """Volume 1 of ``tinyvol_cut`` holds ``a.txt`` whole and the start of ``b.txt``,
+    so ``c.txt``'s header is in volume 2. With volume 1's last header damaged (and
+    not recognised as an end block: the volume is padded after it), the walk still
+    follows ``b.txt`` into volume 2 and lists that volume's own members, in order,
+    before the error. Only part1 and part2 are present, so ``c.txt`` runs into the
+    absent part3 and the error is the incomplete-set ``TruncatedError``, naming
+    both faults. Every member is stored, so the reads need no unrar."""
+    names = ("tinyvol_cut.part1.rar", "tinyvol_cut.part2.rar")
+    for name in names:
+        (tmp_path / name).write_bytes((_RAR_FIXTURES / name).read_bytes())
+    first = tmp_path / names[0]
+    data = first.read_bytes()
+    block_pos, header_end = _endarc_block(data, 5)
+    assert header_end < len(data)  # precondition: padding follows the end block
+    with open_archive(first) as reader:
+        # c.txt continues into the absent part3 even before the damage.
+        expected = {m.name: reader.read(m) for m in list(reader.members_report())[:2]}
+    first.write_bytes(_flip_endarc_type(data, 5))
+    with open_archive(first) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report] == ["a.txt", "b.txt", "c.txt"]
+        for member in report:
+            if member.name != "c.txt":
+                assert reader.read(member) == expected[member.name]
+    assert isinstance(report.error, TruncatedError)
+    message = str(report.error)
+    assert "volume 3 is missing" in message
+    assert "header CRC mismatch" in message
+    assert f"the header starts at byte {block_pos}" in message
+    assert "no later member of that volume is listed" in message
+    assert "(volume 1 of the set" in message
+
+
 def _rar3_hp_damaged_endarc(data: bytes) -> bytes:
     """Flip a CRC16 byte inside the encrypted end block, the file's last 24 bytes
     (8 salt bytes, then one cipher block)."""
@@ -993,42 +1102,67 @@ def _flip_block_type_to_endarc(data: bytes, version: int, which: str) -> bytes:
 @pytest.mark.parametrize("which", ["main", "second_file"])
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
-def test_rar_header_whose_type_byte_reads_as_endarc_stays_corruption(
+def test_rar_header_whose_type_byte_reads_as_endarc_is_a_damaged_header(
     fixture: str, version: int, streaming: bool, which: str
 ) -> None:
     """The type of a header whose CRC failed is not data either: one flipped byte
     turns a MAIN or FILE header's type into the end block's. Such a header has
-    members after it, so it is not taken for the end of the archive, and the
-    walk raises CorruptionError as for any other damaged header. unrar 7.00 on
-    the second_file cases lists only file1.txt and `unrar t` exits 3."""
+    members after it, so it is not taken for the end of the archive, and it is
+    handled as any other damaged header: MAIN fails the open, and a FILE header
+    ends the listing after the members before it with CorruptionError. unrar
+    7.00 on the second_file cases lists only file1.txt and `unrar t` exits 3."""
     data = _flip_block_type_to_endarc(
         (_RAR_FIXTURES / fixture).read_bytes(), version, which
     )
-    with pytest.raises(CorruptionError):
+    seen: list[str] = []
+    with pytest.raises(CorruptionError) as excinfo:
         with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-            _members_and_bytes(reader)
+            for member, _stream in reader.stream_members():
+                seen.append(member.name)
+    assert not isinstance(excinfo.value, TruncatedError)
+    assert seen == ([] if which == "main" else ["file1.txt"])
+    if which == "main":
+        with pytest.raises(CorruptionError):
+            parse_rar_archive(io.BytesIO(data), password=None)
+
+
+def _assert_damaged_after_the_listing(data: bytes, members: int) -> None:
+    """The walk lists ``members`` members and stops at a header that failed its CRC;
+    the reader raises ``CorruptionError`` after them (DR-2), not a truncation."""
+    archive = parse_rar_archive(io.BytesIO(data), password=None)
+    assert len(archive.members) == members
+    assert archive.damaged is not None
+    assert "header CRC mismatch" in archive.damaged
+    assert archive.end_block_damaged_volumes == {}
+    with open_archive(io.BytesIO(data)) as reader:
+        report = reader.members_report()
+        assert len(report.members) == members
+        assert isinstance(report.error, CorruptionError)
+        assert not isinstance(report.error, TruncatedError)
 
 
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
-def test_rar_damaged_endarc_followed_by_bytes_stays_corruption(
+def test_rar_damaged_endarc_followed_by_bytes_is_corruption_after_the_listing(
     fixture: str, version: int
 ) -> None:
-    """A damaged end block is taken as one only where the file ends right after
-    it, which a header with members after it cannot fake."""
-    data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version) + b"\0"
-    with pytest.raises(CorruptionError):
-        parse_rar_archive(io.BytesIO(data), password=None)
+    """A damaged end block is taken as one only where nothing but zero padding
+    follows it, which a header with members after it cannot fake. Otherwise it is a
+    damaged header like any other: the members before it list, then CorruptionError.
+    Zeros after it are covered in test_rar_trailing_data.py."""
+    data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version) + b"\x01"
+    _assert_damaged_after_the_listing(data, 6)
 
 
 @pytest.mark.parametrize("shape", ["data_area", "oversized"])
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
-def test_rar_damaged_last_block_not_shaped_as_an_end_block_stays_corruption(
+def test_rar_damaged_last_block_not_shaped_as_an_end_block_is_corruption(
     fixture: str, version: int, shape: str
 ) -> None:
     """At the end of the file, a damaged header typed as the end block is still
     refused when its shape is not an end block's: it declares a data area (RAR5
     data-area flag, RAR3 long-block flag, as a FILE header does), or its header
-    is longer than an end block's."""
+    is longer than an end block's. The members before it list, then
+    CorruptionError."""
     out = bytearray(_edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version))
     block_pos, header_end = _endarc_block(bytes(out), version)
     assert header_end == len(out)  # precondition: the end block is last
@@ -1044,8 +1178,82 @@ def test_rar_damaged_last_block_not_shaped_as_an_end_block_stays_corruption(
     else:
         out[block_pos + 4] += 1  # one-byte size vint: one byte past the end flags
         out += b"\0"
-    with pytest.raises(CorruptionError):
-        parse_rar_archive(io.BytesIO(bytes(out)), password=None)
+    _assert_damaged_after_the_listing(bytes(out), 6)
+
+
+# ---------------------------------------------------------------------------
+# A damaged member header in the middle lists the members before it (DR-2)
+# ---------------------------------------------------------------------------
+# One flipped byte in the second FILE header, its CRC left as it was. TAR lists the
+# members before such damage and then raises; RAR used to raise CorruptionError at
+# open and list nothing. unrar 7.00 lists the first member, reports "the file header
+# is corrupt" for the second, and exits 3.
+
+_FILE_TYPES = {4: 0x74, 5: 2}
+
+
+def _damage_second_file_header(data: bytes, version: int) -> bytes:
+    blocks = _rar4_blocks(data) if version == 4 else _rar5_blocks(data)
+    _pos, _type, header_end, _size = [
+        b for b in blocks if b[1] == _FILE_TYPES[version]
+    ][1]
+    out = bytearray(data)
+    out[header_end - 1] ^= 0x01  # the last header byte: name or extra area
+    return bytes(out)
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
+def test_rar_damaged_member_header_lists_the_members_before_it(
+    fixture: str, version: int, streaming: bool
+) -> None:
+    data = (_RAR_FIXTURES / fixture).read_bytes()
+    with open_archive(io.BytesIO(data)) as reader:
+        first = _members_and_bytes(reader)[0]
+    damaged = _damage_second_file_header(data, version)
+    with open_archive(io.BytesIO(damaged), streaming=streaming) as reader:
+        seen: list[tuple[str, bytes | None]] = []
+        with pytest.raises(CorruptionError, match="header CRC mismatch") as excinfo:
+            for member, stream in reader.stream_members():
+                seen.append((member.name, stream.read() if stream else None))
+        assert not isinstance(excinfo.value, TruncatedError)
+        assert seen == [first]
+    with open_archive(io.BytesIO(damaged), streaming=streaming) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == [first[0]]
+        assert isinstance(report.error, CorruptionError)
+        assert not isinstance(report.error, TruncatedError)
+
+
+def test_rar4_unparsable_field_in_a_damaged_member_header_lists_the_prefix() -> None:
+    """RAR 1.5-4 parses a FILE header's fields before its CRC16, since they give the
+    bytes it covers. A name size past the header's end, with the CRC16 left as it
+    was, is the same damage as a bad CRC16."""
+    data = (_RAR_FIXTURES / "basic_nonsolid__rar4.rar").read_bytes()
+    block_pos = [b[0] for b in _rar4_blocks(data) if b[1] == 0x74][1]
+    out = bytearray(data)
+    # CRC, type, flags, size, then pack, unpacked size, host OS, file CRC, time,
+    # version and method: the name size is at byte 26 of the header.
+    struct.pack_into("<H", out, block_pos + 26, 0xFFFF)
+    _assert_damaged_after_the_listing(bytes(out), 1)
+
+
+@pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
+def test_rar_damaged_main_header_stays_corruption_at_open(
+    fixture: str, version: int
+) -> None:
+    """Nothing precedes MAIN, and its flags (solid, volume, header encryption) are
+    needed to read anything after it, so damage there still fails the open. The
+    error is the public ``CorruptionError`` itself, not the walk's private CRC
+    subclass: ``scripts/scan_archives.py`` reports ``type(exc).__name__``."""
+    data = bytearray((_RAR_FIXTURES / fixture).read_bytes())
+    blocks = _rar4_blocks(bytes(data)) if version == 4 else _rar5_blocks(bytes(data))
+    main_type = 0x73 if version == 4 else 1
+    _pos, _type, header_end, _size = next(b for b in blocks if b[1] == main_type)
+    data[header_end - 1] ^= 0x01
+    with pytest.raises(CorruptionError, match="CRC mismatch") as excinfo:
+        parse_rar_archive(io.BytesIO(bytes(data)), password=None)
+    assert type(excinfo.value) is CorruptionError
 
 
 # The TAR twin of the rule above (maintainer ruling 2026-10-06): a zero block ends

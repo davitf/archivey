@@ -36,7 +36,7 @@ The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.br`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` |
 | Has a filename but no recognized compressor extension | Append `.uncompressed`; do not strip arbitrary extensions |
 | Anonymous stream | `data` |
@@ -99,7 +99,7 @@ format-specific reliability limits:
 | BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` has no size trailer (best-effort truncation via nonzero leftover bits) |
 | XZ, ZST | Header size when encoder wrote it; otherwise `None` |
 | LZ4 | Frame content-size field when present; otherwise `None` |
-| LZIP | Available from the trailer on a seekable source |
+| LZIP | Available from the trailer on a seekable source that is not another archive's member stream |
 | LZMA Alone | 8-byte Alone header size when not the unknown marker (`0xFFFFFFFFFFFFFFFF`); otherwise `None` |
 
 Availability of an index/trailer-derived size SHALL be decided by **the source's shape**,
@@ -109,6 +109,33 @@ an indexed decompressor backend and resolve accelerator `AUTO`, and they MUST NO
 what metadata a member reports. A seekable source SHALL yield the same `member.size` with
 and without the declaration; a non-seekable source SHALL yield `None` for every
 index/trailer-derived size, and no probe SHALL force a decompression pass to obtain one.
+Another archive's member stream, bare or under a pass-through buffer
+(`seek_is_expensive`), counts as a source that cannot reach its end cheaply, so the size
+is `None`. The xz index and the lzip trailers sit at the end, and on a member stream
+that decompresses (a deflated ZIP entry, a `.gz`'s content) reaching them decompresses
+the whole member. Member streams are treated this way as a group: a stored ZIP entry or
+a TAR member, whose seek is a slice of its container, also reports `size=None`.
+
+`member.compressed_size` SHALL be the source's length when that is cheap to learn. A
+member stream from another archive (`seek_is_expensive`) SHALL report its advertised
+`size`, the length its container's header declares, whether or not the member stream is
+seekable: the value MUST NOT depend on the outer archive's `seekable_members`. Any other
+seekable source SHALL report its cheap size (a path's `stat`, a `BytesIO`'s buffer, a
+caller stream's `size` attribute), else one `seek(0, SEEK_END)` when the seek is cheap.
+A caller's non-seekable stream SHALL report `None`, also when it has a `size` attribute,
+and so SHALL a member stream that advertises no length, rather than seek to the end.
+
+The rule turns on seekability, not on trust: a seekable caller stream's `size` attribute
+is reported unchecked, and on a pipe there is no `SEEK_END` to answer instead, so `None`
+is the answer it always had. The value is more than metadata. Two extraction ratio
+guards divide by a source length: the per-member guard by `compressed_size`, and the
+archive-wide guard by `BaseArchiveReader.compressed_source_size`. Both follow this rule
+(`safe-extraction`, "Archive-wide decompression ratio for solid containers"), so a
+caller's `size` attribute on a pipe reaches neither, and the live ratio applies. A
+member stream's declared length is unchecked too: a ZIP member that holds fewer bytes
+than it declares is refused with `TruncatedError` only after its payload is decoded,
+and a TAR member stream answers `SEEK_END` from the same declared length, so no seek
+could learn more. For a nested archive, `max_extracted_bytes` is the bound that holds.
 
 When a decoder learns the true uncompressed size after EOF, the member MAY be
 updated to that byte count.
@@ -120,9 +147,15 @@ updated to that byte count.
 | `.gz` opened | Single member size is `None` |
 | `.bz2` before full decompression | Size is `None` |
 | `.bz2` fully read to EOF | Size may update to actual uncompressed byte count |
-| `.lz` opened from a seekable source | Size is available from the trailer |
+| `.lz` opened from a seekable source, not a member stream | Size is available from the trailer |
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None`; no decode pass is forced |
+| `.xz` / `.lz` opened from another archive's member stream | Size is `None`; the member is not seeked to its end |
+| `.xz` / `.lz` opened from a stored ZIP entry or a TAR member | Size is `None`, as for any member stream, though that seek would be a slice |
+| `.gz` from a path or `BytesIO` | `compressed_size` is the source's length |
+| `.gz` from a caller's pipe with a `size` attribute | `compressed_size` is `None` |
+| `.gz` from a member stream that advertises its length, seekable or not | `compressed_size` is that length; no seek to the end |
+| `.gz` from a member stream with no advertised length | `compressed_size` is `None`; no seek to the end |
 | Alone stream with known header size | `member.size` equals that size |
 | Alone stream with unknown-size marker | Size is `None` until EOF may update it |
 | Truncated `.Z` with nonzero leftover bits | Available bytes delivered; next `read()` raises `TruncatedError` |
@@ -203,13 +236,13 @@ caller does a plain `open_archive()` and never asks to `seek()`.
   false-matches in large compressed data). After a full read it would add nothing: the
   decoder has already checked every member's CRC, and a digest is worth having only
   before a read (to skip one) or to verify one.
-- **LZIP:** on a seekable source, surface `CRC32` of the whole synthetic member from the
+- **LZIP:** on a seekable source that is not a member stream, surface `CRC32` of the whole synthetic member from the
   lzip index. For multi-member files, the value SHALL equal
   `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
   each member's exact uncompressed `data_size` (combine algebra). Single-member
   degenerates to the trailer CRC.
-- **Non-seekable source:** omit digests that require a trailer/index peek (no forced
-  decode).
+- **Non-seekable source, or one whose seek may re-decode** (a member stream): omit
+  digests that require a trailer/index peek (no forced decode).
 - **BZ2, XZ, ZLIB, BR, `.Z`:** no cheap whole-member stored digest — omit. (Zlib's
   RFC 1950 Adler-32 trailer is verified by the decompressor on read; it is not surfaced
   on `member.hashes` because the wrapper has no size fields for a reliable
@@ -226,6 +259,7 @@ caller does a plain `open_archive()` and never asks to `seek()`.
 | Multi-member `.lz`, seekable source | `CRC32` present (= combine of per-member trailers) |
 | `.lz` seekable, with and without `seekable_members=True` | Same `hashes` both ways |
 | `.lz` from a pipe | no digest key |
+| `.lz` opened from another archive's member stream, a stored ZIP entry or a TAR member included | no digest key |
 | `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | no digest key |
 | Any of the above, full `read()` | verification unchanged; hashes are metadata only |
 
@@ -294,7 +328,22 @@ then stop reading the source. Bytes after the end SHALL be classified this way:
   most 4) and a zero first byte of range-coder data, as `lzma.LZMAFile` reads a second
   stream. Bytes that pass this check but are not a valid stream fail the read with
   `CorruptionError`;
-- zero bytes are padding and SHALL NOT be reported;
+- for xz, lzip, zstd, LZ4 and bzip2, bytes that match the codec's stream magic in at
+  least half of its positions, but not in all of them, are a further stream with a
+  damaged header: the read, and a seek that reaches them, SHALL raise `CorruptionError`.
+  The positions compared are the first `len(magic)` bytes right after the stream, and
+  for xz the first after its stream padding. For zstd, LZ4 and bzip2, a run of zero
+  bytes shorter than the magic SHALL also be compared as the first bytes of the magic,
+  since a damaged byte can be zero; after a run as long as the magic or longer nothing
+  is compared, as no stream is read after zero bytes (next bullet). This is lzip's rule
+  for a corrupt header in a multimember file. A tail shorter than the magic is not
+  judged by it. gzip, zlib, LZMA Alone and Brotli do not apply it;
+- zero bytes are padding and SHALL NOT be reported where they run to the end of the
+  source. For every codec but xz, whose format defines Stream Padding between streams,
+  they are padding only there: after zero bytes, the first non-zero byte is trailing
+  data as the next bullet says, also when it starts another stream, in every
+  accelerator mode. Each codec's own tool stops there too (GNU `gzip`, `bzip2`,
+  `zstd`, `lz4`, `xz --format=lzma`), and so does 7-Zip for gzip, bzip2 and LZMA Alone;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
   `format`, and the offset of the first non-zero byte after the end as
@@ -318,6 +367,8 @@ whose following bytes start another stream, as the first bullet above classifies
 them, is not the last one, so the search SHALL NOT stop there: when the last stream's
 own footer or trailer is damaged, the index is reported unreadable, the size and CRC
 are unknown, and the read or seek that reaches the damage raises `CorruptionError`.
+The same holds when the bytes after a footer or trailer are a damaged header magic, as
+the second bullet above classifies them.
 
 Brotli's decoder fails on input past the end the same way it fails on damage. The
 system SHALL tell them apart by decoding the source again from the start up to the
@@ -337,10 +388,19 @@ after the data decode as more codes.
 | Valid stream + 4096 zero bytes | Full payload; no diagnostic |
 | Valid stream + zeros + junk | One report at the first non-zero byte |
 | Two concatenated `.gz` / `.bz2` / `.lzma` / `.zst` / `.lz4` streams + junk | Both payloads; one report after the second |
+| `.gz` / `.bz2` / `.zst` / `.lz4` / `.lzma` / `.lz` stream + zero bytes + another stream, accelerator `OFF`, `AUTO` or `ON` | The first payload; one report at the second stream's first byte; under strict the read raises |
+| Two `.xz` streams with zero bytes between them | Both payloads; no report (xz Stream Padding) |
+| `.bz2` stream + empty streams + zero bytes | Full payload; no diagnostic |
 | `.zst` with a skippable frame between two frames | Both payloads; no report |
 | `.xz` / `.lz` + junk within 1 MiB | Size known, seek works, full payload, one report |
 | Two concatenated `.xz` streams (with or without stream padding) or `.lz` members, last footer or trailer damaged | Size and CRC unknown; data up to the damage, then `CorruptionError` from the read or `SEEK_END` |
 | `.lz` member + zero bytes + a damaged member | Size and CRC of the first member; its payload and one report |
+| Two `.xz` / `.lz` / `.zst` / `.lz4` / `.bz2` streams, one byte of the second stream's magic damaged | `CorruptionError` from the read and from `SEEK_END`, from a file and from a pipe; no size from the index |
+| Two `.zst` / `.lz4` / `.bz2` streams, the second stream's first magic byte set to zero | `CorruptionError` from the read, with the accelerator on and off for `.bz2` |
+| Two `.xz` / `.lz` / `.zst` / `.lz4` / `.bz2` streams, the second one's first one or two magic bytes set to zero and the file ending after its magic | `CorruptionError` from the read, from a file and from a pipe; accelerator on and off for `.bz2` |
+| A stream + 64 random bytes that match no magic in half of its positions | Full payload; one report |
+| A stream + its own first `len(magic) - 1` bytes, at the end of the file | Full payload; one report |
+| `.bz2` + `BZh0` and an empty stream's end-of-stream marker | `CorruptionError`, with the accelerator on and off |
 | `.xz` / `.lz` + more than 1 MiB of junk | Size unknown; seeking reports `SEEK_INDEX_DEGRADED`; payload and one report |
 | `.lz` + 900 000 zero bytes + junk | Size known, seek works, full payload, one report |
 | `.xz` + 1 MiB of `00 00 59 5A`, `.lz` + 1 MiB of 8 zero bytes and one byte, repeated | Size unknown; payload and one report, after at most 4096 candidates checked |
@@ -386,7 +446,10 @@ NOT be decoded:
   bits, can only handle 16 bits").
 
 A header the tool reports as damaged stays `CorruptionError`, such as a gzip header CRC
-that does not match.
+that does not match. A damaged byte in one of the fields listed above reads the same as
+the unsupported value, since nothing tells the two apart; the `UnsupportedFeatureError`
+message SHALL say that a damaged header reads the same way (the `error-handling` error
+split carries the general rule).
 
 #### Scenario: unsupported stream headers
 
@@ -397,3 +460,4 @@ that does not match.
 | zstd frame compressed with a dictionary | `UnsupportedFeatureError` |
 | `.Z` with maximum code width 17 or 31 | `UnsupportedFeatureError` |
 | gzip header CRC mismatch | `CorruptionError` |
+| zlib stream whose CM is 7 (zlib: "unknown compression method") | `CorruptionError` |

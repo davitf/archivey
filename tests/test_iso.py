@@ -19,6 +19,7 @@ from archivey import (
     ArchiveFormat,
     CompressionAlgorithm,
     CompressionMethod,
+    DiagnosticCode,
     MemberType,
     detect_format,
     format_availability,
@@ -540,10 +541,71 @@ def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
     """
     image = _udf_image_with_links(20)
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2000))
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=2000.*UDF"):
+    with pytest.raises(
+        ResourceLimitError, match="max_metadata_bytes=2000.*UDF directory tree"
+    ):
         open_archive(io.BytesIO(image), config=tight)
     with open_archive(io.BytesIO(_udf_image_with_links(1)), config=tight) as reader:
         assert [m.name for m in reader.members()] == ["F.TXT"]
+
+
+def _image_with_trees(count: int, *, joliet: bool = True, udf: bool = True) -> bytes:
+    """An image holding ``count`` files in its PVD tree and in each tree it asks for."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(
+        interchange_level=3, joliet=3 if joliet else None, udf="2.60" if udf else None
+    )
+    for index in range(count):
+        iso.add_fp(
+            io.BytesIO(b"x"),
+            1,
+            f"/F{index}.TXT;1",
+            joliet_path=f"/f{index}.txt" if joliet else None,
+            udf_path=f"/f{index}.txt" if udf else None,
+        )
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def test_max_metadata_bytes_is_one_budget_for_the_whole_image() -> None:
+    """``max_metadata_bytes`` bounds the bytes of every tree pycdlib parses, together.
+
+    pycdlib keeps every tree it parses, so a budget per tree let one image hold the
+    budget once for each of its PVD, Joliet and UDF trees. With ten files, this image
+    weighs about 540 bytes in its PVD tree, 580 in its Joliet tree and 2,540 in its
+    UDF tree: each tree is under 3,000 bytes, and the three together are about 3,670.
+    ``max_members`` stays per tree
+    (``test_listing_limits_count_udf_entries_as_pycdlib_parses_them``).
+
+    The first leg does not depend on UDF sizes: the same ten files weigh 542 bytes in a
+    PVD-only image and 1,124 with a Joliet tree (542 + 582), so a cap of 800 opens the
+    first and refuses the second, whose trees are each under it.
+    """
+    iso_trees_only = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=800)
+    )
+    with open_archive(
+        io.BytesIO(_image_with_trees(10, joliet=False, udf=False)),
+        config=iso_trees_only,
+    ) as reader:
+        assert len(reader.members()) == 10
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=800"):
+        open_archive(
+            io.BytesIO(_image_with_trees(10, udf=False)), config=iso_trees_only
+        )
+
+    image = _image_with_trees(10)
+    under_total = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=3000))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=3000"):
+        open_archive(io.BytesIO(image), config=under_total)
+
+    fits = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=4000))
+    with open_archive(io.BytesIO(image), config=fits) as reader:
+        assert len(reader.members()) == 10
 
 
 @pytest.mark.parametrize(
@@ -941,22 +1003,84 @@ def test_duplicate_rock_ridge_names_all_list() -> None:
         assert ar.read("dup/f") == b"x"
 
 
-def test_a_rock_ridge_device_node_is_other_not_file(tmp_path: Path) -> None:
-    """The PX file-type bits decide the type: a character device is never a FILE."""
-    data = _build_rr_iso(_two_rr_files)
-    # PX mode is a both-endian 32-bit field: 0o100444 (regular, r--r--r--).
-    regular = struct.pack("<I", 0o100444) + struct.pack(">I", 0o100444)
-    assert data.count(regular) == 2
-    device = struct.pack("<I", 0o020666) + struct.pack(">I", 0o020666)
-    data = data.replace(regular, device, 1)
+def _empty_and_regular_rr_files(iso: Any) -> None:
+    iso.add_fp(io.BytesIO(b""), 0, "/AAA.;1", rr_name="aaa")
+    iso.add_fp(io.BytesIO(b"BBBB"), 4, "/BBB.;1", rr_name="bbb")
+
+
+# PX mode is a both-endian 32-bit field: 0o100444 (regular, r--r--r--).
+_PX_REGULAR = struct.pack("<I", 0o100444) + struct.pack(">I", 0o100444)
+_PX_CHAR_DEVICE = struct.pack("<I", 0o020666) + struct.pack(">I", 0o020666)
+
+
+def test_a_rock_ridge_device_node_without_data_is_other(tmp_path: Path) -> None:
+    """A PX mode naming a device over an empty extent is OTHER (what genisoimage and
+    xorriso write for a FIFO): nothing to read, and extraction skips it."""
+    data = _build_rr_iso(_empty_and_regular_rr_files)
+    assert data.count(_PX_REGULAR) == 2
+    data = data.replace(_PX_REGULAR, _PX_CHAR_DEVICE, 1)
     with open_archive(io.BytesIO(data)) as ar:
         by_name = {m.name: m for m in ar.members()}
         assert by_name["aaa"].type is MemberType.OTHER
         assert by_name["aaa"].size is None
         assert by_name["aaa"].mode == 0o666
+        assert by_name["aaa"].extra["special_file_type"] == "char_device"
         assert by_name["bbb"].type is MemberType.FILE
+        assert "special_file_type" not in by_name["bbb"].extra
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
         ar.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "aaa").exists()
+    assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
+
+
+_PX_DIRECTORY = struct.pack("<I", 0o040755) + struct.pack(">I", 0o040755)
+
+
+def test_a_directory_mode_on_an_empty_file_record_is_other_without_a_kind() -> None:
+    """A PX mode of ``S_IFDIR`` on a file record (not a directory record) over an
+    empty extent is OTHER, but it names no device, FIFO or socket, so there is no
+    ``extra["special_file_type"]``: the key records a special file, not "OTHER"."""
+    data = _build_rr_iso(_empty_and_regular_rr_files)
+    assert data.count(_PX_REGULAR) == 2
+    data = data.replace(_PX_REGULAR, _PX_DIRECTORY, 1)
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["aaa"].type is MemberType.OTHER
+        assert "special_file_type" not in by_name["aaa"].extra
+        assert by_name["bbb"].type is MemberType.FILE
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+
+
+def test_a_rock_ridge_device_node_with_data_is_a_file(tmp_path: Path) -> None:
+    """A device mode over a non-empty extent is a FILE whose bytes are the content:
+    the extent is the structure, the PX mode an attribute (DR-25). The stored type
+    stays in ``extra`` and an advisory diagnostic reports the mismatch."""
+    data = _build_rr_iso(_two_rr_files)
+    assert data.count(_PX_REGULAR) == 2
+    data = data.replace(_PX_REGULAR, _PX_CHAR_DEVICE, 1)
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["aaa"].type is MemberType.FILE
+        assert by_name["aaa"].size == 4
+        assert by_name["aaa"].mode == 0o666
+        assert by_name["aaa"].extra["special_file_type"] == "char_device"
+        assert ar.read("aaa") == b"AAAA"
+        diags = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert len(diags) == 1
+        assert diags[0].context is not None
+        context = diags[0].context.to_dict()
+        assert context["kind"] == "special_file_data"
+        assert context["member_name"] == "aaa"
+        assert context["special_file_type"] == "char_device"
+        assert context["size"] == 4
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "aaa").read_bytes() == b"AAAA"
     assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
 
 
@@ -988,6 +1112,27 @@ def test_plain_iso_versions_keep_the_newest_current(tmp_path: Path) -> None:
         ar.extract_all(tmp_path / "out")
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["BAR.TXT", "FOO"]
     assert (tmp_path / "out" / "FOO").read_bytes() == b"NEW VERSION"
+
+
+def test_a_directory_identifier_keeps_its_version_like_suffix() -> None:
+    """ECMA-119 gives a version only to a file identifier. A directory's ``;1`` is
+    part of its name, so the directory lists under the path its children use."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_directory("/DIAB")
+    iso.add_fp(io.BytesIO(b"x"), 1, "/DIAB/X.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    # The directory record and both path tables spell the identifier.
+    data = out.getvalue().replace(b"DIAB", b"DI;1")
+
+    with open_archive(io.BytesIO(data)) as ar:
+        rows = [(m.name, dict(m.extra)) for m in ar.members()]
+        assert rows == [("DI;1/", {}), ("DI;1/X.TXT", {"iso.version": 1})]
+        assert ar.read("DI;1/X.TXT") == b"x"
 
 
 def test_rock_ridge_relocation_directory_is_not_listed() -> None:
@@ -1163,16 +1308,18 @@ def test_the_el_torito_boot_catalog_reads_and_extracts(tmp_path: Path) -> None:
     assert (tmp_path / "A.TXT").read_bytes() == b"hi"
 
 
-def _split_into_two_extents(
-    image: bytes, identifier: bytes, *, gap: int = 0, flag: bool = True
+def _split_into_extents(
+    image: bytes, identifier: bytes, *, flags: tuple[bool, ...] = (True,), gap: int = 0
 ) -> bytes:
-    """Rewrite a root file's directory record as two, the way a 4 GiB file is stored.
+    """Rewrite a root file's directory record as several, the way a 4 GiB file is stored.
 
-    The first record keeps the first block and is flagged multi-extent; the second
-    has the same name and covers the rest, starting ``gap`` blocks after the first
-    ends. With ``flag=False`` the first record is not flagged, so the two are
-    unrelated files that happen to share an identifier. Both fit in the root
-    directory's sector, whose padding absorbs the new record.
+    The file becomes ``len(flags) + 1`` records with one name. Each record but the
+    last covers one block, and the last covers the rest. Record ``i`` carries the
+    multi-extent flag when ``flags[i]`` is true. With every flag set, the records are
+    one file, as a writer stores it. A record without the flag ends its file, so the
+    next record with the same identifier is an unrelated file. The second record
+    starts ``gap`` blocks after the first ends. All the records fit in the root
+    directory's sector, whose padding absorbs the new ones.
     """
     buf = bytearray(image)
     root = struct.unpack_from("<I", buf, 16 * 2048 + 156 + 2)[0] * 2048
@@ -1192,18 +1339,22 @@ def _split_into_two_extents(
         struct.pack_into("<I", target, at, value)
         struct.pack_into(">I", target, at + 4, value)
 
-    first, second = bytearray(record), bytearray(record)
-    both_endian(first, 10, 2048)
-    if flag:
-        first[25] |= 0x80
-    both_endian(second, 2, extent + 1 + gap)
-    both_endian(second, 10, size - 2048)
+    records = []
+    for index, flag in enumerate(flags):
+        chunk = bytearray(record)
+        both_endian(chunk, 2, extent + index + (gap if index else 0))
+        both_endian(chunk, 10, 2048)
+        if flag:
+            chunk[25] |= 0x80
+        records.append(bytes(chunk))
+    last = bytearray(record)
+    both_endian(last, 2, extent + len(flags) + gap)
+    both_endian(last, 10, size - 2048 * len(flags))
+    records.append(bytes(last))
     sector_end = root + 2048
     rest = bytes(buf[offset + length : sector_end])
-    assert rest.endswith(b"\0" * length), "no room for the second record"
-    buf[offset:sector_end] = (bytes(first) + bytes(second) + rest)[
-        : sector_end - offset
-    ]
+    assert rest.endswith(b"\0" * length * len(flags)), "no room for the new records"
+    buf[offset:sector_end] = (b"".join(records) + rest)[: sector_end - offset]
     return bytes(buf)
 
 
@@ -1224,7 +1375,7 @@ def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
     """A file of 4 GiB or more is several records with one name. Only the first
     reached the reader, so the member listed and read one extent's worth and dropped
     the rest without an error (measured: a 4 400 MiB xorriso file read as 4 GiB)."""
-    image = _split_into_two_extents(_image_with_two_block_file(), b"BIG.BIN;1")
+    image = _split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1")
     with open_archive(io.BytesIO(image)) as ar:
         by_name = {m.name: m for m in ar.members()}
         assert set(by_name) == {"BIG.BIN", "Z.TXT"}
@@ -1235,23 +1386,200 @@ def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
 
 def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
     """Extents that are not back to back are refused rather than read as one run."""
-    image = _split_into_two_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
+    image = _split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
     with open_archive(io.BytesIO(image)) as ar:
         assert ar.get("BIG.BIN").size == 3048
         with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
             ar.read("BIG.BIN")
 
 
-def test_a_repeated_identifier_without_the_flag_is_not_one_file() -> None:
-    """pycdlib links any record whose identifier repeats the previous one, and sets
-    the multi-extent flag on the first in memory. Only the flag as written in the
-    image makes a chain; without it the member is its own record, as before."""
-    image = _split_into_two_extents(
-        _image_with_two_block_file(), b"BIG.BIN;1", flag=False
+def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) -> None:
+    """pycdlib links any record whose identifier repeats the previous one, sets the
+    multi-extent flag on the first in memory, and its walk skips the second record.
+    Only the flag as written in the image makes the two records one file. Without
+    it they are two files with one name, and both list, as ZIP and TAR list two
+    members with one name and as 7-Zip lists this image. The later one is current.
+    """
+    image = _split_into_extents(
+        _image_with_two_block_file(), b"BIG.BIN;1", flags=(False,)
     )
     with open_archive(io.BytesIO(image)) as ar:
-        assert ar.get("BIG.BIN").size == 2048
-        assert ar.read("BIG.BIN") == b"a" * 2048
+        rows = [(m.name, m.size, m.is_current) for m in ar.members()]
+        assert rows == [
+            ("BIG.BIN", 2048, False),
+            ("BIG.BIN", 1000, True),
+            ("Z.TXT", 2, True),
+        ]
+        first, second, _ = ar.members()
+        assert ar.read(first) == b"a" * 2048
+        assert ar.read(second) == b"b" * 1000
+        assert ar.read("BIG.BIN") == b"b" * 1000
+        assert ar.diagnostics.total_count == 0
+        ar.extract_all(tmp_path)
+    assert (tmp_path / "BIG.BIN").read_bytes() == b"b" * 1000
+
+
+def test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list() -> None:
+    """The flag ends a file at the first record without it, so a real multi-extent
+    file followed by an unrelated record with the same identifier lists as two
+    members: the flagged records joined, and the unrelated record on its own."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+
+    for flags, expected in (
+        ((True, False), [b"a" * 2048 + b"b" * 2048, b"c" * 1000]),
+        ((False, True), [b"a" * 2048, b"b" * 2048 + b"c" * 1000]),
+    ):
+        image = _split_into_extents(out.getvalue(), b"BIG.BIN;1", flags=flags)
+        with open_archive(io.BytesIO(image)) as ar:
+            members = ar.members()
+            assert [m.name for m in members] == ["BIG.BIN", "BIG.BIN"]
+            assert [m.size for m in members] == [len(data) for data in expected]
+            assert [ar.read(m) for m in members] == expected
+
+
+def test_records_sharing_an_extent_keep_their_own_multi_extent_flags() -> None:
+    """The flag is matched to a record by its position among the records with its
+    identifier, not by its extent. Here the first two records share an extent and
+    only the first is flagged: the second ends the file, and the third, at its own
+    extent, is a second member. Matched by extent, the second record read as flagged
+    and the third was swallowed into the first member."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = bytearray(
+        _split_into_extents(out.getvalue(), b"BIG.BIN;1", flags=(True, False))
+    )
+    first = image.index(b"BIG.BIN;1") - 33
+    second = first + image[first]
+    assert image[second + 33 : second + 42] == b"BIG.BIN;1"
+    image[second + 2 : second + 10] = image[first + 2 : first + 10]
+
+    with open_archive(io.BytesIO(bytes(image))) as ar:
+        first_member, second_member = ar.members()
+        assert [first_member.size, second_member.size] == [4096, 1000]
+        assert ar.read(second_member) == b"c" * 1000
+        # The first member's two extents are the same block, so not back to back.
+        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
+            ar.read(first_member)
+
+
+def test_a_repeated_superseded_version_stays_not_current(tmp_path: Path) -> None:
+    """Two records ``FOO.;1`` beside ``FOO.;2``: both older records list under their
+    stored identifier and stay not current, though they share a name. The shared
+    last-entry-wins pass keeps a backend's own "not current", so extraction writes
+    only the newest version."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_fp(io.BytesIO(b"a" * 2048 + b"b" * 1000), 3048, "/FOO.;1")
+    iso.add_fp(io.BytesIO(b"NEW"), 3, "/FOO.;2")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = _split_into_extents(out.getvalue(), b"FOO.;1", flags=(False,))
+
+    with open_archive(io.BytesIO(image)) as ar:
+        rows = [(m.name, m.size, m.is_current) for m in ar.members()]
+        assert rows == [
+            ("FOO.;1", 2048, False),
+            ("FOO.;1", 1000, False),
+            ("FOO", 3, True),
+        ]
+        ar.extract_all(tmp_path)
+    assert [p.name for p in tmp_path.iterdir()] == ["FOO"]
+    assert (tmp_path / "FOO").read_bytes() == b"NEW"
+
+
+@pytest.mark.parametrize(
+    ("flags", "associated", "expected"),
+    [
+        # ECMA-119 §9.3 order: the associated file (a resource fork) first, then
+        # the data file it belongs to, here stored in two extents.
+        ((False, True), 0, [b"a" * 2048, b"b" * 2048 + b"c" * 1000]),
+        # The associated file stored after a two-extent data file.
+        ((True, False), 2, [b"a" * 2048 + b"b" * 2048, b"c" * 1000]),
+    ],
+    ids=["associated-first", "associated-last"],
+)
+def test_an_associated_file_and_a_file_with_its_identifier_both_list(
+    flags: tuple[bool, ...], associated: int, expected: list[bytes]
+) -> None:
+    """pycdlib does not link an associated-file record (flag bit 2) to the records
+    that share its identifier, and puts it before them whatever the order on disc,
+    so its walk listed one record and hid the rest. The entries are worked out from
+    the records as written: both files list in on-disc order, each with its own
+    data, and the later one is current."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = bytearray(_split_into_extents(out.getvalue(), b"BIG.BIN;1", flags=flags))
+    at = image.index(b"BIG.BIN;1") - 33
+    for _ in range(associated):
+        at += image[at]
+    image[at + 25] |= 0x04
+
+    with open_archive(io.BytesIO(bytes(image))) as ar:
+        members = ar.members()
+        assert [m.name for m in members] == ["BIG.BIN", "BIG.BIN"]
+        assert [m.size for m in members] == [len(data) for data in expected]
+        assert [ar.read(m) for m in members] == expected
+        assert [m.is_current for m in members] == [False, True]
+
+
+def test_a_directory_and_a_file_with_one_identifier_both_list() -> None:
+    """pycdlib links a file record to the record just before it when the two share an
+    identifier, even when that record is a directory. A directory is never part of
+    a file, so both list, as 7-Zip lists them. The reverse order, and two directories
+    with one identifier, are refused by pycdlib at open."""
+    import pycdlib
+
+    from archivey.exceptions import CorruptionError
+
+    def build(first: str) -> bytes:
+        iso = pycdlib.PyCdlib()
+        iso.new(interchange_level=4)
+        directory, file = ("/DUP", "/DUQ") if first == "dir" else ("/DUQ", "/DUP")
+        iso.add_directory(directory)
+        iso.add_fp(io.BytesIO(b"x"), 1, file)
+        iso.add_fp(io.BytesIO(b"inner"), 5, directory + "/IN")
+        out = io.BytesIO()
+        iso.write_fp(out)
+        iso.close()
+        # The directory record and both path tables spell the identifier.
+        return out.getvalue().replace(b"DUQ", b"DUP")
+
+    with open_archive(io.BytesIO(build("dir"))) as ar:
+        rows = [(m.name, m.type, m.is_current) for m in ar.members()]
+        assert rows == [
+            ("DUP/", MemberType.DIRECTORY, True),
+            ("DUP", MemberType.FILE, True),
+            ("DUP/IN", MemberType.FILE, True),
+        ]
+        assert ar.read("DUP") == b"x"
+        assert ar.read("DUP/IN") == b"inner"
+    with pytest.raises(CorruptionError, match="duplicate name"):
+        open_archive(io.BytesIO(build("file"))).close()
 
 
 def test_a_boot_catalog_declared_past_the_image_end_reads_short() -> None:
@@ -1366,7 +1694,8 @@ def test_the_raw_directory_walk_crosses_sector_padding() -> None:
     data = first.ljust(2048, b"\0") + second.ljust(2048, b"\0")
 
     raw = _parse_raw_directory(data, 2048, image_length=201 * 2048 + 5000)
-    assert raw.flagged == {100, 200}
+    flags = {ident: [r.multi_extent for r in rs] for ident, rs in raw.repeated.items()}
+    assert flags == {b"BIG;1": [True, False], b"HUGE;1": [True, False]}
     assert raw.lengths_to_end == {(201, b"HUGE;1"): 9000}
 
 

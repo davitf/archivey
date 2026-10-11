@@ -51,6 +51,35 @@ parameter because the API returns one stream.
 | Open compressed source without `seekable=True` | Reads forward; `seekable()` false; `seek()` unsupported; no index |
 | Open same source with `seekable=True` | Seekable behavior follows `seekable-decompressor-streams` |
 
+### Requirement: open_stream peels the compression layer of a compressed tar
+
+When `open_stream` is given a compressed tar — any `(TAR, <codec>)` pair whose codec is
+not `UNCOMPRESSED`, such as `TAR_GZ`, `TAR_XZ` or `(TAR, LZIP)` — it SHALL open that
+codec's stream and return the decompressed tar bytes, the same bytes the raw-stream
+format of the same codec returns (`format="gz"` for a `.tar.gz`). This SHALL hold
+whether auto-detection (`format=None`) found the pair or the caller passed it as
+`format=`: how the format was chosen does not change what the file is. The codec SHALL
+be the pair's stream half, the one the detector built the pair from, read through one
+shared rule rather than a second table. This is what `gzip.open` does for a `.tar.gz`,
+and the migration guide offers `open_stream` as its replacement.
+
+Any other container — ZIP, 7z, RAR, ISO, DMG, or an uncompressed tar — has no
+compression layer to remove. Detecting one SHALL raise `FormatDetectionError`; passing
+one as `format=` SHALL raise `ArchiveyUsageError` (`backend-registry`). A directory path
+is refused as `ArchiveyUsageError` before detection runs, and so is
+`format=ArchiveFormat.DIRECTORY`.
+
+#### Scenario: compressed tar through open_stream
+
+| Case | Expected |
+| --- | --- |
+| `open_stream("a.tar.gz")` | Returns the tar bytes; equal to `open_stream("a.tar.gz", format="gz").read()` |
+| `open_stream("a.tar.gz", format=ArchiveFormat.TAR_GZ)` or `format="tar.gz"` | The same tar bytes |
+| `open_archive(open_stream(p, seekable=True))` for every compressed-tar corpus fixture | Same members (every compared field) and data as `open_archive(p)`; `format` is `TAR` |
+| `open_archive(open_stream(p), streaming=True)` | Same `stream_members()` pass as `open_archive(p, streaming=True)` |
+| `open_stream("a.tar")`, `open_stream("a.zip")` | `FormatDetectionError` |
+| `open_stream(p, format=ArchiveFormat.TAR)`, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError` |
+
 ### Requirement: One StreamCodec descriptor describes each codec
 
 The system SHALL register each single-stream codec through one descriptor
@@ -357,6 +386,7 @@ fresh stream.
 | Seek to/past declared size on a **complete** member, then `read` (incl. `seek(size); read(1)`) | Returns `b""`; no fabricated `TruncatedError` (checksum forfeited by the seek) |
 | Seek to/past declared size on a **truncated** member, then `read` | Concluding reads the skipped gap; `TruncatedError` with the true recoverable length |
 | Seek to/past declared size on an **over-long** member, then `read` | Concluding reads the gap and probes past the declared size; `CorruptionError` (over-run), not a silent `b""` |
+| Declared size met; the compressed bytes after it are damaged (a ZIP DEFLATE member declared empty, body not DEFLATE) | `CorruptionError` from the probe past the declared size, not a silent end |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
 | `ArchiveStream` raised a content verdict; caller catches it, then `read()` | Raises the same error object again; no bytes returned |
@@ -536,16 +566,26 @@ bypass the check: on such a stream the accelerator clamps the seek to 0. Acceler
 is a performance choice and SHALL NOT be observable as a difference in whether a corrupt
 source raises, with one exception. Where every byte of output is covered by checks the
 data itself declares, those checks give the verdict, and an accelerator MAY differ from
-the standard-library decoder on stream-boundary malformations they cannot see:
+the standard-library decoder on a stream-boundary malformation they cannot see: for a
+standalone multi-member gzip, a wrong ISIZE on a member other than the last, when every
+member's CRC-32 is still checked.
 
-- for a container member that declares its size and CRC (a ZIP member, a 7z coder
-  under a CRC-checked file), a second stream or
-  trailing bytes inside the member's compressed data, which the accelerator MAY read as
-  content where the standard-library decoder stops at the first stream's end; the
-  declared size and CRC then decide, so output that matches both reads and output that
-  breaks either raises;
-- for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
-  when every member's CRC-32 is still checked.
+A container member's compressed data (a ZIP member's, a 7z coder's declared input) is
+one stream of its codec and nothing else. A byte of it the codec leaves after the
+stream's end, a zero byte too, and a second stream there SHALL raise
+`CorruptionError`, after the output before that end has been delivered, whatever the
+declared size and CRC cover, with the accelerator on or off: an accelerator that reads
+on past the first stream hands the read to the standard-library decoder there, which
+refuses it. 7-Zip 23.01 fails such a member ("There are some data after the end of the
+payload data", or "Data Error"), and the bytes may hide a second payload. A ZIP
+Zstd member is one frame, so a second frame there SHALL raise too. The exception is a
+7z Zstd or LZ4 coder, whose concatenated frames are read as one stream: a further frame
+is content that counts against the declared size and CRC, and only bytes after the
+last frame that start no frame SHALL raise. A codec that
+stops at a declared output size (LZMA1 without an end marker, PPMd) SHALL raise the
+same way when its input goes on past that size; such a cut leaves input over, so it is
+not a `TruncatedError`. A standalone compressed file keeps reporting the bytes after its
+streams as `ARCHIVE_TRAILING_DATA` instead.
 
 A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
 the member. The accelerator reads the output through a CRC-32 and finds the trailer as the
@@ -582,12 +622,15 @@ no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 | Case | Expected |
 | --- | --- |
 | `open_archive(corrupt.bz2, seekable_members=True).read(member)` | Raises, matching `seekable_members=False` |
-| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformations listed above |
+| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformation listed above |
 
-#### Scenario: a ZIP member with a second stream inside its compressed data
+#### Scenario: a container member with input after its stream
 
 | Member | Accelerator `OFF` | Accelerator `ON` |
 | --- | --- | --- |
-| Two DEFLATE or bzip2 streams; declared size and CRC cover both | `TruncatedError` (decoder stops after the first) | Both streams' content |
-| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `TruncatedError` | `CorruptionError` (CRC) |
-| Two bzip2 streams; declared size and CRC cover the first | First stream's content | `CorruptionError` (output past the declared size) |
+| Two DEFLATE or bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
+| One DEFLATE or bzip2 stream, then junk or zero bytes | `CorruptionError` | `CorruptionError` |
+| ZIP Zstd member with two frames | `CorruptionError` | — |
+| ZIP LZMA without an end marker, or 7z LZMA1, whose declared size is 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
+| ZIP PPMd8 or 7z PPMd, then junk, or a declared size 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
+| A `.bz2` file with junk after its stream | Content, and `ARCHIVE_TRAILING_DATA` | Content, and `ARCHIVE_TRAILING_DATA` |

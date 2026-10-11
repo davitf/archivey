@@ -99,6 +99,25 @@ def test_raw_lzma2_backend_for_7z_folder() -> None:
         assert stream.read() == CONTENT
 
 
+def test_raw_lzma2_with_a_declared_size_needs_its_end_byte() -> None:
+    """Only a direct caller gives LZMA2 a declared size (7z checks the size it
+    decoded instead): the stream must still end with its end byte."""
+    compressed = compress_lzma2_raw(CONTENT)
+    assert compressed[-1] == 0  # LZMA2's end byte
+    params = CodecParams(filters=lzma2_raw_filters(), unpack_size=len(CONTENT))
+    with open_codec_stream(
+        Codec.LZMA2, io.BytesIO(compressed), params=params
+    ) as stream:
+        assert stream.read() == CONTENT
+    with (
+        open_codec_stream(
+            Codec.LZMA2, io.BytesIO(compressed[:-1]), params=params
+        ) as stream,
+        pytest.raises(TruncatedError, match="no end marker after its declared size"),
+    ):
+        stream.read()
+
+
 @requires("brotli")
 def test_brotli_backend_roundtrip() -> None:
     """A Brotli stream decompresses via the brotli-backed stream (no file-like open())."""
@@ -2276,10 +2295,17 @@ def test_gzip_multi_member_and_padding_parity() -> None:
         Codec.GZIP, io.BytesIO(m1 + m2), config=_STDLIB_GZIP
     ) as stream:
         assert stream.read() == b"firstsecond"
+    # NULs before a further member end the data, as in GNU gzip; Python's GzipFile
+    # reads on to the member (dev-docs/formats/gzip.md §6).
+    collector = DiagnosticCollector()
     with open_codec_stream(
-        Codec.GZIP, io.BytesIO(m1 + b"\x00\x00\x00\x00" + m2), config=_STDLIB_GZIP
+        Codec.GZIP,
+        io.BytesIO(m1 + b"\x00\x00\x00\x00" + m2),
+        config=_REPORTING_GZIP,
+        collector=collector,
     ) as stream:
-        assert stream.read() == b"firstsecond"
+        assert stream.read() == b"first"
+    assert _trailing_reports(collector) == [("gzip", len(m1) + 4)]
     with open_codec_stream(
         Codec.GZIP, io.BytesIO(m1 + b"\x00\x00\x00"), config=_STDLIB_GZIP
     ) as stream:
@@ -2336,20 +2362,24 @@ def test_gzip_trailing_junk_delivers_member_then_reports() -> None:
 
 
 def test_gzip_multi_member_cross_feed_edges() -> None:
-    """NUL padding / magic split across small reads must still concatenate."""
+    """Member boundaries and NUL padding split across small reads resolve as in one."""
     m1 = gzip.compress(b"aa")
     m2 = gzip.compress(b"bb")
-    # Bytewise output across a padded boundary.
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(m1 + b"\x00\x00" + m2), config=_STDLIB_GZIP
-    ) as stream:
-        buf = bytearray()
-        while True:
-            c = stream.read(1)
-            if not c:
-                break
-            buf.extend(c)
-        assert bytes(buf) == b"aabb"
+
+    def bytewise(data: bytes) -> tuple[bytes, list[tuple[str, int]]]:
+        collector = DiagnosticCollector()
+        with open_codec_stream(
+            Codec.GZIP, io.BytesIO(data), config=_REPORTING_GZIP, collector=collector
+        ) as stream:
+            buf = bytearray()
+            while c := stream.read(1):
+                buf.extend(c)
+        return bytes(buf), _trailing_reports(collector)
+
+    assert bytewise(m1 + m2) == (b"aabb", [])
+    assert bytewise(m1 + b"\x00\x00") == (b"aa", [])
+    # NULs, then a member: the data ends at the NULs.
+    assert bytewise(m1 + b"\x00\x00" + m2) == (b"aa", [("gzip", len(m1) + 2)])
     # Lone trailing partial magic at EOF → deliver member, then report it.
     collector = DiagnosticCollector()
     with open_codec_stream(
@@ -2551,6 +2581,87 @@ def test_gzip_later_member_with_unknown_method_is_unsupported() -> None:
     source = io.BytesIO(member + bytes(second))
     with open_codec_stream(Codec.GZIP, source, config=_STDLIB_GZIP) as stream:
         with pytest.raises(UnsupportedFeatureError):
+            stream.read()
+
+
+def _zlib_with_method(method: int) -> bytes:
+    """``CONTENT`` as a zlib stream whose CMF names compression ``method``, with FCHECK
+    fixed so zlib gets past "incorrect header check" to the method."""
+    data = bytearray(zlib.compress(CONTENT))
+    data[0] = (data[0] & 0xF0) | method
+    data[1] &= 0xE0
+    data[1] |= 31 - (data[0] * 256 + data[1]) % 31
+    return bytes(data)
+
+
+def test_zlib_unknown_compression_method_is_corruption() -> None:
+    """zlib: "unknown compression method" (CM other than 8) is damage, not an
+    unsupported feature as gzip's refused method is: RFC 1950 defines no zlib method
+    but 8. The message names the stream zlib."""
+    source = io.BytesIO(_zlib_with_method(7))
+    with open_codec_stream(Codec.ZLIB, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(CorruptionError, match="zlib stream") as excinfo:
+            stream.read()
+    assert is_corruption_not_truncation(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("codec", "label"), [(Codec.ZLIB, "zlib"), (Codec.DEFLATE, "deflate")]
+)
+def test_zlib_family_translator_names_the_stream(codec: Codec, label: str) -> None:
+    """The zlib and raw DEFLATE translators give every ``zlib.error`` as corruption
+    naming their own stream, a refused header included."""
+    translate = resolve_codec(codec, _STDLIB_GZIP).translate
+    for text in ("unknown compression method", "invalid block type"):
+        error = translate(zlib.error(f"Error -3 while decompressing data: {text}"))
+        assert is_corruption_not_truncation(error)
+        assert f"{label} stream" in str(error)
+
+
+@pytest.mark.parametrize("wbits", [-15, zlib.MAX_WBITS])
+def test_zlib_decompressor_stream_raises_typed_errors(wbits: int) -> None:
+    """``ZlibDecompressorStream`` used alone raises archivey's errors, not ``zlib.error``,
+    also after a resume at a DEFLATE block boundary."""
+    from archivey.internal.streams.codecs.deflate_decoder import (
+        ZlibDecoder,
+        ZlibDecompressorStream,
+    )
+    from archivey.internal.streams.codecs.deflate_resume import DeflateResume
+    from archivey.internal.streams.decompressor_stream import SeekPoint
+
+    label = "zlib" if wbits > 0 else "deflate"
+    bad = b"\xff" * 64 if wbits < 0 else zlib.compress(b"x")[:2] + b"\xff" * 64
+    with ZlibDecompressorStream(io.BytesIO(bad), wbits=wbits) as stream:
+        with pytest.raises(CorruptionError, match=f"Error reading {label} stream"):
+            stream.read()
+    resumed = ZlibDecoder(wbits).recreate(
+        SeekPoint(0, 0, DeflateResume(0, b"")), io.BytesIO()
+    )
+    with pytest.raises(CorruptionError, match=f"Error reading {label} stream"):
+        resumed.feed(b"\xff" * 64)
+
+
+@pytest.mark.parametrize(
+    ("codec", "label"),
+    [
+        (Codec.ZLIB, "zlib"),
+        (Codec.DEFLATE, "deflate"),
+        pytest.param(Codec.DEFLATE64, "deflate64", marks=requires("inflate64")),
+    ],
+)
+def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
+    """A cut stream's ``TruncatedError`` says "<format> stream is truncated"."""
+    if codec is Codec.DEFLATE64:
+        import inflate64
+
+        deflater = inflate64.Deflater()
+        data = deflater.deflate(CONTENT) + deflater.flush()
+        data = data[: len(data) // 2]
+    else:
+        data = _truncated(codec, "tail")
+    source = io.BytesIO(data)
+    with open_codec_stream(codec, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(TruncatedError, match=f"^{label} stream is truncated"):
             stream.read()
 
 

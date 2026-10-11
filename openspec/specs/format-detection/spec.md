@@ -57,7 +57,8 @@ A **directory path** SHALL return `FormatInfo(format=DIRECTORY,
 confidence=CERTAIN, detected_by="directory")` without reading anything, the same
 format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt (one pass, no
 bytes read). It SHALL NOT raise `IsADirectoryError` or any
-other `OSError`.
+other `OSError`. An empty string is not a directory path, although `Path("")` is
+`Path(".")`: `detect_format("")` SHALL raise `ValueError` (`error-handling`).
 
 A **path to a volume of a set** SHALL be detected on the source `open_archive` resolves
 for it: any part of a numbered split set (`set.7z.002`, `set.zip.003`, `set.exe.002`) on
@@ -84,6 +85,7 @@ format its bytes show; `open_archive` refuses it as an incomplete set.
 | Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
+| Empty string `""` | `ValueError`; the current directory is not detected |
 | Any part of a numbered split set, or a RAR continuation | The format, `detected_by` and `payload_offset` `open_archive` reports for the same path |
 | Numbered set with a gap (`set.zip.002`, no `set.zip.001`) | `TruncatedError` naming the missing part, from `detect_format` and `open_archive` alike |
 | Lone first part (`set.zip.001`, no other part) | The format its bytes show; `open_archive` raises `TruncatedError` |
@@ -114,8 +116,13 @@ The system SHALL execute format detection with this algorithm:
    held in the detection prefix still matches. A source shorter than the block SHALL NOT
    be read for it.
 6. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
+   Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
+   the source's extension names SHALL run (see *Magic-less formats are detected by a
+   content probe*); `open_stream` SHALL run every probe.
 7. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
-8. `FormatDetectionError` when nothing matched.
+8. `FormatDetectionError` when nothing matched. When step 6 ran only the probes the
+   extension allows, the message SHALL name the three ways to read a nameless
+   probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`.
 
 Steps are ordered attempts, not alternatives: a step that produces no match falls through,
 and attempting one never prevents a later one from running.
@@ -144,7 +151,7 @@ part of the prefix has (`access-mode-and-cost`, "a non-blocking read is not end 
 | ISO with a zeroed system area | `ISO` / `CERTAIN` / `magic`; unchanged |
 | Source smaller than the extended window, size known | Step 4 skipped without an extended peek; falls through |
 | Source too short for the window, size unknown | Short peek, no match, falls through — never an error for being short |
-| Real Brotli stream larger than the window, no extension | One bounded peek misses at step 4, then step 6 detects it |
+| Real Brotli stream larger than the window, no extension, `always_probe_content=True` | One bounded peek misses at step 4, then step 6 detects it |
 
 ### Requirement: Conflict resolution — magic wins and warning is emitted
 
@@ -169,6 +176,11 @@ Detector tables SHALL come from container backends (`ReadBackend.MAGIC` /
 `EXTENSIONS` / `CONTENT_PROBES`) and stream-codec descriptors — no per-format
 `detect()` logic. Stream-codec rows come from descriptors (not hand-listed on
 `SingleFileBackend`). A content probe is the codec's `content_probe` function.
+A codec's extensions are its canonical one, derived from its format, then its
+`extension_aliases`; today `.zlib` for zlib and `.brotli` for Brotli, each with a `.tar.`
+form. Both formats are found only by a probe, which runs only for a name that claims
+the format, so a common alias is the difference between a file that opens and one
+that is refused.
 Detected formats and `detected_by` MUST match prior behavior. Confidence MUST also
 match prior behavior **except** for an uncorroborated Brotli content-probe match,
 which reports `GUESS` (see the magic-less-formats requirement).
@@ -183,6 +195,8 @@ which reports `GUESS` (see the magic-less-formats requirement).
 | Brotli, first meta-block compressed, no corroborating extension | `PROBABLE` / `content_probe` |
 | Brotli, first meta-block uncompressed/metadata, no corroborating extension | `GUESS` / `content_probe` |
 | ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
+| `x.brotli` / `x.tar.brotli` holding Brotli | Brotli probe runs; `BROTLI` / `TAR` × `BROTLI`, corroborated |
+| `x.zlib` / `x.tar.zlib` holding zlib | zlib probe runs; `ZLIB` / `TAR` × `ZLIB`, corroborated |
 
 ### Requirement: Magic-byte table
 
@@ -240,16 +254,32 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 
 ### Requirement: Magic-less formats are detected by a content probe
 
-When the magic-byte table yields no match, the system SHALL run each registered
-content probe on the peeked prefix (consumes nothing), except after a strong executable
-cue or a known non-archive signature (see *A known non-archive signature stops the content
-probes*). This covers Brotli (no
+When the magic-byte table yields no match, the system SHALL run the registered content
+probes on the peeked prefix (consumes nothing), except after a strong executable cue or a
+known non-archive signature (see *A known non-archive signature stops the content
+probes*).
+
+**Which probes run.** A probe is the weakest evidence detection has, and on a source with
+no name it is the only evidence: real binary files pass the LZMA Alone and Brotli probes
+(a backup-drive scan: 435 of 437 Brotli hits and 51 of 55 Alone hits were other files;
+26 681 zlib hits were git loose objects). So by default `open_archive` and
+`detect_format` SHALL run only the probe of a stream format the source's extension
+names: the extension map's format (`.br`, `.tar.br`, `.zz`, `.lzma`, …), plus LZMA Alone
+for `.tlz` (see *Keep `.tlz` as TAR × LZIP*). Any other source SHALL run no probe.
+Whenever the name leaves out at least one probe, whether or not another one runs, the
+step SHALL be recorded in `unavailable_tiers` as `content_probe` /
+`NOT_ENABLED_BY_POLICY`. `ArchiveyConfig.always_probe_content=True` SHALL run every
+probe whatever the name. `open_stream` SHALL always run every probe: its caller says the
+source is a compressed stream, so a probe only picks the codec. The internal detections
+`open_archive` runs under `format=` (stub check, empty-listing rescan) SHALL follow the
+caller's `always_probe_content`. This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
 properties byte is too weak for exact magic). Probes typically decode a bounded
 prefix; MAY gate on cheap structural bytes first; and MAY consult the source length
 when detection knows it (see the framing requirement below). Skip when the
-decompressor backend is missing (fall through to extension). Extension MAY override
-a disagreeing probe (false-positive risk on short/adversarial input).
+decompressor backend is missing (fall through to extension). A probe the extension's
+format does not name does not run, so the extension decides between them; a stream
+named for another format falls through to that extension's `GUESS`.
 
 A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
 confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**
@@ -330,8 +360,13 @@ here still opens through a `.lzma` name.
 | Case | Expected |
 | --- | --- |
 | No magic; bounded prefix decompresses as Brotli, name is `x.br` | `BROTLI`, `PROBABLE`, `content_probe` |
-| No magic; bounded prefix decompresses as Brotli, first meta-block compressed, no corroborating extension | `BROTLI`, `PROBABLE`, `content_probe` |
-| No magic; bounded prefix decompresses as Brotli, first meta-block uncompressed/metadata, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
+| No magic, no name, probe-only bytes, default config | No probe runs; `FormatDetectionError` naming `always_probe_content` |
+| Same through `open_stream` | Every probe runs; the codec is detected |
+| LZMA Alone bytes named `x.zz` | Only the zlib probe runs; it declines; `ZLIB` / `GUESS` / `extension` |
+| zlib bytes named `x.gz` | No probe runs (`content_probe` / `NOT_ENABLED_BY_POLICY`); `GZ` / `GUESS` / `extension` |
+| Any of the above with `always_probe_content=True` | Every probe runs, as listed in the rows below |
+| `always_probe_content=True`; no magic; bounded prefix decompresses as Brotli, first meta-block compressed, no corroborating extension | `BROTLI`, `PROBABLE`, `content_probe` |
+| `always_probe_content=True`; no magic; bounded prefix decompresses as Brotli, first meta-block uncompressed/metadata, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
 | zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` — unchanged |
 | zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
 | `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |
@@ -373,6 +408,23 @@ accelerators that reject bounded non-seekable views). Missing decompressor → b
 compressor format; open may refine. No TAR header within the bound → bare
 compressor.
 
+A detection decode (this probe and the content probes) SHALL NOT reserve decoder memory
+the source declares beyond what its bounded read needs. An LZMA-family decoder (`.xz`,
+`.lzma`, `.lz`) SHALL be built with a dictionary no larger than the read's output plus a
+small allowance for a filter ahead of LZMA2 (64 bytes), and at least 4 KiB; that decodes
+those bytes identically. The xz probe SHALL follow the file through stream padding into
+later streams, as the reader does. An xz block whose filter chain cannot be decoded that
+way is "can't tell" and its inner TAR is not claimed. A zstd frame whose window is over
+2^27 bytes (libzstd's default limit) is "can't tell". A `MemoryError` from a probe's
+decoder is "can't tell"; it SHALL NOT escape detection. In the inner-TAR probe, "can't
+tell" (an absent backend, or a decoder the probe cannot build) SHALL record `inner_tar`
+in `unavailable_tiers` as `CAPABILITY_UNAVAILABLE`; a corrupt or truncated stream records
+nothing, since it answers "no TAR". The probe SHALL record one reason, in this order: a
+budget that turns the tier off records `NOT_ENABLED_BY_POLICY`, whether or not the
+backend is present; then an absent backend records `CAPABILITY_UNAVAILABLE`, even under
+a budget too small for the probe; then a budget too small for the probe records
+`BUDGET_EXHAUSTED`.
+
 #### Scenario: inner-TAR matrix
 
 | Case | Expected |
@@ -384,6 +436,10 @@ compressor.
 | Non-seekable `.tar.bz2` needing full block | Buffered in the `ArchiveSource`'s replay prefix; `TAR_BZ2`; backend can still read all |
 | Alone `.tar.lzma` / Alone `.tlz` with `ustar`@257 | `ArchiveFormat(TAR, LZMA_ALONE)` |
 | Bare Alone `.lzma`, no `ustar` | `ArchiveFormat.LZMA_ALONE` |
+| `.tar.xz`, `.tar.lzma` or `.tar.lz` declaring a 4 GiB (lzip: 512 MiB) dictionary | `TAR_*`, decoded with a 4 KiB dictionary |
+| `.tar.xz` whose block chain has a filter Python's `lzma` cannot build raw (ARM64) | `XZ`; `inner_tar` skipped as `CAPABILITY_UNAVAILABLE` |
+| Multi-stream `.tar.xz` whose first stream decodes to under 262 bytes (or is empty, with or without stream padding) | `TAR_XZ` |
+| `.tar.zst` whose frame declares a window over 128 MiB (`zstd --long=28` and up) | `ZST`; `inner_tar` skipped as `CAPABILITY_UNAVAILABLE` |
 
 ### Requirement: Keep `.tlz` as TAR × LZIP; Alone content still wins
 
@@ -443,6 +499,27 @@ short of a known end of source (`HitOutcome.VALID_SHORT`) is kept only as a fall
 scan goes on, and a later 7z hit that ends exactly at end of source wins over it, so a
 stub that embeds a whole small 7z archive does not hide the real payload after it. With no
 such later hit the short one is used, which keeps a 7z followed by trailing data readable.
+A held short hit SHALL be displaced only by a later `VALID` hit of the **same** format. A
+`VALID` hit of another format SHALL end the scan, and the held short hit SHALL be the
+answer: the exact-end preference is a tie-break within one format and never reorders
+formats, so the earliest accepted needle still decides between them.
+
+The window bounds where a magic may **start**, not how far its validator reads. A
+candidate that starts inside the window SHALL be judged on its whole header, read up to
+the smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes` past the window end, so under the
+presets the same bytes give the same answer at the window end, inside the window, and on
+a non-seekable source. A header that does not fit that allowance SHALL be rejected and
+`sfx_scan` recorded as *budget exhausted*.
+
+The scan SHALL cap rejected candidates only for a format whose parser runs its own capped
+scan (RAR and 7z), and SHALL count them per format, as each of those parsers counts its own
+format's. Decoys of one format SHALL NOT spend another's allowance. A format whose reader
+runs no such scan SHALL NOT be capped: ZIP already locates the end of central directory
+from the tail, so a cap on ZIP candidates would refuse a file that forced `format=ZIP`
+opens. With both rules, a file of decoys means the same thing to detection as to a forced
+`format=`. After `MAX_VALIDATED_CANDIDATES` (256) rejected candidates of a capped format,
+the scan SHALL stop searching for that format's needles, so its later candidates are not
+judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it answers.
 
 #### Scenario: SFX matrix
 
@@ -455,7 +532,16 @@ such later hit the short one is used, which keeps a 7z followed by trailing data
 | **Strong** executable cue (validated PE / ELF), no RAR/7z/ZIP in window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `dev-docs/topics/detection.md` |
 | Stub containing a decoy needle the validator rejects | The scan resumes past it and finds the real payload |
+| RAR decoy whose header (bad CRC) crosses the window end | Rejected, as at any offset inside the window and on a pipe |
+| Real RAR whose main header crosses the window end | `RAR`, `payload_offset` at its marker; receipt within budget |
+| A header that crosses the window end by more than a small `max_scan_bytes` allows | Rejected; `sfx_scan` recorded *budget exhausted*; the tier reads at most twice `max_scan_bytes` |
+| 256 rejected RAR decoys before the real RAR payload | No `sfx_scan` answer; `sfx_scan` recorded *budget exhausted*; forced `format=RAR` raises `CorruptionError` naming the cap |
+| 256 rejected ZIP decoys before a real RAR payload | `RAR` at its marker, as forced `format=RAR` opens it; nothing recorded as cut short |
+| 256 rejected ZIP decoys before a real ZIP payload | `ZIP` at its local header, as forced `format=ZIP` opens it; nothing recorded as cut short |
+| A window filled with one capped format's decoys | That format's needles are no longer searched after the 256th rejection; the scan does not walk the rest of its decoys |
+| Whole valid 7z in the stub, then 256 rejected 7z decoys, then the real 7z | The embedded 7z, as the fallback forced `format=SEVEN_Z` also takes; `sfx_scan` recorded *budget exhausted* |
 | Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
+| Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |

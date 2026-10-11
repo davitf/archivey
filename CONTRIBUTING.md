@@ -138,6 +138,18 @@ Keep that when you add a step.
 > lint and type checkers are pinned exactly in `pyproject.toml` so that leg 2 cannot
 > change what the gates report.
 
+A pull request that changes only documentation does not start `ci.yml` (none of its
+jobs: lint, test legs, unar and free-threaded legs, benchmark gate), `atheris-fuzz.yml`
+or `ppmd-native-stress.yml`. The docs build and the OpenSpec checks live in
+`docs-checks.yml`, which always runs. The list of documentation paths is the
+`pull_request: paths:` filter in those three workflows; if a test starts reading a doc
+file, re-include that file there, as `docs/api.md` is, or a change to it will skip the
+test that reads it. `tests/test_ci_doc_paths.py` checks that the three lists match and
+that the re-includes come after every `!` entry. Branch protection on `main` requires no
+status checks today. If one is added, it must come from a workflow that runs on every
+pull request, because a filtered workflow reports no check at all and the PR would wait
+on it forever.
+
 ## Cutting a release
 
 See [`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)
@@ -282,11 +294,13 @@ maintainer.
   re-exported: its `__module__` is what `pickle` records. `tests/test_public_api.py`
   enforces this; `ArchiveStream` is the one listed exception.
 - **The CLI uses only public API.** Nothing under `src/archivey/cli/` imports from
-  `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. The
-  one exception is `--track-io`'s import of `archivey.internal.measurement`, allowlisted
-  in that test: the CLI is also a debugging tool for the library, and IO measurement is
-  deliberately not public API. Otherwise, the CLI needing something internal means the
-  public API has a gap. Close the gap through the ordinary `__all__` decision above, or
+  `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. Two
+  imports are allowlisted in that test. `--track-io` imports
+  `archivey.internal.measurement`: the CLI is also a debugging tool for the library, and
+  IO measurement is deliberately not public API. `extract` imports two naming rules
+  from `archivey.internal.filters` that its report and hoist must apply exactly as
+  extraction does. Otherwise, the CLI needing something internal means the public API
+  has a gap. Close the gap through the ordinary `__all__` decision above, or
   in a public module that is not re-exported (`archivey.terminal` holds the display
   helpers any front end needs), or do without: the library's enum-spelling helpers are
   internal, so the CLI derives its option choices from the enums and maps a parsed
@@ -551,6 +565,18 @@ contract, not the primary reading surface
 
 **Same PR as code:** when a change falsifies a handbook or published-doc claim, update
 that page in the same PR.
+
+**Lessons.** When a fix or a review round teaches something, ask: if nothing wrote it
+down, would a future engineer reading the final code still be likely to repeat the
+mistake or redo substantial investigation? Effort and diff size do not count. If no,
+write nothing. If yes, write it in the same PR, in the home that already exists for it:
+a format trap in that format's handbook page (`dev-docs/formats/<format>.md` §5 Sharp
+edges, or §6 Decisions for a choice), a coding trap here, a live defect in
+[`dev-docs/known-issues.md`](dev-docs/known-issues.md), the evidence in
+`dev-docs/investigations/`. A ruling that generalises across formats belongs in
+[`dev-docs/design-rules.md`](dev-docs/design-rules.md), but an agent only proposes one
+there; the maintainer writes it. (The test is adapted from the `ce-compound` skill of
+EveryInc/compound-engineering-plugin, MIT.)
 
 **The invariant:** everything under `docs/` is published and is for users; nothing
 else lives under `docs/`. That is why maintainer material sits in `dev-docs/` rather

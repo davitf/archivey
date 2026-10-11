@@ -88,12 +88,16 @@ not read, because it describes one frame and nothing says the file has one (§7)
 ### 2.3 Member data
 
 Both codecs run in archivey's engine as `FramedDecompressorStream`
-(`internal/streams/codecs/framed_decoder.py`): one library decompressor per frame, and a new one
-only when the next bytes are a frame or skippable-frame magic. Anything else after a
-frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
-([`single-file.md`](single-file.md) §2.3). The file-level readers the libraries offer
-(`compression.zstd.open`, `lz4.frame.open`) cannot do that: they take any bytes after a
-frame for the next frame and fail on them.
+(`internal/streams/codecs/framed_decoder.py`): one library decompressor per frame, and a
+new one only when the bytes right after a frame are a frame or skippable-frame magic.
+Bytes there that hold one of those magics in at least half of its positions, but not
+all, are a frame with a damaged magic and raise `CorruptionError`; a run of one to three
+zeros counts as the magic's first bytes there, since a damaged byte can be a zero.
+Anything else after a frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless
+it is zeros that run to the end of the file ([`single-file.md`](single-file.md) §2.3).
+After zeros, any other byte ends the data, a further frame's magic too (§6). The
+file-level readers the libraries offer (`compression.zstd.open`, `lz4.frame.open`)
+cannot do that: they take any bytes after a frame for the next frame and fail on them.
 
 **zstd.** The decompressor is `compression.zstd.ZstdDecompressor`, or `backports.zstd`'s
 before Python 3.14, the same API (ADR 0009). It skips skippable frames and checks each
@@ -142,6 +146,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `zstd --long=31` on a file | Reads: the window is sized to the input |
 | `zstd --long=31` from standard input (2 GiB window) | Reads under the default 2 GiB cap; `ResourceLimitError` under a smaller one |
 | A zstd file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; `zstd -t` refuses it |
+| Two zstd or LZ4 frames, one byte of the second frame's magic damaged | `CorruptionError` on a read and a seek |
 | One bit flipped mid-file, `zstd` / `zstd --no-check` | `CorruptionError` from the checksum / **read with no error** |
 | `lz4`, `lz4 -BD`, two frames concatenated | Reads |
 | `lz4 --content-size` | Reads; `size=None` |
@@ -150,7 +155,9 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `lz4 -l` of a tar starting with 3 MiB of incompressible data, no extension | `LZ4`, not `TAR_LZ4`: the first block is over the inner-TAR probe's 1 MiB (§2.1) |
 | `lz4 -l` (legacy frame, magic `02 21 4c 18`), one block and several | Detected and read |
 | `lz4 -l` output, a modern frame and another `lz4 -l` output concatenated | Reads, as `lz4 -dc` does |
-| `lz4 -l` output followed by `junk` / by three zero bytes | Reads, then `ARCHIVE_TRAILING_DATA` / reads clean; `lz4 -dc` accepts the first and refuses the second |
+| `lz4 -l` output followed by `junk` / by three zero bytes | Reads, then `ARCHIVE_TRAILING_DATA` / reads clean; `lz4 -dc` accepts the first and refuses the second ("Error 40 : Unrecognized header", exit 40) |
+| A frame, 4 zero bytes, a frame (crafted: no known writer emits this) | The first payload, then `ARCHIVE_TRAILING_DATA` at the second frame's first byte; `DiagnosticPolicy.strict()` raises. `zstd -dc` 1.5.5 writes the first payload, then "unsupported format", exit 1; `lz4 -dc` 1.9.4 writes it and exits 1. `bsdcat` fails on the `.zst` ("Unknown frame descriptor") and writes the first payload of the `.lz4`; `lz4.frame.decompress` returns the first payload. 7-Zip 16.02 opens neither |
+| A frame, then 4 zero bytes at the end of the file | Reads, with no diagnostic. `zstd -dc` and `lz4 -dc` write the payload and exit 1 on the zeros; archivey keeps them silent, as for every codec (§6) |
 
 The legacy format is what Linux kernel images and initramfs files compressed with LZ4 use.
 
@@ -175,13 +182,20 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   `LZ4_COMPRESSBOUND(8 MiB)` ends the stream instead, so the input held for one block
   stays under about 8 MiB and each block decodes into an 8 MiB buffer. Both numbers are
   the format's, so `DecoderLimits` has nothing to cap here.
-- **Detection lifts the cap.** The detection probes decode a sample with
+- **Detection lifts the cap, not the window.** The inner-TAR probe decodes with
   `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs/base.py`, the same rule as
-  liblzma's dictionary), so a probe decodes with `window_log_max` at libzstd's ceiling.
-  libzstd reserves the declared window on the first read: an 18-byte frame declaring
-  2 GiB reserves 2 GiB of address space during `open_archive` whatever
-  `max_decoder_memory` says. Under overcommit that costs nothing resident; under
-  `RLIMIT_AS` or a strict commit limit it is a `MemoryError` at detection.
+  liblzma's dictionary), but with `window_log_max` at libzstd's default 27 (128 MiB),
+  what `zstd -d` decodes without `--long`. libzstd reserves the declared window of a
+  frame without a content size when it reads the header (measured: a 2 GiB window under
+  a 256 MiB `RLIMIT_AS` fails with "Allocation error"), and a window cannot be shrunk to
+  what the read needs the way an LZMA dictionary can. A frame over 128 MiB is "can't
+  tell": detection reports a bare `.zst`, records `inner_tar` as
+  `CAPABILITY_UNAVAILABLE`, and the open applies the caller's limit. The alternative was to
+  keep libzstd's 2 GiB ceiling and let its own allocation refusal ("Allocation error", a
+  `CorruptionError` to the probe) be the "can't tell" under memory pressure; that keeps
+  `--long=28` and up detected where memory allows. The cap was chosen because a 2 GiB
+  reservation per `detect_format` is a cost in itself (threat model O11) and `--long`
+  frames are rare beside the 8 MiB window of `zstd -19`.
 - **The decoders are native code.** Both run in the caller's process. `compression.zstd`
   is the standard library's; `lz4` is a C extension. Neither is fuzzed by archivey's own
   harness beyond the corpus.
@@ -216,6 +230,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | LZ4 through `lz4.frame` | The maintained binding | Writing a frame decoder |
 | The legacy LZ4 stream through `lz4.block`, framed in archivey | Its framing is a magic and a size per block, and `lz4.block` is in the package already installed | Refusing it with `UnsupportedFeatureError`, which would leave kernel images unreadable |
 | One library decompressor per frame, framed by magic in archivey's engine | Finds where the last frame ends, so bytes after it are reported rather than failing the read | `compression.zstd.open` and `lz4.frame.open`, which fail on them |
+| Zero bytes end the data unless they run to the end of the file; a frame after them is `ARCHIVE_TRAILING_DATA` (maintainer ruling, 2026-10-10) | Match the official tools (DR-6): `zstd` and `lz4` stop at zeros between frames and fail, and the same rule already holds for gzip and bzip2. Zeros at the end of the file stay silent although `zstd` and `lz4` refuse them too: one rule for every codec, as tape and block devices pad files with zeros ([`single-file.md`](single-file.md) §6) | Reading a frame after the zeros; refusing zeros at the end, as `zstd` and `lz4` do |
 | Do not report a frame's content size | It covers one frame, and proving there is one frame means reading to the end | Reporting it when present |
 
 ## 7. Open questions
@@ -243,6 +258,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Backward seeks re-decode and are reported | `tests/test_seekable_streams.py::test_zstd_rewinds_and_warns_on_backward_seek`, `::test_lz4_warns_on_rewind` |
 | zstd as a ZIP method | `tests/test_zip_native_codecs.py::test_zip_zstd_handbuilt_roundtrip`, `::test_zip_zstd_without_backend_raises` |
 | The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP method 93 | `tests/test_decoder_limits.py::test_zstd_window_over_libzstd_default_reads_under_the_cap`, `::test_zstd_window_against_the_cap`, `::test_zip_zstd_member_window_is_capped`, `::test_zstd_window_over_libzstd_s_ceiling` |
+| A frame after zero bytes is trailing data, and strict refuses it; zeros at the end and frames with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
 | The legacy LZ4 stream: detection, blocks, concatenation, padding, the size bound, corruption and truncation | `tests/test_lz4_legacy.py` |
 | `pyzstd` is not a runtime dependency | `tests/test_extras_imported.py::test_pyzstd_and_python_xz_are_not_in_any_extra` |
 

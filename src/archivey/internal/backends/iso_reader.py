@@ -119,8 +119,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
+from archivey.internal.unix_mode import special_file_type
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -503,22 +505,28 @@ class _ParseBudget:
     below count as it parses, so an over-limit image is refused early instead of
     after the whole tree is built.
 
-    Counts are per volume descriptor, because a listing shows one tree (Rock Ridge or
-    plain ISO 9660 from the PVD, or Joliet from its SVD), and an image with both has
-    each file twice. Within a tree the counts are a superset of the listing: every
-    record but ``.`` and ``..`` counts as a member, including the extra records of a
-    multi-extent file and the ``rr_moved`` scaffolding the listing hides. The bytes are
+    Members are counted per volume descriptor, because a listing shows one tree (Rock
+    Ridge or plain ISO 9660 from the PVD, or Joliet from its SVD), and an image with
+    both has each file twice: one count for the whole image would halve the member cap
+    of such an image. Within a tree the count is a superset of the listing: every record
+    but ``.`` and ``..`` counts as a member, including the extra records of a
+    multi-extent file and the ``rr_moved`` scaffolding the listing hides.
+
+    Bytes are one sum for the whole image, every tree together, held to
+    ``max_metadata_bytes`` (ruled by davi, 2026-10-10; ``dev-docs/formats/iso.md``
+    records the reasons and what would reopen it): pycdlib keeps every tree it parses,
+    so a budget per tree let one image retain it once per tree. The bytes are
     the directory records as stored, System Use areas included, plus each Rock Ridge
-    continuation area every time pycdlib parses it, plus the tree's little- and
+    continuation area every time pycdlib parses it, plus each tree's little- and
     big-endian path tables, which pycdlib reads whole and parses into one object per
     record (at least 8 bytes each). That is more than the text a listing keeps.
 
     The UDF tree, when the image has one, is counted as one more tree, although
     archivey does not list it: pycdlib parses it inside ``open_fp`` all the same. Every
-    File Identifier but the parent entry counts as a member, and the bytes are each
+    File Identifier but the parent entry counts as a member of the UDF tree, and each
     File Identifier as stored plus each File Entry's fixed part, extended attributes and
-    allocation descriptors as the entry declares them, weighed before pycdlib parses it
-    into one object per descriptor.
+    allocation descriptors as the entry declares them add to the image's bytes, the
+    File Entry weighed before pycdlib parses it into one object per descriptor.
     """
 
     def __init__(self, limits: ListingLimits) -> None:
@@ -526,37 +534,38 @@ class _ParseBudget:
         # Keyed by ``id`` of the volume descriptor; pycdlib keeps every descriptor it
         # walks for the life of the ``PyCdlib`` object, so an id is not reused here.
         self._members: dict[int, int] = {}
-        self._bytes: dict[int, int] = {}
-        # The ISO 9660 or Joliet tree of the record parsed last: pycdlib parses a
-        # record's continuation area right after the record, and ``RockRidge.parse``
-        # is not told the tree. Only ``add_continuation`` reads it; the UDF hooks name
-        # their tree and leave it alone.
+        # Bytes of every tree together: one image-wide budget (see above).
+        self._bytes = 0
+        # The ISO 9660 or Joliet tree of the record parsed last, the key its member is
+        # counted under. ``add_member`` and ``add_continuation`` read it: pycdlib calls
+        # them from inside ``DirectoryRecord.parse``, after ``add_record``, and neither
+        # hook is told the descriptor. Bytes do not need it, being one sum for the
+        # image; the UDF hooks name their tree and leave it alone.
         self._tree = 0
         # Entries pycdlib has parsed from the path table it is parsing now.
         self._path_table_entries = 0
 
     def add_record(self, vd: object, nbytes: int) -> None:
         self._tree = id(vd)
-        self._add_bytes(self._tree, nbytes)
+        self._add_bytes(nbytes, f"its {_ISO_TREE_NAME}")
 
     def add_member(self) -> None:
         self._add_member(self._tree)
 
     def add_udf_bytes(self, nbytes: int) -> None:
-        self._add_bytes(_UDF_TREE, nbytes)
+        self._add_bytes(nbytes, f"its {_UDF_TREE_NAME}")
 
     def add_udf_member(self) -> None:
         self._add_member(_UDF_TREE)
 
     def add_continuation(self, nbytes: int) -> None:
-        self._add_bytes(self._tree, nbytes)
+        self._add_bytes(nbytes, f"its {_ISO_TREE_NAME}")
 
-    def add_path_table(self, vd: object, nbytes: int) -> None:
+    def add_path_table(self, nbytes: int) -> None:
         # Called before pycdlib reads the table, so an over-budget size is refused
         # before the read and the parse, not after.
-        self._tree = id(vd)
         self._path_table_entries = 0
-        self._add_bytes(self._tree, nbytes)
+        self._add_bytes(nbytes, f"a path table of its {_ISO_TREE_NAME}")
 
     def add_path_table_entry(self) -> None:
         """Count one path-table entry pycdlib parsed against ``max_members``.
@@ -582,24 +591,21 @@ class _ParseBudget:
         self._members[tree] = count
         max_members = self._limits.max_members
         if max_members is not None and count > max_members:
-            name = "UDF directory tree" if tree == _UDF_TREE else "ISO directory tree"
+            name = _UDF_TREE_NAME if tree == _UDF_TREE else _ISO_TREE_NAME
             raise ResourceLimitError(
                 f"Listing limit reached: max_members={max_members} "
                 f"({name} holds more than {max_members} records)"
             )
 
-    def _add_bytes(self, tree: int, nbytes: int) -> None:
-        total = self._bytes.get(tree, 0) + nbytes
-        self._bytes[tree] = total
+    def _add_bytes(self, nbytes: int, source: str) -> None:
+        """Add ``nbytes`` to the image-wide sum; ``source`` says where they came from."""
+        self._bytes += nbytes
         check_metadata_budget(
             self._limits,
-            total,
+            self._bytes,
             detail=(
-                f"UDF directory tree has {total} bytes of File Identifiers and "
-                "File Entries"
-                if tree == _UDF_TREE
-                else f"ISO directory tree has {total} bytes of path tables and "
-                "directory records"
+                f"ISO image has {self._bytes} bytes of parsed directory metadata; "
+                f"the last came from {source}"
             ),
         )
 
@@ -607,6 +613,10 @@ class _ParseBudget:
 # The key the UDF tree is counted under in ``_ParseBudget``: pycdlib walks one UDF file
 # set per image, and no ``id()`` is negative.
 _UDF_TREE = -1
+# How a refusal names the tree a member or the last bytes came from: an ISO 9660 or
+# Joliet tree, or the UDF tree.
+_ISO_TREE_NAME = "ISO directory tree"
+_UDF_TREE_NAME = "UDF directory tree"
 
 
 # Set only while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``; ``None``
@@ -665,7 +675,7 @@ def _install_pycdlib_path_table_bound() -> None:
     it walks any directory. The source bounds the read to the image, not the parse.
     A table that runs past the end of the image is ``CorruptionError``, as pycdlib's
     own parse of the short read would have it, and the size is weighed against
-    ``max_metadata_bytes`` with the tree it indexes. A second wrapper, on
+    ``max_metadata_bytes`` with the rest of the image. A second wrapper, on
     ``PathTableRecord.parse``, counts each entry against ``max_members`` as pycdlib
     parses it (:meth:`_ParseBudget.add_path_table_entry`). Installed once and
     transparent outside ``IsoReader``'s ``open_fp``, like the hooks above.
@@ -713,23 +723,8 @@ def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
             "from there"
         )
     budget = _PARSE_BUDGET.get()
-    if budget is None:
-        return
-    # The descriptor whose table this is; pycdlib parses the PVD's, then Joliet's.
-    descriptors = [getattr(iso, "pvd"), *cast("list[object]", getattr(iso, "svds"))]
-    vd = next(
-        (
-            vd
-            for vd in descriptors
-            if extent
-            in (
-                getattr(vd, "path_table_location_le", None),
-                getattr(vd, "path_table_location_be", None),
-            )
-        ),
-        descriptors[0],
-    )
-    budget.add_path_table(vd, ptr_size)
+    if budget is not None:
+        budget.add_path_table(ptr_size)
 
 
 _install_pycdlib_path_table_bound()
@@ -1039,25 +1034,23 @@ def _is_directory_record(obj: object) -> TypeGuard[DirectoryRecord]:
     return _pycdlib_dr is not None and isinstance(obj, _pycdlib_dr.DirectoryRecord)
 
 
-def _continuation_chain(record: DirectoryRecord) -> list[DirectoryRecord]:
-    """``record`` and every record pycdlib linked after it through ``data_continuation``.
+_RecordKey = tuple[int, int, int, int, int, int, int, bytes]
 
-    pycdlib links *any* record whose identifier repeats the previous one in its
-    directory, and sets the multi-extent flag on the earlier record as it does, so
-    this chain is only a candidate: ``IsoReader._layout`` confirms it against
-    the flags as written in the image.
-    """
-    chain = [record]
-    while chain[-1].data_continuation is not None:
-        chain.append(chain[-1].data_continuation)
-    return chain
+
+class _RawRecord(NamedTuple):
+    """One of several records that share an identifier, as written on disc."""
+
+    # The fields that tell it apart from the others with its identifier, in the form
+    # pycdlib keeps them (``_record_key``).
+    key: _RecordKey
+    multi_extent: bool
 
 
 class _RawDirectory(NamedTuple):
     """What a directory's records say on disc that pycdlib does not keep as written."""
 
-    # Extents of the records whose multi-extent flag is set.
-    flagged: frozenset[int]
+    # The records of each identifier written more than once, in on-disc order.
+    repeated: Mapping[bytes, tuple[_RawRecord, ...]]
     # Declared data length of each record whose data reaches the end of the image,
     # keyed by (extent, identifier): the records pycdlib may have clamped.
     lengths_to_end: Mapping[tuple[int, bytes], int]
@@ -1066,19 +1059,23 @@ class _RawDirectory(NamedTuple):
 def _parse_raw_directory(
     directory_data: bytes, block_size: int, image_length: int
 ) -> _RawDirectory:
-    """The multi-extent flags and clamped lengths in a directory's data.
+    """The repeated identifiers and clamped lengths in a directory's data.
 
     Walks the raw records as ECMA-119 §9.1 lays them out: byte 0 is the record length,
-    bytes 2-5 the extent and bytes 10-13 the data length (little-endian), byte 25 the
-    file flags (bit 7 multi-extent), byte 32 the identifier length and the identifier
-    from byte 33. A zero length byte pads to the end of the sector. Only the non-zero
-    lengths that reach ``image_length`` are kept, so the result grows with the records
-    pycdlib may have changed rather than with the directory. The ``>=`` is
-    load-bearing: pycdlib clamps on ``>``, so every clamped length is kept, including
-    one clamped to zero, and ``IsoReader._layout`` reads a zero-length miss as a
-    genuinely empty file.
+    byte 1 the extended-attribute length, bytes 2-5 the extent and bytes 10-13 the
+    data length (little-endian), bytes 18-24 the date, byte 25 the file flags (bit 7
+    multi-extent), bytes 26 and 27 the file unit size and interleave gap, bytes 28-29
+    the volume sequence number, byte 32 the identifier length and the identifier from
+    byte 33. A zero length byte pads to the end of the sector. Only the non-zero
+    lengths that reach ``image_length``, and the records of identifiers written more
+    than once, are kept, so the result grows with the records pycdlib may have
+    changed or hidden rather than with the directory. The ``>=`` is load-bearing:
+    pycdlib clamps on ``>``, so every clamped length is kept, including one clamped
+    to zero, and ``IsoReader._layout`` reads a zero-length miss as a genuinely empty
+    file.
     """
-    flagged: set[int] = set()
+    # Where each identifier's records start; only the repeated ones are read again.
+    offsets: dict[bytes, list[int]] = {}
     lengths: dict[tuple[int, bytes], int] = {}
     offset = 0
     while offset + 33 <= len(directory_data):
@@ -1087,17 +1084,74 @@ def _parse_raw_directory(
             offset += block_size - offset % block_size
             continue
         extent = int.from_bytes(directory_data[offset + 2 : offset + 6], "little")
-        if directory_data[offset + 25] & 0x80:
-            flagged.add(extent)
+        ident_length = directory_data[offset + 32]
+        ident = bytes(directory_data[offset + 33 : offset + 33 + ident_length])
         data_length = int.from_bytes(
             directory_data[offset + 10 : offset + 14], "little"
         )
+        offsets.setdefault(ident, []).append(offset)
         if data_length and extent * block_size + data_length >= image_length:
-            ident_length = directory_data[offset + 32]
-            ident = bytes(directory_data[offset + 33 : offset + 33 + ident_length])
             lengths[(extent, ident)] = data_length
         offset += length
-    return _RawDirectory(frozenset(flagged), lengths)
+    repeated = {
+        ident: tuple(
+            _raw_record(directory_data, at, block_size, image_length) for at in starts
+        )
+        for ident, starts in offsets.items()
+        if len(starts) > 1
+    }
+    return _RawDirectory(repeated, lengths)
+
+
+def _raw_record(
+    directory_data: bytes, offset: int, block_size: int, image_length: int
+) -> _RawRecord:
+    """The record at ``offset`` of a directory's data, keyed as ``_record_key`` is."""
+    extent = int.from_bytes(directory_data[offset + 2 : offset + 6], "little")
+    data_length = int.from_bytes(directory_data[offset + 10 : offset + 14], "little")
+    start = extent * block_size
+    file_flags = directory_data[offset + 25]
+    key = (
+        extent,
+        # Clamped as pycdlib clamps a lone record: a length running past the image
+        # becomes what is left. pycdlib clamps per inode, not per record
+        # (``_record_key``), so this can differ from what it kept.
+        image_length - start if start + data_length > image_length else data_length,
+        file_flags & 0x7F,
+        directory_data[offset + 1],
+        directory_data[offset + 26],
+        directory_data[offset + 27],
+        int.from_bytes(directory_data[offset + 28 : offset + 30], "little"),
+        bytes(directory_data[offset + 18 : offset + 25]),
+    )
+    return _RawRecord(key, bool(file_flags & 0x80))
+
+
+def _record_key(record: DirectoryRecord) -> _RecordKey:
+    """``_RawRecord.key`` for a record pycdlib parsed: the fields it keeps as written.
+
+    The multi-extent bit is left out of the flags, because pycdlib sets it in
+    memory. The length is ``data_length`` as pycdlib left it, and pycdlib clamps
+    per inode, not per record: it computes what is left of the image from the
+    inode's extent and writes that length to every record linked to the inode,
+    that is every record sharing the extent, and it does not clamp a zero-length
+    record or a Rock Ridge symlink at all. ``_raw_record`` clamps each record on its
+    own, so a record that shares its extent with a longer one that runs past the end
+    of the image, or a zero-length record or symlink whose extent lies past it, gets
+    a key that matches nothing here, and its identifier's records are then listed one
+    by one (``IsoReader._entries_sharing_identifier``). That loses only the join of a
+    multi-extent file's records in such an image; no record is hidden.
+    """
+    return (
+        record.extent_location(),
+        record.data_length,
+        record.file_flags & 0x7F,
+        record.xattr_len,
+        record.file_unit_size,
+        record.interleave_gap_size,
+        record.seqnum,
+        bytes(record.date.record()),
+    )
 
 
 class _Extent(NamedTuple):
@@ -1363,6 +1417,9 @@ class IsoReader(BaseArchiveReader):
         self._layouts: dict[int, tuple[_Extent, ...] | None] = {}
         # What each directory's records say on disc, per directory extent read.
         self._raw_directories: dict[int, _RawDirectory] = {}
+        # The records of a file stored in more than one record, keyed by ``id`` of
+        # each of them; joined by the walk (``_entries_sharing_identifier``).
+        self._file_records_of: dict[int, tuple[DirectoryRecord, ...]] = {}
         # What the System Use filter kept aside while ``open_fp`` parsed the Rock Ridge
         # areas: zisofs entries, and the areas it cut short.
         self._system_use = _SystemUseNotes(self._iso)
@@ -1673,7 +1730,9 @@ class IsoReader(BaseArchiveReader):
         close a cycle cannot loop.
 
         Within a directory, subdirectories come first and then files, each in record
-        order, except that plain ISO 9660 files are ordered by (name, version).
+        order, except that plain ISO 9660 files are ordered by (name, version). Records
+        that share an identifier but are separate entries each list
+        (``_entries_sharing_identifier``).
         ``superseded`` is true for a plain ISO 9660 file when the same directory holds
         a higher version of the same name.
         """
@@ -1685,18 +1744,39 @@ class IsoReader(BaseArchiveReader):
             dirpath, raw_dirpath, dir_record = stack.pop()
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
-            for child in _yield_children(dir_record, use_rr):
+            # The runs of records with one identifier, as (start, end) in ``children``
+            # keyed by ``id`` of the run's first record. pycdlib keeps equal
+            # identifiers adjacent, as ``_yield_children`` relies on, so one pass
+            # finds them, and a directory with no repeated identifier allocates none.
+            children = dir_record.children
+            runs: dict[int, tuple[int, int]] = {}
+            start = 0
+            for index in range(1, len(children) + 1):
+                if (
+                    index == len(children)
+                    or children[index].file_ident != children[start].file_ident
+                ):
+                    if index - start > 1:
+                        runs[id(children[start])] = (start, index)
+                    start = index
+            for first in _yield_children(dir_record, use_rr):
                 if (
                     use_rr
                     and dirpath == "/"
-                    and child.is_dir()
-                    and self._is_rr_moved(child)
+                    and first.is_dir()
+                    and self._is_rr_moved(first)
                 ):
                     continue
-                name, raw_name = self._record_name(child)
-                path = self._join(dirpath, name)
-                raw_path = raw_name if dirpath == "/" else raw_dirpath + b"/" + raw_name
-                (dirs if child.is_dir() else files).append((path, raw_path, child))
+                # A directory relocated from elsewhere has no run here.
+                run = runs.get(id(first)) if first.parent is dir_record else None
+                group = [first] if run is None else children[run[0] : run[1]]
+                for child in self._entries_sharing_identifier(dir_record, group):
+                    name, raw_name = self._record_name(child)
+                    path = self._join(dirpath, name)
+                    raw_path = (
+                        raw_name if dirpath == "/" else raw_dirpath + b"/" + raw_name
+                    )
+                    (dirs if child.is_dir() else files).append((path, raw_path, child))
             if self._namespace == "iso9660":
                 files.sort(key=self._version_order)
             newest: dict[str, int] = {}
@@ -1717,12 +1797,89 @@ class IsoReader(BaseArchiveReader):
                 seen_extents.add(extent)
                 stack.append((path, raw_path, record))
 
+    def _entries_sharing_identifier(
+        self, directory: DirectoryRecord, group: list[DirectoryRecord]
+    ) -> list[DirectoryRecord]:
+        """The first record of each entry among ``group``, records with one identifier.
+
+        ``_yield_children`` yields only the first of the records with one identifier,
+        because a file of 4 GiB or more is stored as several records with one name.
+        Two files, a directory and a file, or a file and its associated file (flag
+        bit 2, such as a resource fork) can share an identifier too, and pycdlib's
+        links (``data_continuation``) and order do not tell these apart: it links
+        each later record to the one before it, sets the multi-extent flag on the
+        earlier one in memory, and puts an associated file before the records that
+        share its identifier, whatever the order on disc.
+
+        So the entries are worked out from the records as written. Each record is
+        matched to its bytes on disc (``_record_key``); then, in on-disc order, a file
+        record that carries the multi-extent flag continues into the next record if
+        that is a file record of the same kind (associated or not). Each entry is
+        listed, as ZIP and TAR list two members with one name and as 7-Zip lists such
+        an image; the shared duplicate-name rule then makes the later one current.
+        Records whose matched fields are all equal hold the same data, so which takes
+        which place changes no member's data. If a record cannot be matched, each
+        record of the group is listed on its own.
+        """
+        if len(group) == 1:
+            return group
+        on_disc = self._raw_directory(directory).repeated.get(
+            bytes(group[0].file_ident), ()
+        )
+        if len(on_disc) != len(group):
+            return group
+        # Records with equal keys are taken in pycdlib's order.
+        by_key: dict[_RecordKey, list[DirectoryRecord]] = {}
+        for record in reversed(group):
+            by_key.setdefault(_record_key(record), []).append(record)
+        ordered: list[tuple[DirectoryRecord, bool]] = []
+        for raw in on_disc:
+            candidates = by_key.get(raw.key)
+            if not candidates:
+                return group
+            match = candidates.pop()
+            ordered.append((match, raw.multi_extent and not match.is_dir()))
+        heads: list[DirectoryRecord] = []
+        entry: list[DirectoryRecord] = []
+        continues = False
+        for record, flagged in ordered:
+            if (
+                entry
+                and continues
+                and not record.is_dir()
+                and record.is_associated_file() == entry[-1].is_associated_file()
+            ):
+                entry.append(record)
+            else:
+                self._add_entry(heads, entry)
+                entry = [record]
+            continues = flagged
+        self._add_entry(heads, entry)
+        return heads
+
+    def _add_entry(
+        self, heads: list[DirectoryRecord], entry: list[DirectoryRecord]
+    ) -> None:
+        """Add an entry's first record to ``heads``, and keep a file's records."""
+        if not entry:
+            return
+        heads.append(entry[0])
+        if len(entry) > 1:
+            records = tuple(entry)
+            for record in records:
+                self._file_records_of[id(record)] = records
+
+    def _file_records(self, record: DirectoryRecord) -> tuple[DirectoryRecord, ...]:
+        """The records that hold one file's data, as the walk joined them."""
+        return self._file_records_of.get(id(record), (record,))
+
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
         # the record walk traverses in-memory parsed catalog records and reads nothing
-        # from the image. ``_make_member`` can: for a repeated identifier or a file
-        # whose data ends at the end of the image, ``_raw_directory`` re-reads the
-        # directory's extent through ``_cdfp`` and takes the handle guard itself. The
+        # from the image, except in two cases. For a repeated identifier
+        # (``_entries_sharing_identifier``) or a file whose data ends at the end of
+        # the image (``_make_member``), ``_raw_directory`` re-reads the directory's
+        # extent through ``_cdfp`` and takes the handle guard itself. The
         # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
         # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
         # ``_yield_children`` on the Joliet tree walks them. Following a link target
@@ -1753,19 +1910,36 @@ class IsoReader(BaseArchiveReader):
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
 
+        special = special_file_type(raw_mode) if raw_mode is not None else None
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
         elif record.is_dir():
             member_type = MemberType.DIRECTORY
-        elif raw_mode is not None and not stat.S_ISREG(raw_mode):
-            # A Rock Ridge PX mode names a device, FIFO or socket: never a regular file,
-            # whatever bytes sit at the extent.
+        elif (
+            special is not None or (raw_mode is not None and not stat.S_ISREG(raw_mode))
+        ) and self._file_size(record) == 0:
+            # A Rock Ridge PX mode names a device, FIFO or socket, and the extent is
+            # empty (genisoimage and xorriso write a FIFO so): OTHER. A non-empty extent
+            # under such a mode is a FILE whose bytes are the content (DR-25), with
+            # ``extra["special_file_type"]`` keeping the stored type. ``== 0``, not
+            # ``not``: ``_file_size`` is ``None`` for a non-empty extent whose length
+            # was lost, and that record is a FILE with ``size=None`` like a regular one.
+            # Defence, not tested behaviour: the lost length needs a record pycdlib
+            # walked that its parent directory's bytes on disc do not list with a
+            # length reaching the image end (``_layout``), and no image the suite can
+            # build does that, so no test tells ``== 0`` from ``not``.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
 
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
-        presented, version = self._split_version(ns_path)
+        # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
+        # part of its name, and its children's paths keep it.
+        presented, version = (
+            (ns_path.lstrip("/"), None)
+            if member_type is MemberType.DIRECTORY
+            else self._split_version(ns_path)
+        )
         if superseded:
             # An older version is presented as its stored identifier (``FOO.;1``), as
             # RAR presents a file-version history row: a distinct name to read it by,
@@ -1782,6 +1956,11 @@ class IsoReader(BaseArchiveReader):
             if version is not None
             else MemberExtra()
         )
+        if special is not None:
+            # Only a mode that names a special or unknown file type: a non-regular mode
+            # that is a directory's (``S_IFDIR`` on a file record) still makes OTHER
+            # above but recorded no special file, so it gets no key.
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
         mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
@@ -1836,6 +2015,8 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        if special is not None and member.type is MemberType.FILE:
+            self._emit_special_file_has_data(member, index)
         # The message names the normalized name, so it is built here, not in
         # ``_timestamps``.
         for field, source, value_repr in invalid_dates:
@@ -2100,16 +2281,16 @@ class IsoReader(BaseArchiveReader):
     def _as_written(self, record: DirectoryRecord) -> bool:
         """Whether pycdlib's inode for ``record`` is the file's whole data, unchanged.
 
-        Not so for a record with no inode (the El Torito boot catalog), a record
-        pycdlib linked to another with the same identifier (possibly a multi-extent
-        file), or one whose data ends exactly at the end of the image. pycdlib clamps a
+        Not so for a record with no inode (the El Torito boot catalog), a record of a
+        file the walk joined from several records (a multi-extent file), or one whose
+        data ends exactly at the end of the image. pycdlib clamps a
         file running past the end of the image to end there, and overwrites the
         declared length with the clamped one: zero when the extent starts at the end,
         negative when it starts past it.
         """
         return (
             record.inode is not None
-            and record.data_continuation is None
+            and id(record) not in self._file_records_of
             and not self._reaches_image_end(record)
         )
 
@@ -2122,27 +2303,18 @@ class IsoReader(BaseArchiveReader):
         """A file's extents with their lengths as declared on disc.
 
         A file of 4 GiB or more is stored as several records with one name, each
-        flagged multi-extent but the last. ``_yield_children`` yields only the first,
-        and pycdlib links the rest to it. pycdlib links two unrelated files that share
-        an identifier the same way, and by then has set the flag on the first of them
-        in memory, so the chain is kept only when every record but the last carries
-        the flag in the image itself. Otherwise the file is its own record alone, as
-        it was before multi-extent files were read.
+        flagged multi-extent but the last. ``_file_records`` gives the records the walk
+        joined from the flags as written in the image.
 
         A record whose data ends at the end of the image takes its length from the
         directory's records on disc. One not found there keeps a length of 0 if it has
         one (an empty file whose extent sits at the end of the image), and the layout
         is ``None`` otherwise.
         """
-        chain = _continuation_chain(record)
         parent = record.parent
         assert parent is not None, "a listed file record has a parent directory"
-        if len(chain) > 1:
-            flagged = self._raw_directory(parent).flagged
-            if not all(chunk.extent_location() in flagged for chunk in chain[:-1]):
-                chain = [record]
         layout: list[_Extent] = []
-        for chunk in chain:
+        for chunk in self._file_records(record):
             length = chunk.data_length
             if chunk.inode is not None and self._reaches_image_end(chunk):
                 declared = self._raw_directory(parent).lengths_to_end.get(
