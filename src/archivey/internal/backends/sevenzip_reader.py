@@ -125,10 +125,11 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.trailing_scan import first_nonzero_offset
-from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
+from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, special_file_type
 from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -140,6 +141,7 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
+    SpecialFileType,
     crc32_digest,
 )
 
@@ -961,6 +963,11 @@ class SevenZipReader(BaseArchiveReader):
             if _is_windows_reparse_point(attrs)
             else MemberExtra()
         )
+        special = self._special_file_type(record)
+        if special is not None:
+            # Whatever the type decided above, the key records what the mode said, so
+            # a reparse point that settles or re-types to FILE keeps it (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         ctime = None
         if created is not None and written_on_unix:
             created, ctime = None, created
@@ -997,6 +1004,12 @@ class SevenZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if special is not None and member.type is MemberType.FILE:
+            # member.type, not member_type: the settle above can re-type a reparse
+            # point with no reparse data to the fallback FILE. A reparse point whose
+            # data turns out not to be a link buffer is re-typed later, when the
+            # target is resolved, and `_apply_reparse_data` emits for it then.
+            self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             self._emit_timestamp_invalid(member, index, issue)
         # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
@@ -1040,17 +1053,12 @@ class SevenZipReader(BaseArchiveReader):
                     return MemberType.SYMLINK
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
-                if attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION and is_special_file_mode(
-                    unix_mode
-                ):
-                    # A device, FIFO or socket (7-Zip and p7zip store them with no
-                    # data). Unlike the symlink and directory tests above, this one
-                    # also needs 0x8000. A Windows attribute above 0xFFFF can land on
-                    # a low file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as
-                    # S_IFCHR, while no defined attribute reaches S_IFDIR (0x4000) or
-                    # S_IFLNK (0xA000). Misreading a Windows file as a device would
-                    # make it unextractable, so a high word without the flag stays
-                    # FILE here.
+                if record.emptystream and self._special_file_type(record) is not None:
+                    # A device, FIFO or socket with no stream (7-Zip and p7zip store
+                    # them that way). A record with a stream is a FILE whatever its
+                    # mode says, as 7-Zip reads it: the bytes are the content
+                    # (DR-25), and ``extra["special_file_type"]`` keeps the stored
+                    # type either way.
                     return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
@@ -1059,6 +1067,26 @@ class SevenZipReader(BaseArchiveReader):
                 # when the data turns out not to be a link buffer.
                 return MemberType.SYMLINK
         return self._member_type_ignoring_reparse(record)
+
+    @staticmethod
+    def _special_file_type(record: SevenZipFileRecord) -> SpecialFileType | None:
+        """The stored special type (device, FIFO, socket) of ``record``, from the Unix
+        mode in its attribute high word, or ``None``.
+
+        Unlike the symlink and directory tests, this needs the ``0x8000`` Unix-extension
+        bit as well as the mode. A Windows attribute above 0xFFFF can land on a low
+        file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as S_IFCHR, while no
+        defined attribute reaches S_IFDIR (0x4000) or S_IFLNK (0xA000). Misreading a
+        Windows file as a device would make it unextractable, so a high word without the
+        flag is not special.
+        """
+        attrs = record.attributes
+        if attrs is None or not attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION:
+            return None
+        unix_mode = attrs >> 16
+        if not unix_mode:
+            return None
+        return special_file_type(unix_mode)
 
     def _member_type_ignoring_reparse(self, record: SevenZipFileRecord) -> MemberType:
         """What the entry is by everything except the reparse-point attribute bit."""

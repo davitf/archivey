@@ -142,7 +142,10 @@ any other member, and each directory extent SHALL be descended at most once.
 
 Member type SHALL come from the Rock Ridge PX mode when one is present: a
 directory or symlink as already recognised, a regular file as `FILE`, and any
-other file type (device node, FIFO, socket) as `OTHER` with `size=None`.
+other file type (device node, FIFO, socket) as `OTHER` with `size=None` when its
+extent is empty. Over a non-empty extent such a mode SHALL give `FILE` with the
+extent's bytes as the content and `MEMBER_SPECIAL_FILE_HAS_DATA` reported; either
+way `extra["special_file_type"]` SHALL name the stored kind.
 
 In the plain ISO 9660 namespace the `;N` file version SHALL be removed from the
 presented name of a file together with the `.` of an empty extension (`FOO.;1`
@@ -179,7 +182,8 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | --- | --- |
 | Rock Ridge name `a/a` beside `bbb` | Both list; `bbb` reads |
 | Two directories with Rock Ridge name `dup` | Both list as `dup/` |
-| PX mode `0o020666` (char device) | `type=OTHER`, `size=None`; extraction skips it |
+| PX mode `0o020666` (char device) over an empty extent | `type=OTHER`, `size=None`, `extra["special_file_type"]="char_device"`; extraction skips it |
+| PX mode `0o020666` (char device) over a 4-byte extent | `type=FILE`, `size=4`, `extra["special_file_type"]="char_device"`, `MEMBER_SPECIAL_FILE_HAS_DATA`; reads and extracts the 4 bytes |
 | Plain `FOO.;1` and `FOO.;2` | `FOO` (version 2, current) and `FOO.;1` (version 1, `is_current=False`); extraction writes version 2 |
 | Plain directory identifier `DI;1` holding `X.TXT;1` | `DI;1/` and `DI;1/X.TXT` (version 1); the directory has no `iso.version` |
 | Two file records with one identifier, the first without the multi-extent flag | Two members with that name, each with its own size and data; the later one is current; no diagnostic |

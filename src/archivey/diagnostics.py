@@ -78,6 +78,7 @@ class DiagnosticCode(StrEnum):
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
+    MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -438,6 +439,27 @@ class SelectorUnmatchedContext(_JsonSafeContext):
     entry_kind: Literal["name", "member"] = "name"
 
 
+@dataclass(frozen=True)
+class SpecialFileDataContext(_JsonSafeContext):
+    """A member whose stored type is a device, FIFO or socket carries data, so it is
+    listed as a ``FILE`` (design rule DR-25).
+
+    Info-ZIP's ``zip -FI`` stores a named pipe's content under the pipe's own FIFO mode,
+    and unzip, 7-Zip, bsdtar and ``zipfile`` all write such an entry as a regular file,
+    so archivey does too: the bytes are the content. ``special_file_type`` is what the
+    archive called the entry (the same value as ``extra["special_file_type"]``) and
+    ``size`` the bytes it stores. Advisory: nothing is hidden or misread, so it is not
+    in :data:`ARCHIVE_INTEGRITY_CODES`.
+    """
+
+    kind: Literal["special_file_data"] = "special_file_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    special_file_type: str = ""
+    size: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -456,6 +478,7 @@ DiagnosticContext = (
     | SeekIndexContext
     | StreamRewindContext
     | SelectorUnmatchedContext
+    | SpecialFileDataContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -482,6 +505,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
     }
 )
 
@@ -506,7 +530,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The membership of :meth:`DiagnosticPolicy.strict`. Eight codes are deliberately **out**,
+The membership of :meth:`DiagnosticPolicy.strict`. Nine codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -533,6 +557,9 @@ and the reasons are part of the contract rather than an oversight:
 - ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
   archive. A job that passes one fixed list of names to many archives would otherwise
   raise on every archive that lacks one of them.
+- ``MEMBER_SPECIAL_FILE_HAS_DATA`` — a documented writer option (Info-ZIP ``zip -FI``)
+  produces the shape, and the member's bytes are delivered and checked like any file's,
+  so nothing is hidden; strict would refuse an ordinary archive (DR-25).
 """
 
 

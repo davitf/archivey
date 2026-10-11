@@ -119,8 +119,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
+from archivey.internal.unix_mode import special_file_type
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -1908,13 +1910,24 @@ class IsoReader(BaseArchiveReader):
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
 
+        special = special_file_type(raw_mode) if raw_mode is not None else None
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
         elif record.is_dir():
             member_type = MemberType.DIRECTORY
-        elif raw_mode is not None and not stat.S_ISREG(raw_mode):
-            # A Rock Ridge PX mode names a device, FIFO or socket: never a regular file,
-            # whatever bytes sit at the extent.
+        elif (
+            special is not None or (raw_mode is not None and not stat.S_ISREG(raw_mode))
+        ) and self._file_size(record) == 0:
+            # A Rock Ridge PX mode names a device, FIFO or socket, and the extent is
+            # empty (genisoimage and xorriso write a FIFO so): OTHER. A non-empty extent
+            # under such a mode is a FILE whose bytes are the content (DR-25), with
+            # ``extra["special_file_type"]`` keeping the stored type. ``== 0``, not
+            # ``not``: ``_file_size`` is ``None`` for a non-empty extent whose length
+            # was lost, and that record is a FILE with ``size=None`` like a regular one.
+            # Defence, not tested behaviour: the lost length needs a record pycdlib
+            # walked that its parent directory's bytes on disc do not list with a
+            # length reaching the image end (``_layout``), and no image the suite can
+            # build does that, so no test tells ``== 0`` from ``not``.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
@@ -1943,6 +1956,11 @@ class IsoReader(BaseArchiveReader):
             if version is not None
             else MemberExtra()
         )
+        if special is not None:
+            # Only a mode that names a special or unknown file type: a non-regular mode
+            # that is a directory's (``S_IFDIR`` on a file record) still makes OTHER
+            # above but recorded no special file, so it gets no key.
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
         mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
@@ -1997,6 +2015,8 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        if special is not None and member.type is MemberType.FILE:
+            self._emit_special_file_has_data(member, index)
         # The message names the normalized name, so it is built here, not in
         # ``_timestamps``.
         for field, source, value_repr in invalid_dates:

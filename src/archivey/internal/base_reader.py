@@ -39,6 +39,7 @@ from archivey.diagnostics import (
     MemberListReport,
     MemberTimestampContext,
     NameEncodingContext,
+    SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
     raw_name_to_base64,
@@ -122,6 +123,7 @@ from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
+    EXTRA_SPECIAL_FILE_TYPE,
     AbortOn,
     AbortOnStr,
     ArchiveFormat,
@@ -1849,6 +1851,42 @@ class BaseArchiveReader(ArchiveReader):
             logger=log,
         )
 
+    def _emit_special_file_has_data(
+        self, member: ArchiveMember, member_id: int | None
+    ) -> None:
+        """Report ``MEMBER_SPECIAL_FILE_HAS_DATA`` for a ``FILE`` whose stored type is a
+        device, FIFO or socket (``extra["special_file_type"]`` is set), attached to
+        ``member``. ``member_id`` is the walk position, as for
+        :meth:`_emit_timestamp_invalid`, or ``None`` when neither the caller nor the
+        member has one (a re-type in :meth:`_apply_reparse_data`)."""
+        special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
+        assert isinstance(special, str)
+        size = member.size
+        stored = "data" if size is None else f"{size} bytes"
+        # "unknown" stands for file-type bits no Unix type uses; the four named
+        # kinds read as nouns.
+        kind = (
+            "an unrecognized file type"
+            if special == "unknown"
+            else f"a {special.replace('_', ' ')}"
+        )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+            message=(
+                f"Member {quoted(member.name)} is listed as a file: the archive marks "
+                f"it as {kind} and stores {stored} for it."
+            ),
+            context=SpecialFileDataContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                special_file_type=special,
+                size=size,
+            ),
+            member=member,
+            attach_to_member=True,
+        )
+
     def _emit_name_encoding_inferred(
         self,
         member: ArchiveMember,
@@ -2144,6 +2182,18 @@ class BaseArchiveReader(ArchiveReader):
         )
         if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
             member.type = fallback_type
+            if (
+                fallback_type is MemberType.FILE
+                and EXTRA_SPECIAL_FILE_TYPE in member.extra
+            ):
+                # The entry's mode named a device, FIFO or socket and it was typed a
+                # link provisionally, so the backend's own emit (gated on FILE while
+                # the member is typed) did not run. It is a data-bearing FILE from
+                # here, and the data-model spec asks for the advisory with the key.
+                self._emit_special_file_has_data(
+                    member,
+                    member_id if member_id is not None else member._member_id,
+                )
             reason = "reparse_data_unrecognized"
             message = (
                 f"{quoted(member.name)} is flagged as a Windows reparse point, but its "

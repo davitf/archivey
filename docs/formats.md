@@ -112,8 +112,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.strict()`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
-- An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
-  extraction skips it. The mode is read only when "version made by" says Unix.
+- An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as
+  `MemberType.OTHER`, so extraction skips it. One that stores data is a `FILE` (`zip -FI`
+  writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in
+  both cases `extra["special_file_type"]` names the stored kind. The mode is read only
+  when "version made by" says Unix.
 - **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise uses the
@@ -196,6 +199,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       runs from the block after the damaged one. This needs at least one member before
       the zero block: a file that is only a zero block and then other bytes is not shown
       to be a TAR archive, and it raises `CorruptionError`.
+    - A **device, FIFO or socket header that declares data** (typeflag `3`, `4` or `6`
+      with a non-zero size) raises `CorruptionError` at that header, before the
+      end-marker check runs. Such an entry has no data, GNU tar skips the header as
+      damaged, and `tarfile` would read an all-zero payload as the end of the archive
+      and drop every member after it.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes
@@ -225,8 +233,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   runs about 15 times slower than on real code.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
-- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix lists as
-  `MemberType.OTHER`, so extraction skips it. The mode is trusted for this only when the
+- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix has no data stream
+  and lists as `MemberType.OTHER`, so extraction skips it; `extra["special_file_type"]`
+  names the kind. An entry that owns a data stream under such a mode is a `FILE` with
+  `MEMBER_SPECIAL_FILE_HAS_DATA` reported. The mode is trusted for this only when the
   attribute's `0x8000` Unix-extension bit is set.
 - **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
   hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
@@ -276,8 +286,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   exception is a compressed RAR 1.5 / 2.x comment, which the selected program
   (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
   `comment` is `None`.
-- An entry from a Unix host whose mode is a device, FIFO or socket lists as
-  `MemberType.OTHER`, so extraction skips it. `rar` itself skips such files when
+- An entry from a Unix host whose mode is a device, FIFO or socket and that stores no
+  data lists as `MemberType.OTHER`, so extraction skips it; one that stores data is a
+  `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way
+  `extra["special_file_type"]` names the kind. `rar` itself skips such files when
   archiving.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
@@ -526,8 +538,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   and TAR. That includes a file and its associated file (such as the resource fork on a
   Mac hybrid image), which list as two members with one name and nothing to tell the
   fork apart. Entries within a directory list in on-disc record order.
-- A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
-  skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
+- A Rock Ridge device node, FIFO or socket over an empty extent lists as
+  `MemberType.OTHER`, so extraction skips it; over a non-empty extent it is a `FILE` with
+  `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way `extra["special_file_type"]` names
+  the kind. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
 - A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an
   ordinary file, with the catalog's bytes as its data, as a mounted image shows it.
