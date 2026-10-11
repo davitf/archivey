@@ -4352,6 +4352,7 @@ class RarReadBackend(ReadBackend):
     # matching their shared `Rar!\x1a\x07` prefix and re-reading to disambiguate.
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SFX_HIT_VALIDATOR = staticmethod(validate_rar_main_header)
+    SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
     SUPPORTS_STREAMING_NON_SEEKABLE = False

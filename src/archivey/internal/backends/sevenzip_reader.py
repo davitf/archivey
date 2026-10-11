@@ -1466,6 +1466,7 @@ class SevenZipReadBackend(ReadBackend):
     )
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SFX_HIT_VALIDATOR = staticmethod(validate_sevenzip_signature_header)
+    SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None
