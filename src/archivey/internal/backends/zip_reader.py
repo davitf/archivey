@@ -1301,10 +1301,12 @@ class ZipReader(BaseArchiveReader):
             member, reparse_fallback=reparse_fallback, member_id=index
         )
         if special is not None and member.type is MemberType.FILE:
-            # member.type, not member_type: the settle above can re-type a reparse
-            # point with no reparse data to the fallback FILE. A reparse point whose
-            # data turns out not to be a link buffer is re-typed later, when the
-            # target is resolved, and `_apply_reparse_data` emits for it then.
+            # The gate is kept in the shape the 7z reader needs, where a reparse point
+            # with a special mode can settle or re-type to FILE. In ZIP the two
+            # attribute families cannot coexist: the mode is read only from a Unix
+            # creator and the reparse bit only from a DOS/Windows one, so a member
+            # with `special` set is never a reparse point and `member.type` is
+            # `member_type` here.
             self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)
