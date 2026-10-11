@@ -154,12 +154,16 @@ the link (`member.link_target_unrecorded`), `UNREADABLE` when it records one thi
 could not produce, and `UNRESOLVED` when the target names no member the link can use
 or the chain of links loops.
 
-**Directories and other non-file entries cannot be opened.** `reader.open()` on one
-raises `ArchiveyUsageError` naming the type — check `member.type` first, or use the
-`stream is None` test that `stream_members()` gives you. A link that resolves to one is
-refused the same way. The error's `refused_member_type` holds the type of the member
-that was refused (`MemberType.DIRECTORY` for a symlink to a directory), and is `None`
-on every other usage error.
+**Entries with no data cannot be opened.** `reader.open()` on a directory, a special
+file or a tombstone raises `ArchiveyUsageError` naming the type — check `member.type`
+first, or use the `stream is None` test that `stream_members()` gives you. A link that
+resolves to one is refused the same way. The error's `refused_member_type` holds the
+type of the member that was refused (`MemberType.DIRECTORY` for a symlink to a
+directory), and is `None` on every other usage error. The one exception is a directory
+entry whose header declares data (`MEMBER_DIRECTORY_DATA_IGNORED` reports it):
+extraction creates the directory without the bytes, and `open()` is how you read them
+if you need them (RAR delivers them only when they are stored and not encrypted).
+`stream_members()` still yields `None` for it.
 
 **A member belongs to the reader that produced it.** Passing an `ArchiveMember` from
 a different archive raises `ArchiveyUsageError` rather than resolving it against the

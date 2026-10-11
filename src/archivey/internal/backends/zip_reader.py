@@ -66,6 +66,7 @@ from archivey.cost import (
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
+    DigestContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -239,6 +240,32 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     93: Codec.ZSTD,
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
 }
+
+# Compressed size of an *empty* body per method, as ``zipfile`` writes one for a
+# directory ``ZipInfo`` given no data (the Java ``jar`` tool deflates every directory's
+# empty body: 2 bytes). ``tests/test_zip.py`` checks the table against ``zipfile``.
+# The sizes are those of a known, unencrypted method: an encrypted entry's body also
+# carries the cipher's framing (12 bytes for ZipCrypto, salt plus verifier plus auth
+# code for WinZip AES, under method 99), and DEFLATE64, zstd and PPMd have no 0-byte
+# empty frame, so a directory entry in either shape errs toward being reported. No
+# writer measured (zip, 7-Zip, zipfile) encrypts or compresses a directory's body.
+_ZIP_EMPTY_BODY_SIZES: dict[int, int] = {
+    zipfile.ZIP_STORED: 0,
+    zipfile.ZIP_DEFLATED: 2,
+    zipfile.ZIP_BZIP2: 14,
+    zipfile.ZIP_LZMA: 19,
+}
+
+
+def _zip_directory_stores_data(info: zipfile.ZipInfo) -> bool:
+    """True when a directory entry's body holds something: a declared size, or a
+    compressed body larger than an empty one of its method takes (a declared size of
+    0 over a real body is the same hidden payload one header field away). A method
+    the table does not know reports any body at all."""
+    if info.file_size > 0:
+        return True
+    return info.compress_size > _ZIP_EMPTY_BODY_SIZES.get(info.compress_type, 0)
+
 
 # Local name/extra lengths are uint16; 65535 is the format maximum, so a separate
 # cap cannot fire (S1-F2). Absurd *offsets* are this bound, same discipline as
@@ -1206,12 +1233,26 @@ class ZipReader(BaseArchiveReader):
         created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
-        # without decompressing (VISION "hashes without decompression"). Only for FILE and
-        # SYMLINK members, which have data: a directory's stored CRC is a meaningless 0.
-        # AE-2 stores CRC as 0 and relies on the HMAC — do not surface a fake crc32.
+        # without decompressing (VISION "hashes without decompression"). Only for
+        # members with data: FILE and SYMLINK, and a directory whose header declares
+        # some (``open()`` delivers it, so the read is digest-checked like a file's).
+        # A directory's CRC field is 0 by convention, so a zero there over declared
+        # data is no digest, not a failing one: the member gets no crc32. Whether that
+        # leaves the read unchecked depends on the entry's other checks: a WinZip AES
+        # member (method 99, AE-1 and AE-2 alike) carries an HMAC over its bytes, so
+        # only an entry whose CRC was its only check reports ``DIGEST_UNVERIFIABLE``
+        # below (design principle 1: say so instead of implying the bytes were checked;
+        # DR-4: CorruptionError is for damage). AE-2 stores CRC 0 by design and relies
+        # on the HMAC — never surface a fake crc32 for it.
         hashes: dict[HashAlgorithm, bytes] = {}
-        if member_type in (MemberType.FILE, MemberType.SYMLINK):
-            if aes_info is None or not aes_info.is_ae2:
+        is_ae2 = aes_info is not None and aes_info.is_ae2
+        directory_data = member_type is MemberType.DIRECTORY and info.file_size > 0
+        directory_zero_crc = directory_data and info.CRC == 0
+        directory_without_anchor = directory_zero_crc and aes_info is None
+        if member_type in (MemberType.FILE, MemberType.SYMLINK) or (
+            directory_data and not directory_zero_crc
+        ):
+            if not is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
         if special is not None:
@@ -1300,6 +1341,30 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(info):
+            # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
+            # the directory and drop the bytes silently. Say so; read() delivers them.
+            self._emit_directory_data_ignored(member, index)
+            if directory_without_anchor:
+                self._diagnostics_collector.emit(
+                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                    message=(
+                        f"Directory {quoted(member.name)} declares {info.file_size} "
+                        "bytes of data but its CRC-32 field is 0, a directory's "
+                        "conventional value; the bytes open() delivers are not "
+                        "checked against any digest."
+                    ),
+                    context=DigestContext(
+                        archive_name=self._archive_name,
+                        member_name=member.name,
+                        member_id=index,
+                        algorithm="crc32",
+                        reason="no_integrity_anchor",
+                    ),
+                    member=member,
+                    attach_to_member=True,
+                    logger=logger,
+                )
         if special is not None and member.type is MemberType.FILE:
             # The gate is kept in the shape the 7z reader needs, where a reparse point
             # with a special mode can settle or re-type to FILE. In ZIP the two

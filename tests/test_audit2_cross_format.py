@@ -1607,7 +1607,7 @@ class _LinkOpenStub:
         ),
         pytest.param(
             ArchiveyUsageError(
-                "Cannot open member 'd': type is 'directory' (not a file)",
+                "Cannot open member 'd': directory entry declares no data (not a file)",
                 refused_member_type=MemberType.DIRECTORY,
             ),
             id="directory",
