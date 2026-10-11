@@ -52,7 +52,7 @@ class ForwardArchiveReader(ABC):
     It has every reader method except :meth:`~ArchiveReader.members`,
     :meth:`~ArchiveReader.get`, :meth:`~ArchiveReader.open` and
     :meth:`~ArchiveReader.read`, which need random access. Iterate it, call
-    :meth:`stream_members` or :meth:`extract_all`, or call :meth:`scan_members` for
+    :meth:`stream_members` or :meth:`extract_all`, or call :meth:`members_report` for
     the member list.
 
     ``open_archive(..., streaming=True)`` returns this type, so a type checker flags
@@ -67,11 +67,10 @@ class ForwardArchiveReader(ABC):
     **Listing APIs** (easy to mix up):
 
     - :meth:`~ArchiveReader.members` — complete list or raise; random-access only.
-    - :meth:`members_report` — always returns a report; check ``error is None`` for
-      completeness (preferred for damaged archives).
-    - :meth:`scan_members` — :meth:`members_report` that raises the report's error:
-      random-access, same as ``members``; streaming, start or finish the forward pass
-      and return the resolved list (also OK after a completed pass).
+    - :meth:`members_report` — either mode. Returns a report on archive damage (check
+      ``error is None`` for completeness); raises on limits and usage errors. On a
+      streaming reader it uses up the forward pass (starting it, or finishing an
+      interrupted one). For complete-or-raise there, raise ``report.error`` yourself.
     - :meth:`members_report_if_available` — never scans; ``None`` if not yet cached.
     """
 
@@ -122,30 +121,41 @@ class ForwardArchiveReader(ABC):
         """Materialize the member listing and return a report.
 
         ``report.error is None`` means ``report.members`` is complete. A non-``None``
-        error means the tuple is the recovered prefix and the error is the terminal
-        archive-level listing damage. Unlike :meth:`~ArchiveReader.members`, this
-        returns the report instead of raising for those terminal archive-damage errors.
+        error is terminal archive damage found while listing (a
+        :class:`~archivey.exceptions.CorruptionError`, including
+        :class:`~archivey.exceptions.TruncatedError`): the tuple is the recovered
+        prefix. Only that damage is returned instead of raised. Every other failure
+        raises, as it does from :meth:`~ArchiveReader.members`: a
+        :class:`~archivey.exceptions.ResourceLimitError` when the listing exceeds
+        :class:`~archivey.config.ListingLimits`, :class:`~archivey.ArchiveyUsageError`
+        on misuse (closed reader, overlapping call), and other read failures (a password
+        error, an escalated diagnostic, a pass that failed earlier, an I/O error).
+
+        Random access: does not consume anything; the members are the ones
+        :meth:`~ArchiveReader.members` returns. Streaming: runs the single forward pass
+        to its end (from the start, or finishing one interrupted by an early
+        ``break``), so no later pass is possible; after a completed pass it returns the
+        cached report.
+
+        A :meth:`stream_members` or ``for member in reader`` pass does not enforce
+        ``ListingLimits``, but it stops keeping the listing once the totals cross a
+        limit, so its memory stays bounded by the limits. After such a pass this raises
+        the same ``ResourceLimitError`` that ``members()`` raises on the archive.
+
+        For a complete-or-raise list on a streaming reader::
+
+            report = reader.members_report()
+            if report.error is not None:
+                raise report.error
         """
-        ...
-
-    @abstractmethod
-    def scan_members(self) -> list[ArchiveMember]:
-        """Return the fully-resolved member list in either access mode.
-
-        It is :meth:`members_report`, raising ``report.error`` when the listing is
-        incomplete and otherwise returning ``report.members`` as a list. In
-        random-access mode this is equivalent to :meth:`~ArchiveReader.members` and
-        does not consume the reader. On a streaming reader it finishes the single
-        forward pass (running it from the start, or completing an interrupted one) and
-        returns the resolved list; it may also be called after a completed pass to
-        return the cached list."""
         ...
 
     @abstractmethod
     def members_report_if_available(self) -> MemberListReport | None:
         """A member-list report if available without scanning, else ``None``.
         Never scans or consumes the forward pass, so it is safe to call on any reader
-        (including a streaming one)."""
+        (including a streaming one). It is ``None`` too after a :meth:`stream_members`
+        pass that went past ``ListingLimits``, which keeps no listing."""
         ...
 
     @abstractmethod
@@ -169,6 +179,13 @@ class ForwardArchiveReader(ABC):
         members (read once, so a generator works), or ``None`` for all. The yielded
         stream is valid only until the iterator advances; it is ``None`` for non-file
         members.
+
+        The pass does not enforce ``ListingLimits``: it yields every member, and on an
+        archive over a limit the listing calls after it raise ``ResourceLimitError``.
+        A pass that lists as it goes (every streaming reader, and TAR) stops keeping
+        members once they cross a limit, so its memory stays bounded by the limits and
+        a link it yields after that point gets no ``link_target_member``.
+        ``ListingLimits.UNLIMITED`` keeps them all.
 
         ``file_copy_streams=False`` also yields ``None`` for a file that the archive
         stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file
@@ -263,10 +280,11 @@ class ArchiveReader(ForwardArchiveReader):
     @abstractmethod
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
-        on a streaming reader (use :meth:`~ForwardArchiveReader.scan_members` or
-        :meth:`~ForwardArchiveReader.members_report_if_available` there). Raises
-        terminal archive-level listing errors instead of returning an incomplete
-        list."""
+        on a streaming reader (there, use :meth:`~ForwardArchiveReader.members_report`,
+        which uses up the pass and applies :class:`~archivey.config.ListingLimits`, or
+        iterate :meth:`~ForwardArchiveReader.stream_members` and ignore the streams,
+        which ``ListingLimits`` does not cap). Raises terminal archive-level listing
+        errors instead of returning an incomplete list."""
         ...
 
     @abstractmethod

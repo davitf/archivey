@@ -24,7 +24,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
 
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import ArchiveyError, _UsageValueError
+from archivey.internal.arg_checks import check_instance
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
@@ -266,9 +267,11 @@ class ArchiveEofContext(_JsonSafeContext):
       the TAR trailer (complete, or its second block damaged and reported as
       ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
       header and its last packed stream, ``"rar"`` for a RAR volume's end-of-archive
-      block. ``observed_bytes`` is that byte's offset past the end. RAR emits one per
-      volume, and its offset counts from that volume's end block, unlike member
-      offsets, which count across the whole set; the message names the volume.
+      block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
+      its MBR or GPT lists and the GPT backup header. ``observed_bytes`` is that byte's
+      offset past the end. RAR emits one per volume, and its offset counts from that
+      volume's end block, unlike member offsets, which count across the whole set; the
+      message names the volume.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
       which are neither another stream nor padding the format allows. ``format`` names
@@ -763,6 +766,17 @@ class DiagnosticPolicy:
                 self.default, DiagnosticDisposition, call=call, param="default="
             ),
         )
+        # Without this, ``overrides=0`` failed in ``dict()`` as "'int' object is not
+        # iterable", naming neither the class nor the argument.
+        # The field has a real default, so ``None`` is a wrong type here, not a way
+        # of asking for one. ``_freeze_mapping`` keeps its ``None`` arm for
+        # ``DiagnosticSummary.counts``.
+        check_instance(
+            self.overrides,
+            Mapping,
+            call="DiagnosticPolicy(overrides=…)",
+            allow_none=False,
+        )
         overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
         for key, value in _freeze_mapping(self.overrides).items():
             code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
@@ -772,7 +786,7 @@ class DiagnosticPolicy:
             if overrides.setdefault(code, disposition) is not disposition:
                 # Two spellings of one code (its name and the member) that disagree:
                 # keeping either would silently drop what the other asked for.
-                raise ArchiveyUsageError(
+                raise _UsageValueError(
                     f"{call} got two dispositions for overrides= key "
                     f"{code.value!r}: {overrides[code].value!r} and "
                     f"{disposition.value!r}."
@@ -919,6 +933,7 @@ __all__ = [
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",
     "MemberTimestampContext",
@@ -928,6 +943,7 @@ __all__ = [
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",
+    "SpecialFileDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",

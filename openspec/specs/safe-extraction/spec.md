@@ -1195,7 +1195,7 @@ symlink rechecks of "Symlink Escape Re-Validated at Extraction Time".
 | --- | --- |
 | More than `max_entries` members are written | `ResourceLimitError` once the count crosses the limit; extraction halts under any `OnError` |
 | `ExtractionLimits(max_entries=100)` | Error after the 100th written member when the 101st would be written |
-| Selector chooses one member from millions | Extraction can complete with `max_entries=1` because only selected written entries count |
+| Selector chooses one member from many | Extraction can complete with `max_entries=1` because only selected written entries count; every member the pass walks still counts against `ListingLimits` (`archive-reading`), in both access modes |
 | Many tiny files stay below byte/ratio limits but exceed entry count | Entry-count guard still raises |
 
 ### Requirement: Symlink extraction is target-independent and fails safe on unsupported filesystems

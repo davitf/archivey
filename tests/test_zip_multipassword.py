@@ -15,12 +15,11 @@ import pytest
 
 from archivey import (
     DiagnosticCode,
-    EncryptedVerificationContext,
     MemberType,
     PasswordRequest,
-    SymlinkTargetContext,
     open_archive,
 )
+from archivey.diagnostics import EncryptedVerificationContext, SymlinkTargetContext
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,

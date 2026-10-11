@@ -623,7 +623,7 @@ per reader, and not past the end of its last link member. The one exception is e
 the caller abandons before the folder's last link, as the abandoned-pass bullet says. The
 consumer's own reads are covered by the bullets below.
 
-- Random-access listing (`members()`, `scan_members()`) SHALL decode no more of the
+- Random-access listing (`members()`, `members_report()`) SHALL decode no more of the
   folder for link targets than the end of its last link member.
 - A `stream_members()` pass, in either access mode, SHALL read link targets through its
   own folder decode, and a pass that reaches its end SHALL leave every link target it

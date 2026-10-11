@@ -363,7 +363,7 @@ The rejected-header escalation to `CorruptionError` SHALL take precedence over
 The archive-level EOF check runs at the end of the member scan, so its escalation is a
 terminal listing error carried through the `partial-members-and-errors` report model:
 
-- `members()` / `scan_members()` are complete-or-raise — they raise the stored escalation.
+- `members()` is complete-or-raise — it raises the stored escalation.
 - `members_report()` (and `members_report_if_available()`) return the recovered prefix plus
   the terminal `error`, so a caller can still inspect the salvageable members.
 - `__iter__` (both access modes) yields the recovered members, then raises.

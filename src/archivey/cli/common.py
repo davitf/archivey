@@ -52,8 +52,9 @@ def reject_empty_path(value: str, *, arg: str) -> None:
 
     ``Path("")`` is ``Path(".")``, so an unset shell variable (``"$ARCHIVE"``,
     ``-d "$OUT"``) would otherwise read or extract into the working directory. The
-    library refuses an empty string too, but with ``ValueError``, and the CLI turns
-    the path into a ``Path`` before the library sees it; ``.`` names the cwd on purpose.
+    library refuses an empty string too (an ``ArchiveyUsageError`` that is also a
+    ``ValueError``), and the CLI turns the path into a ``Path`` before the library sees
+    it; ``.`` names the cwd on purpose.
     """
     if value == "":
         raise CliError(
