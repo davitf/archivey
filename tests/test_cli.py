@@ -15,13 +15,10 @@ from pathlib import Path
 import pytest
 
 from archivey import (
-    ArchiveFormat,
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
-    FormatSupport,
     OverwritePolicy,
-    format_availability,
     open_archive,
 )
 from archivey.cli import test_cmd
@@ -650,12 +647,6 @@ _SEEK_ONLY_PAYLOADS = {
     "rar": b"Rar!\x1a\x07\x01\x00" + bytes(1024),
     "iso": bytes(0x8001) + b"CD001\x01" + bytes(4096),
 }
-_SEEK_ONLY_FORMATS = {
-    "zip": ArchiveFormat.ZIP,
-    "7z": ArchiveFormat.SEVEN_Z,
-    "rar": ArchiveFormat.RAR,
-    "iso": ArchiveFormat.ISO,
-}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
@@ -672,10 +663,6 @@ def test_verbs_on_a_seek_only_fifo_say_to_copy_it_to_a_file(
     message must name the format as the user knows it (``7z``, not the enum's
     ``SEVEN_Z``) and what a CLI user can do, not a ``streaming=True`` they cannot pass.
     """
-    # ISO needs pycdlib; without it the open fails on the missing package before the
-    # seekability check, as in tests/test_non_seekable_refusal.py.
-    if format_availability(_SEEK_ONLY_FORMATS[fmt]).support is FormatSupport.NONE:
-        pytest.skip(f"{fmt} has no usable backend here")
     fifo = tmp_path / f"pipe.{fmt}"
     named_fifo_with_writer(fifo, _SEEK_ONLY_PAYLOADS[fmt])
     argv = [verb, str(fifo)]
