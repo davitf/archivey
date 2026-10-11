@@ -42,7 +42,7 @@ binds.
   feature archivey cannot decode is `UnsupportedFeatureError`, not corruption.
 - [DR-4a](#dr-4a-the-integrity-guarantee-is-for-a-start-to-end-read). **The integrity
   guarantee is for a start-to-end read.** Integrity checks are promised for a start-to-end
-  read without seeks.
+  read with no skipped bytes; a read after a seek that jumps gives the digest up.
 - [DR-5](#dr-5-same-input-same-outcome). **Same input, same outcome.** One archive gives
   one result across formats, access modes, sources and OSes.
 - [DR-5a](#dr-5a-malformed-corner-cases-may-differ-a-little). **Malformed corner cases may
