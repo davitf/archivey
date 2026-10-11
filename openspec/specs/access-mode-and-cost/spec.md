@@ -33,7 +33,11 @@ source into memory or a temp file). `streaming=True` is the fix for pipes and
 sockets **only where the backend reads front to back** (TAR, the single-file
 compressors). A format that needs seek in either mode (ZIP, ISO, 7z, RAR) SHALL be
 refused with one message naming a seekable source as the fix, in both modes, rather
-than proposing a `streaming=True` retry the same call would then refuse.
+than proposing a `streaming=True` retry the same call would then refuse. That refusal
+SHALL come before the format's availability check: a pipe cannot be read even with the
+optional package installed, so a missing package MUST NOT be reported first. The
+`streaming=False` refusal for a format that does read front to back stays after the
+availability check, because there the missing package is a real step on the way.
 Eager seek-point building is not exposed.
 
 Every source `open_archive` and `open_stream` take SHALL cross one boundary, which
@@ -102,10 +106,13 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
 | `streaming=False` on non-seekable source, backend reads front to back | Error at open (before member data) naming `streaming=True` — library does not buffer |
 | Either mode on non-seekable source, backend needs seek | Same error and same message in both modes, naming a seekable source (buffer to disk or a `BytesIO`) — library does not buffer |
+| Either mode on non-seekable source, backend needs seek, its optional package missing (ISO without `pycdlib`) | The same seekability error, not `PackageNotInstalledError` |
+| `streaming=False` on non-seekable source, backend reads front to back, its codec package missing (`.tar.lz4` without `lz4`) | `PackageNotInstalledError` first; the `streaming=True` hint follows once the package is installed |
+| Non-seekable source refused by either refusal rule (needs seek in either mode, or `streaming=False` on a front-to-back format), with `password=` for a format with no encryption (ISO, TAR) | `PASSWORD_ARGUMENT_UNUSED` (and `ENCODING_ARGUMENT_UNUSED` likewise) is emitted before the refusal, the same for both rules. The availability refusal (`.tar.lz4` without `lz4`) emits neither: `PackageNotInstalledError` is raised before the argument diagnostics run |
 | Seekable stream source, either mode | Full-count `read(n)` from the `ArchiveSource`: a source that is not already buffered gets a fixed-size read buffer (bounded readahead only), and one that already is (a `BytesIO`, an `open()` handle) gets no readahead. Never materialized to memory or disk |
 | Non-seekable stream source, `streaming=True` | The `ArchiveSource` gives full-count `read(n)` with no read-ahead beyond the detection prefix: `seekable()` stays `False`; reads drain the prefix first, and once it is drained (or when an explicit `format=` meant it was never filled) a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary may still buffer — `DecompressorStream` wraps its input in a `BufferedReader`, so an end-to-end `read(20)` on a compressed non-seekable open takes `io.DEFAULT_BUFFER_SIZE` from the source (8 KiB through 3.13, 128 KiB from 3.14) |
 | Non-seekable stream that is already `io.BufferedReader` | No second full-count buffer is added: the caller's buffer supplies full-count. The detection prefix sits in front of it when detection ran, and is drained first. `fileno()` forwards through the `ArchiveSource` |
-| Non-seekable stream source, metadata probes | The `ArchiveSource` answers what the probes need: a source carrying `name` still answers `source_name`, and one carrying `size` still reports it as `compressed_source_size`, so neither that nor `ResolvedSource.archive_name` degrades; the `size` is a hint, so it bounds no read. It is not transparent in general — what a backend sees is the `ArchiveSource`'s surface, not the source's class, so `read1` / `detach` / `BytesIO.getvalue` do not survive it, and `peek` is the `ArchiveSource`'s own replay prefix, not the source's. `tell()` does not become available either — it raises, as the seek-required refusals depend on |
+| Non-seekable stream source, metadata probes | The `ArchiveSource` answers what the probes need: a source carrying `name` still answers `source_name`, so `ResolvedSource.archive_name` does not degrade. A `size` that a non-seekable caller stream carries is a claim nothing can check: it bounds no read and is not `compressed_source_size` (safe-extraction, archive-wide ratio); detection still takes it as the total size. It is not transparent in general — what a backend sees is the `ArchiveSource`'s surface, not the source's class, so `read1` / `detach` / `BytesIO.getvalue` do not survive it, and `peek` is the `ArchiveSource`'s own replay prefix, not the source's. `tell()` does not become available either — it raises, as the seek-required refusals depend on |
 | Non-seekable short-returning source, any supported streaming format, with and without `format=` | Opens, lists, and reads identically to the full-count source — the guarantee does not depend on detection having run or on a third-party reader's internal buffering |
 | Any stream source, every format, measurement on or off | The reader closing does not close the caller's stream, and the caller can still read from it. Holds for a failed open too: the backend releases what it opened, which never includes the caller's object |
 | Archive whose header declares a length far past the source's end (a 4 GiB directory record in a 55 KiB ISO image), path and stream sources | Refused as `CorruptionError`; no allocation near the declared length is made at the source. A path source and a stream with no cheap size are both bounded |
@@ -318,8 +325,10 @@ requirement only states how the capabilities compose with `streaming`.
 Random-access `stream_members()` remains exclusive even when random `open()` is
 otherwise available (simultaneous streams use materialize + random `open()` under
 `concurrent_members=True` — see `reader-concurrency`). Detected pass/open/close overlap →
-later op `ArchiveyUsageError`; active pass stays usable. Ops after `reader.close()` →
-`ArchiveyUsageError` (idempotent `close`).
+later op `ArchiveyUsageError`; active pass stays usable. The exception is `close()`
+while the pass is suspended at a yield: the reader closes and resuming the pass raises
+`ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see `archive-reading`). Ops
+after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
 
 Defaults and behaviour are unchanged by the spelling: this requirement previously
 described the same composition in terms of a `member_streams` flag enum.
@@ -330,7 +339,8 @@ described the same composition in terms of a `member_streams` flag enum.
 | --- | --- |
 | `streaming=True` + `concurrent_members=True` | `ArchiveyUsageError` at open; no reader |
 | RA + `concurrent_members=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
-| Active pass + conflicting pass/open/close | Later → `ArchiveyUsageError`; original pass usable |
+| Active pass + conflicting pass/open, or close while the pass executes | Later → `ArchiveyUsageError`; original pass usable |
+| Pass suspended at a yield + `close()` | Reader closed; resuming the pass → `ArchiveyUsageError` |
 | RA `stream_members` active + `open()` | `ArchiveyUsageError` |
 | `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
 

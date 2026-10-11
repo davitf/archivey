@@ -98,8 +98,10 @@ Archivey decides what a file is from its bytes, not its name. It checks magic by
 first, including signatures far into the file such as ISO 9660's at 32 KiB, and a stub
 in front of an archive such as a self-extracting executable's. Formats with no usable
 magic, such as a raw zlib or LZMA stream, are recognised by content probes that try to
-parse the start. The extension only corroborates a weak probe, or serves as a last guess
-when the bytes settle nothing, because a name can be wrong: a `.jpg` that is really a ZIP opens as a ZIP, and a
+parse the start. Ordinary files sometimes pass a probe, so a probe runs only when the
+file's extension names that format, unless you set `always_probe_content=True` or call
+`open_stream()`. Otherwise the extension is a last guess when the bytes settle nothing,
+because a name can be wrong: a `.jpg` that is really a ZIP opens as a ZIP, and a
 `FORMAT_EXTENSION_CONFLICT` diagnostic names both candidates. A compressed single file
 is decompressed a little to look for a TAR header, so a `.gz` that holds a tarball opens
 as `.tar.gz`. [`detect_format`][archivey.detect_format] runs the same steps without

@@ -25,7 +25,6 @@ import io
 import os
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -49,11 +48,15 @@ from archivey.internal.sfx import (
     iter_magic_in_prefix,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.volumes import resolve_source
 from archivey.types import ArchiveFormat
 from tests.detection_cost_util import trailer_allowance, within_budget
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import (
+    MemberSeek,
+    NonSeekableBytesIO,
+    assert_no_member_tail_seek,
+    spy_member_seeks,
+)
 
 
 class InstrumentedBytesIO(io.RawIOBase):
@@ -233,46 +236,22 @@ def _zip_of(members: dict[str, bytes]) -> io.BytesIO:
     return buf
 
 
-@dataclass(frozen=True)
-class _Seek:
-    stream: int  # ``id`` of the ``ArchiveStream`` that was seeked
-    before: int
-    after: int
-
-
-def _seek_spy(patch: pytest.MonkeyPatch) -> list[_Seek]:
-    """Record every ``ArchiveStream.seek`` as (stream, position before, position after)."""
-    seeks: list[_Seek] = []
-    real_seek = ArchiveStream.seek
-
-    def spy(self: ArchiveStream, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        before = self.tell()
-        pos = real_seek(self, offset, whence)
-        seeks.append(_Seek(id(self), before, pos))
-        return pos
-
-    patch.setattr(ArchiveStream, "seek", spy)
-    return seeks
-
-
 def _assert_detection_seeks_are_cheap(
-    seeks: list[_Seek], sizes: dict[int, int]
+    seeks: list[MemberSeek], sizes: dict[int, int]
 ) -> None:
     """Backward seeks: 0, not counting the exit restore (format-detection matrix).
 
     Each member here is freshly opened, so its entry position is 0. A stream may be
     seeked backward once, and only onto that entry position: the restore. Any other
-    backward seek re-decodes the member from its start. ``sizes`` maps each member's
-    ``id`` to its length: a seek that moves into a member's last 512 bytes is the
-    trailer read, which decodes the whole member on the way (a no-op seek that a read
-    makes at its own position is free and is not counted).
+    backward seek re-decodes the member from its start. Forward seeks follow the tail
+    rule the single-file reader's open is held to as well
+    (:func:`tests.streams_util.assert_no_member_tail_seek`).
     """
     backward = [s for s in seeks if s.after < s.before]
     assert all(s.after == 0 for s in backward), seeks
     per_stream = [s.stream for s in backward]
     assert len(per_stream) == len(set(per_stream)), seeks
-    forward = [s for s in seeks if s.after > s.before]
-    assert all(s.after < sizes[s.stream] - 512 for s in forward), seeks
+    assert_no_member_tail_seek(seeks, sizes)
 
 
 def test_koly_image_detects_as_dmg_when_the_tail_is_cheap() -> None:
@@ -307,7 +286,7 @@ def test_member_stream_is_not_seeked_to_its_tail(
     ):
         assert member.seekable()
         member_id = id(member)
-        seeks = _seek_spy(patch)
+        seeks = spy_member_seeks(patch)
         info = detect_format(wrap(member))
     # The trailer step was reached and declined, so the guard is what kept the seek
     # off. The answer is the near-magic one.
@@ -324,7 +303,7 @@ def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
     import archivey.core
 
     image = _koly_image()
-    detection_seeks: list[_Seek] = []
+    detection_seeks: list[MemberSeek] = []
     real_detect = archivey.core.detect_format_into
 
     def detect_and_snapshot(*args: Any, **kwargs: Any) -> FormatInfo:
@@ -338,7 +317,7 @@ def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
         monkeypatch.context() as patch,
     ):
         member_id = id(member)
-        seeks = _seek_spy(patch)
+        seeks = spy_member_seeks(patch)
         patch.setattr(archivey.core, "detect_format_into", detect_and_snapshot)
         with open_archive(member) as nested:
             assert nested.format_info.format == ArchiveFormat.BZ2
@@ -364,7 +343,7 @@ def test_volume_list_of_member_streams_is_not_seeked_to_its_tail(
         resolved = resolve_source([first, second])
         with resolved.source as source, monkeypatch.context() as patch:
             assert source.seek_is_expensive
-            seeks = _seek_spy(patch)
+            seeks = spy_member_seeks(patch)
             info = detect_format(source)
     assert info.format == ArchiveFormat.BZ2
     assert _TRAILER_DECLINED in info.unavailable_tiers
@@ -873,3 +852,70 @@ def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
     assert within_budget(receipt, budget) or any(
         s.reason in incomplete for s in info.unavailable_tiers
     ), (receipt, info.unavailable_tiers)
+
+
+def _small_tar_bytes() -> bytes:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        t.addfile(info, io.BytesIO(b"hello"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("backend_present", "budget_change", "reason"),
+    [
+        pytest.param(
+            True,
+            {"max_decode_input": 0, "max_decode_output": 0},
+            TierSkipReason.NOT_ENABLED_BY_POLICY,
+            id="off-backend-present",
+        ),
+        pytest.param(
+            False,
+            {"max_decode_input": 0, "max_decode_output": 0},
+            TierSkipReason.NOT_ENABLED_BY_POLICY,
+            id="off-backend-absent",
+        ),
+        pytest.param(
+            False,
+            {"max_decode_output": 256},
+            TierSkipReason.CAPABILITY_UNAVAILABLE,
+            id="short-budget-backend-absent",
+        ),
+        pytest.param(
+            True,
+            {"max_decode_output": 256},
+            TierSkipReason.BUDGET_EXHAUSTED,
+            id="short-budget-backend-present",
+        ),
+    ],
+)
+def test_inner_tar_skip_reason_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    backend_present: bool,
+    budget_change: dict[str, int],
+    reason: TierSkipReason,
+) -> None:
+    # The inner-TAR tier records one reason, in this order: the policy turned it off
+    # (NOT_ENABLED_BY_POLICY, which does not make the search incomplete), then the
+    # backend is absent (CAPABILITY_UNAVAILABLE: more budget would not help), then the
+    # budget cannot cover the probe (BUDGET_EXHAUSTED).
+    from dataclasses import replace
+
+    from archivey.detection_cost import TierSkip
+    from archivey.internal.streams import codecs
+
+    if not backend_present:
+        monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+    budget = replace(BALANCED_BUDGET, **budget_change)
+    info = detect_format(
+        io.BytesIO(gzip.compress(_small_tar_bytes())),
+        config=ArchiveyConfig(detection_budget=budget),
+    )
+    assert info.format == ArchiveFormat.GZ
+    inner = [s for s in info.unavailable_tiers if s.tier == "inner_tar"]
+    assert inner == [TierSkip("inner_tar", reason)]

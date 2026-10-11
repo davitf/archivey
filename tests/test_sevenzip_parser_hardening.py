@@ -28,7 +28,11 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends import sevenzip_parser, sevenzip_pipeline
+from archivey.internal.backends import (
+    sevenzip_parser,
+    sevenzip_pipeline,
+    sevenzip_reader,
+)
 from archivey.internal.backends.sevenzip_parser import (
     MAGIC_7Z,
     PlainHeader,
@@ -38,10 +42,8 @@ from archivey.internal.backends.sevenzip_parser import (
     parse_header_block,
     read_signature_and_next_header,
 )
-from archivey.internal.backends.sevenzip_pipeline import (
-    parse_sevenzip_archive,
-    plan_folder,
-)
+from archivey.internal.backends.sevenzip_pipeline import plan_folder
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 
@@ -171,7 +173,7 @@ def _read_only_member(data: bytes) -> bytes:
 def _materialize(header: bytes) -> SevenZipArchive:
     block = parse_header_block(header)
     assert isinstance(block, PlainHeader)
-    signature = sevenzip_parser.SignatureInfo(0, 4, header)
+    signature = sevenzip_parser.SignatureInfo(0, 4, header, end_offset=0)
     return materialize_archive(signature, block)
 
 
@@ -544,12 +546,12 @@ def test_archive_entry_point_applies_the_default_listing_limit() -> None:
         next_crc=zlib.crc32(header) & 0xFFFFFFFF,
     )
     with pytest.raises(ResourceLimitError, match="max_members"):
-        parse_sevenzip_archive(io.BytesIO(data + header))
+        load_sevenzip_archive(io.BytesIO(data + header))
     with pytest.raises(ResourceLimitError, match="max_members"):
         parse_header_block(header)
 
 
-@pytest.mark.parametrize("entry", [parse_header_block, parse_sevenzip_archive])
+@pytest.mark.parametrize("entry", [parse_header_block, load_sevenzip_archive])
 def test_entry_points_default_to_the_listing_limit(
     entry: Callable[..., object],
 ) -> None:
@@ -561,11 +563,13 @@ def test_entry_points_default_to_the_listing_limit(
 @pytest.mark.parametrize(
     "helper",
     [
-        sevenzip_pipeline.unwrap_encoded_header,
         sevenzip_parser.parse_decoded_header,
+        sevenzip_reader._decode_encoded_header_block,  # noqa: SLF001
     ],
 )
-def test_header_helpers_require_max_members(helper: Callable[..., object]) -> None:
+def test_decoded_header_helpers_require_max_members(
+    helper: Callable[..., object],
+) -> None:
     param = inspect.signature(helper).parameters["max_members"]
     assert param.default is inspect.Parameter.empty
 

@@ -466,12 +466,15 @@ materialized path, and write nothing if every selected link is skipped. The
 materialized file gets the selected link's transformed metadata. An equivalent
 hidden temp inside `dest` is permitted.
 
-The coordinator SHALL avoid wasted passes: if a free member list exists
-(`members_report_if_available()`), recovery is planned in one forward pass; otherwise
-a seekable source may use one conditional second pass; a forward-only source makes
-the orphaned link unrecoverable and therefore a per-member failure governed by
-`OnError`. A hardlink that merely precedes its selected source is linked after the
-source is written, with one read and one bomb-limit count for the source bytes.
+Recovering orphaned links SHALL take at most one extra pass and no speculative upfront
+scan to find them: a seekable source gets one conditional second pass after the main
+pass, and a forward-only source makes the orphaned link unrecoverable and therefore a
+per-member failure governed by `OnError`. When a free member list exists
+(`members_report_if_available()`), the coordinator MAY plan recovery into the first
+pass instead, as `format-tar` describes; archivey does not, so recovering an orphan in
+a solid archive decodes the solid stream a second time. A hardlink that merely precedes
+its selected source is linked after the source is written, with one read and one
+bomb-limit count for the source bytes.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
@@ -650,11 +653,13 @@ this run neither wrote nor created as a parent) SHALL leave that directory's mod
 ownership and times unchanged. When the member's effective mode differs from the
 directory's, the result SHALL carry the mode the directory kept in
 `ExtractionResult.kept_mode`; otherwise `kept_mode` is `None`, and the times were still
-left alone. A directory this run wrote or created is recognized under any spelling that
-reaches it, under every policy: through a directory symlink the archive created, and a
-case variant on a case-insensitive filesystem. A case variant on a filesystem that
-reports inode 0 for every entry cannot be told from another directory, and is taken for
-one that was there before the run.
+left alone. On Windows a mode sets only the read-only attribute, so the member's mode is
+compared as Windows would store it (`0o777`, or `0o555` without owner write): a `0o755`
+member over a writable directory reports no `kept_mode`. A directory this run wrote or
+created is recognized under any spelling that reaches it, under every policy: through a
+directory symlink the archive created, and a case variant on a case-insensitive
+filesystem. A case variant on a filesystem that reports inode 0 for every entry cannot be
+told from another directory, and is taken for one that was there before the run.
 
 A HARDLINK is made against the path its source member was written to only while that
 path still holds the source's content. Once a later member replaces that path, the path
@@ -1135,7 +1140,16 @@ member's `compressed_size` is unknown/zero and the reader exposes a cheap
 `stat`, trusted integer `size`, `try_get_size()` from Archivey streams, or an
 O(1)-safe `SEEK_END`/restore probe for real files, `BytesIO`, and `mmap`.
 Anything that would decompress or scan payload to answer (for example foreign
-decompressor streams) yields `None`. For compressed containers this is compressed
+decompressor streams) yields `None`. A `size` is taken on a seekable source and
+on an Archivey member stream, seekable or not. On a caller's non-seekable stream a
+`size` attribute is an unchecked claim, and an inflated one would disable both
+archive-wide guards, so it yields `None` and the live ratio applies. A member
+stream's `size` is the length its container declares, and that declaration is
+unchecked too: the container is untrusted input, and a member shorter than its
+declaration is refused (`TruncatedError`) by the container's end-of-member check
+only after its payload is decoded. An inflated declaration therefore disables
+both archive-wide guards for a nested archive, and `max_extracted_bytes` is the
+bound that holds there. For compressed containers this is compressed
 size; for uncompressed containers the resulting ratio is about 1:1 and harmless.
 
 The ratio SHALL be `archive_output / compressed_source_size`, where
@@ -1155,16 +1169,17 @@ SHALL raise `ResourceLimitError`.
 | Case | Expected |
 | --- | --- |
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
-| Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
-| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
+| Compressed tar from non-seekable pipe, with or without a `size` attribute | Static archive-wide ratio skipped; live ratio and cumulative byte limit still apply |
+| Plain `.tar` from a path or a seekable stream with a cheap size | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
+| Plain tar from a non-seekable stream, with or without a `size` attribute | No archive-wide denominator; the cumulative byte limit applies |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
-| Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator |
+| Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator; it is the container's unchecked declaration, so `max_extracted_bytes` is the bound that holds |
 
 ### Requirement: Enforce Maximum Entry Count
 
 The system SHALL count members actually written to disk during one extraction call
 and raise `ResourceLimitError` once the count exceeds `max_entries`. The default is
-`1_048_576`; callers override through `ExtractionLimits`, and `None` disables the
+`262_144`; callers override through `ExtractionLimits`, and `None` disables the
 guard. The counter protects against inode/per-directory/syscall bombs made of many
 tiny entries and is independent of byte and ratio limits.
 
@@ -1209,8 +1224,9 @@ data as Python `tarfile` may do on symlink-unsupported platforms.
 The system SHALL evaluate a live archive-wide ratio during extraction when no
 per-member `compressed_size` and no cheap static `compressed_source_size` is
 available, but the compressed backend can expose `compressed_bytes_consumed`.
-This covers compressed archives from non-seekable pipes and seekable opaque
-streams whose size is not cheaply knowable. Backends wrap the stream source in
+This covers compressed archives from non-seekable pipes, a pipe that carries a
+`size` attribute included, and seekable opaque streams whose size is not cheaply
+knowable. Backends wrap the stream source in
 the counting reader exactly when the static denominator is absent.
 
 The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
@@ -1229,7 +1245,7 @@ weakening the guard, but never causing a false positive.
 | --- | --- |
 | Highly compressible `.tar.gz` from non-seekable pipe has no static denominator | Live ratio raises `ResourceLimitError` after threshold before absolute byte cap |
 | Live ratio exceeded under `OnError.CONTINUE` | `ResourceLimitError` propagates and extraction halts |
-| Plain uncompressed `.tar` from a pipe | Consumed and written bytes stay about 1:1; live ratio does not trip; byte limit still applies |
+| Plain uncompressed `.tar` from a pipe | No counter is installed, so no live ratio applies; byte limit still applies |
 | `.tar.gz` has cheap `compressed_source_size` | Static archive-wide ratio is used; live path is not engaged/double-counted |
 | Seekable opaque compressed stream has no cheap size/`size`/`try_get_size()`/O(1) end seek | Source is counted live; archive is not left with only the byte cap |
 

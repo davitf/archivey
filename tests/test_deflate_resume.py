@@ -46,7 +46,10 @@ def _text(rng: random.Random, size: int) -> bytes:
 
 def _decoder(bit: int, window: bytes) -> DeflateResumeDecoder:
     return DeflateResumeDecoder(
-        DeflateResume(bit, window), ZlibDecoder(-15), corruption=None, truncated="cut"
+        DeflateResume(bit, window),
+        ZlibDecoder(-15),
+        corruption=lambda exc: CorruptionError(str(exc)),
+        truncated="cut",
     )
 
 
@@ -69,7 +72,7 @@ def _decodes_from(bit: int, head: bytes, tail: bytes, data: bytes) -> bool:
         _feed(decoder, tail, 500, out)
     except ResumeReachedStreamEnd:
         pass
-    except zlib.error:
+    except CorruptionError:
         return False
     return len(out) > len(data) // 2 and data.startswith(out)
 

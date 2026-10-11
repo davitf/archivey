@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Generator, Iterator
 from contextlib import closing
-from typing import TextIO, TypeVar
+from typing import TextIO, TypeVar, cast
 
 from archivey import ArchiveReader, ExtractionProgress
 from archivey.cli.common import open_for_cli, reject_salvage
@@ -152,6 +152,10 @@ def run_test(
                             )
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
+                    except BrokenPipeError:
+                        # The -v line or the progress bar lost its reader: not a
+                        # member failure. main() exits 141 for it, with no message.
+                        raise
                     except (ArchiveyError, OSError) as exc:
                         failed += 1
                         print(
@@ -178,8 +182,14 @@ def run_test(
             members_total += len(unverified)
         for link in unverified:
             try:
-                _verify_link(reader, link)
-            except (ArchiveyError, OSError) as exc:
+                # Only 7z and RAR4 leave a link to verify, and neither opens in the
+                # streaming mode the CLI uses for a pipe, so ``reader`` is open for
+                # random access here. The cast states that for the type checker only.
+                # If that stops holding, ``open()`` on the streaming reader raises
+                # ``ArchiveyUsageError``, which is caught here so the link counts as
+                # a FAIL instead of ending the run with a traceback.
+                _verify_link(cast(ArchiveReader, reader), link)
+            except (ArchiveyError, ArchiveyUsageError, OSError) as exc:
                 failed += 1
                 print(
                     f"FAIL {escape_member_name(link.name)}: {format_error_detail(exc)}",

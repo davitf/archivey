@@ -39,9 +39,10 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipFileRecord,
     SevenZipFolder,
 )
+from archivey.internal.backends.sevenzip_pipeline import open_folder_pipeline
 from archivey.internal.backends.sevenzip_reader import (
     SevenZipReader,
-    open_folder_pipeline,
+    load_sevenzip_archive,
 )
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_CHUNK_BYTES
@@ -900,15 +901,34 @@ def test_header_encrypted_empty_decoded_header_rejected(
         open_archive(archive, password="secret").close()
     assert "Password required" not in caught.value.message
 
-    # Same check on the fuzz/helper parse path.
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
-    monkeypatch.setattr(
-        "archivey.internal.backends.sevenzip_pipeline.decode_encoded_header",
-        lambda *args, **kwargs: b"\x01\x00",
-    )
-    with pytest.raises(EncryptionError, match="(?i)rejected.*header"):
-        parse_sevenzip_archive(archive.open("rb"), password=b"secret")
+@requires("cryptography")
+def test_fuzz_header_target_reaches_the_encrypted_header_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Atheris 7z header target passes the corpus password.
+
+    Without one, an AES-coded encoded header stops at "Password required" and the
+    fuzzer never reaches the folder pipeline or the O8 check behind it.
+    """
+    pytest.importorskip("py7zr")
+    from archivey.internal.backends import sevenzip_pipeline
+    from tests.atheris_fuzz.targets import sevenzip_header_one
+    from tests.sample_archives import CORPUS, corpus_archive_path
+
+    entry = next(e for e in CORPUS if e.id == "encrypted-header")
+    data = corpus_archive_path(entry, "7z", tmp_path).read_bytes()
+
+    planned: list[object] = []
+    original = sevenzip_pipeline.plan_folder
+
+    def counting(folder: object) -> object:
+        planned.append(folder)
+        return original(folder)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sevenzip_pipeline, "plan_folder", counting)
+    sevenzip_header_one(data)
+    assert planned
 
 
 def test_lzma1_bcj_fixture_roundtrip(tmp_path: Path) -> None:
@@ -1870,7 +1890,6 @@ def test_next_header_offset_overflow_is_typed_corruption() -> None:
     import zlib
 
     from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # Valid signature CRC over a start_header that claims an absurd next-header offset.
     next_offset = (1 << 64) - 1
@@ -1881,7 +1900,7 @@ def test_next_header_offset_overflow_is_typed_corruption() -> None:
     blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
 
     with raises_corruption_not_truncation(match="next-header offset"):
-        parse_sevenzip_archive(io.BytesIO(blob))
+        load_sevenzip_archive(io.BytesIO(blob))
 
 
 def test_next_header_size_cap_is_typed_corruption() -> None:
@@ -1892,7 +1911,6 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
         MAGIC_7Z,
         MAX_NEXT_HEADER_SIZE,
     )
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     next_offset = 0
     next_size = MAX_NEXT_HEADER_SIZE + 1
@@ -1902,7 +1920,7 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
     blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
 
     with raises_corruption_not_truncation(match="next-header size"):
-        parse_sevenzip_archive(io.BytesIO(blob))
+        load_sevenzip_archive(io.BytesIO(blob))
 
 
 def test_archive_property_payload_size_is_bounded() -> None:
@@ -1911,7 +1929,6 @@ def test_archive_property_payload_size_is_bounded() -> None:
     import zlib
 
     from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # Minimal next-header: HEADER + ARCHIVE_PROPERTIES + prop_id + 0xFF-encoded u64 size.
     # Mirrors the CI crash input shape (payload claim >> remaining header bytes).
@@ -1931,12 +1948,11 @@ def test_archive_property_payload_size_is_bounded() -> None:
     )
 
     with pytest.raises(CorruptionError, match="(length|Truncated|parser limit)"):
-        parse_sevenzip_archive(io.BytesIO(blob))
+        load_sevenzip_archive(io.BytesIO(blob))
 
 
 def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
     """Hostile encoded-header unpack size must not raise MemoryError (Atheris finding)."""
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # CI crash input (sevenzip_header, 2026-07-15): ENCODED_HEADER claims ~7.26e17
     # uncompressed bytes; previously blew up in lzma/read_exact as MemoryError. The
@@ -1956,7 +1972,7 @@ def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
         "0a010000000002830a0a0a0a0a0a0a0a0a0a0a0a816e0000"
     )
     with raises_corruption_not_truncation(match="unpack size|parser limit"):
-        parse_sevenzip_archive(io.BytesIO(blob))
+        load_sevenzip_archive(io.BytesIO(blob))
 
 
 def _sevenzip_blob(*, packed: bytes, next_header: bytes) -> bytes:
@@ -1978,15 +1994,12 @@ def _sevenzip_blob(*, packed: bytes, next_header: bytes) -> bytes:
 @pytest.mark.timeout(5)
 def test_encoded_header_self_copy_is_typed_corruption() -> None:
     """COPY encoded header whose packed bytes are itself must not hang (S2-F2 / O14)."""
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # 66-byte archive from the S2-F2 trigger: signature + 17-byte COPY payload that
     # *is* the next-header (kEncodedHeader, one COPY folder, unpack=17).
     next_header = bytes.fromhex("17060001091100070b010001000c110000")
     blob = _sevenzip_blob(packed=next_header, next_header=next_header)
     assert len(blob) == 66
-    with raises_corruption_not_truncation(match="decoded to another encoded header"):
-        parse_sevenzip_archive(io.BytesIO(blob))
     with raises_corruption_not_truncation(match="decoded to another encoded header"):
         with open_archive(io.BytesIO(blob)):
             pass
@@ -2124,7 +2137,6 @@ def test_unknown_archive_property_is_skipped(prop_id: bytes) -> None:
 def test_encoded_header_unpack_size_is_capped() -> None:
     """A COPY folder claiming more than the next-header cap is refused before decoding."""
     from archivey.internal.backends.sevenzip_parser import MAX_NEXT_HEADER_SIZE
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     next_header = (
         bytes.fromhex("17060001090100070b010001000c")
@@ -2133,7 +2145,7 @@ def test_encoded_header_unpack_size_is_capped() -> None:
     )
     blob = _sevenzip_blob(packed=b"\x00", next_header=next_header)
     with raises_corruption_not_truncation(match="parser limit"):
-        parse_sevenzip_archive(io.BytesIO(blob))
+        load_sevenzip_archive(io.BytesIO(blob))
 
 
 @pytest.fixture(scope="module")
@@ -2234,7 +2246,6 @@ def test_archives_above_stream_cap_still_open(
     """
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     n = _MAX_NUM_STREAMS + 1
     src = above_stream_cap_tree
@@ -2261,7 +2272,7 @@ def test_archives_above_stream_cap_still_open(
         "7z banner not captured",
     )
     with archive.open("rb") as raw:
-        parsed = parse_sevenzip_archive(raw)
+        parsed = load_sevenzip_archive(raw)
     assert sum(parsed.num_unpackstreams_folders) == n, writer
     assert len(parsed.folders) == (1 if single_folder else n), writer
 
@@ -2287,7 +2298,6 @@ def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> Non
 
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
-    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     src = tmp_path / "exes"
     src.mkdir()
@@ -2318,7 +2328,7 @@ def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> Non
         pytest.skip(f"7z cannot build BCJ2 fixture: {result.stderr!r}")
 
     with open(archive, "rb") as fh:
-        parsed = parse_sevenzip_archive(fh)
+        parsed = load_sevenzip_archive(fh)
     with open_archive(archive) as reader:
         n_members = len(reader.members())
     assert n_members >= n_files
