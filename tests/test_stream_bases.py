@@ -395,6 +395,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
     import archivey.internal.backends.sevenzip_reader as sevenzip_reader
     import archivey.internal.backends.tar_parser as tar_parser
+    import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.backends.zipcrypto as zipcrypto
@@ -484,6 +485,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
         tar_parser._ForwardSlice,
+        # A random-access member's data view: the view's offsets, forwarded.
+        tar_reader._MemberDataView,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
@@ -605,6 +608,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.backends.rar_copy_sources as rar_copy_sources
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
+    import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.external.cli as cli
     import archivey.internal.external.unar as unar
@@ -633,6 +637,7 @@ def test_delegating_stream_close_inventory() -> None:
         rar_copy_sources._TeeBlock,
         sparse.SparseStream,
         readahead.ReadAheadStream,
+        tar_reader._MemberDataView,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,

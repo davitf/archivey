@@ -1295,26 +1295,67 @@ def _cut_plain_tar() -> tuple[bytes, bytes]:
     return buf.getvalue()[:150_000], payload
 
 
-def test_a_cut_plain_tar_member_raises_on_read_without_a_listing() -> None:
+class _SizelessSeekable(io.RawIOBase):
+    """A seekable source with no cheap size: no ``size``, not a ``BytesIO`` or a file."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+    def readinto(self, b: Any, /) -> int:
+        return self._inner.readinto(b)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return self._inner.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+
+_CUT_SOURCES = {"bytesio": io.BytesIO, "sizeless": _SizelessSeekable}
+
+
+@pytest.mark.parametrize("source", sorted(_CUT_SOURCES))
+@pytest.mark.parametrize("size", [-1, 1024])
+def test_a_cut_plain_tar_member_raises_on_read_without_a_listing(
+    source: str, size: int
+) -> None:
     # The lookup stops at the first match, so the walk never reaches the cut: the
-    # member read itself has to find it.
+    # member read itself has to find it, whether or not the source size is known.
     cut, payload = _cut_plain_tar()
-    with open_archive(io.BytesIO(cut), format=ArchiveFormat.TAR) as ar:
-        with pytest.raises(TruncatedError):
+    with open_archive(_CUT_SOURCES[source](cut), format=ArchiveFormat.TAR) as ar:
+        with (
+            ar.open("a") as stream,
+            pytest.raises(TruncatedError, match="inside a member's data"),
+        ):
+            while stream.read(size):
+                pass
+        with pytest.raises(TruncatedError, match="inside a member's data"):
             ar.read("a")
 
 
+@pytest.mark.parametrize("source", sorted(_CUT_SOURCES))
 @pytest.mark.parametrize("chunk", [1024, 64 * 1024, 1024 * 1024])
-def test_a_cut_plain_tar_member_delivers_its_prefix_then_raises(chunk: int) -> None:
+def test_a_cut_plain_tar_member_delivers_its_prefix_then_raises(
+    source: str, chunk: int
+) -> None:
     cut, payload = _cut_plain_tar()
     got = bytearray()
-    with open_archive(io.BytesIO(cut), format=ArchiveFormat.TAR) as ar:
+    with open_archive(_CUT_SOURCES[source](cut), format=ArchiveFormat.TAR) as ar:
         member = ar.get("a")
         assert member.size == len(payload)
         with ar.open(member) as stream, pytest.raises(TruncatedError):
             while block := stream.read(chunk):
                 got += block
-    assert len(got) > 0
+    assert len(got) == len(cut) - 512  # every byte after the header
     assert payload.startswith(bytes(got))
 
 
