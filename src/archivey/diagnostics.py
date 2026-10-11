@@ -24,7 +24,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
 
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import ArchiveyError, _UsageValueError
+from archivey.internal.arg_checks import check_instance
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
@@ -740,6 +741,17 @@ class DiagnosticPolicy:
                 self.default, DiagnosticDisposition, call=call, param="default="
             ),
         )
+        # Without this, ``overrides=0`` failed in ``dict()`` as "'int' object is not
+        # iterable", naming neither the class nor the argument.
+        # The field has a real default, so ``None`` is a wrong type here, not a way
+        # of asking for one. ``_freeze_mapping`` keeps its ``None`` arm for
+        # ``DiagnosticSummary.counts``.
+        check_instance(
+            self.overrides,
+            Mapping,
+            call="DiagnosticPolicy(overrides=…)",
+            allow_none=False,
+        )
         overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
         for key, value in _freeze_mapping(self.overrides).items():
             code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
@@ -749,7 +761,7 @@ class DiagnosticPolicy:
             if overrides.setdefault(code, disposition) is not disposition:
                 # Two spellings of one code (its name and the member) that disagree:
                 # keeping either would silently drop what the other asked for.
-                raise ArchiveyUsageError(
+                raise _UsageValueError(
                     f"{call} got two dispositions for overrides= key "
                     f"{code.value!r}: {overrides[code].value!r} and "
                     f"{disposition.value!r}."

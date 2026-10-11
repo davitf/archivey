@@ -61,10 +61,15 @@ The same applies to an argument that is the wrong type or an unusable value — 
 `DetectionBudget`, an `encoding=` naming a codec Python does not have, a
 `members=` holding something that is neither a name nor an `ArchiveMember`.
 Each is refused as `ArchiveyUsageError` at the call that made it, rather than failing
-somewhere further in. This does not hold in two places. On the source and destination
-arguments, a wrong type raises `TypeError` as it would anywhere else in Python, and an
-empty string raises `ValueError` instead of meaning the current directory. And looking
-up a member name that is not in the archive raises `KeyError`, like a mapping.
+somewhere further in. The error is also a `TypeError` when the argument is the wrong
+type, and a `ValueError` when the type is right but the value is not (an unknown format
+or enum spelling, a negative limit), so `except TypeError`, `except ValueError` and
+`except ArchiveyUsageError` all catch it. The source and destination arguments follow
+the same rule: `open_archive(0)` raises an `ArchiveyUsageError` that is also a
+`TypeError`, and an empty string raises one that is also a `ValueError` instead of
+meaning the current directory. Misuse that is not about one argument's type or value,
+such as using a closed reader, raises a plain `ArchiveyUsageError`. Looking up a member
+name that is not in the archive raises `KeyError`, like a mapping.
 
 `ArchiveyConfig`, the limits types and `DetectionBudget` check their own fields when you
 construct them, for the same reason: a limit is a promise about an operation that has not

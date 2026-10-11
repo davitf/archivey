@@ -53,10 +53,13 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
+    _UsageTypeError,
+    _UsageValueError,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
     check_callable,
+    check_dest,
     check_extraction_limits,
     check_path_not_empty,
     describe_value,
@@ -2705,7 +2708,7 @@ class BaseArchiveReader(ArchiveReader):
         # refuses a ``bytes`` name the same way; it takes a member object, which get()
         # does not, because get() looks up by name.
         if not isinstance(name, str):
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 f"reader.get() takes a member name (str), but got "
                 f"{describe_value(name)}."
             )
@@ -2748,7 +2751,7 @@ class BaseArchiveReader(ArchiveReader):
                 # answer. `in` raises TypeError here (a spec'd escape for the operator
                 # protocol); this is an ordinary argument, so it takes the usage error.
                 if not isinstance(member, ArchiveMember):
-                    raise ArchiveyUsageError(
+                    raise _UsageTypeError(
                         f"reader.open() takes a member name (str) or an ArchiveMember "
                         f"yielded by this reader, but got {describe_value(member)}."
                     )
@@ -2758,7 +2761,7 @@ class BaseArchiveReader(ArchiveReader):
                 # data (e.g. the directory backend would read whatever sits at the same
                 # relative path under this reader's root).
                 if member._archive_id != self._archive_id:
-                    raise ArchiveyUsageError(
+                    raise _UsageValueError(
                         f"Member {quoted(member.name)} does not belong to this reader; open a "
                         f"member yielded by this reader, or look it up by name with "
                         f"reader.get(name)."
@@ -2848,7 +2851,7 @@ class BaseArchiveReader(ArchiveReader):
                 )
             current = target
         if current.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
-            raise ArchiveyUsageError(
+            raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is {current.type.value!r} "
                 f"(not a file)"
             )
@@ -2873,7 +2876,7 @@ class BaseArchiveReader(ArchiveReader):
         each handle forward-only); ``tell()`` works.
         """
         if not isinstance(file_copy_streams, bool):
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 "stream_members(file_copy_streams=…) takes True or False, but got "
                 f"{describe_value(file_copy_streams)}."
             )
@@ -3017,8 +3020,9 @@ class BaseArchiveReader(ArchiveReader):
         # passed on, because ``members`` may be a one-shot iterable that a second read
         # would find empty.
         selector = normalize_member_selector(members)
-        check_path_not_empty(dest, call="extract_all()")
-        self._check_extraction_dest(Path(dest))
+        dest_path = check_dest(dest, call="extract_all(dest=…)")
+        check_path_not_empty(dest_path, call="extract_all()")
+        self._check_extraction_dest(Path(dest_path))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.
@@ -3052,7 +3056,7 @@ class BaseArchiveReader(ArchiveReader):
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
             with self._internal_member_opens():
-                results = coordinator.run(self, dest)
+                results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         return ExtractionReport(

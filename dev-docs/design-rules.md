@@ -81,8 +81,9 @@ binds.
   easy to use right the first time.** Between designs that meet principles 1 and 2, pick
   the easier to explain and use.
 - [DR-15](#dr-15-usage-errors-are-for-what-the-types-cannot-rule-out). **Usage errors are
-  for what the types cannot rule out.** A wrong argument raises `TypeError` or
-  `ValueError`; `ArchiveyUsageError` is for misuse the signature cannot express.
+  for what the types cannot rule out.** A wrong argument raises an `ArchiveyUsageError`
+  that is also a `TypeError` or `ValueError`; a plain `ArchiveyUsageError` is for misuse
+  the signature cannot express.
 - [DR-15a](#dr-15a-translate-archive-problems-let-io-problems-through). **Translate
   archive problems; let I/O problems through.** Archive-content errors become archivey
   errors; I/O failures pass through.
@@ -739,12 +740,29 @@ that the error make the fix obvious.
 
 ### DR-15. Usage errors are for what the types cannot rule out
 
-**Rule.** A wrong argument type or value raises `TypeError` or `ValueError`.
-`ArchiveyUsageError` is for misuse the signature cannot express, such as calling a
-method in the wrong mode. Translate only known third-party exceptions; never add a
-catch-all.
+**Rule.** A wrong argument type raises a `TypeError`. An argument of a usable type whose
+value the call refuses raises a `ValueError`; that includes a value refused only after
+looking at what it names, such as a `format=` that conflicts with what the source is, a
+directory passed to `open_stream()`, or a volume sequence that is not the parts of one
+set. Both are also `ArchiveyUsageError`s: the boundary helpers
+(`internal/arg_checks.py`, `enum_args.py`, `format_args.py`, the `*Limits` field checks)
+raise the private `_UsageTypeError` or `_UsageValueError` from `archivey/exceptions.py`,
+so `except TypeError`, `except ValueError` and `except ArchiveyUsageError` all catch a
+bad argument. A plain `ArchiveyUsageError` is for misuse the signature cannot express,
+such as calling a method in the wrong mode or using a closed reader. Translate only
+known third-party exceptions; never add a catch-all.
 
-**Rulings.** 2026-09-25, recorded in the ADR 0012 amendment.
+The source and destination paths follow the same rule: `open_archive(0)` is a type
+error, and an empty string, which `Path("")` would read as the current directory, is a
+value error.
+
+**Rulings.**
+- 2026-09-25, recorded in the ADR 0012 amendment: wrong argument types keep
+  `TypeError` and `ValueError`.
+- 2026-10-10: the two private subclasses above, rather than making `ArchiveyUsageError`
+  itself a `TypeError`, because mode misuse and closed readers also raise it and are not
+  type errors. The subclasses are not exported; callers catch the builtin or
+  `ArchiveyUsageError`.
 
 ### DR-15a. Translate archive problems; let I/O problems through
 

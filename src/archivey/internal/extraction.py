@@ -43,6 +43,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
+    _UsageTypeError,
 )
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
@@ -1511,7 +1512,7 @@ class ExtractionCoordinator:
                 # A caller bug, so a TypeError that ends the call rather than a
                 # per-member result; it names what came back, which the attribute
                 # error from the first use of it did not.
-                raise TypeError(
+                raise _UsageTypeError(
                     f"filter= must return an ArchiveMember or None, not "
                     f"{type(filtered).__name__} (for member {quoted(original.name)})"
                 )

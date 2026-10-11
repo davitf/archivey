@@ -103,7 +103,9 @@ Three things about this path are worth knowing before you debug it:
   in handbook [`topics/exception-handlers.md`](topics/exception-handlers.md).
 - **`ArchiveyUsageError` is deliberately outside the `ArchiveyError` tree** (ADR 0012), so
   a caller-misuse fault cannot be produced by a translator that can only return archive
-  errors.
+  errors. A wrong argument raises one of its two private subclasses, `_UsageTypeError`
+  or `_UsageValueError`, which are also `TypeError` / `ValueError` (DR-15); mode misuse
+  and closed readers raise it plain.
 
 ---
 
