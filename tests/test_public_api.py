@@ -234,53 +234,56 @@ def test_all_has_no_duplicates() -> None:
     assert len(archivey.__all__) == len(set(archivey.__all__))
 
 
-def test_public_symbols_are_in_all() -> None:
-    """Imported public symbols (classes/functions, not modules or dunders) must be
-    listed in __all__, so a new export can't be silently omitted.
+def test_root_exposes_nothing_public_outside_all() -> None:
+    """Every public name on the package root is in ``__all__`` or is a submodule.
 
-    Names deliberately demoted from ``__all__`` but kept importable (Q4) are
-    allowlisted here — they remain reachable as ``archivey.X`` for compatibility
-    without advertising them as part of the curated public surface.
+    DR-13: a niche name lives in its public submodule and is not imported at the root
+    as well, so the root offers one import path per name. A module attribute must be
+    a real submodule of ``archivey``, not some other module an import left behind.
     """
     import inspect
 
-    # Demoted from ``__all__`` but still imported at package level (api-coherence Q4).
-    demoted_but_importable = {
-        "ArchiveEofContext",
-        "DigestContext",
-        "EmptyArchiveContext",
-        "EncryptedVerificationContext",
-        "FormatConflictContext",
-        "MemberHeaderRecordContext",
-        "MemberNameControlsContext",
-        "MemberTimestampContext",
-        "NameEncodingContext",
-        "NameNormalizationContext",
-        "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
-        "ScanRaceContext",
-        "SeekIndexContext",
-        "SelectorUnmatchedContext",
-        "SpecialFileDataContext",
-        "StreamRewindContext",
-        "SymlinkTargetContext",
-        "UnconfirmedFormatContext",
-        "UnusedArgumentContext",
-    }
-
-    public = {
+    stray = sorted(
         name
         for name, obj in vars(archivey).items()
         if not name.startswith("_")
-        and not inspect.ismodule(obj)
-        and name not in ("annotations",)
-    }
-    not_listed = public - set(archivey.__all__) - demoted_but_importable
-    assert not not_listed, f"public symbols missing from __all__: {sorted(not_listed)}"
-    # Demoted names must stay importable (do not silently drop the re-exports).
-    missing_demoted = demoted_but_importable - public
-    assert not missing_demoted, (
-        f"demoted symbols no longer importable from archivey: {sorted(missing_demoted)}"
+        and name not in archivey.__all__
+        and not (inspect.ismodule(obj) and obj.__name__ == f"archivey.{name}")
     )
+    assert not stray, f"public names on archivey outside __all__: {stray}"
+
+
+def test_niche_names_live_only_in_their_submodule() -> None:
+    """The diagnostic context payloads and the rapidgzip size gate are not root names.
+
+    They were importable from ``archivey`` before 0.2.0; they now come only from
+    ``archivey.diagnostics`` and ``archivey.config``.
+    """
+    import archivey.config
+    import archivey.diagnostics
+
+    def is_payload(name: str) -> bool:
+        return (
+            name.endswith("Context")
+            and name != "DiagnosticContext"
+            and not name.startswith("_")
+        )
+
+    # The submodule is the only public path to a payload, so its __all__ must list
+    # every one the module defines.
+    unlisted = sorted(
+        name
+        for name in vars(archivey.diagnostics)
+        if is_payload(name) and name not in archivey.diagnostics.__all__
+    )
+    assert unlisted == []
+    contexts = [name for name in archivey.diagnostics.__all__ if is_payload(name)]
+    # The 18 payload classes the module defines; update the count when one is added
+    # or removed, so the loop below cannot pass on a shrunken list.
+    assert len(contexts) == 18, contexts
+    for name in [*contexts, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE"]:
+        assert not hasattr(archivey, name), name
+    assert archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE > 0
 
 
 def test_no_public_name_reports_an_internal_module() -> None:
