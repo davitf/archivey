@@ -527,7 +527,7 @@ def test_zip_index_only_listing_leaves_symlink_unresolved(tmp_path: Path) -> Non
         assert link.link_target is None
         assert link.link_target_member is None
 
-        resolved = ar.scan_members()
+        resolved = ar.members()
         link_resolved = next(m for m in resolved if m.name == "link")
         assert link_resolved.link_target == "target.txt"
         assert link_resolved.link_target_member is not None

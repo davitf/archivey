@@ -251,9 +251,12 @@ from archives you do not control.
 
 ### Listing a damaged archive
 
-`members()` / `scan_members()` assert a **complete** listing (raise on terminal
-archive damage). When you want the recoverable prefix *and* the error together, use
-`members_report()`:
+`members()` asserts a **complete** listing (raises on terminal archive damage). When
+you want the recoverable prefix *and* the error together, use `members_report()`. It
+returns the damage in `report.error` instead of raising it; it still raises on a
+listing limit (`ResourceLimitError`), on misuse (`ArchiveyUsageError`) and on other read
+failures. On a streaming reader, where `members()` refuses, it is also the way to get
+the member list, and raising `report.error` gives you complete-or-raise:
 
 ```python
 with archivey.open_archive("messy.tar") as reader:

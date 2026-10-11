@@ -217,7 +217,7 @@ ExtractionLimits.UNLIMITED = ExtractionLimits(
 
 @dataclass(frozen=True)
 class ListingLimits:
-    """Caps for materializing a member list (``members`` / ``scan_members`` / extract prep).
+    """Caps for materializing a member list (``members`` / ``members_report`` / extract prep).
 
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.

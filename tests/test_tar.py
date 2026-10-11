@@ -1839,7 +1839,7 @@ def test_symlink_duplicate_name_last_wins_random_access() -> None:
 
 
 # ---------------------------------------------------------------------------
-# scan_members(), post-pass cache, one-pass-only streaming
+# members_report(), post-pass cache, one-pass-only streaming
 # ---------------------------------------------------------------------------
 
 
@@ -1853,10 +1853,12 @@ def _build_forward_symlink_tar() -> bytes:
     )
 
 
-def test_streaming_scan_members_resolves_forward_symlink() -> None:
+def test_streaming_members_report_resolves_forward_symlink() -> None:
     source = NonSeekableBytesIO(_build_forward_symlink_tar())
     with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
-        members = ar.scan_members()
+        report = ar.members_report()
+    assert report.error is None
+    members = report.members
     link = next(m for m in members if m.name == "forward_link")
     assert link.link_target_member is not None
     assert link.link_target_member.name == "target.txt"
@@ -1898,13 +1900,15 @@ def test_streaming_stream_members_materializes_resolved_cache() -> None:
         assert collected[0].link_target_member.name == "target.txt"
 
 
-def test_scan_members_finishes_interrupted_pass(tmp_path: Path) -> None:
+def test_members_report_finishes_interrupted_pass(tmp_path: Path) -> None:
     source = NonSeekableBytesIO(_build_forward_symlink_tar())
     with open_archive(source, format=ArchiveFormat.TAR, streaming=True) as ar:
         for member in ar:
             if member.name == "forward_link":
                 break
-        members = ar.scan_members()
+        report = ar.members_report()
+        assert report.error is None
+        members = report.members
         assert [m.name for m in members] == ["forward_link", "target.txt"]
         link = next(m for m in members if m.name == "forward_link")
         assert link.link_target_member is not None
@@ -1946,7 +1950,7 @@ def test_streaming_second_pass_raises_tar_and_zip(
             list(ar)
 
 
-def test_scan_members_random_access_parity(plain_tar: Path, tmp_path: Path) -> None:
+def test_members_report_random_access_parity(plain_tar: Path, tmp_path: Path) -> None:
     import zipfile
 
     zip_path = tmp_path / "scan.zip"
@@ -1957,11 +1961,11 @@ def test_scan_members_random_access_parity(plain_tar: Path, tmp_path: Path) -> N
     (simple_dir / "a.txt").write_bytes(b"x")
     for source in (plain_tar, zip_path, simple_dir):
         with open_archive(source) as ar:
-            assert ar.scan_members() == ar.members()
+            assert list(ar.members_report().members) == ar.members()
             assert [m.name for m in ar] == [m.name for m in ar.members()]
 
 
-def test_scan_members_before_pass_consumes_streaming_reader(
+def test_members_report_before_pass_consumes_streaming_reader(
     plain_tar: Path, tmp_path: Path
 ) -> None:
     import zipfile
@@ -1974,7 +1978,7 @@ def test_scan_members_before_pass_consumes_streaming_reader(
     (simple_dir / "a.txt").write_bytes(b"x")
     for source in (plain_tar, zip_path, simple_dir):
         with open_archive(source, streaming=True) as ar:
-            names = {m.name for m in ar.scan_members()}
+            names = {m.name for m in ar.members_report()}
             assert len(names) > 0
             with pytest.raises(ArchiveyUsageError):
                 list(ar.stream_members())
@@ -2052,9 +2056,9 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_error_mid_streaming_pass_poisons_scan_members() -> None:
+def test_error_mid_streaming_pass_poisons_members_report() -> None:
     """End-to-end N1 repro: a RAISE-disposition diagnostic fires mid-pass; the caller
-    catches it; ``scan_members()`` must then fail loud instead of silently returning
+    catches it; ``members_report()`` must then fail loud instead of silently returning
     the two-member prefix as the complete resolved list."""
     from archivey.diagnostics import (
         DiagnosticCode,
@@ -2090,7 +2094,7 @@ def test_error_mid_streaming_pass_poisons_scan_members() -> None:
                 seen.append(member.name)
         assert seen == ["a.bin", "b.bin"]
         with pytest.raises(ReadError, match="previously failed"):
-            reader.scan_members()
+            reader.members_report()
         assert reader.members_report_if_available() is None
 
 

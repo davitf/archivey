@@ -1546,7 +1546,7 @@ class TarReader(BaseArchiveReader):
             yield from self._iter_with_data_random_access()
             return
         # Pull from the shared instance-held progressive pass so __iter__,
-        # stream_members, and scan_members share one cursor and finalization.
+        # stream_members, and members_report share one cursor and finalization.
         # close_previous=False: tarfile invalidates the prior extractfile handle on
         # advance; tracking previous would be incorrect.
         # The driver's finally closes the last stream inside this translation context

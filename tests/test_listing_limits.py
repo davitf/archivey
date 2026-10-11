@@ -155,8 +155,8 @@ def test_tar_listing_stops_reading_headers_at_max_members(tmp_path: Path) -> Non
         assert len(tar.members) <= 6
 
 
-def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
-    """scan_members on a streaming reader must enforce caps and not publish a cache."""
+def test_streaming_members_report_enforces_listing_limits(tmp_path: Path) -> None:
+    """members_report on a streaming reader raises on caps and publishes no cache."""
     import tarfile
 
     tar_path = tmp_path / "a.tar"
@@ -169,7 +169,7 @@ def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     with open_archive(tar_path, config=cfg, streaming=True) as reader:
         with pytest.raises(ResourceLimitError, match="max_members"):
-            reader.scan_members()
+            reader.members_report()
         # Cache must stay unpublished after a limit trip.
         assert reader._materialized is None
         assert reader.members_report_if_available() is None

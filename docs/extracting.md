@@ -398,7 +398,7 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (default 1000, checked once 5 MiB has been written), and entry count (default
   262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count (default 262,144) and retained metadata
-  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
+  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
   does not list first: it checks the limits as each member arrives in its one pass, so
   members before the one that crosses a cap are already written when it raises.
