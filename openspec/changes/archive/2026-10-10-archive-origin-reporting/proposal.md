@@ -1,3 +1,14 @@
+> **Retired (2026-10-10). Not implemented; archived without applying its specs.**
+> The maintainer's pre-release triage (2026-10-07) took it off the open list as stale: it
+> puts `prefix_kind` on `ArchiveInfo` by reusing `PrefixKind`, and prefixed-archive-detection
+> struck that enum on 2026-09-25. Since then `archivey info` reads the reader's own
+> `format_info` instead of detecting twice. Two gaps it describes are still open on `main`,
+> and a later change would have to carry them: a reader opened with `format=` cannot report
+> where the payload started (`ArchiveReader.format_info` is `None`, while the 7z and RAR
+> parsers find the origin and drop it), and the 7z and RAR parsers still wrap
+> `internal/sfx.scan_for_magic` in two shapes instead of one shared origin resolver. The
+> measurements below were taken on `056c429` and are not re-checked.
+
 ## Why
 
 An archive that starts after byte zero is opened correctly today, and then archivey

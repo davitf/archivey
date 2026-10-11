@@ -61,10 +61,15 @@ The same applies to an argument that is the wrong type or an unusable value — 
 `DetectionBudget`, an `encoding=` naming a codec Python does not have, a
 `members=` holding something that is neither a name nor an `ArchiveMember`.
 Each is refused as `ArchiveyUsageError` at the call that made it, rather than failing
-somewhere further in. This does not hold in two places. On the source and destination
-arguments, a wrong type raises `TypeError` as it would anywhere else in Python, and an
-empty string raises `ValueError` instead of meaning the current directory. And looking
-up a member name that is not in the archive raises `KeyError`, like a mapping.
+somewhere further in. The error is also a `TypeError` when the argument is the wrong
+type, and a `ValueError` when the type is right but the value is not (an unknown format
+or enum spelling, a negative limit), so `except TypeError`, `except ValueError` and
+`except ArchiveyUsageError` all catch it. The source and destination arguments follow
+the same rule: `open_archive(0)` raises an `ArchiveyUsageError` that is also a
+`TypeError`, and an empty string raises one that is also a `ValueError` instead of
+meaning the current directory. Misuse that is not about one argument's type or value,
+such as using a closed reader, raises a plain `ArchiveyUsageError`. Looking up a member
+name that is not in the archive raises `KeyError`, like a mapping.
 
 `ArchiveyConfig`, the limits types and `DetectionBudget` check their own fields when you
 construct them, for the same reason: a limit is a promise about an operation that has not
@@ -190,6 +195,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | `MEMBER_SELECTOR_UNMATCHED` | An entry in your `members=` collection matched no member, so a typo does not look like an archive that lacks the file. One diagnostic for each such entry, reported once every member has been offered to the selector: by `stream_members()` only when you iterate to the end, and by `extract_all()` before it writes or creates anything when the listing is free, else at the end. A predicate selector is never reported. If you set this code to `RAISE`, `extract_all()` refuses with nothing written only when the listing is free. On TAR and forward-only streams the members before the end are already on disk, and the error replaces the report. |
 | `MEMBER_NAME_BIDI_CONTROL` | A member name or link target contains a Unicode bidi formatting control (the context's `field` says which). The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
 | `MEMBER_HEADER_RECORD_SKIPPED` | One optional record in a member's header was malformed and was dropped; the member is listed without whatever it carried. Today this is the RAR5 extra area — a checksum, a timestamp, a redirect target. The field it would have filled is **absent, never wrong**, and the context names the record and the parse failure. Refusing the whole archive over one bad checksum record would discard every member that parsed, and `unrar` itself lists such archives. A member header is attacker-sized, so how many records one member may drop is capped, and a record whose declared *size* cannot be used stops the walk outright — there is no way to find the next record. Either way one diagnostic reports it with `list_truncated` set and names which fault ended the walk, and a member whose header was cut short is reported as encrypted rather than as plaintext, since the walk may have stopped before the record that would have said so. That last part also decides how the member reads: a member archivey reads by slicing the archive (stored, whether or not it is split across volumes or inside a solid archive) is sliced only once its bytes have been checked against a checksum that survived the damage — where no checksum survived, or the bytes fail it, the read raises `CorruptionError` naming the header. A cut-short member that needs `unrar` is decoded by it as before, with any surviving checksum checked as the member is read. The archive as a whole is not reported encrypted by one such member. A RAR5 archive's own `CMT` and `QO` service headers carry the same records and are reported the same way, in every volume; they are not members, so those diagnostics carry no member name and the message says what the archive does without — the comment, or the quick-open index. How many of them one archive may report is capped, because nothing lists them and `max_members` therefore never counted them; past the cap one more diagnostic says how many went undescribed. |
+| `MEMBER_SPECIAL_FILE_HAS_DATA` | A member whose mode names a FIFO, device or socket also stores data. It is listed as a `FILE`, because the data stream is the structure and the mode only an attribute: refusing it would hide bytes that every other extractor writes out, and Info-ZIP's `zip -FI` produces exactly this shape when it archives a named pipe's content. The stored type stays in `extra["special_file_type"]` and the context carries it with the size. Advisory: `DiagnosticPolicy.strict()` does not raise on it. A special-mode entry with **no** data stays `OTHER` and is skipped by extraction. |
 
 #### What is *not* here: per-member extraction outcomes
 
@@ -250,9 +256,12 @@ from archives you do not control.
 
 ### Listing a damaged archive
 
-`members()` / `scan_members()` assert a **complete** listing (raise on terminal
-archive damage). When you want the recoverable prefix *and* the error together, use
-`members_report()`:
+`members()` asserts a **complete** listing (raises on terminal archive damage). When
+you want the recoverable prefix *and* the error together, use `members_report()`. It
+returns the damage in `report.error` instead of raising it; it still raises on a
+listing limit (`ResourceLimitError`), on misuse (`ArchiveyUsageError`) and on other read
+failures. On a streaming reader, where `members()` refuses, it is also the way to get
+the member list, and raising `report.error` gives you complete-or-raise:
 
 ```python
 with archivey.open_archive("messy.tar") as reader:

@@ -166,7 +166,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
-from archivey.internal.unix_mode import is_special_file_mode
+from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
@@ -181,6 +181,7 @@ from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
     EXTRA_RAR_EXTRACT_VERSION,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -193,6 +194,7 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
+    SpecialFileType,
     crc32_digest,
 )
 
@@ -709,12 +711,24 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     return hashes
 
 
+def _rar_special_file_type(info: RarMemberInfo) -> SpecialFileType | None:
+    """The stored special type (device, FIFO, socket) of a Unix-host entry, or ``None``."""
+    if info.host_os != _RAR_HOST_OS_UNIX or info.mode is None:
+        return None
+    return special_file_type(info.mode)
+
+
 def _rar_member_extra_and_link(
     info: RarMemberInfo,
 ) -> tuple[MemberExtra, str | None]:
     """Build ``ArchiveMember.extra`` and the link target (or a file copy's source)."""
     extra = MemberExtra()
     link_target: str | None = None
+    special = _rar_special_file_type(info)
+    if special is not None:
+        # Whatever type ``_member_type`` gives the entry (a file copy is a FILE even
+        # though it carries a redirect), the key records what the mode said (DR-25).
+        extra[EXTRA_SPECIAL_FILE_TYPE] = special
     if info.file_redir is not None:
         link_target = _rar5_redirect_target(info.file_redir)
         if info.is_file_copy():
@@ -1281,7 +1295,7 @@ class RarReader(BaseArchiveReader):
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
-        if self._archive.is_volume or self._volume_count > 1:
+        if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
         # Built once from the parse, and only when the caller chose unar: it holds the
         # refusals and the pipe layout, and none of it applies to unrar.
@@ -2433,6 +2447,12 @@ class RarReader(BaseArchiveReader):
             )
         self._emit_end_block_missing()
         self._emit_end_block_damaged()
+        self._emit_trailing_data()
+
+    @property
+    def _in_set(self) -> bool:
+        """Whether this archive is a volume set, which decides how diagnostics name it."""
+        return self._archive.is_volume or self._volume_count > 1
 
     def _emit_end_block_damaged(self) -> None:
         """Report each volume whose end-of-archive block failed its header CRC.
@@ -2444,9 +2464,8 @@ class RarReader(BaseArchiveReader):
         block's next-volume flag, so a set continued past that volume only where a
         member's own header said its data continues.
         """
-        in_set = self._archive.is_volume or self._volume_count > 1
         for index, offset in sorted(self._archive.end_block_damaged_volumes.items()):
-            if in_set:
+            if self._in_set:
                 detail = (
                     f"the end-of-archive block of volume {index + 1}, at byte "
                     f"{offset}, fails its header CRC. Its flags were not used, so "
@@ -2470,6 +2489,38 @@ class RarReader(BaseArchiveReader):
                 logger=logger,
             )
 
+    def _emit_trailing_data(self) -> None:
+        """Report each volume with a non-zero byte after its end-of-archive block.
+
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer or a 7z next header: a warning by default, refused under
+        ``DiagnosticPolicy.strict()`` (DR-3), once per volume. Zero padding is silent,
+        since ``rar`` pads volumes with zeros. ``unrar`` says nothing about these
+        bytes; 7-Zip warns "There are data after the end of archive" for any tail,
+        zeros included. ``observed_bytes`` counts from the end of that volume's end
+        block.
+        """
+        for index, offset in sorted(self._archive.trailing_data_volumes.items()):
+            where = f"volume {index + 1} of the set" if self._in_set else "RAR archive"
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+                message=(
+                    f"{where[0].upper()}{where[1:]} continues past its end-of-archive "
+                    f"block: a non-zero byte appears {offset} bytes after it. The "
+                    "listing does not account for it (this file may hold something "
+                    "appended to the archive)."
+                ),
+                context=ArchiveEofContext(
+                    archive_name=self._archive_name,
+                    format="rar",
+                    expected_marker="zeros_to_eof",
+                    expected_bytes=0,
+                    observed_bytes=offset,
+                    observed_kind="nonzero",
+                ),
+                logger=logger,
+            )
+
     def _emit_end_block_missing(self) -> None:
         """Report RAR5 volumes that end without their end-of-archive block.
 
@@ -2482,7 +2533,7 @@ class RarReader(BaseArchiveReader):
         missing = self._archive.end_block_missing_volumes
         if not missing:
             return
-        if self._archive.is_volume or self._volume_count > 1:
+        if self._in_set:
             where = "volume(s) " + ", ".join(str(index + 1) for index in missing)
         else:
             where = "the archive"
@@ -2661,6 +2712,8 @@ class RarReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_header_record_diagnostics(info, member.name, member, index)
+        if EXTRA_SPECIAL_FILE_TYPE in member.extra and member.type is MemberType.FILE:
+            self._emit_special_file_has_data(member, index)
         if info.rar3_utf8_over_encoding:
             assert self._encoding is not None
             self._emit_name_encoding_inferred(
@@ -2858,13 +2911,11 @@ class RarReader(BaseArchiveReader):
             return MemberType.HARDLINK
         if info.is_symlink:
             return MemberType.SYMLINK
-        if (
-            info.host_os == _RAR_HOST_OS_UNIX
-            and info.mode is not None
-            and is_special_file_mode(info.mode)
-        ):
-            # A device, FIFO or socket, typed OTHER as in every format. rar itself
-            # skips these when archiving; only a hand-built header carries one.
+        if _rar_special_file_type(info) is not None and info.file_size == 0:
+            # A device, FIFO or socket with no data, typed OTHER as in every format.
+            # rar itself skips these when archiving; only a hand-built header carries
+            # one. With data the entry is a FILE, its bytes the content (DR-25);
+            # ``extra["special_file_type"]`` keeps the stored type either way.
             return MemberType.OTHER
         return MemberType.FILE
 
@@ -4317,6 +4368,7 @@ class RarReadBackend(ReadBackend):
     # matching their shared `Rar!\x1a\x07` prefix and re-reading to disambiguate.
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SFX_HIT_VALIDATOR = staticmethod(validate_rar_main_header)
+    SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
     SUPPORTS_STREAMING_NON_SEEKABLE = False

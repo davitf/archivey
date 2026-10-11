@@ -44,6 +44,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
+    _UsageTypeError,
 )
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
@@ -1064,11 +1065,10 @@ class ExtractionCoordinator:
         # Extract-prep: enforce ListingLimits. Indexed backends may already have been
         # peeked via members_report_if_available(); scan-required backends (TAR,
         # directory) would otherwise walk via unguarded stream_members() and never hit
-        # listing caps. The reader decides how: most list everything first; TAR
-        # enforces the limits as members arrive in its one pass (_extraction_listing).
-        listing = (
-            contextlib.nullcontext() if forward_only else reader._extraction_listing()
-        )
+        # listing caps. The reader decides how: most list everything first; TAR and
+        # every streaming reader enforce the limits as members arrive in the one pass
+        # (_extraction_listing).
+        listing = reader._extraction_listing()
 
         # The pass is driven through the public stream_members(), which applies the
         # selection (skipped members never surface here — they are invisible to progress
@@ -1521,7 +1521,7 @@ class ExtractionCoordinator:
                 # A caller bug, so a TypeError that ends the call rather than a
                 # per-member result; it names what came back, which the attribute
                 # error from the first use of it did not.
-                raise TypeError(
+                raise _UsageTypeError(
                     f"filter= must return an ArchiveMember or None, not "
                     f"{type(filtered).__name__} (for member {quoted(original.name)})"
                 )

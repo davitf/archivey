@@ -79,15 +79,31 @@ class MemberType(Enum):
 
 Windows NTFS junctions SHALL surface as `MemberType.SYMLINK` with
 `extra["is_junction"] == True`. `MemberType.OTHER` SHALL always be rejected by
-extraction regardless of policy. A device, FIFO, socket or unknown file type SHALL be
-`MemberType.OTHER` in every format that can record one: TAR by its typeflag, ISO when a
-Rock Ridge PX mode is not a regular file (its symlink and directory records decide
-first), and ZIP from a Unix creator, 7z with `0x8000` and the mode in the attribute's
-high word, and RAR from a Unix host by the file-type bits of the stored mode (a mode
-with no file-type bits is not special), even where the format's own tool writes
-it as an empty regular file (unzip, 7-Zip): an empty file in its place would hide what
-the archive said it was. `MemberType.ANTI` SHALL be a deletion/tombstone
-marker (`is_file` false, no payload); it SHALL NOT be treated as `OTHER`.
+extraction regardless of policy. A device, FIFO, socket or unknown file type that
+stores no data SHALL be `MemberType.OTHER` in every format that can record one: TAR by
+its typeflag, ISO when a Rock Ridge PX mode is not a regular file (its symlink and
+directory records decide first) and the extent is empty, and ZIP from a Unix creator,
+7z with `0x8000` and the mode in the attribute's high word, and RAR from a Unix host by
+the file-type bits of the stored mode (a mode with no file-type bits is not special)
+when the entry has no data stream, even where the format's own tool writes it as an
+empty regular file (unzip, 7-Zip): an empty file in its place would hide what the
+archive said it was. An entry whose mode names a special file but that owns a data
+stream (ZIP, 7z, RAR, ISO) SHALL be `MemberType.FILE` with
+`MEMBER_SPECIAL_FILE_HAS_DATA` reported: the stream is the structure and the mode an
+attribute, and `OTHER` would hide bytes every official tool writes out (design rule
+DR-25). In TAR the typeflag is the structure and GNU tar ignores the size field of a
+device or FIFO header, so a header of typeflag `3`, `4` or `6` with a non-zero size
+SHALL be refused as `CorruptionError`. Every member whose stored mode's file-type bits
+(or TAR typeflag `3`/`4`/`6`) named a device, FIFO, socket or unknown file type SHALL
+carry `extra["special_file_type"]` ∈ `{"fifo","char_device","block_device","socket",
+"unknown"}`, whatever type the member ends up with (a RAR file copy is `FILE` by its
+redirect record; a ZIP directory marker, an ISO directory record or a reparse-point bit
+over such a mode makes a `DIRECTORY` or `SYMLINK` that keeps the key), so the stored
+kind is never lost; an `OTHER` member that recorded no
+such mode (a GNU dumpdir, an ISO file record with a directory's `S_IFDIR` mode) has no
+key. `MemberType.ANTI` SHALL be a
+deletion/tombstone marker (`is_file` false, no payload); it SHALL NOT be treated as
+`OTHER`.
 
 A link the source filesystem held as a Windows reparse point — a junction, a Windows
 directory symlink or a Windows file symlink — SHALL additionally carry
@@ -111,8 +127,9 @@ whose data-stored target has not been read yet (`read_link_targets=False`).
 
 | Case | Expected |
 | --- | --- |
-| TAR contains a device node or FIFO † | `member.type == MemberType.OTHER` |
-| ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set) | `member.type == MemberType.OTHER`; `size` keeps the stored value |
+| TAR contains a device node or FIFO † | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
+| ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set), with no data | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
+| The same entry storing data (`zip -FI` on a named pipe), or an ISO Rock Ridge special mode over a non-empty extent | `member.type == MemberType.FILE`; `size` is the stored size; `extra["special_file_type"]` set; `MEMBER_SPECIAL_FILE_HAS_DATA` with `SpecialFileDataContext`; `strict()` does not raise |
 | ZIP whose member carries a junction's reparse data † | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True`; `link_target` is the buffer's substitute name |
 | ZIP whose member has the reparse bit and no reparse data | `member.type == MemberType.SYMLINK`; `link_target is None`; `is_junction` unset, the tag that would establish it being in the data that was not written |
 | 7z ANTI-bit entry † | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |
@@ -128,11 +145,12 @@ header record, or a member constructed directly. The row still states what the s
 guarantees for an archive that does carry the shape, but whether any writer in the wild
 produces it is untested, and so is the behaviour a real one would get.
 
-- **A TAR device node or FIFO.** Nothing builds one; the `OTHER` mapping is exercised
-  through a member constructed in the test.
+- **A TAR device node or FIFO.** Built with `tarfile` in the test.
 - **A ZIP or RAR device, FIFO or socket.** Info-ZIP's zip and rar skip them, so the
-  tests set the mode in a `ZipInfo` (ZIP) or a rewritten fixture header (RAR). The 7z
-  case is not here: 7-Zip and p7zip store a FIFO, and a test archives one with the CLI.
+  tests set the mode in a `ZipInfo` (ZIP) or a rewritten fixture header (RAR); the
+  data-bearing ZIP shape is also made by `zip -FI` on a named pipe when `zip` is
+  installed. The 7z case is not here: 7-Zip and p7zip store a FIFO, and a test archives
+  one with the CLI; the data-bearing 7z record is constructed in the test.
 - **A junction's reparse data in a ZIP.** A junction is always a directory reparse
   point, and the writers measured here store no reparse data for a directory (the row
   below it is what they write instead), so the only ZIPs carrying a junction buffer are

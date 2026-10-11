@@ -101,10 +101,10 @@ def validate_zip_local_header(
     :attr:`HitOutcome.NOT_THIS_FORMAT` — identity never held. This check
     does not return :attr:`HitOutcome.DAMAGED`.
 
-    When ``remaining`` is known, name/extra existence is a length compare:
-    a short ``peek_more`` can only mean the candidate view was clamped by
-    ``scan_limit``, which is not evidence against ZIP. When ``remaining`` is
-    unknown, a short peek is still ``NOT_THIS_FORMAT``.
+    When ``remaining`` is known, name/extra existence is a length compare,
+    so the check does not read up to 128 KiB of name and extra. When
+    ``remaining`` is unknown, the check peeks them, and a short peek (the
+    source ended, or the budget clamped the view) is ``NOT_THIS_FORMAT``.
     """
     header = peek_more(_LOCAL_HEADER_SIZE)
     if len(header) < _LOCAL_HEADER_SIZE or header[:4] != _LOCAL_HEADER_MAGIC:

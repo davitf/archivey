@@ -14,9 +14,10 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 - :mod:`archivey.detection_cost` — detection budgets and receipts; public, not re-exported
 - :mod:`archivey.terminal` — terminal-safe display helpers; public, not re-exported
 
-Names in ``__all__`` are the documented API. A few advanced types are also imported
-here (so ``from archivey import …`` keeps working) but omitted from ``__all__`` so
-they do not crowd the generated API reference — see the ``# noqa: F401`` imports.
+Names in ``__all__`` are the documented API, and the root exposes no other public
+name apart from submodules. Niche names, such as the ``*Context`` diagnostic payloads
+and ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``, are available only from their submodule
+(:mod:`archivey.diagnostics`, :mod:`archivey.config`).
 """
 
 # Declared here so type checkers see a ``str``; the value comes from the module
@@ -25,7 +26,6 @@ __version__: str
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
-    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,  # noqa: F401 — advanced; not in __all__
     AcceleratorMode,
     ArchiveyConfig,
     DecoderLimits,
@@ -54,33 +54,15 @@ from archivey.cost import (
 from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
-    # Context payloads: importable for isinstance/match; omitted from __all__.
-    ArchiveEofContext,  # noqa: F401
     Diagnostic,
     DiagnosticCode,
     DiagnosticContext,
     DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticSummary,
-    DigestContext,  # noqa: F401
-    EmptyArchiveContext,  # noqa: F401
-    EncryptedVerificationContext,  # noqa: F401
     ExtractionReport,
-    FormatConflictContext,  # noqa: F401
-    MemberHeaderRecordContext,  # noqa: F401
     MemberListReport,
-    MemberNameControlsContext,  # noqa: F401
-    MemberTimestampContext,  # noqa: F401
-    NameEncodingContext,  # noqa: F401
-    NameNormalizationContext,  # noqa: F401
     OnDiagnostic,
-    ScanRaceContext,  # noqa: F401
-    SeekIndexContext,  # noqa: F401
-    SelectorUnmatchedContext,  # noqa: F401
-    StreamRewindContext,  # noqa: F401
-    SymlinkTargetContext,  # noqa: F401
-    UnconfirmedFormatContext,  # noqa: F401
-    UnusedArgumentContext,  # noqa: F401
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -222,7 +204,9 @@ __all__ = [
 
 # Eager backend registration so list_supported_formats / format_availability work
 # immediately after `import archivey` (open_archive also imports as a safety net).
-import archivey.internal.backends  # noqa: E402,F401
+# Aliased so the statement does not bind `archivey` on itself: a plain
+# `import archivey.internal.backends` puts `archivey.archivey` on the package root.
+import archivey.internal.backends as _backends  # noqa: E402,F401
 
 
 def _pin_public_module() -> None:

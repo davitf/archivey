@@ -39,6 +39,7 @@ from archivey.diagnostics import (
     MemberListReport,
     MemberTimestampContext,
     NameEncodingContext,
+    SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
     raw_name_to_base64,
@@ -53,10 +54,13 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
+    _UsageTypeError,
+    _UsageValueError,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
     check_callable,
+    check_dest,
     check_extraction_limits,
     check_path_not_empty,
     describe_value,
@@ -123,6 +127,7 @@ from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
+    EXTRA_SPECIAL_FILE_TYPE,
     AbortOn,
     AbortOnStr,
     ArchiveFormat,
@@ -297,6 +302,13 @@ class ReadBackend(ABC):
     # ``self`` as the first argument. The other detection tables (MAGIC, SFX_MAGIC)
     # are inert data and do not have this problem.
     SFX_HIT_VALIDATOR: ClassVar[HitValidator | None] = None
+    # Whether this backend's parser finds a payload behind a stub with its own capped
+    # forward scan (``sfx.scan_for_magic``), as the RAR and 7z parsers do. The
+    # detector applies the same rejection cap to these formats only, so detection
+    # gives up exactly where forced ``format=`` does. A format whose reader locates
+    # its directory another way (ZIP reads the end of central directory from the
+    # tail) has no scan to agree with and is never capped.
+    SFX_PARSER_SCANS: ClassVar[bool] = False
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
@@ -406,7 +418,7 @@ class BaseArchiveReader(ArchiveReader):
     Access-mode enforcement (independent of the flag above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
     ``ArchiveyUsageError`` — uniformly, not per-backend. Only a single pass of
-    ``__iter__``/``stream_members``/``extract_all`` is allowed; ``scan_members()`` may
+    ``__iter__``/``stream_members``/``extract_all`` is allowed; ``members_report()`` may
     finish or return that pass. ``members_report_if_available()`` is a scan-free,
     index-only peek. ``member in reader`` is identity-based and scan-free, so it works in
     either mode; there is no ``__len__``/``__getitem__`` (name lookup is ``get()``).
@@ -418,7 +430,7 @@ class BaseArchiveReader(ArchiveReader):
       it** (correctness, not just efficiency). Streaming backends that override
       ``_iter_with_data()`` **MUST** route their forward metadata pass through the shared
       instance-held progressive pass (``_begin_forward_pass``) so
-      ``scan_members()`` can finish an interrupted pass and the resolved cache is
+      ``members_report()`` can finish an interrupted pass and the resolved cache is
       finalized on completion. A backend whose own pass walks a cached list (7z, solid
       RAR) iterates ``_listed_members()``, which does that in streaming and drains the
       shared walk in random access, so its members are the reader's own objects.
@@ -500,9 +512,15 @@ class BaseArchiveReader(ArchiveReader):
         # (see ``_pull_replayable``): a walk started over after a failure replays those
         # positions onto the same objects, with their diagnostics already emitted and
         # attached. A streaming walk keeps neither.
-        # ``_walk_presented`` counts the positions whose presentation checks have run.
+        # ``_walk_presented`` counts the positions whose presentation checks have run,
+        # and ``_walk_position`` the members the walk has produced.
+        # ``_listing_discarded`` is set when an unguarded pass (``stream_members()``)
+        # crosses ``ListingLimits``: from then on the walk keeps nothing, so memory
+        # stays bounded by the caps (see ``_discard_listing``).
         self._listed: list[ArchiveMember] = []
         self._listed_by_name: dict[str, list[ArchiveMember]] = {}
+        self._listing_discarded: bool = False
+        self._walk_position: int = 0
         self._walk: Iterator[ArchiveMember] | None = None
         self._walk_done: bool = False
         self._walk_error: CorruptionError | None = None
@@ -1246,7 +1264,8 @@ class BaseArchiveReader(ArchiveReader):
         Eager materialization uses a child scope + internal-open exemption for
         link-data reads; a streaming pass's finalization does not open a child scope.
         ``is_current`` is not stamped here: the walk stamps it once, when it ends
-        (``_end_walk``), and link resolution never reads it.
+        (``_end_walk``) or when a pass discards it (``_discard_listing``), and link
+        resolution never reads it.
 
         Targets stored as member data are read here only under
         ``ArchiveyConfig.read_link_targets``. With it off this is listing, or a pass
@@ -1363,7 +1382,8 @@ class BaseArchiveReader(ArchiveReader):
         """Pull the next member from the walk, or ``None`` once the walk has ended.
 
         Registers the member (id stamp, presentation checks, listing accounting under
-        ``enforce``), indexes its name and appends it to ``_listed``.
+        ``enforce``), indexes its name and appends it to ``_listed``, unless the listing
+        has been discarded (``_discard_listing``).
 
         The walk ends when the backend's generator is exhausted or raises terminal
         archive damage (``CorruptionError`` / ``TruncatedError``); the damage is kept in
@@ -1393,11 +1413,12 @@ class BaseArchiveReader(ArchiveReader):
             if self._walk is None:
                 self._account_archive_comment(enforce=enforce)
                 self._walk = self._iter_members()
-            position = len(self._listed)
+            position = self._walk_position
             try:
-                if self._streaming:
-                    # A streaming walk is never started over (``_abandon_walk`` poisons
-                    # it), so it has nothing to replay and keeps no log.
+                if self._streaming or self._listing_discarded:
+                    # A streaming walk, or one whose listing was discarded, is never
+                    # started over (``_abandon_walk`` poisons it), so it has nothing to
+                    # replay and keeps no log.
                     member = next(self._walk)
                 else:
                     member = self._pull_replayable(position)
@@ -1408,8 +1429,10 @@ class BaseArchiveReader(ArchiveReader):
                 self._end_walk(exc)
                 return None
             self._register_member(position, member, enforce_listing_limits=enforce)
-            self._index_member_name(member)
-            self._listed.append(member)
+            self._walk_position = position + 1
+            if not self._listing_discarded:
+                self._index_member_name(member)
+                self._listed.append(member)
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
@@ -1447,8 +1470,9 @@ class BaseArchiveReader(ArchiveReader):
     def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
 
-        This is the only place ``is_current`` is stamped for duplicate names, whichever
-        consumer ended the walk. On terminal damage it covers the recovered prefix the
+        This is where ``is_current`` is stamped for duplicate names, whichever consumer
+        ended the walk; the only other place is ``_discard_listing``, over the prefix it
+        drops. On terminal damage it covers the recovered prefix the
         incomplete report holds: ``is_current`` defaults to ``True``, so an unstamped
         prefix would read every shadowed duplicate as current.
         """
@@ -1467,9 +1491,10 @@ class BaseArchiveReader(ArchiveReader):
         self._walk = None
         if close is not None:
             close()
-        if self._streaming:
+        if self._streaming or self._listing_discarded:
             # The pass has already yielded the prefix, so it cannot be walked again
-            # without handing the caller a second object for the same member.
+            # without handing the caller a second object for the same member. A
+            # discarded listing has no prefix left to replay either.
             self._walk_failure = exc
             return
         # Random access hands out no member before the walk ends, so nobody holds the
@@ -1477,7 +1502,57 @@ class BaseArchiveReader(ArchiveReader):
         # ``_pull_member`` replays the positions the failed walk reached.
         self._listed = []
         self._listed_by_name = {}
+        self._walk_position = 0
         self._listing_tracker.reset()
+
+    def _keep_listing_within_limits(self) -> None:
+        """After an unguarded pull, discard the listing once it is over ``ListingLimits``.
+
+        Only a pass that does not enforce the limits calls this (``stream_members()``,
+        ``for member in reader``): it keeps yielding past the caps, so what it keeps
+        must stop growing there. An enforcing pull raises at the caps instead.
+        """
+        if self._listing_discarded:
+            return
+        try:
+            self._listing_tracker.assert_within_limits()
+        except ResourceLimitError:
+            self._discard_listing()
+
+    def _discard_listing(self) -> None:
+        """Stop keeping the walk's members: the listing is over ``ListingLimits``.
+
+        Keeping it would make memory grow with a member count the archive chooses,
+        and no listing method could serve it anyway, since each one refuses a listing
+        over the limits (``_refuse_discarded_listing``). The pass that crossed them
+        keeps yielding, but the walk keeps no member, name index or replay log from
+        here on. So links in members the pass yields later resolve against no earlier
+        member, and the pass publishes nothing when it ends (``_finalize_pass_links``).
+        Last-entry-wins is stamped over the kept prefix first, as ``_end_walk`` would
+        stamp it, so a duplicate name in the prefix is superseded by a later copy in
+        the prefix; a copy the pass yields after the discard cannot supersede it.
+
+        A backend that keeps its own record of the walk (TAR's ``tarfile``) extends
+        this to drop it too.
+        """
+        _apply_last_entry_wins_is_current(self._listed)
+        self._listing_discarded = True
+        self._listed = []
+        self._listed_by_name = {}
+        self._walk_built = []
+        self._walk_emits = {}
+
+    def _refuse_discarded_listing(self) -> None:
+        """Raise the listing-limit error for a listing a pass discarded, if it did.
+
+        The totals that crossed the limits never go back down: ``_abandon_walk`` does
+        not reset a discarded walk. So this is the ``ResourceLimitError`` that
+        ``members()`` raises on the same archive.
+        """
+        if not self._listing_discarded:
+            return
+        self._listing_tracker.assert_within_limits()
+        raise AssertionError("a discarded listing is within ListingLimits")
 
     def _drain_walk(self, *, enforce: bool) -> None:
         """Pull to the end of the walk, each pull under ``enforce``.
@@ -1576,8 +1651,10 @@ class BaseArchiveReader(ArchiveReader):
         """The published listing, or ``None``; under ``enforce``, re-check its totals.
 
         A report a non-enforcing pass published (``stream_members``) may be over the
-        limits, so a caller that enforces them refuses it on the way out.
+        limits, so a caller that enforces them refuses it on the way out. A listing such
+        a pass discarded is refused whatever ``enforce`` says: there is none to return.
         """
+        self._refuse_discarded_listing()
         materialized = self._materialized
         if materialized is not None and enforce:
             self._listing_tracker.assert_within_limits()
@@ -1598,17 +1675,24 @@ class BaseArchiveReader(ArchiveReader):
             self._progressive_enforce_listing_limits = previous
 
     def _extraction_listing(self) -> AbstractContextManager[None]:
-        """Apply ``ListingLimits`` for an extraction over this random-access reader.
+        """Apply ``ListingLimits`` for an extraction over this reader.
 
         Called by the extraction coordinator before its pass, which it runs inside the
-        returned context. The default lists every member first, with the limits
-        enforced, so nothing is written from an archive over them. A backend whose
-        listing is itself a scan of the data may instead enforce them as members
-        arrive during the pass (TAR), and not decode the archive twice.
+        returned context. On a random-access reader the default lists every member
+        first, with the limits enforced, so nothing is written from an archive over
+        them. A backend whose listing is itself a scan of the data may instead enforce
+        them as members arrive during the pass (TAR), and not decode the archive twice.
+        A streaming reader always does that: its one pass is the listing.
+
+        The pass resolves hard links against the members it has listed, so it keeps
+        them all; enforcing the limits is what bounds that, where an unguarded
+        ``stream_members()`` pass discards its listing instead (``_discard_listing``).
 
         A listing that ends in damage does not raise here: the pass writes the
         members listed before it and then raises the damage, as a TAR pass does.
         """
+        if self._streaming:
+            return self._enforcing_listing_limits()
         self._materialize_members(enforce_listing_limits=True)
         return nullcontext()
 
@@ -1841,6 +1925,42 @@ class BaseArchiveReader(ArchiveReader):
             member=member,
             attach_to_member=True,
             logger=log,
+        )
+
+    def _emit_special_file_has_data(
+        self, member: ArchiveMember, member_id: int | None
+    ) -> None:
+        """Report ``MEMBER_SPECIAL_FILE_HAS_DATA`` for a ``FILE`` whose stored type is a
+        device, FIFO or socket (``extra["special_file_type"]`` is set), attached to
+        ``member``. ``member_id`` is the walk position, as for
+        :meth:`_emit_timestamp_invalid`, or ``None`` when neither the caller nor the
+        member has one (a re-type in :meth:`_apply_reparse_data`)."""
+        special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
+        assert isinstance(special, str)
+        size = member.size
+        stored = "data" if size is None else f"{size} bytes"
+        # "unknown" stands for file-type bits no Unix type uses; the four named
+        # kinds read as nouns.
+        kind = (
+            "an unrecognized file type"
+            if special == "unknown"
+            else f"a {special.replace('_', ' ')}"
+        )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+            message=(
+                f"Member {quoted(member.name)} is listed as a file: the archive marks "
+                f"it as {kind} and stores {stored} for it."
+            ),
+            context=SpecialFileDataContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                special_file_type=special,
+                size=size,
+            ),
+            member=member,
+            attach_to_member=True,
         )
 
     def _emit_name_encoding_inferred(
@@ -2138,6 +2258,18 @@ class BaseArchiveReader(ArchiveReader):
         )
         if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
             member.type = fallback_type
+            if (
+                fallback_type is MemberType.FILE
+                and EXTRA_SPECIAL_FILE_TYPE in member.extra
+            ):
+                # The entry's mode named a device, FIFO or socket and it was typed a
+                # link provisionally, so the backend's own emit (gated on FILE while
+                # the member is typed) did not run. It is a data-bearing FILE from
+                # here, and the data-model spec asks for the advisory with the key.
+                self._emit_special_file_has_data(
+                    member,
+                    member_id if member_id is not None else member._member_id,
+                )
             reason = "reparse_data_unrecognized"
             message = (
                 f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
@@ -2300,8 +2432,11 @@ class BaseArchiveReader(ArchiveReader):
             member.link_target_member = terminal
 
     def _finalize_pass_links(self, *, error: ArchiveyError | None = None) -> None:
-        """Resolve all links after a forward pass reaches EOF or terminal damage."""
-        if self._materialized is not None:
+        """Resolve all links after a forward pass reaches EOF or terminal damage.
+
+        A pass whose listing was discarded has nothing to resolve or publish.
+        """
+        if self._materialized is not None or self._listing_discarded:
             return
         # Also ends a random-access reader's stream_members() pass (TAR's one-pass
         # walk, and the 7z and solid RAR passes over ``_listed_members()``), which
@@ -2341,8 +2476,8 @@ class BaseArchiveReader(ArchiveReader):
         if self._streaming and self._forward_pass_started:
             raise ArchiveyUsageError(
                 f"{op} is not available after a streaming reader's forward pass has "
-                f"started. Call scan_members() for the resolved member list, or "
-                f"members_report_if_available() for an index-only peek.",
+                f"started. Call members_report() to finish the pass and get the member "
+                f"list, or members_report_if_available() for an index-only peek.",
             )
 
     def _enter_forward_pass(self, op: str) -> None:
@@ -2358,15 +2493,30 @@ class BaseArchiveReader(ArchiveReader):
         A ``streaming=True`` reader is forward-only: only a single pass of
         ``__iter__``/``stream_members`` (or one ``extract_all``) is allowed. This is
         uniform and format-independent — it does **not** depend on whether a backend
-        happens to have an index loaded (use :meth:`scan_members` or
-        :meth:`members_report_if_available` for member listing instead).
+        happens to have an index loaded. The message names the route that fits
+        ``op``: for member data (``get()``, ``open()``/``read()``), iterate
+        :meth:`stream_members` and read each stream as the pass reaches it; for the
+        listing (``members()``), use :meth:`members_report` (which applies
+        ``ListingLimits``), iterate :meth:`stream_members` (which ``ListingLimits`` does
+        not cap), or peek with :meth:`members_report_if_available`.
         """
         self._state.require_open(op)
         if self._streaming:
+            if op == "members()":
+                advice = (
+                    "Call members_report() for the member list (it uses up the "
+                    "forward pass and applies ListingLimits; raise report.error for "
+                    "complete-or-raise), iterate stream_members() and ignore the "
+                    "streams (not capped by ListingLimits), or call "
+                    "members_report_if_available() for an index-only peek."
+                )
+            else:
+                advice = (
+                    "Iterate stream_members() and read each member's stream as the "
+                    "pass reaches it."
+                )
             raise ArchiveyUsageError(
-                f"{op} is not available on a streaming (forward-only) reader. "
-                f"Iterate with stream_members(), call scan_members() for the resolved "
-                f"member list, or members_report_if_available() for an index-only peek.",
+                f"{op} is not available on a streaming (forward-only) reader. {advice}",
             )
 
     @property
@@ -2541,25 +2691,21 @@ class BaseArchiveReader(ArchiveReader):
             self._state.release_pass(token)
 
     def members_report(self) -> MemberListReport:
-        return self._members_report("members_report")
-
-    def _members_report(self, op: str) -> MemberListReport:
-        """``members_report()``, with usage errors naming ``op``, the method called."""
-        self._state.require_open(f"{op}()")
+        self._state.require_open("members_report()")
         if not self._streaming:
             if self._state.concurrent:
-                token = self._state.acquire_worker(op)
+                token = self._state.acquire_worker("members_report")
                 try:
                     return self._materialize_members().report
                 finally:
                     self._state.release_worker(token)
-            token = self._state.acquire_pass(op)
+            token = self._state.acquire_pass("members_report")
             try:
                 return self._materialize_members().report
             finally:
                 self._state.release_pass(token)
 
-        token = self._state.acquire_pass(op)
+        token = self._state.acquire_pass("members_report")
         try:
             published = self._published_within_limits(enforce=True)
             if published is not None:
@@ -2581,12 +2727,6 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_pass(token)
 
-    def scan_members(self) -> list[ArchiveMember]:
-        report = self._members_report("scan_members")
-        if report.error is not None:
-            raise report.error
-        return list(report.members)
-
     def members_report_if_available(self) -> MemberListReport | None:
         """Return the member-list report if it is available **without scanning**, else
         ``None``. Safe to call on any reader (including a streaming one).
@@ -2595,15 +2735,21 @@ class BaseArchiveReader(ArchiveReader):
         backend's upfront index when ``_MEMBER_LIST_UPFRONT`` is set. It never triggers
         a forward scan, never reads member data, and never consumes the forward pass.
         Link targets stored in member data (e.g. ZIP symlinks) may be unset; use
-        :meth:`members` or :meth:`scan_members` for a fully-resolved list. The members
+        :meth:`members` or :meth:`members_report` for a fully-resolved list. The members
         are the reader's own objects, the same ones every other listing method and pass
         returns, so a later ``members()`` fills those link fields in place.
 
         On an upfront index this drains the reader's one member walk, which reads no
         member data. A walk that ends in terminal archive damage is returned as the
         incomplete report (prefix plus ``error``), not raised.
+
+        After a ``stream_members()`` pass that went past ``ListingLimits`` and so
+        discarded its listing (``_discard_listing``), nothing is cached: this returns
+        ``None``, and the listing methods raise the limit error.
         """
         self._state.require_open("members_report_if_available()")
+        if self._listing_discarded:
+            return None
         published = self._published_within_limits(enforce=True)
         if published is not None:
             return published.report
@@ -2644,7 +2790,7 @@ class BaseArchiveReader(ArchiveReader):
         # refuses a ``bytes`` name the same way; it takes a member object, which get()
         # does not, because get() looks up by name.
         if not isinstance(name, str):
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 f"reader.get() takes a member name (str), but got "
                 f"{describe_value(name)}."
             )
@@ -2687,7 +2833,7 @@ class BaseArchiveReader(ArchiveReader):
                 # answer. `in` raises TypeError here (a spec'd escape for the operator
                 # protocol); this is an ordinary argument, so it takes the usage error.
                 if not isinstance(member, ArchiveMember):
-                    raise ArchiveyUsageError(
+                    raise _UsageTypeError(
                         f"reader.open() takes a member name (str) or an ArchiveMember "
                         f"yielded by this reader, but got {describe_value(member)}."
                     )
@@ -2697,7 +2843,7 @@ class BaseArchiveReader(ArchiveReader):
                 # data (e.g. the directory backend would read whatever sits at the same
                 # relative path under this reader's root).
                 if member._archive_id != self._archive_id:
-                    raise ArchiveyUsageError(
+                    raise _UsageValueError(
                         f"Member {quoted(member.name)} does not belong to this reader; open a "
                         f"member yielded by this reader, or look it up by name with "
                         f"reader.get(name)."
@@ -2792,7 +2938,7 @@ class BaseArchiveReader(ArchiveReader):
                 )
             current = target
         if current.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
-            raise ArchiveyUsageError(
+            raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is {current.type.value!r} "
                 f"(not a file)",
                 refused_member_type=current.type,
@@ -2818,7 +2964,7 @@ class BaseArchiveReader(ArchiveReader):
         each handle forward-only); ``tell()`` works.
         """
         if not isinstance(file_copy_streams, bool):
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 "stream_members(file_copy_streams=…) takes True or False, but got "
                 f"{describe_value(file_copy_streams)}."
             )
@@ -2962,8 +3108,9 @@ class BaseArchiveReader(ArchiveReader):
         # passed on, because ``members`` may be a one-shot iterable that a second read
         # would find empty.
         selector = normalize_member_selector(members)
-        check_path_not_empty(dest, call="extract_all()")
-        self._check_extraction_dest(Path(dest))
+        dest_path = check_dest(dest, call="extract_all(dest=…)")
+        check_path_not_empty(dest_path, call="extract_all()")
+        self._check_extraction_dest(Path(dest_path))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.
@@ -2997,7 +3144,7 @@ class BaseArchiveReader(ArchiveReader):
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
             with self._internal_member_opens():
-                results = coordinator.run(self, dest)
+                results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         return ExtractionReport(
@@ -3188,7 +3335,7 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
 
     A generator would be closed (and its post-loop tail skipped) when a consumer
     breaks out of ``for member in reader``; this iterator survives early exit so
-    :meth:`BaseArchiveReader.scan_members` can drain the remainder.
+    :meth:`BaseArchiveReader.members_report` can drain the remainder.
 
     The cursor reads ``_listed`` and pulls from the walk only when it reaches the end
     of what has been walked, so a peek that drained the walk ahead of it hands the pass
@@ -3198,6 +3345,8 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
     """
 
     def __init__(self, reader: BaseArchiveReader) -> None:
+        # A pass starts at the first member, which a discarded listing no longer has.
+        reader._refuse_discarded_listing()
         self._reader = reader
         self._pos = 0
         self._finished = False
@@ -3210,7 +3359,7 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         if self._error is not None:
             # The pass previously failed. A plain retry could step past the end of a
             # PARTIAL listing and finalize it as the complete, resolved member cache —
-            # scan_members() would then silently return a truncated listing after the
+            # members_report() would then silently return a truncated listing after the
             # caller caught the original error. Fail loud and keep the cache unpublished.
             err = ReadError(
                 "The archive scan previously failed "
@@ -3221,13 +3370,15 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         if self._finished:
             raise StopIteration
         reader = self._reader
+        # Whether this step pulled a member without enforcing the limits.
+        unguarded = False
         try:
-            if self._pos < len(reader._listed):
+            if not reader._listing_discarded and self._pos < len(reader._listed):
                 member: ArchiveMember | None = reader._listed[self._pos]
             else:
-                member = reader._pull_member(
-                    enforce=reader._progressive_enforce_listing_limits
-                )
+                enforce = reader._progressive_enforce_listing_limits
+                member = reader._pull_member(enforce=enforce)
+                unguarded = not enforce
         except BaseException as exc:
             # A failed pull poisons the walk as well (``_abandon_walk``); this keeps the
             # pass's own answer the same whichever of the two a retry reaches first.
@@ -3253,6 +3404,10 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         self._pos += 1
         try:
             reader._link_progressive_member(member)
+            if unguarded:
+                # After the link: the member that crosses a limit still resolves
+                # against the listing kept so far, which the caps bound.
+                reader._keep_listing_within_limits()
         except BaseException as exc:
             self._error = exc
             raise

@@ -137,7 +137,10 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   never leaves a half-written destination file. The destination root itself is yours,
   so if it is a symlink to a directory, archivey follows it and extracts into the
   target (as `tar -C` and `unzip -d` do).
-- **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
+- **Special files** (devices, FIFOs, sockets) are never created: archivey calls no
+  `mknod`. An entry that stores no data under such a mode is `MemberType.OTHER` and is
+  skipped; an entry that stores data under such a mode is a `FILE` and its bytes are
+  written as a regular file (`MEMBER_SPECIAL_FILE_HAS_DATA` reports it). An NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
   which in practice means RAR and a directory tree read from a Windows filesystem. ZIP
@@ -195,7 +198,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.
 - **Permission hygiene:** setuid/setgid/sticky stripped except under `TRUSTED`;
-  ownership applied only under `TRUSTED` as root.
+  ownership applied only under `TRUSTED` as root. `STANDARD` keeps group and other
+  write bits, unlike `tarfile`'s `data` and `tar` filters, which both mask the stored mode
+  with `0o755`.
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
@@ -300,8 +305,8 @@ extraction finish.
 | Policy | Intent |
 | --- | --- |
 | `STRICT` | Untrusted archives (default) |
-| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
-| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
+| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute and group or other write included (the umask does not apply, so a stored `0o666` file stays `0o666`), but strips setuid, setgid and sticky and never applies ownership. A member with no stored mode, such as every member of a ZIP written on Windows, gets `0o644` (file) or `0o755` (directory). Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
+| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal. A member with no stored mode keeps the creation default, so the umask decides, not `0o644` / `0o755` |
 
 Selective extract:
 
@@ -385,7 +390,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z, RAR and ISO): `open_archive` itself raises. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`, and to `extract_all()` in both access modes. `stream_members()` and `for member in reader` are intentionally unguarded, but their memory stays bounded by the limits: past them the reader stops keeping the listing, and listing calls afterwards raise `ResourceLimitError`. The exceptions are formats that already apply `max_members` at parse (7z, RAR and ISO): `open_archive` itself raises. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -396,12 +401,13 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (default 1000, checked once 5 MiB has been written), and entry count (default
   262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count (default 262,144) and retained metadata
-  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
-  extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
-  does not list first: it checks the limits as each member arrives in its one pass, so
-  members before the one that crosses a cap are already written when it raises.
-  `stream_members()` / `streaming=True`
-  stay unguarded by design, except on 7z, RAR and ISO where `max_members` is checked
+  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
+  extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction,
+  and any extraction from a streaming reader, does not list first: it checks the limits
+  as each member arrives in its one pass, so members before the one that crosses a cap
+  are already written when it raises. `stream_members()` and `for member in reader`
+  stay unguarded by design (past a cap the reader stops keeping the listing, so memory
+  stays bounded), except on 7z, RAR and ISO where `max_members` is checked
   at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z, RAR or
   ISO. For 7z and RAR that parse bound is a member count, not a byte budget:
   `max_metadata_bytes` still fires when the list is materialized. RAR also checks it at

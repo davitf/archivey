@@ -217,16 +217,18 @@ ExtractionLimits.UNLIMITED = ExtractionLimits(
 
 @dataclass(frozen=True)
 class ListingLimits:
-    """Caps for materializing a member list (``members`` / ``scan_members`` / extract prep).
+    """Caps for materializing a member list (``members`` / ``members_report`` / extract prep).
 
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
-    ``stream_members`` / ``streaming=True`` / forward-only iteration do not
-    enforce these caps. 7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its
-    comments against ``max_metadata_bytes`` (the declared sizes of compressed RAR
-    1.5/2.x comments before decoding them), and ISO the directory records, path
-    tables and UDF descriptors ``pycdlib`` parses, so ``open_archive`` raises and none
-    is an escape hatch.
+    ``stream_members`` and ``for member in reader`` do not enforce these caps: they
+    yield every member, but stop keeping the listing once a cap is crossed, so their
+    memory stays bounded by it. ``extract_all`` enforces them in both access modes.
+    7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its comments against
+    ``max_metadata_bytes`` (the declared sizes of compressed RAR 1.5/2.x comments
+    before decoding them), and ISO the directory records, path tables and UDF
+    descriptors ``pycdlib`` parses, so ``open_archive`` raises and none is an escape
+    hatch.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``

@@ -214,11 +214,12 @@ class PrefixWorkspace:
         shared buffer — never a second fetch of bytes already retrieved.
 
         ``limit`` is an exclusive archive-origin ceiling (the SFX scan passes
-        ``scan_limit``). A validator that asks for more than remains gets a short
-        read and must not grow the prefix past the cost gate. That short read is
-        indistinguishable from source EOF inside the validator; the workspace
-        notes the clamp so the scan can record ``BUDGET_EXHAUSTED``. ``None``
-        leaves the view unbounded.
+        ``scan_limit`` plus ``validator_allowance(budget)``, which every
+        validator's peek fits under the presets).
+        A validator that asks for more than remains gets a short read and must not
+        grow the prefix past the cost gate. That short read is indistinguishable
+        from source EOF inside the validator; the workspace notes the clamp so the
+        scan can record ``BUDGET_EXHAUSTED``. ``None`` leaves the view unbounded.
         """
         if candidate_origin < 0:
             raise ValueError("candidate_origin must be non-negative")

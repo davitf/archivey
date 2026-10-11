@@ -35,6 +35,7 @@ from typing import BinaryIO
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
 )
@@ -68,6 +69,7 @@ from archivey.internal.backends.sevenzip_parser import (
     folder_is_encrypted,
     folder_unpack_size,
     materialize_archive,
+    packed_streams_end,
     parse_decoded_header,
     parse_header_block,
     read_signature_and_next_header,
@@ -85,6 +87,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -121,10 +124,12 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
-from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
+from archivey.internal.trailing_scan import first_nonzero_offset
+from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, special_file_type
 from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -136,6 +141,7 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
+    SpecialFileType,
     crc32_digest,
 )
 
@@ -155,6 +161,17 @@ def _written_on_unix(attrs: int | None) -> bool:
     Unix ``st_mode`` does, so the file type is the test.
     """
     return attrs is not None and bool((attrs >> 16) & UNIX_FILE_TYPE_MASK)
+
+
+def _is_unix_directory(record: SevenZipFileRecord) -> bool:
+    """True when the high word's Unix mode says ``S_IFDIR`` and the record has no stream.
+
+    A record with a stream is never a directory, whatever its mode says, as in 7-Zip,
+    which extracts an entry that has data as a regular file. Typing it a directory
+    would skip its data on every read without an error.
+    """
+    attrs = record.attributes
+    return record.emptystream and attrs is not None and stat.S_ISDIR(attrs >> 16)
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -273,8 +290,10 @@ def load_sevenzip_archive(
 
     block = parse_header_block(signature.header_data, max_members=max_members)
     header_encrypted = False
+    encoded_streams_end = 0
     if isinstance(block, EncodedHeader):
         header_encrypted = encoded_header_needs_password(block)
+        encoded_streams_end = packed_streams_end(block.streams)
         block = _decode_encoded_header_block(
             fp,
             block,
@@ -285,7 +304,12 @@ def load_sevenzip_archive(
             max_members=max_members,
         )
     assert isinstance(block, PlainHeader)
-    return materialize_archive(signature, block, is_header_encrypted=header_encrypted)
+    return materialize_archive(
+        signature,
+        block,
+        is_header_encrypted=header_encrypted,
+        encoded_streams_end=encoded_streams_end,
+    )
 
 
 def _decode_encoded_header_block(
@@ -518,6 +542,7 @@ class SevenZipReader(BaseArchiveReader):
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+        self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
         """A source view whose ``start`` is measured from the signature header.
@@ -536,6 +561,44 @@ class SevenZipReader(BaseArchiveReader):
             stream_config=self._stream_config,
             collector=self._diagnostics_collector,
             max_members=self._config.listing_limits.max_members,
+        )
+
+    def _report_trailing_data(self) -> None:
+        """Report a non-zero byte after the end of a 7z archive.
+
+        The end is the later of the next header's end and the last packed stream's.
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``
+        (DR-3). Zero padding is silent under DR-3; 7-Zip warns about any tail, zeros
+        included. Runs after the header has parsed, so a wrong header password or a
+        damaged header is reported as that, not as this. A self-extractor's tail (the
+        certificate table of a code-signed one) is reported too: it is outside the
+        archive whatever wrote it.
+        """
+        fp = self._view(self._archive.end_offset)
+        try:
+            found = first_nonzero_offset(fp)
+        finally:
+            fp.close()
+        if found is None:
+            return
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            message=(
+                "7z archive continues past its end: a non-zero byte appears "
+                f"{found} bytes after the end of its next header and packed streams. "
+                "The listing does not account for it (this file may hold something "
+                "appended to the archive)."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="7z",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found,
+                observed_kind="nonzero",
+            ),
+            logger=backends_logger,
         )
 
     def _init_folder_caches(self, archive: SevenZipArchive) -> None:
@@ -911,6 +974,11 @@ class SevenZipReader(BaseArchiveReader):
             if _is_windows_reparse_point(attrs)
             else MemberExtra()
         )
+        special = self._special_file_type(record)
+        if special is not None:
+            # Whatever the type decided above, the key records what the mode said, so
+            # a reparse point that settles or re-types to FILE keeps it (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         ctime = None
         if created is not None and written_on_unix:
             created, ctime = None, created
@@ -947,6 +1015,12 @@ class SevenZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if special is not None and member.type is MemberType.FILE:
+            # member.type, not member_type: the settle above can re-type a reparse
+            # point with no reparse data to the fallback FILE. A reparse point whose
+            # data turns out not to be a link buffer is re-typed later, when the
+            # target is resolved, and `_apply_reparse_data` emits for it then.
+            self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             self._emit_timestamp_invalid(member, index, issue)
         # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
@@ -988,19 +1062,14 @@ class SevenZipReader(BaseArchiveReader):
             if unix_mode:
                 if stat.S_ISLNK(unix_mode):
                     return MemberType.SYMLINK
-                if stat.S_ISDIR(unix_mode):
+                if _is_unix_directory(record):
                     return MemberType.DIRECTORY
-                if attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION and is_special_file_mode(
-                    unix_mode
-                ):
-                    # A device, FIFO or socket (7-Zip and p7zip store them with no
-                    # data). Unlike the symlink and directory tests above, this one
-                    # also needs 0x8000. A Windows attribute above 0xFFFF can land on
-                    # a low file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as
-                    # S_IFCHR, while no defined attribute reaches S_IFDIR (0x4000) or
-                    # S_IFLNK (0xA000). Misreading a Windows file as a device would
-                    # make it unextractable, so a high word without the flag stays
-                    # FILE here.
+                if record.emptystream and self._special_file_type(record) is not None:
+                    # A device, FIFO or socket with no stream (7-Zip and p7zip store
+                    # them that way). With a stream, the special mode does not decide
+                    # the type, as 7-Zip reads it: the bytes are the content (DR-25),
+                    # so the record is a FILE unless the reparse bit below applies.
+                    # ``extra["special_file_type"]`` keeps the stored type either way.
                     return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
@@ -1009,6 +1078,26 @@ class SevenZipReader(BaseArchiveReader):
                 # when the data turns out not to be a link buffer.
                 return MemberType.SYMLINK
         return self._member_type_ignoring_reparse(record)
+
+    @staticmethod
+    def _special_file_type(record: SevenZipFileRecord) -> SpecialFileType | None:
+        """The stored special type (device, FIFO, socket) of ``record``, from the Unix
+        mode in its attribute high word, or ``None``.
+
+        Unlike the symlink and directory tests, this needs the ``0x8000`` Unix-extension
+        bit as well as the mode. A Windows attribute above 0xFFFF can land on a low
+        file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as S_IFCHR, while no
+        defined attribute reaches S_IFDIR (0x4000) or S_IFLNK (0xA000). Misreading a
+        Windows file as a device would make it unextractable, so a high word without the
+        flag is not special.
+        """
+        attrs = record.attributes
+        if attrs is None or not attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION:
+            return None
+        unix_mode = attrs >> 16
+        if not unix_mode:
+            return None
+        return special_file_type(unix_mode)
 
     def _member_type_ignoring_reparse(self, record: SevenZipFileRecord) -> MemberType:
         """What the entry is by everything except the reparse-point attribute bit."""
@@ -1019,13 +1108,11 @@ class SevenZipReader(BaseArchiveReader):
         its data is not a link buffer (the bit is set for deduplication stubs and cloud
         placeholders too, whose content stays readable); ``None`` for any other entry.
 
-        A Unix mode of ``S_IFDIR`` in the high word types the entry a directory ahead of
-        the bit (`_member_type`), so it has no link target to settle or read.
+        A Unix mode of ``S_IFDIR`` in the high word types a stream-less entry a directory
+        ahead of the bit (`_member_type`), so it has no link target to settle or read.
         """
         attrs = record.attributes
-        if not _is_windows_reparse_point(attrs) or (
-            attrs is not None and stat.S_ISDIR(attrs >> 16)
-        ):
+        if not _is_windows_reparse_point(attrs) or _is_unix_directory(record):
             return None
         return self._member_type_ignoring_reparse(record)
 
@@ -1416,6 +1503,7 @@ class SevenZipReadBackend(ReadBackend):
     )
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SFX_HIT_VALIDATOR = staticmethod(validate_sevenzip_signature_header)
+    SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None

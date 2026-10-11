@@ -26,7 +26,6 @@ from archivey.cli.choices import from_cli_choice
 from archivey.cli.common import (
     open_for_cli,
     reject_empty_path,
-    reject_salvage,
 )
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import MemberSelection
@@ -631,7 +630,8 @@ def maybe_hoist_single_root(
             moves=_Moves.of(moved, wrapper, stopped=True),
         )
     except OSError as exc:
-        print(f"hoist failed: {format_error_detail(exc)}", file=err)
+        # The ``archivey: `` prefix: see main._parse_and_dispatch.
+        print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
         print(f"files left in {escape_path(wrapper)}/", file=err)
         return _HoistResult(
             wrapper,
@@ -1064,7 +1064,6 @@ def run_extract(
     exclude: list[str],
     policy: str,
     overwrite: str,
-    salvage: bool,
     password: str | None,
     track_io: bool,
     hide_progress: bool,
@@ -1076,7 +1075,6 @@ def run_extract(
     err: TextIO | None = None,
 ) -> int:
     del out  # extract reports to stderr; files go to the filesystem
-    reject_salvage(salvage)
     # On the strings, before Path() turns "" into ".". The stdin token "-" is
     # refused by open_for_cli below.
     reject_empty_path(archive, arg="archive")
@@ -1159,8 +1157,14 @@ def run_extract(
                 # DiagnosticRaisedError): report what was already written, then
                 # the stop notice. Exit 1 always on abort (Q8 Option A): exit 3
                 # is reserved for a *completed* run with policy blocks and safe
-                # members on disk (blocks never abort under STOP).
-                print(format_error_detail(exc), file=err)
+                # members on disk (blocks never abort under STOP). The
+                # ``archivey: `` prefix: see main._parse_and_dispatch.
+                # Under CONTINUE this line can repeat the detail of the
+                # ``WARNING: Skipping …`` line printed just above it, which ``test``
+                # suppresses. That is kept on purpose: the warning says a member was
+                # skipped, this line says why the run ended, and ``extract`` has no
+                # failure counter, so nothing is counted twice.
+                print(f"archivey: {format_error_detail(exc)}", file=err)
                 parts: list[str] = []
                 if members_extracted:
                     parts.append(f"{members_extracted} member(s) extracted")
