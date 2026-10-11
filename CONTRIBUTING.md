@@ -299,12 +299,15 @@ maintainer.
   `archivey.internal.measurement`, because the CLI is also a debugging tool for the
   library, and IO measurement is deliberately not public API. Otherwise, the CLI
   needing something internal means the public API has a gap. That includes a private
-  attribute it would read, or an exception message it would match. Close the gap
-  through the ordinary `__all__` decision above, or in a public module that is not
-  re-exported (`archivey.terminal` holds the display helpers any front end needs, and
-  `archivey.paths` the `name (N)` rename spelling), or do without: the library's enum-spelling helpers are
-  internal, so the CLI derives its option choices from the enums and maps a parsed
-  choice back to its member itself (`src/archivey/cli/choices.py`).
+  attribute of a library object it would read, or a library exception's message it
+  would match (argparse's attributes and messages are not the library's). The same
+  test's second allowlist holds the two `ExtractionReport` dry-run fields, for the
+  reason the `cli` spec records. Close the gap through the ordinary `__all__` decision
+  above, or in a public module that is not re-exported (`archivey.terminal` holds the
+  display helpers any front end needs, and `archivey.paths` the `name (N)` rename
+  spelling), or do without: the library's enum-spelling helpers are internal, so the
+  CLI derives its option choices from the enums and maps a parsed choice back to its
+  member itself (`src/archivey/cli/choices.py`).
 - **Report from what the run left behind, not a re-derivation of it.** When code has to
   report what an operation did or would do (a dry run, a preview, a summary line), read
   the answer from what the operation left behind, such as the tree it wrote, rather than
