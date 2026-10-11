@@ -60,10 +60,11 @@ EOCD_SIZE = 22
 ZIP64_LOCATOR_SIZE = 20
 ZIP64_EOCD_SIZE = 56
 CENTRAL_HEADER_SIZE = 46
-# How far before the end of the file the end-record search starts: stdlib's window,
-# ``1 << 16`` plus the record. The comment length is a uint16, so this is one byte more
-# than the format needs; matching stdlib keeps one byte of junk after a maximal comment
-# readable, as it is today.
+# How far before the end of the file the end-record search starts: stdlib's window
+# before Python 3.13, ``1 << 16`` plus the record. The comment length is a uint16, so
+# this is one byte more than the format needs; 3.13 shrank stdlib's window to match.
+# Keeping the wider one reads every archive either window reads, so one byte of junk
+# after a maximal comment stays readable on every Python.
 _SEARCH_BACK = (1 << 16) + 22
 
 _EOCD = struct.Struct("<4s4H2LH")

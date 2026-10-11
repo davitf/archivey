@@ -11,6 +11,7 @@ import io
 import shutil
 import struct
 import subprocess
+import sys
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -427,12 +428,13 @@ def test_trailing_bytes_are_counted(comment: bytes) -> None:
 
 @pytest.mark.parametrize("junk", [1, 2])
 def test_maximal_comment_with_junk_follows_stdlib(junk: int) -> None:
-    """stdlib searches 1 << 16 bytes plus the record back: one byte of junk after a
-    65 535-byte comment still finds the record, two do not."""
+    """The search covers 1 << 16 bytes plus the record, stdlib's window before 3.13:
+    one byte of junk after a 65 535-byte comment still finds the record, two do not.
+    3.13 shrank stdlib's window by one byte, so there stdlib refuses the first case."""
     data = _zip({"a.txt": b"hello"}, comment=b"c" * 0xFFFF) + b"j" * junk
     if junk == 1:
-        assert _assert_matches_zipfile(data)
         assert _parse(data)[0].trailing == 1
+        assert _assert_matches_zipfile(data) == (sys.version_info < (3, 13))
     else:
         assert _stdlib_infos(data) is None
         with pytest.raises(CorruptionError):
