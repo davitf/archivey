@@ -48,12 +48,13 @@ mean decompressing the member again from its start. If you install the `seekable
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
-compression in gzip files and in most ZIP members. In compressed data without the accelerator, a
-forward seek decodes the bytes it passes, so archivey still checks the member's checksum. With it, a
-forward seek can jump to a restart point instead, and reading on from there stops the checksum check
-until you seek back to the start. [Damaged archives](errors-and-diagnostics.md#damaged-archives)
-lists the other seeks that jump, and what is still checked after one. If you'll seek a lot,
-extracting the member to a file first is often faster.
+compression in gzip files and in most ZIP members. A forward seek keeps the checksum check when
+reaching the target means decoding the bytes in between, which is the usual case in compressed data.
+A seek that can jump over those bytes instead, as the accelerator can, gives the check up once you
+read on from there, until you seek back to the start. A seek to or past the member's end keeps it
+either way. [Damaged archives](errors-and-diagnostics.md#damaged-archives) lists the other seeks
+that jump, and what is still checked after one. If you'll seek a lot, extracting the member to a
+file first is often faster.
 
 ## Several members at once
 

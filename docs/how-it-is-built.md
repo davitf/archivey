@@ -28,8 +28,8 @@ rulings:
 - Decoder memory is capped at 2 GiB by default, and you can change the cap through
   `DecoderLimits`.
 - The integrity guarantee covers a member read from start to end with no skipped bytes, so
-  most seeks keep it. A read after a seek that jumps by the format's own index or an
-  accelerator is best effort, because that seek trusts the index.
+  most seeks keep it. A read after a seek that jumps by an index, an accelerator or random
+  access is best effort, because such seeks trust the format's own index.
 
 The maintainer reads code as well, especially to check the architecture and the tricky
 parts. Decisions are recorded in the repository as
