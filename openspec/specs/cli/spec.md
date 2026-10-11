@@ -96,7 +96,12 @@ system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
-written to **stderr**.
+written to **stderr**. The line that reports the fault which ended the run,
+including the uncounted error that ends `test`'s read pass after a member already
+failed, SHALL start with `archivey: `. A counted failure (`test`'s `FAIL …` lines),
+a line about one member (`extract`'s per-member warnings), the notices and counts
+that follow the fault line (stop notices, `N member(s) extracted before the stop`,
+`files left in <dir>/`) and `interrupted` keep their own shape.
 
 `--track-io` SHALL report I/O accounting for the operation using the internal
 measurement hook (decode/seek counters), without patching `builtins.open`. It is
@@ -115,12 +120,18 @@ message naming the terminal archive error, and SHALL exit nonzero (`1`). `-v` /
 the shared verification stage (including CRC32 and Blake2sp where supported).
 Members with no stored digest SHALL count as OK when fully readable without
 error. `test` MUST NOT require emitting computed content hashes. By default
-`test` SHALL be quiet — printing only failures and a one-line summary
-(`N OK, M failed`) to stderr — and SHALL exit non-zero if any member fails;
+`test` SHALL be quiet — printing only failures, the stop notice when the read
+pass ends early, and a one-line summary (`N OK, M failed`) to stderr — and SHALL
+exit non-zero if any member fails;
 `-v` / `--verbose` SHALL add a per-member OK/FAIL line. When a cheap member
 index is available and the stream ends before every selected file member has
 been counted OK or failed (archive-wide error or solid/poisoned abort), the
 summary SHALL append `, K not tested` where `K` is the untested remainder.
+When the stream ends on an error right after a member read failed, that member's
+failure SHALL be counted once: `test` SHALL print
+`test stopped; remaining members were not tested`, SHALL print the stream's error
+(prefixed `archivey: `) only when it differs from the member's, and SHALL NOT count
+it as a second failure.
 When the run emits `DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED` (a member
 or archive-level digest that went unchecked), the summary SHALL append
 `, V not verified` where `V` counts those diagnostics. `test` SHALL exit `1` when
@@ -431,6 +442,7 @@ a failure and MUST NOT assume `1` is the only failure code.
 | `archivey test <archive-with-failing-member>` | Exit `1` |
 | `archivey test <archive>` with a symlink whose target is stored as data (ZIP, 7z, RAR4) and fails its check | That link is reported `FAIL`; exit `1`. A link for which the archive records no target is not a failure |
 | `archivey test <indexed-archive>` when the member stream aborts early | Summary includes `K not tested` for the untested remainder; exit `1` |
+| `archivey test <truncated-tar>` (plain or compressed) whose stream ends on the error a member read already reported | One `FAIL <member>:` line, then `test stopped; remaining members were not tested`; the summary counts that member once; exit `1` |
 | `archivey test <archive>` when a digest goes unchecked (`DIGEST_UNVERIFIABLE` / `ENCRYPTED_MEMBER_UNVERIFIED`) | Summary includes `V not verified`; exit `1` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
 | `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
