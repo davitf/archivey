@@ -228,19 +228,27 @@ def test_header_layouts() -> None:
 # ---------------------------------------------------------------------- PAX records
 
 
-def test_pax_records_in_order_with_padding() -> None:
+def test_pax_records_with_padding() -> None:
     data = _rec(b"path", b"abc") + _rec(b"a", b"\xff\xfe") + b"\x00" * 20
     records = parse_pax_records(data, binary_default=False)
-    assert [(k, v.value, v.binary) for k, v in records] == [
+    assert [(k, v.value, v.binary) for k, v in records.values.items()] == [
         (b"path", b"abc", False),
         (b"a", b"\xff\xfe", False),
     ]
 
 
+def test_pax_repeated_key_keeps_its_last_value() -> None:
+    data = _rec(b"a", b"1") + _rec(b"a", b"2") + _rec(b"b", b"3")
+    records = parse_pax_records(data, binary_default=False).values
+    assert {k: v.value for k, v in records.items()} == {b"a": b"2", b"b": b"3"}
+
+
 def test_pax_hdrcharset_binary_marks_the_block() -> None:
     data = _rec(b"hdrcharset", b"BINARY") + _rec(b"path", b"abc")
-    assert all(v.binary for _, v in parse_pax_records(data, binary_default=False))
-    assert parse_pax_records(b"12 path=abc\n", binary_default=True)[0][1].binary
+    records = parse_pax_records(data, binary_default=False).values
+    assert all(v.binary for v in records.values())
+    records = parse_pax_records(b"12 path=abc\n", binary_default=True).values
+    assert records[b"path"].binary
 
 
 @pytest.mark.parametrize(
@@ -305,7 +313,9 @@ def test_sparse_numbers_past_any_file_are_damage() -> None:
             binary_default=False,
         )
         with pytest.raises(CorruptionError, match=r"has \d+, past any file"):
-            sparse_map_0_0(records, "f", _budget(10**6))
+            sparse_map_0_0(
+                records.sparse_offsets, records.sparse_numbytes, "f", _budget(10**6)
+            )
         map_text = _data(b"1\n0\n" + value + b"\n")
         with pytest.raises(CorruptionError, match=r"has \d+, past any file"):
             read_sparse_map_1_0(_reader(map_text), BLOCKSIZE, "f", _budget(10**6))
@@ -326,10 +336,11 @@ def test_sparse_0_0() -> None:
         + _rec(b"GNU.sparse.numbytes", b"3"),
         binary_default=False,
     )
-    sparse = sparse_map_0_0(records, "f", _budget(48))
+    offsets, lengths = records.sparse_offsets, records.sparse_numbytes
+    sparse = sparse_map_0_0(offsets, lengths, "f", _budget(48))
     assert (list(sparse.offsets), list(sparse.lengths)) == ([0, 100], [5, 3])
     with pytest.raises(CorruptionError):
-        sparse_map_0_0(records[:3], "f", _budget(48))
+        sparse_map_0_0(offsets, lengths[:1], "f", _budget(48))
 
 
 def test_sparse_0_0_holds_one_number_per_record() -> None:
@@ -338,7 +349,9 @@ def test_sparse_0_0_holds_one_number_per_record() -> None:
         binary_default=False,
     )
     with pytest.raises(CorruptionError):
-        sparse_map_0_0(records, "f", _budget(10**6))
+        sparse_map_0_0(
+            records.sparse_offsets, records.sparse_numbytes, "f", _budget(10**6)
+        )
 
 
 def test_sparse_map_refuses_an_entry_too_large_to_store() -> None:

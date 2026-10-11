@@ -133,13 +133,28 @@ def test_tar_extract_all_enforces_listing_limits(tmp_path: Path) -> None:
             reader.extract_all(dest)
 
 
-def test_tar_listing_stops_reading_headers_at_max_members(tmp_path: Path) -> None:
-    """The cap bounds what tarfile parses, not only what archivey keeps.
+def _count_header_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the headers the TAR walk parses, one entry per ``next_entry`` call."""
+    from archivey.internal.backends.tar_parser import TarWalker
 
-    A random-access listing used to call ``getmembers()``, which parses and keeps every
-    header in the file before the first member reaches the cap, so a header bomb cost
-    memory in proportion to its size and ``max_members`` only decided whether to refuse
-    it afterwards.
+    calls: list[int] = []
+    original = TarWalker.next_entry
+
+    def counting(self: TarWalker, budget: object) -> object:
+        calls.append(1)
+        return original(self, budget)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(TarWalker, "next_entry", counting)
+    return calls
+
+
+def test_tar_listing_stops_reading_headers_at_max_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap bounds how many headers the walk parses, not only what archivey keeps.
+
+    A header bomb must not cost work in proportion to its size when ``max_members``
+    refuses it early.
     """
     import tarfile
 
@@ -148,11 +163,11 @@ def test_tar_listing_stops_reading_headers_at_max_members(tmp_path: Path) -> Non
         for i in range(200):
             tf.addfile(tarfile.TarInfo(name=f"f{i:03d}"))
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
+    header_reads = _count_header_reads(monkeypatch)
     with open_archive(tar_path, config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members()
-        tar = reader._tar  # type: ignore[attr-defined]
-        assert len(tar.members) <= 6
+    assert len(header_reads) <= 6
 
 
 def test_streaming_members_report_enforces_listing_limits(tmp_path: Path) -> None:
@@ -229,13 +244,11 @@ def test_metadata_accounting_never_undercounts_utf8() -> None:
 
 
 def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The byte cap bounds what tarfile parses too, not only the member count.
+    """The byte cap bounds how many headers the walk parses, not only the member count.
 
-    A batch sized from ``max_members`` alone parsed up to 1 024 headers before the base
-    weighed the first against ``max_metadata_bytes``, so long names retained many times
-    the byte budget before the refusal.
+    Long names must not be parsed many times over the byte budget before the refusal.
     """
     import tarfile
 
@@ -244,14 +257,13 @@ def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
         for i in range(200):
             tf.addfile(tarfile.TarInfo(name=f"{i:03d}" + "n" * 9_997))
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=50_000))
+    header_reads = _count_header_reads(monkeypatch)
     with open_archive(tar_path, config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
             reader.members()
-        tar = reader._tar  # type: ignore[attr-defined]
-        # Each name is 10 000 characters. The walk counts names only, so its count
-        # passes 50 000 on the sixth header and it parses no further. The base also
-        # weighs raw_name, so it has already refused on the third.
-        assert len(tar.members) <= 6
+    # Each name is 10 000 characters and the base weighs name and raw_name, so the
+    # cap is passed on the third member.
+    assert len(header_reads) <= 6
 
 
 def test_metadata_accounting_counts_long_nested_extra_keys() -> None:
@@ -290,7 +302,9 @@ def test_metadata_accounting_skips_top_level_keys_and_counts_nested_keys() -> No
     assert member_metadata_bytes(nested) == member_metadata_bytes(bare) + len("keyword")
 
 
-def test_tar_pax_keywords_count_toward_max_metadata_bytes(tmp_path: Path) -> None:
+def test_tar_pax_keywords_count_toward_max_metadata_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A PAX record's keyword is weighed like its value.
 
     TAR keeps every PAX record in ``extra["tar.pax_headers"]``. When only values were
@@ -306,22 +320,20 @@ def test_tar_pax_keywords_count_toward_max_metadata_bytes(tmp_path: Path) -> Non
             info.pax_headers = {f"{i:02d}" + "k" * 99_998: "v"}
             tf.addfile(info)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=500_000))
+    header_reads = _count_header_reads(monkeypatch)
     with open_archive(tar_path, config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
             reader.members()
-        tar = reader._tar  # type: ignore[attr-defined]
-        # Each keyword is 100 000 characters, so the header walk passes the cap on
-        # the sixth header and parses no further.
-        assert len(tar.members) <= 6
+    # Each keyword is 100 000 characters, so the walk passes the cap on the sixth
+    # header and parses no further.
+    assert len(header_reads) <= 6
 
 
 def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) -> None:
-    """A long link name on a regular file is text no listing limit weighs.
+    """A long link name on a regular file is not presented, and the listing reads it.
 
-    GNU tar stores a long link name in a LONGLINK block ahead of the header, and
-    tarfile applies it to whatever header follows. On a regular file it means nothing,
-    but the TarInfo each member keeps held it, so a small gzipped tar could retain
-    hundreds of megabytes under a 1 MiB ``max_metadata_bytes``.
+    GNU tar stores a long link name in a LONGLINK block ahead of the header, which
+    applies to whatever header follows. On a regular file it means nothing.
     """
     import tarfile
 
@@ -329,31 +341,15 @@ def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) 
     with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tf:
         for i in range(20):
             info = tarfile.TarInfo(name=f"f{i}")
-            # Under the cap on its own: tarfile reads a long link name whole, and a
-            # header larger than max_metadata_bytes is refused before that read.
+            # Under the cap on its own: a header larger than max_metadata_bytes is
+            # refused before it is read.
             info.linkname = "l" * 99_000
             tf.addfile(info)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
     with open_archive(tar_path, config=cfg) as reader:
-        # Headers are parsed a batch at a time, before any member is built, so the
-        # link names must already be gone when the first member is built, not only
-        # after the walk.
-        held_while_walking: list[int] = []
-        build = reader._to_member  # type: ignore[attr-defined]
-
-        def spy(info: tarfile.TarInfo, index: int) -> object:
-            held_while_walking.append(
-                sum(len(t.linkname) for t in reader._tar.members)  # type: ignore[attr-defined]
-            )
-            return build(info, index)
-
-        reader._to_member = spy  # type: ignore[attr-defined]
         members = reader.members()
-        assert held_while_walking and max(held_while_walking) == 0
-        assert len(members) == 20
-        assert all(m.link_target is None for m in members)
-        tar = reader._tar  # type: ignore[attr-defined]
-        assert sum(len(t.linkname) for t in tar.members) == 0
+    assert len(members) == 20
+    assert all(m.link_target is None for m in members)
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
@@ -361,11 +357,10 @@ def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) 
 def test_tar_link_name_drop_covers_both_walks_and_both_long_name_records(
     tmp_path: Path, fmt: str, streaming: bool
 ) -> None:
-    """A long link name is dropped from a regular file's header and kept on a symlink.
+    """A long link name is dropped from a regular file and kept on a symlink.
 
-    tarfile applies a GNU LONGLINK block or a PAX ``linkpath`` record to the header
-    that follows, after the nested header read returns. The drop happens in the
-    outermost read, so it must see that final link name in both walks.
+    A GNU LONGLINK block or a PAX ``linkpath`` record applies to the header that
+    follows, in both walks.
     """
     import tarfile
 
@@ -385,31 +380,5 @@ def test_tar_link_name_drop_covers_both_walks_and_both_long_name_records(
             members = {m.name: m for m, _ in reader.stream_members()}
         else:
             members = {m.name: m for m in reader.members()}
-        # The headers tarfile keeps are what the listing limits do not weigh.
-        held = {t.name: t.linkname for t in reader._tar.members}  # type: ignore[attr-defined]
-    assert held == {"regular": "", "link": target}
     assert members["regular"].link_target is None
     assert members["link"].link_target == target
-
-
-def test_tar_header_batch_returns_to_full_size_past_max_members(tmp_path: Path) -> None:
-    """Past the cap the batch goes back to full size instead of one header.
-
-    ``stream_members()`` on a random-access reader walks the whole archive without
-    enforcing the cap, and a batch clamped to one header there is the slow
-    one-header-per-lock walk batching replaced.
-    """
-    import tarfile
-
-    from archivey.internal.backends.tar_reader import _HEADER_BATCH
-
-    tar_path = tmp_path / "one.tar"
-    with tarfile.open(tar_path, "w") as tf:
-        tf.addfile(tarfile.TarInfo(name="a"))
-    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
-    with open_archive(tar_path, config=cfg) as reader:
-        size = reader._header_batch_size  # type: ignore[attr-defined]
-        assert size(0) == 101
-        assert size(100) == 1
-        assert size(101) == _HEADER_BATCH
-        assert size(5_000) == _HEADER_BATCH

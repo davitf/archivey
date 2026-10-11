@@ -1,23 +1,25 @@
-"""TAR backend on the v2 ABC, backed by the stdlib ``tarfile`` module.
+"""TAR backend on the v2 ABC, over archivey's own header parser (``tar_parser.py``).
 
-On-disk layout (ustar/pax/gnu as ``tarfile`` sees it)::
+On-disk layout::
 
     [ 512-byte header ][ file data, padded to 512 ]*
     [ 512 zero bytes ][ 512 zero bytes ]   # two null end-of-archive trailers
 
-There is no central directory: listing is a header scan (``REQUIRES_SCANNING``) or a
+There is no central directory: listing is a header walk (``REQUIRES_SCANNING``) or a
 progressive forward pass. Compressed forms (``.tar.gz`` / …) wrap the same layout in
 a stream codec and behave as **solid** for random member opens.
 
 Random-access reading (``streaming=False``) needs a seekable source (decompressing
-first for a compressed tar) and opens any member on demand. Forward-only
-(``streaming=True``) walks one progressive pass — including on a non-seekable source —
-via ``_iter_with_data()`` / ``stream_members()``.
+first for a compressed tar) and opens any member on demand: a member's stream is a
+view over its data area. Forward-only (``streaming=True``) walks one progressive pass,
+including on a non-seekable source, via ``_iter_with_data()`` / ``stream_members()``;
+a member's data is read through the walker, which skips what the consumer left.
 
-After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
+After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
+:class:`~archivey.internal.backends.tar_parser.TarEnd` the walk stopped on:
 
-- A header ``tarfile`` rejected where it stopped → ``CorruptionError``, in both access
-  modes and whatever follows it.
+- A header that does not parse → ``CorruptionError``, in both access modes and
+  whatever follows it.
 - A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING``.
 - A trailer whose first block is zero and whose second is not, after at least one
   member → ``ARCHIVE_EOF_MARKER_MISSING`` (``expected_marker="second_zero_block"``).
@@ -28,24 +30,18 @@ After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
 fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
-
-Note: after the header walk, ``tarfile`` has typically already consumed the
-*first* trailer zero-block; the end check therefore inspects the *next* 512 bytes.
 """
 
 from __future__ import annotations
 
-import errno
 import stat
-import tarfile
 import threading
 from collections.abc import Iterator, Mapping
-from contextlib import AbstractContextManager
-from contextvars import ContextVar, Token
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import datetime
-from io import SEEK_SET, BytesIO
-from typing import BinaryIO, Literal, Self, cast
+from types import MappingProxyType
+from typing import BinaryIO, Literal, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -63,9 +59,20 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
+)
+from archivey.internal.backends.tar_parser import (
+    BLOCKSIZE,
+    SPARSE_ENTRY_BYTES,
+    Budget,
+    NameSource,
+    PaxValue,
+    TarEnd,
+    TarEndKind,
+    TarEntry,
+    TarWalker,
+    validate_sparse_map,
 )
 from archivey.internal.base_reader import (
     BaseArchiveReader,
@@ -91,12 +98,11 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
-    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     LockedStream,
-    ReadOnlyIOStream,
-    ensure_binaryio,
+    ReadAheadStream,
+    SharedView,
+    SparseStream,
     ensure_bufferedio,
-    read_within_reach,
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
@@ -121,11 +127,6 @@ from archivey.types import (
 # concatenated archive, a padded record, arbitrary junk), so it is consumed in chunks
 # rather than with one read().
 _TRAILING_SCAN_CHUNK = 64 * 1024
-
-# Read size for reading through the rest of a member's data on a forward-only walk
-# (``TarReader._read_through_member_data``): a member can be any size, so it is read in
-# chunks, never whole.
-_READ_THROUGH_CHUNK = 64 * 1024
 
 # How far past the trailer the trailing-bytes scan looks before it stops. An effort
 # bound, not a ceiling: nothing is refused when it is reached, the scan only stops
@@ -159,634 +160,53 @@ _STREAMS_WITH_CHECKSUM = frozenset(
 # trailing scan may be a failed check over members already read, and says so.
 _STREAMS_WITH_UNTYPED_CHECKSUM = frozenset((StreamFormat.BZIP2, StreamFormat.XZ))
 
-# Headers the random-access walk parses per handle-lock hold. Large enough that the
-# walk runs as a dense pass (one header per hold measured about 1.3x slower on a
-# 100 000-member listing), small enough that a partial batch is cheap to hold.
-_HEADER_BATCH = 1024
-
-# The largest position a seek can name. A file offset (``off_t``) and a ``BytesIO``
-# position (``ssize_t`` on a 64-bit build) are signed 64-bit integers, so a target
-# past this is not a place in any file: only an archive's size field can produce it.
-_MAX_SEEK_OFFSET = 2**63 - 1
-
-# What one GNU sparse map entry weighs against ``max_metadata_bytes``: the 24 bytes
-# (two 12-byte numbers) the old GNU header spends on an entry. The retained
-# ``(offset, numbytes)`` tuple in its list costs Python more than this (about 60 to
-# 100 bytes), so the weight is an estimate on the low side, in keeping with a cap
-# that counts text and not allocator bytes. The map is retained on the member's
-# ``TarInfo``, which reads the data through it, and a PAX sparse 1.0 map lives in the
-# data area, so no header text the cap already weighs stands in for it.
-_SPARSE_ENTRY_BYTES = 24
-
-# The ``tarfile`` module under a name that ``tarfile``'s own method signatures, which
-# call their ``TarFile`` argument ``tarfile``, do not shadow.
-_tarfile = tarfile
-
-
-def _sparse_map(info: tarfile.TarInfo) -> list[tuple[int, int]] | None:
-    """``info.sparse``, typed as what tarfile stores there (typeshed says ``bytes``)."""
-    return cast("list[tuple[int, int]] | None", info.sparse)
-
-
-def _sparse_map_bytes(info: tarfile.TarInfo) -> int:
-    """What ``info``'s retained sparse map weighs against ``max_metadata_bytes``."""
-    sparse = _sparse_map(info)
-    return len(sparse) * _SPARSE_ENTRY_BYTES if sparse else 0
-
-
-def _header_text_bytes(info: tarfile.TarInfo) -> int:
-    """Header text a member built from ``info`` retains, counted low.
-
-    Counts only fields the base also weighs against ``max_metadata_bytes``, and the
-    base weighs them at least as heavily (it adds ``raw_name`` and counts non-ASCII
-    four to a character), so once this sum passes the cap the base has refused. The
-    walk uses it to stop parsing where the byte cap would, without the base's running
-    total. ``linkname`` counts only on a link: on any other member
-    ``_drop_unweighed_link_name`` has already cleared it, so it is not retained.
-    PAX records count keyword and value, as the base weighs both in
-    ``extra["tar.pax_headers"]``. A sparse map counts what
-    ``TarReader._register_member`` adds for it.
-    """
-    total = len(info.name) + len(info.uname) + len(info.gname)
-    if info.issym() or info.islnk():
-        total += len(info.linkname)
-    for keyword, value in info.pax_headers.items():
-        total += len(keyword) + len(value)
-    return total + _sparse_map_bytes(info)
-
-
-# Header types whose data ``tarfile`` reads whole into memory as header text, with one
-# ``read(size)`` of the size the header declares: PAX extended (``x``, and Solaris
-# ``X``) and global (``g``) headers, and GNU long names and link names (``L`` / ``K``).
-_HEADER_DATA_TYPES = frozenset(
-    (
-        tarfile.XHDTYPE,
-        tarfile.XGLTYPE,
-        tarfile.SOLARIS_XHDTYPE,
-        tarfile.GNUTYPE_LONGNAME,
-        tarfile.GNUTYPE_LONGLINK,
-    )
-)
-
-# ``(bytes left, cap)`` of ``max_metadata_bytes`` for the header ``tarfile`` is about to
-# parse, or ``None`` when the cap is off. Set by the reader around each ``tarfile``
-# call that parses headers (the open and each step of the walk), and read by
-# ``_TarInfo._proc_member``, which ``tarfile`` calls with no way to pass it along. A
-# context variable rather than state on the reader, because ``tarfile`` builds
-# ``TarInfo`` objects from the class it is given and hands them no reader.
-_HEADER_BUDGET: ContextVar[tuple[int, int] | None] = ContextVar(
-    "_HEADER_BUDGET", default=None
-)
-
-
-class _HeaderBudget:
-    """Sets :data:`_HEADER_BUDGET` for the ``tarfile`` calls in a ``with`` block."""
-
-    def __init__(self, budget: tuple[int, int] | None) -> None:
-        self._budget = budget
-        self._token: Token[tuple[int, int] | None] | None = None
-
-    def set(self, budget: tuple[int, int] | None) -> None:
-        """Change the budget for the headers parsed after this, within the block."""
-        _HEADER_BUDGET.set(budget)
-
-    def __enter__(self) -> _HeaderBudget:
-        self._token = _HEADER_BUDGET.set(self._budget)
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        # Back to the value before the block, whatever ``set`` changed it to since.
-        assert self._token is not None
-        _HEADER_BUDGET.reset(self._token)
-
-
 # What :meth:`TarReader._verify_tar_eof` found where the end-of-archive marker belongs:
 # no block, a partial one, a non-null block after a zero block that ended at least one
-# member (the marker is damaged, the listing whole), a header tarfile rejected (the
+# member (the marker is damaged, the listing whole), a header that does not parse (the
 # listing is shortened), or a non-null block after a zero block with no member before
 # it.
-_TarEnd = Literal[
+_EofFinding = Literal[
     "absent", "short", "damaged_second_block", "rejected_header", "no_member"
 ]
 
+# Typeflags whose member is a file: regular (``0`` and the old NUL), contiguous (``7``)
+# and old GNU sparse (``S``) all carry the file's data. Every other typeflag that is not
+# a directory or a link lists as OTHER, its data skipped by size.
+_FILE_TYPES = frozenset((b"0", b"\x00", b"7", b"S"))
+# The walk's read-ahead over a codec stream or a view. Fixed rather than io's default,
+# which Python 3.14 raised from 8 KiB to 128 KiB: a larger read-ahead reads and decodes
+# further past what the listing needs, so listing costs and source reads would differ
+# by Python version.
+_WALK_BUFFER = 8 * 1024
 
-# typeshed does not declare tarfile's header errors. The first is raised for a zero
-# block; the second for a header tarfile rejects (a bad checksum or number field, a
-# negative size, PAX records that do not parse).
-_EOFHeaderError: type[Exception] = tarfile.EOFHeaderError  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-_InvalidHeaderError: type[Exception] = tarfile.InvalidHeaderError  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+# GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
+# lists the directory's contents at dump time. GNU tar extracts it as a directory; the
+# list is skipped.
+_DIRECTORY_TYPES = frozenset((b"5", b"D"))
 
-# Why the last header parse of a walk failed: on a zero block, or on a header tarfile
-# rejected. ``None`` when it did not fail with either (it parsed, or the data ran out).
-_HeaderStop = Literal["zero_block", "rejected_header"]
+_NO_PAX: Mapping[bytes, PaxValue] = MappingProxyType({})
+_SYMLINK_TYPE = b"2"
+_HARDLINK_TYPE = b"1"
+# Character and block devices and FIFOs, which carry device numbers.
+_DEVICE_TYPES = frozenset((b"3", b"4", b"6"))
 
-
-class _TarFile(tarfile.TarFile):
-    """A ``TarFile`` that remembers why its walk stopped.
-
-    ``TarFile.next()`` returns ``None`` both on a zero block (the first end-of-archive
-    block) and on a header it rejects after the first member, and swallows the error
-    that told the two apart. It calls :meth:`_TarInfo.fromtarfile` once per member,
-    and that call sets ``stopped_on``, so after the walk ends it says which of the two
-    the last parse hit. It comes from the error class, not from the
-    bytes read, so it is the same answer in both access modes, and whatever block
-    follows the stop.
-
-    Only the outermost parse matters. A GNU long-name or PAX header is followed by a
-    nested parse of the member's own header; a failure there reaches ``next()`` as
-    ``SubsequentHeaderError``, which it re-raises as ``ReadError`` instead of
-    swallowing, so the walk ends with an error and ``stopped_on`` is not read. From
-    CPython 3.11.16, 3.12.14, 3.13.13 and 3.14.4 that nested parse goes through the
-    private ``_fromtarfile`` and bypasses the override; earlier patch releases run it
-    through ``fromtarfile`` and so through the override, innermost first, and the
-    outermost call still runs last.
-    """
-
-    stopped_on: _HeaderStop | None = None
-
-    header_depth: int = 0
-    """How many :meth:`_TarInfo.fromtarfile` calls are running. A GNU long name or a
-    PAX header parses the header after it from inside its own call on Pythons without
-    the 2025 tarfile fixes (CPython 3.11.15 and 3.12.13 among them; a distribution's
-    build of an older version may carry the fixes, as Ubuntu's 3.12.3 does), so 0
-    after a call returns means the member is final."""
-
-    # The PAX global records as they stood at the last member parsed, or ``None``
-    # once a global header has changed them since (:meth:`_TarInfo._proc_member`).
-    _global_records: _GlobalPaxRecords | None = None
-
-    def global_records(self) -> _GlobalPaxRecords:
-        """One shared copy of the PAX global records now in force.
-
-        ``tarfile`` gives every member its own copy of ``pax_headers``, the global
-        records included, so one global header of K records cost K entries per
-        member, from a 512-byte header each. Members with no records of their own
-        share this copy instead (:meth:`_TarInfo._proc_builtin`).
-        """
-        if self._global_records is None:
-            self._global_records = _GlobalPaxRecords(self.pax_headers)
-        return self._global_records
+# PAX records whose value is a name: without ``hdrcharset=BINARY`` it is UTF-8, as
+# POSIX says; with it, or for a ustar or GNU field, it has no declared encoding.
+_PAX_NAME_KEYS = frozenset((b"path", b"linkpath", b"uname", b"gname"))
 
 
-class _GlobalPaxRecords(dict[str, str]):
-    """The PAX global records shared by every member that has none of its own.
-
-    A type of its own so the listing can tell a shared copy from a member's own
-    records, and share its ``extra["tar.pax_headers"]`` the same way
-    (:meth:`TarReader._extra_pax_headers`). Nothing writes to it once made.
-    """
-
-    __slots__ = ()
-
-
-def _charge_sparse_map(entries: int, name: str) -> None:
-    """Refuse a sparse map of ``entries`` entries that weighs more than is left of
-    ``max_metadata_bytes`` for this member.
-
-    ``tarfile`` parses a map whole, into a list of tuples, before the member it
-    belongs to can be weighed: a PAX sparse 1.0 map lives in the data area and has no
-    size of its own, and an old GNU map grows by one extension block at a time. This
-    is called with the count before the entries are parsed, or as each block adds
-    some, so the refusal comes before the cost.
-    """
-    budget = _HEADER_BUDGET.get()
-    if budget is None:
-        return
-    left, cap = budget
-    weight = entries * _SPARSE_ENTRY_BYTES
-    if weight > left:
-        raise ResourceLimitError(
-            f"Listing limit reached: max_metadata_bytes={cap} (the TAR sparse map of "
-            f"{quoted(name)} has {entries} entries, weighing {weight} bytes, "
-            f"{max(left, 0)} left)"
-        )
-
-
-# The most characters one number of a PAX sparse 1.0 map may have. GNU tar reads each
-# into a buffer sized for the largest ``uintmax_t`` (20 digits) and refuses a longer
-# one, so no map it writes or reads has more. Structural, not a policy limit: without
-# it a number with no newline after it grows one buffer for as long as the archive
-# lasts.
-_SPARSE_NUMBER_DIGITS = 20
-
-
-class _TarInfo(tarfile.TarInfo):
-    """A ``TarInfo`` that records where its member's stored data ends, refuses an
-    extended header or a sparse map larger than the listing's metadata budget before
-    reading it, and shares the PAX global records between members.
-
-    ``tarfile`` keeps no record of how many bytes a sparse member stores: it replaces
-    ``size`` with the logical size and reads the data through the sparse map, even
-    where the map claims more than the member stores and the read runs on into the
-    next header. :func:`_sparse_map_error` compares the map to this end.
-
-    It also decides old-style directories itself, as GNU tar does: see
-    :meth:`_mark_old_style_directory`. That needs the nesting count only a
-    :class:`_TarFile` keeps, so :meth:`fromtarfile` requires one.
-    """
-
-    __slots__ = ("old_style_directory", "stored_end")
-
-    stored_end: int
-    """The offset where the member's data area ends, rounded up to whole blocks."""
-
-    old_style_directory: bool
-    """The header is a regular file (``AREGTYPE``, typeflag NUL) whose final name ends
-    in ``/``, listed as a directory. ``type`` is then ``DIRTYPE``."""
-
-    @classmethod
-    def frombuf(cls, buf: bytes | bytearray, encoding: str, errors: str) -> Self:
-        # Python versions before the 2025 tarfile security fixes call this one.
-        info = super().frombuf(buf, encoding, errors)
-        info._undo_stdlib_directory_check(buf)
-        return info
-
-    @classmethod
-    def _frombuf(
-        cls,
-        buf: bytes | bytearray,
-        encoding: str,
-        errors: str,
-        *,
-        dircheck: bool = True,
-    ) -> Self:
-        # Later versions call this one. typeshed does not declare tarfile's private
-        # TarInfo._frombuf.
-        info: Self = super()._frombuf(buf, encoding, errors, dircheck=dircheck)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-        info._undo_stdlib_directory_check(buf)
-        return info
-
-    def _undo_stdlib_directory_check(self, buf: bytes | bytearray) -> None:
-        """Keep an ``AREGTYPE`` header a regular file while its member is parsed.
-
-        Old (v7) tars mark a directory as a regular file whose name ends in ``/``.
-        ``tarfile`` decides that from the header's own name field: on every header
-        before the 2025 fixes, and after them only on a header with no GNU long name
-        or PAX header before it. It then does not skip the data, because a directory
-        has none, so a header that declares a size has its data read as the next
-        header. Undone here, so ``tarfile`` skips the data as for any regular file,
-        with the final size, and :meth:`_mark_old_style_directory` decides on the
-        final name once the member is complete.
-        """
-        self.old_style_directory = False
-        if buf[156:157] == tarfile.AREGTYPE and self.type == tarfile.DIRTYPE:
-            self.type = tarfile.AREGTYPE
-            # ``tarfile`` stripped the slash, before adding the ustar prefix.
-            self.name += "/"
-
-    def _mark_old_style_directory(self) -> None:
-        """Make an ``AREGTYPE`` member whose final name ends in ``/`` a directory.
-
-        The final name is the one after a PAX ``path`` or a GNU long name, as GNU tar
-        1.35 and 7-Zip read it. Both list such a member as a directory and skip its
-        data. ``tarfile`` strips the slash from a PAX ``path``, so the record is read
-        again. A ``DIRTYPE`` header that declares a size is not this case: it has no
-        data area.
-        """
-        if self.type != tarfile.AREGTYPE:
-            return
-        name_is_dir = self.name.endswith("/")
-        pax_path = self.pax_headers.get("path")
-        if pax_path is not None and self.name == pax_path.rstrip("/"):
-            name_is_dir = pax_path.endswith("/")
-        if name_is_dir:
-            self.type = tarfile.DIRTYPE
-            self.name = self.name.rstrip("/")
-            self.old_style_directory = True
-
-    @classmethod
-    def fromtarfile(cls, tarfile: tarfile.TarFile) -> Self:
-        # ``TarFile.next()`` swallows the header error that ends the walk, so whether
-        # it stopped on a zero block or on a rejected header is recorded here, where
-        # the error passes through (see :class:`_TarFile`).
-        # Only a _TarFile counts its nesting. Over a plain TarFile this would mark
-        # the inner header of a PAX or GNU long-name member on older CPython patch
-        # releases, before tarfile skips its data, and the data would be read as the
-        # next header.
-        assert isinstance(tarfile, _TarFile)
-        tarfile.stopped_on = None
-        tarfile.header_depth += 1
-        try:
-            info = super().fromtarfile(tarfile)
-        except _EOFHeaderError:
-            tarfile.stopped_on = "zero_block"
-            raise
-        except _InvalidHeaderError:
-            tarfile.stopped_on = "rejected_header"
-            raise
-        finally:
-            tarfile.header_depth -= 1
-        # ``TarFile.offset`` is where tarfile will look for the next header, which is
-        # the end of this member's data area. This call returns only after any GNU
-        # long-name or PAX headers before the member's header have been parsed and
-        # applied (on older CPython patch releases the nested parses also run through
-        # here, and finish first; see :class:`_TarFile`), so it sees the final offset,
-        # which a PAX ``size`` record may change, and the final ``linkname``, which a
-        # long link name or PAX linkpath sets.
-        info.stored_end = tarfile.offset
-        _drop_unweighed_link_name(info)
-        if tarfile.header_depth == 0:
-            info._mark_old_style_directory()
-        return info
-
-    def _proc_member(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
-        """Refuse an extended header over the budget, then parse as ``tarfile`` does.
-
-        ``_proc_member`` is the private call stdlib's own ``fromtarfile`` makes once
-        the 512-byte header block is parsed, and tarfile's source names it as the
-        method a subclass overrides. Here ``size`` is known and the header's data is
-        not read yet, so a PAX header or GNU long name declaring megabytes costs the
-        cap and not its own size: ``tarfile`` would read all of it in one call before
-        any listing limit could weigh the result.
-        """
-        budget = _HEADER_BUDGET.get()
-        if budget is not None and self.type in _HEADER_DATA_TYPES:
-            left, cap = budget
-            if self.size > left:
-                raise ResourceLimitError(
-                    f"Listing limit reached: max_metadata_bytes={cap} (a TAR extended "
-                    f"header for {quoted(self.name)} declares {self.size} bytes, "
-                    f"{max(left, 0)} left)"
-                )
-            # ``tarfile`` parses the next header from inside this one's parse, and
-            # keeps this one's data alive until the member at the end of the chain
-            # is built. So the rest of the chain, and the member's sparse map, draw
-            # from what this header leaves. The walk sets a fresh budget for the
-            # next member.
-            _HEADER_BUDGET.set((left - self.size, cap))
-        if self.type == _tarfile.XGLTYPE and isinstance(tarfile, _TarFile):
-            # This header changes the global records the members after it get.
-            tarfile._global_records = None
-        # typeshed does not declare tarfile's private TarInfo._proc_member.
-        return super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-
-    def _proc_builtin(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
-        """Parse as ``tarfile`` does, then share the global records.
-
-        ``tarfile`` has just given this member its own copy of the PAX global
-        records. With no records of its own (a member that has some gets them from
-        ``_proc_pax`` afterwards, which replaces this), the member takes the copy all
-        such members share instead, and its own is freed.
-        """
-        # typeshed does not declare tarfile's private TarInfo._proc_builtin.
-        info = super()._proc_builtin(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-        if isinstance(tarfile, _TarFile) and tarfile.pax_headers:
-            info.pax_headers = tarfile.global_records()
-        return info
-
-    def _proc_sparse(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
-        """Parse an old GNU sparse header and its extension blocks, weighing the map
-        as each block adds to it.
-
-        A copy of stdlib's private ``TarInfo._proc_sparse``, which reads every
-        extension block the archive chains before anything can weigh the map, with
-        the weighing added. A short block, which ``tarfile`` met with a raw
-        ``IndexError``, is a truncated archive. It does not call ``super()``, so a
-        change to stdlib's body is shadowed, not inherited: the copied body was
-        compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
-        ``tests/test_tar_header_memory.py`` fails when stdlib's source changes. A
-        divergence has to be re-checked and carried over, not assumed harmless.
-        """
-        # Set by ``TarInfo.frombuf`` for a sparse header; typeshed does not declare it.
-        structs, isextended, origsize = self._sparse_structs  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-        del self._sparse_structs  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-        while isextended:
-            buf = tarfile.fileobj.read(_tarfile.BLOCKSIZE)
-            if len(buf) < _tarfile.BLOCKSIZE:
-                raise TruncatedError(
-                    f"TAR archive is truncated in the sparse map of {quoted(self.name)}"
-                )
-            for pos in range(0, 21 * 24, 24):
-                # typeshed does not declare tarfile's nti(). A field it cannot parse
-                # raises ``InvalidHeaderError``, as in ``tarfile``'s own loop.
-                offset = _tarfile.nti(buf[pos : pos + 12])  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-                numbytes = _tarfile.nti(buf[pos + 12 : pos + 24])  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-                if offset and numbytes:
-                    structs.append((offset, numbytes))
-            isextended = bool(buf[504])
-            _charge_sparse_map(len(structs), self.name)
-        self.sparse = structs
-        self.offset_data = tarfile.fileobj.tell()
-        tarfile.offset = self.offset_data + self._block(self.size)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-        self.size = origsize
-        return self
-
-    def _proc_gnusparse_00(
-        self, next: tarfile.TarInfo, raw_headers: list[tuple[int, bytes, bytes]]
-    ) -> None:
-        """Weigh a PAX sparse 0.0 map by its count of offset records, then parse as
-        ``tarfile`` does."""
-        entries = sum(
-            1 for _, keyword, _ in raw_headers if keyword == b"GNU.sparse.offset"
-        )
-        _charge_sparse_map(entries, next.name)
-        # typeshed does not declare tarfile's private TarInfo._proc_gnusparse_00.
-        super()._proc_gnusparse_00(next, raw_headers)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-
-    def _proc_gnusparse_01(
-        self, next: tarfile.TarInfo, pax_headers: dict[str, str]
-    ) -> None:
-        """Weigh a PAX sparse 0.1 map by its count of commas, then parse as
-        ``tarfile`` does. The map's text is header text the budget has already
-        weighed; its entries cost more again once parsed."""
-        entries = (pax_headers["GNU.sparse.map"].count(",") + 1) // 2
-        _charge_sparse_map(entries, next.name)
-        # typeshed does not declare tarfile's private TarInfo._proc_gnusparse_01.
-        super()._proc_gnusparse_01(next, pax_headers)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-
-    def _proc_gnusparse_10(
-        self,
-        next: tarfile.TarInfo,
-        pax_headers: dict[str, str],
-        tarfile: tarfile.TarFile,
-    ) -> None:
-        """Parse a PAX sparse 1.0 map, weighing it by its entry count first.
-
-        The map is the start of the member's data area: a count, then an offset and
-        a size per entry, each a decimal number on its own line, padded to a block.
-        ``tarfile`` reads all of it before anything can weigh it, and reads a number
-        with no newline into one buffer that grows for as long as the archive lasts.
-        Here the count is weighed before any entry is read, and a number longer than
-        any GNU tar reads is corruption.
-
-        This replaces stdlib's private ``TarInfo._proc_gnusparse_10`` without calling
-        it, so a change to stdlib's parse is shadowed, not inherited. Stdlib's body
-        was compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
-        ``tests/test_tar_header_memory.py`` fails when its source changes. A
-        divergence has to be re-checked against this parse, not assumed harmless.
-        """
-        fileobj = tarfile.fileobj
-        buf = b""
-
-        def number() -> int:
-            nonlocal buf
-            while (end := buf.find(b"\n")) < 0:
-                if len(buf) > _SPARSE_NUMBER_DIGITS:
-                    break
-                block = fileobj.read(_tarfile.BLOCKSIZE)
-                if not block:
-                    break
-                buf += block
-            if not 0 <= end <= _SPARSE_NUMBER_DIGITS:
-                raise CorruptionError(
-                    f"TAR sparse map of {quoted(next.name)} has a malformed entry"
-                )
-            text, buf = buf[:end], buf[end + 1 :]
-            try:
-                value = int(text)
-            except ValueError:
-                raise CorruptionError(
-                    f"TAR sparse map of {quoted(next.name)} has an entry that is "
-                    f"not a number: {text[:_SPARSE_NUMBER_DIGITS]!r}"
-                ) from None
-            return value
-
-        entries = number()
-        if entries < 0:
-            raise CorruptionError(
-                f"TAR sparse map of {quoted(next.name)} declares {entries} entries"
-            )
-        _charge_sparse_map(entries, next.name)
-        sparse = [(number(), number()) for _ in range(entries)]
-        next.offset_data = fileobj.tell()
-        # What tarfile stores there (see :func:`_sparse_map`); typeshed says ``bytes``.
-        next.sparse = sparse  # pyrefly: ignore[bad-assignment]  # ty: ignore[invalid-assignment]
-
-
-def _sparse_map_error(
-    info: tarfile.TarInfo,
-) -> CorruptionError | UnsupportedFeatureError | None:
-    """Refuse a sparse map that is damaged, or that ``tarfile`` cannot serve right.
-
-    ``tarfile`` reads the map's data chunks one after another from the start of the
-    data area. A map whose chunks add up to more than the member stores reads the
-    following header and members as this member's content, silently; a negative
-    entry makes the read go backwards. ``tar(1)`` refuses both. The stored size is
-    known only rounded up to whole blocks, so up to 511 bytes of the member's own
-    zero padding can still be read as data; nothing past its data area can. For the
-    same reason a map must account for every stored byte but that padding: stored
-    bytes that no chunk names are never served, and leftover bytes inside a member's
-    data are damage (DR-3). GNU tar 1.35 extracts such a member without them.
-
-    A chunk must end at or before the logical size. For a non-empty chunk past it,
-    ``tarfile`` drops the stored bytes of that chunk (DR-3). An empty entry past it
-    loses no bytes in ``tarfile``, which serves the same bytes as for the valid map.
-    The empty entry is refused because the map contradicts its own declared size,
-    and because the readers then disagree on the extracted length (DR-1): GNU tar
-    1.35 refuses such a map in the old GNU and PAX 1.0 encodings, and in PAX 0.0 and
-    0.1 it extracts a file longer than the size ``tarfile`` serves. A chunk past the
-    logical size raises ``CorruptionError``, whether it is empty or not.
-
-    A non-empty chunk must start at or after the end of the previous one. GNU tar
-    1.35 reads an out-of-order or overlapping map, writing each chunk at the offset
-    the map gives; ``tarfile`` instead stitches the chunks into one run, which is a
-    wrong answer (DR-1). Serving them in logical order on the streaming path would
-    mean buffering up to the member's logical size (DR-9). Such a map is valid data
-    that archivey cannot serve, so it raises ``UnsupportedFeatureError`` (DR-4), and
-    only when no damage was found in the same map. An empty entry is exempt from the
-    order check: GNU tar ends a map with ``(realsize, 0)`` when the file ends in a
-    hole, and the old GNU header pads its four slots with ``(0, 0)``.
-
-    The logical size (the GNU ``realsize`` field or ``GNU.sparse.realsize``) is held
-    to the same bound as a plain size: past ``_MAX_SEEK_OFFSET`` it is no file's size,
-    and tarfile's fill of the trailing hole would raise a raw ``OverflowError`` or
-    ``MemoryError``.
-    """
-    sparse = _sparse_map(info)
-    stored_end = getattr(info, "stored_end", None)
-    if not sparse or stored_end is None:
-        return None
-    if info.size > _MAX_SEEK_OFFSET:
-        return CorruptionError(
-            f"TAR archive is corrupt: sparse member {quoted(info.name)} declares a "
-            f"size of {info.size} bytes, past the largest offset any file can have"
-        )
-    stored = stored_end - info.offset_data
-    total = 0
-    previous_end = 0
-    unordered: UnsupportedFeatureError | None = None
-    for offset, numbytes in sparse:
-        if offset < 0 or numbytes < 0:
-            return CorruptionError(
-                f"TAR sparse map of {quoted(info.name)} has a negative entry "
-                f"(offset {offset}, {numbytes} bytes)"
-            )
-        if offset + numbytes > info.size:
-            return CorruptionError(
-                f"TAR sparse map of {quoted(info.name)} has a chunk at offset "
-                f"{offset} ({numbytes} bytes) that ends past the member's size "
-                f"of {info.size} bytes"
-            )
-        if numbytes:
-            if offset < previous_end and unordered is None:
-                unordered = UnsupportedFeatureError(
-                    f"TAR sparse map of {quoted(info.name)} is out of order or "
-                    f"overlapping: a chunk at offset {offset} starts before the "
-                    f"previous chunk ends at {previous_end}"
-                )
-            previous_end = max(previous_end, offset + numbytes)
-        total += numbytes
-    if total > stored:
-        return CorruptionError(
-            f"TAR sparse map of {quoted(info.name)} claims {total} bytes of data, but "
-            f"the member stores at most {stored}"
-        )
-    if stored - total > tarfile.BLOCKSIZE - 1:
-        return CorruptionError(
-            f"TAR sparse map of {quoted(info.name)} accounts for only {total} of the "
-            f"{stored} bytes the member stores"
-        )
-    return unordered
-
-
-def _raised_by_tarfile(exc: BaseException) -> bool:
-    """Whether the innermost Python frame ``exc`` was raised in is stdlib ``tarfile``'s.
-
-    ``tarfile`` parses some header values with a bare ``int()`` or tuple unpacking
-    (the GNU sparse PAX records), so a malformed value
-    escapes as a plain ``ValueError``. Where it was raised is what separates that from
-    a ``ValueError`` of the stream under ``tarfile``, which is raised in that stream's
-    own code and is not this translator's to map. The closed-handle case among those
-    (``I/O operation on closed file``) is mapped to ``ArchiveyUsageError`` by the
-    error boundary above this translator before this check runs:
-    ``ArchiveStream._raise_translated`` for a member read,
-    ``BaseArchiveReader._raise_translated`` for the reader's own work. The check is
-    also reached from ``_translate_open_error`` while the reader is constructed,
-    behind neither boundary; it returns ``False`` there on its own, because the stream
-    under ``tarfile`` is always one of archivey's own wrappers (``_BoundedTarFileobj``
-    for ``r:``, the ``ArchiveSource`` for ``r|``), so a closed-handle ``ValueError``
-    is raised in that wrapper's frame, not ``tarfile``'s. What is left for this check
-    is ``tarfile``'s own header-parse ``ValueError``s; any other stream ``ValueError``
-    propagates unchanged.
-    """
-    tb = exc.__traceback__
-    if tb is None:
-        return False
-    while tb.tb_next is not None:
-        tb = tb.tb_next
-    return tb.tb_frame.f_globals.get("__name__") == tarfile.__name__
-
-
-def _passes_through_tarfile(exc: BaseException) -> bool:
-    """Whether any frame ``exc`` unwound through is stdlib ``tarfile``'s."""
-    tb = exc.__traceback__
-    while tb is not None:
-        if tb.tb_frame.f_globals.get("__name__") == tarfile.__name__:
-            return True
-        tb = tb.tb_next
-    return False
-
-
-def _drop_unweighed_link_name(info: tarfile.TarInfo) -> None:
-    """Clear ``linkname`` on a member that is not a link.
-
-    A GNU long link name or PAX linkpath ahead of a header that is not a link has no
-    meaning, and no listing limit weighs it. :meth:`_TarInfo.fromtarfile` clears it as
-    the header is parsed, so neither walk holds it in a batch or on the retained
-    ``TarInfo``.
-    """
-    if not (info.issym() or info.islnk()):
-        info.linkname = ""
+def _member_type(entry: TarEntry) -> MemberType:
+    typeflag = entry.typeflag
+    if typeflag in _DIRECTORY_TYPES or entry.old_style_directory:
+        return MemberType.DIRECTORY
+    if typeflag == _SYMLINK_TYPE:
+        return MemberType.SYMLINK
+    if typeflag == _HARDLINK_TYPE:
+        return MemberType.HARDLINK
+    if typeflag in _FILE_TYPES:
+        return MemberType.FILE
+    # Character/block devices, FIFOs, multi-volume and volume headers, unknown types.
+    return MemberType.OTHER
 
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
@@ -831,42 +251,34 @@ _TAR_EXTENSIONS.update(
 )
 
 
-def _member_type(info: tarfile.TarInfo) -> MemberType:
-    if info.isdir():
-        return MemberType.DIRECTORY
-    if info.issym():
-        return MemberType.SYMLINK
-    if info.islnk():
-        return MemberType.HARDLINK
-    if info.isfile():
-        return MemberType.FILE
-    # Character/block devices, FIFOs, GNU dumpdirs and volume headers, vendor types, …
-    # (a contiguous file, typeflag 7, is a regular file to tarfile and so a FILE).
-    return MemberType.OTHER
-
-
 # Shared across FILE/HARDLINK members — avoid per-member CompressionMethod construction.
 _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
     CompressionMethod(algo=CompressionAlgorithm.STORED),
 )
 
 
-def _pax_time(
-    info: tarfile.TarInfo, key: str
-) -> tuple[datetime | None, TimestampIssue | None]:
-    """Parse a PAX time record (float Unix seconds) into a tz-aware UTC datetime.
+def _pax_text(entry: TarEntry, key: bytes) -> str | None:
+    """The PAX record ``key`` in force for ``entry`` as text, or ``None`` when it is
+    absent or empty (an empty value in a member's own header cancels the keyword)."""
+    value = entry.pax.get(key)
+    if value is None or not value.value:
+        return None
+    return value.value.decode("utf-8", "surrogateescape")
 
-    ``tarfile`` folds the PAX ``mtime`` into ``TarInfo.mtime`` itself, but leaves the
-    access and inode-change times, and libarchive's ``LIBARCHIVE.creationtime``
-    extension keyword (not a standard PAX record), only in ``pax_headers``; surface
-    them here. The ``mtime`` record is read back here too, for the one case the fold
-    hides: a record that is not a number, which ``tarfile`` turns into ``0``.
+
+def _pax_time(
+    entry: TarEntry, key: str, name: str
+) -> tuple[datetime | None, TimestampIssue | None]:
+    """Parse a PAX time record (decimal Unix seconds) into a tz-aware UTC datetime.
+
+    Covers the standard ``mtime``, ``atime`` and ``ctime`` records and libarchive's
+    ``LIBARCHIVE.creationtime`` extension keyword (not a standard PAX record).
 
     Returns ``(None, None)`` when the record is absent, and ``(None, TimestampIssue)``
     when it is present but not a number or outside ``datetime``'s range, so a bad
-    record is reported the same way as a bad ``mtime``.
+    record is reported the same way as a bad header ``mtime``.
     """
-    raw = info.pax_headers.get(key)
+    raw = _pax_text(entry, key.encode())
     if raw is None:
         return None, None
     try:
@@ -877,7 +289,7 @@ def _pax_time(
         value = unix_to_datetime(seconds)
     if value is not None:
         return value, None
-    return None, _tar_time_issue(info, key, repr(raw), pax_record=True)
+    return None, _tar_time_issue(name, key, repr(raw), pax_record=True)
 
 
 # The ArchiveMember field each TAR time fills, which is what a timestamp diagnostic
@@ -891,138 +303,24 @@ _TAR_TIME_FIELDS = {
 
 
 def _tar_time_issue(
-    info: tarfile.TarInfo, key: str, value_repr: str, *, pax_record: bool
+    name: str, key: str, value_repr: str, *, pax_record: bool
 ) -> TimestampIssue:
     """The ``MEMBER_TIMESTAMP_INVALID`` finding for one TAR time field.
 
-    ``value_repr`` is the raw PAX record for a record, and ``TarInfo.mtime`` for the
-    folded ``mtime`` that ``datetime`` cannot hold.
+    ``value_repr`` is the raw PAX record for a record, and the header's ``mtime`` for
+    one that ``datetime`` cannot hold.
     """
     label = f"PAX {key}" if pax_record else key
     return TimestampIssue(
         field=_TAR_TIME_FIELDS[key],
         source="tar",
         value_repr=value_repr,
-        message=f"Invalid TAR {label} for {quoted(info.name)}: {value_repr}",
+        message=f"Invalid TAR {label} for {quoted(name)}: {value_repr}",
     )
 
 
-class _BoundedTarFileobj(ReadOnlyIOStream):
-    """Read/seek proxy over the seekable fileobj handed to stdlib ``tarfile`` in
-    random-access mode, which bounds the reads and seeks whose size the archive chooses.
-
-    tarfile treats this as an external fileobj (``read``/``seek``/``tell``/``seekable``
-    only) and never closes it; the reader closes what it wraps — the decompressor via
-    ``_owned_stream``, the source by closing the source. It subclasses
-    :class:`ReadOnlyIOStream` so it is the ``BinaryIO`` it is passed as, with no cast;
-    that base also gives it ``mode == "rb"`` and no ``name``, which is what tarfile
-    reads off an external fileobj.
-
-    Over a decompressor it is the one place a read sized from the archive can be
-    bounded: the source's own bound sits under the codec, not in front of ``tarfile``.
-    Over the source itself (a plain tar) the source already bounds, so ``bounded=False``
-    passes reads straight through rather than bounding the raw case twice.
-    ``TarInfo._proc_pax`` and ``_proc_gnulong`` each issue a single ``read(self._block(self.size))`` for a PAX
-    extended header or a GNU long name, where ``size`` is the 12-byte octal field of a
-    ``typeflag`` ``x`` / ``L`` / ``K`` header — up to 8 GiB, and further through GNU
-    base-256. ``BufferedReader.read(n)`` allocates ``n`` up front, so the allocation
-    lands before the short read reveals the archive is three kilobytes. ``read`` below
-    therefore asks the wrapped stream in steps rather than for the whole size at once.
-    """
-
-    # The step this backend reads in when the source's length is unknown: the
-    # compressed path, whose length would cost a decompression pass to learn, and any
-    # caller-supplied stream that advertises none. What the number buys, and why
-    # splitting is the normal case rather than an exception, is documented once on
-    # :data:`DEFAULT_UNKNOWN_LENGTH_READ_STEP`, beside the branch it governs.
-    _UNKNOWN_LENGTH_READ_STEP = DEFAULT_UNKNOWN_LENGTH_READ_STEP
-
-    def __init__(self, inner: BinaryIO, *, bounded: bool = True) -> None:
-        super().__init__()
-        self._inner = inner
-        self._bounded = bounded
-        # Offsets share tarfile's coordinate space (both anchored at the wrapped
-        # stream's current position), so they compare directly to TarInfo offsets.
-        self._pos = inner.tell() if inner.seekable() else 0
-
-    def read(self, size: int = -1, /) -> bytes:
-        chunk = self._read_within_reach(size)
-        self._pos += len(chunk)
-        return chunk
-
-    def _read_within_reach(self, size: int) -> bytes:
-        """``read`` without committing to the allocation the archive asked for.
-
-        The rule itself lives in :func:`read_within_reach`, because the source bounds
-        every raw read by exactly the same one.
-        """
-        if not self._bounded:
-            return self._inner.read(size)
-        # Stepped, never clamped: the one bounded caller wraps a decompressor, whose
-        # length is not a fact (a gzip ISIZE wraps past 4 GiB and can understate).
-        return read_within_reach(
-            self._inner, size, remaining=None, step=self._UNKNOWN_LENGTH_READ_STEP
-        )
-
-    def seek(self, offset: int, whence: int = 0, /) -> int:
-        # tarfile seeks to offsets it adds up from the archive's size fields: to the
-        # next header past a member, and to a sparse member's data chunks. A PAX or
-        # base-256 size can put that past what a seek can take, and the stream under
-        # would raise OverflowError, ValueError or OSError(EINVAL) depending on its
-        # type. Refused here, so none of those is taken for a fault of the stream.
-        if whence == SEEK_SET and offset > _MAX_SEEK_OFFSET:
-            raise CorruptionError(
-                f"TAR archive is corrupt: a size field puts data at byte {offset}, "
-                "past the largest offset any file can have"
-            )
-        try:
-            self._inner.seek(offset, whence)
-        except OSError as e:
-            # A filesystem refuses a smaller offset too, past its largest file size:
-            # ext4 (about 16 TiB) with EINVAL or EOVERFLOW, while APFS and a BytesIO
-            # take it and the next read finds the end of the data. The archive is
-            # shorter than any file that filesystem can hold, so the offset is past
-            # its end, and the same archive is a TruncatedError from any source on
-            # any OS (DR-5), as GNU tar reports it ("Unexpected EOF in archive").
-            #
-            # Taking EINVAL as an archive fact is sound here, though extraction
-            # deliberately does not (safe-extraction spec): there one ``try`` holds
-            # open, mkdir and write calls, where EINVAL has unrelated causes. Over a
-            # plain tar this ``try`` holds one absolute lseek to a non-negative
-            # offset the archive chose, whose EINVAL or EOVERFLOW means only that
-            # the offset is past what the file can hold. Over a decompressor the
-            # seek decodes forward with plain reads of the source, which give
-            # neither errno for a reachable offset.
-            if (
-                whence != SEEK_SET
-                or offset < 0
-                or e.errno not in (errno.EINVAL, errno.EOVERFLOW)
-            ):
-                raise
-            raise TruncatedError(
-                f"TAR archive is truncated: a size field puts data at byte {offset}, "
-                "past the end of the archive"
-            ) from e
-        self._pos = self._inner.tell()
-        return self._pos
-
-    def tell(self, /) -> int:
-        return self._pos
-
-    def seekable(self) -> bool:
-        return self._inner.seekable()
-
-    def close(self) -> None:
-        # No-op: the reader owns the wrapped stream's lifetime (``_owned_stream``); a
-        # stray tarfile call must not tear the shared handle down early. So ``closed``
-        # stays False for the proxy's whole life. Nothing reads it: tarfile never
-        # checks an external fileobj's ``closed``, and the proxy never leaves this
-        # module.
-        pass
-
-
 class TarReader(BaseArchiveReader):
-    """Reads a TAR archive (plain or compressed) via stdlib ``tarfile``.
+    """Reads a TAR archive (plain or compressed) with :class:`TarWalker`.
 
     A seekable source can open any member, but ``_MEMBER_LIST_UPFRONT`` is False —
     there is no central directory, so a complete list always requires a scan (or a
@@ -1058,32 +356,35 @@ class TarReader(BaseArchiveReader):
             open_site=open_site,
         )
         self._encoding = encoding
+        # The codec for header and GNU name fields that are not valid UTF-8, and for
+        # PAX values that are not.
+        self._codec = encoding if encoding is not None else "utf-8"
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
         # Whether the walk's current pull enforces the listing limits (see
         # _pull_member). True until a pull says otherwise: the first header is parsed
         # at open, where only the whole cap can bind anyway.
         self._listing_enforced = True
-        # Set while a random-access stream_members() pass reads data as it walks
-        # (_iter_with_data_random_access): the walk then parses one header per pull.
-        self._one_header_at_a_time = False
-        # The decompression stream of a compressed tar, which this reader builds and so
-        # must close. tarfile is always handed ``fileobj=``, so it never owns what it
-        # reads; the source itself closes with the reader.
+        # Streaming only: the buffer in front of the codec stream or the source, built
+        # by this reader, so closed by it. Random access buffers each walk's view
+        # (``_walker_view``) and each compressed member's view instead, so a reader
+        # holds ``_owned_stream`` or ``_walker_view``, never both.
         self._owned_stream: BinaryIO | None = None
-        # The codec stream under ``_owned_stream``. ``ensure_bufferedio`` wraps it in a
-        # buffer that detaches on close rather than closing it, so it is closed here
-        # explicitly: left to the garbage collector, a stream held by a failed open's
-        # traceback kept its rapidgzip child process running.
+        # A compressed tar's codec stream, in either mode. In random access nothing
+        # wraps it, so it is closed here explicitly (streaming's buffer also closes it;
+        # a second close is a no-op): left to the garbage collector, a stream held by a
+        # failed open's traceback kept its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
-        # The last shared copy of the PAX global records a member was built from, and
-        # the ``extra["tar.pax_headers"]`` every member built from it shares
+        # Random access only: the current walk's own buffered view (see _new_walker).
+        self._walker_view: BinaryIO | None = None
+        # The last PAX records a member without records of its own was built from,
+        # and the ``extra["tar.pax_headers"]`` every such member shares
         # (:meth:`_extra_pax_headers`).
-        self._shared_pax: tuple[_GlobalPaxRecords, _ReadOnlyDict] | None = None
-        # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
-        # streaming readers also take a lock (exclusive / normally uncontended) so the
-        # same critical-section shape covers init, progressive walk, extractfile, EOF,
-        # and close (tar-concurrent-open 2.6).
+        self._shared_pax: tuple[Mapping[bytes, PaxValue], _ReadOnlyDict] | None = None
+        # Shared-handle lock: CONCURRENT readers serialize every read of the shared
+        # byte stream; streaming readers also take a lock (exclusive / normally
+        # uncontended) so the same critical-section shape covers the walk, member
+        # reads, the end check and close.
         self._handle_lock = (
             threading.Lock()
             if MemberStreams.CONCURRENT in member_streams or streaming
@@ -1091,29 +392,24 @@ class TarReader(BaseArchiveReader):
         )
 
         try:
-            # tarfile parses the first member's headers as it opens.
-            with self._handle_guard(), _HeaderBudget(self._header_budget(0)):
-                self._tar = self._open_tarfile(
-                    source, format, streaming, member_streams=member_streams
-                )
-        except (tarfile.TarError, ValueError, RecursionError) as exc:
-            # Only tarfile's own (format) errors are translated, and the ValueError and
-            # RecursionError it raises on a malformed first header (see
-            # _translate_exception); anything else, and a genuine OSError from the
-            # underlying handle, propagates unchanged (see error-handling: "Genuine
-            # runtime and I/O errors are not reclassified").
-            # Release before re-raising: the exception traceback keeps this frame alive and
-            # would otherwise pin the owned fp until the caller drops the exception
-            # (inventory/fuzz catch-and-continue loops).
-            self._release_owned_stream()
-            translated = self._translate_open_error(exc)
-            if translated is None:
-                raise
-            raise translated from exc
+            self._stream = self._open_byte_stream(
+                source, format, streaming, member_streams=member_streams
+            )
+            # The first member's headers are parsed at open, so a file that is not a
+            # tar fails here (DR-15b).
+            self._walker = self._new_walker()
+            first = self._step(self._walker)
+            self._check_first(first)
+            # The walk that hands out ``first`` is the open-time one; a random-access
+            # walk started over after a discarded failure builds its own.
+            self._open_walk: tuple[TarWalker, TarEntry | TarEnd] | None = (
+                self._walker,
+                first,
+            )
         except ArchiveyError as exc:
-            # Raised by this module from inside tarfile's parse (an extended header
-            # over the metadata cap, an impossible seek): typed already, so only the
-            # context stamp is missing.
+            # Release before re-raising: the exception traceback keeps this frame alive
+            # and would otherwise pin the owned stream until the caller drops the
+            # exception (inventory/fuzz catch-and-continue loops).
             self._release_owned_stream()
             self._stamp_error_context(exc)
             raise
@@ -1122,24 +418,33 @@ class TarReader(BaseArchiveReader):
             raise
 
     def _release_owned_stream(self) -> None:
-        """Close a stream this reader opened, if any. Safe to call more than once."""
+        """Close the streams this reader opened, if any. Safe to call more than once."""
         try:
+            # Never both (see __init__), so the codec stream alone needs the finally.
+            self._close_walker_view()
             if self._owned_stream is not None:
-                self._owned_stream.close()
-                self._owned_stream = None
+                owned, self._owned_stream = self._owned_stream, None
+                owned.close()
         finally:
             if self._owned_codec_stream is not None:
-                self._owned_codec_stream.close()
-                self._owned_codec_stream = None
+                codec, self._owned_codec_stream = self._owned_codec_stream, None
+                codec.close()
 
-    def _open_tarfile(
+    def _close_walker_view(self) -> None:
+        if self._walker_view is not None:
+            view, self._walker_view = self._walker_view, None
+            view.close()
+
+    def _open_byte_stream(
         self,
         source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         *,
         member_streams: MemberStreams,
-    ) -> tarfile.TarFile:
+    ) -> BinaryIO:
+        """The TAR bytes: the source for a plain tar, archivey's codec stream for a
+        compressed one."""
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
             codec_source: str | BinaryIO
@@ -1169,199 +474,103 @@ class TarReader(BaseArchiveReader):
                 ),
                 stamp=lambda exc: self._stamp_error_context(exc),
                 collector=self._diagnostics_collector,
+                # Random access reads it only through views that seek before each
+                # read. A repeated verdict would drop the prefix of the read that
+                # reaches the damage; each member stream repeats its own.
+                repeat_verdict=streaming,
             )
-            # tarfile can mis-handle a short read() (fewer bytes than requested) from a
-            # decompressor; a BufferedReader in front guarantees full-sized reads. The cast
-            # is typeshed's split: BufferedIOBase is not BinaryIO there, but is at runtime.
             self._owned_codec_stream = stream
-            self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
-            return self._tarfile_open(
-                fileobj=self._bounded_fileobj(self._owned_stream, streaming),
-                streaming=streaming,
-            )
-        # A plain tar reads the source itself, which is full-count and bounded; the
-        # proxy in front of it only refuses impossible seeks. Do NOT slurp a path into a
-        # BytesIO — that would force the whole archive into memory up front.
-        return self._tarfile_open(
-            name=str(source.path) if source.path is not None else None,
-            fileobj=self._bounded_fileobj(
-                self._track_source_seeks(source), streaming, bounded=False
-            ),
-            streaming=streaming,
-        )
-
-    @staticmethod
-    def _bounded_fileobj(
-        fileobj: BinaryIO,
-        streaming: bool,
-        *,
-        bounded: bool = True,
-    ) -> BinaryIO:
-        """Wrap a random-access fileobj in :class:`_BoundedTarFileobj`. A forward-only
-        (streaming) open passes it through unwrapped.
-
-        ``r|`` needs no bound: tarfile's own ``_Stream.read`` loops in ``bufsize``
-        chunks. ``r:`` is the mode that hands a raw handle through. Over
-        a decompressor the read is stepped; a plain tar passes ``bounded=False``: the
-        source it wraps bounds its own reads.
-        """
+            if not streaming:
+                # Each walk buffers its own view (_new_walker). A second buffer here
+                # would fill the first one in a loop, and a loop that reaches a damaged
+                # codec tail raises and drops the bytes already decoded, though the
+                # walk may need none of the tail.
+                return stream
+            # The walker reads 512-byte blocks: a buffer in front makes each one a copy
+            # from memory, not a decoder call. It reads the codec once per read, so a
+            # cut member's recoverable prefix comes before its TruncatedError.
+            self._owned_stream = ReadAheadStream(stream, _WALK_BUFFER)
+            return self._owned_stream
+        stream = self._track_source_seeks(source)
         if streaming:
-            return fileobj
-        return _BoundedTarFileobj(fileobj, bounded=bounded)
+            # Random access buffers each walk's own view instead (_new_walker).
+            self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
+            return self._owned_stream
+        return stream
 
-    def _tarfile_open(
-        self,
-        *,
-        name: str | None = None,
-        fileobj: BinaryIO | None = None,
-        streaming: bool = False,
-    ) -> tarfile.TarFile:
-        # mode="r:" reads an *uncompressed* tar stream with random access; mode="r|" is
-        # forward-only (required for non-seekable sources). We feed either the raw file
-        # (plain tar) or our own decompressor (compressed tar), never tarfile's native
-        # r:gz/r:bz2 modes.
-        mode = "r|" if streaming else "r:"
-        return _TarFile.open(
-            name=name,
-            fileobj=fileobj,
-            mode=mode,
-            tarinfo=_TarInfo,
-            errorlevel=1,  # raise on fatal read errors (truncation/corruption surface below)
-            # UTF-8 unless the caller passed encoding=. tarfile's own default,
-            # tarfile.ENCODING, is the process filesystem encoding on POSIX, so the
-            # same archive would list differently under a non-UTF-8 locale. tarfile
-            # keeps its errors="surrogateescape" default, so undecodable bytes survive
-            # as U+DC80..U+DCFF. ustar/GNU names (and uname/gname/linkname) always use
-            # this codec, and _to_member then takes the UTF-8 reading of any such
-            # field whose bytes are valid UTF-8 (_utf8_first), so encoding= reaches
-            # only bytes that are not. A PAX record is decoded strictly as UTF-8 first
-            # and falls back to this codec when that fails (or for its own
-            # hdrcharset=BINARY), so it reaches PAX bytes that are not UTF-8 too.
-            encoding=self._encoding if self._encoding is not None else "utf-8",
-        )
+    def _new_walker(self) -> TarWalker:
+        """A walker from the start of the archive.
 
-    def _translate_open_error(self, exc: Exception) -> ArchiveyError | None:
-        """The typed error for ``exc`` raised while opening, or ``None`` to re-raise it.
-
-        Every ``tarfile.TarError`` is typed: an error of the library's own the
-        translator does not name still says the file is not a TAR it can read.
+        Streaming: over the reader's one forward stream, whose only reader it is
+        (member data is read through it). Random access: over a buffered view of its
+        own, which re-seeks the shared stream under the handle lock before each read
+        of the buffer, so member reads never move the walk. A pass reads member data
+        through this buffer too, so on a compressed tar the buffer's read-ahead into a
+        member's data never makes a member read seek back.
         """
-        translated = self._translate_exception(exc)
-        if translated is None:
-            if not isinstance(exc, tarfile.TarError):
-                return None
-            translated = CorruptionError(f"Could not open TAR archive: {exc!r}")
-        self._stamp_error_context(translated)
-        return translated
-
-    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
-        if isinstance(exc, tarfile.ReadError):
-            text = str(exc).lower()
-            if "end of data" in text or "truncat" in text or "empty file" in text:
-                return TruncatedError(f"TAR archive is truncated: {exc!r}")
-            return CorruptionError(f"Error reading TAR archive: {exc!r}")
-        if isinstance(exc, tarfile.StreamError):
-            # A forward-only read that would have to go backwards ("seeking backwards
-            # is not allowed"). tarfile reads a member's data chunks in the order its
-            # sparse map gives them, so a map with a negative entry or with chunks
-            # out of order would get here; _sparse_map_error refuses both before the
-            # first read. This branch keeps any other backward seek tarfile makes on
-            # a forward-only stream typed as damage.
-            return CorruptionError(f"Error reading TAR archive: {exc!r}")
-        if isinstance(exc, EOFError):
-            return TruncatedError(f"TAR archive is truncated: {exc!r}")
-        if isinstance(exc, ValueError) and _raised_by_tarfile(exc):
-            # A header value tarfile parses with a bare int() or tuple unpack: a GNU
-            # sparse PAX record (GNU.sparse.map / size / realsize) that is not a list
-            # of integers. A PAX sparse 1.0 map is parsed here
-            # (_TarInfo._proc_gnusparse_10), which raises CorruptionError itself.
-            return CorruptionError(f"Malformed TAR header value: {exc!r}")
-        if isinstance(exc, RecursionError) and _passes_through_tarfile(exc):
-            # tarfile parses the header after a GNU long-name/long-link or PAX header
-            # from inside the call that parsed that header, so a long enough chain of
-            # them exhausts the interpreter's stack. Writers emit at most a few ahead of
-            # one member. The chain is not bounded before that: it has no size of its
-            # own a caller could configure, and the point where it fails depends on how
-            # deep the caller's stack already is.
-            return CorruptionError(
-                "TAR archive is corrupt: too long a chain of GNU long-name or PAX "
-                "extended headers"
-            )
-        return None
-
-    def _iter_members(self) -> Iterator[ArchiveMember]:
         if self._streaming:
-            yield from self._iter_members_progressive()
+            return TarWalker(self._stream, seekable=False)
+        view = ReadAheadStream(
+            SharedView(self._stream, 0, lock=self._io_guard()), _WALK_BUFFER
+        )
+        # Only one walk runs at a time, and a pass's member streams are closed when it
+        # ends, so a walk started over replaces the last one's view.
+        self._close_walker_view()
+        self._walker_view = view
+        return TarWalker(view, seekable=True)
+
+    def _io_guard(self) -> AbstractContextManager[object]:
+        return self._handle_lock if self._handle_lock is not None else nullcontext()
+
+    def _walk_guard(self) -> AbstractContextManager[object]:
+        """Held around the walker's own reads. A streaming walker reads the shared
+        stream directly; a random-access one reads through a locked view."""
+        return self._handle_guard() if self._streaming else nullcontext()
+
+    def _step(self, walker: TarWalker) -> TarEntry | TarEnd:
+        with self._walk_guard():
+            return walker.next_entry(self._header_budget())
+
+    def _check_first(self, first: TarEntry | TarEnd) -> None:
+        """Refuse a file whose first block is not a member header or a zero block."""
+        if not isinstance(first, TarEnd):
             return
-        # Headers are pulled in batches rather than through getmembers(): the base
-        # counts each yielded member against ``max_members`` and ``max_metadata_bytes``,
-        # and a batch never reaches past what either cap has left (see
-        # _header_batch_size and _header_text_bytes), so a header bomb stops at the
-        # cap plus one header instead of after tarfile has parsed and kept every
-        # header in the file. Batches rather than one header per lock hold, because alternating
-        # header parsing with member construction measured about 1.3x slower on an
-        # ordinary 100 000-member listing; at 1 024 the difference is within noise.
-        # ``iter(self._tar)`` rather than bare next() calls, because it serves headers
-        # tarfile already loaded from its own list before reading more.
-        #
-        # A member is opened while this walk runs only in a one-pass
-        # stream_members() (_iter_with_data_random_access), which parses one header
-        # per batch and reads each member before the next header, so every seek goes
-        # forward. Otherwise the base hands out no member of a random-access listing
-        # until the walk has ended. TarFile.next() re-seeks to its own offset after a
-        # read elsewhere, so the walk stays correct either way; what a read behind the
-        # walk costs is a backward seek, on a compressed tar a decode from the start.
-        tar_iter = iter(self._tar)
-        index = 0
-        ended = False
-        byte_cap = self._config.listing_limits.max_metadata_bytes
-        text_bytes = 0
-        while not ended:
-            want = self._header_batch_size(index)
-            # Only the batch that crosses the byte cap is cut short. The count is a
-            # lower bound on the base's, so past it the base has refused already, or
-            # is not enforcing, and a batch of one would be the slow walk batching
-            # exists to avoid.
-            byte_stop = (
-                byte_cap if byte_cap is not None and text_bytes <= byte_cap else None
+        if first.kind == TarEndKind.ABSENT:
+            raise TruncatedError("TAR archive is truncated: the file is empty")
+        if first.kind == TarEndKind.SHORT:
+            raise TruncatedError(
+                f"TAR archive is truncated: it holds {first.observed_bytes} bytes, "
+                "less than one header block"
             )
-            batch: list[tarfile.TarInfo] = []
-            failure: CorruptionError | None = None
-            # The error boundary sits OUTSIDE the handle guard, so translation and
-            # stamping never run under the shared-fileobj lock. An exception the
-            # translator does not recognize (a genuine OSError from the source)
-            # propagates unchanged.
-            try:
-                with self._translated_errors():
-                    # Pinned-library audit: TarFile.next() drives seek/tell/read on
-                    # the shared fileobj, so it runs under the handle lock.
-                    with (
-                        self._handle_guard(),
-                        _HeaderBudget(self._header_budget(text_bytes)) as budget,
-                    ):
-                        for info in tar_iter:
-                            batch.append(info)
-                            text_bytes += _header_text_bytes(info)
-                            budget.set(self._header_budget(text_bytes))
-                            if len(batch) == want or (
-                                byte_stop is not None and text_bytes > byte_stop
-                            ):
-                                break
-                        else:
-                            ended = True
-            except CorruptionError as exc:
-                # Hand out the headers this batch already parsed first, so a
-                # members_report() keeps the same salvaged prefix it would have had
-                # one header at a time. These two are the only errors the base ends
-                # a walk on with its prefix kept; on any other it discards the
-                # listing, so there is nothing to hand out.
-                failure = exc
-            for info in batch:
-                yield self._to_member(info, index)
-                index += 1
-            if failure is not None:
-                raise failure
-        self._verify_tar_eof(any_members=index > 0)
+        if first.kind == TarEndKind.REJECTED:
+            raise CorruptionError(
+                f"Not a TAR archive, or a damaged one: the header at offset "
+                f"{first.offset} does not parse ({first.reason})"
+            )
+
+    def _header_budget(self) -> Budget:
+        """``(bytes left, cap)`` of ``max_metadata_bytes`` for the next member's headers.
+
+        A random-access walk the base is enforcing has what the listing has not yet
+        retained. A walk the base is not enforcing (``stream_members()``), and a
+        streaming walk, which never enforces the running total (threat-model O1),
+        still may not parse one member's headers larger than the whole cap. So may
+        not a walk already past the cap: the base refuses at the member that crosses
+        it.
+        """
+        cap = self._config.listing_limits.max_metadata_bytes
+        if cap is None:
+            return None
+        counted = self._listing_tracker.metadata_bytes
+        if self._streaming or not self._listing_enforced or counted > cap:
+            return (cap, cap)
+        return (cap - counted, cap)
+
+    def _pull_member(self, *, enforce: bool) -> ArchiveMember | None:
+        """Pull as the base does, noting whether it enforces the listing limits, which
+        sets the budget for the next member's headers (:meth:`_header_budget`)."""
+        self._listing_enforced = enforce
+        return super()._pull_member(enforce=enforce)
 
     def _register_member(
         self,
@@ -1373,47 +582,46 @@ class TarReader(BaseArchiveReader):
         """Register as the base does, then weigh a sparse member's retained map.
 
         The map can hold millions of entries from a few kilobytes of compressed
-        archive, and it stays on the member's ``TarInfo`` for the life of the listing.
+        archive, and it stays on the member's entry for the life of the listing.
         """
         super()._register_member(
             idx, member, enforce_listing_limits=enforce_listing_limits
         )
-        info = member._raw
-        if isinstance(info, tarfile.TarInfo):
-            sparse_bytes = _sparse_map_bytes(info)
-            if sparse_bytes:
-                self._listing_tracker.account_retained_bytes(
-                    sparse_bytes, enforce=enforce_listing_limits
-                )
+        entry = member._raw
+        if isinstance(entry, TarEntry) and entry.sparse is not None:
+            self._listing_tracker.account_retained_bytes(
+                len(entry.sparse) * SPARSE_ENTRY_BYTES, enforce=enforce_listing_limits
+            )
 
-    def _header_budget(self, counted: int) -> tuple[int, int] | None:
-        """``(bytes left, cap)`` of ``max_metadata_bytes`` for the next header parsed.
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        """The member walk, one header per pull.
 
-        A random-access walk the base is enforcing has ``cap - counted`` left,
-        ``counted`` being the walk's low count of what it has parsed so far
-        (:func:`_header_text_bytes`), so what is left is never understated. A walk the
-        base is not enforcing (``stream_members()``), and a streaming walk, which
-        never enforces the running total (threat-model O1), still may not parse one
-        header larger than the whole cap. So may not a walk whose count is past the
-        cap: the base refuses at the member that crosses it.
+        Each member is registered (and counted against the listing limits) before the
+        next header is parsed, so a header bomb stops at the member that crosses a cap.
+        A random-access walk started over after a discarded failure walks again from
+        the start with a walker of its own.
         """
-        cap = self._config.listing_limits.max_metadata_bytes
-        if cap is None:
-            return None
-        if self._streaming or not self._listing_enforced or counted > cap:
-            return (cap, cap)
-        return (cap - counted, cap)
+        if self._open_walk is not None:
+            walker, entry = self._open_walk
+            self._open_walk = None
+        else:
+            walker = self._new_walker()
+            with self._translated_errors():
+                entry = self._step(walker)
+        # A pass reads the data of the member the walk is at through this walker.
+        self._walker = walker
+        index = 0
+        while isinstance(entry, TarEntry):
+            yield self._to_member(entry, index)
+            index += 1
+            with self._translated_errors():
+                entry = self._step(walker)
+        self._verify_tar_eof(walker, entry, any_members=index > 0)
 
-    def _pull_member(self, *, enforce: bool) -> ArchiveMember | None:
-        """Pull as the base does, noting whether it enforces the listing limits.
-
-        The random-access walk parses headers a batch ahead of registration, so this
-        is how it learns whether a header over what is left of ``max_metadata_bytes``
-        would be refused anyway (``members()``) or must still list
-        (``stream_members()``).
-        """
-        self._listing_enforced = enforce
-        return super()._pull_member(enforce=enforce)
+    def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
+        """Forward-only member walk. Yields bare members; the base's shared progressive
+        pass stamps ids and resolves backward links."""
+        return self._iter_members()
 
     def _iter_with_data_random_access(
         self,
@@ -1423,9 +631,8 @@ class TarReader(BaseArchiveReader):
         The base's version lists every member first and then reads their data, which
         on a compressed tar decodes the stream to its end for the headers and then again
         from the start for the data. Here, when the walk has not ended yet, the walk and
-        the data share one pass: the walk parses one header at a time
-        (:meth:`_header_batch_size`), the member is registered and yielded, and its data
-        is read from where the header left the stream, so every seek goes forward.
+        the data share one pass: the member is registered and yielded, and its data is
+        read before the walk parses the next header, so every seek goes forward.
         Members are registered as they arrive, as the base's walk registers them, so
         ``members()`` afterwards serves the same list, and the pass links a hardlink to
         an earlier member only, as the streaming pass does.
@@ -1439,16 +646,20 @@ class TarReader(BaseArchiveReader):
             yield from super()._iter_with_data()
             return
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
-            return self._lazy_member_stream(member) if member.is_file else None
+        def _open_in_walk(member: ArchiveMember) -> ArchiveStream:
+            with self._translated_errors(member.name):
+                return self._open_member_stream(
+                    member, defer_sparse_error=False, in_walk=True
+                )
 
-        self._one_header_at_a_time = True
-        try:
-            yield from self._drive_pass_streams(
-                _ProgressivePassIterator(self), open_member=_open
-            )
-        finally:
-            self._one_header_at_a_time = False
+        def _open(member: ArchiveMember) -> ArchiveStream | None:
+            if not member.is_file:
+                return None
+            return self._lazy_member_stream(member, _open_in_walk)
+
+        yield from self._drive_pass_streams(
+            _ProgressivePassIterator(self), open_member=_open
+        )
 
     def _extraction_listing(self) -> AbstractContextManager[None]:
         """Enforce ``ListingLimits`` as members arrive in the extraction's one pass.
@@ -1464,81 +675,6 @@ class TarReader(BaseArchiveReader):
             return super()._extraction_listing()
         return self._enforcing_listing_limits()
 
-    def _header_batch_size(self, listed: int) -> int:
-        """How many headers the random-access walk may parse next: a full batch, or
-        what ``max_members`` has left plus the one header that trips it. Once that
-        header is listed the cap is not being enforced (``stream_members()`` on a
-        random-access reader), so the walk goes back to full batches. During a
-        one-pass ``stream_members()`` it is one header, so the walk never runs ahead
-        of the member whose data is being read."""
-        if self._one_header_at_a_time:
-            return 1
-        cap = self._config.listing_limits.max_members
-        if cap is None or listed > cap:
-            return _HEADER_BATCH
-        return min(_HEADER_BATCH, cap - listed + 1)
-
-    def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
-        """Forward-only member walk — never calls ``getmembers()``.
-
-        Yields bare members; the base's shared progressive pass stamps ids and resolves
-        backward links. Every shared-handle op runs under ``_handle_lock``, which a
-        streaming reader always has (the constructor creates it for ``streaming``).
-        """
-        lock = self._handle_lock
-        assert lock is not None, "a streaming TAR reader always holds a handle lock"
-        with self._translated_errors():
-            # Hold the lock only around each next() so a yielded consumer can open
-            # the current member without deadlock (streaming is single-owner).
-            tar_iter = iter(self._tar)
-            index = 0
-            while True:
-                with lock:
-                    if index:
-                        # Not before the first member: tarfile parsed its header at
-                        # open, and its data is still the consumer's to read.
-                        self._read_through_member_data()
-                    try:
-                        with _HeaderBudget(self._header_budget(0)):
-                            info = next(tar_iter)
-                    except StopIteration:
-                        break
-                yield self._to_member(info, index)
-                index += 1
-        self._verify_tar_eof(any_members=index > 0)
-
-    def _read_through_member_data(self) -> None:
-        """Read what is left of the last member's data area, before the next header.
-
-        A forward-only ``tarfile`` skips a member the consumer did not read by reading
-        through it, but in steps sized from the member's declared size, and without
-        noticing that the steps come back empty: a few kilobytes of archive declaring
-        a 2**45-byte member keep it looping for hours. Reading through here first
-        costs the bytes the archive actually holds, the same bytes tarfile would have
-        read on an honest archive, and stops at the first short read. tarfile's own
-        skip then has nothing left to do.
-
-        ``TarFile.offset`` is where tarfile will look for the next header: the end of
-        the member's data area in whole blocks, which for a sparse member is its
-        stored size, not its logical one. Whatever the consumer already read through
-        ``extractfile`` has moved the stream's position on, so only the rest is read.
-        Reads are bounded chunks, never the whole member.
-        """
-        fileobj = self._tar.fileobj
-        if fileobj is None:
-            return
-        data_end = self._tar.offset
-        position = fileobj.tell()
-        while position < data_end:
-            want = min(_READ_THROUGH_CHUNK, data_end - position)
-            got = len(fileobj.read(want))
-            position += got
-            if got < want:
-                raise TruncatedError(
-                    f"TAR archive is truncated: a member's data area ends at byte "
-                    f"{data_end}, but the archive ends at byte {position}"
-                )
-
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
@@ -1547,12 +683,8 @@ class TarReader(BaseArchiveReader):
             return
         # Pull from the shared instance-held progressive pass so __iter__,
         # stream_members, and members_report share one cursor and finalization.
-        # close_previous=False: tarfile invalidates the prior extractfile handle on
-        # advance; tracking previous would be incorrect.
-        # The driver's finally closes the last stream inside this translation context
-        # (pre-unify, only stream_members's finally closed it, outside translation).
-        # Close-time faults on the final member now surface typed; the outer
-        # stream_members finally still idempotently closes afterward.
+        # close_previous=False: the walk's next header leaves the previous member's
+        # stream unreadable, and the walk reads through whatever it left.
         with self._translated_errors():
 
             def _open(member: ArchiveMember) -> ArchiveStream | None:
@@ -1566,25 +698,23 @@ class TarReader(BaseArchiveReader):
                 close_previous=False,
             )
 
-    def _verify_tar_eof(self, *, any_members: bool) -> None:
-        """Verify the two-block null end-of-archive marker and surface a rejected header
-        as corruption.
+    def _verify_tar_eof(
+        self, walker: TarWalker, end: TarEnd, *, any_members: bool
+    ) -> None:
+        """Check the end-of-archive marker from where the walk stopped.
 
-        What tarfile stopped on decides first (:class:`_TarFile`). When its last header
-        parse rejected the header — a corrupt member header after the first, which
-        ``TarFile.next()`` treats as a clean end — the listing was cut short, and that
-        escalates to ``CorruptionError`` whatever the diagnostic policy says. This needs
-        no further read, so it holds in both access modes whatever follows the rejected
-        header: nothing, a zero block (a member whose data starts with one), or more
-        members.
+        A header that does not parse (a corrupt member header after the first) means
+        the listing was cut short, and that escalates to ``CorruptionError`` whatever
+        the diagnostic policy says. This needs no further read, so it holds in both
+        access modes whatever follows the rejected header: nothing, a zero block (a
+        member whose data starts with one), or more members.
 
-        Otherwise it inspects the block following tarfile's stop. ``tarfile`` has already
-        consumed the *first* null trailer block (stopping on it via ``EOFHeaderError``
-        with ``ignore_zeros=False``), so we only confirm the *second*: reading two blocks
-        here would demand a third block of trailing zeros and wrongly flag a minimal
-        ``tar -b1`` trailer. Two null blocks are valid. A short or empty read is a
-        truncated or absent trailer, reported as ``ARCHIVE_EOF_MARKER_MISSING`` under the
-        ordinary diagnostic policy.
+        A zero block ends the members. An ``x`` or ``L`` header right before it is
+        left unused, as GNU tar 1.35 lists such an archive, with no diagnostic. Only
+        the *second* marker block is checked: reading two here would demand a third
+        block of trailing zeros and wrongly flag a minimal ``tar -b1`` trailer. A short
+        or empty read is a truncated or absent trailer, reported as
+        ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary diagnostic policy.
 
         A non-null block there, after a zero block with members listed, means the
         end-of-archive marker itself is damaged: every member before it is listed and
@@ -1594,42 +724,37 @@ class TarReader(BaseArchiveReader):
         from the block after it. A zero block and then a non-null one with no member
         before them is ``CorruptionError``.
         """
-        stopped_on = self._tar.stopped_on if isinstance(self._tar, _TarFile) else None
-        if stopped_on == "rejected_header":
-            self._emit_eof_marker("rejected_header", observed_bytes=512)
+        if end.kind == TarEndKind.REJECTED:
+            self._emit_eof_marker("rejected_header", observed_bytes=BLOCKSIZE)
             return
-        fileobj = self._tar.fileobj
-        if fileobj is None:
+        if end.kind != TarEndKind.ZERO_BLOCK:
+            self._emit_eof_marker(
+                "absent" if end.kind == TarEndKind.ABSENT else "short",
+                observed_bytes=end.observed_bytes,
+            )
             return
-        with self._handle_guard():
-            chunk = fileobj.read(512)
-        if len(chunk) == 512 and chunk == b"\x00" * 512:
-            self._verify_nothing_but_zeros_to_eof()
+        stream = walker.stream_after_end()
+        with self._translated_errors(), self._walk_guard():
+            chunk = stream.read(BLOCKSIZE)
+        if len(chunk) == BLOCKSIZE and chunk == bytes(BLOCKSIZE):
+            self._verify_nothing_but_zeros_to_eof(stream)
             return
-        if len(chunk) == 512:
+        if len(chunk) == BLOCKSIZE:
             if not any_members:
-                self._emit_eof_marker("no_member", observed_bytes=512)
+                self._emit_eof_marker("no_member", observed_bytes=BLOCKSIZE)
                 return
-            if stopped_on == "zero_block":
-                # One zero block, then a damaged one: the marker is damaged, not the
-                # listing. The scan past it still runs, because on a compressed tar it
-                # is where the codec's whole-stream checksum over the members just
-                # listed is usually reached.
-                self._emit_eof_marker("damaged_second_block", observed_bytes=512)
-                self._verify_nothing_but_zeros_to_eof()
-                return
-            # The walk recorded no stop reason, yet a whole block follows. Not reached
-            # today: tarfile's other stops (no data, or a partial block) leave the
-            # source at its end. Kept as a conservative fallback, so that a stop
-            # reason nobody anticipated cannot read as a clean end.
-            assert stopped_on is None
-            self._emit_eof_marker("rejected_header", observed_bytes=512)
+            # One zero block, then a damaged one: the marker is damaged, not the
+            # listing. The scan past it still runs, because on a compressed tar it is
+            # where the codec's whole-stream checksum over the members just listed is
+            # usually reached.
+            self._emit_eof_marker("damaged_second_block", observed_bytes=BLOCKSIZE)
+            self._verify_nothing_but_zeros_to_eof(stream)
             return
         self._emit_eof_marker(
             "absent" if len(chunk) == 0 else "short", observed_bytes=len(chunk)
         )
 
-    def _verify_nothing_but_zeros_to_eof(self) -> None:
+    def _verify_nothing_but_zeros_to_eof(self, stream: BinaryIO) -> None:
         """Report a non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of the trailer.
 
         Without this, a complete trailer asserted only that the two trailer blocks were
@@ -1670,16 +795,13 @@ class TarReader(BaseArchiveReader):
         When the scan stops at its bound with the compressed stream not yet at its end,
         that checksum was never checked, and ``DIGEST_UNVERIFIABLE`` says so.
         """
-        fileobj = self._tar.fileobj
-        if fileobj is None:
-            return
         offset = 0
         while offset <= _MAX_TRAILING_SCAN:
             # One byte past the bound, to learn whether the stream ended there.
             want = min(_TRAILING_SCAN_CHUNK, _MAX_TRAILING_SCAN - offset) or 1
             try:
-                with self._translated_errors(), self._handle_guard():
-                    chunk = fileobj.read(want)
+                with self._translated_errors(), self._walk_guard():
+                    chunk = stream.read(want)
             except _StreamChecksumError:
                 # The codec's whole-stream checksum covers the members already read,
                 # so this is damage to them, not a tail that failed to decode.
@@ -1760,12 +882,12 @@ class TarReader(BaseArchiveReader):
             logger=backends_logger,
         )
 
-    def _emit_eof_marker(self, end: _TarEnd, *, observed_bytes: int) -> None:
+    def _emit_eof_marker(self, end: _EofFinding, *, observed_bytes: int) -> None:
         """Report a missing or damaged two-zero-block end-of-archive marker.
 
-        ``end`` says what was found where the marker belongs (see :data:`_TarEnd`).
+        ``end`` says what was found where the marker belongs (see :data:`_EofFinding`).
         ``"rejected_header"`` and ``"no_member"`` are corruption whatever the policy:
-        the first means tarfile read a rejected header as a clean end and shortened the
+        the first means a header that does not parse ended the walk and shortened the
         listing, the second that a file with no member is a zero block and then junk,
         which must not open as an empty tar. The other three follow the policy.
         ``"damaged_second_block"`` gets its own ``expected_marker``,
@@ -1787,9 +909,8 @@ class TarReader(BaseArchiveReader):
         elif end == "rejected_header":
             message = (
                 "TAR archive is corrupt: a member header that does not parse appears "
-                "where the next header or the end-of-archive marker was expected. "
-                "Stdlib tarfile treats a corrupt member header after the first as a "
-                "clean end of archive, so a silently shortened listing surfaces here."
+                "where the next header or the end-of-archive marker was expected, so "
+                "the members after it are not listed."
             )
             escalate_as = CorruptionError
         elif end == "no_member":
@@ -1834,57 +955,106 @@ class TarReader(BaseArchiveReader):
             return StreamCapability.SEEKABLE
         return StreamCapability.FORWARD_ONLY
 
-    def _extra_pax_headers(self, pax_headers: Mapping[str, str]) -> _ReadOnlyDict:
-        """``extra["tar.pax_headers"]`` for a member whose records are ``pax_headers``.
+    def _extra_pax_headers(self, entry: TarEntry) -> _ReadOnlyDict:
+        """``extra["tar.pax_headers"]`` for ``entry``: its PAX records, the global ones
+        in force included, as text.
 
         A read-only copy. Members that carry only the PAX global records share one,
-        as they share the records (:meth:`_TarFile.global_records`): one per member
-        cost the global records once for every 512-byte member header. Read-only so
-        that sharing it is invisible: a change made through one member cannot show
-        on another, or reach the ``TarInfo`` the reader reads.
+        as the walker shares the records: one per member cost the global records once
+        for every 512-byte member header. Read-only so that sharing it is invisible: a
+        change made through one member cannot show on another.
         """
-        if not isinstance(pax_headers, _GlobalPaxRecords):
-            return _ReadOnlyDict(pax_headers)
+        if entry.has_own_pax:
+            return _ReadOnlyDict(self._pax_headers_text(entry.pax))
         shared = self._shared_pax
-        if shared is None or shared[0] is not pax_headers:
-            shared = self._shared_pax = (pax_headers, _ReadOnlyDict(pax_headers))
+        if shared is None or shared[0] is not entry.pax:
+            shared = self._shared_pax = (
+                entry.pax,
+                _ReadOnlyDict(self._pax_headers_text(entry.pax)),
+            )
         return shared[1]
 
-    def _to_member(self, info: tarfile.TarInfo, index: int) -> ArchiveMember:
+    def _pax_headers_text(self, records: Mapping[bytes, PaxValue]) -> dict[str, str]:
+        """PAX records as text. Keys and values are UTF-8; a name value under
+        ``hdrcharset=BINARY`` uses the archive codec, and any value that is not valid
+        UTF-8 falls back to it, with undecodable bytes kept as surrogates."""
+        text: dict[str, str] = {}
+        for key, entry in records.items():
+            value = entry.value
+            if key in _PAX_NAME_KEYS and entry.binary:
+                decoded = value.decode(self._codec, "surrogateescape")
+            else:
+                try:
+                    decoded = value.decode("utf-8")
+                except UnicodeDecodeError:
+                    decoded = value.decode(self._codec, "surrogateescape")
+            text[key.decode("utf-8", "surrogateescape")] = decoded
+        return text
+
+    def _decode_name(
+        self, raw: bytes, source: NameSource | None, binary: bool
+    ) -> tuple[str, bool]:
+        """A name, link name, user or group name as text, and whether the UTF-8
+        reading was taken over the caller's ``encoding=``.
+
+        A PAX value is UTF-8 unless its block says ``hdrcharset=BINARY``; one that is
+        not valid UTF-8 falls back to the archive codec. A ustar or GNU field, or a
+        ``BINARY`` PAX value, declares no encoding: it is UTF-8 when its bytes are
+        valid UTF-8, else the caller's ``encoding=`` (UTF-8 with surrogateescape by
+        default), the rule every format follows.
+        """
+        if source is NameSource.PAX and not binary:
+            try:
+                return raw.decode("utf-8"), False
+            except UnicodeDecodeError:
+                return raw.decode(self._codec, "surrogateescape"), False
+        codec_text = raw.decode(self._codec, "surrogateescape")
+        if self._encoding is None or raw.isascii():
+            return codec_text, False
+        try:
+            utf8_text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return codec_text, False
+        return utf8_text, utf8_text != codec_text
+
+    def _to_member(self, entry: TarEntry, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
         stamps, so the diagnostics raised here can name it before it has one."""
-        member_type = _member_type(info)
-        pax = self._tar.pax_headers
+        member_type = _member_type(entry)
+        presented, inferred = self._decode_name(
+            entry.name, entry.name_source, entry.name_binary
+        )
+        if entry.name_source is NameSource.PAX or member_type == MemberType.DIRECTORY:
+            # A PAX path is read with its trailing slashes removed, as tarfile reads
+            # it; a directory's slash is its type.
+            presented = presented.rstrip("/") or presented
         # TAR is a POSIX format: a backslash is a legal filename character, not a separator.
-        presented = self._utf8_first(info, "path", info.name, pax)
         name = normalize_member_name(
             presented, member_type, backslash_is_separator=False
         )
-        raw_name = _recover_raw_name(info, self._tar.encoding, self._tar.errors, pax)
 
-        link_target = (
-            self._utf8_first(info, "linkpath", info.linkname, pax)
-            if member_type in (MemberType.SYMLINK, MemberType.HARDLINK)
-            else None
-        )
-
-        # tarfile folds a PAX mtime (sub-second/timezone) into TarInfo.mtime already, so this
-        # one field honors both the standard ustar mtime and the PAX override. A hostile
-        # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
-        # sink the whole listing, so it degrades to None and is reported, as _pax_time does.
-        modified = unix_to_datetime(info.mtime)
-        timestamp_issues: list[TimestampIssue] = []
-        if modified is None:
-            timestamp_issues.append(
-                _tar_time_issue(info, "mtime", repr(info.mtime), pax_record=False)
+        link_target: str | None = None
+        if entry.linkname is not None:
+            link_target, _ = self._decode_name(
+                entry.linkname, entry.linkname_source, entry.linkname_binary
             )
-        elif info.mtime == 0 and "mtime" in info.pax_headers:
-            # tarfile turns a PAX mtime that is not a number into 0 with no error, so
-            # the Unix epoch here can stand for a value that was never readable.
-            _, issue = _pax_time(info, "mtime")
+
+        timestamp_issues: list[TimestampIssue] = []
+        modified: datetime | None
+        if entry.pax and _pax_text(entry, b"mtime") is not None:
+            modified, issue = _pax_time(entry, "mtime", presented)
             if issue is not None:
-                modified = None
                 timestamp_issues.append(issue)
+        else:
+            # A hostile out-of-range value (a base-256 mtime beyond datetime's range)
+            # must not sink the whole listing, so it degrades to None and is reported.
+            modified = unix_to_datetime(entry.header.mtime)
+            if modified is None:
+                timestamp_issues.append(
+                    _tar_time_issue(
+                        presented, "mtime", repr(entry.header.mtime), pax_record=False
+                    )
+                )
 
         compression = (
             _STORED_COMPRESSION
@@ -1892,87 +1062,82 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        # The typeflag as stored: NUL for an old-style directory, whose ``type`` is
-        # DIRTYPE.
-        stored_type = (
-            tarfile.AREGTYPE
-            if getattr(info, "old_style_directory", False)
-            else info.type
-        )
-        extra = MemberExtra({"tar.type": stored_type})
-        special = special_file_type_from_tar_typeflag(info.type)
+        # The typeflag as stored: NUL for an old-style directory.
+        extra = MemberExtra({"tar.type": entry.typeflag})
+        special = special_file_type_from_tar_typeflag(entry.typeflag)
         if special is not None:
-            if info.size:
+            if entry.size:
                 # The typeflag is structure in TAR, so a device or FIFO header has no
-                # data: GNU tar and libarchive ignore its size field and resync at the
-                # next header ("Skipping to next header", exit 2). tarfile does not
-                # skip the declared blocks either, so a non-zero size usually
-                # desynchronises the walk and already surfaced as CorruptionError; an
-                # all-zero payload instead reads as the end-of-archive marker and the
-                # declared size would vanish without a word. Refused here, at the
-                # header, so both shapes are the same damage (DR-25).
+                # data: GNU tar and libarchive ignore its size field and read the next
+                # header where the "data" starts. An all-zero payload would then read
+                # as the end-of-archive marker and every later member would vanish
+                # without a word, so the header is refused as damage (DR-25).
                 raise CorruptionError(
                     f"TAR header for {quoted(name)} is a {special.replace('_', ' ')} "
-                    f"that declares {info.size} bytes of data; a device or FIFO entry "
+                    f"that declares {entry.size} bytes of data; a device or FIFO entry "
                     "has no data, and tar skips such a header as damaged",
                     archive_name=self._archive_name,
                     member_name=name,
                 )
             # The cross-format key says which kind the archive recorded (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
-        if info.pax_headers:
-            extra["tar.pax_headers"] = self._extra_pax_headers(info.pax_headers)
-        if info.isdev():
-            extra["tar.devmajor"] = info.devmajor
-            extra["tar.devminor"] = info.devminor
+        if entry.pax:
+            extra["tar.pax_headers"] = self._extra_pax_headers(entry)
+        if entry.typeflag in _DEVICE_TYPES:
+            extra["tar.devmajor"] = entry.header.devmajor
+            extra["tar.devminor"] = entry.header.devminor
 
         member = ArchiveMember(
             type=member_type,
             name=name,
-            raw_name=raw_name,
-            size=info.size if member_type == MemberType.FILE else None,
+            raw_name=entry.name,
+            size=entry.size if member_type == MemberType.FILE else None,
             modified=modified,
             # A GNU base-256 mode field can hold a negative or wider-than-32-bit value,
             # which stat.S_IMODE refuses with OverflowError. Masked first, as RAR does:
             # the permission bits are the low twelve, which is what S_IMODE keeps.
-            mode=stat.S_IMODE(info.mode & 0o7777),
-            uid=info.uid,
-            gid=info.gid,
+            mode=stat.S_IMODE(entry.header.mode & 0o7777),
+            uid=entry.uid,
+            gid=entry.gid,
             compression=compression,
             extra=extra,
-            _raw=info,  # carry the TarInfo so _open_member needs no name/id lookup table
+            _raw=entry,  # carry the entry so _open_member needs no name/id lookup table
         )
         # Skip defaulted None/False fields on the listing hot path (perf review L2).
-        if info.pax_headers:
-            accessed, issue = _pax_time(info, "atime")
+        if entry.pax:
+            accessed, issue = _pax_time(entry, "atime", presented)
             if accessed is not None:
                 member.accessed = accessed
             elif issue is not None:
                 timestamp_issues.append(issue)
             # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
             # ``ctime``, never ``created``.
-            ctime, issue = _pax_time(info, "ctime")
+            ctime, issue = _pax_time(entry, "ctime", presented)
             if ctime is not None:
                 member.ctime = ctime
             elif issue is not None:
                 timestamp_issues.append(issue)
             # libarchive writes the source's birth time, where the OS has one, as a PAX
             # extension keyword. It is the only TAR writer known to store a birth time.
-            birth, issue = _pax_time(info, "LIBARCHIVE.creationtime")
+            birth, issue = _pax_time(entry, "LIBARCHIVE.creationtime", presented)
             if birth is not None:
                 member.created = birth
             elif issue is not None:
                 timestamp_issues.append(issue)
-        if info.uname:
-            member.uname = self._utf8_first(info, "uname", info.uname, pax)
-        if info.gname:
-            member.gname = self._utf8_first(info, "gname", info.gname, pax)
-        if link_target is not None:
+        uname = self._owner_name(entry.uname, entry.uname_pax)
+        if uname:
+            member.uname = uname
+        gname = self._owner_name(entry.gname, entry.gname_pax)
+        if gname:
+            member.gname = gname
+        if link_target is not None and member_type in (
+            MemberType.SYMLINK,
+            MemberType.HARDLINK,
+        ):
             member.link_target = link_target
-        # issparse() covers all four GNU encodings: the old ``S`` typeflag and PAX
-        # sparse 0.0 / 0.1 / 1.0, which GNU tar writes under ``--format=pax`` with a
-        # plain ``0`` typeflag.
-        if info.issparse():
+        # All four GNU encodings: the old ``S`` typeflag and PAX sparse 0.0 / 0.1 /
+        # 1.0, which GNU tar writes under ``--format=pax`` with a plain ``0`` typeflag.
+        if entry.sparse_format is not None:
             member.is_sparse = True
         emit_member_name_normalized(
             self._diagnostics_collector,
@@ -1983,9 +1148,9 @@ class TarReader(BaseArchiveReader):
         )
         for issue in timestamp_issues:
             self._emit_timestamp_invalid(member, index, issue)
-        if presented != info.name:
-            # _utf8_first took the UTF-8 reading over the caller's encoding=, which
-            # ZIP and RAR 1.5-4 report the same way.
+        if inferred:
+            # The UTF-8 reading was taken over the caller's encoding=, which ZIP and
+            # RAR 1.5-4 report the same way.
             assert self._encoding is not None
             self._emit_name_encoding_inferred(
                 member,
@@ -1998,74 +1163,95 @@ class TarReader(BaseArchiveReader):
                     f"{quoted(member.name)}"
                 ),
             )
+        if entry.has_own_pax:
+            # The records live on, decoded, in extra["tar.pax_headers"]; the parsed
+            # copy is not kept twice. A shared global mapping costs nothing per member.
+            entry.pax = _NO_PAX
         return member
 
-    def _utf8_first(
-        self,
-        info: tarfile.TarInfo,
-        key: str,
-        text: str,
-        global_headers: Mapping[str, str],
-    ) -> str:
-        """``text`` as UTF-8 when tarfile decoded it with the archive codec from bytes
-        that are valid UTF-8, else ``text`` unchanged.
-
-        A ustar or GNU field does not declare its encoding, so the caller's
-        ``encoding=`` applies only to bytes that are not valid UTF-8, as in every
-        format. A field tarfile took from a PAX record (``key``) was already decoded
-        UTF-8 first. ASCII text, and every field under the UTF-8 default, is
-        unchanged. A codec that cannot give the bytes back keeps tarfile's text.
-        """
-        if self._encoding is None or text.isascii():
-            return text
-        if _pax_field_is_utf8(info, key, text, global_headers):
-            return text
-        try:
-            return text.encode(self._tar.encoding, self._tar.errors).decode("utf-8")
-        except UnicodeError:
-            return text
+    def _owner_name(self, header: bytes, pax: PaxValue | None) -> str:
+        """``uname`` or ``gname``: a PAX record of that name overrides the header's."""
+        if pax is not None:
+            return self._decode_name(pax.value, NameSource.PAX, pax.binary)[0]
+        return self._decode_name(header, NameSource.HEADER, False)[0]
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        # The callee takes the handle guard inside this boundary.
         with self._translated_errors(member.name):
             return self._open_member_stream(member, defer_sparse_error=False)
 
     def _open_member_stream(
-        self, member: ArchiveMember, *, defer_sparse_error: bool
+        self,
+        member: ArchiveMember,
+        *,
+        defer_sparse_error: bool,
+        in_walk: bool = False,
     ) -> ArchiveStream:
         """Open ``member``'s data. A bad sparse map raises here, or with
         ``defer_sparse_error`` on the first read: a forward-only consumer that skips
-        the member does not read the bad map, and tarfile moves on to the next header
-        by the member's stored end."""
-        info = member._raw
-        assert isinstance(info, tarfile.TarInfo), (
-            "TAR member is missing its TarInfo handle"
-        )
-        sparse_error = _sparse_map_error(info)
-        if sparse_error is not None:
-            if not defer_sparse_error:
-                raise sparse_error
+        the member does not read the bad map, and the walk moves on to the next
+        header by the member's stored size.
 
-            def _refuse(
-                error: CorruptionError | UnsupportedFeatureError = sparse_error,
-            ) -> BinaryIO:
-                raise error
-
-            return self._wrap_member_stream(
-                None, member.name, open_fn=_refuse, size=member.size
+        ``in_walk`` is for a random-access pass: the data is read through the walk's
+        own stream, as a streaming walk reads it, which saves the re-seek a separate
+        view makes on every read. The pass closes the stream before the walk moves
+        on, and no other listing can run during the pass."""
+        entry = member._raw
+        assert isinstance(entry, TarEntry), "TAR member is missing its entry"
+        if entry.sparse is not None:
+            sparse_error = validate_sparse_map(
+                entry.sparse, entry.size, entry.stored_size, quoted(member.name)
             )
-        # Callers put their translation boundary outside this guard, so
-        # translation/stamping never run while the shared-fileobj lock is held.
-        with self._handle_guard():
-            raw = self._tar.extractfile(info)
-        if raw is None:
-            # Only FILE members reach here (the base follows links/skips non-data members),
-            # so a None stream means a zero-length or special entry; present an empty stream.
-            raw = BytesIO(b"")
-        stream: BinaryIO = ensure_binaryio(raw)
-        if self._handle_lock is not None:
+            if sparse_error is not None:
+                if not defer_sparse_error:
+                    raise sparse_error
+
+                def _refuse(
+                    error: CorruptionError | UnsupportedFeatureError = sparse_error,
+                ) -> BinaryIO:
+                    raise error
+
+                return self._wrap_member_stream(
+                    None, member.name, open_fn=_refuse, size=member.size
+                )
+        stream: BinaryIO
+        # Whether the member's data runs past the end of the archive.
+        cut = False
+        if self._streaming or in_walk:
+            stream = self._walker.open_data(entry)
+        else:
+            # A view of its own: reads re-seek the shared stream under the handle lock,
+            # so members, and the walk, read independently.
+            view = SharedView(
+                self._stream,
+                entry.data_offset,
+                entry.stored_size,
+                lock=self._io_guard(),
+            )
+            # The view stops at the end of the archive and then returns b"". The length
+            # check is enabled for a cut member alone, so it reads what is there and
+            # then raises TruncatedError. Every other member keeps the bare ``size``.
+            cut = view.size is not None and view.size < entry.stored_size
+            stream = view
+            if self._compressed:
+                # The codec stream has no buffer of its own here (_open_byte_stream),
+                # so a read smaller than this would cost a decoder seek and read. The
+                # buffer sits above the view and reads it at most once per read, so a
+                # cut member's recoverable prefix comes before its TruncatedError.
+                stream = ReadAheadStream(stream, _WALK_BUFFER)
+        if entry.sparse is not None:
+            stream = SparseStream(
+                stream, entry.sparse.offsets, entry.sparse.lengths, entry.size
+            )
+        if self._streaming:
+            assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
-        return self._wrap_member_stream(stream, member.name, size=member.size)
+        return self._wrap_member_stream(
+            stream,
+            member.name,
+            size=member.size,
+            expected_size=member.size if cut else None,
+            verify_member=member if cut else None,
+        )
 
     def _get_archive_info(self) -> ArchiveInfo:
         stream_cap = self._source_stream_capability()
@@ -2095,84 +1281,11 @@ class TarReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
+        # Close what this reader built, even when a close raises: teardown runs once.
+        # The source closes with the reader, after this. Under the handle lock, so a
+        # concurrent member read never runs on a stream being closed.
         with self._handle_guard():
-            try:
-                self._tar.close()
-            finally:
-                # tarfile never closes an external fileobj, so close the decompression
-                # stream we built, even when close() raised: teardown runs once. The
-                # source closes with the reader, after this.
-                self._release_owned_stream()
-
-
-def _recover_raw_name(
-    info: tarfile.TarInfo,
-    encoding: str,
-    errors: str,
-    global_headers: Mapping[str, str],
-) -> bytes | None:
-    """Recover the stored name bytes from tarfile's decoded ``info.name``.
-
-    The codec depends on where the name came from. A ustar or GNU long-name field is
-    decoded with the archive ``encoding`` and ``errors`` (surrogateescape by default), so
-    encoding back with the same pair round-trips. A PAX ``path`` record is decoded
-    strictly as UTF-8 (strictly with ``encoding`` when its own header block says
-    ``hdrcharset=BINARY``), and only when that fails with ``encoding`` + ``errors``.
-
-    Where the name came from is inferred, not recorded: ``info.pax_headers`` has the
-    archive's global headers merged in, and tarfile keeps no per-block record. The name
-    is taken as a PAX name when it equals ``pax_headers["path"]`` (a GNU long name that
-    overrode an inherited global ``path`` differs from it), and ``BINARY`` is honoured
-    only when it is not the inherited global value (tarfile reads ``hdrcharset`` from
-    the member's own block only). A block that repeats the global ``BINARY``, or a long
-    name equal to a global ``path``, is misread; both need a crafted archive and matter
-    only when ``encoding`` is not UTF-8. :func:`_pax_field_is_utf8` says what the first
-    misread costs.
-
-    For a PAX name the bytes are taken as UTF-8, the spec's encoding. A name that UTF-8
-    cannot encode holds surrogates, which only the fallback decode produces, so it is
-    encoded back with the fallback pair. What stays ambiguous is a fallback decode under
-    a codec that yields no surrogates (``latin-1``, say) of bytes that are not UTF-8: the
-    string does not say which arm produced it, and the spec's reading wins.
-
-    Returns ``None`` when no codec reproduces the name, which ``ArchiveMember.raw_name``
-    documents as "could not be recovered". One unencodable name must not sink the
-    listing.
-    """
-    try:
-        if _pax_field_is_utf8(info, "path", info.name, global_headers):
-            try:
-                return info.name.encode("utf-8")
-            except UnicodeEncodeError:
-                pass
-        return info.name.encode(encoding, errors)
-    except UnicodeEncodeError:
-        return None
-
-
-def _pax_field_is_utf8(
-    info: tarfile.TarInfo, key: str, text: str, global_headers: Mapping[str, str]
-) -> bool:
-    """Whether tarfile took ``text`` from the PAX record ``key`` and read it as UTF-8.
-
-    Inferred as :func:`_recover_raw_name` describes: the text equals the record, and
-    the member's own block does not say ``hdrcharset=BINARY``.
-
-    ``info.pax_headers`` merges the global headers into the member's, and tarfile keeps
-    no record of which block a key came from. So a member block that repeats a global
-    ``hdrcharset=BINARY`` reads here as "not BINARY", though tarfile decoded its records
-    with the archive codec. That is the chosen wrong answer: the other one misreads a
-    ``BINARY`` set only globally, which tarfile ignores. It needs a crafted archive and
-    an ``encoding=`` that is not UTF-8, and then reaches the presented name, link
-    target, ``uname`` and ``gname`` (no UTF-8 reading is taken) and ``raw_name`` (the
-    text is encoded back as UTF-8, not with the codec). The test
-    ``test_pax_member_repeating_a_global_binary_charset_keeps_the_codec_reading`` pins
-    it.
-    """
-    if info.pax_headers.get(key) != text:
-        return False
-    charset = info.pax_headers.get("hdrcharset")
-    return not (charset == "BINARY" and global_headers.get("hdrcharset") != charset)
+            self._release_owned_stream()
 
 
 class TarReadBackend(ReadBackend):
@@ -2189,7 +1302,7 @@ class TarReadBackend(ReadBackend):
     # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
-    USES_ENCODING = True  # passed to tarfile.open(encoding=...) for name decoding
+    USES_ENCODING = True  # the fallback codec for names that are not valid UTF-8
 
     def open_read(
         self,

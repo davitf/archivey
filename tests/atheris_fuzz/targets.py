@@ -86,6 +86,9 @@ _MAX_MEMBERS = 10_000
 _MAX_ZIP_READ_MEMBERS = 8
 _MAX_ZIP_READ_BYTES = 64 * 1024
 _MAX_STREAM_READ_BYTES = 256 * 1024
+# Bounded TAR member reads: the walk's data skip and sparse expansion.
+_MAX_TAR_READ_MEMBERS = 8
+_MAX_TAR_READ_BYTES = 64 * 1024
 
 # Empty + common corpus password for the encrypted ZIP and 7z seeds.
 _PASSWORD_CANDIDATES: list[str | bytes] = ["", "password"]
@@ -163,14 +166,21 @@ def zip_open_one(data: bytes) -> None:
 
 
 def tar_open_one(data: bytes) -> None:
+    """List a TAR archive and read the first members' data, sparse maps included."""
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.TAR, config=_FUZZ_CONFIG
         ) as arc:
-            for i, member in enumerate(arc):
+            for i, (member, stream) in enumerate(arc.stream_members()):
                 if i >= _MAX_MEMBERS:
                     break
                 _ = member.name
+                if stream is not None and i < _MAX_TAR_READ_MEMBERS:
+                    try:
+                        stream.read(_MAX_TAR_READ_BYTES)
+                    except ArchiveyError:
+                        # A damaged member's data; keep walking.
+                        continue
     except ArchiveyError:
         return
 

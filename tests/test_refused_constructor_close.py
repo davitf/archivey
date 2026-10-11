@@ -236,6 +236,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
     ),
+    "archivey.internal.streams.streamtools.readahead.ReadAheadStream": (
+        "assigns every field close() reads before DelegatingStream.__init__"
+    ),
     "archivey.internal.streams.streamtools.sparse.SparseStream": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),

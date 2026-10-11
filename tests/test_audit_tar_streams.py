@@ -374,7 +374,7 @@ _PACKED = b"A" * 512 + b"B" * 512
             CorruptionError,
             "ends past the member's size",
         ),
-        ([(0, 512)], 8192, CorruptionError, "accounts for only 512"),
+        ([(0, 512)], 8192, CorruptionError, "accounts for 512 bytes"),
     ],
     ids=[
         "out-of-order",
