@@ -182,8 +182,8 @@ class DelegatingStream(ReadOnlyIOStream):
     :class:`~archivey.internal.streams.streamtools.slice.SlicingStream` /
     :class:`~archivey.internal.streams.streamtools.slice.SharedView`, which borrow
     unless told otherwise. The owning default is load-bearing — every production
-    subclass sits in a close chain that must reach the inner (a tar ``extractfile``
-    handle, a ``PyCdlibIO``, a measured source, an accelerator). Flipping it to
+    subclass sits in a close chain that must reach the inner (a TAR sparse
+    member's view, a ``PyCdlibIO``, a measured source, an accelerator). Flipping it to
     borrow would make a forgotten keyword a leak the leak oracle does not pin
     (it ignores default DelegatingStream constructors). A wrapper that must not
     close what it wraps is not a ``DelegatingStream``: the source boundary's

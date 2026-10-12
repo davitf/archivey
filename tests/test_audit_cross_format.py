@@ -240,6 +240,17 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
     return out
 
 
+def _tar_header_mtime_overflow(tmp_path: Path) -> Path:
+    out = tmp_path / "mtime.tar"
+    # GNU stores the value as base-256 in the header itself.
+    with tarfile.open(out, "w", format=tarfile.GNU_FORMAT) as tf:
+        info = tarfile.TarInfo("f.txt")
+        info.size = 1
+        info.mtime = 2**62  # past datetime's range
+        tf.addfile(info, io.BytesIO(b"x"))
+    return out
+
+
 # ``field`` is the member attribute in every format; the stored record's own name is
 # only in the message. See MemberTimestampContext.
 @pytest.mark.parametrize(
@@ -275,14 +286,20 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
             re.escape("(2001, 13, 1, 0, 0, 0)"),
             id="zip-month-13",
         ),
-        # The pax record carries the time as a decimal string; tarfile reads it back
-        # as a float.
+        # The PAX record carries the time as a decimal string, reported as stored.
         pytest.param(
             _tar_mtime_overflow,
+            "TAR PAX mtime",
+            "tar",
+            re.escape(repr(str(2**62))),
+            id="tar-mtime-overflow",
+        ),
+        pytest.param(
+            _tar_header_mtime_overflow,
             "TAR mtime",
             "tar",
-            r"4\.6116\d*e\+18",
-            id="tar-mtime-overflow",
+            str(2**62),
+            id="tar-header-mtime-overflow",
         ),
     ],
 )

@@ -412,6 +412,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.crypto as crypto
     import archivey.internal.streams.decompressor_stream as decompressor_stream
     import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.readahead as readahead
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
     import archivey.internal.streams.streamtools.sparse as sparse
@@ -429,6 +430,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
+        readahead.ReadAheadStream,  # the inner's offsets
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
         sevenzip_pipeline._DecodedPastSizeCheck,  # same offsets as the codec it wraps
@@ -477,15 +479,14 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
         # bytes and has no seek-point table to forward to.
         codecs.lzma_codec._RefusedAloneStream,
-        # Sits under tarfile, which hands out member data through its own
-        # ExFileObject: nothing above it can ask it for a resume offset.
-        tar_reader._BoundedTarFileobj,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
-        # A member's stored bytes, read forward from a forward-only walk's stream
-        # (for .tar.gz, the decompressed stream). TAR stores member data as is, so
-        # no codec above it has a table, and a forward-only walk resumes nowhere.
+        # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
+        # the decompressed stream) in one pass. TAR stores member data as is, so no
+        # codec above it has a table, and a pass's member streams are forward-only.
         tar_parser._ForwardSlice,
+        # A random-access member's data view: the view's offsets, forwarded.
+        tar_reader._MemberDataView,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
@@ -607,6 +608,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.backends.rar_copy_sources as rar_copy_sources
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
+    import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.external.cli as cli
     import archivey.internal.external.unar as unar
@@ -614,6 +616,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.readahead as readahead
     import archivey.internal.streams.streamtools.sparse as sparse
 
     owns_via_base = {
@@ -633,6 +636,8 @@ def test_delegating_stream_close_inventory() -> None:
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
         sparse.SparseStream,
+        readahead.ReadAheadStream,
+        tar_reader._MemberDataView,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,

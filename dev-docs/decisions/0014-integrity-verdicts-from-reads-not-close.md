@@ -48,6 +48,12 @@ asked for a verdict at all.
   concluding read, which hashes it. Only a read that starts past the frontier, after a
   jump by a seek index, an accelerator or random access, forfeits the digest. The
   maintainer asked for this on 2026-10-10.
+  One stream opts out: a random-access compressed TAR's archive-level codec stream
+  (`open_codec_stream(repeat_verdict=False)`). No caller reads it; the reader's own
+  views do, and they seek before every read, so each read would count as rewound and
+  the short read that reaches the damage would be withheld, dropping the prefix of a
+  cut member. Each member stream over those views keeps the rule. Reopen this if a
+  stream a caller reads is ever built with the flag off.
 - `close()` never raises a content error (target contract; best-effort on a few
   backends today).
 

@@ -186,6 +186,7 @@ def open_codec_stream(
     collector: DiagnosticCollector | None = None,
     seekable: bool | None = None,
     on_close: Callable[[], None] | None = None,
+    repeat_verdict: bool = True,
 ) -> ArchiveStream:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
@@ -206,6 +207,10 @@ def open_codec_stream(
     ``collector`` goes to the returned stream and, through ``config.collector``, to the
     codec's own decompressor, which is where a degraded seek index is reported. A
     ``config`` that already carries a collector keeps it when ``collector`` is omitted.
+
+    ``repeat_verdict=False`` makes the stream raise each error as the decoder raises
+    it, and not repeat the first one after a seek (``ArchiveStream._fail``). It is for a
+    stream that only a reader's own views read, which seek before every read.
     """
     if collector is not None:
         config = replace(config, collector=collector)
@@ -247,4 +252,5 @@ def open_codec_stream(
         rewind_warning=backend.rewind_warning if stream_seekable else None,
         collector=config.collector,
         on_close=on_close,
+        repeat_verdict=repeat_verdict,
     )

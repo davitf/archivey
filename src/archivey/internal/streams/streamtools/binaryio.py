@@ -351,9 +351,10 @@ def is_seekable(stream: object) -> bool:
 
     ``seekable()`` on some stdlib objects is broken rather than missing — notably
     ``tarfile.ExFileObject`` in ``r|`` (streaming) mode, whose ``seekable()`` delegates
-    to ``tarfile._Stream`` which has no ``seekable()`` method (``AttributeError``). Those
-    member streams are forward-only by design (``r|`` forbids backward seeks), so treating
-    them as non-seekable is correct.
+    to ``tarfile._Stream`` which has no ``seekable()`` method (``AttributeError``). A
+    caller can pass such a member stream as a source. Those member streams are
+    forward-only by design (``r|`` forbids backward seeks), so treating them as
+    non-seekable is correct.
     """
     if isinstance(stream, _BUFFER_TYPES):
         raw = stream.raw
@@ -609,11 +610,14 @@ def read_within_reach(
     parts = [data]
     taken = len(data)
     while taken < size:
-        part = inner.read(min(size - taken, step))
-        if not part:
-            break
+        want = min(size - taken, step)
+        part = inner.read(want)
         parts.append(part)
         taken += len(part)
+        if len(part) < want:
+            # A short read is the end (ADR 0014). Asking again would pull a decoder's
+            # deferred error into this call and drop the bytes already joined.
+            break
     return b"".join(parts)
 
 
