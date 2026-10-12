@@ -56,6 +56,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
@@ -1050,6 +1051,14 @@ class _RespawnStream(ReadOnlyIOStream):
             self._close_inner()
         self._pos = target
         return self._pos
+
+    def nearest_resume_offset(self, target: int) -> int:
+        """Where the output restarts to reach ``target``: the live pipe's position when
+        ``target`` is at or past it, else 0 (a fresh process). A member's verifier asks
+        this to see that reaching a forward target decodes the skipped bytes anyway."""
+        if self._inner is not None and self._pipe_needed(target) >= self._pipe_pos:
+            return self._pipe_pos
+        return 0
 
     def _sync_pipe(self) -> BinaryIO:
         inner = self._ensure()
@@ -2820,6 +2829,7 @@ class RarReader(BaseArchiveReader):
             raise LinkTargetNotFoundError(
                 "The source of this RAR file copy is not an earlier file member of "
                 "the archive",
+                reason=LinkTargetNotFoundReason.UNRESOLVED,
                 archive_name=self._archive_name,
                 member_name=member.name,
                 link_target=member.link_target,

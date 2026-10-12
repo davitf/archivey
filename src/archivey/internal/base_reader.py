@@ -51,6 +51,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
@@ -547,7 +548,7 @@ class BaseArchiveReader(ArchiveReader):
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
         # A backend that shares one underlying handle across member streams (zipfile fp,
-        # tarfile fileobj, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
+        # the TAR walk's stream, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
         # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
         # handle to serialize (default readers, path-per-open backends).
@@ -721,8 +722,8 @@ class BaseArchiveReader(ArchiveReader):
 
         Backends supply an ``open_member`` hook (return ``None`` for non-file members)
         and an optional ``cleanup`` for pass-scoped resources (solid block, ``unrar``
-        pipe). ``close_previous=False`` is for TAR streaming, where tarfile invalidates
-        the prior ``extractfile`` handle on advance.
+        pipe). ``close_previous=False`` is for TAR streaming, where the walk invalidates
+        the prior member stream on advance.
 
         The driver **always** closes the last still-open stream in its ``finally``
         before running ``cleanup`` — never tear down a solid block / pipe under a live
@@ -799,22 +800,31 @@ class BaseArchiveReader(ArchiveReader):
             after_members=_raise_report_error,
         )
 
-    def _lazy_member_stream(self, member: ArchiveMember) -> ArchiveStream:
+    def _lazy_member_stream(
+        self,
+        member: ArchiveMember,
+        open_member: Callable[[ArchiveMember], BinaryIO] | None = None,
+        *,
+        track_output: bool = False,
+    ) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
-        already returns an ``ArchiveStream``; nesting is collapsed inside
+        returns an ``ArchiveStream``; nesting is collapsed inside
         :meth:`ArchiveStream._ensure_open` so the public handle is a **single**
-        wrapper. Deferral does not change what a failed open raises — only when.
+        wrapper. ``open_member`` replaces it, and may return a raw byte stream
+        instead: then ``track_output=True``, because nothing inside the opener counts
+        the bytes. Deferral does not change what a failed open raises — only when.
         """
+        opener = self._open_member if open_member is None else open_member
         return self._register_public_stream(
             self._wrap_member_stream(
                 None,
                 member.name,
-                open_fn=lambda: self._open_member(member),
+                open_fn=lambda: opener(member),
                 size=member.size,
-                # ``_open_member`` already applied output tracking inside its wrap.
-                track_output=False,
+                # Default False: ``_open_member`` already counts inside its wrap.
+                track_output=track_output,
                 seekable=self._seek_declared(),
             )
         )
@@ -1532,8 +1542,7 @@ class BaseArchiveReader(ArchiveReader):
         stamp it, so a duplicate name in the prefix is superseded by a later copy in
         the prefix; a copy the pass yields after the discard cannot supersede it.
 
-        A backend that keeps its own record of the walk (TAR's ``tarfile``) extends
-        this to drop it too.
+        A backend that keeps its own record of the walk extends this to drop it too.
         """
         _apply_last_entry_wins_is_current(self._listed)
         self._listing_discarded = True
@@ -2936,22 +2945,23 @@ class BaseArchiveReader(ArchiveReader):
 
         The cycle policy differs from :meth:`_resolve_link` on purpose. That one is
         listing bookkeeping and leaves ``link_target_member`` unset on a cycle or dead
-        end; this one is a caller asking for bytes, so it raises ``ReadError`` /
-        ``LinkTargetNotFoundError``. Do not unify them.
+        end; this one is a caller asking for bytes, so it raises
+        ``LinkTargetNotFoundError`` (a ``ReadError``). Do not unify them.
         """
         current = member
         while current.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            if current._member_id is None:
-                raise LinkTargetNotFoundError(
-                    "Link target is unknown",
-                    member_name=current.name,
-                )
+            # Every hop is registered: ``open()`` refuses a member whose ``_archive_id``
+            # is not this reader's, ``_register_member`` sets that id together with
+            # ``_member_id``, and ``link_target_member`` / ``_find_link_target`` hand
+            # back registered members.
+            assert current._member_id is not None, current.name
             member_id = current._member_id
             if member_id in visited:
-                # The CLI's ``_is_link_destination_error`` (``cli/test_cmd.py``)
-                # matches this exact message, since the CLI may not import a shared
-                # constant from ``internal``. Change both together.
-                raise ReadError("Link cycle detected", member_name=current.name)
+                raise LinkTargetNotFoundError(
+                    "Link cycle detected",
+                    reason=LinkTargetNotFoundReason.UNRESOLVED,
+                    member_name=current.name,
+                )
             visited.add(member_id)
             if current.link_target_member is not None:
                 current = current.link_target_member
@@ -2961,6 +2971,9 @@ class BaseArchiveReader(ArchiveReader):
             if current.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
+                    reason=LinkTargetNotFoundReason.NOT_RECORDED
+                    if current.link_target_unrecorded
+                    else LinkTargetNotFoundReason.UNREADABLE,
                     member_name=current.name,
                 )
             # open() materializes first: a half-walked index must never answer a lookup.
@@ -2969,6 +2982,7 @@ class BaseArchiveReader(ArchiveReader):
             if target is None:
                 raise LinkTargetNotFoundError(
                     "Link target not found in archive",
+                    reason=LinkTargetNotFoundReason.UNRESOLVED,
                     member_name=current.name,
                     link_target=current.link_target,
                 )
@@ -2985,12 +2999,14 @@ class BaseArchiveReader(ArchiveReader):
         if current.type in (MemberType.ANTI, MemberType.OTHER):
             raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is "
-                f"{current.type.value!r} (not a file)"
+                f"{current.type.value!r} (not a file)",
+                refused_member_type=current.type,
             )
         if current.type is MemberType.DIRECTORY and not current.size:
             raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: directory entry "
-                "declares no data (not a file)"
+                "declares no data (not a file)",
+                refused_member_type=current.type,
             )
         return self._open_member(current)
 

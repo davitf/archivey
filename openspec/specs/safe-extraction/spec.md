@@ -210,7 +210,8 @@ read back.
 | HARDLINK `"/b"` → `"/a"` under `STANDARD` / `TRUSTED` | Both members re-rooted; `b` linked to the extracted `a` |
 | Absolute name, `abort_on={NAME_SANITIZED}`, `STANDARD` | `NameRewrittenError`; no report |
 | The same, with a filter that drops or renames the member | No error; the filter's outcome stands |
-| `"/etc/x"` under `STANDARD` | `presented_name="/etc/x"` |
+| `"/etc/x"` under `STANDARD` | `presented_name="/etc/x"`; `rewrites == {REROOTED}` |
+| `"/a/what?.txt"` under `STANDARD` | Written `a/what%3F.txt`; `presented_name="/a/what?.txt"`; `rewrites == {REROOTED, PORTABLE_NAME}` |
 | `"a:b"` (drive-relative) at any policy | `FilterRejectionError`; never re-rooted to `b` |
 | Caller filter returns an absolute or `..` name | `FilterRejectionError`; the check runs on the filter's output |
 | `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
@@ -874,6 +875,7 @@ class ExtractionResult:
     error: ArchiveyError | OSError | None = None
     requested_path: Path | None = None
     presented_name: str | None = None
+    rewrites: frozenset[NameRewrite] = frozenset()
     failure_group_id: str | None = None
     failure_group_size: int | None = None
     collided_with: Path | None = None
@@ -886,6 +888,10 @@ class ExtractionStatus(StrEnum):
     BLOCKED = "blocked"
     FAILED = "failed"
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
+
+class NameRewrite(StrEnum):
+    REROOTED = "rerooted"
+    PORTABLE_NAME = "portable_name"
 ```
 
 `ExtractionReport.results` SHALL be the **sole authoritative record** of per-member
@@ -971,6 +977,12 @@ replaced with a name of its own is not a rewrite. `presented_name` is distinct f
 `path` (the final on-disk spelling) and, except after a re-root, from `member.name`
 (the archive's spelling): a caller `filter` rename followed by a portable rewrite
 produces three spellings, and only `presented_name` records the middle one.
+
+`rewrites` SHALL name each safety rewrite that reached disk, one `NameRewrite` value per
+source: `REROOTED` for the absolute-name re-root and `PORTABLE_NAME` for the
+portable-name rewrite. It SHALL be empty exactly when `presented_name` is `None`, and
+SHALL hold both values when a re-root and a portable rewrite both ran. A caller reads
+the kind of rewrite from it, not from the shape of `presented_name`.
 
 `collided_with` SHALL carry the already-written destination this member collided
 with, and SHALL be `None` when nothing this run held the name. It SHALL be set under
@@ -1352,7 +1364,7 @@ rewritten name then collides and is renamed).
 | `README` and `readme` in one archive | Second is a collision event on all platforms; `OverwritePolicy` applied; `requested_path` recorded | Local OS behavior (both extract on a case-sensitive FS) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
 | Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
-| Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`; `STANDARD` keeps faithful | Written if the OS allows |
+| Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
 | TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |

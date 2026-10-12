@@ -347,3 +347,22 @@ passes the string spelling to the entry point, which converts it.
 | `from archivey.terminal import escape_control_chars, display_path, quoted` | Works |
 | `hasattr(archivey, "escape_control_chars")` / `"terminal" in archivey.__all__` | `False` / `False` |
 | `escape_control_chars("ev\x1b[2Kil")` | `ev\x1b[2Kil` with the escape as four literal characters |
+
+### Requirement: Destination naming rules live in the public archivey.paths module
+
+The package SHALL provide a public module, `archivey.paths`, holding `numbered_name`:
+the `name (N)` spelling `OverwritePolicy.RENAME` gives a renamed destination. A front
+end that moves or renames what extraction wrote uses it to choose the name a direct
+extraction would have chosen, and extraction itself SHALL use the same function, so the
+two cannot drift. Names in its `__all__` SHALL carry the same compatibility promise as
+`archivey.__all__`. The module SHALL NOT be re-exported from `archivey`.
+
+#### Scenario: paths surface
+
+| Case | Expected |
+| --- | --- |
+| `from archivey.paths import numbered_name` | Works |
+| `"paths" in archivey.__all__` / `hasattr(archivey, "numbered_name")` | `False` / `False` |
+| `numbered_name("photo.jpg", 1, is_dir=False)` | `"photo (1).jpg"` |
+| `numbered_name("photos.2024", 2, is_dir=True)` | `"photos.2024 (2)"` |
+| Two members named `photo.jpg` under `OverwritePolicy.RENAME` | The second is written as `numbered_name("photo.jpg", 1, is_dir=False)` |

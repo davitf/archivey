@@ -1678,21 +1678,24 @@ def test_verify_exact_available_read_then_close_is_quiet() -> None:
 
 
 def test_verify_seek_forfeits_checksum_keeps_length() -> None:
-    """Seek off frontier disables CRC but still raises TruncatedError when short."""
+    """A jump past the frontier disables CRC but still raises TruncatedError when short.
+
+    ``BytesIO`` has no ``nearest_resume_offset``, so the seek is a jump, not a decode.
+    """
     stream = VerifyingStream(
         io.BytesIO(CONTENT),
         {HashAlgorithm.CRC32: _crc32(CONTENT + b"x")},  # would mismatch if checked
         expected_size=len(CONTENT) + 4,
     )
     assert stream.read(10) == CONTENT[:10]
-    stream.seek(5)
-    assert not stream._verifier.digests_enabled
+    stream.seek(20)
+    assert stream._digest_intact() is False
     with pytest.raises(TruncatedError):
         stream.read(-1)
     stream.close()
 
 
-@pytest.mark.parametrize("first_seek", [5, len(CONTENT)])
+@pytest.mark.parametrize("first_seek", [20, len(CONTENT) - 5])
 def test_verify_rewind_to_start_rearms_checksum(first_seek: int) -> None:
     """A seek to 0 re-arms the CRC: a read from there to the end is fully verified."""
     stream = VerifyingStream(
@@ -1702,6 +1705,7 @@ def test_verify_rewind_to_start_rearms_checksum(first_seek: int) -> None:
     )
     assert stream.read(10) == CONTENT[:10]
     stream.seek(first_seek)
+    stream.read(1)  # skips the gap: the CRC is lost
     assert not stream._verifier.digests_enabled
     stream.seek(0)
     assert stream._verifier.digests_enabled
@@ -1718,6 +1722,203 @@ def test_verify_rewind_to_start_rearms_checksum(first_seek: int) -> None:
     stream.seek(first_seek)
     stream.seek(0)
     assert stream.read(-1) == CONTENT  # hashers start again, so no false mismatch
+    stream.close()
+
+
+class _DecodingBytesIO(io.BytesIO):
+    """A ``BytesIO`` that prices seeks like a decompressor with no seek points.
+
+    Every seek restarts at the origin, so a forward seek past the verifier's frontier
+    decodes the skipped bytes anyway, and the verifier reads them itself.
+    """
+
+    def nearest_resume_offset(self, target: int) -> int:
+        return 0
+
+
+class _JumpingBytesIO(io.BytesIO):
+    """A ``BytesIO`` that prices seeks like an index with a point at every byte."""
+
+    def nearest_resume_offset(self, target: int) -> int:
+        return target
+
+
+_BAD_CRC = {HashAlgorithm.CRC32: _crc32(CONTENT + b"x")}
+_GOOD_CRC = {HashAlgorithm.CRC32: _crc32(CONTENT)}
+
+
+@pytest.mark.parametrize("size", [len(CONTENT), None])
+def test_verify_backward_seek_keeps_checksum(size: int | None) -> None:
+    """The hashers cover up to the furthest read, so a seek back loses nothing."""
+    stream = VerifyingStream(io.BytesIO(CONTENT), _BAD_CRC, expected_size=size)
+    assert stream.read(30) == CONTENT[:30]
+    stream.seek(10)
+    assert stream._digest_intact() is True
+    with pytest.raises(CorruptionError):
+        stream.read(-1)
+    stream.close()
+
+    stream = VerifyingStream(io.BytesIO(CONTENT), _GOOD_CRC, expected_size=size)
+    assert stream.read(30) == CONTENT[:30]
+    stream.seek(10)
+    # The re-read bytes are not hashed twice.
+    assert stream.read(-1) == CONTENT[10:]
+    stream.close()
+
+
+@pytest.mark.parametrize("size", [len(CONTENT), None])
+def test_verify_forward_seek_that_decodes_keeps_checksum(size: int | None) -> None:
+    """A forward seek the inner would decode anyway reads the gap through the hashers."""
+    stream = VerifyingStream(_DecodingBytesIO(CONTENT), _BAD_CRC, expected_size=size)
+    assert stream.read(10) == CONTENT[:10]
+    assert stream.seek(500) == 500
+    assert stream._digest_intact() is True
+    with pytest.raises(CorruptionError):
+        stream.read(-1)
+    stream.close()
+
+    stream = VerifyingStream(_DecodingBytesIO(CONTENT), _GOOD_CRC, expected_size=size)
+    assert stream.read(10) == CONTENT[:10]
+    assert stream.seek(400, io.SEEK_CUR) == 410
+    assert stream.tell() == 410
+    if size is not None:
+        assert stream.seek(-400, io.SEEK_END) == len(CONTENT) - 400
+    stream.seek(5)  # behind the frontier: the next forward seek starts from it
+    stream.seek(800)
+    assert stream.tell() == 800
+    assert stream.read(-1) == CONTENT[800:]
+    stream.close()
+
+
+def test_verify_forward_seek_that_jumps_forfeits_checksum() -> None:
+    """A seek the inner can jump skips bytes the hashers never see: the CRC is lost
+    once a read starts past the frontier, and a seek back before reading keeps it."""
+    stream = VerifyingStream(
+        _JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=len(CONTENT)
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(500)
+    assert stream._digest_intact() is False
+    stream.seek(10)  # undone before any read: nothing was skipped
+    assert stream._digest_intact() is True
+    stream.seek(500)
+    assert stream.read(-1) == CONTENT[500:]  # mismatch not checked
+    assert stream._digest_intact() is False
+    stream.close()
+
+
+def test_verify_seek_to_declared_size_keeps_checksum() -> None:
+    """A seek to the declared size defers the gap to the concluding read, which
+    hashes it, so a mismatch still raises (and the seek itself reads nothing)."""
+    inner = _JumpingBytesIO(CONTENT)
+    stream = VerifyingStream(inner, _BAD_CRC, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(0, io.SEEK_END)
+    assert inner.tell() == len(CONTENT)
+    assert stream._verifier._furthest_read_pos == 10
+    assert stream._digest_intact() is True
+    with pytest.raises(CorruptionError):
+        stream.read(1)
+    stream.close()
+
+
+def test_verify_decoding_seek_past_the_end_of_an_unsized_stream() -> None:
+    """With no declared size, a decoding seek that reaches the end first has hashed
+    every byte, so the read there checks the CRC."""
+    stream = VerifyingStream(_DecodingBytesIO(CONTENT), _BAD_CRC)
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(len(CONTENT) + 100)
+    with pytest.raises(CorruptionError):
+        stream.read()
+    stream.close()
+
+    stream = VerifyingStream(_DecodingBytesIO(CONTENT), _GOOD_CRC)
+    stream.seek(len(CONTENT) + 100)
+    assert stream.read() == b""
+    stream.close()
+
+
+def test_verify_second_seek_past_a_found_end_reads_nothing_again() -> None:
+    """Once a read-through found the end, a later seek past it does not rewind the
+    inner to the frontier to read the same nothing again."""
+    seeks: list[int] = []
+
+    class _Counting(_DecodingBytesIO):
+        def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+            seeks.append(offset)
+            return super().seek(offset, whence)
+
+    stream = VerifyingStream(_Counting(CONTENT), _GOOD_CRC)
+    stream.seek(len(CONTENT) + 100)
+    assert stream.read() == b""
+    seeks.clear()
+    stream.seek(len(CONTENT) + 200)
+    assert seeks == [len(CONTENT) + 200]
+    assert stream.read() == b""
+    stream.close()
+
+
+class _RecordingDecodingBytesIO(_DecodingBytesIO):
+    """A ``_DecodingBytesIO`` that records every call that touches its position."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.calls: list[tuple[str, int]] = []
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        self.calls.append(("read", -1 if n is None else n))
+        return super().read(n)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self.calls.append(("seek", offset))
+        return super().seek(offset, whence)
+
+
+def test_verify_decoding_seek_is_lazy() -> None:
+    """A forward seek that keeps the checksum reads nothing until a read: a later
+    seek replaces it, and a stream closed after it decodes nothing."""
+    inner = _RecordingDecodingBytesIO(CONTENT)
+    stream = VerifyingStream(inner, _BAD_CRC, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    inner.calls.clear()
+    assert stream.seek(500) == 500
+    assert stream.tell() == 500
+    assert stream.seek(100, io.SEEK_CUR) == 600
+    assert stream.tell() == 600
+    assert inner.calls == []
+    assert stream.seek(5) == 5  # back behind the frontier: nothing was decoded
+    assert inner.calls == [("seek", 5)]
+    assert stream.read(5) == CONTENT[5:10]
+    stream.seek(700)
+    stream.close()
+    assert ("read", len(CONTENT) - 10) not in inner.calls
+
+    inner = _RecordingDecodingBytesIO(CONTENT)
+    stream = VerifyingStream(inner, _BAD_CRC, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(700)
+    assert stream.read(10) == CONTENT[700:710]  # the read pays for the gap
+    with pytest.raises(CorruptionError):
+        stream.read(-1)
+    stream.close()
+
+
+def test_verify_decode_error_in_a_deferred_gap_raises_from_the_read() -> None:
+    """A decode error in the skipped bytes surfaces from the read that decodes them,
+    not from the seek, and abandons the checks."""
+
+    class _Failing(_DecodingBytesIO):
+        def read(self, n: int | None = -1, /) -> bytes:
+            if self.tell() >= 100:
+                raise OSError("bad block")
+            return super().read(n)
+
+    stream = VerifyingStream(_Failing(CONTENT), _GOOD_CRC, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    assert stream.seek(500) == 500
+    with pytest.raises(OSError, match="bad block"):
+        stream.read(1)
+    assert not stream._verify_enabled
     stream.close()
 
 
@@ -1750,8 +1951,8 @@ def test_verify_seek_past_end_of_complete_member_returns_empty() -> None:
     advanced the logical position to/past the declared size — the member is intact,
     so seek-past-end then read returns ``b""`` (standard ``BinaryIO``), never a false
     ``TruncatedError``. Covers the completeness idiom ``seek(size); read(1)`` and
-    read-a-prefix-then-seek-to-the-end. The checksum is forfeited by the seek, so a
-    matching CRC is simply not consulted here.
+    read-a-prefix-then-seek-to-the-end. The read that concludes reads the skipped gap
+    through the hashers, so the matching CRC is checked and passes.
     """
     hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(CONTENT))}
 

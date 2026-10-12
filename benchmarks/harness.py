@@ -130,7 +130,8 @@ WALL_RATIO_DRIFT_MIN_ABS = 0.15
 # baseline for a month. Gross slowdowns of tiny cases still fail on the 10× ceiling.
 WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
-# ZIP/TAR wrap stdlib → 2–3×/member; native 7z/RAR → ≈parity with py7zr/rarfile.
+# ZIP (stdlib) and TAR (native walker) → 2–3×/member vs zipfile/tarfile; native
+# 7z/RAR → ≈parity with py7zr/rarfile.
 LISTING_RATIO_ZIP_TAR = 3.0
 LISTING_RATIO_NATIVE = 1.25
 

@@ -113,7 +113,8 @@ as the parameter that would have allowed the operation.
 - driving a reader or stream from inside a diagnostic callback it is emitting;
 - `open_stream()` given a `format=` that is not a compressed stream;
 - `open()` / `read()` of a resolved non-payload member (`DIRECTORY`, `ANTI`,
-  `OTHER`). A symlink/hardlink that fails to resolve remains
+  `OTHER`), marked by `refused_member_type` (that member's type; `None` on every other
+  usage error). A symlink/hardlink that fails to resolve remains
   `LinkTargetNotFoundError` (`ArchiveyError`) — that is an archive property,
   not caller misuse. A link that resolves to a non-`FILE` then hits the
   non-payload rule above.
@@ -262,8 +263,8 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 
 The system SHALL preserve original decoding-library exceptions as `__cause__`
 using `raise ... from exc`; libraries MUST NOT swallow the original traceback.
-Type translation is per underlying library (for example `zipfile`, `tarfile`,
-`lzma`, `unrar`, crypto backend), not per format. The `ArchiveReader` base class
+Type translation is per underlying library (for example `zipfile`, `lzma`,
+`pycdlib`, `unrar`, crypto backend), not per format. The `ArchiveReader` base class
 SHALL centrally stamp `source_format`, `archive_name`, and `member_name` on
 propagating `ArchiveyError`s; backends do not hand-fill those fields.
 

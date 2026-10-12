@@ -232,7 +232,7 @@ class ArchiveEofContext(_JsonSafeContext):
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing (``observed_kind="absent"``), short (``"short"``), or a non-null block
       where a header or the trailer belongs (``"nonzero"``). ``"nonzero"`` is always
-      escalated to ``CorruptionError``: tarfile rejected a header and the listing is
+      escalated to ``CorruptionError``: a header did not parse and the listing is
       shortened, or the file has no member and is not shown to be a TAR archive.
     - ``"second_zero_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the first TAR trailer
       block is zero and ends the members, and the second is a full non-null block.
@@ -394,11 +394,11 @@ class EncryptedVerificationContext(_JsonSafeContext):
     ``pw_verify``), ``"confirm_budget_exhausted"`` (confirmation survived its bounded
     prefix without reaching a checksum) or ``"no_password_check"`` (the member carries
     no password check at all, as RAR3/4 data does, so nothing accepted the password
-    before decoding). ``reason`` names why the digest was not
-    reached: ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek gave up
-    a CRC; a WinZip AES HMAC survives seeks, so for an AES member it means only that a
-    failed seek left the position unknown). No password or key material is ever
-    carried.
+    before decoding). ``reason`` names why the digest was not reached:
+    ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek that jumped past
+    the bytes read so far gave up a CRC; a WinZip AES HMAC survives seeks, so for an
+    AES member it means only that a failed seek left the position unknown). No
+    password or key material is ever carried.
 
     The code answers a question a member stream cannot answer for itself yet. Retire it
     when member streams report their verification state (``dev-docs/IDEAS.md``,

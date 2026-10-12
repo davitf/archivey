@@ -40,6 +40,7 @@ from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
     LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
@@ -52,13 +53,13 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     disk_spelled,
-    numbered_name,
     reroot_absolute,
     resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.selection import CollectionSelector
+from archivey.paths import numbered_name
 from archivey.terminal import display_path, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -70,6 +71,7 @@ from archivey.types import (
     ExtractionStatus,
     MemberFilter,
     MemberType,
+    NameRewrite,
     OnError,
     OverwritePolicy,
 )
@@ -1159,6 +1161,7 @@ class ExtractionCoordinator:
             member_started = False
             recorded_index: int | None = None
             presented_name: str | None = None
+            rewrites: frozenset[NameRewrite] = frozenset()
             current = self._current = _MemberState()
             link_error: ArchiveyError | None = None
             try:
@@ -1169,7 +1172,7 @@ class ExtractionCoordinator:
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
                 # even if the filter returns the member.
-                transformed, presented_name = self._transform(original)
+                transformed, presented_name, rewrites = self._transform(original)
                 if transformed is None:
                     # Filter returned None: caller-elected exclusion — no ExtractionResult
                     # (same as a selector exclusion). Still counts as processed for progress.
@@ -1254,7 +1257,11 @@ class ExtractionCoordinator:
             if presented_name is not None and recorded_index is not None:
                 self._set_result(
                     recorded_index,
-                    replace(results[recorded_index], presented_name=presented_name),
+                    replace(
+                        results[recorded_index],
+                        presented_name=presented_name,
+                        rewrites=rewrites,
+                    ),
                 )
 
             members_done += 1
@@ -1348,6 +1355,7 @@ class ExtractionCoordinator:
                 ExtractionStatus.SUPERSEDED,
                 None,
                 presented_name=prior.presented_name,
+                rewrites=prior.rewrites,
             ),
         )
 
@@ -1479,14 +1487,16 @@ class ExtractionCoordinator:
 
     def _transform(
         self, original: ArchiveMember
-    ) -> tuple[ArchiveMember | None, str | None]:
+    ) -> tuple[ArchiveMember | None, str | None, frozenset[NameRewrite]]:
         """Policy transform and user filter on a transient copy, then the universal check
         on the result.
 
-        Returns ``(member_to_write, presented_name)`` — the member is ``None`` if the user
-        filter skipped it, and ``presented_name`` is the full name before a safety rewrite
-        (the absolute-name re-root or the portable-name policy) when one reaches disk,
-        else ``None``. Raises a ``FilterRejectionError`` on a universal violation."""
+        Returns ``(member_to_write, presented_name, rewrites)`` — the member is ``None``
+        if the user filter skipped it, ``presented_name`` is the full name before a
+        safety rewrite (the absolute-name re-root or the portable-name policy) when one
+        reaches disk, else ``None``, and ``rewrites`` names each safety rewrite that
+        reached disk (empty exactly when ``presented_name`` is ``None``). Raises a
+        ``FilterRejectionError`` on a universal violation."""
         transformed = POLICY_TRANSFORMS[self._policy](original)
         # The re-root comes before the filter so the filter sees the name that would be
         # written, as it already sees the policy's permission changes, and a filter
@@ -1506,7 +1516,7 @@ class ExtractionCoordinator:
         if self._filter is not None:
             filtered = self._filter(transformed)
             if filtered is None:
-                return None, None
+                return None, None, frozenset()
             if not isinstance(filtered, ArchiveMember):
                 # A caller bug, so a TypeError that ends the call rather than a
                 # per-member result; it names what came back, which the attribute
@@ -1583,8 +1593,13 @@ class ExtractionCoordinator:
         on_disk = disk_spelled(portable)
         if on_disk is not portable:
             self._current.spelled_from = portable
+        reroot_rewrite = (
+            frozenset({NameRewrite.REROOTED})
+            if rerooted_from is not None
+            else frozenset()
+        )
         if portable.name == transformed.name:
-            return on_disk, rerooted_from
+            return on_disk, rerooted_from, reroot_rewrite
         # The pre-rewrite spelling is the caller filter's output when there is one, which
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
@@ -1596,7 +1611,11 @@ class ExtractionCoordinator:
                 )
             )
         # After a re-root, the stored name is the one the caller will recognise.
-        return on_disk, rerooted_from or transformed.name
+        return (
+            on_disk,
+            rerooted_from or transformed.name,
+            reroot_rewrite | {NameRewrite.PORTABLE_NAME},
+        )
 
     def _source_refused(self, link: ArchiveMember) -> bool:
         """Whether the member a HARDLINK gets its bytes from was refused, so the link
@@ -2148,8 +2167,8 @@ class ExtractionCoordinator:
     def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
 
-        :func:`numbered_name` spells each candidate (``photo.jpg`` → ``photo (1).jpg``),
-        the same spelling the CLI's single-root hoist uses.
+        :func:`~archivey.paths.numbered_name` spells each candidate (``photo.jpg`` →
+        ``photo (1).jpg``), the same spelling the CLI's single-root hoist uses.
 
         The search resumes after the last ``N`` this run handed out for the same
         collision key, rather than starting at 1 each time: restarting made ``k``
@@ -2347,7 +2366,7 @@ class ExtractionCoordinator:
         dest_path: Path,
     ) -> ExtractionResult:
         target = transformed.link_target
-        if target is None and original._link_target_absent:
+        if target is None and original.link_target_unrecorded:
             # The archive says this is a link and records nowhere for it to point — a
             # 7-Zip-written directory symlink or junction, or a reparse buffer naming
             # nothing. There is nothing to write, and nothing here went wrong, so this
@@ -2370,6 +2389,7 @@ class ExtractionCoordinator:
             # backend's to report: `BaseArchiveReader._emit_link_target_unavailable`.
             raise LinkTargetNotFoundError(
                 "Symlink has no target",
+                reason=LinkTargetNotFoundReason.UNREADABLE,
                 member_name=transformed.name,
             )
 
@@ -2428,6 +2448,7 @@ class ExtractionCoordinator:
         if source is None:
             raise LinkTargetNotFoundError(
                 "Hardlink target not found",
+                reason=LinkTargetNotFoundReason.UNRESOLVED,
                 member_name=transformed.name,
                 link_target=original.link_target,
             )
@@ -2592,18 +2613,22 @@ class ExtractionCoordinator:
     def _revise_result(self, index: int, new: ExtractionResult) -> None:
         """Overwrite a recorded result, carrying forward first-pass facts it omits.
 
-        The second pass rebuilds a result from scratch, but two fields were decided in
-        the first pass (before the member was deferred) and are still true: the
-        ``presented_name`` rewrite, and the ``requested_path`` the member asked for. A
-        rebuild that does not supply them must not erase them — results are the sole
-        record, so a dropped field is a fact lost rather than a fact reported elsewhere.
+        The second pass rebuilds a result from scratch, but two facts were decided in
+        the first pass (before the member was deferred) and are still true: the name
+        rewrite, and the ``requested_path`` the member asked for. The rewrite is two
+        fields, ``presented_name`` and the ``rewrites`` that produced it, so neither is
+        carried without the other. A rebuild that does not supply them must not erase
+        them — results are the sole record, so a dropped field is a fact lost rather
+        than a fact reported elsewhere.
         Unlike ``_set_result`` it moves no progress tally: ``_report_progress`` is
         called only from the main member loop, which has finished by the second pass.
         """
         results = self._state.results
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
-            new = replace(new, presented_name=prior.presented_name)
+            new = replace(
+                new, presented_name=prior.presented_name, rewrites=prior.rewrites
+            )
         if prior.requested_path is not None and new.requested_path is None:
             new = replace(new, requested_path=prior.requested_path)
         results[index] = new

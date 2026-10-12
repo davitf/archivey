@@ -46,7 +46,11 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.resume import ResumeReachedStreamEnd
+from archivey.internal.streams.resume import (
+    ResumeReachedStreamEnd,
+    hold_for_planned_seek,
+    planning_seek,
+)
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     ensure_bufferedio,
@@ -851,8 +855,33 @@ class DecompressorStream(ReadOnlyIOStream):
         ``_ensure_index_built()``: a diagnostic that built an index would change the cost
         it is reporting on. An index still being filled in reports a resume point further
         back than the finished one would, which errs toward telling the caller.
+
+        The exception is a caller planning a seek (``ask_seek_resume_offset``): it is
+        owed the resume point the seek will use, so the index a forward seek to
+        ``target`` would build is built here (``_build_index_for_seek``).
         """
+        if planning_seek():
+            self._build_index_for_seek(target)
         return self._find_best_seek_point(target).decompressed_offset
+
+    def _build_index_for_seek(self, target: int) -> None:
+        """Build the index now when a forward seek to ``target`` would (see ``_seek``).
+
+        A report the build escalates is held, as the seek holds it, and handed to the
+        planning caller (``hold_for_planned_seek``), which raises it once its seek has
+        moved, where it would have come from had the seek built the index itself.
+        """
+        if (
+            target <= self._pos + len(self._buffer)
+            or target <= self._seek_points[-1].decompressed_offset
+            or not self._inner.seekable()
+        ):
+            return
+        with self._deferring_raises() as pending:
+            self._ensure_index_built()
+            held = pending()
+        if held is not None:
+            hold_for_planned_seek(held)
 
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)

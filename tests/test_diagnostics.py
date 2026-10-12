@@ -679,13 +679,13 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
         )
     diagnostic = ei.value.diagnostic
     assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
-    assert diagnostic.message == "Invalid TAR mtime for 'a.txt': -1099511627776.0"
+    assert diagnostic.message == "Invalid TAR PAX mtime for 'a.txt': '-1099511627776'"
     context = diagnostic.context
     assert isinstance(context, MemberTimestampContext)
     assert (context.field, context.source, context.value_repr) == (
         "modified",
         "tar",
-        "-1099511627776.0",
+        "'-1099511627776'",
     )
 
 

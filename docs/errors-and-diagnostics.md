@@ -26,7 +26,7 @@ React to specific cases with the subtypes:
 | [`ReadError`][archivey.ReadError] | the archive's data is bad or cannot be read, whether at open (a damaged header) or later; the parent of the next three rows, and the thing to catch when you do not care which. A damaged header raises one of these from `open_archive()`, not `OpenError`, except a damaged method, codec or version number in a header with no checksum, which raises `UnsupportedFeatureError` (see that row) |
 | [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
 | [`CorruptionError`][archivey.CorruptionError] | the archive's bytes are damaged: a checksum mismatch, a malformed header or data block, or data cut short. [`TruncatedError`][archivey.TruncatedError], its subclass, marks damage that looks like the data ending early, as a best-effort label (see [The integrity guarantee](#the-integrity-guarantee)) |
-| [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain, or a RAR file copy names a source it does not contain |
+| [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain, or a RAR file copy names a source it does not contain. Its `reason` ([`LinkTargetNotFoundReason`][archivey.LinkTargetNotFoundReason]) tells a link the archive left without a target from an unreadable target and from one that names no member or loops |
 | [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent — for the whole format at open (ISO without `pycdlib`) or for one member when you read it (PPMd without `pyppmd`) — or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
 | [`ExtractionError`][archivey.ExtractionError] | writing a member to disk failed; the parent of the next two rows |
 | [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member: a path that escapes the destination, a symlink that resolves outside it, a device node, FIFO or socket, a name the destination OS cannot store safely (such as a Windows-reserved name), or a name built to display as something it is not (such as a bidi override). The message says which |
@@ -81,7 +81,7 @@ it to disable that guard on purpose.
 
 ### What is translated, and what passes through
 
-The libraries archivey decodes with — `zipfile`, `tarfile`, `lzma`, `pycdlib`, `unrar`
+The libraries archivey decodes with — `zipfile`, `lzma`, `pycdlib`, `unrar`
 and the others — raise their own exceptions. Archivey translates the ones it recognises
 into the tree above and keeps the original as `__cause__`, so the traceback still shows
 what the library said. It never converts *every* exception, and that shapes your
@@ -304,10 +304,15 @@ What that does and does not promise:
   member fails mid-stream, some of what you already read is probably fine — but we
   can't tell you which part, or how much. Treat the prefix as unverified: not
   known-good, not known-bad.
-- **A full-length return from a read with no seek means the checksum matched.** Trust
-  it as far as you trust that digest. A seek to position 0 does not count against
-  this: it starts the check again.
-- **After a seek elsewhere, checking is best effort.** The member's stored checksum is
+- **A full-length return from a read with no skipped bytes means the checksum matched.**
+  Trust it as far as you trust that digest. Most seeks keep the check: a seek back, a
+  seek to position 0 (which starts it again), and a forward seek in a compressed
+  member, whose skipped bytes the next read decodes and hashes before its own. The check
+  covers the first pass over each byte: bytes read again after a seek back are not
+  checked again.
+- **After a seek that jumps, checking is best effort.** When a forward seek jumps over
+  bytes without decoding them (a stored member, or a seek by an index or the
+  `[seekable]` accelerator) and you read on from there, the member's stored checksum is
   no longer checked (a WinZip AES HMAC still is), but the length is, and damage that
   the codec's own checks reach still raises. A seek into a `.xz` or `.lz` file jumps
   by the file's own index, and a crafted index can send it to the wrong bytes with no

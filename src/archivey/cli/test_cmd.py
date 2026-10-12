@@ -280,15 +280,16 @@ def _link_needs_verification(member: ArchiveMember) -> bool:
 
     A ZIP, 7z or RAR4 symlink keeps its target in the member's data. Listing reads and
     checks that data, so a link listed with a target has passed its check. A link
-    listed without one either records no target at all (``_link_target_absent``: not
-    a fault, and ``extract`` reports it as ``LINK_TARGET_UNAVAILABLE``) or has a
-    target that the read could not produce: damaged, encrypted, or out of reach.
-    ``extract`` fails the second kind, so ``test`` does too.
+    listed without one either records no target at all
+    (``ArchiveMember.link_target_unrecorded``: not a fault, and ``extract`` reports it
+    as ``LINK_TARGET_UNAVAILABLE``) or has a target that the read could not produce:
+    damaged, encrypted, or out of reach. ``extract`` fails the second kind, so ``test``
+    does too.
     """
     return (
         member.type is MemberType.SYMLINK
         and member.link_target is None
-        and not member._link_target_absent
+        and not member.link_target_unrecorded
     )
 
 
@@ -298,9 +299,9 @@ def _verify_link(reader: ArchiveReader, member: ArchiveMember) -> None:
     ``open()`` reads a link's target before it follows the link, and that read raises
     the fault that listing only reported. Once the target is read, the rest is about
     where the link points, not about this member's data: a target outside the archive,
-    a directory or a link cycle is not a fault, and a target inside it is verified as
-    a member of its own. Those three are the only errors ignored; any other error is
-    raised, such as a target member that cannot be opened or a usage error.
+    a link cycle, or a directory is not a fault, and a target inside it is verified as
+    a member of its own. Those errors are the only ones ignored; any other error is
+    raised, such as a target member that cannot be decoded.
     """
     try:
         reader.open(member).close()
@@ -312,19 +313,17 @@ def _verify_link(reader: ArchiveReader, member: ArchiveMember) -> None:
 
 
 def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
-    """Whether ``exc`` is one of the errors link following raises about where a link
-    points (``_open_with_link_follow`` in ``base_reader``), not about any data.
+    """Whether ``exc``, raised by ``open()`` after it read the link's own target, is
+    about where the link points rather than about any data.
 
-    The cycle and the directory have no exception type of their own, so they are told
-    apart by the message that function writes.
+    A target that names no member, or a chain of links that loops, is a
+    ``LinkTargetNotFoundError``. A link that resolves to a directory, an anti-item or
+    an OTHER member is a usage error that carries ``refused_member_type``: ``open()``
+    refuses to return bytes for it. Any other usage error is raised.
     """
     if isinstance(exc, LinkTargetNotFoundError):
         return True
-    if type(exc) is ReadError:
-        return exc.raw_message == "Link cycle detected"
-    # A link to a directory, an anti-item or an OTHER member: ``open()`` refuses to
-    # return bytes for it, as a usage error, after following the link.
-    return isinstance(exc, ArchiveyUsageError) and str(exc).endswith("(not a file)")
+    return isinstance(exc, ArchiveyUsageError) and exc.refused_member_type is not None
 
 
 def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:

@@ -352,9 +352,10 @@ candidate failure (defined below) on the caller's `read`, `readinto` or forward
 the member may be corrupt, not `CorruptionError`; for an `LZMA` or `PPMd` member, whose
 codec header is read when the member opens, the open raises it. It SHALL NOT be marked
 as a wrong-password verdict: nothing in the archive tells a colliding wrong password
-from a damaged member. A seek off the read frontier forfeits the CRC until a seek to 0
-(`compressed-streams`, ADR 0014), so a STORED member's seek does not raise; closing that stream emits
-`ENCRYPTED_MEMBER_UNVERIFIED`.
+from a damaged member. A STORED member's forward seek jumps, so a read after it loses
+the CRC until a seek to 0 (`compressed-streams`, ADR 0014) and that seek does not raise;
+closing that stream emits `ENCRYPTED_MEMBER_UNVERIFIED`. A compressed member's forward
+seek keeps the CRC, as `compressed-streams` describes.
 
 ZIP's two per-open checks are the `archive-reading` ladder's **cheap key check** rung:
 ZipCrypto's one header verification byte (2⁻⁸) and WinZip AES's two-byte `pw_verify`

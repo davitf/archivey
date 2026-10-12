@@ -34,6 +34,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import StreamCapability
+from archivey.exceptions import TruncatedError
 from archivey.types import (
     ArchiveFormat,
     CompressionAlgorithm,
@@ -237,6 +238,36 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
             depths.append(len(traceback.extract_tb(retry.value.__traceback__)))
         assert len(set(depths)) == 1
         stream.close()
+
+
+def test_a_cut_tar_gz_member_keeps_raising_after_a_seek_back(tmp_path: Path) -> None:
+    """The rule above holds for a cut .tar.gz member, whose archive-level codec stream
+    does not repeat its own verdict: the member stream does."""
+    payload = os.urandom(200_000)
+    path = tmp_path / "a.tar.gz"
+    with tarfile.open(path, "w:gz") as t:
+        info = tarfile.TarInfo("a")
+        info.size = len(payload)
+        t.addfile(info, io.BytesIO(payload))
+    path.write_bytes(path.read_bytes()[:10_000])
+    with (
+        open_archive(path, seekable_members=True) as ar,
+        ar.open("a") as stream,
+    ):
+        got = bytearray()
+        with pytest.raises(TruncatedError) as first:
+            while block := stream.read(1024):
+                got += block
+        assert got and bytes(got) == payload[: len(got)]
+        with pytest.raises(TruncatedError) as again:
+            stream.read(10)
+        assert again.value is first.value
+        stream.seek(0)
+        assert stream.read(10) == payload[:10]
+        with pytest.raises(TruncatedError) as after:
+            while stream.read(1024):
+                pass
+        assert after.value is first.value
 
 
 @pytest.mark.parametrize("first_read", ["read", "read-size", "readinto-size"])

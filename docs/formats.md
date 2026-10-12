@@ -173,7 +173,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 
 ## TAR (and compressed TAR)
 
-- Uncompressed seekable TAR: random access via `tarfile`.
+- Uncompressed seekable TAR: random access, each member read straight from its place in
+  the file. Archivey parses the headers itself, the same way on every Python version.
 - Compressed variants (`.tar.gz` etc.) behave as **solid** for random member opens —
   prefer a single forward pass.
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
@@ -194,14 +195,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before you extract. For a sparse archive you trust, raise the limit:
   `reader.extract_all(dest, limits=ExtractionLimits(max_ratio=...))`, or
   `max_ratio=None`.
-- **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
-  corrupt member header *after the first* as a clean end of archive — no exception is
-  raised; iteration just stops early. Archivey backstops this with its end-of-archive
-  marker check:
-    - When the shortened scan stops on a **header `tarfile` rejected**, archivey raises
-      `CorruptionError` **by default** — a well-formed tar never ends that way. This
-      holds in random-access and streaming reads alike, whatever follows the bad header:
-      more members, nothing (it is the archive's *final* block), or a block of zeros.
+- **Archivey checks how the archive ends.** A tar has no member count, so a corrupt
+  member header *after the first* could otherwise pass for the end of the archive and
+  shorten the listing without an error:
+    - When the walk stops on a **header that does not parse**, archivey raises
+      `CorruptionError` whatever the diagnostic policy — a well-formed tar never ends
+      that way. This holds in random-access and streaming reads alike, whatever follows
+      the bad header: more members, nothing (it is the archive's *final* block), or a
+      block of zeros.
     - A tar that merely **ends cleanly on a member boundary without the two-block null
       trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
@@ -218,9 +219,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       to be a TAR archive, and it raises `CorruptionError`.
     - A **device, FIFO or socket header that declares data** (typeflag `3`, `4` or `6`
       with a non-zero size) raises `CorruptionError` at that header, before the
-      end-marker check runs. Such an entry has no data, GNU tar skips the header as
-      damaged, and `tarfile` would read an all-zero payload as the end of the archive
-      and drop every member after it.
+      end-marker check runs. Such an entry has no data, and GNU tar skips the header as
+      damaged. Reading on from the next block, an all-zero payload would look like the
+      end of the archive and drop every member after it.
     - A **directory header (typeflag `5`) that declares data** has no data area either,
       so the next header is read straight after it. When that header parses, the
       directory lists with no size, as GNU tar, bsdtar and 7-Zip list it. When the
@@ -245,8 +246,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       [Single-file compressors](#single-file-compressors). A tail that does not
       decompress (a missing gzip footer) ends the check quietly rather than failing the
       listing.
-    - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
-      whatever the policy.
+    - Truncation *inside* a member's data always raises `TruncatedError`, whatever the
+      policy: in a listing or a pass when the walk reaches the cut, and from a member
+      stream on the read that reaches it. A read with a size returns the bytes before the
+      cut first; `read()` with no size raises and returns nothing.
 
 ## 7z
 
