@@ -136,8 +136,8 @@ Python version, so the listing is the same on every supported one.
 tar, archivey's own codec stream; a path source goes to the codec as a path, so the codec
 can use an accelerator and a static ratio. A random-access walk reads through a buffered
 `SharedView` of its own, with a fixed 8 KiB read-ahead so listing cost does not change
-with Python's default buffer size. The view re-seeks the shared stream before each read,
-so a member read never moves the walk. A streaming walk is the only reader of the
+with Python's default buffer size. The view seeks the shared stream before a read when
+the handle is not already there, so a member read never moves the walk. A streaming walk is the only reader of the
 forward stream, buffered, and member data is read through it. The reader closes every
 stream it built.
 
@@ -147,7 +147,7 @@ decoder over a cut stream returns the bytes it could decode and raises
 `TruncatedError` on the next read, so asking again in the same read would drop those
 bytes. For the same reason the random-access codec stream does not repeat its first
 error after a seek (`open_codec_stream(repeat_verdict=False)`): its views seek before
-every read. Each member stream keeps its own. What a cut member's reads return is the
+a read when the handle is not already there. Each member stream keeps its own. What a cut member's reads return is the
 contract in the TAR spec's requirement "Detect truncated TAR archives": a sized read
 gives the readable prefix and the next read raises, and a read with no size raises with
 nothing.
@@ -278,10 +278,10 @@ global header reset, declares no encoding and is read as a ustar field is.
 
 **A member's stream is a view of its data area.** In random access it is a `SharedView`
 over the reader's byte stream (the source, or the codec stream), from the member's
-`data_offset` for its `stored_size` bytes, which re-seeks the shared stream before each
-read. On a compressed tar the view has an 8 KiB buffer above it, so small reads do not
-each reach the decoder. A seek past the end returns the target and the next read returns `b""`, as in every
-other format. In a streaming pass, and in a random-access pass whose walk is still
+`data_offset` for its `stored_size` bytes, and seeks the shared stream before a read
+when the handle is not already there. On a compressed tar the view has an 8 KiB buffer
+above it, so small reads do not each reach the decoder. A seek past the end returns the
+target and the next read returns `b""`, as in every other format. In a streaming pass, and in a random-access pass whose walk is still
 running, the member is read through the walk's own stream (`TarWalker.open_data`). A
 sparse member is a `SparseStream` over either: it serves the logical bytes, zeros in the
 holes, and reads the stored stream only inside a chunk.
@@ -340,7 +340,11 @@ stream, so the first `open()` after `members()` is already a backward seek.
 callers to use. On a random-access reader whose walk has not ended it is one pass
 (`_iter_with_data_random_access`): the walk parses one header at a time, registers the
 member as it arrives (so `members()` afterwards serves the same list), and the member's
-data is read from where its header left the stream, before the next header. After a full
+data is read from where its header left the stream, before the next header. On a plain
+tar that read is clamped to the file's length and issued once, and a read larger than
+the 8 KiB buffer rewinds the prefetched tail so the file's own buffer is what comes
+back. A compressed tar keeps stepped reads: rewinding a codec would decode the tail
+again. After a full
 listing it reads the members' data in archive order, one forward sweep after a single
 seek back to the first member. `extract_all()` takes the one-pass path too (§2.4).
 
@@ -360,8 +364,8 @@ random access as in a streaming pass. A symlink is a path, not a reference, and 
 to the last member of that name either way.
 
 **`MemberStreams.CONCURRENT`** puts one lock around every read of the shared byte
-stream: each read the walk's buffer makes, each member read with the re-seek it makes
-first, and the end-of-archive reads. A member's `seek` and `tell` change only its view's
+stream: each read the walk's buffer makes, each member read with the seek it makes
+when the handle is elsewhere, and the end-of-archive reads. A member's `seek` and `tell` change only its view's
 own position. The lock
 makes interleaved reads correct. It does not make them parallel, and on a compressed tar
 they still share one decompressor. A streaming reader takes the same lock, uncontended,

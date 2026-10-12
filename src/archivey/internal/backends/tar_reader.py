@@ -545,10 +545,11 @@ class TarReader(BaseArchiveReader):
 
         Streaming: over the reader's one forward stream, whose only reader it is
         (member data is read through it). Random access: over a buffered view of its
-        own, which repositions the shared stream under the handle lock when another
-        reader has moved it, so member reads never move the walk. A pass reads member
-        data through this buffer too, so on a compressed tar the buffer's read-ahead
-        into a member's data never makes a member read seek the decoder back.
+        own, which repositions the shared stream under the handle lock when the
+        handle is not already there, so member reads never move the walk. A pass
+        reads member data through this buffer too, so on a compressed tar the
+        buffer's read-ahead into a member's data never makes a member read seek
+        the decoder back.
         """
         # A plain file's length is a fact, so a member read is clamped to the bytes
         # the file holds and issued once. A compressed stream's length is not.
@@ -1234,8 +1235,7 @@ class TarReader(BaseArchiveReader):
         """``member``'s bytes, before the public wrapper.
 
         A bad sparse map raises here. ``in_walk`` reads through the walk's own stream,
-        as a streaming walk does, which saves the re-seek a separate view makes on
-        every read. The pass closes the stream before the walk moves on."""
+        as a streaming walk does. The pass closes the stream before the walk moves on."""
         entry = member._raw
         assert isinstance(entry, TarEntry), "TAR member is missing its entry"
         if entry.sparse is not None:
@@ -1248,8 +1248,8 @@ class TarReader(BaseArchiveReader):
         if self._streaming or in_walk:
             stream = self._walker.open_data(entry)
         else:
-            # A view of its own: reads re-seek the shared stream under the handle lock,
-            # so members, and the walk, read independently.
+            # A view of its own: a read seeks the shared stream under the handle lock
+            # when the handle is elsewhere, so members and the walk read independently.
             stream = _MemberDataView(
                 SharedView(
                     self._stream,

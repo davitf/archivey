@@ -4,20 +4,22 @@ A source (an OS file handle or a seekable ``BinaryIO``) has exactly one file pos
 Two consumers that each ``seek``+``read`` the same handle will clobber each other's
 offset — even on a single thread. :class:`SharedSource` mints independent, seekable,
 **non-owning** views over ``[start, start+length)``; each view keeps its own ``_pos``,
-and every read re-seeks the underlying to that absolute position under a shared lock so
-the seek+read pair is atomic.
+and a read seeks the underlying to that absolute position under a shared lock when
+the handle is not already there, so the seek+read pair stays atomic.
 
 Views are :class:`~archivey.internal.streams.streamtools.slice.SharedView` instances
 (a :class:`~archivey.internal.streams.streamtools.slice.SlicingStream` subclass) with
-the source lock engaged — the same bound/tell logic, plus lock+reseek on every read.
+the source lock engaged — the same bound/tell logic, plus a locked seek when the
+handle is not already at the view's offset.
 
 This is the streamtools analogue of stdlib ``zipfile._SharedFile``. It is deliberately
 archivey-dependency-free: it raises stdlib-shaped errors (``ValueError`` / ``OSError`` /
 ``io.UnsupportedOperation``), never ``archivey.exceptions``.
 
-**Views are unbuffered.** Every ``read`` is one locked seek+read on the shared handle —
-cheap (an in-memory offset move on a regular file / ``BytesIO``), and the current
-consumers (codec streams, which buffer internally) already read in large chunks. A
+**Views are unbuffered.** A ``read`` is one locked read of the shared handle, and a
+seek when the handle is elsewhere — cheap (an in-memory offset move on a regular
+file / ``BytesIO``), and the current consumers (codec streams, which buffer
+internally) already read in large chunks. A
 consumer that issues many tiny reads should wrap its view in a buffer itself;
 buffering inside the primitive would double-copy for everyone else. Over a view of a
 decoder that defers its error, that buffer is

@@ -742,9 +742,9 @@ class TestSliceResumeOffset:
     def test_sequential_reads_seek_once(self) -> None:
         """A handle already at the view's offset is not seeked again.
 
-        Seeking a buffered file drops its read-ahead, so a walk that re-seeks
-        before every small read pays for the buffer on every chunk. A stream
-        that already sits at the start is not seeked at all.
+        A seek to the current position is an lseek once the buffer is empty.
+        Skipping it is what this pins: a stream already at the start is not
+        seeked at all.
         """
         payload = b"abcdefghij" * 50
         counter = SeekCounter()

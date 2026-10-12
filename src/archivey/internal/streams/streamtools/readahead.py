@@ -27,6 +27,15 @@ from archivey.internal.streams.streamtools.binaryio import (
 )
 
 
+def _seek_to(stream: BinaryIO, target: int) -> bool:
+    """Seek ``stream`` to ``target``. False when it cannot, without raising."""
+    try:
+        stream.seek(target)
+    except (OSError, AttributeError, ValueError, io.UnsupportedOperation):
+        return False
+    return True
+
+
 class ReadAheadStream(DelegatingStream):
     """Buffer reads of a full-count ``inner``, reading it at most once per ``read``.
 
@@ -36,7 +45,10 @@ class ReadAheadStream(DelegatingStream):
     ``rewind_oversize`` is for an inner whose seek is a pointer move. A read larger
     than the buffer then rewinds any prefetched tail and returns that one inner read.
     Joining the tail to a second read would copy the whole request. Leave it off for
-    a codec: rewinding it re-decodes.
+    a codec: rewinding it re-decodes. If that read raises, the inner is moved just
+    past the tail before the tail is returned, so the next read raises the error
+    and does not return the tail again. A restore that fails raises now and
+    returns nothing.
     """
 
     readinto_passthrough = False
@@ -76,13 +88,20 @@ class ReadAheadStream(DelegatingStream):
             except (OSError, ValueError, io.UnsupportedOperation):
                 pass
             else:
+                # The rewind put ``held`` back on the inner. Remember where that
+                # starts: a failed read must leave the inner just past those bytes
+                # before they are returned, or the next read delivers them again.
+                try:
+                    mark = self._inner.tell()
+                except (OSError, AttributeError, ValueError, io.UnsupportedOperation):
+                    mark = None
                 try:
                     return read_blocking(self._inner, n)
                 except Exception as err:
-                    if not held:
-                        raise
-                    self._held = err
-                    return held
+                    if mark is not None and _seek_to(self._inner, mark + len(held)):
+                        self._held = err
+                        return held
+                    raise
         want = -1 if n < 0 else max(n - buffered, self._buffer_size)
         try:
             data = read_blocking(self._inner, want)

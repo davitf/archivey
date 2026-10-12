@@ -11,9 +11,11 @@ Two construction contracts (two classes, shared bound/tell/size arithmetic):
    does not seek the handle to ``start``; the first ``read``/``seek`` positions it.
 2. :class:`SharedView` — **locked, re-seek-before-read**. A ``read`` seeks to
    ``start + _pos`` under the lock when the handle is elsewhere, so interleaved views
-   never clobber each other. A handle already there is left alone: seeking it again
-   would drop a buffered file's read-ahead. Construction does not call unlocked
-   ``tell``/``seek`` on the shared handle — ``BufferedReader.tell`` is not
+   never clobber each other. A handle already there is left alone.
+   ``BufferedReader.seek`` to the current position stays in its buffer while that
+   buffer still holds bytes, and is an ``lseek`` once the buffer is empty, which is
+   every refill. Skipping it saves that ``lseek``. Construction does not call
+   unlocked ``tell``/``seek`` on the shared handle — ``BufferedReader.tell`` is not
    thread-safe. A cheap size probe (to clamp ``length``) runs under the lock when
    the caller did not already pass ``source_size``.
 
@@ -195,7 +197,8 @@ class SlicingStream(ReadOnlyIOStream):
                 source_size = source_byte_size(stream)
         self._start = start
         self._source_size = source_size
-        # Locked views re-seek on every read, so they are never "unpositioned".
+        # Locked views seek on read when the handle is elsewhere, so they are
+        # never "unpositioned".
         self._unpositioned = not self._seek_before_read
 
     def _raise_if_closed(self) -> None:
@@ -264,10 +267,10 @@ class SlicingStream(ReadOnlyIOStream):
                     self._start is not None
                 )  # re-seek / lazy-position views are seekable
                 target = self._start + self._pos
-                # A seek to the handle's current position still drops a buffered
-                # file's read-ahead, so a sequential walk would re-fetch every chunk.
-                # tell() is that position; when it already matches, the next read
-                # continues. A stream that cannot tell is seeked, as before.
+                # tell() is the handle's position. When it already matches, skip the
+                # seek: once the buffer is empty that seek is an lseek, and a
+                # sequential walk refills on every chunk. A stream that cannot tell
+                # is seeked, as before.
                 if self._unpositioned or not _already_at(self._stream, target):
                     self._stream.seek(target)
                 self._unpositioned = False
@@ -330,7 +333,8 @@ class SlicingStream(ReadOnlyIOStream):
             # Single-consumer: keep the underlying handle in sync with the view.
             self._stream.seek(start_abs + new_relative)
             self._unpositioned = False
-        # Re-seek mode: only update _pos — the next read re-seeks under the guard.
+        # Re-seek mode: only update _pos — the next read seeks under the guard
+        # when the handle is not already there.
         self._pos = new_relative
         return self._pos
 
@@ -395,9 +399,10 @@ class SharedView(SlicingStream):
     ``source_size``. Unlocked ``BufferedReader.tell`` under concurrency corrupts
     the buffer even when every later ``read`` is locked.
 
-    The source must be seekable: every ``read`` re-seeks. A non-seekable stream
-    is a ``ValueError`` at construction, matching :class:`SharedSource`. This
-    view never owns the handle — ``close()`` does not close the shared source.
+    The source must be seekable: a ``read`` seeks when the handle is not already
+    at this view's offset. A non-seekable stream is a ``ValueError`` at
+    construction, matching :class:`SharedSource`. This view never owns the
+    handle — ``close()`` does not close the shared source.
     """
 
     def __init__(
