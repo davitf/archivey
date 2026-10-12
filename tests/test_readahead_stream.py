@@ -130,3 +130,31 @@ def test_close_closes_the_inner() -> None:
     assert inner.closed
     with pytest.raises(ValueError, match="closed"):
         stream.read(1)
+
+
+class _SizedReads(io.BytesIO):
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.sizes: list[int] = []
+
+    def read(self, n: int = -1, /) -> bytes:
+        self.sizes.append(n)
+        return super().read(n)
+
+
+def test_rewind_oversize_reads_the_request_once() -> None:
+    """A large read rewinds the prefetched tail and returns one inner read.
+
+    Joining the tail to a second read would copy the whole request. The bytes
+    are the same either way.
+    """
+    data = bytes(range(256)) * 8
+    inner = _SizedReads(data)
+    stream = ReadAheadStream(inner, 8, rewind_oversize=True)
+    assert stream.read(3) == data[:3]
+    inner.sizes.clear()
+    assert stream.read(100) == data[3:103]
+    assert inner.sizes == [100]
+    assert stream.read() == data[103:]
+    plain = ReadAheadStream(io.BytesIO(data), 8)
+    assert plain.read(3) + plain.read(100) + plain.read() == data

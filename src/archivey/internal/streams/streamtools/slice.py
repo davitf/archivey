@@ -9,11 +9,13 @@ Two construction contracts (two classes, shared bound/tell/size arithmetic):
 1. :class:`SlicingStream` — **single-consumer**. ``read`` continues from wherever the
    underlying handle currently sits. Correct when only one view is live. Construction
    does not seek the handle to ``start``; the first ``read``/``seek`` positions it.
-2. :class:`SharedView` — **locked, re-seek-before-read**. Every ``read`` does
-   ``seek(start + _pos); read(n)`` under the lock so interleaved views never clobber
-   each other. Construction does not call unlocked ``tell``/``seek`` on the shared
-   handle — ``BufferedReader.tell`` is not thread-safe. A cheap size probe (to clamp
-   ``length``) runs under the lock when the caller did not already pass ``source_size``.
+2. :class:`SharedView` — **locked, re-seek-before-read**. A ``read`` seeks to
+   ``start + _pos`` under the lock when the handle is elsewhere, so interleaved views
+   never clobber each other. A handle already there is left alone: seeking it again
+   would drop a buffered file's read-ahead. Construction does not call unlocked
+   ``tell``/``seek`` on the shared handle — ``BufferedReader.tell`` is not
+   thread-safe. A cheap size probe (to clamp ``length``) runs under the lock when
+   the caller did not already pass ``source_size``.
 
 ``SharedSource.view`` returns :class:`SharedView`. Direct ``SlicingStream(..., lock=…)``
 is gone; pass ``lock`` to :class:`SharedView`.
@@ -34,6 +36,20 @@ from archivey.internal.streams.streamtools.binaryio import (
     resolve_seek,
     source_byte_size,
 )
+
+
+def _already_at(stream: BinaryIO, target: int) -> bool:
+    """Whether ``stream`` is already at ``target``, without moving it.
+
+    False when it cannot say: the caller seeks, which is the old behaviour.
+    """
+    tell = getattr(stream, "tell", None)
+    if tell is None:
+        return False
+    try:
+        return tell() == target
+    except (OSError, AttributeError, ValueError, io.UnsupportedOperation):
+        return False
 
 
 def _clamp_slice_length(
@@ -247,7 +263,13 @@ class SlicingStream(ReadOnlyIOStream):
                 assert (
                     self._start is not None
                 )  # re-seek / lazy-position views are seekable
-                self._stream.seek(self._start + self._pos)
+                target = self._start + self._pos
+                # A seek to the handle's current position still drops a buffered
+                # file's read-ahead, so a sequential walk would re-fetch every chunk.
+                # tell() is that position; when it already matches, the next read
+                # continues. A stream that cannot tell is seeked, as before.
+                if self._unpositioned or not _already_at(self._stream, target):
+                    self._stream.seek(target)
                 self._unpositioned = False
             if drain and self._declared_length is not None:
                 data = read_exact(self._stream, n)
@@ -362,9 +384,10 @@ class SlicingStream(ReadOnlyIOStream):
 class SharedView(SlicingStream):
     """Locked re-seek-before-read view over ``[start, start+length)``.
 
-    Every ``read`` does ``seek(start + _pos); read(n)`` under ``lock`` so interleaved
-    views never clobber each other. ``seek`` only updates this view's ``_pos``; the
-    next ``read`` re-seeks.
+    A ``read`` seeks to ``start + _pos`` under ``lock`` when the handle is elsewhere,
+    so interleaved views never clobber each other. ``seek`` only updates this view's
+    ``_pos``; the next ``read`` repositions. A handle already at that offset is not
+    seeked again.
 
     Construction does not call unlocked ``tell``/``seek`` on the shared handle.
     A missing ``start`` is read from ``tell()`` under the lock. A cheap size probe

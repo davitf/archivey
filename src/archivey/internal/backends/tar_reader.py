@@ -408,7 +408,7 @@ class TarReader(BaseArchiveReader):
         # at open, where only the whole cap can bind anyway.
         self._listing_enforced = True
         # Streaming only: the buffer in front of the codec stream or the source, built
-        # by this reader, so closed by it. Random access buffers each walk's view
+        # by this reader, so closed by it. Random access keeps each walk's view
         # (``_walker_view``) and each compressed member's view instead, so a reader
         # holds ``_owned_stream`` or ``_walker_view``, never both.
         self._owned_stream: BinaryIO | None = None
@@ -545,21 +545,30 @@ class TarReader(BaseArchiveReader):
 
         Streaming: over the reader's one forward stream, whose only reader it is
         (member data is read through it). Random access: over a buffered view of its
-        own, which re-seeks the shared stream under the handle lock before each read
-        of the buffer, so member reads never move the walk. A pass reads member data
-        through this buffer too, so on a compressed tar the buffer's read-ahead into a
-        member's data never makes a member read seek back.
+        own, which repositions the shared stream under the handle lock when another
+        reader has moved it, so member reads never move the walk. A pass reads member
+        data through this buffer too, so on a compressed tar the buffer's read-ahead
+        into a member's data never makes a member read seek the decoder back.
         """
+        # A plain file's length is a fact, so a member read is clamped to the bytes
+        # the file holds and issued once. A compressed stream's length is not.
+        assert self._source is not None
+        end = None if self._compressed else self._source.size
         if self._streaming:
-            return TarWalker(self._stream, seekable=False)
+            return TarWalker(self._stream, seekable=False, end=end)
+        # Plain file: a read larger than the buffer rewinds the prefetched tail and
+        # returns the file's own buffer. Joining the tail on would copy the member.
+        # A codec keeps the join: rewinding it would decode the tail again.
         view = ReadAheadStream(
-            SharedView(self._stream, 0, lock=self._io_guard()), _WALK_BUFFER
+            SharedView(self._stream, 0, lock=self._io_guard()),
+            _WALK_BUFFER,
+            rewind_oversize=not self._compressed,
         )
         # Only one walk runs at a time, and a pass's member streams are closed when it
         # ends, so a walk started over replaces the last one's view.
         self._close_walker_view()
         self._walker_view = view
-        return TarWalker(view, seekable=True)
+        return TarWalker(view, seekable=True, end=end)
 
     def _io_guard(self) -> AbstractContextManager[object]:
         return self._handle_lock if self._handle_lock is not None else nullcontext()
@@ -688,16 +697,16 @@ class TarReader(BaseArchiveReader):
             yield from super()._iter_with_data()
             return
 
-        def _open_in_walk(member: ArchiveMember) -> ArchiveStream:
+        def _open_in_walk(member: ArchiveMember) -> BinaryIO:
+            # The raw body, not another ArchiveStream. The lazy handle below is the
+            # one wrapper; a second one was built and collapsed on every member.
             with self._translated_errors(member.name):
-                return self._open_member_stream(
-                    member, defer_sparse_error=False, in_walk=True
-                )
+                return self._member_body(member, in_walk=True)
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
             if not member.is_file:
                 return None
-            return self._lazy_member_stream(member, _open_in_walk)
+            return self._lazy_member_stream(member, _open_in_walk, track_output=True)
 
         yield from self._drive_pass_streams(
             _ProgressivePassIterator(self), open_member=_open
@@ -1221,22 +1230,12 @@ class TarReader(BaseArchiveReader):
         with self._translated_errors(member.name):
             return self._open_member_stream(member, defer_sparse_error=False)
 
-    def _open_member_stream(
-        self,
-        member: ArchiveMember,
-        *,
-        defer_sparse_error: bool,
-        in_walk: bool = False,
-    ) -> ArchiveStream:
-        """Open ``member``'s data. A bad sparse map raises here, or with
-        ``defer_sparse_error`` on the first read: a forward-only consumer that skips
-        the member does not read the bad map, and the walk moves on to the next
-        header by the member's stored size.
+    def _member_body(self, member: ArchiveMember, *, in_walk: bool) -> BinaryIO:
+        """``member``'s bytes, before the public wrapper.
 
-        ``in_walk`` is for a random-access pass: the data is read through the walk's
-        own stream, as a streaming walk reads it, which saves the re-seek a separate
-        view makes on every read. The pass closes the stream before the walk moves
-        on, and no other listing can run during the pass."""
+        A bad sparse map raises here. ``in_walk`` reads through the walk's own stream,
+        as a streaming walk does, which saves the re-seek a separate view makes on
+        every read. The pass closes the stream before the walk moves on."""
         entry = member._raw
         assert isinstance(entry, TarEntry), "TAR member is missing its entry"
         if entry.sparse is not None:
@@ -1244,17 +1243,7 @@ class TarReader(BaseArchiveReader):
                 entry.sparse, entry.size, entry.stored_size, quoted(member.name)
             )
             if sparse_error is not None:
-                if not defer_sparse_error:
-                    raise sparse_error
-
-                def _refuse(
-                    error: CorruptionError | UnsupportedFeatureError = sparse_error,
-                ) -> BinaryIO:
-                    raise error
-
-                return self._wrap_member_stream(
-                    None, member.name, open_fn=_refuse, size=member.size
-                )
+                raise sparse_error
         stream: BinaryIO
         if self._streaming or in_walk:
             stream = self._walker.open_data(entry)
@@ -1284,7 +1273,39 @@ class TarReader(BaseArchiveReader):
         if self._streaming:
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
-        return self._wrap_member_stream(stream, member.name, size=member.size)
+        return stream
+
+    def _open_member_stream(
+        self, member: ArchiveMember, *, defer_sparse_error: bool
+    ) -> ArchiveStream:
+        """Open ``member``'s data. A bad sparse map raises here, or with
+        ``defer_sparse_error`` on the first read: a forward-only consumer that skips
+        the member does not read the bad map, and the walk moves on to the next
+        header by the member's stored size.
+
+        A random-access pass does not come through here: it opens the raw body
+        (see :meth:`_member_body`) and wraps it once."""
+        entry = member._raw
+        assert isinstance(entry, TarEntry), "TAR member is missing its entry"
+        if defer_sparse_error and entry.sparse is not None:
+            sparse_error = validate_sparse_map(
+                entry.sparse, entry.size, entry.stored_size, quoted(member.name)
+            )
+            if sparse_error is not None:
+
+                def _refuse(
+                    error: CorruptionError | UnsupportedFeatureError = sparse_error,
+                ) -> BinaryIO:
+                    raise error
+
+                return self._wrap_member_stream(
+                    None, member.name, open_fn=_refuse, size=member.size
+                )
+        return self._wrap_member_stream(
+            self._member_body(member, in_walk=False),
+            member.name,
+            size=member.size,
+        )
 
     def _get_archive_info(self) -> ArchiveInfo:
         stream_cap = self._source_stream_capability()

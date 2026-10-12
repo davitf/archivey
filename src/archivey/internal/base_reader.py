@@ -803,16 +803,18 @@ class BaseArchiveReader(ArchiveReader):
     def _lazy_member_stream(
         self,
         member: ArchiveMember,
-        open_member: Callable[[ArchiveMember], ArchiveStream] | None = None,
+        open_member: Callable[[ArchiveMember], BinaryIO] | None = None,
+        *,
+        track_output: bool = False,
     ) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
-        already returns an ``ArchiveStream``; nesting is collapsed inside
+        returns an ``ArchiveStream``; nesting is collapsed inside
         :meth:`ArchiveStream._ensure_open` so the public handle is a **single**
-        wrapper. Deferral does not change what a failed open raises — only when.
-        ``open_member`` replaces ``_open_member``, for a pass that opens its members
-        another way; it has the same contract.
+        wrapper. ``open_member`` replaces it, and may return a raw byte stream
+        instead: then ``track_output=True``, because nothing inside the opener counts
+        the bytes. Deferral does not change what a failed open raises — only when.
         """
         opener = self._open_member if open_member is None else open_member
         return self._register_public_stream(
@@ -821,8 +823,8 @@ class BaseArchiveReader(ArchiveReader):
                 member.name,
                 open_fn=lambda: opener(member),
                 size=member.size,
-                # ``_open_member`` already applied output tracking inside its wrap.
-                track_output=False,
+                # Default False: ``_open_member`` already counts inside its wrap.
+                track_output=track_output,
                 seekable=self._seek_declared(),
             )
         )

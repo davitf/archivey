@@ -32,17 +32,25 @@ class ReadAheadStream(DelegatingStream):
 
     Owns ``inner``, as every :class:`DelegatingStream` does. Seekable when ``inner``
     is: a seek drops the buffer and any held error, then seeks ``inner``.
+
+    ``rewind_oversize`` is for an inner whose seek is a pointer move. A read larger
+    than the buffer then rewinds any prefetched tail and returns that one inner read.
+    Joining the tail to a second read would copy the whole request. Leave it off for
+    a codec: rewinding it re-decodes.
     """
 
     readinto_passthrough = False
 
-    def __init__(self, inner: BinaryIO, buffer_size: int) -> None:
+    def __init__(
+        self, inner: BinaryIO, buffer_size: int, *, rewind_oversize: bool = False
+    ) -> None:
         # The buffered bytes are ``_buffer[_offset:]``: a read moves the offset and
         # copies only what it returns.
         self._buffer = b""
         self._offset = 0
         self._held: Exception | None = None
         self._buffer_size = buffer_size
+        self._rewind_oversize = rewind_oversize
         super().__init__(inner)
 
     def read(self, n: int | None = -1, /) -> bytes:
@@ -60,6 +68,21 @@ class ReadAheadStream(DelegatingStream):
         held = self._buffer[start:]
         self._buffer = b""
         self._offset = 0
+        # The tail is shorter than this read. Rewinding it and reading once
+        # returns the inner's own buffer; joining the two copies the request.
+        if self._rewind_oversize and held and (n < 0 or n > self._buffer_size):
+            try:
+                self._inner.seek(-len(held), io.SEEK_CUR)
+            except (OSError, ValueError, io.UnsupportedOperation):
+                pass
+            else:
+                try:
+                    return read_blocking(self._inner, n)
+                except Exception as err:
+                    if not held:
+                        raise
+                    self._held = err
+                    return held
         want = -1 if n < 0 else max(n - buffered, self._buffer_size)
         try:
             data = read_blocking(self._inner, want)
