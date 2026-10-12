@@ -516,9 +516,10 @@ class TarReader(BaseArchiveReader):
                 ),
                 stamp=lambda exc: self._stamp_error_context(exc),
                 collector=self._diagnostics_collector,
-                # Random access reads it only through views that seek before each
-                # read. A repeated verdict would drop the prefix of the read that
-                # reaches the damage; each member stream repeats its own.
+                # Random access reads it only through views. A read seeks the shared
+                # handle when it is not already there, and one such seek is enough to
+                # mark the stream rewound. A repeated verdict would drop the prefix of
+                # the read that reaches the damage; each member stream repeats its own.
                 repeat_verdict=streaming,
             )
             self._owned_codec_stream = stream

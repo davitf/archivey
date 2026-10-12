@@ -209,8 +209,10 @@ def open_codec_stream(
     ``config`` that already carries a collector keeps it when ``collector`` is omitted.
 
     ``repeat_verdict=False`` makes the stream raise each error as the decoder raises
-    it, and not repeat the first one after a seek (``ArchiveStream._fail``). It is for a
-    stream that only a reader's own views read, which seek before every read.
+    it, and not repeat the first one after a seek (``ArchiveStream._fail``). It is for
+    a stream that only a reader's own views read. A read seeks the shared handle when it
+    is not already there. Some reads still seek, and one seek is enough to mark the
+    stream rewound.
     """
     if collector is not None:
         config = replace(config, collector=collector)
