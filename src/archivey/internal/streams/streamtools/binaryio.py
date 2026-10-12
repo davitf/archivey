@@ -542,14 +542,13 @@ def _under_buffer(stream: object) -> object:
     return stream
 
 
-#: What one ``read`` may ask for when the source's length is unknown, and the default
-#: every caller of :func:`read_within_reach` in archivey passes. It lives here rather
-#: than beside either backend's wrapper because the backends held the same number for
-#: the same reason, each documented by pointing at the other.
+#: What one ``read`` may ask for when the source's length is unknown: the step
+#: ``ArchiveSource`` passes to :func:`read_within_reach`. The TAR walker passes a
+#: smaller one of its own (``tar_parser.READ_STEP``) for the header data it reads.
 #:
 #: A request past this is split and rejoined, which is the *normal* case for a read
-#: larger than the step on such a source, not an exception — stdlib ``tarfile`` asks for
-#: a whole member in one call, so a 40 MiB member is two and a half steps. That costs no
+#: larger than the step on such a source, not an exception — a caller that reads a
+#: whole member in one call asks for a 40 MiB member as two and a half steps. That costs no
 #: more than the single unsplit read it replaces: measured on a 40 MiB member of a
 #: ``.tar.gz``, ``tracemalloc`` peaks at 84 MB through the split against 168 MB without
 #: it, because the unsplit form commits to the entire request inside the

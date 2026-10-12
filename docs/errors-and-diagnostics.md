@@ -81,7 +81,7 @@ it to disable that guard on purpose.
 
 ### What is translated, and what passes through
 
-The libraries archivey decodes with — `zipfile`, `tarfile`, `lzma`, `pycdlib`, `unrar`
+The libraries archivey decodes with — `zipfile`, `lzma`, `pycdlib`, `unrar`
 and the others — raise their own exceptions. Archivey translates the ones it recognises
 into the tree above and keeps the original as `__cause__`, so the traceback still shows
 what the library said. It never converts *every* exception, and that shapes your

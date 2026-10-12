@@ -502,8 +502,8 @@ directory) is not the same as applying `max_members` at parse.
 enforce `ListingLimits`: they yield every member, however many there are. Their
 memory SHALL still be bounded by `ListingLimits`, not by the member count: the
 pass counts each member as usual, and once the totals cross a limit the reader
-stops keeping the listing. It then holds no member, name index or `tarfile`
-header list for the rest of the pass. From that point:
+stops keeping the listing. It then holds no member, name index or header
+record for the rest of the pass. From that point:
 
 - the pass keeps yielding every member, but a link it yields after that point
   gets no `link_target_member`, and the pass publishes no listing at its end;
