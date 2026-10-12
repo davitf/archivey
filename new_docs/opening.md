@@ -8,11 +8,10 @@ enough, and archivey finds the others. If it can't find them by name, such as vo
 open file objects, you can pass a list of them, in order.
 
 A file object is read from its current position to its end, so an archive that starts partway
-through a larger file opens as is. Bytes after the archive don't stop it opening: a ZIP ignores
-them, and a compressed stream such as gzip records `ARCHIVE_TRAILING_DATA`, which
-`DiagnosticPolicy.strict()` turns into an exception. A file object that can't seek, such as a pipe
-or an HTTP response, needs `streaming=True` and works only for some formats, which [Reading
-once](reading.md#reading-once) lists.
+through a larger file opens as is. Bytes after the archive don't stop it opening. They're recorded
+as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.strict()` turns into an exception. A file
+object that can't seek, such as a pipe or an HTTP response, needs `streaming=True` and works only
+for some formats, which [Reading once](reading.md#reading-once) lists.
 
 ## Format
 
