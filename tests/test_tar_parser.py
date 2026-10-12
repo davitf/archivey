@@ -33,6 +33,7 @@ from archivey.internal.backends.tar_parser import (
     TarEntry,
     TarWalker,
     ZeroBlock,
+    _checksum_matches,
     parse_header_block,
     parse_number,
     parse_pax_records,
@@ -208,6 +209,19 @@ def test_signed_checksum_is_accepted() -> None:
     parsed = parse_header_block(_block(patch=signed, checksum=False), 0)
     assert isinstance(parsed, HeaderBlock)
     assert parsed.name == name
+
+
+@pytest.mark.parametrize("fill", [0x00, 0x01, 0x7F, 0x80, 0xFF])
+def test_checksum_sum_is_exact_for_any_byte_values(fill: int) -> None:
+    """The block sum behind the checksum check is exact even when every byte is at
+    its largest, where a half block sums closest to the Adler-32 modulus it is
+    computed with."""
+    block = bytearray([fill]) * BLOCKSIZE
+    block[148:156] = b" " * 8
+    unsigned = sum(block)
+    assert _checksum_matches(bytes(block), unsigned)
+    assert not _checksum_matches(bytes(block), unsigned + 1)
+    assert not _checksum_matches(bytes(block), unsigned - 1)
 
 
 def test_header_layouts() -> None:

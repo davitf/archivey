@@ -1251,16 +1251,19 @@ class TarReader(BaseArchiveReader):
         else:
             # A view of its own: a read seeks the shared stream under the handle lock
             # when the handle is elsewhere, so members and the walk read independently.
-            stream = _MemberDataView(
-                SharedView(
-                    self._stream,
-                    entry.data_offset,
-                    entry.stored_size,
-                    lock=self._io_guard(),
-                ),
+            assert self._source is not None
+            # The view's length clamp needs the source size. A plain file's is the
+            # fact the walk already uses (_new_walker), so it is passed, not probed
+            # again on every open; a codec stream is probed as before.
+            view = SharedView(
+                self._stream,
                 entry.data_offset,
                 entry.stored_size,
+                lock=self._io_guard(),
+                source_size=None if self._compressed else self._source.size,
+                probe_source_size=self._compressed,
             )
+            stream = _MemberDataView(view, entry.data_offset, entry.stored_size)
             if self._compressed:
                 # The codec stream has no buffer of its own here (_open_byte_stream),
                 # so a read smaller than this would cost a decoder seek and read. The

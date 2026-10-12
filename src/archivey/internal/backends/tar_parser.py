@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import errno
 import re
+import zlib
 from array import array
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -205,6 +206,20 @@ def parse_number(field: bytes) -> int:
     return int(digits, 8) if digits else 0
 
 
+# Adler-32's low 16 bits are 1 plus the byte sum modulo 65521. A piece of 256 bytes
+# sums to at most 255 * 256 = 65280, below the modulus, so each piece's value is the
+# exact sum. ``sum()`` over a 512-byte block takes about six times as long.
+_SUM_PIECE = 256
+
+
+def _byte_sum(data: bytes) -> int:
+    """``sum(data)``, computed in C."""
+    total = 0
+    for start in range(0, len(data), _SUM_PIECE):
+        total += (zlib.adler32(data[start : start + _SUM_PIECE]) & 0xFFFF) - 1
+    return total
+
+
 def _checksum_matches(block: bytes, stored: int) -> bool:
     """Whether ``stored`` is the unsigned or the signed sum of ``block`` with its
     checksum field as spaces.
@@ -212,7 +227,7 @@ def _checksum_matches(block: bytes, stored: int) -> bool:
     Old Sun and other writers summed signed bytes; GNU tar and ``tarfile`` accept
     either sum.
     """
-    unsigned = sum(block) - sum(block[148:156]) + 8 * 0x20
+    unsigned = _byte_sum(block) - sum(block[148:156]) + 8 * 0x20
     if stored == unsigned:
         return True
     rest = block[:148] + block[156:]
