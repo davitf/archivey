@@ -102,9 +102,12 @@ time. The piece size trades memory (one piece plus one entry) against the number
 reads, each a seek and a read on the shared handle: a directory of 1 MiB or less is one
 read, and a 46 MB one is 46. It is an implementation constant (DR-9). Every read goes
 through `read_at`, which the reader implements under its lock with the handle position
-saved and restored, so the parser knows nothing of locking. Each entry resolves its
-ZIP64 extra field (`0x0001`) in the order APPNOTE gives, reading only the fields whose
-32-bit value is `0xFFFFFFFF`. It stops at `cd_size` bytes, as stdlib does, and cuts a
+saved and restored, so the parser knows nothing of locking. Each entry applies every
+ZIP64 extra field (`0x0001`) in turn, as stdlib does, reading values in the order
+APPNOTE gives: a value still all ones after one field is read again from the next (an
+uncompressed size of `0xFFFFFFFF` or 64-bit all ones, a compressed size or header
+offset of `0xFFFFFFFF`), and the disk number is read once, from the first field with
+four bytes left after the other values. It stops at `cd_size` bytes, as stdlib does, and cuts a
 name, extra or comment that runs past that point, which is one of the findings.
 
 The walk takes no limit and no charge callback. An entry's variable fields are three
