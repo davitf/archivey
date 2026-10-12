@@ -1694,7 +1694,7 @@ def test_old_style_directory_with_data_extracts(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_dirtype_with_bytes_payload_is_corruption(streaming: bool) -> None:
-    # A DIRTYPE header has no data area, so tarfile reads the declared blocks as the
+    # A DIRTYPE header has no data area, so the walker reads the declared blocks as the
     # next header; a non-zero payload does not parse. The error names the directory,
     # whose declared size is why a header sits where none parses. GNU tar 1.35 reports
     # "Skipping to next header", dropping after.txt; 7-Zip stops.
@@ -1704,7 +1704,7 @@ def test_dirtype_with_bytes_payload_is_corruption(streaming: bool) -> None:
 
 
 _ZERO_SPANS = [b"\0" * 512, b"\0" * 1024, b"\0" * 1536, b"\0" * 512 + b"x" * 512]
-"""Declared DIRTYPE payloads that begin with a zero block: tarfile reads them as the
+"""Declared DIRTYPE payloads that begin with a zero block: the walker reads them as the
 end-of-archive marker (a lone block, a complete marker, or a marker with junk)."""
 
 
@@ -1715,7 +1715,7 @@ end-of-archive marker (a lone block, a complete marker, or a marker with junk)."
     ids=["zero_block", "two_zero_blocks", "three_zero_blocks", "zero_then_bytes"],
 )
 def test_dirtype_zero_span_is_reported(payload: bytes, streaming: bool) -> None:
-    # A DIRTYPE header has no data area, so tarfile reads a zero payload as the
+    # A DIRTYPE header has no data area, so the walker reads a zero payload as the
     # end-of-archive marker and after.txt behind it is not listed. Nothing in the file
     # tells that from a header whose blocks were never written before a trailer and
     # appended data, so the directory is listed with no size and reported with
@@ -1834,7 +1834,7 @@ def test_old_style_directory_with_data_before_lone_zero_block_lists(
     typeflag: bytes, streaming: bool
 ) -> None:
     # An old-style directory that declares data as the last member before a lone zero
-    # block with a member behind it. Its header is a regular file's, so tarfile skipped
+    # block with a member behind it. Its header is a regular file's, so the walker skipped
     # its block and the listing reported it; the end check must not take the header
     # behind the zero block for one hidden by a DIRTYPE span, which would name the
     # directory. The listing stands, with the directory's data reported and the lone

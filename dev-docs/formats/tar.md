@@ -204,11 +204,11 @@ that is not a number or a PAX sparse map that does not parse.
      runs from the block after it. With no member before the zero block it is
      `CorruptionError`, with `expected_marker="two_zero_blocks"`.
      When the last member parsed is a `DIRTYPE` header with a size (not an old-style
-     directory, whose blocks tarfile skipped) and tarfile stopped on a zero block, the
-     directory is reported with `MEMBER_DIRECTORY_DATA_IGNORED` before the block is
-     read (`_report_directory_span`): the zero block is either its declared span, read
-     as the marker, or the trailer after blocks never written. The trailer is then
-     reported as above.
+     directory, whose blocks the walker skipped by size) and the walk stopped on a
+     zero block, the directory is reported with `MEMBER_DIRECTORY_DATA_IGNORED` before
+     the block is read (`_report_directory_span`): the zero block is either its
+     declared span, read as the marker, or the trailer after blocks never written. The
+     trailer is then reported as above.
   3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero
      byte and emit `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar`
      pads to 10 KiB records. On a compressed tar the tail is decompressed to look at
