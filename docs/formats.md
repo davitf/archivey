@@ -225,16 +225,19 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
     - A **directory header (typeflag `5`) that declares data** has no data area either,
       so the next header is read straight after it. When that header parses, the
       directory lists with no size, as GNU tar, bsdtar and 7-Zip list it. When the
-      walk ends there on a zero block instead, the directory is listed with no size
-      and reported with `MEMBER_DIRECTORY_DATA_IGNORED` (`strict()` refuses the
-      archive): the declared blocks, if they are there, were read as the end-of-archive
-      marker and the members behind them are not listed, as GNU tar lists them, and
-      nothing in the file tells that from a trailer after blocks that were never
-      written, so the report says what the header declares and the trailer checks
-      above report the rest. `open()` refuses the directory, since its bytes cannot be
-      told from the trailer. A block that is neither a header nor zero where the data
-      would begin raises `CorruptionError` naming the directory header. An old-style
-      directory, a regular-file header named `d/`, is the other case: see above.
+      walk ends instead on a zero block inside the span the size declares, the
+      directory is listed with no size and reported with
+      `MEMBER_DIRECTORY_DATA_IGNORED` (`strict()` refuses the archive): the declared
+      blocks, if they are there, were read as the end-of-archive marker and the
+      members behind them are not listed, as GNU tar lists them, and nothing in the
+      file tells that from a trailer after blocks that were never written, so the
+      report says what the header declares and the trailer checks above report the
+      rest. `open()` refuses the directory, since its bytes cannot be told from the
+      trailer. A block that is neither a header nor zero where the data would begin
+      raises `CorruptionError` naming the directory header. A walk that gets past the
+      declared span (extended headers filled it) has read all it could hide, and
+      nothing is reported. An old-style directory, a regular-file header named `d/`,
+      is the other case: see above.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes
