@@ -641,8 +641,9 @@ class TarEntry:
     # and has_own_pax stays true.
     pax: Mapping[bytes, PaxValue]
     has_own_pax: bool
-    # An AREGTYPE (NUL) entry whose final name ends in "/": a directory, whose
-    # declared data is skipped, as GNU tar reads it.
+    # An AREGTYPE (NUL) or REGTYPE (0) entry whose final name ends in "/": a
+    # directory, as GNU tar and 7-Zip read it. Its declared size is a real data area
+    # (the typeflag carries data), which the reader lists and reports.
     old_style_directory: bool
     # Set only for a member type that carries data: sparse records on a link,
     # device, FIFO or directory leave both None.
@@ -1127,7 +1128,9 @@ class TarWalker:
             data_offset += used
             stored_size -= used
 
-        old_style_directory = typeflag == b"\x00" and name.endswith(b"/")
+        # The final name decides, after any PAX path or GNU long name: a regular-file
+        # typeflag with a name ending in "/" is a pre-POSIX directory entry.
+        old_style_directory = typeflag in (b"\x00", b"0") and name.endswith(b"/")
         if not carries_data(typeflag):
             # The size field of a link, device, FIFO or directory announces no data
             # area: the next header follows this one.

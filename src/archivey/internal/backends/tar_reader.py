@@ -27,6 +27,16 @@ After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
   not a tar does not open as an empty one.
 - A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a complete trailer, or of a
   damaged second trailer block → ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
+- A ``DIRTYPE`` header with a size as the last member, the walk stopped on a zero block
+  right after it → ``MEMBER_DIRECTORY_DATA_IGNORED`` naming the directory: the declared
+  blocks, if there, were read as the marker and hid the members behind them, and nothing
+  tells that from a trailer after a header whose blocks were never written
+  (:meth:`TarReader._report_directory_span`). A block that is neither a header nor zero
+  there → ``CorruptionError`` naming the directory.
+
+A directory listed from an old-style regular-file header named ``d/`` keeps its declared
+``size`` and is reported with ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing; ``open()``
+delivers the bytes, extraction creates the directory (DR-3).
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
 fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
@@ -54,6 +64,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    DirectoryDataContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -213,6 +224,19 @@ def _member_type(entry: TarEntry) -> MemberType:
         return MemberType.FILE
     # Character/block devices, FIFOs, multi-volume and volume headers, unknown types.
     return MemberType.OTHER
+
+
+def _directory_declaring_blocks(entry: TarEntry | None) -> TarEntry | None:
+    """``entry`` when it is a ``DIRTYPE`` header with a non-zero size, else None.
+
+    Such a header announces blocks it has no data area for (``NO_DATA_TYPES``), so the
+    walker read the next header right behind it; what the walk stopped on decides what
+    the size meant (:meth:`TarReader._verify_tar_eof`). An old-style ``d/`` regular-file
+    header is not this case: its typeflag carries data, which is read by size.
+    """
+    if entry is None or entry.typeflag != b"5" or not entry.size:
+        return None
+    return entry
 
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
@@ -664,12 +688,14 @@ class TarReader(BaseArchiveReader):
         # A pass reads the data of the member the walk is at through this walker.
         self._walker = walker
         index = 0
+        last_entry: TarEntry | None = None
         while isinstance(entry, TarEntry):
             yield self._to_member(entry, index)
+            last_entry = entry
             index += 1
             with self._translated_errors():
                 entry = self._step(walker)
-        self._verify_tar_eof(walker, entry, any_members=index > 0)
+        self._verify_tar_eof(walker, entry, last_entry=last_entry, member_count=index)
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
         """Forward-only member walk. Yields bare members; the base's shared progressive
@@ -752,9 +778,29 @@ class TarReader(BaseArchiveReader):
             )
 
     def _verify_tar_eof(
-        self, walker: TarWalker, end: TarEnd, *, any_members: bool
+        self,
+        walker: TarWalker,
+        end: TarEnd,
+        *,
+        last_entry: TarEntry | None,
+        member_count: int,
     ) -> None:
         """Check the end-of-archive marker from where the walk stopped.
+
+        ``member_count`` is how many members the walk yielded and ``last_entry`` the
+        last of them, or None. When that entry is a ``DIRTYPE`` header with a size, the
+        walker read the next header where its data would begin (a directory has no
+        data area, so it skipped none), and the walk ending there has two readings
+        nobody can tell apart: the declared blocks are zeros, read as the
+        end-of-archive marker with the members behind them dropped, or they were never
+        written and the trailer follows the header. :meth:`_report_directory_span`
+        says so with ``MEMBER_DIRECTORY_DATA_IGNORED``, the weight DR-3 gives a
+        directory's declared data, and the marker checks below run unchanged. When
+        the header where the data would begin does not parse,
+        :meth:`_refuse_directory_blocks` names the directory in the
+        ``CorruptionError`` the rejected header is anyway. The same header followed
+        by a header that parses is GNU tar's, bsdtar's and 7-Zip's clean case, listed
+        with no size and no report, and never reaches this method as ``last_entry``.
 
         A header that does not parse (a corrupt member header after the first) means
         the listing was cut short, and that escalates to ``CorruptionError`` whatever
@@ -777,9 +823,14 @@ class TarReader(BaseArchiveReader):
         from the block after it. A zero block and then a non-null one with no member
         before them is ``CorruptionError``.
         """
+        directory = _directory_declaring_blocks(last_entry)
         if end.kind == TarEndKind.REJECTED:
+            if directory is not None:
+                self._refuse_directory_blocks(directory)
             self._emit_eof_marker("rejected_header", observed_bytes=BLOCKSIZE)
             return
+        if directory is not None and end.kind == TarEndKind.ZERO_BLOCK:
+            self._report_directory_span(directory, member_id=member_count - 1)
         if end.kind != TarEndKind.ZERO_BLOCK:
             self._emit_eof_marker(
                 "absent" if end.kind == TarEndKind.ABSENT else "short",
@@ -793,7 +844,7 @@ class TarReader(BaseArchiveReader):
             self._verify_nothing_but_zeros_to_eof(stream)
             return
         if len(chunk) == BLOCKSIZE:
-            if not any_members:
+            if member_count == 0:
                 self._emit_eof_marker("no_member", observed_bytes=BLOCKSIZE)
                 return
             # One zero block, then a damaged one: the marker is damaged, not the
@@ -805,6 +856,75 @@ class TarReader(BaseArchiveReader):
             return
         self._emit_eof_marker(
             "absent" if len(chunk) == 0 else "short", observed_bytes=len(chunk)
+        )
+
+    def _directory_name(self, directory: TarEntry) -> str:
+        presented, _ = self._decode_name(
+            directory.name, directory.name_source, directory.name_binary
+        )
+        return normalize_member_name(
+            presented.rstrip("/") or presented,
+            MemberType.DIRECTORY,
+            backslash_is_separator=False,
+        )
+
+    def _report_directory_span(self, directory: TarEntry, *, member_id: int) -> None:
+        """Report ``MEMBER_DIRECTORY_DATA_IGNORED`` for a ``DIRTYPE`` header with a
+        size that the walk ended right after, on a zero block.
+
+        The bytes have two readings: the declared blocks are zeros, which the walker
+        read as the end-of-archive marker (a lone block, or a complete marker when the
+        span is two blocks or more), so the members behind them are not listed, as GNU
+        tar lists the directory and stops ("A lone zero block", or no word at all); or
+        the blocks were never written and the trailer follows the header, as a writer
+        that carried ``st_size`` leaves it. Nothing in the file tells them apart, so
+        the report says what the header declares and what the walk saw, and the
+        directory is listed with no ``size``: the declared bytes cannot be told from
+        the trailer, so ``open()`` has nothing to deliver. The code is in
+        ``ARCHIVE_INTEGRITY_CODES``, so ``DiagnosticPolicy.strict()`` refuses the
+        archive, the weight DR-3 gives a directory's declared data in every format.
+        The marker checks that follow report the trailer as they would after a file.
+        """
+        name = self._directory_name(directory)
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+            message=(
+                f"Directory {quoted(name)} declares {directory.size} bytes of data and "
+                "the archive ends right after its header: a TAR directory entry has "
+                "no data area, so if the blocks are there they were read as the "
+                "end-of-archive marker and the members behind them are not listed. "
+                "Extraction creates the directory; the bytes cannot be told from the "
+                "trailer, so open() has nothing to deliver."
+            ),
+            context=DirectoryDataContext(
+                archive_name=self._archive_name,
+                member_name=name,
+                member_id=member_id,
+                size=directory.size,
+                compressed_size=None,
+            ),
+            logger=integrity_logger,
+        )
+
+    def _refuse_directory_blocks(self, directory: TarEntry) -> None:
+        """Raise ``CorruptionError`` naming a ``DIRTYPE`` header with a size when the
+        block where its data would begin is neither a member header nor a zero block.
+
+        The archive is damaged there whichever reading holds, the declared blocks
+        present and read as a header or absent with junk behind the directory; GNU tar
+        reports "Skipping to next header" and exits 2 on both. The generic rejected
+        header report would raise anyway; this one names the directory, since its
+        declared size is the likeliest reason a header sits where none parses.
+        """
+        name = self._directory_name(directory)
+        raise CorruptionError(
+            f"TAR header for {quoted(name)} is a directory that declares "
+            f"{directory.size} bytes of data, and the block where that data would "
+            "begin is neither a member header nor a zero block: a directory entry has "
+            "no data area, so either the declared blocks are there and were read as a "
+            "header, or the archive is damaged right after the directory",
+            archive_name=self._archive_name,
+            member_name=name,
         )
 
     def _verify_nothing_but_zeros_to_eof(self, stream: BinaryIO) -> None:
@@ -1115,7 +1235,8 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        # The typeflag as stored: NUL for an old-style directory.
+        # The typeflag as stored: NUL or 0 for an old-style directory, so a caller can
+        # tell it from a DIRTYPE one.
         extra = MemberExtra({"tar.type": entry.typeflag})
         special = special_file_type_from_tar_typeflag(entry.typeflag)
         if special is not None:
@@ -1144,7 +1265,14 @@ class TarReader(BaseArchiveReader):
             type=member_type,
             name=name,
             raw_name=entry.name,
-            size=entry.size if member_type == MemberType.FILE else None,
+            # An old-style directory keeps its declared size: its regular-file
+            # typeflag gives it a data area, which open() delivers (DR-3). A DIRTYPE
+            # size names no data area, so it is dropped here and judged at the end
+            # of the walk (_verify_tar_eof).
+            size=entry.size
+            if member_type == MemberType.FILE
+            or (entry.old_style_directory and entry.size)
+            else None,
             modified=modified,
             # A GNU base-256 mode field can hold a negative or wider-than-32-bit value,
             # which stat.S_IMODE refuses with OverflowError. Masked first, as RAR does:
@@ -1216,6 +1344,10 @@ class TarReader(BaseArchiveReader):
                     f"{quoted(member.name)}"
                 ),
             )
+        if entry.old_style_directory and entry.size:
+            # GNU tar and 7-Zip create the directory and skip the bytes without a word.
+            # Say so; read() delivers them.
+            self._emit_directory_data_ignored(member, index)
         if entry.has_own_pax:
             # The records live on, decoded, in extra["tar.pax_headers"]; the parsed
             # copy is not kept twice. A shared global mapping costs nothing per member.
