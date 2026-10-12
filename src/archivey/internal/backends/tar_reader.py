@@ -859,6 +859,8 @@ class TarReader(BaseArchiveReader):
         )
 
     def _directory_name(self, directory: TarEntry) -> str:
+        """``directory``'s name as the listing presents it (:meth:`_to_member`), for a
+        report raised at the end of the walk, after the member was built."""
         presented, _ = self._decode_name(
             directory.name, directory.name_source, directory.name_binary
         )
