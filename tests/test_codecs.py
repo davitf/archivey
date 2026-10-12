@@ -38,11 +38,13 @@ from archivey.internal.streams import crypto
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
+    StreamCodec,
     codec_for_stream_format,
     codec_requirement,
     open_codec_stream,
     resolve_codec,
 )
+from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,
     _MAX_FLAT_ENTRY,
@@ -151,6 +153,30 @@ def test_stored_stream_starts_at_the_source_position() -> None:
         assert stream.seek(0) == 0
         assert stream.read(4) == CONTENT[:4]
         assert source.tell() == 3 + 4
+
+
+def test_stored_stream_keeps_the_caller_wiring() -> None:
+    """The stored stream skips the config work but still gets the caller's collector
+    and runs ``on_close`` when it closes."""
+    collector = DiagnosticCollector()
+    closed: list[bool] = []
+    stream = open_codec_stream(
+        Codec.STORED,
+        io.BytesIO(CONTENT),
+        collector=collector,
+        on_close=lambda: closed.append(True),
+    )
+    assert stream._diagnostics_collector is collector
+    stream.close()
+    assert closed == [True]
+
+
+def test_stored_codec_ignores_the_config() -> None:
+    """``open_codec_stream`` hands a stored stream source the caller's config as is, not
+    the decoder config the other codecs get. That is only right while ``StoredCodec``
+    reads nothing from it."""
+    assert StoredCodec.prepare_config is StreamCodec.prepare_config
+    assert StoredCodec.translator is StreamCodec.translator
 
 
 def test_codec_implemented_once_is_shared_across_formats() -> None:
