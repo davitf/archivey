@@ -76,12 +76,16 @@ Where the format stores a checksum for each member, reading a member from start 
 and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
 checked. A loop that reads in chunks gets every byte that could be read before the error, but those
 bytes may be wrong too, since archivey can't tell where the damage starts. Some archives store
-nothing to check a single member against, so damage there can go unnoticed. A TAR member has no
-checksum of its own, and the checksum of a `.tar.gz` covers the whole file rather than one member.
-ISO images and Brotli, `.Z` and `.lzma` files have no checksums at all, and `.xz`, `.zst` and `.lz4`
-files have one only if the program that wrote them added it. When archivey can't check a member that
-you'd expect to be checked, such as a 7z member encrypted without a CRC, it records the diagnostic
-`DIGEST_UNVERIFIABLE`, which `strict()` also turns into an exception.
+nothing to check a single member against, so damage there can go unnoticed:
+
+- A TAR member has no checksum of its own, and the checksum of a `.tar.gz` covers the whole file
+  rather than one member.
+- ISO images and Brotli, `.Z` and `.lzma` files have no checksums at all.
+- `.xz`, `.zst` and `.lz4` files have one only if the program that wrote them added it.
+
+When archivey can't check a member that you'd expect to be checked, such as a 7z member encrypted
+without a CRC, it records the diagnostic `DIGEST_UNVERIFIABLE`, which `strict()` also turns into an
+exception.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that

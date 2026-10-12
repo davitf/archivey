@@ -33,9 +33,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   standard library's zlib, bz2 and lzma, run inside your process. Archivey runs the decoders known
   to crash in a child process, or feeds them in a way that avoids the crash, but one nobody has
   found yet would still abort yours. Members compressed with PPMd, a method some 7z and ZIP archives
-  use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB by
-  default) and in a child process above it. Under a tight memory limit, such as a container's, the
-  in-process decoder can crash instead of raising an error.
+  use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB of
+  compressed data by default) and in a child process above it. Under a tight memory limit, such as a
+  container's, the in-process decoder can crash instead of raising an error.
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
   default. Everything else needs memory on top of that: the rest of your program, archivey itself,
@@ -57,9 +57,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   and `spool_limits.max_bytes` caps that copy. When the archive records a member's size in
   `member.size`, archivey never decodes more than that, and a member holding more raises
   `CorruptionError`.
-- **A streaming pass doesn't enforce the listing limits.** With `streaming=True` or
-  `stream_members()`, `max_members` and `max_metadata_bytes` aren't checked, except that 7z, RAR and
-  ISO archives still check the member count when they open.
+- **`stream_members()` doesn't enforce the listing limits.** It doesn't check `max_members` and
+  `max_metadata_bytes`, except that 7z, RAR and ISO archives still check the member count when they
+  open. `extract_all` checks them even with `streaming=True`, so the files written before it goes
+  over a limit stay on disk.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
@@ -117,9 +118,10 @@ in the repository measures what each limit costs in time and memory on your mach
 
 The costs were measured on one 2.8 GHz core.
 
-A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16
-for RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member, so
-two such members reach the default. Each password you try costs the same work again.
+A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16 for
+RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member, so two
+such members use the whole default, and a third is refused. Each password you try costs the same
+work again.
 
 Going over a limit raises `ResourceLimitError`.
 

@@ -58,15 +58,15 @@ file first is often faster.
 
 ## Several members at once
 
-By default only one member stream can be open at a time, and opening a second while the first
-is still open raises. A thread pool that reads different members at once needs
-`concurrent_members=True`. Each stream is opened the same way `open` always opens one, so on a
-solid archive it may first decompress the members stored before it. The streams share the
-source and take turns reading compressed data from it, but they decompress in parallel. That can
-be cheaper than opening the archive once per worker, which reads the archive's index each
-time. The exception is a source where each jump to a new position is costly, such as a member
-of another archive or a file read over the network. There, streams that take turns make the
-source jump back and forth, and each jump throws away what it had buffered.
+By default only one member stream can be open at a time, and opening a second while the first is
+still open raises. A thread pool that reads different members at once needs
+`concurrent_members=True`, which can't be combined with `streaming=True`. Each stream is opened the
+same way `open` always opens one, so on a solid archive it may first decompress the members stored
+before it. The streams share the source and take turns reading compressed data from it, but they
+decompress in parallel. That can be cheaper than opening the archive once per worker, which reads
+the archive's index each time. The exception is a source where each jump to a new position is
+costly, such as a member of another archive or a file read over the network. There, streams that
+take turns make the source jump back and forth, and each jump throws away what it had buffered.
 
 ## Why these aren't on by default
 
