@@ -130,3 +130,104 @@ def test_close_closes_the_inner() -> None:
     assert inner.closed
     with pytest.raises(ValueError, match="closed"):
         stream.read(1)
+
+
+class _SizedReads(io.BytesIO):
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.sizes: list[int] = []
+
+    def read(self, n: int = -1, /) -> bytes:
+        self.sizes.append(n)
+        return super().read(n)
+
+
+class _RaisesOnRead(io.BytesIO):
+    """Raises ``OSError`` from the read that starts at ``at``.
+
+    ``consume`` bytes are taken first, so the position after the raise is ahead of
+    where the read began.
+    """
+
+    def __init__(self, data: bytes, *, at: int, consume: int = 0) -> None:
+        super().__init__(data)
+        self._at = at
+        self._consume = consume
+        self._raised = False
+
+    def read(self, n: int = -1, /) -> bytes:
+        if not self._raised and self.tell() >= self._at:
+            self._raised = True
+            if self._consume:
+                super().read(self._consume)
+            raise OSError("cut")
+        return super().read(n)
+
+
+class _RestoreSeekFails(_RaisesOnRead):
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if whence == io.SEEK_SET:
+            raise OSError("no absolute")
+        return super().seek(offset, whence)
+
+
+def test_rewind_oversize_does_not_repeat_bytes_after_a_failed_read() -> None:
+    """A failed oversize read returns the prefetched tail and leaves the inner past it.
+
+    The rewind has already given that tail back to the inner. Returning it without
+    moving forward makes the read after the stashed error deliver the same bytes.
+    """
+    data = bytes(range(32))
+    stream = ReadAheadStream(_RaisesOnRead(data, at=3), 8, rewind_oversize=True)
+    assert stream.read(3) == data[:3]
+    assert stream.read(100) == data[3:8]
+    assert stream.tell() == 8
+    with pytest.raises(OSError, match="cut"):
+        stream.read(1)
+    assert stream.read(4) == data[8:12]
+
+
+def test_rewind_oversize_restore_uses_the_position_from_before_the_read() -> None:
+    """Bytes the failed read already took do not shift where the tail ends.
+
+    The restore is an absolute seek to the position from just after the rewind,
+    plus the tail. Seeking forward by the tail from wherever the failed read
+    stopped would skip past the tail.
+    """
+    data = bytes(range(32))
+    stream = ReadAheadStream(
+        _RaisesOnRead(data, at=3, consume=2), 8, rewind_oversize=True
+    )
+    assert stream.read(3) == data[:3]
+    assert stream.read(100) == data[3:8]
+    assert stream.tell() == 8
+    with pytest.raises(OSError, match="cut"):
+        stream.read(1)
+    assert stream.read(4) == data[8:12]
+
+
+def test_rewind_oversize_reraises_when_the_position_cannot_be_restored() -> None:
+    """A restore that fails does not hand back bytes the inner still holds."""
+    data = bytes(range(32))
+    stream = ReadAheadStream(_RestoreSeekFails(data, at=3), 8, rewind_oversize=True)
+    assert stream.read(3) == data[:3]
+    with pytest.raises(OSError, match="cut"):
+        stream.read(100)
+
+
+def test_rewind_oversize_reads_the_request_once() -> None:
+    """A large read rewinds the prefetched tail and returns one inner read.
+
+    Joining the tail to a second read would copy the whole request. The bytes
+    are the same either way.
+    """
+    data = bytes(range(256)) * 8
+    inner = _SizedReads(data)
+    stream = ReadAheadStream(inner, 8, rewind_oversize=True)
+    assert stream.read(3) == data[:3]
+    inner.sizes.clear()
+    assert stream.read(100) == data[3:103]
+    assert inner.sizes == [100]
+    assert stream.read() == data[103:]
+    plain = ReadAheadStream(io.BytesIO(data), 8)
+    assert plain.read(3) + plain.read(100) + plain.read() == data

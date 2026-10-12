@@ -27,22 +27,42 @@ from archivey.internal.streams.streamtools.binaryio import (
 )
 
 
+def _seek_to(stream: BinaryIO, target: int) -> bool:
+    """Seek ``stream`` to ``target``. False when it cannot, without raising."""
+    try:
+        stream.seek(target)
+    except (OSError, AttributeError, ValueError, io.UnsupportedOperation):
+        return False
+    return True
+
+
 class ReadAheadStream(DelegatingStream):
     """Buffer reads of a full-count ``inner``, reading it at most once per ``read``.
 
     Owns ``inner``, as every :class:`DelegatingStream` does. Seekable when ``inner``
     is: a seek drops the buffer and any held error, then seeks ``inner``.
+
+    ``rewind_oversize`` is for an inner whose seek is a pointer move. A read larger
+    than the buffer then rewinds any prefetched tail and returns that one inner read.
+    Joining the tail to a second read would copy the whole request. Leave it off for
+    a codec: rewinding it re-decodes. If that read raises, the inner is moved just
+    past the tail before the tail is returned, so the next read raises the error
+    and does not return the tail again. A restore that fails raises now and
+    returns nothing.
     """
 
     readinto_passthrough = False
 
-    def __init__(self, inner: BinaryIO, buffer_size: int) -> None:
+    def __init__(
+        self, inner: BinaryIO, buffer_size: int, *, rewind_oversize: bool = False
+    ) -> None:
         # The buffered bytes are ``_buffer[_offset:]``: a read moves the offset and
         # copies only what it returns.
         self._buffer = b""
         self._offset = 0
         self._held: Exception | None = None
         self._buffer_size = buffer_size
+        self._rewind_oversize = rewind_oversize
         super().__init__(inner)
 
     def read(self, n: int | None = -1, /) -> bytes:
@@ -60,6 +80,28 @@ class ReadAheadStream(DelegatingStream):
         held = self._buffer[start:]
         self._buffer = b""
         self._offset = 0
+        # The tail is shorter than this read. Rewinding it and reading once
+        # returns the inner's own buffer; joining the two copies the request.
+        if self._rewind_oversize and held and (n < 0 or n > self._buffer_size):
+            try:
+                self._inner.seek(-len(held), io.SEEK_CUR)
+            except (OSError, ValueError, io.UnsupportedOperation):
+                pass
+            else:
+                # The rewind put ``held`` back on the inner. Remember where that
+                # starts: a failed read must leave the inner just past those bytes
+                # before they are returned, or the next read delivers them again.
+                try:
+                    mark = self._inner.tell()
+                except (OSError, AttributeError, ValueError, io.UnsupportedOperation):
+                    mark = None
+                try:
+                    return read_blocking(self._inner, n)
+                except Exception as err:
+                    if mark is not None and _seek_to(self._inner, mark + len(held)):
+                        self._held = err
+                        return held
+                    raise
         want = -1 if n < 0 else max(n - buffered, self._buffer_size)
         try:
             data = read_blocking(self._inner, want)

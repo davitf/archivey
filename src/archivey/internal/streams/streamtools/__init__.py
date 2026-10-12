@@ -33,7 +33,8 @@ When to use which concurrency helper:
 
 - ``LockedStream`` — one shared handle; hold a lock across each seek+read (TAR/ISO).
 - ``SharedSource`` + ``SharedView`` — each consumer has its own logical
-  position; every read re-seeks under the lock (ZIP-style shared file).
+  position; a read seeks under the lock when the handle is not already there
+  (ZIP-style shared file).
 - ``SolidBlockReader`` — one forward decode; hand out consecutive member slices
   (7z folder / RAR pipe). Not seekable.
 

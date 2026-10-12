@@ -738,9 +738,15 @@ class TarWalker:
     the walker counts.
     """
 
-    def __init__(self, stream: BinaryIO, *, seekable: bool) -> None:
+    def __init__(
+        self, stream: BinaryIO, *, seekable: bool, end: int | None = None
+    ) -> None:
         self._stream = stream
         self._seekable = seekable
+        # Byte length of the archive when it is a fact (a plain file). A read is then
+        # clamped to what the file holds, so one member is one read. Unknown (a
+        # compressed stream, a test buffer) keeps the stepped read.
+        self._end = end
         self._pos = 0  # where the next header starts, once the current data is skipped
         self._stream_pos = 0  # forward-only: bytes consumed from the stream so far
         self._global: dict[bytes, PaxValue] = {}
@@ -794,7 +800,14 @@ class TarWalker:
                 )
 
     def _read(self, size: int) -> bytes:
-        data = read_within_reach(self._stream, size, remaining=None, step=READ_STEP)
+        end = self._end
+        # ``end`` is a fact, so clamping cannot hide bytes the file really holds.
+        # Without it a declared size is read in steps: one joined copy per member
+        # larger than the step.
+        remaining = None if end is None else max(0, end - self._stream_pos)
+        data = read_within_reach(
+            self._stream, size, remaining=remaining, step=READ_STEP
+        )
         self._stream_pos += len(data)
         return data
 

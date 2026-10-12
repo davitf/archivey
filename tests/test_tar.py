@@ -45,7 +45,8 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends import tar_reader as tar_reader_module
-from archivey.internal.backends.tar_parser import TarWalker
+from archivey.internal.backends.tar_parser import READ_STEP, TarWalker
+from archivey.internal.backends.tar_reader import _WALK_BUFFER
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from tests.conftest import requires_zstd, zstd_backend
 from tests.corruption_util import (
@@ -2214,6 +2215,36 @@ def test_extended_header_over_the_metadata_cap_is_refused_unread(
     assert max(source.requested) <= max(
         DEFAULT_UNKNOWN_LENGTH_READ_STEP, io.DEFAULT_BUFFER_SIZE, 10240
     )
+
+
+def test_plain_tar_member_past_the_walk_buffer_is_one_source_read() -> None:
+    """A plain-tar member larger than the walk buffer is one source read of its size.
+
+    The file length is a fact, so the walker asks for the member once, and a read
+    larger than the walk buffer rewinds the prefetched tail instead of joining a
+    second read onto it. Leaving ``TarWalker.end`` unset reads the member in
+    ``READ_STEP`` pieces, so this size is absent from the recorded requests.
+    Turning ``rewind_oversize`` off splits the prefetched tail from the rest, so
+    the one request of this size is absent there too.
+    """
+    payload = b"m" * (_WALK_BUFFER + READ_STEP + 100)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        info = tarfile.TarInfo("big.bin")
+        info.size = len(payload)
+        info.mtime = 1_700_000_000
+        tar.addfile(info, io.BytesIO(payload))
+    source = FactSizedReadRecorder(buf.getvalue())
+
+    with open_archive(source, format=ArchiveFormat.TAR) as archive:
+        got = b"".join(
+            stream.read()
+            for member, stream in archive.stream_members()
+            if member.is_file
+        )
+
+    assert got == payload
+    assert source.requested.count(len(payload)) == 1
 
 
 def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) -> None:

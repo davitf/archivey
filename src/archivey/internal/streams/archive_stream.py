@@ -208,8 +208,9 @@ class ArchiveStream(ReadOnlyIOStream):
         # Whether the caller has seeked since the verdict last raised. A seek restarts
         # the decode, so the prefix reads again; the read that reaches the end raises.
         self._verdict_rewound = False
-        # False for a stream that only a reader's own views read: they seek before every
-        # read, so each read would count as rewound, and a short read that ends at the
+        # False for a stream that only a reader's own views read. A read seeks the
+        # shared handle when it is not already there. Some reads still seek, and one
+        # seek is enough to mark the stream rewound, so a short read that ends at the
         # damage would lose its prefix. The member streams over those views keep theirs.
         self._repeat_verdict = repeat_verdict
         # A stream's diagnostics are everything emitted from its open onward: capture the
