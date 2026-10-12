@@ -99,23 +99,28 @@ carry `extra["special_file_type"]` ∈ `{"fifo","char_device","block_device","so
 "unknown"}`, whatever type the member ends up with (a RAR file copy is `FILE` by its
 redirect record; a ZIP directory marker, an ISO directory record or a reparse-point bit
 over such a mode makes a `DIRECTORY` or `SYMLINK` that keeps the key), so the stored
-kind is never lost; an `OTHER` member that recorded no
-such mode (a GNU dumpdir, an ISO file record with a directory's `S_IFDIR` mode) has no
-key. `MemberType.ANTI` SHALL be a
+kind is never lost; a member that recorded no such mode (a GNU dumpdir, which is a
+`DIRECTORY`; an ISO file record with a directory's `S_IFDIR` mode, which is `OTHER`)
+has no key. `MemberType.ANTI` SHALL be a
 deletion/tombstone marker (`is_file` false, no payload); it SHALL NOT be treated as
 `OTHER`.
 
-A directory entry whose header declares data (ZIP, RAR; no format gives a directory
-content) SHALL stay `MemberType.DIRECTORY` with `size` as declared, SHALL be reported
-with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`) once per member at
-listing, and SHALL be created as a directory by extraction, as every official tool does.
+A directory entry whose header declares data (ZIP, TAR, RAR; no format gives a
+directory content) SHALL stay `MemberType.DIRECTORY` with `size` as declared, SHALL
+be reported with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`) once
+per member at listing, and SHALL be created as a directory by extraction, as every
+official tool does. The one exception is GNU tar's dumpdir (`D`, from `tar -G`): its
+data is the directory's contents list at dump time, structure that GNU tar defines and
+reads itself, so it is a `DIRECTORY` with no `size` and no report, and `open()`
+refuses it for declaring no data.
 `open()` SHALL refuse a directory for declaring no data, and a tombstone or a special
 entry for its type (a special entry that stores data is a `FILE`): `ANTI`, `OTHER` and a directory
 declaring no size raise `ArchiveyUsageError`, while a directory declaring data opens
 and delivers the bytes where the backend can decode them (ZIP decodes any method;
-RAR delivers stored, unencrypted directory data and raises `UnsupportedFeatureError`
-for the rest, since `unrar` emits nothing for a directory entry), checked against
-the stored digest like a file's when the header carries one. A ZIP directory entry
+TAR reads the blocks of an old-style `d/` regular-file header; RAR delivers stored,
+unencrypted directory data and raises `UnsupportedFeatureError` for the rest, since
+`unrar` emits nothing for a directory entry), checked against the stored digest like
+a file's when the header carries one. A ZIP directory entry
 whose CRC-32 field is 0, the conventional value for a directory, carries no digest;
 `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) SHALL say so instead of
 refusing the bytes as damaged when that CRC was the entry's only check (unencrypted
