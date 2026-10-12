@@ -214,6 +214,17 @@ def open_codec_stream(
     is not already there. Some reads still seek, and one seek is enough to mark the
     stream rewound.
     """
+    if codec is Codec.STORED and not isinstance(source, (str, os.PathLike)):
+        return _open_stored_stream(
+            source,
+            config=config,
+            params=params,
+            stamp=stamp,
+            collector=collector,
+            seekable=seekable,
+            on_close=on_close,
+            repeat_verdict=repeat_verdict,
+        )
     if collector is not None:
         config = replace(config, collector=collector)
     if not isinstance(source, (str, os.PathLike)):
@@ -253,6 +264,41 @@ def open_codec_stream(
         seekable=stream_seekable,
         rewind_warning=backend.rewind_warning if stream_seekable else None,
         collector=config.collector,
+        on_close=on_close,
+        repeat_verdict=repeat_verdict,
+    )
+
+
+def _open_stored_stream(
+    source: BinaryIO,
+    *,
+    config: StreamConfig,
+    params: CodecParams,
+    stamp: Callable[[ArchiveyError], None] | None,
+    collector: DiagnosticCollector | None,
+    seekable: bool | None,
+    on_close: Callable[[], None] | None,
+    repeat_verdict: bool,
+) -> ArchiveStream:
+    """:func:`open_codec_stream` for a stored stream source, without the config work.
+
+    Nothing is decoded, so the config steers nothing but the collector: the size
+    probe, the seek-demand check and the copies of ``config`` that the general path
+    makes would each be built and then ignored. A ZIP member is opened this way once
+    per member, so they are skipped. The origin fix, the translator, the rewind
+    warning and the stream itself are the general path's.
+    """
+    source = fix_stream_start_position(source)
+    sc = _BY_CODEC[Codec.STORED]
+    stream_seekable = True if seekable is None else seekable
+    return ArchiveStream(
+        lambda: sc.open(source, params, config),
+        translate=sc.translator(config),
+        stamp=stamp,
+        lazy=False,
+        seekable=stream_seekable,
+        rewind_warning=sc.rewind_warning(config) if stream_seekable else None,
+        collector=collector if collector is not None else config.collector,
         on_close=on_close,
         repeat_verdict=repeat_verdict,
     )

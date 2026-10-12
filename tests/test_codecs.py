@@ -141,6 +141,18 @@ def test_stored_passthrough() -> None:
         assert stream.read() == CONTENT
 
 
+def test_stored_stream_starts_at_the_source_position() -> None:
+    """A stored stream skips the config work, not the origin fix: a source positioned
+    mid-file reads from there, and ``seek(0)`` goes back there."""
+    source = io.BytesIO(b"xyz" + CONTENT)
+    source.seek(3)
+    with open_codec_stream(Codec.STORED, source) as stream:
+        assert stream.read() == CONTENT
+        assert stream.seek(0) == 0
+        assert stream.read(4) == CONTENT[:4]
+        assert source.tell() == 3 + 4
+
+
 def test_codec_implemented_once_is_shared_across_formats() -> None:
     """The single-file gzip format and any other gzip consumer resolve to one codec."""
     assert codec_for_stream_format(StreamFormat.GZIP) is Codec.GZIP
