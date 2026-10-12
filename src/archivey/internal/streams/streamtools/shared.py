@@ -19,12 +19,11 @@ archivey-dependency-free: it raises stdlib-shaped errors (``ValueError`` / ``OSE
 **Views are unbuffered.** A ``read`` is one locked read of the shared handle, and a
 seek when the handle is elsewhere — cheap (an in-memory offset move on a regular
 file / ``BytesIO``), and the current consumers (codec streams, which buffer
-internally) already read in large chunks. A
-consumer that issues many tiny reads should wrap its view in a buffer itself;
-buffering inside the primitive would double-copy for everyone else. Over a view of a
-decoder that defers its error, that buffer is
-:class:`~archivey.internal.streams.streamtools.readahead.ReadAheadStream`, not
-``io.BufferedReader``, which asks again after a short fill and so drops the prefix.
+internally) already read in large chunks. A consumer that issues many tiny reads
+should wrap its view in a buffer itself; buffering inside the primitive would
+double-copy for everyone else. Over a view of a decoder that defers its error,
+that buffer is :class:`~archivey.internal.streams.streamtools.readahead.ReadAheadStream`,
+not ``io.BufferedReader``, which asks again after a short fill and so drops the prefix.
 """
 
 from __future__ import annotations

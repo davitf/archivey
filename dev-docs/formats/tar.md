@@ -137,10 +137,9 @@ tar, archivey's own codec stream; a path source goes to the codec as a path, so 
 can use an accelerator and a static ratio. A random-access walk reads through a buffered
 `SharedView` of its own, with a fixed 8 KiB read-ahead so listing cost does not change
 with Python's default buffer size. The view seeks the shared stream before a read when
-the handle is not already there, so a member read never moves the walk. A streaming
-walk is the only reader of the forward stream, buffered, and member data is read through
-it. The reader closes every
-stream it built.
+the handle is not already there, so a member read never moves the walk. A streaming walk
+is the only reader of the forward stream, buffered, and member data is read through it.
+The reader closes every stream it built.
 
 **Every buffer reads the stream under it at most once per read.** It is a
 `ReadAheadStream`, not `io.BufferedReader`, which asks again after a short read. A
@@ -148,11 +147,10 @@ decoder over a cut stream returns the bytes it could decode and raises
 `TruncatedError` on the next read, so asking again in the same read would drop those
 bytes. For the same reason the random-access codec stream does not repeat its first
 error after a seek (`open_codec_stream(repeat_verdict=False)`): its views seek before
-a read when the handle is not already there. Each member stream keeps its own. What a
-cut member's reads return is the contract in the TAR spec's requirement "Detect truncated
-TAR archives": a sized read
-gives the readable prefix and the next read raises, and a read with no size raises with
-nothing.
+a read when the handle is not already there. Each member stream keeps its own. What a cut
+member's reads return is the contract in the TAR spec's requirement "Detect truncated TAR
+archives": a sized read gives the readable prefix and the next read raises, and a read
+with no size raises with nothing.
 
 **A random-access member view stops at the end of the archive** and then returns no
 bytes. `_MemberDataView` sits on it and knows the member's stored length, so a read that
@@ -285,9 +283,9 @@ when the handle is not already there. On a compressed tar the view has an 8 KiB 
 above it, so small reads do not each reach the decoder. A seek past the end returns the
 target and the next read returns `b""`, as in every other format. In a streaming pass,
 and in a random-access pass whose walk is still running, the member is read through the
-walk's own stream (`TarWalker.open_data`). A
-sparse member is a `SparseStream` over either: it serves the logical bytes, zeros in the
-holes, and reads the stored stream only inside a chunk.
+walk's own stream (`TarWalker.open_data`). A sparse member is a `SparseStream` over
+either: it serves the logical bytes, zeros in the holes, and reads the stored stream only
+inside a chunk.
 
 **A sparse map is checked against the member's sizes first.** Every map is parsed during
 the walk, a PAX 1.0 map from the first blocks of the data area, so a map that does not
@@ -347,15 +345,15 @@ data is read from where its header left the stream, before the next header. On a
 tar that read is clamped to the file's length and issued once, and a read larger than
 the 8 KiB buffer rewinds the prefetched tail so the file's own buffer is what comes
 back. A compressed tar keeps stepped reads: rewinding a codec would decode the tail
-again. After a full
-listing it reads the members' data in archive order, one forward sweep after a single
-seek back to the first member. `extract_all()` takes the one-pass path too (§2.4).
+again. After a full listing it reads the members' data in archive order, one forward
+sweep after a single seek back to the first member. `extract_all()` takes the one-pass
+path too (§2.4).
 
 **`streaming=True` hands each member out as the pass reaches it.** A member's stream is
 good only until the pass moves on, because the walk reads through whatever the consumer
 left and then reads the next header from the same stream; keeping one and reading it
-later raises `ValueError` on a closed file. A
-hardlink or symlink in a streaming pass resolves against members already seen.
+later raises `ValueError` on a closed file. A hardlink or symlink in a streaming pass
+resolves against members already seen.
 
 **A hardlink resolves to an earlier member only, in both modes.** A hardlink is a
 reference to a file already archived: tarfile's `_find_link_target` searches only the
@@ -368,11 +366,11 @@ to the last member of that name either way.
 
 **`MemberStreams.CONCURRENT`** puts one lock around every read of the shared byte
 stream: each read the walk's buffer makes, each member read with the seek it makes
-when the handle is elsewhere, and the end-of-archive reads. A member's `seek` and
-`tell` change only its view's own position. The lock
-makes interleaved reads correct. It does not make them parallel, and on a compressed tar
-they still share one decompressor. A streaming reader takes the same lock, uncontended,
-so both modes have one critical-section shape.
+when the handle is elsewhere, and the end-of-archive reads. A member's `seek` and `tell`
+change only its view's own position. The lock makes interleaved reads correct. It does
+not make them parallel, and on a compressed tar they still share one decompressor.
+A streaming reader takes the same lock, uncontended, so both modes have one
+critical-section shape.
 
 **Nothing verifies member data.** The format has a checksum over each header and none
 over data. On a compressed tar the compressor's own check catches a corrupted byte when
