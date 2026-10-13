@@ -271,17 +271,17 @@ def test_multithread_reads_beside_stream_members(
     The pass's streams and the threads' random opens interleave on the shared handle,
     so on a tar.gz both move the one decoder back and forth under the handle lock.
     """
-    path = _make_tar(tmp_path / "a.tar", compressed=compressed, n=4)
+    name = "a.tar.gz" if compressed else "a.tar"
+    path = _make_tar(tmp_path / name, compressed=compressed, n=4)
     expected = _expected(4)
     with open_archive(path, concurrent_members=True) as reader:
-        reader.members()  # a TAR listing is complete only after a full walk
         barrier = threading.Barrier(5)
         errors: list[BaseException] = []
         got: list[dict[str, bytes]] = []
 
         def read_all() -> None:
             try:
-                barrier.wait()
+                barrier.wait(timeout=5)
                 got.append({name: reader.read(name) for name in expected})
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
@@ -292,7 +292,7 @@ def test_multithread_reads_beside_stream_members(
         passed: dict[str, bytes] = {}
         for member, stream in reader.stream_members():
             if member.name == "f0.txt":
-                barrier.wait()
+                barrier.wait(timeout=5)
             assert stream is not None
             passed[member.name] = stream.read()
         for t in threads:

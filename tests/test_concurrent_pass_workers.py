@@ -10,6 +10,7 @@ bookkeeping itself is unit-tested at the bottom.
 
 from __future__ import annotations
 
+import gzip
 import io
 import tarfile
 import threading
@@ -81,6 +82,12 @@ def _iso(tmp_path: Path) -> Path:
     return path
 
 
+def _gz(tmp_path: Path) -> Path:
+    path = tmp_path / "c.txt.gz"
+    path.write_bytes(gzip.compress(_FILES["c.txt"] * 500))
+    return path
+
+
 def _fixture(name: str) -> Callable[[Path], Path]:
     return lambda _tmp: _FIXTURES / name
 
@@ -90,6 +97,7 @@ LISTED_UP_FRONT = [
     pytest.param(_zip, id="zip"),
     pytest.param(_directory, id="dir"),
     pytest.param(_iso, id="iso", marks=requires("pycdlib")),
+    pytest.param(_gz, id="gz"),
     pytest.param(
         _fixture("rar/basic_nonsolid__.rar"),
         id="rar-nonsolid",
