@@ -434,11 +434,16 @@ class ArchiveInfo:
 same shape as `MemberExtra` over a separate key set, not merged with it. Known
 keys carry their declared types on a subscript read; unknown keys remain legal
 and read as `object`. Writes and `.get()` are not narrowed.
-`member_count` SHALL be `None` when computing it requires a full scan.
+`member_count` SHALL be `None` when computing it requires a full scan, and when the
+archive cannot supply a count: a ZIP whose central directory walk met damage or
+stopped at `ListingLimits.max_members`. A ZIP reads its count from that walk, an index
+read rather than a scan of member data; reading `member_count` before the listing has
+walked the directory runs the walk.
 
 #### Scenario: archive info matrix
 
 | Case | Expected |
 | --- | --- |
 | TAR archive opens without central directory | `ar.info.member_count is None` |
+| ZIP whose central directory is damaged at its third entry, or holds more entries than `max_members` | `ar.info.member_count is None`; `members()` raises |
 | ISO 9660 image richest namespace is Joliet | `ar.info.extra["iso.namespace"] == "joliet"` |

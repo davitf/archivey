@@ -326,11 +326,6 @@ class CentralEntry:
         return self.version_made_by >> 8
 
     @property
-    def is_dir(self) -> bool:
-        """The name ends in ``/``, the ZIP directory convention."""
-        return self.name.endswith(b"/")
-
-    @property
     def date_time(self) -> tuple[int, int, int, int, int, int]:
         """The DOS stamp as ``(year, month, day, hour, minute, second)``, unvalidated.
 

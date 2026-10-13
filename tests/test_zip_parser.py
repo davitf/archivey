@@ -91,7 +91,7 @@ def _assert_matches_zipfile(data: bytes) -> bool:
         assert entry.comment == info.comment
         assert entry.date_time == info.date_time
         assert entry.dos_time == info._raw_time  # type: ignore[attr-defined]
-        assert entry.is_dir == info.orig_filename.endswith("/")
+        assert entry.name.endswith(b"/") == info.orig_filename.endswith("/")
         if info.volume != 0xFFFF:
             assert entry.disk_start == info.volume
     return True

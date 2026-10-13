@@ -1088,7 +1088,9 @@ class ZipReader(BaseArchiveReader):
                 yield self._to_member(entry, index)
         except (CorruptionError, UnsupportedFeatureError):
             # The members before the damage keep their bound: from the offsets the
-            # walk read, which covers every member it handed out.
+            # walk read, which covers every member it handed out. No complete set
+            # exists past damage, so this looser bound is the best there is; past
+            # max_members one does exist, and ``_data_bounds`` refuses instead.
             self._set_bounds(offsets, count=None)
             raise
         self._set_bounds(offsets, count=walk.entries_read)
@@ -1186,8 +1188,11 @@ class ZipReader(BaseArchiveReader):
         known. Otherwise, when a member opens before the listing has finished, an
         **index pass** reads the directory's entries again, builds no members and keeps
         only the offsets and the count. It charges ``max_members`` too: past it, every
-        open raises, not only one above the stop, because a bound could otherwise come
-        from an incomplete set of offsets.
+        open raises, not only one above the stop. The complete set of offsets exists
+        there and the limit refuses to pay for it, so a bound from the partial set would
+        be loose where a correct one was in reach. Damage is the opposite case: no
+        complete set exists, so the bounds from the entries before it are the best
+        there are (``_iter_members``).
         """
         bounds = self._bounds
         if bounds is not None:
@@ -1216,7 +1221,8 @@ class ZipReader(BaseArchiveReader):
                 offsets.append(_bound_offset(entry.header_offset))
         except (CorruptionError, UnsupportedFeatureError):
             # The listing raises the damage itself; an open meanwhile reads with the
-            # bounds of the entries before it, as after a listing that met it.
+            # bounds of the entries before it, as after a listing that met it (no
+            # complete set of offsets exists past damage).
             self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
             self._count_known = True
             return
@@ -1364,7 +1370,9 @@ class ZipReader(BaseArchiveReader):
     def _to_member(self, entry: CentralEntry, index: int) -> ArchiveMember:
         external_attr = entry.external_attr
         full_mode = external_attr >> 16
-        host = entry.version_made_by >> 8  # CentralEntry.create_system, inlined
+        # CentralEntry.create_system, inlined: a property call per member is measurable
+        # on a 20 000-entry listing.
+        host = entry.version_made_by >> 8
         is_unix = host == 3
         # Permission bits only; None when no usable Unix mode was stored.
         mode = stat.S_IMODE(full_mode) if (external_attr != 0 and is_unix) else None

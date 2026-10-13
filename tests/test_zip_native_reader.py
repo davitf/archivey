@@ -299,18 +299,20 @@ def test_listing_does_not_keep_extra_fields_or_comments_alive() -> None:
     count, extra_size = 500, 4096
     data = _zip_with_large_extras(count, extra_size)
     gc.collect()
-    tracemalloc.start()
+    reader = open_archive(io.BytesIO(data))
     try:
-        reader = open_archive(io.BytesIO(data))
-        before, _ = tracemalloc.get_traced_memory()
-        members = reader.members()
-        gc.collect()
-        after, _ = tracemalloc.get_traced_memory()
+        tracemalloc.start()
+        try:
+            before, _ = tracemalloc.get_traced_memory()
+            members = reader.members()
+            gc.collect()
+            after, _ = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        per_member = (after - before) / count
+        # The comment is kept, decoded, on the member; the extra field is not kept at
+        # all. Keeping the directory entry would hold both, over 8 KiB per member.
+        assert per_member < extra_size + 3000, per_member
+        assert all(m.comment == "c" * extra_size for m in members)
     finally:
-        tracemalloc.stop()
-    per_member = (after - before) / count
-    # The comment is kept, decoded, on the member; the extra field is not kept at all.
-    # Keeping the directory entry would hold both, over 8 KiB per member.
-    assert per_member < extra_size + 3000, per_member
-    assert all(m.comment == "c" * extra_size for m in members)
-    reader.close()
+        reader.close()
