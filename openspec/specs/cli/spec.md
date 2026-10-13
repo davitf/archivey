@@ -2,7 +2,8 @@
 
 ## Purpose
 
-Shell interface for inspecting, verifying, and extracting archives with fnmatch filters and optional I/O instrumentation; CLI-only deps stay out of core.
+Shell interface for inspecting, verifying, and extracting archives with glob member
+filters and optional I/O instrumentation; CLI-only deps stay out of core.
 
 ## Related specs
 
@@ -49,15 +50,17 @@ Supported verbs in this capability:
 | `extract` | `x` | Safe extraction |
 | `info` | `i`, `detect` | Format detection + archive identity |
 
-`list`, `test`, and `extract` SHALL support fnmatch member filters. Positional
+`list`, `test`, and `extract` SHALL support glob member filters. Positional
 patterns after the archive path SHALL act as **include** filters (a member is
 selected when it matches any positional, or when no positional is given).
-A pattern SHALL match a member name as written, and also with any trailing `/`
-removed and `/` or `/*` appended, so `docs` and `docs/` select the directory `docs/`
-and every member under it, as `tar` does. On Windows a `\` in a pattern SHALL be
-read as `/`; elsewhere it SHALL stay a literal character. Includes, `--exclude` and
-the unmatched-pattern warning SHALL all use this matching. It is a CLI rule: the
-library's `members=` matches names exactly.
+A pattern SHALL match as `archivey.paths.match_glob(pattern, with_contents=True)`
+does: `*` stays inside one folder, `**` matches any depth, and a pattern that matches
+a folder also selects every member under it, so `docs` and `docs/` select the
+directory `docs/` and its contents, as `tar` does, but `*.md` selects only top-level
+`.md` files. On Windows a `\` in a pattern SHALL be read as `/` first; elsewhere it
+SHALL stay a literal character. A pattern `match_glob` refuses SHALL be a usage error
+(exit `2`). Includes, `--exclude` and the unmatched-pattern warning SHALL all use this
+matching. The library's own `members=` still matches names exactly.
 `--exclude PATTERN` (repeatable, long-form only — no short flag) SHALL remove
 matching members; a member SHALL be processed when it matches an include (or none
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
@@ -256,12 +259,15 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
 | `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports extracted/blocked counts before stop; policy blocks alone do not stop |
-| Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
+| Subcommand includes glob pattern(s) after the archive | Operation limited to matching member names (positional = include) |
 | `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
 | `archivey extract <archive> docs` with members `docs/`, `docs/a.txt`, `docs.txt` | Extracts `docs/` and `docs/a.txt`, not `docs.txt`; no warning |
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
-| `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
+| `archivey extract <archive> '**/*.py' --exclude '**/*_test.py'` | Includes `**/*.py` minus `**/*_test.py`; exclude wins over include |
+| `archivey list <archive> '*.md'` with members `README.md`, `docs/a.md` | Lists `README.md` only: `*` does not cross `/` |
+| `archivey list <archive> '**/*.md'` with members `README.md`, `docs/a.md` | Lists both: `**` matches any depth |
+| `archivey list <archive> 'a//b'` or `archivey list <archive> '[z-a]'` | stderr `archivey: invalid member pattern: …` with the reason; exit `2` |
 | `archivey test <archive> 'a*' --exclude 'a*'` or `archivey extract <archive> --exclude '*'` | stderr `warning: no members selected: …`; exit `1`; `extract` creates no directory |
 | `archivey test <archive.tar.gz> a.txt` | The archive is decompressed once; no backward-seek warning |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
