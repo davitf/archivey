@@ -860,12 +860,12 @@ class TarWalker:
         """Where the next header starts (the end of the last member's data area)."""
         return self._pos
 
-    def open_data(self, entry: TarEntry | TarSpan) -> _ForwardSlice:
-        """A forward-only stream over ``entry``'s data area (``stored_size`` bytes),
+    def open_data(self, span: TarSpan) -> _ForwardSlice:
+        """A forward-only stream over ``span``'s data area (``stored_size`` bytes),
         read through the walk's own stream. It is good while the walk stays at the
         data, that is until the next :meth:`next_entry`; its ``in_place()`` tells
         whether it still is."""
-        return _ForwardSlice(self, entry.data_offset, entry.stored_size)
+        return _ForwardSlice(self, span.data_offset, span.stored_size)
 
     def stream_after_end(self) -> BinaryIO:
         """The stream, positioned right after the zero block the walk ended on, for

@@ -1091,10 +1091,10 @@ def test_forward_only_data_stream() -> None:
     walker = TarWalker(io.BytesIO(data), seekable=False)
     a = walker.next_entry()
     assert isinstance(a, TarEntry)
-    stream = walker.open_data(a)
+    stream = walker.open_data(a.span())
     assert stream.read(2) == b"he"
     b = walker.next_entry()  # reads through the rest of "a"
     assert isinstance(b, TarEntry)
     with pytest.raises(ValueError):
         stream.read()
-    assert walker.open_data(b).read() == b"world"
+    assert walker.open_data(b.span()).read() == b"world"

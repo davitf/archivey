@@ -243,11 +243,11 @@ def _directory_declaring_blocks(member: ArchiveMember | None) -> TarSpan | None:
     return span
 
 
-def _declared_span_end(entry: TarSpan) -> int:
-    """The offset right after the blocks ``entry``'s size field declares, were they
+def _declared_span_end(span: TarSpan) -> int:
+    """The offset right after the blocks ``span``'s size field declares, were they
     there: a ``NO_DATA`` typeflag's ``data_offset`` is the block after its header and
     its ``stored_size`` is 0, so the span is measured from the declared ``size``."""
-    return entry.data_offset + (entry.size + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
+    return span.data_offset + (span.size + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
 
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
@@ -1388,29 +1388,29 @@ class TarReader(BaseArchiveReader):
 
         A bad sparse map raises here. ``in_walk`` reads through the walk's own stream,
         as a streaming walk does. The pass closes the stream before the walk moves on."""
-        entry = member._raw
-        assert isinstance(entry, TarSpan), "TAR member is missing its span"
-        if entry.sparse is not None:
+        span = member._raw
+        assert isinstance(span, TarSpan), "TAR member is missing its span"
+        if span.sparse is not None:
             sparse_error = validate_sparse_map(
-                entry.sparse, entry.size, entry.stored_size, quoted(member.name)
+                span.sparse, span.size, span.stored_size, quoted(member.name)
             )
             if sparse_error is not None:
                 raise sparse_error
         stream: BinaryIO
         if self._streaming or in_walk:
-            stream = self._walker.open_data(entry)
+            stream = self._walker.open_data(span)
         else:
             # A view of its own: a read seeks the shared stream under the handle lock
             # when the handle is elsewhere, so members and the walk read independently.
             stream = _MemberDataView(
                 SharedView(
                     self._stream,
-                    entry.data_offset,
-                    entry.stored_size,
+                    span.data_offset,
+                    span.stored_size,
                     lock=self._io_guard(),
                 ),
-                entry.data_offset,
-                entry.stored_size,
+                span.data_offset,
+                span.stored_size,
             )
             if self._compressed:
                 # The codec stream has no buffer of its own here (_open_byte_stream),
@@ -1418,9 +1418,9 @@ class TarReader(BaseArchiveReader):
                 # buffer sits above the view and reads it at most once per read, so a
                 # cut member's recoverable prefix comes before its TruncatedError.
                 stream = ReadAheadStream(stream, _WALK_BUFFER)
-        if entry.sparse is not None:
+        if span.sparse is not None:
             stream = SparseStream(
-                stream, entry.sparse.offsets, entry.sparse.lengths, entry.size
+                stream, span.sparse.offsets, span.sparse.lengths, span.size
             )
         if self._streaming:
             assert self._handle_lock is not None
@@ -1437,11 +1437,11 @@ class TarReader(BaseArchiveReader):
 
         A random-access pass does not come through here: it opens the raw body
         (see :meth:`_member_body`) and wraps it once."""
-        entry = member._raw
-        assert isinstance(entry, TarSpan), "TAR member is missing its span"
-        if defer_sparse_error and entry.sparse is not None:
+        span = member._raw
+        assert isinstance(span, TarSpan), "TAR member is missing its span"
+        if defer_sparse_error and span.sparse is not None:
             sparse_error = validate_sparse_map(
-                entry.sparse, entry.size, entry.stored_size, quoted(member.name)
+                span.sparse, span.size, span.stored_size, quoted(member.name)
             )
             if sparse_error is not None:
 
