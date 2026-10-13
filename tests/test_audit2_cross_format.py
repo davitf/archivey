@@ -39,6 +39,7 @@ from archivey.exceptions import (
     DiagnosticRaisedError,
     EncryptionError,
     LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
     PackageNotInstalledError,
     ReadError,
     TruncatedError,
@@ -269,9 +270,9 @@ def _assert_truncated_listing(
     with open_archive(
         io.BytesIO(data), password=password, streaming=streaming
     ) as reader:
-        # members() is random-access only; scan_members() is the streaming listing.
+        # members() is random-access only; a streaming pass raises at the damage.
         with pytest.raises(TruncatedError):
-            reader.scan_members() if streaming else reader.members()
+            list(reader) if streaming else reader.members()
 
 
 @requires("cryptography")
@@ -1144,10 +1145,11 @@ def _assert_damaged_after_the_listing(data: bytes, members: int) -> None:
 def test_rar_damaged_endarc_followed_by_bytes_is_corruption_after_the_listing(
     fixture: str, version: int
 ) -> None:
-    """A damaged end block is taken as one only where the file ends right after
-    it, which a header with members after it cannot fake. Otherwise it is a damaged
-    header like any other: the members before it list, then CorruptionError."""
-    data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version) + b"\0"
+    """A damaged end block is taken as one only where nothing but zero padding
+    follows it, which a header with members after it cannot fake. Otherwise it is a
+    damaged header like any other: the members before it list, then CorruptionError.
+    Zeros after it are covered in test_rar_trailing_data.py."""
+    data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version) + b"\x01"
     _assert_damaged_after_the_listing(data, 6)
 
 
@@ -1584,11 +1586,24 @@ class _LinkOpenStub:
 @pytest.mark.parametrize(
     "exc",
     [
-        pytest.param(LinkTargetNotFoundError("Link target not found"), id="absent"),
-        pytest.param(ReadError("Link cycle detected", member_name="a"), id="cycle"),
+        pytest.param(
+            LinkTargetNotFoundError(
+                "Link target not found", reason=LinkTargetNotFoundReason.UNRESOLVED
+            ),
+            id="absent",
+        ),
+        pytest.param(
+            LinkTargetNotFoundError(
+                "Link cycle detected",
+                reason=LinkTargetNotFoundReason.UNRESOLVED,
+                member_name="a",
+            ),
+            id="cycle",
+        ),
         pytest.param(
             ArchiveyUsageError(
-                "Cannot open member 'd': type is 'directory' (not a file)"
+                "Cannot open member 'd': directory entry declares no data (not a file)",
+                refused_member_type=MemberType.DIRECTORY,
             ),
             id="directory",
         ),
@@ -1602,8 +1617,8 @@ def test_cli_test_ignores_where_a_link_points(exc: Exception) -> None:
 
 
 def test_cli_test_ignores_a_real_link_cycle() -> None:
-    """The CLI tells a cycle apart by the message the reader raises; pin it against
-    the real reader so a change to that message cannot slip past the stub above."""
+    """The CLI tells a cycle apart by the error type the reader raises; pin it against
+    the real reader so a change to that type cannot slip past the stub above."""
     from archivey.cli.test_cmd import _verify_link
 
     buf = io.BytesIO()
@@ -1617,8 +1632,34 @@ def test_cli_test_ignores_a_real_link_cycle() -> None:
     with open_archive(buf) as reader:
         link = reader.get("a")
         assert link is not None
-        with pytest.raises(ReadError, match="Link cycle detected"):
+        with pytest.raises(LinkTargetNotFoundError, match="Link cycle detected") as e:
             reader.open(link)
+        assert e.value.reason is LinkTargetNotFoundReason.UNRESOLVED
+        _verify_link(reader, link)
+
+
+def test_cli_test_ignores_a_real_link_to_a_directory() -> None:
+    """``open()`` refuses a link to a directory with a usage error marked by
+    ``refused_member_type``; the CLI tells it apart by that marker, not by the
+    message."""
+    from archivey.cli.test_cmd import _verify_link
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        d = tarfile.TarInfo("d")
+        d.type = tarfile.DIRTYPE
+        tf.addfile(d)
+        info = tarfile.TarInfo("l")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "d"
+        tf.addfile(info)
+    buf.seek(0)
+    with open_archive(buf) as reader:
+        link = reader.get("l")
+        assert link is not None
+        with pytest.raises(ArchiveyUsageError) as info:
+            reader.open(link)
+        assert info.value.refused_member_type is MemberType.DIRECTORY
         _verify_link(reader, link)
 
 
@@ -1632,13 +1673,46 @@ def test_cli_test_ignores_a_real_link_cycle() -> None:
     ],
 )
 def test_cli_test_raises_other_errors_from_a_link_open(exc: Exception) -> None:
-    """Only the three errors about where a link points are ignored once its target
-    is read; a target that cannot be opened, or a usage error, is not a clean link."""
+    """Only the errors about where a link points are ignored once its target is
+    read; a target that cannot be opened, or an unmarked usage error, is not a
+    clean link."""
     from archivey.cli.test_cmd import _verify_link
 
     link = ArchiveMember(type=MemberType.SYMLINK, name="l")
     with pytest.raises(type(exc)):
         _verify_link(_LinkOpenStub(exc), link)  # type: ignore[arg-type]
+
+
+class _RefusingOpenStub:
+    """A reader whose ``open()`` raises ``exc`` before it reads the link's target."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def open(self, member: ArchiveMember) -> None:
+        raise self.exc
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(ArchiveyUsageError("The reader is closed"), id="usage"),
+        pytest.param(
+            LinkTargetNotFoundError(
+                "Link target is unknown", reason=LinkTargetNotFoundReason.UNREADABLE
+            ),
+            id="unreadable",
+        ),
+    ],
+)
+def test_cli_test_raises_errors_from_before_the_target_read(exc: Exception) -> None:
+    """An error raised while the link's target is still unread is about the link
+    itself (or the call), so it is raised whatever its type."""
+    from archivey.cli.test_cmd import _verify_link
+
+    link = ArchiveMember(type=MemberType.SYMLINK, name="l")
+    with pytest.raises(type(exc)):
+        _verify_link(_RefusingOpenStub(exc), link)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

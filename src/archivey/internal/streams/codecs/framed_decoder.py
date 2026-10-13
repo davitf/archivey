@@ -114,14 +114,21 @@ class FramedDecoder(BaseDecoder):
     ``needs_input``. Their file readers decide on their own what may follow a stream,
     and disagree: ``bz2.open`` ignores anything that does not decode, zstd and lz4
     raise on it. This adapter decides it the same way for all of them. Bytes that start
-    ``magic`` begin another stream (a concatenated file); zeros are padding; bytes that
-    hold at least half of the magic, but not all, are a damaged stream and raise
-    :class:`CorruptionError` (:func:`near_stream_magic`); anything else ends the data
-    and sets :attr:`trailing_bytes`. A run of zeros shorter than the magic is also
-    judged as the start of a damaged stream, since the damaged byte can be a zero. A
-    codec with no magic (LZMA Alone) passes a :data:`StreamStart` check of the header
-    instead, which may raise to refuse the next stream. ``zero_padding=False`` hands
-    zeros to that check too (raw LZMA, where 7-Zip refuses any byte after the end
+    ``magic`` right after a stream begin another stream (a concatenated file); bytes
+    there that hold at least half of the magic, but not all, are a damaged stream and
+    raise :class:`CorruptionError` (:func:`near_stream_magic`). Zeros that run to the
+    end of the input are padding. Anything else ends the data and sets
+    :attr:`trailing_bytes`. That includes any byte after zeros, a further stream's
+    magic too: the first non-zero byte after them is where the trailing bytes start.
+    One exception: a run of zeros shorter than the magic is judged with the bytes after
+    it as the start of a damaged stream, since the damaged byte can be a zero.
+    Each codec's own tool stops at zeros between streams too: ``bzip2``, ``zstd``,
+    ``lz4`` and ``xz --format=lzma``, and 7-Zip for bzip2 and LZMA Alone. ``zstd``,
+    ``lz4`` and ``xz --format=lzma`` also refuse zeros at the end of the file, which
+    archivey accepts on purpose, as for every codec (``dev-docs/formats/single-file.md``
+    §6). A codec with no magic (LZMA Alone) passes a :data:`StreamStart` check of the
+    header instead, which may raise to refuse the next stream. ``zero_padding=False``
+    hands zeros to that check too (raw LZMA, where 7-Zip refuses any byte after the end
     marker).
 
     The first stream is handed to the library as it comes, so a file that is not this
@@ -148,6 +155,8 @@ class FramedDecoder(BaseDecoder):
         self._fed = False
         # Past a stream's end, looking for the next one.
         self._between = False
+        # Past a stream's end, zeros have been skipped; no stream follows them.
+        self._padded = False
         # Input not yet handed on: kept when an output budget ran out, or bytes after a
         # stream, fewer than a magic, waiting for the rest (``_need_more``).
         self._held = b""
@@ -160,7 +169,9 @@ class FramedDecoder(BaseDecoder):
             # Only the bzip2 takeover adds such a point (``bzip2_resume``).
             return Bzip2ResumeDecoder(point.state, self)
         return FramedDecoder(
-            self._new, magic=self._magic, zero_padding=self._zero_padding
+            self._new,
+            magic=self._magic,
+            zero_padding=self._zero_padding,
         )
 
     def _next_stream(self, data: bytes) -> bytes:
@@ -176,6 +187,7 @@ class FramedDecoder(BaseDecoder):
             # Zero padding is input after a stream's end, which a
             # ``refuse_input_after_end`` stream refuses (``input_after_end``).
             self._input_after_end = True
+            self._padded = True
         width = self._magic_start.width if self._magic_start is not None else 0
         # A run of ``width`` zeros or more is padding whatever its length, so no more
         # than ``width`` of them are kept: the decision then does not depend on where
@@ -186,6 +198,17 @@ class FramedDecoder(BaseDecoder):
             self._held = data
             self._need_more = bool(data)
             return b""
+        if self._padded:
+            # After zeros no stream is read. Only a run shorter than the magic is still
+            # judged, as a damaged magic's first bytes, which needs a magic's length.
+            if 0 < zeros < width and len(data) < width:
+                self._held = data
+                self._need_more = True
+                return b""
+            self._judge_zero_run(data, zeros)
+            self._past_end(rest)
+            self._done = True
+            return b""
         state = self._magic(rest)
         if state is None:
             self._held = data
@@ -195,7 +218,6 @@ class FramedDecoder(BaseDecoder):
             self._decomp = self._new()
             self._between = False
             return rest
-        self._judge_zero_run(data, zeros)
         self._past_end(rest)
         self._done = True
         return b""
@@ -297,7 +319,9 @@ def FramedDecompressorStream(
     return DecompressorStream(
         path,
         make_decoder=lambda _p, _i: FramedDecoder(
-            new_decompressor, magic=magic, zero_padding=zero_padding
+            new_decompressor,
+            magic=magic,
+            zero_padding=zero_padding,
         ),
         collector=collector,
         codec_name=codec_name,

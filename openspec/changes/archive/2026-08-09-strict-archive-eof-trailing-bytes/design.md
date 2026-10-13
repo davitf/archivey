@@ -22,6 +22,11 @@ should not disagree about the same shape of evidence.
 
 ### Strict-only, and that is a cost decision, not a taste one
 
+> **Superseded.** TAR now reports `ARCHIVE_TRAILING_DATA` at every policy, as an
+> ordinary diagnostic that `DiagnosticPolicy.strict()` escalates to a raise; the live
+> rule is `openspec/specs/format-tar/spec.md`. This section records the decision as it
+> was made on 2026-08-09.
+
 A batch indexer would genuinely like to know about trailing junk without opting into a
 raise. It does not get an unconditional advisory because the check is O(tail length) —
 and on a `.tar.gz` the tail must be *decompressed* to be inspected. Paying that on every

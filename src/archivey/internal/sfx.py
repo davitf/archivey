@@ -35,7 +35,8 @@ deliberately two-tiered — see :class:`ExecutableCue`.
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterator, Sequence
+from collections.abc import Set as AbstractSet
 from enum import Enum
 from typing import BinaryIO, Generic, NamedTuple, Protocol, TypeVar
 
@@ -48,17 +49,31 @@ _T = TypeVar("_T")
 # installer stubs are of the same order) while keeping a miss cheap and bounded.
 SFX_MAX = 2 * 1024 * 1024
 
-# Rejected-candidate cap for :func:`scan_for_magic` when a validator is passed. A 2 MiB
-# window of planted 6-byte decoys is otherwise an unbounded validation loop. This is
+# Rejected-candidate cap per format, shared by both SFX scans: :func:`scan_for_magic`
+# when a validator is passed, and the detector's scan over :func:`iter_magic_in_prefix`.
+# A 2 MiB window of planted 6-byte decoys is otherwise an unbounded validation loop,
+# and each RAR decoy can make its validator read and CRC up to 64 KiB. This is
 # structural, not a ``ListingLimits`` / ``DetectionBudget`` knob: a real SFX stub does
 # not carry hundreds of format magics, and the native parsers that call this have no
-# detection budget. 256 is a starting value; raise it here if a real archive needs more.
-#
-# :func:`iter_magic_in_prefix` is left uncapped on purpose: its search is linear in
-# the window (see :class:`_EarliestFinder`), and what the detector then spends on
-# each candidate is the detection budget's business (threat-model O11), not a
-# structural cap's.
+# detection budget. Each parser scans for one format, so the detector counts each
+# format's rejections apart (:class:`HitSelector`) and caps only the formats whose
+# parser scans (``ReadBackend.SFX_PARSER_SCANS``: RAR and 7z). Decoys of one format
+# do not spend another's allowance, and a ZIP is never capped, because its reader
+# finds the end of central directory from the tail and runs no scan to stop. So a
+# file of decoys means the same thing to detection as to a forced ``format=``. 256 is
+# a starting value; raise it here if a real archive needs more.
 MAX_VALIDATED_CANDIDATES = 256
+
+# How far past its candidate origin a hit validator may read. The scan window bounds
+# where a magic may *start*; a candidate that starts inside it is judged on its whole
+# header, even when that header crosses the window end. It must cover every
+# validator's largest peek: a ZIP local header with maximal name and extra on a source
+# of unknown length (30 + 2 * 65 535 bytes), and a RAR main header at its 64 KiB cap;
+# 7z reads 32 bytes. The detector extends each validator's view past ``scan_limit`` by
+# this much or by ``max_scan_bytes``, whichever is smaller
+# (``detection.validator_allowance``), so the budget field still bounds the tier's
+# reads. Under the presets that is this constant.
+VALIDATOR_PEEK_MAX = 132 * 1024
 
 # Read granularity for the forward scan. Large enough that a full 2 MiB window is 32
 # reads, small enough that a match near the front stops early.
@@ -131,19 +146,18 @@ class HitValidator(Protocol):
     it with ``scan_limit``. The scan always passes it; ``None`` is a value, not
     an omitted argument.
 
-    ``peek_more(n)`` may return fewer than ``n`` bytes, and a short answer does
-    not by itself mean the source ended. The two callers differ:
-
-    - :func:`scan_for_magic` escalates on demand: it reads the source forward
-      until it holds ``n`` bytes past the candidate, so a short answer is EOF.
-    - The detector's SFX scan hands out a
-      :meth:`~archivey.internal.detection_workspace.PrefixWorkspace.candidate_view`
-      clamped at ``scan_limit``, so a candidate near the end of the window gets
-      a short answer while the source continues past it.
-
-    A validator must therefore judge every short peek against ``remaining``:
-    when ``remaining`` covers the bytes it needs, the peek was clamped and the
-    shortfall is not evidence against the candidate.
+    ``peek_more(n)`` returns fewer than ``n`` bytes when the source ends, or
+    when the detector's budget clamps the view. :func:`scan_for_magic` reads the
+    source forward until it holds ``n`` bytes past the candidate; the detector's
+    SFX scan hands out a
+    :meth:`~archivey.internal.detection_workspace.PrefixWorkspace.candidate_view`
+    that reaches ``validator_allowance(budget)`` past ``scan_limit``:
+    :data:`VALIDATOR_PEEK_MAX` under the presets, so a candidate near the end of
+    the window is judged on the same bytes as one inside it. Under a smaller
+    ``max_scan_bytes`` the view can clamp first; the workspace notes the clamp
+    and the scan records ``sfx_scan`` as cut short. Either way a short peek means
+    the header was not checked, so the candidate is not this format. A validator
+    must not read more than :data:`VALIDATOR_PEEK_MAX`.
     """
 
     def __call__(
@@ -207,8 +221,8 @@ class ScanMiss(Enum):
     """Why :func:`scan_for_magic` returned no :class:`MagicHit`.
 
     ``NO_MATCH`` — no needle in the window.
-    ``CAPPED`` — :data:`MAX_VALIDATED_CANDIDATES` rejections, none ``VALID`` or
-    ``VALID_SHORT``. ``CAPPED`` discards the damaged fallback on purpose: 256
+    ``CAPPED`` — :data:`MAX_VALIDATED_CANDIDATES` rejections of one format, none
+    ``VALID`` or ``VALID_SHORT``. ``CAPPED`` discards the damaged fallback on purpose: 256
     rejections is evidence that none of them is the payload, so the scan returns no
     origin rather than the first decoy. A ``VALID_SHORT`` hit is not a rejection
     (its header checked out), so the cap returns it rather than a miss. An uncapped
@@ -258,23 +272,53 @@ class HitSelector(Generic[_T]):
     still reaches the parser. A later ``VALID`` hit displaces the short one only
     when its ``key`` (the format) matches: the preference for a hit that ends at the
     end of the source is a tie-break among candidates of one format, and never
-    reorders formats. Every other hit, a second short one included, is a rejection;
-    after ``cap`` of them :meth:`offer` says stop, and :meth:`result` gives the
-    short hit or :attr:`ScanMiss.CAPPED` (a ``VALID_SHORT`` hit is structurally
-    valid, not a rejection, so the cap does not discard it).
+    reorders formats. Every other hit, a second short one included, is a rejection.
+
+    Rejections are counted per ``key``, so each format gets ``cap`` of them, as each
+    parser's own one-format scan does. ``cap_keys`` names the keys the cap applies
+    to; ``None`` applies it to every key. Once a key reaches ``cap`` it is capped: the
+    caller stops validating that key's candidates (:meth:`is_capped`), and
+    :meth:`offer` ignores them. :meth:`result` then gives a ``VALID`` or short hit
+    if one is held (a ``VALID_SHORT`` hit is structurally valid, not a rejection, so
+    the cap does not discard it), and otherwise :attr:`ScanMiss.CAPPED`. Either way
+    :attr:`capped` stays true, because the candidates the cap skipped were never
+    judged.
     """
 
-    def __init__(self, *, keep_damaged: bool, cap: int | None) -> None:
+    def __init__(
+        self,
+        *,
+        keep_damaged: bool,
+        cap: int | None,
+        cap_keys: Container[object] | None = None,
+    ) -> None:
         self._keep_damaged = keep_damaged
         self._cap = cap
+        self._cap_keys = cap_keys
         self._chosen: _T | None = None
         self._short: tuple[object, _T] | None = None
         self._fallback: _T | None = None
-        self._capped = False
+        self._rejected_by_key: dict[object, int] = {}
+        self._capped_keys: set[object] = set()
         self.rejected = 0
 
+    @property
+    def capped(self) -> bool:
+        """Whether any key reached the cap, so some candidates were never judged."""
+        return bool(self._capped_keys)
+
+    def is_capped(self, key: object) -> bool:
+        """Whether ``key`` reached the cap; its later candidates are not judged."""
+        return key in self._capped_keys
+
     def offer(self, key: object, hit: _T, outcome: HitOutcome) -> bool:
-        """Grade ``hit``; ``True`` means the scan is decided and should stop."""
+        """Grade ``hit``; ``True`` means a ``VALID`` hit decided the scan.
+
+        A hit for a capped key is ignored. A caller that must stop once a key is
+        capped checks :meth:`is_capped` itself.
+        """
+        if key in self._capped_keys:
+            return False
         if outcome is HitOutcome.VALID:
             short = self._short
             self._chosen = short[1] if short is not None and short[0] != key else hit
@@ -285,8 +329,15 @@ class HitSelector(Generic[_T]):
         if self._keep_damaged and self._fallback is None:
             self._fallback = hit
         self.rejected += 1
-        self._capped = self._cap is not None and self.rejected >= self._cap
-        return self._capped
+        count = self._rejected_by_key.get(key, 0) + 1
+        self._rejected_by_key[key] = count
+        if (
+            self._cap is not None
+            and count >= self._cap
+            and (self._cap_keys is None or key in self._cap_keys)
+        ):
+            self._capped_keys.add(key)
+        return False
 
     def result(self) -> tuple[_T | None, ScanMiss | None]:
         """The selected hit, or ``None`` and why there is none."""
@@ -294,7 +345,7 @@ class HitSelector(Generic[_T]):
             return self._chosen, None
         if self._short is not None:
             return self._short[1], None
-        if self._capped:
+        if self._capped_keys:
             return None, ScanMiss.CAPPED
         if self._fallback is not None:
             return self._fallback, None
@@ -472,6 +523,10 @@ class _EarliestFinder:
     ``searched`` is how far a previous pass already covered. A shorter
     needle that fitted entirely in that prefix must not be re-found in the overlap
     kept for a longer sibling (RAR5's 8 bytes vs RAR4's 7, or ZIP's 4).
+
+    ``dropped`` holds magics no longer searched for; it may grow between calls. A
+    dropped needle is not searched again, so a window carpeted with its decoys costs
+    only the other needles' ``bytes.find``.
     """
 
     def __init__(
@@ -480,9 +535,11 @@ class _EarliestFinder:
         needles: Sequence[ScanNeedle],
         *,
         searched: int = 0,
+        dropped: Container[bytes] = frozenset(),
     ) -> None:
         self._data = data
         self._needles = needles
+        self._dropped = dropped
         # Per needle: the lowest index it may match at (the ``searched`` skip).
         self._floors = [max(0, searched - (len(n.magic) - 1)) for n in needles]
         # Per needle: its next match (``-1`` for none), and ``len(data)`` when that
@@ -497,7 +554,10 @@ class _EarliestFinder:
         data = self._data
         size = len(data)
         best: tuple[int, ScanNeedle] | None = None
+        dropped = self._dropped
         for i, needle in enumerate(self._needles):
+            if needle.magic in dropped:
+                continue
             found = self._next[i]
             scanned_len = self._scanned_len[i]
             if scanned_len < 0 or (found >= 0 and found < start):
@@ -673,8 +733,12 @@ def scan_for_magic(
                 return MagicScan(found, None, 0)
             remaining = _remaining_from_origin(scan_start, origin, total)
             # One key for every hit: each caller passes the needles of one format,
-            # so a later VALID hit always displaces a held short one.
-            if selector.offer(None, found, validator(bind_view(origin), remaining)):
+            # so a later VALID hit always displaces a held short one, and the cap
+            # counts that one format's rejections.
+            if (
+                selector.offer(None, found, validator(bind_view(origin), remaining))
+                or selector.capped
+            ):
                 return finish()
             search_from = index + 1
 
@@ -692,11 +756,15 @@ def iter_magic_in_prefix(
     needles: Sequence[bytes | ScanNeedle],
     *,
     limit: int = SFX_MAX,
+    dropped: AbstractSet[bytes] = frozenset(),
 ) -> Iterator[MagicHit]:
     """Yield every in-window ``needles`` match, earliest first, as :class:`MagicHit`.
 
     Callers skip decoys (a candidate that fails its format-owned validator) and
-    keep iterating. A negative candidate origin is discarded rather than yielded.
+    keep iterating. A caller that stops looking for a magic adds it to ``dropped``
+    between yields; its later matches are not searched for, and once every needle is
+    dropped the iteration ends without reading further. A negative candidate origin
+    is discarded rather than yielded.
     Each match is yielded once: a shorter needle that sat wholly inside the previous
     peek is not re-emitted when the next step rewinds by the longest needle's overlap.
     ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them
@@ -708,12 +776,17 @@ def iter_magic_in_prefix(
         return
     searched = 0
 
+    magics = {needle.magic for needle in normalized}
     for step in (*_PEEK_STEPS, limit):
         if step <= searched:
             continue
+        # The detector never gets here today: it drops only capped formats' magics
+        # (RAR, 7z), and ZIP's is never capped, so it stays searched.
+        if magics <= dropped:
+            return
         data = peek_more(min(step, limit))
         search_from = 0
-        finder = _EarliestFinder(data, normalized, searched=searched)
+        finder = _EarliestFinder(data, normalized, searched=searched, dropped=dropped)
         while True:
             hit = finder.find(search_from)
             if hit is None:

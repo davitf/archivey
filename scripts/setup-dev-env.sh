@@ -63,7 +63,9 @@ install_linux_packages() {
   #   Ubuntu 22.04-26.04 package fails archivey's RAR5 check and is refused, so those
   #   tests skip with it too; the verification below says so and names
   #   scripts/install-unar-from-source.sh, which builds one that passes.
-  ${SUDO} apt-get install -y unrar rar p7zip-full unar
+  # xorriso: builds hybrid ISOs with an appended partition for
+  #   tests/test_iso_trailing_data.py.
+  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso
 }
 
 install_macos_packages() {
@@ -96,6 +98,7 @@ install_macos_packages() {
   fi
   command -v 7z >/dev/null 2>&1 || brew install p7zip
   command -v unar >/dev/null 2>&1 || brew install unar
+  command -v xorriso >/dev/null 2>&1 || brew install xorriso
 }
 
 install_windows_packages() {
@@ -165,7 +168,7 @@ def _on_login_path(found: str) -> bool:
     return parent in login_dirs
 
 
-for tool in ("unrar", "7z", "unar"):
+for tool in ("unrar", "7z", "unar", "xorriso"):
     found = shutil.which(tool)
     if not found:
         print(f"MISSING {tool}")

@@ -343,7 +343,9 @@ class MemberType(Enum):
 
     ``ANTI`` is a deletion/tombstone (solid 7z incremental updates), not a payload
     file — ``is_file`` is false and extraction skips it. ``OTHER`` covers device
-    nodes, FIFOs, sockets, etc., and is always rejected by safe extraction.
+    nodes, FIFOs, sockets, etc. that store no data, and is always rejected by safe
+    extraction. A special-mode entry that does carry data is a ``FILE`` with
+    ``extra["special_file_type"]`` saying what the archive called it (DR-25).
     """
 
     FILE = "file"
@@ -477,6 +479,16 @@ EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
 # CompressionMethod.level, which carries the method-byte offset instead.
 EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 
+# What the archive called a member whose stored type is a device, FIFO, socket or an
+# unknown file type: set on every such member, the stream-less ``OTHER`` and the
+# data-bearing ``FILE`` alike (design rule DR-25). Not namespaced: TAR, ZIP, 7z, RAR
+# and ISO all carry one.
+EXTRA_SPECIAL_FILE_TYPE: Final = "special_file_type"
+
+SpecialFileType = Literal["fifo", "char_device", "block_device", "socket", "unknown"]
+"""Values of ``extra["special_file_type"]``: the stored type of a device, FIFO or socket
+entry as the format recorded it, or ``"unknown"`` for file-type bits no Unix type uses."""
+
 
 class _ReadOnlyDict(dict[str, str]):
     """A ``dict`` that refuses changes, the value of ``extra["tar.pax_headers"]``.
@@ -551,6 +563,18 @@ class MemberExtra(dict[str, object]):
     * ``is_file_copy`` (``bool``) — RAR. A ``FILE`` member whose bytes the archive
       stores once under an earlier member (a RAR5 file reference, ``rar -oi``).
       ``link_target`` names that source and ``link_target_member`` is it.
+    * ``special_file_type`` (``"fifo" | "char_device" | "block_device" | "socket" |
+      "unknown"``) — every format. What the entry's stored Unix mode (ZIP, 7z, RAR,
+      Rock Ridge) or TAR typeflag named when that is a device, FIFO or socket;
+      ``"unknown"`` is a mode whose file-type bits no Unix type uses. Set whatever type
+      the member ends up with: the stream-less ``OTHER`` such an entry usually is, the
+      ``FILE`` it becomes when it carries data (its bytes are the content, as unzip,
+      7-Zip, bsdtar and ``zipfile`` deliver them), a RAR file copy, or the
+      ``DIRECTORY`` or ``SYMLINK`` a structural marker made of it (a ZIP name ending
+      in ``/``, an ISO directory record, a reparse-point bit) over such a mode. The
+      key says what the mode named; the type says what the archive's structure
+      decided. Absent on an ``OTHER`` member that is not a special file (a GNU
+      dumpdir in TAR). TAR keeps ``tar.type`` as well.
     * ``alternate_raw_name`` (``bytes``) — ZIP. The other stored spelling of the
       name, when the archive stores two and ``raw_name`` is the one ``name`` was
       decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra
@@ -594,6 +618,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["is_file_copy"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["special_file_type"], /) -> SpecialFileType: ...
     @overload
     def __getitem__(self, key: Literal["alternate_raw_name"], /) -> bytes: ...
     @overload
@@ -676,15 +702,32 @@ class ArchiveMember:
     """Normalized member path, ``/``-separated, decoded for display and lookup."""
 
     raw_name: bytes | None = None
-    """The member name exactly as stored in the archive, undecoded, or ``None`` when
-    the format stores no name or the bytes cannot be recovered from the decoded one.
+    """The member name exactly as stored in the archive, undecoded. ``None`` when the
+    format has no name field for this member or the bytes cannot be recovered from the
+    decoded name; ``b""`` when the format has the field and the member left it empty
+    (7z).
 
-    ``name`` is ``raw_name`` decoded and normalized. Where the archive stores the
-    name twice, ``raw_name`` is the spelling the name was decoded from: a ZIP name
-    taken from its Info-ZIP Unicode Path extra field (0x7075) has that field's UTF-8
-    bytes here, and the header's bytes in ``extra["alternate_raw_name"]``. One
-    exception remains: an ISO Rock Ridge name that is not UTF-8 and takes its Joliet
-    name keeps the Rock Ridge bytes here."""
+    ``name`` is ``raw_name`` decoded and normalized, then put through the format's own
+    naming rules. Where the archive stores the name twice, ``raw_name`` is the spelling
+    the name was decoded from: a ZIP name taken from its Info-ZIP Unicode Path extra
+    field (0x7075) has that field's UTF-8 bytes here, and the header's bytes in
+    ``extra["alternate_raw_name"]``.
+
+    The naming rules that make ``name`` differ from ``raw_name`` decoded:
+
+    - ISO: in a plain ISO 9660 image, ``name`` drops the ``;N`` version suffix (and
+      the ``.`` before an empty extension) that ``raw_name`` keeps; the version is in
+      ``extra["iso.version"]``. A superseded version keeps its stored spelling. A Rock
+      Ridge name that is not UTF-8 and takes its Joliet name keeps the Rock Ridge
+      bytes here.
+    - A gzip file's member is named after the archive source (``"data"`` when the
+      source has no file name); ``raw_name`` holds the original file name from the
+      gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those
+      bytes decoded as Latin-1.
+    - A 7z member stored with no name is named after the archive source, and
+      ``raw_name`` is ``b""``.
+    - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
+      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""
@@ -773,6 +816,10 @@ class ArchiveMember:
 
     Duplicate names keep earlier rows with ``is_current=False`` (history /
     superseded). :meth:`~archivey.ArchiveReader.get` returns the current one.
+
+    Stamped when the listing is complete. A ``stream_members()`` pass sets it after
+    its last member; one that went past ``ListingLimits`` stamps only the members it
+    kept, so a copy it yields after the limit cannot mark an earlier one superseded.
     """
 
     is_sparse: bool = False
@@ -833,7 +880,8 @@ class ArchiveMember:
     naming nothing — or it may carry one this reader could not reach, because the bytes
     are compressed, split across volumes or encrypted. Only the first is the archive's
     omission, and only the first is an extraction outcome rather than a failure, so the
-    backend that knows which it is says so here. Not part of the public contract."""
+    backend that knows which it is says so here. Read it through the public
+    :attr:`link_target_unrecorded`."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
     # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
@@ -927,6 +975,26 @@ class ArchiveMember:
         what the archive said about it.
         """
         return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
+
+    @property
+    def link_target_unrecorded(self) -> bool:
+        """The archive records no target for this link.
+
+        Some writers store a link with nowhere to point: 7-Zip writes a directory
+        symlink or junction this way, and a Windows reparse buffer can name nothing.
+        Such a link has :attr:`link_target` ``None``, :meth:`~archivey.ArchiveReader.open`
+        raises :class:`~archivey.LinkTargetNotFoundError` with ``reason``
+        ``NOT_RECORDED`` for it, and extraction records it as
+        ``ExtractionStatus.LINK_TARGET_UNAVAILABLE`` rather than as a failure.
+
+        ``False`` does not mean the target is known. :attr:`link_target` can also be
+        ``None`` because the archive stores a target this read could not produce
+        (damaged, encrypted, or out of reach), or because the target is stored as
+        member data that nothing has read yet (``ArchiveyConfig.read_link_targets``
+        is ``False``). This property is ``True`` only when the archive itself left
+        the target out.
+        """
+        return self.is_link and self.link_target is None and self._link_target_absent
 
     def replace(self, **kwargs: object) -> ArchiveMember:
         """Return a copy with the given fields changed; never mutates self.
@@ -1174,6 +1242,27 @@ class ExtractionStatus(StrEnum):
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
 
 
+class NameRewrite(StrEnum):
+    """A safety rewrite that changed a member's name before it reached disk.
+
+    ``ExtractionResult.rewrites`` holds one value per rewrite that ran on the member,
+    and ``ExtractionResult.presented_name`` holds the name before them.
+    Both can run on one member: under ``STANDARD``, ``/a/what?.txt`` is re-rooted to
+    ``a/what?.txt`` and then written ``a/what%3F.txt``.
+    """
+
+    REROOTED = "rerooted"
+    """An absolute name was moved inside the destination by dropping its root
+    (``/etc/x`` extracts as ``etc/x``). ``STRICT`` refuses such a name instead."""
+
+    PORTABLE_NAME = "portable_name"
+    """The name was respelled so that every supported OS stores it the same way: a
+    ``\\`` written as ``/``, a byte that is not UTF-8 or a character Windows refuses
+    (``<>"|?*`` and 0x01-0x1F) written as ``%XX``, and, under ``STRICT`` only, a
+    trailing dot or space removed from each segment. ``TRUSTED`` never rewrites a
+    name."""
+
+
 @dataclass
 class ExtractionProgress:
     """Progress snapshot for the ``on_progress`` callback.
@@ -1232,6 +1321,10 @@ class ExtractionResult:
     # final on-disk spelling): a caller ``filter`` rename followed by a portable rewrite
     # produces three spellings, and only this field records the middle one.
     presented_name: str | None = None
+    # Which safety rewrites produced ``presented_name``: empty exactly when
+    # ``presented_name`` is ``None``. A re-root followed by a portable rewrite records
+    # both, and ``presented_name`` is then the stored name.
+    rewrites: frozenset[NameRewrite] = frozenset()
     # Set together, and only when one failed hardlink source causes N FAILED link results:
     # those N results share one group id and carry ``failure_group_size=N``. The id is
     # opaque — compare for equality to join a group; do not rely on ordering, format, or

@@ -31,13 +31,14 @@ carried across a pickle.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
-    from archivey.types import ArchiveFormat
+    from archivey.types import ArchiveFormat, MemberType
 
 
 def _restore_exception(
@@ -169,7 +170,7 @@ class ReadError(ArchiveyError):
     """The archive's data is bad or cannot be read, at open or later.
 
     Raised directly when an external decoder or a child process fails without saying
-    why, or a link chain loops; the subclasses name the common causes.
+    why; the subclasses name the common causes.
     """
 
 
@@ -193,8 +194,56 @@ class EncryptionError(ReadError):
     """Password required or wrong password."""
 
 
+class LinkTargetNotFoundReason(StrEnum):
+    """Why a link has no member to follow to: :attr:`LinkTargetNotFoundError.reason`."""
+
+    NOT_RECORDED = "not_recorded"
+    """The archive records no target for this link. Not damage: a writer such as
+    7-Zip stores some links this way, and ``ArchiveMember.link_target_unrecorded`` is
+    ``True`` for them."""
+
+    UNREADABLE = "unreadable"
+    """The archive records a target, and this read could not produce it: the data
+    holding it is damaged, encrypted, or out of reach. A diagnostic on the member
+    says which."""
+
+    UNRESOLVED = "unresolved"
+    """The target is known, but following it reaches no member that holds data: it
+    names no member of the archive, or one the link may not use (a symlink target that
+    leaves the archive root, a hardlink to a later member), or the chain of links
+    loops."""
+
+
 class LinkTargetNotFoundError(ReadError):
-    """A symlink/hardlink target, or a file copy's source, is absent from the archive."""
+    """A symlink/hardlink target, or a file copy's source, is absent from the archive.
+
+    :attr:`reason` says why, so a caller can act on the cause without reading the
+    message.
+    """
+
+    reason: LinkTargetNotFoundReason
+    """Why the link has no member to follow to."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: LinkTargetNotFoundReason,
+        source_format: ArchiveFormat | None = None,
+        archive_name: str | None = None,
+        member_name: str | None = None,
+        link_target: str | None = None,
+        format_unconfirmed: bool = False,
+    ) -> None:
+        super().__init__(
+            message,
+            source_format=source_format,
+            archive_name=archive_name,
+            member_name=member_name,
+            link_target=link_target,
+            format_unconfirmed=format_unconfirmed,
+        )
+        self.reason = reason
 
 
 class ExtractionError(ArchiveyError):
@@ -288,19 +337,36 @@ class ArchiveyUsageError(Exception):
     reader's mode forbids (``members()`` on a ``streaming=True`` reader), using a closed
     reader, opening a second overlapping member stream without
     ``concurrent_members=True`` (the message names the ``open_archive()`` call site),
-    and driving the reader from inside a diagnostic callback.
+    and driving the reader from inside a diagnostic callback. Those raise this class
+    itself.
+
+    A wrong argument raises it too, as a private subclass that is also a
+    ``TypeError`` (an argument of a type the call cannot use: ``config="strict"``,
+    ``open_archive(0)``) or a ``ValueError`` (a usable type with a value the call
+    refuses: an unknown format spelling, a negative limit). So ``except TypeError``,
+    ``except ValueError`` and ``except ArchiveyUsageError`` all catch a bad argument.
+    The subclasses are not public names; catch the builtin or this class.
 
     The message is escaped on the same terms as :class:`ArchiveyError`'s. A usage
     error's text is mostly archivey's own, so the escaping is usually a no-op — but
     "mostly" is not a property worth carving an exception into, and a usage error is
     free to name the member that provoked it.
+
+    ``refused_member_type`` marks one case by type rather than by message. It is the
+    type of the member ``open()`` / ``read()`` refused because it is not a file
+    (``DIRECTORY``, ``ANTI`` or ``OTHER``), and ``None`` on every other usage error.
+    When the caller opened a link, it is the type of the member the link resolved to:
+    a symlink to a directory gives ``MemberType.DIRECTORY``.
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self, message: str, *, refused_member_type: MemberType | None = None
+    ) -> None:
         self.raw_message = message
         message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
+        self.refused_member_type = refused_member_type
 
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle and copy without re-running __init__; see _restore_exception.
@@ -308,6 +374,22 @@ class ArchiveyUsageError(Exception):
 
     def __str__(self) -> str:
         return self.message
+
+
+class _UsageTypeError(ArchiveyUsageError, TypeError):
+    """A public argument of a type the call cannot use.
+
+    Private on purpose: a caller catches ``TypeError`` or
+    :class:`ArchiveyUsageError`, and neither needs a third name to do it.
+    """
+
+
+class _UsageValueError(ArchiveyUsageError, ValueError):
+    """A public argument of a usable type whose value the call refuses.
+
+    An unknown enum or format spelling, a negative or NaN limit, a codec name Python
+    does not know. Private for the same reason as :class:`_UsageTypeError`.
+    """
 
 
 class DiagnosticRaisedError(ArchiveyError):

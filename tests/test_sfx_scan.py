@@ -114,6 +114,31 @@ def test_iter_magic_in_prefix_is_linear_in_decoys() -> None:
     assert elapsed < 10, f"scan took {elapsed:.1f}s"
 
 
+def test_iter_magic_in_prefix_stops_reading_once_every_needle_is_dropped() -> None:
+    """With every magic dropped, the iteration yields nothing and reads no further."""
+    data = b"MZ" + RAR5_ID + b"\x00" * (1 << 17) + MAGIC_7Z + b"\x00" * (1 << 17)
+    magics = {needle.magic for needle in _NEEDLES}
+    peeks: list[int] = []
+
+    def peek_more(n: int) -> bytes:
+        peeks.append(n)
+        return data[:n]
+
+    assert list(iter_magic_in_prefix(peek_more, _NEEDLES, dropped=magics)) == []
+    assert len(peeks) <= 1
+
+    # Dropping every magic after the first hit ends the scan before the next peek,
+    # so the 7z past the first peek step is never searched for.
+    peeks.clear()
+    dropped: set[bytes] = set()
+    hits = []
+    for hit in iter_magic_in_prefix(peek_more, _NEEDLES, dropped=dropped):
+        hits.append(hit.candidate_origin)
+        dropped |= magics
+    assert hits == [2]
+    assert len(peeks) == 1
+
+
 def test_validated_scan_hits_are_unchanged() -> None:
     """``scan_for_magic`` still validates candidates in order and returns the first VALID."""
     payload = b"MZ" + b"\x00" * 100 + RAR5_ID + b"\x00" * 50 + MAGIC_7Z + b"\x00" * 64

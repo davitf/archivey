@@ -1,6 +1,6 @@
 # detection-result-surface — hand a detection result to open
 
-**Status:** Cut down on 2026-09-25 after the evidence-ledger change was decided against. The reader keeping its `FormatInfo` and `archivey info` detecting once have shipped; what remains is the `detection=` handoff. Not needed for 0.2.0. Additive, no break. Effort: medium.
+**Status:** Parked, not part of 0.2.0 (2026-10-07). Cut down on 2026-09-25 after the evidence-ledger change was decided against. The reader keeping its `FormatInfo` and `archivey info` detecting once have shipped; what remains is the `detection=` handoff. Not needed for 0.2.0. Additive, no break. Effort: medium.
 
 **Why it matters:** A caller who wants to look before opening calls detect format, then open archive, and pays for detection twice. On a pipe it cannot do that at all, because the first detection consumed the bytes the second one needs.
 

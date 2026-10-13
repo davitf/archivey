@@ -5,7 +5,9 @@
 Every public entry point that declares an `Enum`-typed parameter SHALL accept the
 member **spelled as a string** and convert it to the member before any branch on its
 value, and SHALL raise `ArchiveyUsageError` — outside `ArchiveyError`, per the misuse
-requirement above — on a value that is neither a member nor a recognised spelling.
+requirement above — on a value that is neither a member nor a recognised spelling. That
+error SHALL also be a `ValueError` for a string that is not a recognised spelling, and a
+`TypeError` for any other type, a member of a different enum included.
 
 This is a boundary rule, not a check at the point of use. The consuming code tests
 these values with `is`, so an unconverted value is not refused where it is read: it
@@ -59,7 +61,7 @@ vocabulary rather than two that can drift.
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
 | `DiagnosticPolicy(raise_on=["ARCHIVE_TRAILING_DATA"])` | The field holds `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
 | `DiagnosticPolicy(ignore="archive_trailing_data")` | `ArchiveyUsageError` naming the list spelling |
-| `DiagnosticPolicy(ignore={"ARCHIVE_TRAILING_DATA": "raise"})` | `ArchiveyUsageError`: a mapping is refused, not read as its keys |
+| `DiagnosticPolicy(ignore={"ARCHIVE_TRAILING_DATA": "raise"})` | `ArchiveyUsageError` (a `TypeError`): a mapping is refused, not read as its keys |
 | `ArchiveyConfig(detection_budget="fast")` | Detection under that config uses the FAST preset |
 | `ArchiveyConfig(detection_budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
 | `coerce to OverwritePolicy` given `AbortOn.BLOCKED_MEMBER` | `ArchiveyUsageError` reporting a wrong **type**, though `AbortOn` is a `str` subclass |

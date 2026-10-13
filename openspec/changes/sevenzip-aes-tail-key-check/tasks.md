@@ -54,8 +54,9 @@ it is supposed to bypass, so "it rejected the wrong password" proves nothing on 
       `test_password_confirm_does_not_request_the_whole_folder` does for #318. This is the
       only assertion that distinguishes "confirmed by the tail" from "confirmed by the
       anchor"; without it 3.1 and 3.4 both pass with the tail check removed.
-- [ ] 3.6 Commit the p7zip and py7zr padding fixtures with a note on which writer and
-      version produced each, so the premise in `design.md` has an artefact.
+- [ ] 3.6 Commit the `7z` CLI (7-Zip 23.01, see `design.md`) and py7zr padding fixtures
+      with a note on which writer and version produced each, so the premise in
+      `design.md` has an artefact.
 - [ ] 3.7 Invariant guard, both halves, with the correct password: `pack_size % 16 != 0`
       and `pack_size < unpack_size` each raise `CorruptionError` rather than
       `EncryptionError` or `_AesCbcTruncatedError`. The second case is the regression test

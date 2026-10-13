@@ -66,6 +66,7 @@ from archivey.internal.timestamps import (
     filetime_to_datetime,
     unix32_to_datetime,
 )
+from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.terminal import quoted
 
 
@@ -579,23 +580,31 @@ class RarArchive:
     #: ``truncated`` already reports the cut, nor for RAR 1.5-4, whose writers
     #: may omit the block.
     end_block_missing_volumes: list[int] = field(default_factory=list)
-    #: 0-based volume index -> byte offset, within that volume, where its
-    #: end-of-archive block starts (its salt or IV first, when headers are
-    #: encrypted), for the volumes whose end block failed its header CRC. A header whose
-    #: CRC failed is taken for the end block only if all three hold: its type reads
-    #: as the end block, it has an end block's shape (no data area, a header no
-    #: larger than an end block's), and the file ends right after it. One flipped
-    #: byte cannot make a MAIN or FILE header pass: either the shape fails or
-    #: blocks follow it. Anything else stays a ``CorruptionError``. The block sits
-    #: after the last member, so the walk keeps the members before it and stops
-    #: there; the reader reports the damage as ``ARCHIVE_EOF_MARKER_MISSING`` after
-    #: the members, and a strict policy refuses. The block's flags are not data once
-    #: its CRC fails, so its next-volume flag is not read: ``needs_next_volume`` is
+    #: 0-based volume index -> byte offset, within that volume, where its end-of-archive
+    #: block starts (its salt or IV first, when headers are encrypted), for the volumes
+    #: whose end block failed its header CRC. A header whose CRC failed is taken for the
+    #: end block only if all three hold: its type reads as the end block, it has an end
+    #: block's shape (no data area, a header no larger than an end block's), and nothing
+    #: but zero padding follows it in the volume, as far as the 1 MiB trailing scan
+    #: looks. One flipped byte cannot make a FILE header pass the shape; a MAIN header
+    #: with no extra or data area can, and is then kept out only by the blocks after it
+    #: (see ``dev-docs/formats/rar.md``). Anything else stays a ``CorruptionError``. The
+    #: block sits after the last member, so the walk keeps the members before it and
+    #: stops there; the reader reports the damage as ``ARCHIVE_EOF_MARKER_MISSING``
+    #: after the members, and a strict policy refuses. The block's flags are not data
+    #: once its CRC fails, so its next-volume flag is not read: ``needs_next_volume`` is
     #: then set only by a member header (CRC intact) whose data continues, as for a
-    #: volume with no end block. Both formats. Never set where the header password
-    #: is unproven: there a CRC mismatch reads the same as a wrong key, so the walk
-    #: raises the wrong-password ``EncryptionError`` instead.
+    #: volume with no end block. Both formats. Never set where the header password is
+    #: unproven: there a CRC mismatch reads the same as a wrong key, so the walk raises
+    #: the wrong-password ``EncryptionError`` instead.
     end_block_damaged_volumes: dict[int, int] = field(default_factory=dict)
+    #: 0-based volume index -> offset, counted from the end of that volume's
+    #: end-of-archive block, of the first non-zero byte within
+    #: :data:`~archivey.internal.trailing_scan.MAX_TRAILING_SCAN` bytes after it.
+    #: Only for a volume whose end block was read intact: a damaged one is taken for
+    #: the end block only when nothing but zeros follows it. The reader reports each as
+    #: ``ARCHIVE_TRAILING_DATA`` after the members. Zero padding is not recorded.
+    trailing_data_volumes: dict[int, int] = field(default_factory=dict)
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
@@ -768,6 +777,7 @@ def parse_rar_volumes(
             merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
+            merged.trailing_data_volumes.update(part.trailing_data_volumes)
             for position, member in enumerate(part.members):
                 if gap and position == 0:
                     # Its earlier parts are in the missing volume: listed on its
@@ -1029,12 +1039,32 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
         raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
 
 
-def _ends_at(source: BinaryIO, pos: int) -> bool:
-    """Whether the file ends exactly at ``pos``; the read position is kept."""
+def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
+    """Where the first non-zero byte after an end block at ``end`` lies, if any.
+
+    ``end`` is where the block's bytes stop in the volume: past any data area it
+    declares, as every other block ends, and past its AES padding when headers are
+    encrypted, as the walk's ``data_offset`` is a ciphertext offset. The read position
+    is left at ``end``. See ``RarArchive.trailing_data_volumes``.
+    """
+    _seek_to(source, end)
+    try:
+        return first_nonzero_offset(source)
+    finally:
+        source.seek(end)
+
+
+def _only_zeros_after(source: BinaryIO, pos: int) -> bool:
+    """Whether nothing but zero padding follows ``pos``; the read position is kept.
+
+    The same test an intact end block's tail gets, with the same 1 MiB bound, so a
+    damaged end block on a volume ``rar`` padded with zeros is still recognised as one.
+    """
     here = source.tell()
-    end = source.seek(0, io.SEEK_END)
-    source.seek(here)
-    return pos == end
+    try:
+        return _scan_after_end_block(source, pos) is None
+    finally:
+        source.seek(here)
 
 
 def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
@@ -1070,7 +1100,9 @@ def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
 
     That is the type, block flags with neither an extra nor a data area, then the
     end-of-archive flags, and nothing after them. A FILE or service header declares
-    a data area; a MAIN header passes this, and the end-of-file check rejects it.
+    a data area. A MAIN header with no extra and no data area passes this; the blocks
+    that follow it in any archive with members keep it out (see
+    ``dev-docs/formats/rar.md``).
     """
     try:
         _type, pos = load_vint(hdata, pos)
@@ -1139,12 +1171,13 @@ class _RarEndBlockCrcError(CorruptionError):
     :func:`_read_rar5_block` raises this in place of the generic CRC error when the
     header's type reads as the end block and its shape is an end block's (see
     :func:`_rar5_end_block_shaped`). The walk keeps the members before it only if
-    the file also ends at ``data_offset`` and the header password is proven or
-    headers are plain. Behind an unproven header password the walk's earlier
-    check raises the wrong-password :class:`EncryptionError` instead. With a proven
-    key or plain headers, a file that does not end at ``data_offset`` is handled as
-    ``generic``, the error a header of any other type would have raised. The
-    end-of-archive flags are not used.
+    nothing but zeros follows ``data_offset``, as far as the 1 MiB trailing scan
+    looks (:func:`_only_zeros_after`), and the header password is proven or headers
+    are plain. Behind an unproven header password the walk's earlier check raises
+    the wrong-password :class:`EncryptionError` instead. With a proven key or plain
+    headers, a non-zero byte within that scan is handled as ``generic``, the error
+    a header of any other type would have raised. The end-of-archive flags are not
+    used.
     """
 
     def __init__(self, header_offset: int, data_offset: int) -> None:
@@ -2029,6 +2062,7 @@ def _parse_rar3(
     damaged: str | None = None
     main_seen = False
     end_block_damaged_at: int | None = None
+    trailing_at: int | None = None
     # Set once an encrypted header decrypted with a matching CRC16, in this volume or
     # an earlier one of the set (the caller passes that in). The walk treats a
     # mismatch as proof of a wrong password, so a match proves the password the same
@@ -2132,8 +2166,8 @@ def _parse_rar3(
         if block_type == _RAR3_ENDARC:
             # The type was read from the same unverified bytes, so a MAIN or FILE
             # header with one flipped byte reads as ENDARC too. Only a header shaped
-            # as an end block, with nothing after it, is one. Damage after the last
-            # member keeps the listing, and the flags, the next-volume flag among
+            # as an end block, with nothing but zeros after it, is one. Damage after
+            # the last member keeps the listing, and the flags, the next-volume flag among
             # them, are not read. unrar lists such an archive and tests every member
             # OK, then reports one error. An unproven key still reads as a wrong
             # password, through _check_rar3_crc.
@@ -2141,7 +2175,7 @@ def _parse_rar3(
                 header_crc != _crc32(hdata[2:header_size]) & 0xFFFF
                 and (password_proven or not block_encrypted)
                 and _rar3_end_block_shaped(flags, header_size)
-                and _ends_at(source, data_offset)
+                and _only_zeros_after(source, data_offset)
             ):
                 end_block_damaged_at = header_start
                 break
@@ -2168,6 +2202,9 @@ def _parse_rar3(
                 raise UnsupportedFeatureError(
                     "Need first volume of multi-volume RAR archive"
                 )
+            trailing_at = _scan_after_end_block(
+                source, _packed_span_end(data_offset, add_size)
+            )
             break
 
         if block_type in (_RAR3_FILE, _RAR3_SUB):
@@ -2285,6 +2322,9 @@ def _parse_rar3(
             {volume_index: end_block_damaged_at}
             if end_block_damaged_at is not None
             else {}
+        ),
+        trailing_data_volumes=(
+            {volume_index: trailing_at} if trailing_at is not None else {}
         ),
         password_proven=password_proven,
     )
@@ -2897,6 +2937,7 @@ def _parse_rar5(
     main_seen = False
     end_block_seen = False
     end_block_damaged_at: int | None = None
+    trailing_at: int | None = None
     # Only the first MAIN of a volume is asked for the quick-open table. unrar
     # accepts a repeated MAIN, and each try reads a QO payload of up to
     # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
@@ -2939,10 +2980,10 @@ def _parse_rar5(
             if truncated is not None:
                 break
             if isinstance(exc, _RarEndBlockCrcError):
-                # As in the RAR3 walk: only a block with nothing after it is the
-                # end block. Damage after the last member keeps the listing, and
+                # As in the RAR3 walk: only a block with nothing but zeros after it is
+                # the end block. Damage after the last member keeps the listing, and
                 # the block's next-volume flag is not read.
-                if _ends_at(source, exc.data_offset):
+                if _only_zeros_after(source, exc.data_offset):
                     end_block_seen = True
                     end_block_damaged_at = header_start
                     break
@@ -3055,6 +3096,9 @@ def _parse_rar5(
             endarc_flags, _ = load_vint(hdata, pos)
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             end_block_seen = True
+            trailing_at = _scan_after_end_block(
+                source, _packed_span_end(data_offset, add_size)
+            )
             break
 
         if block_type in (_RAR5_FILE, _RAR5_SERVICE):
@@ -3120,6 +3164,9 @@ def _parse_rar5(
             {volume_index: end_block_damaged_at}
             if end_block_damaged_at is not None
             else {}
+        ),
+        trailing_data_volumes=(
+            {volume_index: trailing_at} if trailing_at is not None else {}
         ),
     )
 

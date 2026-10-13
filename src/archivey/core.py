@@ -36,15 +36,18 @@ from archivey.diagnostics import (
     UnusedArgumentContext,
 )
 from archivey.exceptions import (
-    ArchiveyUsageError,
     FormatDetectionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
+    _UsageTypeError,
+    _UsageValueError,
 )
 from archivey.internal.arg_checks import (
     check_config,
     check_encoding,
     check_path_not_empty,
+    raise_if_text_stream,
+    raise_if_write_only_stream,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
 from archivey.internal.backends.zip_detect import (
@@ -76,11 +79,7 @@ from archivey.internal.registry import (
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.streamtools import (
-    is_stream,
-    raise_if_text_stream,
-    raise_if_write_only_stream,
-)
+from archivey.internal.streams.streamtools import is_stream
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
@@ -223,7 +222,9 @@ def _follow_stub_volume(
                 pass
             else:
                 if info.format.container != format.container:
-                    raise ArchiveyUsageError(
+                    # DR-15's value half: format= is a usable type, and the call
+                    # refuses this value because it conflicts with what the source is.
+                    raise _UsageValueError(
                         f"{display_path(stub)} has no archive magic; the split first "
                         f"volume beside it is {info.format.display_name}, but "
                         f"format={format!r} was requested."
@@ -391,7 +392,7 @@ def open_archive(
         # tested on the container so an unnamed pair such as (UNKNOWN, GZIP) is refused
         # too. Refused here rather than in coerce_archive_format:
         # format_availability(UNKNOWN) is a legitimate query that answers NONE.
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"open_archive(format=…) cannot open {format!r}, which names no format; "
             f"pass the archive's format, or None to auto-detect."
         )
@@ -399,7 +400,7 @@ def open_archive(
     check_encoding(encoding, call="open_archive(encoding=…)")
 
     if streaming and concurrent_members:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             "open_archive(streaming=True) cannot be combined with "
             "concurrent_members=True: a forward-only pass has one progressive decoder "
             "and cannot fan out concurrent member streams."
@@ -553,7 +554,8 @@ def _open_resolved(
         # Every other explicit-format conflict is refused loudly; so is this one.
         if format is not None and format != ArchiveFormat.DIRECTORY:
             assert archive_source.path is not None  # the directory form has a path
-            raise ArchiveyUsageError(
+            # DR-15's value half: format= conflicts with what the source is.
+            raise _UsageValueError(
                 f"{archive_name or display_path(archive_source.path)} is a directory, but format="
                 f"{format!r} was requested. Pass a path to an archive file, or "
                 f"format=ArchiveFormat.DIRECTORY to read the directory tree."
@@ -572,7 +574,8 @@ def _open_resolved(
             if archive_source.path is not None
             else "The source stream"
         )
-        raise ArchiveyUsageError(
+        # DR-15's value half: format= conflicts with what the source is.
+        raise _UsageValueError(
             f"{where} is not a directory, but format={format!r} was requested. Pass a "
             f"directory path, or the archive's own format (or None to auto-detect)."
         )
@@ -813,7 +816,7 @@ def open_stream(
         # as open_archive refuses it, so a missing path or a directory does not answer
         # first; the container refusal in _resolve_stream_format would also send the
         # caller to open_archive, which refuses it as well.
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"open_stream cannot open {format!r}, which names no format; pass a "
             "StreamFormat or a raw-stream ArchiveFormat (e.g. ArchiveFormat.GZ), "
             "or None to auto-detect."
@@ -829,8 +832,9 @@ def open_stream(
         if path.is_dir():
             # Split out of the is_file() check: a directory exists, so "not found" sends
             # the caller looking for a missing file. open_archive() reads the same path
-            # happily as a directory archive, which is the likely intent.
-            raise ArchiveyUsageError(
+            # happily as a directory archive, which is the likely intent. DR-15's
+            # value half: the path is a usable type whose value this call refuses.
+            raise _UsageValueError(
                 f"{display_path(path)} is a directory, not a compressed stream; "
                 f"use open_archive() to read a directory tree"
             )
@@ -843,7 +847,7 @@ def open_stream(
         if not is_stream(source):
             raise_if_text_stream(source)
             raise_if_write_only_stream(source)
-            raise TypeError(
+            raise _UsageTypeError(
                 f"open_stream source must be a path or binary stream, got {type(source)!r}"
             )
         # The same boundary open_archive uses: full-count, borrowed, bounded, and a
@@ -887,7 +891,7 @@ def _open_stream_from_source(
     # Only an explicit format= can be UNCOMPRESSED: detection never returns a
     # RAW_STREAM/UNCOMPRESSED pair, so this is the caller's mistake, not the input's.
     if stream_format is StreamFormat.UNCOMPRESSED:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             "open_stream requires a compressed stream format "
             f"(got {stream_format!r}); use open_archive for uncompressed containers."
         )
@@ -936,7 +940,7 @@ def _resolve_stream_format(
         # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.
         outer = outer_stream_format(format)
         if outer is None:
-            raise ArchiveyUsageError(
+            raise _UsageValueError(
                 f"open_stream does not accept container format {format!r}; "
                 "pass a StreamFormat, a raw-stream ArchiveFormat "
                 "(e.g. ArchiveFormat.GZ) or a compressed tar, or use open_archive."

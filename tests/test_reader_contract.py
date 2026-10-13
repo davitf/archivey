@@ -8,7 +8,8 @@ access-mode gate (``streaming=True`` is forward-only) plus
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Any
 
 import pytest
 
@@ -228,24 +229,59 @@ def test_members_report_if_available_after_streaming_pass() -> None:
     assert [m.name for m in report] == ["a.txt"]
 
 
-def test_scan_members_equals_members_in_random_mode() -> None:
+def test_members_report_equals_members_in_random_mode() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
-    assert reader.scan_members() == reader.members()
+    assert list(reader.members_report().members) == reader.members()
     assert [m.name for m in reader] == ["a.txt"]
 
 
-def test_scan_members_usage_errors_name_scan_members() -> None:
-    """scan_members() runs members_report()'s body, but its errors name the call made."""
+def test_streaming_members_refusal_names_the_two_listing_routes() -> None:
+    """members() refuses on a streaming reader and points at what works there."""
+    reader = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
+    with pytest.raises(ArchiveyUsageError) as info:
+        reader.members()
+    message = str(info.value)
+    assert "members_report()" in message
+    assert "stream_members()" in message
+    # Both routes still list the archive; members_report() uses up the pass.
+    assert [m.name for m in reader.members_report()] == ["a.txt"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda r: r.get("a.txt"), id="get"),
+        pytest.param(lambda r: r.open("a.txt"), id="open"),
+        pytest.param(lambda r: r.read("a.txt"), id="read"),
+    ],
+)
+def test_streaming_data_refusal_names_the_data_route(
+    call: Callable[[Any], object],
+) -> None:
+    """get()/open()/read() want member data, so the refusal names the route that
+    gives it (stream_members()) and none of the listing-only routes."""
+    reader = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
+    with pytest.raises(ArchiveyUsageError) as info:
+        call(reader)
+    message = str(info.value)
+    assert "stream_members() and read each member's stream" in message
+    assert "members_report" not in message
+    assert "ignore the streams" not in message
+
+
+def test_members_report_usage_errors_name_members_report() -> None:
     closed = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
     closed.close()
-    with pytest.raises(ArchiveyUsageError, match=r"^scan_members\(\) is not available"):
-        closed.scan_members()
+    with pytest.raises(
+        ArchiveyUsageError, match=r"^members_report\(\) is not available"
+    ):
+        closed.members_report()
 
     streaming = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
     pass_ = streaming.stream_members()
     next(pass_)
-    with pytest.raises(ArchiveyUsageError, match="Cannot start 'scan_members'"):
-        streaming.scan_members()
+    with pytest.raises(ArchiveyUsageError, match="Cannot start 'members_report'"):
+        streaming.members_report()
     pass_.close()
 
 
@@ -325,8 +361,6 @@ def test_random_access_terminal_damage_report_and_yield_then_raise() -> None:
 
     with raises_corruption_not_truncation():
         reader.members()
-    with raises_corruption_not_truncation():
-        reader.scan_members()
 
     it = iter(reader)
     member = next(it)
@@ -348,9 +382,10 @@ def test_failed_streaming_pass_publishes_incomplete_report() -> None:
     assert next(it).name == "a.txt"
     with raises_corruption_not_truncation():
         next(it)
-    # Complete-list methods must fail loud, not serve the partial scan as complete.
-    with raises_corruption_not_truncation():
-        reader.scan_members()
+    # The listing methods label the partial scan as incomplete, never complete.
+    finished = reader.members_report()
+    assert is_corruption_not_truncation(finished.error)
+    assert [m.name for m in finished] == ["a.txt"]
     report = reader.members_report_if_available()
     assert report is not None
     assert is_corruption_not_truncation(report.error)
@@ -362,8 +397,6 @@ def test_failed_streaming_pass_replays_incomplete_report() -> None:
     with raises_corruption_not_truncation():
         list(reader)
     for _ in range(2):
-        with raises_corruption_not_truncation():
-            reader.scan_members()
         report = reader.members_report()
         assert [m.name for m in report] == ["a.txt"]
         assert is_corruption_not_truncation(report.error)

@@ -82,7 +82,9 @@ def test_accelerator_modes_honored_via_config(
 
     captured: list[object] = []
 
-    def _capture_open(codec, source, *, config, stamp=None, collector=None):
+    def _capture_open(
+        codec, source, *, config, stamp=None, collector=None, repeat_verdict=True
+    ):
         captured.append(config)
         return io.BytesIO(tar_bytes)
 

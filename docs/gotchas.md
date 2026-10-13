@@ -17,13 +17,16 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   backward seek **re-decompresses from the start** — loudly, via
   `STREAM_REWIND_REDECOMPRESSES`, but it still costs.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
-- **Don't expect a CRC verdict after seeking.** A seek that moves the position
-  gives up the member's CRC check until you seek back to 0; a read from 0 to the end
-  with no seek in between is checked again. A WinZip AES member's HMAC is the
+- **Don't expect a CRC verdict after a seek that jumps.** A seek back keeps the member's
+  CRC check, and so does a forward seek in a compressed member: the next read decodes
+  the bytes it skipped, as it would have to anyway, and Archivey hashes them as it goes.
+  A forward seek that jumps over bytes without decoding them (a stored member, or a seek
+  by an index or the `[seekable]` accelerator) gives up the check once you read past the
+  jump, until you seek back to 0. The check covers the first pass over each byte: bytes
+  read again after a seek back are not checked again. A WinZip AES member's HMAC is the
   exception: it is still checked when a read reaches the end, and that read first
-  re-reads, without decrypting, the ciphertext your seeks skipped. A short read at
-  the end of a large AES member can therefore read the whole member from the
-  archive.
+  re-reads, without decrypting, the ciphertext your seeks skipped. A short read at the
+  end of a large AES member can therefore read the whole member from the archive.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
@@ -43,10 +46,10 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   Unicode-normalisation twins collide on **every** OS, not just Windows.
   → [Names change on disk](extracting.md#names-change-on-disk)
 - **Don't `read()` a member from an untrusted archive without a size guard.**
-  `read()` is unbounded, and `stream_members()` / `streaming=True` are
-  deliberately outside `ListingLimits` except on 7z, RAR and ISO, which still
-  enforce `max_members` at open. Chunk
-  untrusted payloads.
+  `read()` is unbounded. `stream_members()` and `for member in reader` are
+  deliberately outside `ListingLimits` (they yield every member, and keep no
+  listing past a limit), except on 7z, RAR and ISO, which still enforce
+  `max_members` at open. Chunk untrusted payloads.
   → [Limits](extracting.md#limits)
 - **Don't recurse into nested archives without bounding it yourself.** The bomb
   tracker checks expansion for *individual* archives and is **not nesting-aware**, so

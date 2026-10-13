@@ -299,24 +299,46 @@ short) so `read(); close()` cannot silently accept bad content. `finish_on_close
 SHALL close the inner and MUST NOT introduce a first content `TruncatedError` /
 `CorruptionError` solely because the caller is closing.
 
-A seek off the sequential frontier SHALL forfeit digest verification until a seek to
-position 0, which SHALL re-arm every check: the digests start again and the read
-frontier is cleared, so a read from position 0 to the end after any seeks is
-verified as a first read is, for every format. Length / truncation / over-run checks
-SHALL remain active and SHALL key off bytes actually read (not a seek-updated
-logical position alone). When a seek jumps the logical position to/past the declared
-size without reading the intervening bytes, concluding SHALL read that skipped gap
-(bounded by the declared size) **and probe one byte past the declared size**,
-reproducing the same length + over-run verdict a sequential reaching read runs,
+The digests SHALL cover the bytes from position 0 to the furthest position a read
+has reached (the frontier), and a seek SHALL forfeit them only when the bytes it
+skips can no longer reach them:
+
+- A seek to or behind the frontier SHALL keep the digests; later reads hash only
+  the bytes past the frontier.
+- A forward seek past the frontier whose inner stream would decode the skipped
+  bytes anyway (its `nearest_resume_offset` for the target, asked as for a seek, is
+  at or before the frontier) SHALL keep them: the next read SHALL read those bytes
+  through the digests before its own. The seek itself SHALL decode nothing, so a
+  later seek replaces its target and a stream closed with no read decodes nothing.
+  A decode error in those bytes raises from that read, as it would after an inner
+  whose own seek is lazy (the unrar pipe).
+- A seek to or past the declared size SHALL keep the digests: concluding reads the
+  skipped gap through them (below), so the seek itself reads nothing.
+- A seek past the frontier that the inner can jump (a seek index, an accelerator, a
+  stored or decrypt-only member, or an inner that cannot say) SHALL forfeit the
+  digests once a read starts past the frontier, until a seek to position 0. A seek
+  back to the frontier before any such read skips nothing and keeps them.
+
+The digests SHALL cover the first pass over each byte: bytes read again after a seek
+back are not hashed again, so a re-decode that returns different bytes there (a crafted
+seek index) is not caught by the digest.
+
+A seek to position 0 SHALL re-arm every check: the digests start again and the read
+frontier is cleared, so a read from position 0 to the end after any seeks is verified as
+a first read is, for every format. Length / truncation / over-run checks SHALL remain
+active and SHALL key off bytes actually read (not a seek-updated logical position
+alone). When a seek jumps the logical position to/past the declared size without reading
+the intervening bytes, concluding SHALL read that skipped gap (bounded by the declared
+size, through the digests while they are on) **and probe one byte past the declared
+size**, reproducing the same length + over-run verdict a sequential reaching read runs,
 rather than returning `b""` blind. So a past-EOF `seek(declared_size)` on a
-**truncated** member MUST NOT silence `TruncatedError`, and on an **over-long**
-member (one that decodes past its declared size) MUST NOT silence `CorruptionError`.
-Symmetrically, the same jump on a **complete** member MUST NOT fabricate either
-fault: a seek to/past the declared size followed by `read` returns `b""` (standard
-`BinaryIO` past-EOF semantics), and the `seek(member.size); read(1)` completeness
-idiom works. A member already read to its declared size is length-verified, so a
-later seek past the end concludes with no extra reads, unless a seek to 0 has
-re-armed the checks since.
+**truncated** member MUST NOT silence `TruncatedError`, and on an **over-long** member
+(one that decodes past its declared size) MUST NOT silence `CorruptionError`.
+Symmetrically, the same jump on a **complete** member MUST NOT fabricate either fault: a
+seek to/past the declared size followed by `read` returns `b""` (standard `BinaryIO`
+past-EOF semantics), and the `seek(member.size); read(1)` completeness idiom works. A
+member already read to its declared size is length-verified, so a later seek past the
+end concludes with no extra reads, unless a seek to 0 has re-armed the checks since.
 
 Deliberate partial read then close before clean EOF remains quiet for
 digest/length verification (abandon before verdict), modulo the length checks
@@ -342,7 +364,7 @@ Once the public `ArchiveStream` has raised a content verdict (`CorruptionError` 
 again until the caller seeks, with the traceback it was first raised with rather than
 one that grows per call. A seek SHALL succeed and restart the decode, so the prefix
 reads again, as a truncated `DecompressorStream` does; the read that then reaches the
-end SHALL raise the verdict again and return no bytes, whether or not the seek forfeited
+end SHALL raise the verdict again and return no bytes, whether or not a seek forfeited
 the digest check (a seek to 0 re-arms it, and the damage found again raises the same
 error object). A read reaches the end when it returns short or empty, is `read(-1)`, or
 leaves the stream at or past the member's declared size; a full-length
@@ -381,9 +403,14 @@ fresh stream.
 | `read(-1)` over a short-reading inner (returns `< n`, not EOF) | Full body gathered via bounded drain; EOF verdict fires in that call |
 | Bounded `read(n)` over a short-reading inner | Full-count: returns `n` or short only at terminal boundary |
 | `read(-1)` over an over-long inner with a declared size | Stopped at the declared size; `CorruptionError`; inner not read unbounded past the cap |
-| Seek off frontier then short of declared size | Checksum forfeited; `TruncatedError` still raises on completing/empty read |
+| Seek off frontier then short of declared size | `TruncatedError` still raises on completing/empty read |
+| Backward seek, then a read to the end over a digest mismatch | Checksum kept (bytes before the frontier not hashed twice); `CorruptionError` |
+| Forward seek on a decompressing member (resume point at or before the frontier), then a read to the end over a digest mismatch | Gap read through the digests by the next read, not the seek; `CorruptionError` |
+| Forward seek that jumps (stored member, seek index), then a read | Checksum forfeited by that read; length checks still run |
+| Forward jump undone by a seek back to the frontier before any read | Checksum kept |
 | Any seeks, then `seek(0)` and a read to the end over a digest mismatch | Checksum re-armed by the seek to 0; `CorruptionError` |
-| Seek to/past declared size on a **complete** member, then `read` (incl. `seek(size); read(1)`) | Returns `b""`; no fabricated `TruncatedError` (checksum forfeited by the seek) |
+| Seek to/past declared size on a **complete** member, then `read` (incl. `seek(size); read(1)`) | Returns `b""`; no fabricated `TruncatedError`; the gap read checks the digest |
+| Seek to/past declared size over a digest mismatch, then `read` | Concluding hashes the skipped gap; `CorruptionError` |
 | Seek to/past declared size on a **truncated** member, then `read` | Concluding reads the skipped gap; `TruncatedError` with the true recoverable length |
 | Seek to/past declared size on an **over-long** member, then `read` | Concluding reads the gap and probes past the declared size; `CorruptionError` (over-run), not a silent `b""` |
 | Declared size met; the compressed bytes after it are damaged (a ZIP DEFLATE member declared empty, body not DEFLATE) | `CorruptionError` from the probe past the declared size, not a silent end |

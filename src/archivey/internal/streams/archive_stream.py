@@ -178,6 +178,7 @@ class ArchiveStream(ReadOnlyIOStream):
         archive_name: str | None = None,
         verifier: MemberVerifier | None = None,
         member_name: str | None = None,
+        repeat_verdict: bool = True,
     ) -> None:
         super().__init__()
         # Named in the closed-source error and returned by ``name``; ``None`` for a
@@ -207,6 +208,11 @@ class ArchiveStream(ReadOnlyIOStream):
         # Whether the caller has seeked since the verdict last raised. A seek restarts
         # the decode, so the prefix reads again; the read that reaches the end raises.
         self._verdict_rewound = False
+        # False for a stream that only a reader's own views read. A read seeks the
+        # shared handle when it is not already there. Some reads still seek, and one
+        # seek is enough to mark the stream rewound, so a short read that ends at the
+        # damage would lose its prefix. The member streams over those views keep theirs.
+        self._repeat_verdict = repeat_verdict
         # A stream's diagnostics are everything emitted from its open onward: capture the
         # collector position here and difference against "now" on each query. No per-stream
         # bookkeeping is retained collector-side.
@@ -458,12 +464,13 @@ class ArchiveStream(ReadOnlyIOStream):
         not the seek forfeited the digest check: a caller who catches it and seeks back
         cannot re-read the damaged member as complete, clean data. A content error that
         a rewound read raises is that same verdict found again (a seek to 0 re-arms the
-        verifier), so the stream raises the error object it raised first.
+        verifier), so the stream raises the error object it raised first. A stream built
+        with ``repeat_verdict=False`` remembers nothing and raises each error as it comes.
         """
         try:
             self._raise_translated(e)
         except ArchiveyError as raised:
-            if not _is_content_verdict(raised):
+            if not self._repeat_verdict or not _is_content_verdict(raised):
                 raise
             repeat = self._verdict is not None and self._verdict_rewound
             if self._verdict is None:
@@ -601,15 +608,18 @@ class ArchiveStream(ReadOnlyIOStream):
         offset, whence = check_seek_args(offset, whence)
         inner = self._ensure_open()  # outside the try, same as read()
         before: int | None = None
+        verifier = self._verifier
         try:
             before = inner.tell()
-            result = inner.seek(offset, whence)
+            if verifier is not None:
+                # The verifier may defer a forward seek to the next read, which then
+                # hashes the skipped bytes (``MemberVerifier.seek``).
+                result = verifier.seek(inner, offset, whence)
+            else:
+                result = inner.seek(offset, whence)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._note_raised_seek(inner, before)
             self._fail(e)
-        verifier = self._verifier
-        if verifier is not None:
-            verifier.note_seek(result)
         if self._verdict is not None:
             self._verdict_rewound = True
         self._maybe_warn_rewind(before, result)
@@ -630,6 +640,14 @@ class ArchiveStream(ReadOnlyIOStream):
                 self._maybe_warn_rewind(before, after)
             except Exception:  # noqa: BLE001 - the seek's own error propagates instead
                 pass
+
+    def _digest_intact(self) -> bool | None:
+        """Whether the fused verifier's digest can still run (``ask_digest_intact``).
+
+        ``None`` without a fused verifier: a codec-level stream has no member digest.
+        """
+        verifier = self._verifier
+        return verifier.digest_intact if verifier is not None else None
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""
@@ -713,6 +731,8 @@ class ArchiveStream(ReadOnlyIOStream):
             raise ValueError("I/O operation on closed file.")
         if self._inner is None:
             return 0
+        if self._verifier is not None:
+            return self._verifier.tell(self._inner)
         return self._inner.tell()
 
     def _make_forward_only(self) -> None:

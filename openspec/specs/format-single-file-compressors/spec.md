@@ -331,14 +331,19 @@ then stop reading the source. Bytes after the end SHALL be classified this way:
 - for xz, lzip, zstd, LZ4 and bzip2, bytes that match the codec's stream magic in at
   least half of its positions, but not in all of them, are a further stream with a
   damaged header: the read, and a seek that reaches them, SHALL raise `CorruptionError`.
-  The positions compared are the first `len(magic)` bytes after any padding the codec
-  skips (xz stream padding, zero bytes for zstd, LZ4 and bzip2; none for lzip). For
-  zstd, LZ4 and bzip2, a run of zero bytes shorter than the magic SHALL also be
-  compared as the first bytes of the magic, since a damaged byte can be zero; a run as
-  long as the magic or longer is padding. This is lzip's rule for a corrupt header in a
-  multimember file. A tail shorter than the magic is not judged by it. gzip, zlib, LZMA
-  Alone and Brotli do not apply it;
-- zero bytes are padding and SHALL NOT be reported;
+  The positions compared are the first `len(magic)` bytes right after the stream, and
+  for xz the first after its stream padding. For zstd, LZ4 and bzip2, a run of zero
+  bytes shorter than the magic SHALL also be compared as the first bytes of the magic,
+  since a damaged byte can be zero; after a run as long as the magic or longer nothing
+  is compared, as no stream is read after zero bytes (next bullet). This is lzip's rule
+  for a corrupt header in a multimember file. A tail shorter than the magic is not
+  judged by it. gzip, zlib, LZMA Alone and Brotli do not apply it;
+- zero bytes are padding and SHALL NOT be reported where they run to the end of the
+  source. For every codec but xz, whose format defines Stream Padding between streams,
+  they are padding only there: after zero bytes, the first non-zero byte is trailing
+  data as the next bullet says, also when it starts another stream, in every
+  accelerator mode. Each codec's own tool stops there too (GNU `gzip`, `bzip2`,
+  `zstd`, `lz4`, `xz --format=lzma`), and so does 7-Zip for gzip, bzip2 and LZMA Alone;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
   `format`, and the offset of the first non-zero byte after the end as
@@ -383,6 +388,9 @@ after the data decode as more codes.
 | Valid stream + 4096 zero bytes | Full payload; no diagnostic |
 | Valid stream + zeros + junk | One report at the first non-zero byte |
 | Two concatenated `.gz` / `.bz2` / `.lzma` / `.zst` / `.lz4` streams + junk | Both payloads; one report after the second |
+| `.gz` / `.bz2` / `.zst` / `.lz4` / `.lzma` / `.lz` stream + zero bytes + another stream, accelerator `OFF`, `AUTO` or `ON` | The first payload; one report at the second stream's first byte; under strict the read raises |
+| Two `.xz` streams with zero bytes between them | Both payloads; no report (xz Stream Padding) |
+| `.bz2` stream + empty streams + zero bytes | Full payload; no diagnostic |
 | `.zst` with a skippable frame between two frames | Both payloads; no report |
 | `.xz` / `.lz` + junk within 1 MiB | Size known, seek works, full payload, one report |
 | Two concatenated `.xz` streams (with or without stream padding) or `.lz` members, last footer or trailer damaged | Size and CRC unknown; data up to the damage, then `CorruptionError` from the read or `SEEK_END` |

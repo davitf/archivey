@@ -202,6 +202,19 @@ class BackendRegistry:
                 mapping[sig.format] = validator
         return mapping
 
+    def sfx_parser_scanned_formats(self) -> frozenset[ArchiveFormat]:
+        """Formats whose parser runs its own capped SFX scan.
+
+        Collected from ``ReadBackend.SFX_PARSER_SCANS``. The detector applies the
+        rejection cap to these formats only.
+        """
+        return frozenset(
+            sig.format
+            for cls in self._reader_classes
+            if cls.SFX_PARSER_SCANS
+            for sig in cls.SFX_MAGIC
+        )
+
     def trailer_entries(self) -> list[TrailerSignature]:
         """Trailer magic declared by registered backends.
 

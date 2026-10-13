@@ -674,13 +674,13 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
         )
     diagnostic = ei.value.diagnostic
     assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
-    assert diagnostic.message == "Invalid TAR mtime for 'a.txt': -1099511627776.0"
+    assert diagnostic.message == "Invalid TAR PAX mtime for 'a.txt': '-1099511627776'"
     context = diagnostic.context
     assert isinstance(context, MemberTimestampContext)
     assert (context.field, context.source, context.value_repr) == (
         "modified",
         "tar",
-        "-1099511627776.0",
+        "'-1099511627776'",
     )
 
 
@@ -988,6 +988,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         # Fires only on a stream abandoned before EOF; in strict it would turn a peek
         # at a ZipCrypto member into DiagnosticRaisedError.
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
+        # ``zip -FI`` writes the shape and the bytes are delivered; nothing hidden.
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
     }
 
 

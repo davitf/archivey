@@ -25,6 +25,7 @@ Module map:
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
 - :mod:`.locked` — ``LockedStream`` (whole-op lock wrapper)
+- :mod:`.readahead` — ``ReadAheadStream`` (a read buffer over a full-count stream)
 - :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
 - :mod:`.sparse` — ``SparseStream`` (a sparse file's logical bytes, holes as zeros)
 
@@ -32,7 +33,8 @@ When to use which concurrency helper:
 
 - ``LockedStream`` — one shared handle; hold a lock across each seek+read (TAR/ISO).
 - ``SharedSource`` + ``SharedView`` — each consumer has its own logical
-  position; every read re-seeks under the lock (ZIP-style shared file).
+  position; a read seeks under the lock when the handle is not already there
+  (ZIP-style shared file).
 - ``SolidBlockReader`` — one forward decode; hand out consecutive member slices
   (7z folder / RAR pipe). Not seekable.
 
@@ -71,6 +73,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     underlying_stream,
 )
 from archivey.internal.streams.streamtools.locked import LockedStream
+from archivey.internal.streams.streamtools.readahead import ReadAheadStream
 from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import (
     SharedView,
@@ -87,6 +90,7 @@ __all__ = [
     "BinaryIOWrapper",
     "DelegatingStream",
     "LockedStream",
+    "ReadAheadStream",
     "ReadOnlyIOStream",
     "ReadableStream",
     "SharedSource",

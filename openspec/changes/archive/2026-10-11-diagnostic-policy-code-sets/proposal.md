@@ -42,4 +42,5 @@ Alternatives not taken:
 - `diagnostics`: the policy contract and the presets requirement.
 - `error-handling`: the enum-coercion table rows for `DiagnosticPolicy`.
 - Code: `src/archivey/diagnostics.py`; references to `strict()` / `pedantic()` across
-  `src/`, `tests/`, `docs/`, `dev-docs/` and the other specs become `STRICT` / `PEDANTIC`.
+  `src/`, `tests/`, `docs/`, `new_docs/`, `dev-docs/` and the other specs become
+  `STRICT` / `PEDANTIC`.
