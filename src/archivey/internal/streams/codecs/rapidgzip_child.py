@@ -90,7 +90,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     TELL_COMPRESSED,
     read_exact_or_none,
 )
-from archivey.internal.streams.decompressor_stream import SeekPoint
+from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
 _WORKER = Path(__file__).with_name("rapidgzip_worker.py")
@@ -612,7 +612,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         elif is_crash(returncode) and truncated:
             cls = TruncatedError
             message = (
-                f"{label} stream is truncated: the rapidgzip decoder process aborted "
+                f"{truncated_message(label)}: the rapidgzip decoder process aborted "
                 f"on it ({how}{reason})"
             )
         elif is_crash(returncode):

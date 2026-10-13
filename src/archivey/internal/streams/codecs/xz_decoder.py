@@ -58,6 +58,7 @@ from archivey.internal.streams.decompressor_stream import (
     build_index_backwards,
     damaged_stream_error,
     near_stream_magic,
+    truncated_message,
 )
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
@@ -1355,7 +1356,7 @@ class _HeadInput:
 
     def take(self, n: int) -> bytes:
         if not self.fill(n):
-            raise TruncatedError("XZ stream is truncated")
+            raise TruncatedError(truncated_message("XZ"))
         taken = bytes(self.pending[:n])
         del self.pending[:n]
         return taken
@@ -1363,7 +1364,7 @@ class _HeadInput:
     def take_all(self) -> bytes:
         """Everything held, or the next read when nothing is; truncated at the end."""
         if not self.pending and not self.fill(1):
-            raise TruncatedError("XZ stream is truncated")
+            raise TruncatedError(truncated_message("XZ"))
         taken = bytes(self.pending)
         self.pending.clear()
         return taken
@@ -1418,7 +1419,7 @@ def _skip_index_and_footer(source: _HeadInput) -> None:
     run = 0  # continuation bytes since the last MBI ended
     while left:
         if not source.pending and not source.fill(1):
-            raise TruncatedError("XZ stream is truncated")
+            raise TruncatedError(truncated_message("XZ"))
         # ``left`` MBIs take at least ``left`` bytes: this slice is all index.
         marks = _mbi_marks(source.pending[:left])
         if _MBI_TOO_LONG in b"C" * run + marks:

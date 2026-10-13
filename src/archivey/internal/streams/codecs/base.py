@@ -1,5 +1,7 @@
 """The pieces every codec shares: the :class:`Codec` ids, :class:`CodecParams`, the
-:class:`StreamCodec` base class, and helpers that read a source without moving it.
+:class:`StreamCodec` base class, helpers that read a source without moving it, and the
+format values several codecs must agree on (the zlib ``wbits``, the gzip magic, the bzip2
+stream header).
 """
 
 from __future__ import annotations
@@ -215,9 +217,13 @@ RAW_DEFLATE_WBITS = -zlib.MAX_WBITS
 GZIP_WBITS = 16 + zlib.MAX_WBITS
 # The first two bytes of every gzip member (RFC 1952 ID1 and ID2).
 GZIP_MAGIC = b"\x1f\x8b"
-# A bzip2 stream header: ``BZh`` and the block-size digit 1 to 9.
+# A bzip2 stream header: ``BZh`` and the block-size digit 1 to 9. It must accept the same
+# bytes as ``bzip2_codec._BZIP2_MAGIC`` (the ``_BZIP2_STREAMS`` magic that decides whether
+# the standard library reads a further stream): the end handover
+# (``_first_trailing_byte``) and the layout walk (``_bzip2_stream_starts``) rely on the
+# two agreeing. The rapidgzip format gate in ``zlib_codec`` reads it too, so a change
+# made for that gate moves what the two walks accept.
 BZIP2_HEADER = re.compile(rb"BZh[1-9]")
-BZIP2_HEADER_LEN = 4
 
 # A frame, or a skippable frame (magic 0x184D2A50 to 0x184D2A5F), for both.
 _SKIPPABLE_FRAME = (range(0x50, 0x60), b"\x2a", b"\x4d", b"\x18")

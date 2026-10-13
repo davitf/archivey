@@ -29,7 +29,6 @@ from archivey.internal.streams.archive_stream import (
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     BZIP2_HEADER,
-    BZIP2_HEADER_LEN,
     Codec,
     CodecParams,
     CodecSource,
@@ -115,9 +114,12 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
 
 
 # What may start a further stream after one ends, so a concatenated file reads whole.
-# _BZIP2_HEADER must accept the same bytes.
+# ``base.BZIP2_HEADER`` must accept the same bytes: the end handover and the layout walk
+# rely on the two agreeing.
 _BZIP2_MAGIC = (b"B", b"Z", b"h", b"123456789")
 _BZIP2_STREAMS = stream_magic(_BZIP2_MAGIC)
+# The bytes a stream header takes, one per ``_BZIP2_MAGIC`` position.
+_BZIP2_HEADER_LEN = len(_BZIP2_MAGIC)
 
 
 # Nothing starts a further stream: what follows the first one is past the data.
@@ -455,7 +457,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                         # shorter than a stream header, waits for the next chunk. An
                         # empty ``chunk`` means the end of the source: ``rest`` cannot
                         # become a whole stream, so it is reported.
-                        short = len(rest) < BZIP2_HEADER_LEN
+                        short = len(rest) < _BZIP2_HEADER_LEN
                         if chunk and (short or _starts_empty_bzip2_stream(rest)):
                             held = rest
                             offset += skipped
@@ -680,12 +682,12 @@ def _bzip2_stream_starts(view: BinaryIO, start: int, bit: int) -> bool:
     begins at byte ``start``, after nothing but empty streams."""
     if bit % 8:
         return False
-    header = bit // 8 - BZIP2_HEADER_LEN
+    header = bit // 8 - _BZIP2_HEADER_LEN
     if header < start or header - start > _BZIP2_LAYOUT_MAX_BETWEEN:
         return False
     view.seek(start)
-    between = view.read(header - start + BZIP2_HEADER_LEN)
-    if len(between) != header - start + BZIP2_HEADER_LEN:
+    between = view.read(header - start + _BZIP2_HEADER_LEN)
+    if len(between) != header - start + _BZIP2_HEADER_LEN:
         return False
     return (
         _run_end(_EMPTY_BZIP2_STREAM_RUN, between[: header - start]) == header - start
@@ -757,9 +759,6 @@ _EMPTY_BZIP2_STREAM_BYTES = (
     + re.escape(_EMPTY_BZIP2_TEMPLATE[4:])
 )
 _EMPTY_BZIP2_STREAM = re.compile(_EMPTY_BZIP2_STREAM_BYTES)
-# A stream header (``BZIP2_HEADER``) must accept the same bytes as _BZIP2_STREAMS, which
-# decides whether the standard library reads a further stream: the end handover and the
-# layout walk rely on the two agreeing.
 _EMPTY_BZIP2_STREAM_RUN = re.compile(rb"(?:" + _EMPTY_BZIP2_STREAM_BYTES + rb")*")
 _ZERO_RUN = re.compile(rb"\x00*")
 

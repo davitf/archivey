@@ -37,7 +37,10 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import (
+    _StreamChecksumError,
+    truncated_message,
+)
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -402,7 +405,7 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
     if isinstance(exc, (ValueError, RuntimeError)) and (
         "End of file encountered" in text or "Unexpected end of file" in text
     ):
-        return TruncatedError(f"{label} stream is truncated (rapidgzip): {exc!r}")
+        return TruncatedError(f"{truncated_message(label)} (rapidgzip): {exc!r}")
     shared = _translate_rapidgzip_shared(
         exc, f"{label} stream (rapidgzip)", "rapidgzip"
     )

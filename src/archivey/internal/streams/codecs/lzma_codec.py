@@ -47,6 +47,7 @@ from archivey.internal.streams.decompressor_stream import (
     Decoder,
     DecompressorStream,
     SeekPoint,
+    truncated_message,
 )
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -567,6 +568,10 @@ _LZMA_EMPTY_STREAM_MAX = 16
 # asked of them (_LzmaToSizeDecoder._check_range_coder_end).
 _LZMA_ZEROS = b"\x00" * 16
 _LZMA_ZEROS_OUTPUT = 64
+# The error when an LZMA2 stream reaches its declared size with no end marker after it.
+_LZMA2_NO_END_MARKER = (
+    f"{truncated_message('LZMA2')}: no end marker after its declared size"
+)
 
 # _LzmaToSizeDecoder's states: decoding; output at the declared size, looking for an
 # end marker in the input left; an end marker before that size; settled.
@@ -666,9 +671,7 @@ class _LzmaToSizeDecoder(BaseDecoder):
         if self._decomp.eof:
             ok = not more and len(self._decomp.unused_data) >= len(_LZMA_ZEROS)
         elif self._lzma2:
-            self._pending_error = TruncatedError(
-                "LZMA2 stream is truncated: no end marker after its declared size"
-            )
+            self._pending_error = TruncatedError(_LZMA2_NO_END_MARKER)
             self._state = _DONE
             return
         else:
@@ -758,9 +761,7 @@ class _LzmaToSizeDecoder(BaseDecoder):
             if self._empty is not None:
                 self._finish_empty()
             elif self._lzma2:
-                self._pending_error = TruncatedError(
-                    "LZMA2 stream is truncated: no end marker after its declared size"
-                )
+                self._pending_error = TruncatedError(_LZMA2_NO_END_MARKER)
                 self._state = _DONE
             else:
                 # Input after the output's end that holds no end marker.
