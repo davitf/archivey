@@ -793,7 +793,9 @@ overwrite policy have accepted it), the system SHALL refuse it with the per-memb
 `ResourceLimitError` when its `size` exceeds both `ratio_activation_threshold` and
 `max_ratio * compressed_size` (only when both are known and `compressed_size` is
 greater than zero). The refusal is member-scoped, as the measured per-member check's
-is, and the member has no temp file and adds no bytes to any counter.
+is, and the member has no temp file and adds no bytes to any counter. When the orphan pass
+writes an excluded hard-link source's content at a link's path, the source's sizes are
+the ones checked.
 
 For a member that delivers its whole recorded `size`, this is the verdict the measured
 check would reach after decoding past the threshold. A member whose data stops short

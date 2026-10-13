@@ -698,6 +698,7 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_recorded_size_leaves_the_archive_wide_ratio_to_count`,
 `::test_zip_bomb_member_is_refused_before_any_byte_is_written`,
 `::test_7z_and_rar_bomb_members_are_refused_before_any_byte_is_written`,
+`::test_orphan_hardlink_source_is_refused_from_its_recorded_size`,
 `::test_recorded_size_check_runs_on_a_dry_run`,
 `::test_recorded_size_check_skips_members_the_run_does_not_decode`,
 `::test_forged_recorded_size_fails_only_its_member`;

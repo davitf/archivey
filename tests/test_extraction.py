@@ -1579,36 +1579,64 @@ def test_zip_bomb_member_is_refused_before_any_byte_is_written(tmp_path: Path) -
     assert not (dest / "bomb.bin").exists()
 
 
-@pytest.mark.parametrize(
-    ("tool", "args"),
-    [
-        ("7z", ["a", "-bd", "-bso0", "-ms=off", "bomb.7z"]),
-        ("rar", ["a", "-inul", "bomb.rar"]),
-    ],
-)
-def test_7z_and_rar_bomb_members_are_refused_before_any_byte_is_written(
-    tmp_path: Path, tool: str, args: list[str]
-) -> None:
-    exe = shutil.which(tool)
+_RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
+
+
+def _bomb_7z(tmp_path: Path) -> tuple[Path, str, str]:
+    exe = shutil.which("7z")
     if exe is None:
-        pytest.skip(f"{tool} not installed")
+        pytest.skip("7z not installed")
     work = tmp_path / "in"
     work.mkdir()
     (work / "small.txt").write_bytes(b"hello")
     (work / "bomb.bin").write_bytes(b"\x00" * (8 * 2**20))
-    subprocess.run([exe, *args, "small.txt", "bomb.bin"], cwd=work, check=True)
+    subprocess.run(
+        [exe, "a", "-bd", "-bso0", "-ms=off", "bomb.7z", "small.txt", "bomb.bin"],
+        cwd=work,
+        check=True,
+    )
+    return work / "bomb.7z", "bomb.bin", "small.txt"
+
+
+def _bomb_rar(tmp_path: Path) -> tuple[Path, str, str]:
+    # Committed, so the leg runs wherever unrar is installed (no rar writer needed).
+    # prefix.bin records 1 MiB from 91 bytes.
+    return _RAR_FIXTURES / "seek_respawn_solid__.rar", "prefix.bin", "tail.txt"
+
+
+@pytest.mark.parametrize("build", [_bomb_7z, _bomb_rar], ids=["7z", "rar"])
+def test_7z_and_rar_bomb_members_are_refused_before_any_byte_is_written(
+    tmp_path: Path, build
+) -> None:
+    src, bomb, small = build(tmp_path)
     written: list[int] = []
     report = open_and_extract(
-        work / args[-1],
+        src,
         tmp_path / "out",
         limits=_TIGHT_RATIO,
         on_error=OnError.CONTINUE,
         on_progress=lambda p: written.append(p.bytes_written),
     )
     by_name = {r.member.name: r for r in report.results}
-    assert "from recorded sizes" in str(by_name["bomb.bin"].error)
-    assert by_name["small.txt"].status is ExtractionStatus.EXTRACTED
-    assert max(written) == len(b"hello")
+    assert "from recorded sizes" in str(by_name[bomb].error)
+    assert by_name[small].status is ExtractionStatus.EXTRACTED
+    assert max(written) == by_name[small].member.size
+
+
+def test_orphan_hardlink_source_is_refused_from_its_recorded_size(
+    tmp_path: Path,
+) -> None:
+    # Extracting only a hard link writes its excluded source's content at the link's
+    # path, so the source's recorded sizes decide (8 bytes from 5 here).
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError, match="from recorded sizes"):
+        open_and_extract(
+            _RAR_FIXTURES / "hardlinks_solid__.rar",
+            dest,
+            members=["hardlink_to_file2.txt"],
+            limits=ExtractionLimits(max_ratio=1.0, ratio_activation_threshold=1),
+        )
+    assert not (dest / "hardlink_to_file2.txt").exists()
 
 
 def test_recorded_size_check_runs_on_a_dry_run(tmp_path: Path) -> None:
