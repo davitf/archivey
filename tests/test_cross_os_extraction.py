@@ -1000,6 +1000,7 @@ def test_filesystem_calls_take_the_long_path_form(
             assert path is None or not str(path).startswith("/./")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in prefix is POSIX-only")
 def test_long_path_errors_name_the_plain_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1085,10 +1086,14 @@ def _zip(specs: list[tuple[str, str, bytes | str | None]]) -> bytes:
         for kind, name, payload in specs:
             if kind == "dir":
                 info = zipfile.ZipInfo(name + "/")
+                info.create_system = 3
                 info.external_attr = (stat.S_IFDIR | 0o755) << 16
                 zf.writestr(info, b"")
                 continue
             info = zipfile.ZipInfo(name)
+            # Unix, so the mode in external_attr counts: on Windows ZipInfo defaults
+            # to MS-DOS, and the link would read back as a file.
+            info.create_system = 3
             if kind == "sym":
                 assert isinstance(payload, str)
                 info.external_attr = (stat.S_IFLNK | 0o777) << 16
@@ -1238,7 +1243,8 @@ def _alias_after_first(
     is written, as an 8.3 short name is on a volume that has them."""
 
     def make_alias(member: ArchiveMember) -> ArchiveMember:
-        if member.name == alias:
+        # On a Windows volume that makes 8.3 names the alias is there already.
+        if member.name == alias and not os.path.lexists(dest / alias):
             os.link(dest / first, dest / alias)
         return member
 
