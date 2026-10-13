@@ -257,17 +257,80 @@ def test_default_reader_still_refuses(
         it.close()
 
 
-def test_other_passes_still_refuse_inside_the_loop(tmp_path: Path) -> None:
-    """A second pass or an extraction still cannot start inside the loop."""
-    path = _zip(tmp_path)
+@pytest.mark.parametrize("make", ALL_FORMATS)
+def test_passes_side_by_side(tmp_path: Path, make: Callable[[Path], Path]) -> None:
+    """Two passes advance in lockstep on one thread, and a third runs on another."""
+    path = make(tmp_path)
+    expected = _expected(path)
+
+    def drain(it):  # noqa: ANN001, ANN202 - test helper
+        return {m.name: s.read() for m, s in it if s is not None and m.is_current}
+
+    with open_archive(path, concurrent_members=True) as reader:
+        reader.members()
+        first: dict[str, bytes] = {}
+        second: dict[str, bytes] = {}
+        other = reader.stream_members()
+        for member, stream in reader.stream_members():
+            paired, paired_stream = next(other)
+            assert paired is member
+            if stream is not None and member.is_current:
+                assert paired_stream is not None
+                # Interleaved reads: the two passes' streams are independent.
+                first[member.name] = stream.read(3)
+                second[member.name] = paired_stream.read()
+                first[member.name] += stream.read()
+                assert _in_thread(lambda: drain(reader.stream_members())) == expected
+        assert next(other, None) is None
+    assert first == expected
+    assert second == expected
+
+
+@pytest.mark.parametrize("make", LISTED_BY_THE_PASS)
+def test_second_pass_refused_until_the_listing_is_complete(
+    tmp_path: Path, make: Callable[[Path], Path]
+) -> None:
+    path = make(tmp_path)
     with open_archive(path, concurrent_members=True) as reader:
         it = reader.stream_members()
         next(it)
         with pytest.raises(ArchiveyUsageError, match="already active"):
             next(reader.stream_members())
+        it.close()
+
+
+def test_extraction_still_refused_inside_the_loop(tmp_path: Path) -> None:
+    path = _zip(tmp_path)
+    with open_archive(path, concurrent_members=True) as reader:
+        it = reader.stream_members()
+        next(it)
         with pytest.raises(ArchiveyUsageError, match="already active"):
             reader.extract_all(tmp_path / "out")
+        side = reader.stream_members()
+        next(side)
+        # The first pass ends; the one beside it still holds the reader.
         it.close()
+        with pytest.raises(ArchiveyUsageError, match="already active"):
+            reader.extract_all(tmp_path / "out")
+        assert reader.read("c.txt") == b"gamma"
+        side.close()
+        reader.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "c.txt").read_bytes() == b"gamma"
+
+
+def test_close_winds_down_every_suspended_pass(tmp_path: Path) -> None:
+    path = _zip(tmp_path)
+    reader = open_archive(path, concurrent_members=True)
+    first = reader.stream_members()
+    second = reader.stream_members()
+    _, first_stream = next(first)
+    _, second_stream = next(second)
+    reader.close()
+    assert first_stream is not None and first_stream.closed
+    assert second_stream is not None and second_stream.closed
+    for it in (first, second):
+        with pytest.raises(ArchiveyUsageError):
+            next(it)
 
 
 def test_close_inside_the_loop_after_random_calls(tmp_path: Path) -> None:
@@ -353,7 +416,7 @@ def _close_waiting_on_a_worker(
         state.set_suspended(token, False)
     state.release_worker(worker)  # type: ignore[arg-type]
     closer.join()
-    return state, [] if state._pass_wind_down is None else ["pass"], errors
+    return state, ["pass"] if state._pass_wind_down else [], errors
 
 
 def test_close_waits_for_the_worker_then_winds_the_pass_down() -> None:
@@ -412,3 +475,41 @@ def test_7z_link_opened_from_another_thread_leaves_the_pass_decoder_alone() -> N
                 passed[member.name] = stream.read()
     assert followed
     assert passed == expected
+
+
+def test_close_takes_every_suspended_pass_closer() -> None:
+    state = _state()
+    ran: list[str] = []
+    tokens = []
+    for _ in range(2):
+        tokens.append(state.acquire_pass("stream_members"))
+        state.set_suspended(tokens[-1], True)
+    for i, token in enumerate(tokens):
+
+        def closer(i: int = i) -> None:
+            ran.append(f"pass {i}")
+            raise ValueError(f"pass {i}")
+
+        state.set_pass_closer(token, closer)
+        state.set_suspended(token, True)
+    state.mark_reader_closed()
+    wind_down = state.take_pass_wind_down()
+    assert wind_down is not None
+    with pytest.raises(ExceptionGroup) as info:
+        wind_down()
+    assert ran == ["pass 0", "pass 1"]
+    assert [str(e) for e in info.value.exceptions] == ["pass 0", "pass 1"]
+    assert state.take_pass_wind_down() is None
+
+
+def test_ending_the_first_pass_hands_the_reader_to_the_one_beside_it() -> None:
+    state = _state()
+    first = state.acquire_pass("stream_members")
+    state.set_suspended(first, True)
+    second = state.acquire_pass("stream_members")
+    state.set_suspended(second, True)
+    state.release_pass(first)
+    with pytest.raises(ArchiveyUsageError, match="'stream_members'"):
+        state.acquire_pass("extract_all")
+    state.release_pass(second)
+    state.release_pass(state.acquire_pass("extract_all"))
