@@ -410,8 +410,8 @@ that is right on one format and wrong on another breaks callers silently.
   (2026-09-29, "Why these aren't on by default" in the user docs).
 - Under `concurrent_members=True`, `open`, `read`, `get` and `members()` work during a
   `stream_members` pass (2026-10-13). Until passes can share one walk, they still raise
-  on an archive whose listing that pass is still building, such as a TAR read for the
-  first time; that gap is open.
+  on an archive whose listing that pass is still building (TAR, 7z and solid RAR, until
+  `members()` has run or a pass has reached the end); that gap is open.
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
