@@ -629,14 +629,16 @@ def _refused(codec: Codec, written: bytes, cap: int) -> bool:
 
 
 @pytest.mark.parametrize(
-    ("cap_delta", "code"),
+    ("cap_delta", "code", "refused"),
     [
-        pytest.param(0, 20, id="exactly-the-cap"),
-        pytest.param(-1, 20, id="one-byte-over-the-cap"),
-        pytest.param(0, 21, id="next-xz-size"),
+        pytest.param(0, 20, False, id="exactly-the-cap"),
+        pytest.param(-1, 20, False, id="one-byte-over-the-cap"),
+        pytest.param(0, 21, True, id="next-xz-size"),
     ],
 )
-def test_lzma_alone_boundary_matches_xz(cap_delta: int, code: int) -> None:
+def test_lzma_alone_boundary_matches_xz(
+    cap_delta: int, code: int, refused: bool
+) -> None:
     """``.lzma`` and xz refuse the same declared dictionary under the same cap.
 
     Both go through liblzma's ``memlimit`` with the same overhead allowance. What
@@ -653,8 +655,8 @@ def test_lzma_alone_boundary_matches_xz(cap_delta: int, code: int) -> None:
     alone = _alone_stream(_LZMA_MEMBER, dict_size)
     xz_refused = _refused(Codec.XZ, xz, cap)
     assert _refused(Codec.LZMA_ALONE, alone, cap) == xz_refused
-    # The cases sit well inside or well outside the allowance on any liblzma build.
-    assert xz_refused == (dict_size > 4 * 2**20)
+    # Each case sits well inside or well outside the allowance on any liblzma build.
+    assert xz_refused is refused
 
 
 def test_lzma_alone_refuses_on_read_not_on_open() -> None:

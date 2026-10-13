@@ -195,7 +195,8 @@ padding only where they run to the end of the file; a stream after them is trail
 (§6). A backward seek decodes again from the start.
 
 **Dictionary caps.** Each format's declared dictionary is compared with
-`DecoderLimits.max_decoder_memory` before a decoder is built:
+`DecoderLimits.max_decoder_memory` before the dictionary is allocated: inside liblzma for
+xz and LZMA Alone, before the decoder is built for lzip:
 
 - **xz** and **LZMA Alone**: liblzma reads the declared dictionary (each xz block header
   declares its own, each `.lzma` stream header one), so the decompressor is built with

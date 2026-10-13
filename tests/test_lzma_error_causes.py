@@ -106,7 +106,8 @@ def test_each_liblzma_cause_maps_to_its_own_error(
 
 
 def test_a_memlimit_refusal_names_the_cap_when_given_the_limits() -> None:
-    """The cap message serves xz and .lzma alike, so it names no format."""
+    """The cap message serves xz and .lzma alike: the sentence the translator writes
+    names no format, and the caller's context names the path that refused."""
     error = lzma.LZMAError("Memory usage limit exceeded")
     translated = lzma_error_to_archivey(
         error, "ctx", DecoderLimits(max_decoder_memory=4096)

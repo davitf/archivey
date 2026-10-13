@@ -265,7 +265,7 @@ How sure each codec is that a stream ended early differs a great deal; each page
 row, and §3 has the table.
 
 **Decoder memory.** `DecoderLimits.max_decoder_memory` (2 GiB by default) is checked
-against a dictionary size the stream declares before the decoder is built: xz per block,
+against a dictionary size the stream declares before the dictionary is allocated: xz per block,
 through liblzma's `memlimit`; lzip per member, whose format caps the dictionary at 512 MiB
 anyway; LZMA Alone per stream, through liblzma's `memlimit` too, refused on the first read
 so the refusal carries the probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3);
