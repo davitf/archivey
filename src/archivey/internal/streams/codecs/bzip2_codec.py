@@ -28,6 +28,8 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
+    BZIP2_HEADER,
+    BZIP2_HEADER_LEN,
     Codec,
     CodecParams,
     CodecSource,
@@ -64,6 +66,7 @@ from archivey.internal.streams.decompressor_stream import (
     input_after_end_error,
     near_stream_magic,
     report_trailing_data,
+    truncated_message,
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
@@ -452,14 +455,14 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                         # shorter than a stream header, waits for the next chunk. An
                         # empty ``chunk`` means the end of the source: ``rest`` cannot
                         # become a whole stream, so it is reported.
-                        short = len(rest) < _BZIP2_HEADER_LEN
+                        short = len(rest) < BZIP2_HEADER_LEN
                         if chunk and (short or _starts_empty_bzip2_stream(rest)):
                             held = rest
                             offset += skipped
                             continue
                         if not rest:
                             return None
-                        header = _BZIP2_HEADER.match(rest) is not None
+                        header = BZIP2_HEADER.match(rest) is not None
                         damaged = near_stream_magic(rest, _BZIP2_MAGIC)
                         return offset + skipped, header or damaged
                     padded = True
@@ -677,16 +680,16 @@ def _bzip2_stream_starts(view: BinaryIO, start: int, bit: int) -> bool:
     begins at byte ``start``, after nothing but empty streams."""
     if bit % 8:
         return False
-    header = bit // 8 - _BZIP2_HEADER_LEN
+    header = bit // 8 - BZIP2_HEADER_LEN
     if header < start or header - start > _BZIP2_LAYOUT_MAX_BETWEEN:
         return False
     view.seek(start)
-    between = view.read(header - start + _BZIP2_HEADER_LEN)
-    if len(between) != header - start + _BZIP2_HEADER_LEN:
+    between = view.read(header - start + BZIP2_HEADER_LEN)
+    if len(between) != header - start + BZIP2_HEADER_LEN:
         return False
     return (
         _run_end(_EMPTY_BZIP2_STREAM_RUN, between[: header - start]) == header - start
-        and _BZIP2_HEADER.fullmatch(between[header - start :]) is not None
+        and BZIP2_HEADER.fullmatch(between[header - start :]) is not None
     )
 
 
@@ -754,11 +757,9 @@ _EMPTY_BZIP2_STREAM_BYTES = (
     + re.escape(_EMPTY_BZIP2_TEMPLATE[4:])
 )
 _EMPTY_BZIP2_STREAM = re.compile(_EMPTY_BZIP2_STREAM_BYTES)
-# A stream header: ``BZh`` and the block-size digit. It must accept the same bytes as
-# _BZIP2_STREAMS, which decides whether the standard library reads a further stream: the
-# end handover and the layout walk rely on the two agreeing.
-_BZIP2_HEADER = re.compile(rb"BZh[1-9]")
-_BZIP2_HEADER_LEN = 4
+# A stream header (``BZIP2_HEADER``) must accept the same bytes as _BZIP2_STREAMS, which
+# decides whether the standard library reads a further stream: the end handover and the
+# layout walk rely on the two agreeing.
 _EMPTY_BZIP2_STREAM_RUN = re.compile(rb"(?:" + _EMPTY_BZIP2_STREAM_BYTES + rb")*")
 _ZERO_RUN = re.compile(rb"\x00*")
 
@@ -847,9 +848,9 @@ class Bzip2Codec(StreamCodec):
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
             return CorruptionError(f"bzip2 stream is corrupt: {exc!r}")
-        if isinstance(exc, (EOFError, ValueError)):
-            return TruncatedError(f"bzip2 stream is truncated: {exc!r}")
-        return None
+        if isinstance(exc, ValueError):
+            return TruncatedError(f"{truncated_message('bzip2')}: {exc!r}")
+        return self._eof_truncation(exc, "bzip2")
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
         if _bzip2_uses_accelerator(config):

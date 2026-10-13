@@ -7,6 +7,8 @@ from __future__ import annotations
 import io
 import lzma
 import os
+import re
+import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -29,6 +31,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -206,6 +209,16 @@ def _stream_prefix(source: CodecSource, size: int) -> bytes:
         return f.read(size)
 
 
+# zlib's ``wbits`` for raw DEFLATE (no header or trailer; ZIP, 7z and the resume
+# decoders) and for a gzip member (header, then CRC-32 and ISIZE checked at its end).
+RAW_DEFLATE_WBITS = -zlib.MAX_WBITS
+GZIP_WBITS = 16 + zlib.MAX_WBITS
+# The first two bytes of every gzip member (RFC 1952 ID1 and ID2).
+GZIP_MAGIC = b"\x1f\x8b"
+# A bzip2 stream header: ``BZh`` and the block-size digit 1 to 9.
+BZIP2_HEADER = re.compile(rb"BZh[1-9]")
+BZIP2_HEADER_LEN = 4
+
 # A frame, or a skippable frame (magic 0x184D2A50 to 0x184D2A5F), for both.
 _SKIPPABLE_FRAME = (range(0x50, 0x60), b"\x2a", b"\x4d", b"\x18")
 
@@ -351,6 +364,15 @@ class StreamCodec:
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``."""
+        return None
+
+    @staticmethod
+    def _eof_truncation(exc: Exception, label: str) -> TruncatedError | None:
+        """The :class:`TruncatedError` for an ``EOFError`` from a ``label`` stream's
+        decoder, or ``None`` for any other exception. A :meth:`translate` calls it for
+        its ``EOFError`` arm, so every codec words a truncation the same way."""
+        if isinstance(exc, EOFError):
+            return TruncatedError(f"{truncated_message(label)}: {exc!r}")
         return None
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:

@@ -11,10 +11,12 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     ArchiveyError,
-    TruncatedError,
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs.base import (
+    BZIP2_HEADER,
+    GZIP_MAGIC,
+    RAW_DEFLATE_WBITS,
     Codec,
     CodecParams,
     CodecSource,
@@ -57,9 +59,9 @@ def _rapidgzip_may_read_as_another_format(source: CodecSource) -> bool:
     """
     prefix = _stream_prefix(source, 4)
     return (
-        prefix[:2] == b"\x1f\x8b"
+        prefix.startswith(GZIP_MAGIC)
         or _zlib_header_plausible(prefix[:2])
-        or (len(prefix) == 4 and prefix[:3] == b"BZh" and prefix[3] in b"123456789")
+        or BZIP2_HEADER.match(prefix) is not None
     )
 
 
@@ -485,9 +487,7 @@ class _ZlibErrorCodec(_DeflateFamilyCodec):
         if isinstance(exc, zlib.error):
             # A zlib stream's Adler-32 failing is a whole-stream checksum.
             return zlib_error(exc, self._label)
-        if isinstance(exc, EOFError):
-            return TruncatedError(f"{self._label} stream is truncated: {exc!r}")
-        return None
+        return self._eof_truncation(exc, self._label)
 
 
 class DeflateCodec(_ZlibErrorCodec):
@@ -499,7 +499,7 @@ class DeflateCodec(_ZlibErrorCodec):
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         # Under rapidgzip it is also the takeover's decoder, so bytes after the stream
         # that rapidgzip fails on are refused there too (refuse_input_after_end).
-        return _stdlib_zlib(source, config, wbits=-15)
+        return _stdlib_zlib(source, config, wbits=RAW_DEFLATE_WBITS)
 
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
