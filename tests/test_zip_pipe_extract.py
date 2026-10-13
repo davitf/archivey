@@ -94,17 +94,22 @@ def _extract(
 
 
 def _both(
-    data: bytes, tmp_path: Path, **options: object
+    data: bytes, tmp_path: Path, *, times: bool = True, **options: object
 ) -> tuple[
     list[tuple[str, ExtractionStatus, str | None]], dict[str, tuple[object, ...]]
 ]:
     """Extract ``data`` from a file and from a pipe; assert both end the same, and
-    return the results and the tree."""
+    return the results and the tree. ``times=False`` leaves the times out, for a
+    destination the caller seeded: a folder of theirs gets the time of the run."""
     from_file = _extract(data, tmp_path / "file", piped=False, **options)
     from_pipe = _extract(data, tmp_path / "pipe", piped=True, **options)
     tree = _tree(tmp_path / "file")
+    piped_tree = _tree(tmp_path / "pipe")
+    if not times:
+        tree = {name: entry[:2] for name, entry in tree.items()}
+        piped_tree = {name: entry[:2] for name, entry in piped_tree.items()}
     assert from_pipe == from_file
-    assert _tree(tmp_path / "pipe") == tree
+    assert piped_tree == tree
     return from_file, tree
 
 
@@ -327,7 +332,12 @@ def test_a_member_the_list_leaves_out_in_the_end_keeps_the_callers_file(
     for where in ("file", "pipe"):
         _seed(tmp_path / where, {"x/y": b"MINE"})
     results, tree = _both(
-        data, tmp_path, members=["x/y"], overwrite=overwrite, on_error="continue"
+        data,
+        tmp_path,
+        times=False,
+        members=["x/y"],
+        overwrite=overwrite,
+        on_error="continue",
     )
     assert results == []
     assert tree["x/y"][0] == b"MINE"
@@ -345,6 +355,7 @@ def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
         results, tree = _both(
             _dos_docs(),
             tmp_path,
+            times=False,
             members=["docs/r.txt"],
             overwrite="replace",
             on_error="continue",
@@ -362,7 +373,7 @@ def test_a_member_the_list_takes_in_the_end_replaces_the_callers_file(
     for where in ("file", "pipe"):
         _seed(tmp_path / where, {"docs/r.txt": b"MINE"})
     results, tree = _both(
-        _dos_docs(), tmp_path, members=["docs/r.txt"], overwrite=overwrite
+        _dos_docs(), tmp_path, times=False, members=["docs/r.txt"], overwrite=overwrite
     )
     expected = b"read me" if overwrite == "replace" else b"MINE"
     assert tree["docs/r.txt"][0] == expected
@@ -379,6 +390,7 @@ def test_a_predicate_that_drops_the_member_in_the_end_keeps_the_callers_file(
     results, tree = _both(
         _link_zip("a.txt"),
         tmp_path,
+        times=False,
         members=lambda member: member.type is MemberType.FILE,
         overwrite="replace",
     )
