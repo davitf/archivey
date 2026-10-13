@@ -675,8 +675,10 @@ def _install_pycdlib_path_table_bound() -> None:
     into one ``PathTableRecord`` per record, at least 8 bytes each, about 29 times
     the size in memory; it does this twice per tree (little- and big-endian), before
     it walks any directory. The source bounds the read to the image, not the parse.
-    A table that runs past the end of the image is ``CorruptionError``, as pycdlib's
-    own parse of the short read would have it, and the size is weighed against
+    A table that runs past the end of the image is ``TruncatedError`` when it ends
+    inside the volume space the image declares (the file is cut short, as
+    :func:`_cut_short` decides for pycdlib's own failures), else ``CorruptionError``;
+    either way it is refused before the read. The size is weighed against
     ``max_metadata_bytes`` with the rest of the image. A second wrapper, on
     ``PathTableRecord.parse``, counts each entry against ``max_members`` as pycdlib
     parses it (:meth:`_ParseBudget.add_path_table_entry`). Installed once and
@@ -796,6 +798,16 @@ def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
     cdfp.seek(position)
     start = extent * block_size
     if start + ptr_size > image_length:
+        pvd = getattr(iso, "pvd")
+        volume_end = cast(int, pvd.space_size) * block_size
+        if start + ptr_size <= volume_end:
+            # Inside the volume space the image declares: the file is cut short.
+            raise TruncatedError(
+                f"Error reading ISO image: the image ends before its path table at "
+                f"block {extent}, which declares {ptr_size} bytes; the image holds "
+                f"{max(0, image_length - start)} from there and its volume space "
+                f"declares {volume_end} bytes, the file {image_length}"
+            )
         raise CorruptionError(
             f"Error reading ISO image: the path table at block {extent} declares "
             f"{ptr_size} bytes and the image holds {max(0, image_length - start)} "
@@ -907,6 +919,66 @@ _install_pycdlib_udf_counter()
 _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
     (_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ()
 ) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
+
+# ECMA-119: the volume descriptors start at block 16 and are one 2048-byte sector each,
+# whatever the logical block size. In the primary descriptor, the volume space size (in
+# logical blocks) is a little-endian 32-bit field at byte 80, and the logical block size
+# a little-endian 16-bit field at byte 128.
+_DESCRIPTOR_SECTOR = 2048
+_FIRST_DESCRIPTOR = 16 * _DESCRIPTOR_SECTOR
+# How many descriptors are searched for the primary one. Real images put it first, or
+# after one boot record; this bounds the reads a crafted image can cause at an error.
+_MAX_DESCRIPTORS_SEARCHED = 64
+
+
+def _declared_length(fp: BinaryIO, image_length: int) -> int | None:
+    """How many bytes the image says it holds, when that is more than ``image_length``.
+
+    The volume space size of the primary volume descriptor, times its block size. When
+    the descriptor set itself runs past the end of the file, the end of the descriptor
+    that is cut. ``None`` when the image fits in the file, or has no primary descriptor
+    to say otherwise. ``fp``'s position is not kept.
+    """
+    for index in range(_MAX_DESCRIPTORS_SEARCHED):
+        start = _FIRST_DESCRIPTOR + index * _DESCRIPTOR_SECTOR
+        fp.seek(start)
+        sector = fp.read(_DESCRIPTOR_SECTOR)
+        if len(sector) < _DESCRIPTOR_SECTOR:
+            return start + _DESCRIPTOR_SECTOR
+        if sector[1:6] != b"CD001" or sector[0] == 255:  # not a descriptor, or the end
+            return None
+        if sector[0] == 1:  # the primary volume descriptor
+            (space_size,) = struct.unpack_from("<I", sector, 80)
+            (block_size,) = struct.unpack_from("<H", sector, 128)
+            declared = space_size * block_size
+            return declared if declared > image_length else None
+    return None
+
+
+def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
+    """``exc``, which pycdlib raised while opening the image, as a truncation, if it is one.
+
+    pycdlib reports a read that comes back short as an invalid image, or fails parsing
+    the short bytes, so its exception does not say whether the bytes were wrong or not
+    there. Two facts do. pycdlib's last read reached the end of the file: ``fp`` is at
+    or past it. And the end of the file comes before the end the image declares, and
+    not before where that read started: the descriptor set, or the volume space of the
+    primary descriptor, goes on past the file. A read that stopped inside the file
+    parsed bytes that are present, and a read from past the volume space followed a
+    wrong pointer; both stay ``CorruptionError``. Called with pycdlib's handle, inside
+    the handle guard.
+    """
+    position = fp.tell()
+    image_length = fp.seek(0, io.SEEK_END)
+    if position < image_length:
+        return None
+    declared = _declared_length(fp, image_length)
+    if declared is None or position > declared:
+        return None
+    return TruncatedError(
+        f"Error reading ISO image: the image ends before its own structures do: it "
+        f"declares {declared} bytes and the file holds {image_length} ({exc!r})"
+    )
 
 
 # Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
@@ -1546,6 +1618,11 @@ class IsoReader(BaseArchiveReader):
                     budget_token = _PARSE_BUDGET.set(budget)
                     try:
                         self._iso.open_fp(self._iso_fp)
+                    except _PYCDLIB_ERRORS as exc:
+                        truncated = _cut_short(self._iso_fp, exc)
+                        if truncated is None:
+                            raise
+                        raise truncated from exc
                     finally:
                         _PARSE_BUDGET.reset(budget_token)
                         _SYSTEM_USE_NOTES.reset(token)

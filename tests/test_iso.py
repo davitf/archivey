@@ -365,11 +365,13 @@ def _pycdlib_directory_cycle_image(
     return bytes(data)
 
 
-def test_corrupt_iso_raises() -> None:
-    # CD001 is present (so detection still picks ISO) but the volume descriptor is cut off,
-    # so pycdlib cannot parse it -> CorruptionError.
+def test_an_image_cut_inside_its_first_descriptor_is_truncated() -> None:
+    # CD001 is present (so detection still picks ISO) but the volume descriptor is cut
+    # off: the file ends before the image does.
+    from archivey.exceptions import TruncatedError
+
     truncated = _build_iso(rock_ridge=True, joliet=False)[:32780]
-    with raises_corruption_not_truncation():
+    with pytest.raises(TruncatedError, match="ends before"):
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
 
 
@@ -1672,6 +1674,180 @@ def test_a_truncated_image_lists_declared_sizes_and_reads_to_the_cut(
                 assert len(stream.read(available)) == available
                 with pytest.raises(TruncatedError, match="expected bytes"):
                     stream.read()
+
+
+def _three_file_image(*, udf: bool) -> bytes:
+    """Rock Ridge and Joliet, or UDF: a directory holding three 5 000-byte files."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    if udf:
+        iso.new(interchange_level=3, udf="2.60")
+        iso.add_directory("/D", udf_path="/d")
+    else:
+        iso.new(interchange_level=3, joliet=3, rock_ridge="1.09")
+        iso.add_directory("/D", rr_name="d", joliet_path="/d")
+    for index in range(3):
+        names = (
+            {"udf_path": f"/d/f{index}"}
+            if udf
+            else {"rr_name": f"f{index}", "joliet_path": f"/d/f{index}"}
+        )
+        data = bytes([ord("A") + index]) * 5000
+        iso.add_fp(io.BytesIO(data), len(data), f"/D/F{index}.;1", **names)
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def _iso_cut_points(*, udf: bool) -> dict[str, int]:
+    """Offsets inside each structure of ``_three_file_image``, read from the image.
+
+    Every structure lies inside the volume space the primary descriptor declares,
+    so an image cut at any of these offsets is shorter than it says it is.
+    """
+    import pycdlib
+
+    image = _three_file_image(udf=udf)
+    iso = pycdlib.PyCdlib()
+    iso.open_fp(io.BytesIO(image))
+    block = iso.logical_block_size
+    pvd = iso.pvd
+    root = pvd.root_directory_record().extent_location() * block
+    assert image[16 * block + 1 : 16 * block + 6] == b"CD001"
+    points = {
+        "primary-descriptor": 16 * block + 100,
+        "path-table-le": pvd.path_table_location_le * block + 4,
+        "path-table-be": pvd.path_table_location_be * block + 4,
+        # The ``.`` record's own 34 bytes, then its System Use area.
+        "root-directory-record": root + 10,
+        "root-system-use": root + 40,
+        "root-directory-padding": root + block // 2,
+    }
+    if udf:
+        assert image[18 * block + 1 : 18 * block + 6] == b"BEA01"
+        points["udf-volume-recognition"] = 18 * block + 100
+        # pycdlib reads the anchor in the volume's last block once the ISO 9660
+        # trees are parsed.
+        points["udf-last-anchor"] = (pvd.space_size - 1) * block + 10
+        points["udf-file-data"] = image.index(b"A" * 5000) + 100
+    else:
+        assert iso.joliet_vd is not None
+        assert image[17 * block] == 2  # the Joliet supplementary descriptor
+        assert image[18 * block] == 255  # the set terminator
+        points["joliet-descriptor"] = 17 * block + 100
+        points["at-descriptor-terminator"] = 18 * block
+        points["joliet-path-table"] = iso.joliet_vd.path_table_location_le * block + 4
+        points["joliet-root-directory"] = (
+            iso.joliet_vd.root_directory_record().extent_location() * block + 40
+        )
+        directory = iso.get_record(rr_path="/d").extent_location() * block
+        points["subdirectory"] = directory + 40
+    iso.close()
+    return points
+
+
+_SHARED_CUTS = (
+    "primary-descriptor",
+    "path-table-le",
+    "path-table-be",
+    "root-directory-record",
+    "root-system-use",
+    "root-directory-padding",
+)
+_RICH_CUTS = (
+    "joliet-descriptor",
+    "at-descriptor-terminator",
+    "joliet-path-table",
+    "joliet-root-directory",
+    "subdirectory",
+)
+_UDF_CUTS = ("udf-volume-recognition", "udf-last-anchor", "udf-file-data")
+
+
+@pytest.mark.parametrize(
+    ("udf", "point"),
+    [(False, name) for name in _SHARED_CUTS + _RICH_CUTS]
+    + [(True, name) for name in _SHARED_CUTS + _UDF_CUTS],
+)
+def test_an_image_cut_inside_its_metadata_is_truncated(udf: bool, point: str) -> None:
+    """An image that ends before a structure its own descriptors point to raises
+    ``TruncatedError`` at open, as TAR, RAR and 7z do for a cut header. It raised a
+    plain ``CorruptionError`` because pycdlib reports a short read as an invalid
+    image. A UDF image is refused at open even when the cut is in file data: pycdlib
+    reads the anchor in the volume's last block."""
+    from archivey.exceptions import TruncatedError
+
+    image = _three_file_image(udf=udf)
+    cut = _iso_cut_points(udf=udf)[point]
+    with pytest.raises(TruncatedError, match="ends before"):
+        open_archive(io.BytesIO(image[:cut]), format=ArchiveFormat.ISO)
+
+
+def test_every_cut_of_an_image_is_truncated_or_opens() -> None:
+    """A cut in each block of both images, up to the end of the last file's data:
+    the image opens, and a file the cut reaches raises ``TruncatedError`` on read, or
+    the open raises it. No cut is a plain ``CorruptionError``. (A UDF image cut inside
+    its last block, after every file, opens and reads whole: pycdlib parses the
+    anchor there from the bytes that are left.)"""
+    from archivey.exceptions import TruncatedError
+
+    for udf in (False, True):
+        image = _three_file_image(udf=udf)
+        data_end = image.index(b"C" * 5000) + 5000
+        for cut in range(16 * 2048 + 700, data_end, 2048):
+            try:
+                with open_archive(io.BytesIO(image[:cut])) as ar:
+                    for member in ar.members():
+                        if member.is_file:
+                            ar.read(member)
+            except TruncatedError:
+                continue
+            raise AssertionError(f"udf={udf}: the image cut at {cut} read whole")
+
+
+def _damage_primary_descriptor(image: bytearray, block: int) -> None:
+    image[16 * block + 6] = 2  # descriptor version, 1 in ECMA-119
+
+
+def _damage_directory_padding(image: bytearray, block: int) -> None:
+    (root,) = struct.unpack_from("<I", image, 16 * block + 156 + 2)
+    image[root * block + block - 1] = 0xFF  # past the last record: must be zero
+
+
+def _damage_path_table_size(image: bytearray, block: int) -> None:
+    # Larger than the whole volume space: a wrong size, not a cut image.
+    struct.pack_into("<I", image, 16 * block + 132, len(image) * 4)
+    struct.pack_into(">I", image, 16 * block + 136, len(image) * 4)
+
+
+def _damage_root_extent(image: bytearray, block: int) -> None:
+    # The root directory placed far past the volume space's end.
+    struct.pack_into("<I", image, 16 * block + 156 + 2, 0x00FFFFFF)
+    struct.pack_into(">I", image, 16 * block + 156 + 6, 0x00FFFFFF)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        _damage_primary_descriptor,
+        _damage_directory_padding,
+        _damage_path_table_size,
+        _damage_root_extent,
+    ],
+    ids=["primary-descriptor", "directory-padding", "path-table-size", "root-extent"],
+)
+def test_a_damaged_image_of_full_length_is_corruption_not_truncation(
+    damage: Callable[[bytearray, int], None],
+) -> None:
+    """The counterpart of the cut tests: the image holds every byte its volume space
+    declares, so a structure that does not parse, or that points past the end, is
+    damage. A pointer past the end of a full image is a wrong pointer, not a cut."""
+    image = bytearray(_three_file_image(udf=False))
+    damage(image, 2048)
+    with raises_corruption_not_truncation():
+        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
 
 
 def test_the_raw_directory_walk_crosses_sector_padding() -> None:

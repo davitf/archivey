@@ -603,7 +603,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - A truncated image opens as long as its directories survive, and lists the sizes its
   records declare. A file the cut reaches reads the bytes that survive and then raises
   `TruncatedError`; files before the cut read normally. A file whose declared length
-  cannot be recovered lists with `size` set to `None`.
+  cannot be recovered lists with `size` set to `None`. A cut that reaches the volume
+  descriptors, path tables or directories, or the last block of an image with UDF, makes
+  `open_archive` raise `TruncatedError`.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
