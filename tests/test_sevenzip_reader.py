@@ -2166,10 +2166,12 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
     identical work on one idle container spanned 3.8 s to 22.2 s, against a
     steady ~2 s for either archive build. It runs in the setup of whichever
     parametrized item goes first, and ``pytest-timeout`` charges setup to that
-    item's budget unless ``--timeout-func-only`` is set, which
-    ``pyproject.toml`` does not. So the 120 s mark below does cover this build,
-    and it stays at 120 s rather than tracking the 25-30 s worst item measured
-    after the split: the margin is for the spread, not for the mean.
+    item's budget by default. The mark below passes ``func_only=True`` so it
+    does not: on a slow Windows runner the first item, setup included, went
+    past 120 s, and the thread-method timeout then killed the worker with no
+    traceback. The build is plain file writes with nothing that can hang, so
+    leaving it unbounded costs nothing; the 120 s still bounds the ``7z`` build
+    and the reads, with a margin for the spread rather than the mean.
 
     Every timing here and below is Linux with 7z 23.01. The two runs that timed
     out before the split were macOS and Windows, where 65 537 file creates can
@@ -2203,7 +2205,8 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
         shutil.rmtree(src, ignore_errors=True)
 
 
-@pytest.mark.timeout(120)
+# func_only: the shared tree is built in setup; see above_stream_cap_tree.
+@pytest.mark.timeout(120, func_only=True)
 @requires_binary("7z")
 @pytest.mark.parametrize(
     ("extra_args", "shape", "single_folder"),

@@ -45,6 +45,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
+from archivey.internal.streams.streamtools import base as streamtools_base
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_unar_probe import GOOD_UNAR_EXTRACT
@@ -864,14 +865,20 @@ def test_a_stream_that_cannot_be_built_stops_its_process(
     The raise itself must reap, not the collection of the half-built stream
     (``IOBase.__del__`` calls ``close()`` on it too). Binding ``refused`` keeps its
     traceback, and with it the half-built stream, alive past the assertion.
+
+    The raise comes from ``is_seekable``, the last step of
+    ``DelegatingStream.__init__`` and the one that can fail on a real inner. Patching
+    the whole ``__init__`` instead leaves fields unset that no real construction
+    leaves unset, and the finalizer's ``close()`` then raised ``AttributeError``
+    as an unraisable warning whenever the stream was collected.
     """
 
-    def refuse(self: object, inner: object) -> None:
+    def refuse(inner: object) -> bool:
         raise RuntimeError("wrapper refused")
 
-    # Patches the shared base class; nothing else constructs a DelegatingStream in
-    # this block.
-    monkeypatch.setattr(cli.DelegatingStream, "__init__", refuse)
+    # Patches the name the shared base class calls; nothing else constructs a
+    # DelegatingStream in this block.
+    monkeypatch.setattr(streamtools_base, "is_seekable", refuse)
     proc = subprocess.Popen(
         [sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536)"],
         stdout=subprocess.PIPE,
