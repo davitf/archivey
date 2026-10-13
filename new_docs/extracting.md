@@ -215,11 +215,11 @@ characters in the destination. It's safe to delete.
 ## Archives you trust
 
 By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
-expands more than 1000 times. When the archive records each member's size, as ZIP, 7z and RAR
-archives do, a member that would expand too much is refused before any of it is written. The
-expansion check ignores outputs under 5 MiB, or under 256 MiB for a whole archive read from a pipe.
-To extract something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn
-them off.
+expands more than 1000 times. When the archive records both a member's size and its compressed
+size, a member that would expand too much is refused before any of it is written. Other members,
+and the whole archive, are checked as data is written. The expansion check ignores outputs under
+5 MiB, or under 256 MiB for a whole archive read from a pipe. To extract something bigger, pass
+higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
 
 ??? note "Why ignore small outputs?"
     Small files compress very well without being dangerous. 1 MiB of zeros compresses about 1,000
