@@ -729,9 +729,10 @@ def _bound_offset(offset: int) -> int:
     """``offset`` clamped into a signed 64-bit range that keeps its order.
 
     A local-header offset past ``MAX_DATA_OFFSET`` or below 0 is refused when its
-    member opens; as a bound for its neighbours only its order matters.
+    member opens; as a bound for its neighbours only its order matters, and
+    ``MAX_DATA_OFFSET`` is the largest value the array holds.
     """
-    return min(max(offset, -1), MAX_DATA_OFFSET + 1)
+    return min(max(offset, -1), MAX_DATA_OFFSET)
 
 
 class _DataBounds:
@@ -743,6 +744,12 @@ class _DataBounds:
     overlap, because many directory entries over one local header is the
     overlapping-entry amplification shape (DR-9a). stdlib warns and reads both from
     3.12.10, 3.13.3 and 3.14.
+
+    A walk that stops early, at damage or at ``max_members``, gives the offsets of the
+    entries before the stop. Every walk stops at the same entry, so those are every
+    member ever handed out; no member past the stop opens. The bound only loosens for
+    a listed member whose next header is past the stop: its data may then run over
+    entries that never open, so no byte still reads as two members' data.
     """
 
     __slots__ = ("_cd_start", "_first_at", "_sorted")
@@ -949,7 +956,6 @@ class ZipReader(BaseArchiveReader):
         # the guard's sorted bounds once the walk is complete (``_data_bounds``).
         self._index_lock = threading.Lock()
         self._bounds: _DataBounds | None = None
-        self._bounds_error: ResourceLimitError | None = None
         self._member_count: int | None = None
         self._count_known = False
         self._report_trailing_data()
@@ -1086,11 +1092,9 @@ class ZipReader(BaseArchiveReader):
                 offsets.append(_bound_offset(entry.header_offset))
                 last = entry
                 yield self._to_member(entry, index)
-        except (CorruptionError, UnsupportedFeatureError):
-            # The members before the damage keep their bound: from the offsets the
-            # walk read, which covers every member it handed out. No complete set
-            # exists past damage, so this looser bound is the best there is; past
-            # max_members one does exist, and ``_data_bounds`` refuses instead.
+        except (CorruptionError, UnsupportedFeatureError, ResourceLimitError):
+            # The members before the damage or the limit keep their bound, from the
+            # offsets the walk read (``_DataBounds``).
             self._set_bounds(offsets, count=None)
             raise
         self._set_bounds(offsets, count=walk.entries_read)
@@ -1184,24 +1188,19 @@ class ZipReader(BaseArchiveReader):
     def _data_bounds(self) -> _DataBounds:
         """The overlap guard's bounds, walking the directory once more if needed.
 
-        After a listing that ran to the end (or to damage) the bounds are already
-        known. Otherwise, when a member opens before the listing has finished, an
-        **index pass** reads the directory's entries again, builds no members and keeps
-        only the offsets and the count. It charges ``max_members`` too: past it, every
-        open raises, not only one above the stop. The complete set of offsets exists
-        there and the limit refuses to pay for it, so a bound from the partial set would
-        be loose where a correct one was in reach. Damage is the opposite case: no
-        complete set exists, so the bounds from the entries before it are the best
-        there are (``_iter_members``).
+        After a listing that ran to the end (or to damage, or to ``max_members``) the
+        bounds are already known. Otherwise, when a member opens before the listing has
+        finished, an **index pass** reads the directory's entries again, builds no
+        members and keeps only the offsets and the count. It stops where the listing
+        walk stops, at damage or at ``max_members``, and keeps the offsets before that
+        point (``_DataBounds``).
         """
         bounds = self._bounds
         if bounds is not None:
             return bounds
         with self._index_lock:
-            if self._bounds is None and self._bounds_error is None:
+            if self._bounds is None:
                 self._index_pass()
-            if self._bounds_error is not None:
-                raise self._bounds_error
             assert self._bounds is not None
             return self._bounds
 
@@ -1216,28 +1215,27 @@ class ZipReader(BaseArchiveReader):
         try:
             for entry in walk:
                 if max_members is not None and entry.index >= max_members:
-                    self._bounds_error = _max_members_error(max_members)
-                    return
+                    # The listing raises the limit itself, at the same entry.
+                    break
                 offsets.append(_bound_offset(entry.header_offset))
+            else:
+                self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
+                self._member_count = walk.entries_read
+                self._count_known = True
+                return
         except (CorruptionError, UnsupportedFeatureError):
-            # The listing raises the damage itself; an open meanwhile reads with the
-            # bounds of the entries before it, as after a listing that met it (no
-            # complete set of offsets exists past damage).
-            self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
-            self._count_known = True
-            return
+            # The listing raises the damage itself, at the same entry.
+            pass
+        # Stopped early: an open meanwhile reads with the bounds of the entries before
+        # the stop, as after a listing that met it; the count is unknown.
         self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
-        self._member_count = walk.entries_read
         self._count_known = True
 
     def _known_member_count(self) -> int | None:
         """Entries a complete walk read; ``None`` when the walk fails or stops at
         ``max_members`` (DR-1: absence over a wrong value)."""
         if not self._count_known:
-            try:
-                self._data_bounds()
-            except ResourceLimitError:
-                return None
+            self._data_bounds()
         return self._member_count
 
     def _sniff_unflagged_name(

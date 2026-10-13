@@ -121,6 +121,28 @@ def test_zip_walk_charges_max_members_when_the_declared_count_lies() -> None:
         assert reader.info.member_count is None
 
 
+def test_zip_members_before_the_limit_read_when_opened_first() -> None:
+    """A streaming pass reads each member as it is yielded, so the index pass runs
+    before the listing reaches the limit. It stops at the same entry and keeps the
+    offsets before it, so the members inside the limit read, as after damage."""
+    data = bytearray(_zip_with_members([f"f{i}.txt" for i in range(5)]))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 1, 1)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
+    read: list[str] = []
+    with open_archive(io.BytesIO(bytes(data)), config=cfg, streaming=True) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                assert stream.read() == b"x"
+                read.append(member.name)
+    assert read == ["f0.txt", "f1.txt", "f2.txt"]
+    with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
+        assert reader.info.member_count is None
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
+            reader.members()
+
+
 def test_stream_members_unguarded_when_members_would_fail() -> None:
     data = _tar_with_members([f"f{i}.txt" for i in range(5)])
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))

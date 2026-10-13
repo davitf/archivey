@@ -184,12 +184,15 @@ first, runs one index pass over the directory instead. Both walks charge
 end record that declares more entries than the limit, in a directory large enough to
 hold them (46 bytes each), is refused at open. A count the directory cannot hold is a
 wrong field: the walk charges the entries really there, and the mismatch is reported
-below.
+below. Both walks stop at the same entry, at the limit as at damage, and the members
+before the stop read with the overlap bounds of the entries before it.
 
-**A damaged directory lists up to the damage.** An entry with a wrong signature, or one
-the directory cuts short, raises `CorruptionError` after the members before it, as a
-cut TAR or RAR does (DR-2): `members_report()` carries both, iteration and
-`extract_all()` deliver those members and then raise, and `member_count` is `None`.
+**A damaged directory lists up to the damage.** An entry with a wrong signature, or
+whose 46-byte fixed header the directory cuts short, raises `CorruptionError` after the
+members before it, as a cut TAR or RAR does (DR-2): `members_report()` carries both,
+iteration and `extract_all()` deliver those members and then raise, and `member_count`
+is `None`. A name, extra field or comment that runs past the directory's end can only be
+the last entry's, so it lists and is reported with the end-record checks below.
 A local header that the file cuts short means the directory pointed at the wrong place
 (the directory follows every local header), so it is `CorruptionError` too, never
 `TruncatedError`.

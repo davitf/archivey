@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from archivey import open_archive
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
 from archivey.internal.backends import zip_parser
 from archivey.internal.backends.zip_parser import (
@@ -30,6 +31,7 @@ from archivey.internal.backends.zip_parser import (
     find_end_record,
     read_local_header,
 )
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import (
     CORPUS,
@@ -559,7 +561,7 @@ def test_local_header() -> None:
     with pytest.raises(CorruptionError, match="Bad magic number for file header"):
         read_local_header(_read_at(data), entries[0].header_offset + 1)
     with pytest.raises(CorruptionError, match="Absurd"):
-        read_local_header(_read_at(data), 1 << 41)
+        read_local_header(_read_at(data), 1 << 63)
 
 
 def test_local_header_cut_by_end_of_file_is_truncation() -> None:
@@ -604,3 +606,17 @@ def test_7zip_output_matches(tmp_path: Path) -> None:
         capture_output=True,
     )
     assert _assert_matches_zipfile(out.read_bytes())
+
+
+@pytest.mark.parametrize("offset", [1 << 41, (1 << 63) - 1, (1 << 64) - 1])
+def test_reader_refuses_a_local_header_offset_past_the_file(offset: int) -> None:
+    """A ZIP64 offset past the file is damage when its member opens, however large:
+    below the seek limit the header read comes back short, past it the parser refuses
+    the offset before seeking, so no raw ``OverflowError`` escapes."""
+    plain = _zip({"a.txt": b"hello", "b.txt": b"world"})
+    extra = struct.pack("<HHQ", 0x0001, 8, offset)
+    data = _with_central_extra(plain, 1, extra, header_offset=0xFFFF_FFFF)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert reader.open("a.txt").read() == b"hello"
+        with raises_corruption_not_truncation():
+            reader.open("b.txt").read()

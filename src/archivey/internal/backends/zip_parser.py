@@ -87,12 +87,14 @@ _ZIP64_DISK_SENTINEL = 0xFFFF
 # handle; a directory no larger than one piece is read in one read.
 _WALK_CHUNK = 1 << 20
 
-# An archivey policy bound on ZIP offsets, inherited unchanged from the stdlib-based
-# reader (its ``_MAX_DATA_OFFSET``): a ZIP64 field can declare any uint64, and an
-# offset past this is refused as corrupt before anything seeks to it. It is not the
-# seek limit (that is 2**63); whether it stays a policy bound, and where that policy
-# is recorded, is for the stage that makes the reader depend on it.
-MAX_DATA_OFFSET = 1 << 40
+# The largest offset a seek takes (a signed 64-bit file offset). A ZIP64 field can
+# declare any uint64, and seeking past this raises a raw OverflowError, so an offset
+# past it is refused as corrupt before anything seeks to it. It is a structural bound,
+# not a policy one: no file holds a header there. Offsets below it need no bound of
+# their own, because the reader keeps every member's data before the next local header
+# or the central directory (the overlap guard), and a header read past the file's end
+# is cut short.
+MAX_DATA_OFFSET = (1 << 63) - 1
 
 
 @dataclass(frozen=True, slots=True)

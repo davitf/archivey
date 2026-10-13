@@ -342,13 +342,18 @@ while 7-Zip searches further back and lists the real members.
 
 The central directory SHALL be walked as members are listed, so a damaged entry costs
 the entries from it on, not the archive (DR-2). An entry whose signature is wrong, or
-whose fixed header, name, extra field or comment the directory cuts short, SHALL make
-the listing raise `CorruptionError` after the members before it: `members()` raises,
+whose 46-byte fixed header the directory cuts short, SHALL make the listing raise
+`CorruptionError` after the members before it: `members()` raises,
 `members_report()` returns those members with the error, iteration yields them and then
 raises, and `extract_all()` writes them and then raises. A listed member before the
 damage SHALL read. `ArchiveInfo.member_count` SHALL be `None` when the walk did not
 complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise `CorruptionError`
-the same way, at its entry.
+the same way, at its entry. A name, extra field or comment that runs past the
+directory's end can only be the last entry's; it is the end-record mismatch above, not
+damage. A local-header offset past the file's end SHALL raise `CorruptionError` when
+that member opens, never `TruncatedError` (the directory follows every local header, so
+the offset is wrong, not the file cut) and never an untyped error for an offset too
+large to seek to.
 
 #### Scenario: damaged directory
 
@@ -357,6 +362,7 @@ the same way, at its entry.
 | Third central header's signature overwritten | `a.txt`, `b.txt` listed, then `CorruptionError` naming a bad magic number; both read |
 | A 10-byte header fragment after the second entry, inside the declared directory size | The same, `CorruptionError` naming a truncated central directory |
 | Either, through `for member in reader` or `extract_all()` | Two members yielded or written, then `CorruptionError` |
+| Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 
 ### Requirement: Read ZIP members whatever version they say they need
 
@@ -403,7 +409,9 @@ an escape hatch. An end record that declares more entries than `max_members`, in
 directory at least 46 bytes per declared entry long, SHALL be refused at
 `open_archive` with `ResourceLimitError`. A declared count the directory cannot hold is
 a wrong field (reported as a count mismatch, see above), and the walk charges the
-entries really there: past `max_members` it SHALL raise `ResourceLimitError`.
+entries really there: past `max_members` it SHALL raise `ResourceLimitError`. The
+members listed before the limit SHALL read, also when they are opened before the
+listing reaches it.
 
 #### Scenario: ZIP member limit
 
@@ -411,6 +419,7 @@ entries really there: past `max_members` it SHALL raise `ResourceLimitError`.
 | --- | --- |
 | Three entries, end record declares 3 | `ResourceLimitError` at open |
 | Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
+| The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 
