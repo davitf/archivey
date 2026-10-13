@@ -40,10 +40,9 @@ that can seek.
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in
-    it. RAR data is decompressed by `unrar`, which needs the archive as a file on disk. ZIP keeps
-    its index at the end too, though a later release reads ZIP from a pipe using the header stored
-    before each member. Archivey could copy the pipe to a temporary file first, but that copy takes
-    as much disk as the archive, and nothing in your code would show it.
+    it. ZIP and RAR store a header before each member, so archivey could read them from a pipe,
+    for RAR copying what it reads to a temporary file for `unrar` as it goes. It doesn't yet: a
+    later release reads ZIP from a pipe, and RAR may follow.
 
 ## Seeking inside a member
 

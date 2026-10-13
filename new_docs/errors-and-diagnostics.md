@@ -23,17 +23,12 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 | `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, but that's a guess, so catch `CorruptionError` for both |
 | `EncryptionError` | A password is needed and none was given, or none of the ones given works |
 | `FormatDetectionError` | The file isn't in a format archivey recognizes |
-| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method or format version |
+| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method. A damaged header can raise it too, when the damaged field is one nothing checks, such as a ZIP entry's compression method. Either way, you can't use the file |
 | `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
 | `ResourceLimitError` | The archive went over one of the [limits](security.md#hardening) |
 
 The [reference](api.md#archivey.ArchiveyError) lists the rest, such as `ReadError`, the parent of
 the first two.
-
-??? note "Can an unknown method or version mean the archive is damaged?"
-    Yes. Nothing checksums the header field it's read from, such as a ZIP entry's compression
-    method, so archivey can't tell a method it doesn't know from a damaged field, and the message
-    says so. If all you need to know is whether you can use the file, the answer is no either way.
 
 If reading fails and the format was only a guess, the exception has `format_unconfirmed=True`. That
 happens when nothing in the file confirmed its format, so archivey went by the file name, or when
@@ -72,7 +67,7 @@ with archivey.open_archive("damaged.tar") as archive:
         print("The list stops early:", report.error)
 ```
 
-??? note "Why does `members()` give nothing?"
+??? note "Why does `members()` raise if the archive is damaged?"
     It returns a list, and a shorter list looks just like a complete one, so code that only looks at
     the list would carry on as if the archive ended there. Iterating hands you each member as it's
     found, so the exception at the end still tells you the rest is missing.
