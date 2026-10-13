@@ -75,9 +75,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 
 ## ZIP
 
-- Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes
-  through archivey's shared codec layer (seekable source only, even with
-  ``streaming=True``).
+- Archivey's own parser reads the **central directory** as members are listed; member
+  **data** decodes through archivey's shared codec layer (seekable source only, even
+  with ``streaming=True``). Stdlib ``zipfile`` is not used.
+- **A damaged central directory lists the members before the damage**, then raises
+  `CorruptionError`; `members_report()` gives you both. An archive whose end record is
+  gone (cut short, or followed by more than 64 KiB) still fails at open.
+- **Bytes after the end** of the archive (after its end record and comment) emit
+  `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.strict()`
+  refuses. "Version needed to extract" never refuses a member: only a method or
+  encryption Archivey cannot read does.
+- `ListingLimits.max_members` is checked at open against the entry count the end
+  record declares, and as the directory is read, in `stream_members()` too.
 - Extended ZIP codecs with ``[recommended]`` installed: Deflate64 and PPMd
   (``inflate64`` / ``pyppmd`` — the same packages the 7z reader uses, which is why no
   extra is named after a format) and Zstd (``backports.zstd``, or stdlib on 3.14+). A
@@ -141,12 +150,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   encoding does not define stays in the comment as a surrogate escape, as in a name. One
   signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
-  the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones.
-- **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
-  bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
-  parsing the central directory, so the failure is archive-wide rather than confined to
-  the one bad name. A native ZIP reader could recover the other entries; today it
-  cannot. Rare, and it fails loudly.
+  the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A
+  malformed field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped
+  with a `member_header_record_skipped` diagnostic. The archive opens on every Python
+  version; `zipfile` on its own refuses it from Python 3.12.
+- **A wrongly-set UTF-8 flag stops the listing at that name.** When general-purpose
+  bit 11 claims UTF-8 but the stored bytes are not, the listing raises
+  `CorruptionError` at that entry, after the members before it. Rare, and it fails
+  loudly.
 - **ZipCrypto** checks a password against one byte, so a wrong one passes about one
   time in 256. Its data then fails the CRC or the decompressor, and Archivey raises
   `EncryptionError` saying the password may be wrong or the member corrupt, since a

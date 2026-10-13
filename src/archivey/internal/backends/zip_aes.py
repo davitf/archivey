@@ -88,11 +88,9 @@ def iter_extra_fields(extra: bytes) -> Iterator[ExtraField]:
     import would be a cycle.
 
     A last field whose declared size runs past the blob comes back with the bytes
-    that are there and ``complete`` false; each caller decides what that means. The
-    readers get their blobs from ``zipfile.ZipInfo``, which already rejects such a
-    field (``BadZipFile: Corrupt extra field``), so today they never see it; the
-    flag keeps each caller's rule explicit for a path that parses the directory
-    itself. Trailing bytes too short for a header are ignored.
+    that are there and ``complete`` false; each caller decides what that means (the
+    Unicode Path field reports it as malformed). Trailing bytes too short for a header
+    are ignored.
     """
     pos = 0
     while pos + 4 <= len(extra):

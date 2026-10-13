@@ -21,7 +21,7 @@ rather than here — they go stale faster than this page is revised.
 | --- | --- |
 | Large-member ZIP/TAR/gzip **read** (decompression-dominated) | ≤ **1.3×** stdlib peer |
 | ZIP/TAR **extract** (safety floor) | ≤ ~**2×** stdlib peer |
-| ZIP **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` |
+| ZIP **open+list** (native parser) | ≤ **2–3×** `zipfile` |
 | TAR **open+list** (native parser) | ≤ **2–3×** `tarfile` |
 | 7z/RAR **open+list** (native parsers) | ≈parity (~**1.25×**) vs `py7zr` / `rarfile` |
 

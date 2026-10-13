@@ -2,8 +2,8 @@
 
 ``open_archive`` and ``open_stream`` build one of these from whatever the caller passed —
 a path, a stream, or a volume list — and hand it to detection and then to the backend.
-It **is** the stream they read (third-party parsers such as ``pycdlib`` and ``zipfile``
-get it directly), and it carries every guarantee the raw source must give:
+It **is** the stream they read (third-party parsers such as ``pycdlib`` get it
+directly), and it carries every guarantee the raw source must give:
 
 - **Full-count.** ``read(n)`` returns ``n`` bytes unless the source is exhausted. A raw
   ``read(n)`` may legally return short, and header parsers — archivey's and the stdlib's —

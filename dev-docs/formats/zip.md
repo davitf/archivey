@@ -43,8 +43,8 @@ them.
 | **EOCD** — end of central directory | `PK\x05\x06` | 22 fixed bytes plus an optional comment: total entries, the size of the CDH run, `offset_cd` (where that run starts), the disk numbers, the comment length. The only record found by *position* rather than by a pointer |
 
 archivey takes every member field from the CDH and reads the LFH only to locate the data
-(§2.3). It cross-checks the two copies of the name and refuses on a mismatch, which is
-also stdlib's rule.
+(§2.3). It cross-checks the two copies of the name, as bytes, and refuses on a
+mismatch, which was also stdlib's rule.
 
 **The index is at the end.** The central directory is authoritative and is found by
 scanning backwards from the last bytes for the EOCD. So:
@@ -61,7 +61,18 @@ begins at most 65535 + 22 bytes before the end, since `comment_length` is a `uin
 Archivey searches one byte further, 65 558 bytes, because that is stdlib's older window
 (3.11 and early 3.12 releases; 3.13 and later 3.12 releases dropped the byte). Trailing
 bytes are not comment bytes, so the extra byte does find a record: a maximal comment
-followed by one junk byte.
+followed by one junk byte. When the reader used stdlib, that archive opened or not
+depending on the Python version; it now lists on every version, and the junk byte is
+reported as trailing data.
+
+**Bytes after the end are reported.** The archive ends where the end record's declared
+comment ends. A non-zero byte after that is `ARCHIVE_TRAILING_DATA`
+(`expected_marker="zeros_to_eof"`, `format="zip"`, `observed_bytes` counted from the
+comment's end), found at open by the scan TAR, 7z, RAR and ISO share
+(`internal/trailing_scan.py`); zero padding is silent and `strict()` refuses (DR-3).
+Bytes inside the declared comment are the comment, whatever they look like. A tail
+longer than the search window hides the end record, so the file is not opened at all;
+the local-header walk of stage 3 of the `native-zip-reader` change reads it.
 
 **Members are independent.** Each member has its own LFH and its own compressed byte range,
 with no cross-member state. So reaching any member is a seek rather than a walk (`DIRECT`),
@@ -157,8 +168,36 @@ Two things are ZIP-specific rather than general in the shared detector:
 
 ### 2.2 Open and list
 
-Stdlib `zipfile` parses the central directory (the CDH run) and builds the member map. `reader.get()`
-and name lookup are satisfied from that map with no further archive I/O.
+archivey's own parser (`internal/backends/zip_parser.py`, ADR
+[0020](../decisions/0020-native-zip-reader.md)) finds the end record at open and walks
+the central directory (the CDH run) as members are listed; nothing else is read at
+open but the trailing-data scan. Each listed member keeps a small locator
+(`_ZipLocator`: offsets, sizes, CRC, flags, method, and what its open needs), not the
+directory entry, so an entry's extra field is not kept alive. `reader.get()` and name
+lookup are satisfied from the listing with no further archive I/O.
+
+The walk records each entry's local-header offset for the overlap guard (§4) and counts
+the entries for `member_count`. A member opened before the listing has finished (a
+streaming pass opens each member as the walk yields it), or `info.member_count` read
+first, runs one index pass over the directory instead. Both walks charge
+`ListingLimits.max_members` in every mode, because each keeps an offset per entry; an
+end record that declares more entries than the limit, in a directory large enough to
+hold them (46 bytes each), is refused at open. A count the directory cannot hold is a
+wrong field: the walk charges the entries really there, and the mismatch is reported
+below.
+
+**A damaged directory lists up to the damage.** An entry with a wrong signature, or one
+the directory cuts short, raises `CorruptionError` after the members before it, as a
+cut TAR or RAR does (DR-2): `members_report()` carries both, iteration and
+`extract_all()` deliver those members and then raise, and `member_count` is `None`.
+A local header that the file cuts short means the directory pointed at the wrong place
+(the directory follows every local header), so it is `CorruptionError` too, never
+`TruncatedError`.
+
+**"Version needed to extract" decides nothing.** Stdlib refused an archive whose entry
+said it needed more than 6.3; 7-Zip 23.01 reads such a stored member and Info-ZIP
+`unzip` 6.0 skips it. archivey lists and reads it: what a member needs is named by its
+method and flags, checked when it opens (DR-4).
 
 **Split sets are settled before anything else, and the two conventions get opposite
 answers.** 7-Zip's `.zip.NNN` parts (and SFX `.exe.NNN` slices of the same `-v` split)
@@ -189,12 +228,12 @@ gap, not the ZIP "not supported" message. A part that is not on disk itself is
 `FileNotFoundError`, like any other missing path. Info-ZIP `.zNN` stays
 `UnsupportedFeatureError` with the rejoin-first text. Both run in `open_archive`
 before detection, because middle parts have no magic at offset 0 and detection
-alone would raise `FormatDetectionError`. After stdlib opens the archive:
+alone would raise `FormatDetectionError`. When the parser reads the end record:
 non-zero EOCD disk fields (the ZIP64 end record's when there is one, else the
 classic record's, with `0xFFFF` treated as the ZIP64 sentinel),
-which is what catches Info-ZIP's final `.zip` part — it lists cleanly, because it
-holds the central directory — and a ZIP64 locator claiming more than one disk,
-where stdlib raises and archivey re-types by matching the exception text.
+which is what catches Info-ZIP's final `.zip` part — it would list cleanly, because it
+holds the central directory — and a ZIP64 locator claiming more than one disk. Both
+raise `UnsupportedFeatureError` from the parser itself.
 
 Two things narrow the filename refusals. A joined set keeps part one's name, so they key
 off *whether the set was joined*, not off the name alone; otherwise they would fire on
@@ -212,9 +251,10 @@ not its ZIP structure, which is single-disk.
 UTF-8 when the bytes are valid UTF-8, and otherwise with the caller's `encoding=` when one
 was passed, else with `ArchiveyConfig.zip_unflagged_fallback_encoding` (default `cp437`,
 which decodes every byte, so no `UnicodeDecodeError` escapes). Both decode with
-`surrogateescape`. Stdlib `zipfile` gets no `metadata_encoding`: it decodes an unflagged
-name as cp437, which maps every byte both ways, and the reader takes the bytes back from
-that and decodes them itself. This departs from stdlib's `metadata_encoding` and from
+`surrogateescape`. The parser hands the reader the stored bytes, so nothing is decoded
+twice. A flagged name that is not valid UTF-8 raises `CorruptionError` at its entry,
+after the members before it (stage 4 of the change decodes it as an unflagged name
+instead). This departs from stdlib's `metadata_encoding` and from
 `unzip -O`, which apply the codec to every unflagged name: a valid UTF-8 name wins over
 `encoding=` in every format (design rules, ruled 2026-10-07), so a legacy `encoding=` fixes
 the legacy names in a mixed archive without garbling its UTF-8 ones.
@@ -231,19 +271,34 @@ and an explicit `encoding=` alike, as in 7-Zip, which also consults it only for 
 names and before its code page switch. Info-ZIP `unzip` and stdlib `zipfile` 3.12+
 (`ZipInfo.filename`) use it too. `raw_name` is then the field's UTF-8 bytes, so `name` stays
 `raw_name` decoded, and the header's bytes go to `extra["alternate_raw_name"]`; no
-diagnostic, since the field declares its encoding. A field that fails a test is ignored,
-except that stdlib 3.12+ refuses the archive at open when a CRC-matching field is not valid
-UTF-8 (`CorruptionError`). The local header's copy is not read: the listing comes from the
-central directory, and the local header's name is only compared with the central one.
+diagnostic, since the field declares its encoding. A stale field (CRC mismatch) or an
+unknown version is not about this name and is ignored like any unknown record. A
+**malformed** field is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unicode_path"`,
+`record_id=0x7075`) and the name decoded as if it were absent: one shorter than its
+version byte and CRC, or one whose CRC matches but whose name is empty, not UTF-8, or
+runs past the end of the extra field. That
+is the RAR5 extra-record ruling ([`rar.md`](rar.md) §6) applied to ZIP's one optional name
+record: one bad record costs that record, not the archive. Only the field of an unflagged
+name is consulted, so a flagged name's field is never read or reported. The local header's
+copy is not read: the listing comes from the central directory, and the local header's
+name is only compared with the central one.
+
+Stdlib from 3.12 acts on the field while reading the central directory: it raises
+`BadZipFile` over a field shorter than five bytes (whatever its CRC) or a CRC-matching
+one that is not UTF-8, and calls `warnings.warn` on an empty one, outside the
+diagnostics system; 3.11 ignores it, and so does 7-Zip. archivey's parser reads the
+field itself, so the outcome is the same on every Python version and no warning filter
+is touched.
 
 Backslashes are normalised on `name` by origin, not globally: a DOS/FAT-origin entry's `\`
 is treated as a path separator and rewritten to `/`; a Unix-origin entry keeps `\` as a
 literal filename character. `raw_name` keeps the stored bytes unchanged: the header's,
 or the Unicode Path field's when that named the member.
 
-**Metadata mapping.** Stdlib `zipfile` hands us the central-directory fields and the raw
-`extra` blob; it does **not** classify symlinks or parse NTFS / Extended Timestamp extras
-into datetime fields — archivey does both from the values `ZipInfo` exposes.
+**Metadata mapping.** The parser hands the reader the central-directory fields
+(`CentralEntry`, ZIP64 values already resolved) and the raw `extra` blob; the reader
+classifies symlinks and parses the NTFS / Extended Timestamp extras into datetime
+fields.
 
 | `ArchiveMember` field | Source | Absent when |
 | --- | --- | --- |
@@ -251,11 +306,11 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `raw_name` | The stored bytes `name` was decoded from, verbatim (no backslash rewrite) | — |
 | `extra["alternate_raw_name"]` | The CDH name bytes, when the Unicode Path field named the member | No such field, or it does not match |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
-| `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra`. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
-| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry. Not `ZipInfo.is_dir()`: it reads stdlib's rewritten `filename`, which depends on the host OS and the Python version. A directory whose `file_size` is not 0 (APPNOTE 4.3.8 forbids it; unzip, 7-Zip and bsdtar create the directory and drop the bytes silently, Go's `archive/zip` refuses the archive) stays a directory, emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes, carries the central-directory CRC-32 in `hashes` (unless that field is 0, the conventional value for a directory: then no digest, and `DIGEST_UNVERIFIABLE` where the CRC was the only check, unencrypted or ZipCrypto; a WinZip AES entry, AE-1 with a zeroed field or AE-2 which stores 0 by design, is checked by its HMAC instead and reports nothing), and reads through `open()` like a file: `_open_with_link_follow` refuses a directory by data and a tombstone or special entry by type. `file_size == 0` over a body larger than an empty one of its method (`_ZIP_EMPTY_BODY_SIZES`: 0 stored, 2 deflated, 14 bzip2, 19 LZMA) is reported too and not readable; `compress_size == 2` deflated is the Java `jar` tool's empty body and is silent. A Unix FIFO, device or socket mode makes `OTHER` only when `file_size` is 0; with data it is a `FILE` (`zip -FI` stores a named pipe's content so, and unzip, 7-Zip, bsdtar and `zipfile` all write it as a file) with `MEMBER_SPECIAL_FILE_HAS_DATA`, DR-25. Both carry `extra["special_file_type"]` | — |
+| `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
+| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word; directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry, the same on every host OS and Python version. A directory whose `file_size` is not 0 (APPNOTE 4.3.8 forbids it; unzip, 7-Zip and bsdtar create the directory and drop the bytes silently, Go's `archive/zip` refuses the archive) stays a directory, emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes, carries the central-directory CRC-32 in `hashes` (unless that field is 0, the conventional value for a directory: then no digest, and `DIGEST_UNVERIFIABLE` where the CRC was the only check, unencrypted or ZipCrypto; a WinZip AES entry, AE-1 with a zeroed field or AE-2 which stores 0 by design, is checked by its HMAC instead and reports nothing), and reads through `open()` like a file: `_open_with_link_follow` refuses a directory by data and a tombstone or special entry by type. `file_size == 0` over a body larger than an empty one of its method (`_ZIP_EMPTY_BODY_SIZES`: 0 stored, 2 deflated, 14 bzip2, 19 LZMA) is reported too and not readable; `compress_size == 2` deflated is the Java `jar` tool's empty body and is silent. A Unix FIFO, device or socket mode makes `OTHER` only when `file_size` is 0; with data it is a `FILE` (`zip -FI` stores a named pipe's content so, and unzip, 7-Zip, bsdtar and `zipfile` all write it as a file) with `MEMBER_SPECIAL_FILE_HAS_DATA`, DR-25. Both carry `extra["special_file_type"]` | — |
 | `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
-| `compression` | `compress_type` → `CompressionMethod` | — |
-| `is_encrypted` | `flag_bits & 0x1`, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
+| `compression` | CDH method → `CompressionMethod` | — |
+| `is_encrypted` | general-purpose bit 0, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
 | `comment` | CDH member comment. APPNOTE puts it under the name's bit 11, so it decodes as the name would: UTF-8 when flagged; unflagged, the same sniff as an unflagged name (UTF-8 if valid, else `encoding=`, else `zip_unflagged_fallback_encoding`), with no diagnostic; a byte the codec leaves undefined survives as a lone surrogate. `ArchiveInfo.comment` (the end record's, which has no flag) decodes as an unflagged one | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
@@ -357,27 +412,23 @@ redirects with no data stream, so its CRC32 field covers zero bytes and archivey
 no digest at all rather than the constant `crc32(b"")` —
 [`formats/rar.md`](rar.md) §2.2.
 
-**The end record is checked against the directory stdlib read.** Stdlib reads
-directory entries until it has consumed the size the end record gives and ignores the
-rest of the record. After the members, the reader emits `ARCHIVE_EOF_MARKER_MISSING`
-for an entry count that differs from the entries read (the ZIP64 record's count when
-stdlib used it; a classic count modulo 65536, because old 7-Zip versions stored a
-larger count's low 16 bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that
-with a "16-bit overflow" note), an archive comment length past the end of the file, and
-an entry whose name, extra field or comment runs past the directory, which stdlib cuts
-at the directory's end. Info-ZIP
-unzip warns or errors on each and 7-Zip says "Headers Error", after testing every
-member, so the default policy lists and reads; `strict()` refuses.
-`_end_record_findings` takes the counts and the declared and present comment lengths
-from stdlib's own `_EndRecData` result (indices bound through `zipfile._ECD_*`), and
-reads the directory once more to find the entry that overruns it. Because the checks use
-the record stdlib chose, a decoy end-record signature inside the archive comment passes
-them: the archive lists as empty (`EMPTY_ARCHIVE`), as with Info-ZIP unzip, where 7-Zip
-searches further back and lists the real members.
+**The end record is checked against the directory the walk read.** The walk reads
+directory entries until it has consumed the size the end record gives. After the last
+member, the reader emits the walk's findings as `ARCHIVE_EOF_MARKER_MISSING`: an entry
+count that differs from the entries read (the ZIP64 record's count when there is one; a
+classic count modulo 65536, because old 7-Zip versions stored a larger count's low 16
+bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that with a "16-bit
+overflow" note), an archive comment length past the end of the file, and an entry whose
+name, extra field or comment runs past the directory, which is cut at the directory's
+end. Info-ZIP unzip warns or errors on each and 7-Zip says "Headers Error", after
+testing every member, so the default policy lists and reads; `strict()` refuses. The
+end record is the last signature in the tail, so a decoy end-record signature inside
+the archive comment passes the checks: the archive lists as empty (`EMPTY_ARCHIVE`), as
+with Info-ZIP unzip, where 7-Zip searches further back and lists the real members.
 
 ### 2.3 Member data
 
-**`zipfile`'s own decoders are not used** — meaning `ZipExtFile`, not the standard library:
+**`zipfile`'s own decoders were never used** — meaning `ZipExtFile`, not the standard library:
 the codec layer still ends at `zlib`, `bz2` and `lzma` for the methods they cover. archivey
 locates the member's raw compressed bytes with
 a bounded LFH parse (the fixed 30 bytes plus the local name and extra lengths, with
@@ -436,7 +487,7 @@ the same fused verifier:
 | --- | --- | --- |
 | Traditional ZipCrypto | archivey (`zipcrypto.py`, `ZipCryptoDecryptStream`) | One-byte verifier, so ~1 in 256 wrong passwords passes it. Pure Python, byte by byte, at the speed of stdlib's own decrypter (~1.6 MiB/s here). The cipher state depends on every earlier byte, so a backward seek restarts from the saved post-header state and a forward seek decrypts what it skips; `AUTO` accelerators stay off over it, because they read out of order. A seek back, or a forward seek in a compressed member (whose next read decodes the gap), keeps the CRC; a forward seek in a STORED member jumps, and a read past it gives the CRC up. The CRC is ZipCrypto's only content check: after that, the rest of the member is checked for length only (ADR 0014). A 12-byte header the file cuts short is `TruncatedError` on every password path |
 | WinZip AES (method 99, extra `0x9901`) | archivey (`zip_aes.py`) | AES-128, -192 or -256, as the extra's strength byte says · PBKDF2-HMAC-SHA1 at 1 000 iterations · AES-CTR · HMAC-SHA1 truncated to 10 bytes |
-| PKWARE Strong Encryption (APPNOTE §7: bit 6, or extra `0x0017`) | refused | Listed as encrypted; opening it raises `UnsupportedFeatureError` naming Strong Encryption, with or without a password. A symlink of this kind lists with `link_target` unset (`target_data_encrypted`). When the central directory itself is encrypted (bit 13), stdlib cannot list the archive; an archive extra data record (`PK\x06\x08`) where the directory should start turns that into the same refusal instead of `CorruptionError`. Best-effort: without that record the archive reads as corrupt |
+| PKWARE Strong Encryption (APPNOTE §7: bit 6, or extra `0x0017`) | refused | Listed as encrypted; opening it raises `UnsupportedFeatureError` naming Strong Encryption, with or without a password. A symlink of this kind lists with `link_target` unset (`target_data_encrypted`). When the central directory itself is encrypted (bit 13), it cannot be listed; an archive extra data record (`PK\x06\x08`) where the directory should start makes the open the same refusal instead of a `CorruptionError` from the listing. Best-effort: without that record the archive reads as corrupt |
 
 Both cheap key checks admit some wrong passwords (ZipCrypto 2⁻⁸, WinZip AES 2⁻¹⁶), so
 both schemes share one confirmation ladder (`password_confirm.py`). With **one** possible
@@ -602,7 +653,8 @@ AE-1. It is not a legacy branch kept for symmetry, and 0.4.0 still emits it unde
 `conditionally_include_crc` for members of at least 20 bytes. `tests/fixtures/external/aes_ae1_pyzipper036.zip`
 is a real sample; the CRC is verified on AE-1 and absent on AE-2 (§2.3).
 
-ZIP64 is not exotic. A central directory of 70 000 entries lists correctly through stdlib.
+ZIP64 is not exotic. A central directory of 70 000 entries lists correctly, through the
+ZIP64 end record or, without one, as a classic count modulo 65 536 (§2.2).
 
 ## 4. Threat surface
 
@@ -616,14 +668,15 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   written, plus a live ratio measured from bytes consumed. Nesting is not tracked — a
   zip-of-zips amplifies one level at a time (O6).
 - **Overlapping entries** are a distinct crafted shape, caught when a member opens by
-  an overlap guard and raised as `CorruptionError`. The guard is stdlib's (each
-  entry's data must end before the next local header, or before the central
-  directory), but archivey computes the bounds itself because stdlib sets them only
-  from Python 3.11.8. Of two entries over one local header, the first in directory
-  order reads and the later one is refused. stdlib raises on 3.11, on 3.12 before
-  3.12.10 and on 3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read both.
-  archivey keeps refusing, because many entries over one local header is the
-  overlapping-entry amplification shape (DR-9a).
+  an overlap guard and raised as `CorruptionError`. The guard was stdlib's: each
+  entry's data must end before the next local header in file order, or before the
+  central directory. The bounds come from the offsets the listing walk records
+  (`_DataBounds`, one sorted array), or from one index pass when a member opens first
+  (§2.2). Of two entries over one local header, the first in directory order reads
+  and the later one is refused. stdlib raised on 3.11, on 3.12 before 3.12.10 and on
+  3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read both. archivey keeps
+  refusing, because many entries over one local header is the overlapping-entry
+  amplification shape (DR-9a).
 - **Confirming a ZipCrypto password costs time that depends on the archive, and that cost
   is observable**: the one-byte verifier cannot decide between candidates, so a STORED
   member is read through and its CRC compared. Timing the call, or watching how much is
@@ -637,16 +690,17 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 
 ## 5. Sharp edges
 
-*Where it lives*: **format** — inherent, no implementation fixes it · **library** — stdlib
-`zipfile`'s behaviour, fixable only upstream or by replacing it · **archivey** — ours.
+*Where it lives*: **format** — inherent, no implementation fixes it · **library** — a
+library archivey decodes with, fixable only upstream or by replacing it · **archivey** —
+ours.
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **library** | The index is at the end (§1). The native ZIP reader planned for 0.2.0 reads it with `streaming=True` by walking local headers forward (the `native-zip-reader` OpenSpec change, stage 3); the metadata that lives only in the end directory (types, modes, comments) is applied to the members at the end of the pass |
-| One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. The native ZIP reader planned for 0.2.0 fixes it (the `native-zip-reader` OpenSpec change, stage 4) |
-| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot — and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
-| A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part — stdlib refuses at open with `File is not a zip file`, and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
-| A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. The native ZIP reader planned for 0.2.0 lists the entries before a damaged one, then raises (stage 2); listing an archive whose directory is lost, by walking local headers forward, stays an idea ([`IDEAS.md`](../IDEAS.md)) |
+| A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **archivey** | The index is at the end (§1). The native ZIP reader planned for 0.2.0 reads it with `streaming=True` by walking local headers forward (the `native-zip-reader` OpenSpec change, stage 3); the metadata that lives only in the end directory (types, modes, comments) is applied to the members at the end of the pass |
+| One member name whose UTF-8 flag lies stops the listing at that entry | **archivey** | Flagged names decode strictly, so the listing raises `CorruptionError` there, after the members before it (until the native reader's first stage the whole archive was unlistable). Stage 4 of the `native-zip-reader` OpenSpec change decodes such a name as an unflagged one instead |
+| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
+| A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
+| An archive cut before its end record, or followed by more than 64 KiB, fails at open — nothing is salvaged | **archivey** | Without an end record in the tail there is no directory to walk. A damaged *directory* lists the entries before the damage, then raises (§2.2). Stage 3 of the `native-zip-reader` OpenSpec change walks the local headers forward when the end record is not in the tail |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a forward seek in a STORED ZipCrypto member, no CRC checks it, and a wrong password that passed the check byte goes unnoticed | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order. A seek back keeps it, and so does a compressed member's forward seek, whose skipped bytes the verifier reads and hashes (ADR 0014, since 2026-10-10). A STORED member's forward seek jumps, so a read past it gives the CRC up and returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
@@ -657,14 +711,17 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
-| Stdlib `zipfile` for the central directory | Zero-dependency, no packaging burden, well-tested parser | `python-libarchive-c` — faster and broader, at the cost of a native dependency ([ADR 0006](../decisions/0006-stdlib-zipfile.md)) |
+| archivey's own parser for the end record, central directory and local headers ([ADR 0020](../decisions/0020-native-zip-reader.md), superseding [0006](../decisions/0006-stdlib-zipfile.md)) | Zero-dependency still. Stdlib parsed the whole directory at open before `ListingLimits` saw a member, lost the archive over one damaged entry, varied by Python version and was reached through private names and exception text; the parser lists lazily, lists up to damage, and behaves the same everywhere | Stdlib `zipfile` (ADR 0006); `python-libarchive-c`, faster and broader at the cost of a native dependency |
+| Report bytes after the end record as `ARCHIVE_TRAILING_DATA` | DR-3: the TAR, 7z, RAR and ISO rule. 7-Zip warns on any tail; zero padding stays silent here as there | Ignoring the tail, as Info-ZIP `unzip` and stdlib do |
+| Refuse at open an end record declaring more entries than `max_members` | Every walk keeps an offset per entry for the overlap guard, so the count bounds memory in every mode (DR-15b); the directory must be 46 bytes per declared entry, so a wrong count field alone does not refuse a small archive | Charging only on `members()`, which left a streaming pass unbounded |
+| Read members whatever "version needed" says | DR-4: the method and flags say what a member needs; 7-Zip reads such members | Stdlib's refusal of the whole archive above 6.3 |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Refuse a non-seekable source rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
-| Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` and leaves reads to stdlib's `_SharedFile` lock, for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable because the other kind is refused at open. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
+| Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` behind its own re-entrant lock (a source whose read closes the archive re-enters it on the same thread), for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable because the other kind is refused at open. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
-| Refuse PKWARE Strong Encryption at member open, not implement it | Without these checks, a member marked only by extra `0x0017` (no bit 6) was decrypted as ZipCrypto: a wrong-password or corruption error, or with the right password bytes handed back as plaintext. A bit-6 member already reached stdlib's own `NotImplementedError`, translated to `UnsupportedFeatureError`; checking bit 6 here gives it a message archivey owns and refuses a symlink's target before its data is read. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
+| Refuse PKWARE Strong Encryption at member open, not implement it | Without these checks, a member marked only by extra `0x0017` (no bit 6) was decrypted as ZipCrypto: a wrong-password or corruption error, or with the right password bytes handed back as plaintext. Checking bit 6 too gives a bit-6 member a message archivey owns (it used to reach stdlib's own `NotImplementedError`) and refuses a symlink's target before its data is read. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 | Short ZipCrypto header is `TruncatedError` on both password paths; a declared size too small for the encryption header is `CorruptionError` for ZipCrypto and WinZip AES alike | A short read is physical EOF; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split. A declared size under 12 bytes (ZipCrypto) or under salt + verifier + HMAC (WinZip AES) is an impossible header in a file that did not end, so it is checked before the read and is damage, the same for both schemes; for WinZip AES it is also checked before the `cryptography` availability gate, so the type does not depend on the install (DR-5) | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
 | ZipCrypto decrypts in archivey, ahead of the codec layer, not in stdlib's `ZipExtFile` | One pipeline for every member: ZipCrypto members gain the three methods stdlib cannot decode, the fused verifier and the codec layer's seek, and share WinZip AES's password ladder. Stdlib's decrypter is pure Python too, so nothing is slower | Keeping `ZipExtFile` for ZipCrypto, which left it the one exception to the shared stream layer |
@@ -673,6 +730,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A WinZip AES member every candidate fails on the HMAC raises `CorruptionError`, as one password does | A wrong password passes `pw_verify` once in 65 536, so damage is far likelier, and one error type for both password paths means a symlink with a damaged target lists the same way under either (S28-K4, davi 2026-09-26) | ZipCrypto's ambiguous `EncryptionError`, which fits an 8-bit check but made the same damaged AES member raise two different types depending on how many passwords the caller passed |
 | A damaged symlink target leaves the link listed without a target | One member's damage says nothing about the others, and listing raised for the whole archive. The link is reported (`target_data_damaged`) and raises when opened or extracted; a strict policy still refuses the archive | Raising from `members()`, which took every other member with it |
 | WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
+| A malformed Unicode Path field drops the field, not the archive, on every Python version | The RAR5 extra-record ruling ([`rar.md`](rar.md) §6): an optional record that cannot be parsed costs that record, reported as `MEMBER_HEADER_RECORD_SKIPPED`, and the name it would have given is absent, so the header's bytes name the member. Stdlib 3.12+ refused the archive over two of the shapes and warned outside the diagnostics system over the third, while 3.11 and 7-Zip open it; the native parser reads the field itself, so every version agrees | Keeping stdlib's refusal on 3.12+; silencing the warning with `warnings.catch_warnings`, which changes process-wide state and is not thread-safe; dropping the field silently |
 | Read a member whose central and local headers disagree on the name, or whose central CRC is 0 while the local CRC is right; keep refusing one whose two headers both understate the size (davi, 2026-10-10) | The first two are found in real archives (another code page or `\` against `/` in the local name; every Adobe AIR package), `unzip` reads both, and archivey takes every field from the central directory, so the local name decides nothing; the data is still checked against the local CRC. The third is refused because the declared size is the bound that stops decoding (DR-9a). Both reads carry a new diagnostic and strict refuses them. Reopen if a real writer produces the third shape at scale. Lands with the native ZIP reader | Refusing all three, which loses archives `unzip` reads; reading the third, which drops the size bound |
 | Two stored names that decode to the same name stay ordinary duplicates (davi, 2026-10-10) | Once each name decodes on its own, `c3 a9` (valid UTF-8) and `82` (cp437) can both become `é.txt`. The later member supersedes the earlier like any duplicate (`is_current=False`, `SUPERSEDED` on extraction) and the two `raw_name`s differ, so nothing is lost and no new public name is needed. Reopen if a real archive shows a collision a user needs both copies of | A dedicated diagnostic or a renaming rule |
 | Leave LZMA1 `lc + lp` over 4 unsupported | 7-Zip writes it only when asked (`lc=8`). Decoding it needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; a pure-Python LZMA1 decoder (very slow); handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma |
@@ -707,12 +765,16 @@ move.
 | Timestamp precedence; an out-of-range NTFS time is an issue; the extended timestamp, a signed 32-bit field, is always a valid date (pre-1970 included) | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_pre_epoch`, `::test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime`, `tests/test_timestamps.py::test_filetime_out_of_range_is_an_issue`, `::test_unix32_to_datetime_covers_every_32_bit_value` |
 | A bad timestamp's diagnostic names the member field, the creation slot by host | `tests/test_zip.py::test_bad_ntfs_times_name_the_member_field` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
-| Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version, empty or local-only field is ignored | `tests/test_audit2_zip.py::test_unicode_path_extra_field_names_the_member` and the four tests after it |
+| Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version or local-only field is ignored | `tests/test_audit2_zip.py::test_unicode_path_extra_field_names_the_member` and the tests after it |
+| A short, empty, cut-short or non-UTF-8 Unicode Path field is dropped with `MEMBER_HEADER_RECORD_SKIPPED` on every Python version, with no stdlib warning; strict refuses; a flagged name's field is not consulted | `tests/test_audit2_zip.py::test_malformed_unicode_path_field_is_dropped_with_a_diagnostic` and the three tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |
 | Symlink target from member data; encrypted target withheld | `::test_symlink_member`, `::test_encrypted_symlink_listing_without_password` |
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
-| Overlapping-entry bomb, without stdlib's end offsets too; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_overlap_guard_does_not_depend_on_stdlib_end_offsets`, `::test_entries_sharing_one_local_header_read_only_once` |
+| Overlapping-entry bomb; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_entries_sharing_one_local_header_read_only_once` |
+| A damaged directory lists up to the damage; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when an open comes first; a listed member keeps no extra field | `tests/test_zip_native_reader.py` |
+| `max_members` refused at open from the declared count, charged by the walk when the count lies | `tests/test_listing_limits.py::test_zip_applies_max_members_at_open`, `::test_zip_walk_charges_max_members_when_the_declared_count_lies` |
+| The parser against stdlib on every fixture, ZIP64, stubs, disk fields | `tests/test_zip_parser.py` |
 | A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is refused | `tests/test_surplus_input.py`, `tests/test_audit2_zip.py::test_bytes_after_a_deflate_members_stream_are_corrupt`, `::test_bzip2_member_with_a_second_stream_is_corrupt` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |
 | Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators (for DEFLATE on a seek to the end too); `7z t` fails on the same members | `tests/test_zip_native_codecs.py::test_zip_member_with_input_after_its_stream_is_corrupt`, `::test_zip_zstd_member_with_input_after_its_frame_is_corrupt`, `::test_zip_input_after_the_stream_is_corrupt_under_the_accelerator`, `::test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process`, `tests/test_accelerator_takeover.py::test_a_seek_to_the_end_refuses_input_after_a_container_streams_end` |
@@ -734,7 +796,7 @@ move.
 | WinZip AES candidates confirmed, not taken on `pw_verify` | `tests/test_zip_aes.py::test_aes_candidate_passing_pw_verify_does_not_shadow_the_right_one` |
 | A failing HMAC is `CorruptionError` with a candidate list too, including when only colliding wrong candidates reach it | `tests/test_zip_aes.py::test_aes_tampered_hmac_with_candidates_raises_corruption`, `::test_aes_only_colliding_candidates_report_damage` |
 | A damaged symlink target (CRC, HMAC, declared size) lists the link targetless with `target_data_damaged`; open and extraction raise; strict refuses | `tests/test_damaged_link_target.py`, `tests/test_link_target_cap.py::test_a_zip_target_longer_than_its_declared_size_is_corruption` |
-| PKWARE Strong Encryption refused at open, a symlink of it listed with the target unset; unrelated extra records still read; an encrypted central directory recognized where stdlib reads it, a damaged one (and a record at a stale declared offset) still `CorruptionError` | `tests/test_zip.py::test_strong_encryption_member_is_unsupported`, `::test_strong_encryption_symlink_lists_with_target_unset`, `::test_zipcrypto_member_with_unrelated_extra_still_reads`, `::test_encrypted_central_directory_is_unsupported`, `::test_encrypted_zip64_central_directory_is_unsupported`, `::test_record_inside_a_damaged_zip64_directory_is_not_read_as_encryption`, `::test_damaged_central_directory_stays_corruption`, `::test_record_at_the_stale_declared_offset_is_not_read_as_encryption` |
+| PKWARE Strong Encryption refused at open, a symlink of it listed with the target unset; unrelated extra records still read; an encrypted central directory recognized where the directory starts, a damaged one (and a record at a stale declared offset) still `CorruptionError` | `tests/test_zip.py::test_strong_encryption_member_is_unsupported`, `::test_strong_encryption_symlink_lists_with_target_unset`, `::test_zipcrypto_member_with_unrelated_extra_still_reads`, `::test_encrypted_central_directory_is_unsupported`, `::test_encrypted_zip64_central_directory_is_unsupported`, `::test_record_inside_a_damaged_zip64_directory_is_not_read_as_encryption`, `::test_damaged_central_directory_stays_corruption`, `::test_record_at_the_stale_declared_offset_is_not_read_as_encryption` |
 | Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths; a declared size too small for the ZipCrypto or WinZip AES header is `CorruptionError` naming the member; codec-path and member-read `IndexError` stay raw; CONCURRENT stamp releases the handle lock | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_encryption_header_larger_than_declared_size_is_corruption`, `tests/test_zip_aes.py::test_aes_header_too_short_is_corruption_without_crypto`, `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated`, `::test_truncated_zipcrypto_stamp_releases_handle_lock` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 

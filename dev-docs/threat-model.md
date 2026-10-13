@@ -312,7 +312,7 @@ archive declares.
   materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
   `stream_members()` and `for member in reader` are unguarded: they yield every
-  member, except on 7z, RAR and ISO, which check the caps while parsing. Their memory
+  member, except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing. Their memory
   is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
   reader, and TAR in both modes) counts members as usual and stops keeping them once
   the totals cross a cap, in `base_reader.py` `_discard_listing`. The TAR walker keeps
@@ -416,10 +416,11 @@ The 1 048 576 default stays (davitf, 2026-10-01), for these reasons:
 
 Revisit this if a stricter safety-first configuration mode lands (it could carry a
 lower default), if member records become lazy (removing most of the fixed cost), or if
-callers are found to open untrusted 7z with default limits. ZIP builds the
-whole central directory at open through stdlib `zipfile` (ADR
-[0006](decisions/0006-stdlib-zipfile.md)), so its memory at open is linear in the
-central directory and `max_members` binds at `members()`. `max_metadata_bytes` counts
+callers are found to open untrusted 7z with default limits. ZIP reads its central directory as members are listed (ADR
+[0020](decisions/0020-native-zip-reader.md)) and keeps a small locator per member, so
+nothing is built at open; an end record declaring more entries than `max_members` is
+refused at open, and the walk charges `max_members` in every mode, so an end record
+that understates the count is refused when the walk passes the limit. `max_metadata_bytes` counts
 retained metadata, not a transient decode buffer discarded before any member exists.
 ISO's counts are a superset of the listing's: the extra records of a multi-extent file
 and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are records as

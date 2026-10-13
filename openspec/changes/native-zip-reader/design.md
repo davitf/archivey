@@ -101,8 +101,9 @@ do today, in one place:
 time. The piece size trades memory (one piece plus one entry) against the number of
 reads, each a seek and a read on the shared handle: a directory of 1 MiB or less is one
 read, and a 46 MB one is 46. It is an implementation constant (DR-9). Every read goes
-through `read_at`, which the reader implements under its lock with the handle position
-saved and restored, so the parser knows nothing of locking. Each entry applies every
+through `read_at`, which the reader implements as a seek and a read under its lock, so
+the parser knows nothing of locking; it leaves the handle where the read ended, since
+every other reader of the handle (`SharedView`) seeks before it reads. Each entry applies every
 ZIP64 extra field (`0x0001`) in turn, as stdlib does, reading values in the order
 APPNOTE gives: a value still all ones after one field is read again from the next (an
 uncompressed size of `0xFFFFFFFF` or 64-bit all ones, a compressed size or header
@@ -138,9 +139,10 @@ can no longer raise `UnicodeDecodeError` there.
 - The handle is `self._source` (or the seek-counting and slicing wrappers over it), for a
   path source too. stdlib opened its own file for a path; the reader now opens nothing
   itself, and the path-or-handle branch in `__init__` goes.
-- A reader-owned `threading.Lock` replaces `ZipFile._lock`. `SharedView`, the local
-  header read, `_payload_is_complete` and `_close_archive` take it, as they take the stdlib
-  lock today.
+- A reader-owned `threading.RLock` replaces `ZipFile._lock`, re-entrant as that one
+  was: a source whose read closes the archive re-enters the lock on the same thread.
+  `SharedView`, the local header read, `_payload_is_complete` and `_close_archive` take
+  it, as they took the stdlib lock.
 - `_iter_members` drives a `CentralDirectoryWalk` and yields each member as its entry is
   parsed. `ListingLimits` therefore see members as they are read, not after the whole
   directory has been built. The end-record findings are emitted after the last member, as
@@ -434,7 +436,7 @@ archive pays nothing for it.
 | `_looks_like_multivolume`, matching `BadZipFile` text | `:2545` | the same |
 | `_central_directory_looks_encrypted` after stdlib failed | `:2496` | checked before the walk |
 | `ZipInfo._raw_time` for the ZipCrypto check byte | `:1161` | `CentralEntry.dos_time` |
-| `ZipFile._lock` | `:1180` | reader-owned lock |
+| `ZipFile._lock` | `:1180` | reader-owned re-entrant lock |
 | `ZipInfo._end_offset` for the overlap guard | `:1266` | offset array |
 | cp437 round trip of `orig_filename` to get the stored bytes | `:1013-1018` | `CentralEntry.name` |
 | The `ZipFile` subclass overriding `_RealGetContents` (Unicode Path PR) | open PR | nothing: stdlib never sees the field |

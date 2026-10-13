@@ -19,7 +19,7 @@ not fully recovered yet.
 | [0003](0003-member-streams-opt-in.md) | Default forward-only, single live stream | recorded |
 | [0004](0004-streaming-bool-not-intent-enum.md) | Keep `streaming: bool`; drop `Intent` enum | recorded |
 | [0005](0005-sync-only-v1.md) | Sync-only public API in v1 | recorded |
-| [0006](0006-stdlib-zipfile.md) | Stdlib `zipfile` for ZIP core | recorded |
+| [0006](0006-stdlib-zipfile.md) | Stdlib `zipfile` for ZIP core | superseded by 0020 |
 | [0007](0007-mutable-archive-member.md) | Mutable `ArchiveMember` filled in place | recorded |
 | [0008](0008-single-accelerator-rapidgzip.md) | One accelerator library: `rapidgzip` | recorded |
 | [0009](0009-zstd-stdlib-backports.md) | stdlib / `backports.zstd`, not `zstandard` | recorded |
@@ -33,6 +33,7 @@ not fully recovered yet.
 | [0017](0017-bidi-override-rejection-is-policy-keyed.md) | Bidi-override rejection is policy-keyed; `TRUSTED` extracts | recorded |
 | [0018](0018-review-and-address-stay-separate-skills.md) | Review and address stay two skills; auto-watchers route through `steward` | recorded |
 | [0019](0019-no-top-level-extract.md) | No top-level `extract()`; extract through an open reader | recorded |
+| [0020](0020-native-zip-reader.md) | Native ZIP reader; stdlib `zipfile` leaves the library | recorded |
 
 Related long-form material (not ADRs):
 
