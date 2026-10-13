@@ -701,6 +701,9 @@ class LocalHeaderWalk:
         self.gap: tuple[int, int] | None = None
         #: Stream offset of the first central header, once the directory is reached.
         self.cd_start: int | None = None
+        #: Stream offset where the directory ends (after its digital signature, if
+        #: any), once :meth:`directory` has read it.
+        self.cd_end: int | None = None
         #: The end record, once :meth:`directory` has read it. Its ``base`` and
         #: ``eocd_offset`` are stream positions; ``trailing`` is ``None`` (not counted).
         self.end: EndRecord | None = None
@@ -985,6 +988,7 @@ class LocalHeaderWalk:
             if self.source.skip(size) != size:
                 raise TruncatedError("ZIP stream ends inside the digital signature")
             sig = self.source.peek(4)
+        self.cd_end = self.source.offset
         zip64: tuple[int, int, int, int, int] | None = None
         if sig == ZIP64_EOCD_SIGNATURE:
             zip64 = self._read_zip64_records()

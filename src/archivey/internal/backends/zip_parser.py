@@ -372,6 +372,19 @@ class EntryOverrun:
     cd_size: int
 
 
+@dataclass(frozen=True, slots=True)
+class DirectorySizeMismatch:
+    """The directory a forward walk read is not the size the end record declares.
+
+    Only the forward walk (``LocalHeaderWalk``) finds this: it reads the entries before
+    the end record that sizes them, where the seekable read reads only the declared
+    bytes (and finds :class:`EntryOverrun` or :class:`EntryCountMismatch` instead).
+    """
+
+    declared: int
+    held: int
+
+
 WalkFinding = EntryCountMismatch | CommentCutShort | EntryOverrun
 
 

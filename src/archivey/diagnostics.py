@@ -326,7 +326,11 @@ class ArchiveEofContext(_JsonSafeContext):
       directory entry's name, extra field or comment length runs past the directory
       size the end record gives, and that field is cut short. ``expected_bytes`` is
       that directory size and ``observed_bytes`` where the entry would end, both
-      counted from the directory's start; ``observed_kind`` is ``"nonzero"``.
+      counted from the directory's start; ``observed_kind`` is ``"nonzero"``. Read
+      from a source that cannot seek, where the entries come before the end record
+      that sizes them, the same marker reports entries that fill more
+      (``"nonzero"``) or fewer (``"short"``) bytes than that size: ``expected_bytes``
+      is the size and ``observed_bytes`` the bytes the entries fill.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
       archive's end within the first MiB past it, so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for

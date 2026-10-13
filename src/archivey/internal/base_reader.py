@@ -1580,12 +1580,19 @@ class BaseArchiveReader(ArchiveReader):
         ``for member in reader``): it keeps yielding past the caps, so what it keeps
         must stop growing there. An enforcing pull raises at the caps instead.
         """
+        if self._listing_over_limits():
+            self._discard_listing()
+
+    def _listing_over_limits(self) -> bool:
+        """Whether a kept listing has crossed ``ListingLimits``, so a pass that does not
+        enforce them discards it (``_keep_listing_within_limits``)."""
         if self._listing_discarded:
-            return
+            return False
         try:
             self._listing_tracker.assert_within_limits()
         except ResourceLimitError:
-            self._discard_listing()
+            return True
+        return False
 
     def _discard_listing(self) -> None:
         """Stop keeping the walk's members: the listing is over ``ListingLimits``.

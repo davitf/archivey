@@ -397,6 +397,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.tar_parser as tar_parser
     import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
+    import archivey.internal.backends.zip_forward_reader as zip_forward_reader
     import archivey.internal.backends.zip_local_walk as zip_local_walk
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.backends.zipcrypto as zipcrypto
@@ -493,6 +494,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         zip_local_walk._SizedData,
         zip_local_walk._CodecData,
         zip_local_walk._ScannedData,
+        # A pipe ZIP pass's member stream, over the codec stream the pass reads
+        # once: forward-only, so nothing seeks it or asks it for a resume offset.
+        zip_forward_reader._PassStream,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
