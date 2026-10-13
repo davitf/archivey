@@ -1637,8 +1637,9 @@ class ExtractionCoordinator:
         so a refusal leaves nothing at its path. A file whose name changed is written
         again from the bytes already on disk; a link's target comes from its data,
         which the reader kept. A member that now needs bytes the stream has passed,
-        and that were not written, fails, unless it has none (an empty file). Results other than ``EXTRACTED`` and
-        ``BLOCKED`` stand: nothing was written for them that the change could alter.
+        and that were not written, fails, unless it has none (an empty file). Results
+        other than ``EXTRACTED`` and ``BLOCKED`` stand: nothing was written for them
+        that the change could alter.
         """
         state = self._state
         result = state.results[index]
