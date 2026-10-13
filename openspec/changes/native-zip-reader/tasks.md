@@ -67,6 +67,14 @@
       forward only (question C); a test counts its seeks.
 - [ ] 3.0a Before the walk: open a real self-extractor fixture through a pipe under the
       `FAST` and default budgets and record what `payload_offset` comes back as.
+- [ ] 3.0b A seekable source whose end record is not in the last 65 558 bytes runs the
+      local-header walk, per `design.md` §"A seekable source whose end record is not in
+      the tail": tests first for a ZIP followed by 1 MiB of non-zero bytes (opens, members
+      updated from the directory, `ARCHIVE_TRAILING_DATA`), a ZIP cut before its
+      directory (members listed, then `TruncatedError`; `members_report()` carries both),
+      a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
+      (`CorruptionError` after the members before it); a sized member is seeked over
+      (counted reads).
 - [ ] 3.1 `parse_local_header` / `parse_central_header` on bytes, shared by both walks;
       `LocalHeaderWalk` over a forward reader; data descriptor parsing (signature
       optional, 4- or 8-byte sizes).
