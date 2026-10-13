@@ -14,7 +14,6 @@ import sys
 import textwrap
 import zipfile
 import zlib
-from typing import TYPE_CHECKING
 
 import pytest
 
@@ -23,9 +22,6 @@ from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.reader_state import LifecycleState
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
-
-if TYPE_CHECKING:
-    pass
 
 
 def _zip_with_corrupt_deflate_body() -> bytes:

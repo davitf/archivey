@@ -12,6 +12,7 @@ import json
 import random
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -161,6 +162,26 @@ def test_a_worker_that_stops_reading_is_a_hang_not_a_stall() -> None:
     finally:
         stuck.proc.kill()
         stuck.proc.wait()
+
+
+@requires("rapidgzip")
+def test_a_crashed_worker_leaves_no_temporary_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker that dies never runs its own clean-up, and the search starts a new one
+    after every crash, so the directory a worker writes its ``path`` cases to is removed
+    by the supervisor once the worker is reaped."""
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    worker = search._Worker("gzip", 1)
+    path_kind = search._SOURCE_KINDS.index("path")
+    assert worker.send(path_kind, gzip.compress(b"payload " * 1000), timeout=60)
+    assert worker.answer(timeout=60) == search._STARTED
+    assert worker.answer(timeout=60)
+    worker.proc.kill()  # what a crash looks like from the supervisor
+    worker.death()
+    assert not list(tmp_path.glob("accel-crash-search-*"))
 
 
 def test_a_cut_in_a_later_concatenated_stream_ends_early() -> None:

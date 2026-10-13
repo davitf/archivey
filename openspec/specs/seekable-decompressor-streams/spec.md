@@ -333,22 +333,23 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 
 ### Requirement: Accelerator lifecycle is safe at shutdown
 
-The system SHALL protect rapidgzip streams with a `weakref.finalize` guard that
-closes the raw object exactly once when the wrapper is collected or at
-interpreter exit. The guard MUST hold a strong reference to the raw object until
-close completes, because `join_threads()` alone does not stop rapidgzip's C++
-worker thread and an unclosed worker can abort the process during finalization.
+No rapidgzip object SHALL live in the caller's process. The decoder process SHALL close
+its rapidgzip stream before it exits and then skip interpreter finalization
+(`os._exit`), because `join_threads()` alone does not stop rapidgzip's C++ worker thread
+and a worker still running at finalization aborts the process. The caller's process SHALL
+reap the decoder process when its stream is closed, collected, or left at interpreter
+exit.
 
-The system SHALL keep one accelerator library in process by using rapidgzip for
-both gzip and bzip2 and never importing standalone `indexed_bzip2`. With these
-measures, `AUTO` MAY select rapidgzip for declared random access on every
-platform.
+The decoder process SHALL use rapidgzip for both gzip and bzip2 and never import
+standalone `indexed_bzip2`. With these measures, `AUTO` MAY select rapidgzip for declared
+random access on every platform.
 
 #### Scenario: accelerator safety matrix
 
 | Case | Expected |
 | --- | --- |
-| Accelerator stream is leaked, cyclically collected, or process exits | Finalizer closes raw object before free; process terminates cleanly |
+| Accelerator stream is leaked, cyclically collected, or process exits | The decoder process is reaped; the caller's process holds no rapidgzip object and terminates cleanly |
+| Decoder process finishes a stream | It closes the rapidgzip stream, then exits with `os._exit` |
 | Process accelerates gzip and bzip2 | Both use rapidgzip; standalone `indexed_bzip2` is absent; no cross-library heap double-free |
 | Declared random access with `AUTO` and rapidgzip available | rapidgzip may be selected on every platform |
 

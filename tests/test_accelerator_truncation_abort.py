@@ -1253,9 +1253,6 @@ def test_no_fallback_warning_when_rapidgzip_is_not_installed(
         codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
     )
     monkeypatch.setattr(
-        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
-    )
-    monkeypatch.setattr(
         codecs_module.deps,
         "rapidgzip",
         codecs_module.deps.LazyOptional("rapidgzip", present=False),

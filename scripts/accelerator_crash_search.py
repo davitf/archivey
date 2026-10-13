@@ -168,7 +168,7 @@ def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
     return b"".join(parts)
 
 
-def worker_main(codec: str, parallelization: int) -> None:
+def worker_main(codec: str, parallelization: int, tmpdir: str) -> None:
     import io
 
     if sys.platform == "win32":
@@ -180,7 +180,7 @@ def worker_main(codec: str, parallelization: int) -> None:
             sem_failcriticalerrors | sem_nogpfaulterrorbox
         )
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
-    tmpdir = tempfile.mkdtemp(prefix="accel-crash-search-")
+    # The supervisor owns ``tmpdir`` and removes it: this process may never get to.
     path = os.path.join(tmpdir, f"case.{codec}")
     while True:
         header = _read_exact(stdin, _CASE.size)
@@ -201,11 +201,6 @@ def worker_main(codec: str, parallelization: int) -> None:
         outcome = _decode(codec, source, parallelization)
         stdout.write(bytes([outcome]))
         stdout.flush()
-    try:
-        os.remove(path)
-        os.rmdir(tmpdir)
-    except OSError:
-        pass
 
 
 # --- inputs -------------------------------------------------------------------------------
@@ -416,8 +411,21 @@ class _Worker:
 
     def __init__(self, codec: str, parallelization: int) -> None:
         self.stderr = tempfile.TemporaryFile()
+        # Where the worker writes its ``path`` cases. Removed here after the worker is
+        # reaped, since a worker that aborts never runs its own clean-up.
+        self.tmpdir = tempfile.TemporaryDirectory(
+            prefix="accel-crash-search-", ignore_cleanup_errors=True
+        )
         self.proc = subprocess.Popen(
-            [sys.executable, "-P", __file__, "--worker", codec, str(parallelization)],
+            [
+                sys.executable,
+                "-P",
+                __file__,
+                "--worker",
+                codec,
+                str(parallelization),
+                self.tmpdir.name,
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.stderr,
@@ -497,6 +505,7 @@ class _Worker:
                 pass
         self._wait_or_kill()
         self.stderr.close()
+        self.tmpdir.cleanup()
 
     def _wait_or_kill(self) -> int | None:
         """The worker's exit code once it has exited; killed after 10 seconds. ``None``
@@ -661,7 +670,7 @@ def _print_report(reports: list[CodecReport]) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args[:1] == ["--worker"]:
-        worker_main(args[1], int(args[2]))
+        worker_main(args[1], int(args[2]), args[3])
         return 0
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(

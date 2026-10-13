@@ -182,19 +182,19 @@ irrelevant; only finalization matters:
 
 A guard that called `join_threads()` only was tried and is not enough.
 
-**What archivey does.** `_AcceleratorStream` (in `archivey.internal.streams.codecs`) wraps
-every accelerator object and installs a `weakref.finalize` guard that closes the raw object
-exactly once: when the wrapper is collected (cyclically or not) or at interpreter exit. The
-guard holds a strong reference, so the close always runs before the object is freed.
-`close()` on the wrapper triggers the same guard early.
+**What archivey does.** Archivey runs rapidgzip only in its decoder process
+(`rapidgzip_worker.py`), so no rapidgzip object lives in the caller's process. The decoder
+process closes its stream before it exits and then skips interpreter finalization
+(`os._exit`). The in-process wrapper with a `weakref.finalize` guard that archivey used
+before is removed.
 
 **The canary.** `tests/test_accelerator_shutdown.py` asserts the contract: the closed case
 and the two guarded finalization paths exit cleanly on every platform (if they ever abort,
-archivey's own cleanup is broken), while the raw `cycle_gc` and `unclosed` paths abort. If a
-later `rapidgzip` release stops aborting on a raw, never-closed object (for example because
-it closes or joins in its destructor), the raw-case assertions fail. That is the signal
-that the close-on-finalize guard is no longer load-bearing and the wrapper could be
-simplified.
+the close-then-exit the decoder process relies on is broken), while the raw `cycle_gc` and
+`unclosed` paths abort. If a later `rapidgzip` release stops aborting on a raw, never-closed
+object (for example because it closes or joins in its destructor), the raw-case assertions
+fail. That is the signal that the decoder process no longer needs to close before it
+exits.
 
 ## 7. Bug 2: rapidgzip and indexed_bzip2 cannot share a process (fixed in archivey)
 
@@ -269,6 +269,6 @@ print("source still alive after close:", alive() is not None)  # True
 Expected: `False`, as for `bz2.BZ2File`. The leak is per open, whatever the input's size,
 so a service that opens many `.bz2` streams from memory grows without bound; archivey's
 fuzz run over this decoder ran out of memory after about 36 000 inputs before the
-workaround. Archivey reads a caller's stream through a shim (`_TrappingSource`, known-issues
-Bug 3) and drops the stream from the shim at close, so only the shim leaks, about 1.7 kB
-per open.
+workaround. Archivey now runs this decoder only in its decoder process, which reads the
+caller's stream over a pipe, so nothing leaks in the caller's process (known-issues Bug 5,
+"What remains").

@@ -619,12 +619,13 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             )
         elif returncode == MEMORY_LIMIT_EXIT:
             cls = ResourceLimitError
+            setting = "use_indexed_bzip2" if self._bzip2 else "use_rapidgzip"
             message = (
                 f"the rapidgzip decoder process for this {label} stream was stopped: "
                 "its memory grew past DecoderLimits.max_decoder_memory="
                 f"{self._max_memory}. The decoder keeps decoded chunks in memory, and "
                 "this stream decodes to large chunks. Raise the limit if the data is "
-                "trusted, or set use_rapidgzip=AcceleratorMode.OFF."
+                f"trusted, or set {setting}=AcceleratorMode.OFF."
             )
         elif is_crash(returncode) and truncated:
             cls = TruncatedError
@@ -958,7 +959,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         Unlike :meth:`block_offsets` it forces nothing. When the child cannot answer
         (it died, or it reported an error), this is the last index it sent: the
         bzip2 takeover asks for it after an error, to find the blocks the decoder
-        indexed before it (``_bzip2_resume_points`` in ``codecs.py``). A parked
+        indexed before it (``_bzip2_resume_points`` in ``codecs/bzip2_codec.py``). A parked
         source error is left for the next read or seek.
         """
         if self._death is None and self._proc is not None:
