@@ -265,6 +265,10 @@ def test_a_copy_waits_only_on_its_unread_link_target(tmp_path: Path) -> None:
             assert stream.read() == b"x"
         assert copy.link_target == "a.txt"
         assert copy.member_state_final
+        unread = reader.get("link").replace(name="unread")
+    # No listing holds a copy, so closing the reader does not settle it.
+    assert not unread.member_state_final
+    assert unread.link_target is None
     path = tmp_path / "dup.tar"
     path.write_bytes(_tar(_DUPLICATES))
     with open_archive(path, streaming=True) as reader:

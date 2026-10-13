@@ -1056,7 +1056,8 @@ class ArchiveMember:
 
         No listing holds the copy, so nothing stamps ``is_current`` on it or resolves
         its links to members; its ``member_state_final`` waits only on an unread link
-        target, which reading the copy fills in place.
+        target, which reading the copy fills in place. Closing the reader cannot reach
+        a copy, so a copy whose target is never read keeps reading ``False``.
         """
         copy = replace(self, **kwargs)
         copy._listing_pending = False

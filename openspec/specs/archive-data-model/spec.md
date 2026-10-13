@@ -385,7 +385,8 @@ format, in two cases:
 It SHALL be `True` everywhere else. A walk that fails and cannot be resumed settles the
 members it handed out, and closing the reader settles every member it listed. A copy
 made with `replace()` belongs to no listing: it is never stamped, so it reads `False`
-only while it is a symlink whose data-stored target is unread. Attached `diagnostics`
+only while it is a symlink whose data-stored target is unread, and no settle reaches
+it, so a copy whose target is never read reads `False` after the reader closes too. Attached `diagnostics`
 are not covered and MAY still grow. The documented meaning is "no field of this member
 will change"; each format's user documentation names the fields that change in
 practice.
@@ -400,7 +401,7 @@ practice.
 | Peek (`members_report_if_available()`), either access mode | `False` until a later call or pass resolves links to members, then `True` |
 | Streaming pass over the `ListingLimits` | Members kept before the limit read `True` from the point the pass stops keeping them, with `is_current` stamped over them; later ones read `True` when yielded, and none is stamped after that point |
 | Pass left early, then the reader closed | `True`: a closed reader updates nothing |
-| Copy made with `replace()` | `True`, unless it is a symlink whose data-stored target is unread: `False` until `open()` reads the target into the copy |
+| Copy made with `replace()` | `True`, unless it is a symlink whose data-stored target is unread: `False` until `open()` reads the target into the copy; one never read stays `False`, after the reader closes too |
 | TAR symlink, either `read_link_targets` | `True`: the header carries the target |
 | ZIP symlink under `read_link_targets=False` | `False` until `open()` or `extract_all()` reads its target, then `True` |
 | ZIP symlink under the default | `True` once listed |
