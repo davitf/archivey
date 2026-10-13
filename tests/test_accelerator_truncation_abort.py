@@ -676,6 +676,7 @@ def test_an_outside_death_message_is_escaped_once(returncode: int) -> None:
     assert str(exc).startswith("ended C:\\\\path\\x1b")
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl and /proc")
 def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
     """The child aborts on every cut stream, and a crash handler that ``core_pattern``
     pipes to (apport, systemd-coredump) gets the whole core whatever ``RLIMIT_CORE``
