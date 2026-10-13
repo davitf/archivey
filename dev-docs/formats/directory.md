@@ -160,8 +160,8 @@ lists as `None` rather than failing the walk. A pre-1970 time is a real date on 
 platform.
 
 **Limits.** The shared `ListingLimits` apply: a tree with more entries than `max_members`
-raises `ResourceLimitError` when listed, as for any archive. `stream_members()` does not
-enforce them, as elsewhere.
+raises `ResourceLimitError` when listed, as for any archive, `stream_members()`
+included.
 
 ### 2.3 Member data
 

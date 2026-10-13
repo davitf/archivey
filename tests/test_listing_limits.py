@@ -89,6 +89,9 @@ def test_stream_members_enforces_max_members() -> None:
             for m, _ in reader.stream_members():
                 names.append(m.name)
         assert names == []
+        # The peek walks the upfront index again and is refused the same way.
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.members_report_if_available()
         with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members()
 
@@ -123,7 +126,7 @@ def test_extract_all_runs_under_the_open_time_listing_limits(tmp_path: Path) -> 
 def test_tar_extract_all_enforces_listing_limits(
     tmp_path: Path, streaming: bool
 ) -> None:
-    """Scan-required backends must not bypass listing caps via unguarded stream_members.
+    """Scan-required backends enforce the listing caps in extraction's one pass.
 
     A streaming extraction enforces them too: it resolves hard links against the
     members already listed, so it keeps the listing, and only the caps bound it.
@@ -437,6 +440,12 @@ def test_pass_raises_at_the_member_that_crosses_the_cap(
         if not streaming:
             with pytest.raises(ResourceLimitError, match="max_members"):
                 reader.members()
+            with pytest.raises(ResourceLimitError, match="max_members"):
+                reader.get("f000000")
+            # A second pass walks again and is refused at the same member.
+            with pytest.raises(ResourceLimitError, match="max_members"):
+                for _member, _stream in reader.stream_members():
+                    pass
 
 
 @pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])

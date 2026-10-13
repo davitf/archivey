@@ -423,9 +423,10 @@ live against compressed bytes consumed, which is why a piped `.tar.gz` bomb stop
 mid-pass. A plain tar has nothing to decompress and is checked against the archive size.
 
 **`extract_all` is one forward pass in both modes.** Random access does not list the
-archive first: `TarReader._list_before_extraction` leaves the listing to the pass, which
-enforces `ListingLimits` as members arrive (`ResourceLimitError` at the member that crosses a cap, before it is
-written), so a `.tar.gz` is decoded once and no rewind is reported. What that gives up is
+archive first: `TarReader._list_before_extraction` leaves the listing to the pass,
+which enforces `ListingLimits` as members arrive (`ResourceLimitError` at the member
+that crosses a cap, before it is written), so a `.tar.gz` is decoded once and no rewind
+is reported. What that gives up is
 knowledge of the future, the same as a streaming pass: a corrupt header raises after the
 members before it are written (no longer fails closed), and the duplicate-name cases
 `safe-extraction` lists as differing in a streaming pass differ here too. A hardlink
@@ -473,9 +474,7 @@ extraction checks (§2.4).
   allocate 6 GiB ([`threat-model.md`](../threat-model.md) O15).
 - **Every header is a member to keep.** Headers compress to a few bytes each: 300 000
   empty headers gzip to 1.8 MB. The walk stops at the member that crosses either listing
-  cap (§2.2).
-  `stream_members()` and forward-only iteration are not capped, and hold every header
-  until the pass ends (O1).
+  cap (§2.2), in every mode, and holds no header behind the member list (O1).
 - **A sparse member is a ratio claim.** A few hundred bytes of sparse map can declare a
   logical size of terabytes. Extraction writes the logical bytes, so what stops it is the
   decompression-ratio guard, the same one that stops a gzip bomb; `ExtractionLimits`

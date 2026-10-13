@@ -643,12 +643,16 @@ class TarReader(BaseArchiveReader):
         """``(bytes left, cap)`` of ``max_metadata_bytes`` for the next member's headers.
 
         Every walk enforces the running total, so the next member may use what the
-        listing has not yet retained.
+        listing has not yet retained. Every TAR accounting path enforces the cap, so
+        the total never exceeds it (only a link target read on request is weighed
+        without enforcing, and a TAR link's target is in its header).
         """
         cap = self._config.listing_limits.max_metadata_bytes
         if cap is None:
             return None
-        return (max(cap - self._listing_tracker.metadata_bytes, 0), cap)
+        counted = self._listing_tracker.metadata_bytes
+        assert counted <= cap, (counted, cap)
+        return (cap - counted, cap)
 
     def _register_member(
         self,

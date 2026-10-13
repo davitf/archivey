@@ -504,11 +504,14 @@ directory) is not the same as applying `max_members` at parse.
 `ResourceLimitError` on the same archive. A pass that lists as it goes (every
 streaming reader, and a random-access TAR) yields the members registered within
 the limits and raises at the member that crosses one, before yielding it and
-before parsing further headers. A random-access reader that lists the whole
-archive before the first yield (ZIP, directory, 7z, RAR, ISO, and
-`for member in reader`) raises before the first yield. The pass that raised
-publishes no listing: `members_report_if_available()` returns `None` after it,
-and on a random-access reader a later listing call walks again and raises again.
+before parsing further headers; it publishes no listing, so
+`members_report_if_available()` returns `None` after it. A random-access reader
+that lists the whole archive before the first yield (ZIP, directory, 7z, RAR,
+ISO) raises before the first yield. On any random-access reader, TAR included,
+`for member in reader` lists the whole archive first, unlike `stream_members()`.
+On a random-access reader a later listing call walks again and raises the same
+error; so does `members_report_if_available()` on a reader with an upfront
+index (ZIP, 7z, RAR, ISO, single-file).
 An archive with more members than the limits allow is read only by raising
 them; `ListingLimits.UNLIMITED` streams any archive, and the reader then keeps
 every member until it closes. Formats that apply `max_members` at parse (7z, RAR
@@ -574,12 +577,12 @@ SHALL raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 A TAR extended header (PAX `x` / `g`, GNU long name or link name) is read whole by the
 parser before any member is registered, so its declared size SHALL be weighed first: one
-that declares more than is left of `max_metadata_bytes`, in any walk
-(`stream_members()` and `streaming=True` included), SHALL raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data. The
-headers ahead of one member form a chain the parser holds whole until the member is
-built, so each header of the chain, and the member's sparse map, SHALL be weighed
-against what the headers before it in the chain left, not against the member's whole
-share.
+that declares more than is left of `max_metadata_bytes`, in any walk (`stream_members()`
+and `streaming=True` included), SHALL raise `ResourceLimitError` naming
+`max_metadata_bytes` without reading its data. The headers ahead of one member form a
+chain the parser holds whole until the member is built, so each header of the chain, and
+the member's sparse map, SHALL be weighed against what the headers before it in the
+chain left, not against the member's whole share.
 
 #### Scenario: metadata accounting matrix
 

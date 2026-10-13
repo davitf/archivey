@@ -373,12 +373,12 @@ archive declares.
   budget before it reads them: an extended header (PAX `x` or `g`, GNU `L` or `K`) at
   its declared size, and a sparse map at 24 bytes per entry from its entry count before
   its entries are parsed, or block by block for an old GNU map's extension blocks. The
-  budget is what is left of `max_metadata_bytes`, in every walk, streaming included.
-  The headers ahead of
-  one member are one chain and draw on one budget. An over-limit tar then costs about
-  the cap plus one ordinary header. The PAX global records are held once per global
-  header, not once per member: members with none of their own share one read-only
-  snapshot. Each member is still charged for them, so the cap counts them as if copied.
+  budget is what is left of `max_metadata_bytes`, in every walk, streaming included. The
+  headers ahead of one member are one chain and draw on one budget. An over-limit tar
+  then costs about the cap plus one ordinary header. The PAX global records are held
+  once per global header, not once per member: members with none of their own share one
+  read-only snapshot. Each member is still charged for them, so the cap counts them as
+  if copied.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An

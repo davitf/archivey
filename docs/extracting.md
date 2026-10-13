@@ -405,22 +405,21 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 - **Extraction bombs** — total extracted bytes (default 2 GiB), compression ratio
   (default 1000, checked once 5 MiB has been written), and entry count (default
   262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
-- **Listing** — member count (default 262,144) and retained metadata
-  bytes (default 64 MiB) (`ListingLimits`) on `members()`, `members_report()`,
-  `stream_members()`, `for member in reader` and `extract_all()`. Trips raise
-  `ResourceLimitError`. A TAR extraction,
-  and any extraction from a streaming reader, does not list first: it checks the limits
-  as each member arrives in its one pass, so members before the one that crosses a cap
-  are already written when it raises. A `stream_members()` pass that lists as it goes
-  yields the members before the one that crosses a cap, the same way. 7z, RAR and ISO
-  check `max_members` at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z, RAR or
-  ISO. For 7z and RAR that parse bound is a member count, not a byte budget:
-  `max_metadata_bytes` still fires when the list is materialized. RAR also checks it at
-  `open_archive` against the declared sizes of compressed RAR 1.5/2.x comments, before
-  decoding them. ISO checks it at `open_archive` against the bytes of the directory
-  records `pycdlib` parses, which are more than the text a listing keeps; and ISO
-  counts every directory record of one tree, so an image right at a cap may need a
-  slightly higher one.
+- **Listing** — member count (default 262,144) and retained metadata bytes (default
+  64 MiB) (`ListingLimits`) on `members()`, `members_report()`, `stream_members()`,
+  `for member in reader` and `extract_all()`. Trips raise `ResourceLimitError`. A TAR
+  extraction, and any extraction from a streaming reader, does not list first: it checks
+  the limits as each member arrives in its one pass, so members before the one that
+  crosses a cap are already written when it raises. A `stream_members()` pass that lists
+  as it goes yields the members before the one that crosses a cap, the same way. 7z, RAR
+  and ISO check `max_members` at `open_archive`. Raise `listing_limits.max_members` to
+  open a larger 7z, RAR or ISO. For 7z and RAR that parse bound is a member count, not a
+  byte budget: `max_metadata_bytes` still fires when the list is materialized. RAR also
+  checks it at `open_archive` against the declared sizes of compressed RAR 1.5/2.x
+  comments, before decoding them. ISO checks it at `open_archive` against the bytes of
+  the directory records `pycdlib` parses, which are more than the text a listing keeps;
+  and ISO counts every directory record of one tree, so an image right at a cap may need
+  a slightly higher one.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
