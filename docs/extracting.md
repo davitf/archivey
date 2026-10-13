@@ -416,10 +416,10 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   the count). Raise `listing_limits.max_members` to open a larger ZIP, 7z, RAR or
   ISO. 7z and RAR also check `max_metadata_bytes` at `open_archive`, against the
   names and comments their headers hold (RAR's compressed RAR 1.5/2.x comments by
-  their declared sizes, before decoding them). ISO checks it at `open_archive` against the bytes of the directory
-  records `pycdlib` parses, which are more than the text a listing keeps; and ISO
-  counts every directory record of one tree, so an image right at a cap may need a
-  slightly higher one.
+  their declared sizes, before decoding them). ISO checks it at `open_archive`
+  against the bytes of the directory records `pycdlib` parses, which are more than
+  the text a listing keeps; and ISO counts every directory record of one tree, so an
+  image right at a cap may need a slightly higher one.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on

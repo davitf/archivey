@@ -1200,12 +1200,12 @@ RAR-specific only. General extraction and name hazards are §2.4.
   in the reader once the walk has returned (§2.2), so `max_members` never weighs them. Each
   is `uint16`-bounded at 64 KiB. **The sum is bounded:** the header walk weighs each
   member's declared `unpacked_size` with its names as it appends the member, and before
-  decoding any the reader weighs the final list again with the archive comment, raising `ResourceLimitError` past
-  `listing_limits.max_metadata_bytes`, so a refused archive spawns nothing. **The spawn count is not:** every compressed comment still forks
-  its own `unrar`, and comments that each declare a few bytes pass the byte budget, so the
-  process cost remains open — decoding all of them in one `unrar` call is tracked
-  internally. The path is inert
-  without the binary, which drops comments.
+  decoding any the reader weighs the final list again with the archive comment, raising
+  `ResourceLimitError` past `listing_limits.max_metadata_bytes`, so a refused archive
+  spawns nothing. **The spawn count is not:** every compressed comment still forks its own
+  `unrar`, and comments that each declare a few bytes pass the byte budget, so the process
+  cost remains open — decoding all of them in one `unrar` call is tracked internally. The
+  path is inert without the binary, which drops comments.
 - **RAR3 names are themselves compressed.** The *retained* name bytes are roughly 1:1 with
   header bytes on a successful decode. Before #292 the transient cost was the lever: the
   decoder continued past a failed 8-bit read with `?`, so an empty 8-bit field plus
