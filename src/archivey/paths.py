@@ -238,8 +238,19 @@ class _MemberGlob:
         # Patterns ending in "/" select directories only, so they get their own regex.
         any_kind = [p for p in patterns if not p.endswith("/")]
         dirs_only = [p.removesuffix("/") for p in patterns if p.endswith("/")]
-        self._any = _compile_globs(any_kind)
-        self._dirs_only = _compile_globs(dirs_only)
+        any_kind_regexes = [f"(?:{_glob_to_regex(p)})" for p in any_kind]
+        dirs_only_regexes = [f"(?:{_glob_to_regex(p)})" for p in dirs_only]
+        self._dirs_only = _compile_alternatives(dirs_only_regexes)
+        if with_contents:
+            # A member inside a matching folder: the name continues past a "/" after a
+            # prefix the pattern matches. That prefix is a folder, so a dirs-only
+            # pattern counts for it too. (?<=.): a "/" at index 0 starts an absolute
+            # name and ends no folder.
+            contents = "(?:(?<=.)/.+)"
+            any_kind_regexes = [f"{r}{contents}?" for r in any_kind_regexes] + [
+                f"{r}{contents}" for r in dirs_only_regexes
+            ]
+        self._any = _compile_alternatives(any_kind_regexes)
 
     def __call__(self, member: ArchiveMember | str) -> bool:
         if isinstance(member, str):
@@ -252,17 +263,6 @@ class _MemberGlob:
             is_dir = member.is_dir or name.endswith("/")
         if name.endswith("/"):
             name = name[:-1]
-        if self._matches(name, is_dir=is_dir):
-            return True
-        if self.with_contents:
-            # Every folder the member is in, outermost first: "a/b/c" is in "a" and
-            # "a/b". A "/" at index 0 starts an absolute name and ends no folder.
-            for index, char in enumerate(name):
-                if char == "/" and index and self._matches(name[:index], is_dir=True):
-                    return True
-        return False
-
-    def _matches(self, name: str, *, is_dir: bool) -> bool:
         if self._any is not None and self._any.fullmatch(name):
             return True
         return bool(
@@ -276,11 +276,11 @@ class _MemberGlob:
         )
 
 
-def _compile_globs(patterns: list[str]) -> re.Pattern[str] | None:
-    if not patterns:
+def _compile_alternatives(regexes: list[str]) -> re.Pattern[str] | None:
+    if not regexes:
         return None
     # DOTALL: a member name can contain a newline, and "**" becomes ".*".
-    return re.compile("|".join(f"(?:{_glob_to_regex(p)})" for p in patterns), re.DOTALL)
+    return re.compile("|".join(regexes), re.DOTALL)
 
 
 def _glob_to_regex(pattern: str) -> str:

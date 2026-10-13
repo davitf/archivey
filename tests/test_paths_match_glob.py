@@ -99,10 +99,10 @@ def test_negated_set_keeps_its_own_characters() -> None:
 @pytest.mark.parametrize(
     ("pattern", "selected", "refused"),
     [
-        ("a[*--]", ["a-", "a*", "a+"], ["a.", "a/b"]),
+        ("a[*--]", ["a-", "a*", "a+"], ["a."]),
         ("a[--^]b", ["a-b", "a0b", "a^b"], ["a/b", "a_b"]),
         ("a[!a&&b]", ["ac"], ["a&", "aa", "ab"]),
-        ("a[~~|]", ["a~", "a|"], ["a&", "a/b"]),
+        ("a[~~|]", ["a~", "a|"], ["a&"]),
     ],
 )
 def test_set_operators_are_literal(
@@ -198,6 +198,9 @@ def test_with_contents_on_an_absolute_name() -> None:
     predicate = match_glob("/etc", with_contents=True)
     assert predicate("/etc/passwd")
     assert not predicate("etc/passwd")
+    # The leading "/" of "/etc" ends no folder: "/etc" is not inside one named "".
+    assert not match_glob("*/", with_contents=True)("/etc")
+    assert not match_glob("**/", with_contents=True)("/etc")
 
 
 @pytest.mark.parametrize(
