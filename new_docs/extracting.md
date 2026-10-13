@@ -137,6 +137,7 @@ Some members are refused under every policy, and others depend on it:
 | A device file or a named pipe | Refused | Refused | Refused |
 | `CON`, `aux.txt` or `file:ads`, which Windows can't create | Refused | Refused | Written as is |
 | A name with characters that reorder how it displays, making an `.exe` look like a `.png` | Refused | Refused | Written as is |
+| `invoice\u200b.pdf`, with an invisible character such as a zero-width space | Written as is, and noted as `MEMBER_NAME_INVISIBLE_CHARACTER` | Same as `"strict"` | Same as `"strict"` |
 | `notes. `, with a trailing dot and space | Written as `notes` | Written as is | Written as is |
 | `caf\xe9.txt`, a name that isn't valid UTF-8 | Written as `caf%E9.txt` | Written as `caf%E9.txt` | Written as is |
 | `what?.txt`, with a character Windows doesn't allow | Written as `what%3F.txt` | Written as `what%3F.txt` | Written as is |
