@@ -50,6 +50,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
+from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
@@ -371,8 +372,12 @@ class _LzipState:
                 more = self._dec.decompress(b"")
                 out = out + more
                 self._crc = zlib.crc32(more, self._crc) & 0xFFFFFFFF
-            except lzma.LZMAError:
-                pass
+            except lzma.LZMAError as e:
+                # A corrupt tail is what truncation looks like here, so it stays a
+                # truncation, as on xz. Any other cause is not damage and is raised.
+                failure = lzma_error_to_archivey(e, "Error reading Lzip archive")
+                if not isinstance(failure, CorruptionError):
+                    raise failure from e
         self.truncated = True
         return out, units
 
@@ -425,7 +430,7 @@ class _LzipState:
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(chunk, remaining)
                 except lzma.LZMAError as e:
-                    raise CorruptionError(f"Error reading Lzip archive: {e}") from e
+                    raise lzma_error_to_archivey(e, "Error reading Lzip archive") from e
                 self._member_comp_size += len(chunk)
                 if plain:
                     self._crc = zlib.crc32(plain, self._crc)
@@ -482,7 +487,7 @@ class _LzipState:
             self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
             self._dec.decompress(lzma_alone_header)
         except lzma.LZMAError as e:
-            raise CorruptionError(f"Error reading lzip header: {e}") from e
+            raise lzma_error_to_archivey(e, "Error reading lzip header") from e
         self._crc = 0
         self._member_size = 0
         self._member_comp_size = _HEADER_SIZE

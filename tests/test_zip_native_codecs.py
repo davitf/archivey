@@ -278,6 +278,26 @@ def test_zip_lzma_out_of_range_properties_stay_corrupt() -> None:
             ar.read(member)
 
 
+@pytest.mark.parametrize(
+    "props",
+    [
+        pytest.param(bytes([225]) + (1 << 16).to_bytes(4, "little"), id="byte-225"),
+        pytest.param(b"\x5d\x00\x00", id="three-bytes"),
+    ],
+)
+def test_zip_lzma_malformed_properties_name_the_member(props: bytes) -> None:
+    """The properties are typed where they are decoded, so the message says what is
+    wrong, and the error carries the member, not a raw ``LZMAError`` repr."""
+    data = _build_minimal_zip(b"bad.txt", _zip_lzma_body(props), _PAYLOAD, method=14)
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        with pytest.raises(CorruptionError) as caught:
+            ar.read(member)
+    assert "Malformed ZIP LZMA member properties" in str(caught.value)
+    assert "LZMAError" not in str(caught.value)
+    assert caught.value.member_name == "bad.txt"
+
+
 @requires_binary("7z")
 def test_zip_lzma_lc8_written_by_7zip_is_unsupported(tmp_path: Path) -> None:
     archive = _7z_zip(tmp_path, "LZMA:lc=8", _PAYLOAD)
