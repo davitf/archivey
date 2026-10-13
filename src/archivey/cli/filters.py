@@ -15,49 +15,36 @@ from archivey.paths import match_glob
 from archivey.types import ArchiveMember
 
 
-class _Pattern:
-    """One member pattern from the command line, matched by :func:`archivey.paths.match_glob`.
+def _compile(
+    texts: Sequence[str], *, backslash_is_separator: bool | None = None
+) -> list[Callable[[ArchiveMember], bool]]:
+    """Build one :func:`archivey.paths.match_glob` predicate per command-line pattern.
 
-    The CLI reads patterns as ``match_glob(pattern, with_contents=True)`` does, so a
-    pattern means the same thing on the command line and in that ``members=`` argument:
-    ``*`` stays inside one folder, ``**`` matches any depth, and a pattern that matches a
+    A pattern means the same thing on the command line as
+    ``match_glob(pattern, with_contents=True)`` does as a ``members=`` argument: ``*``
+    stays inside one folder, ``**`` matches any depth, and a pattern that matches a
     folder also selects everything under it, as ``tar`` does. ``docs`` and ``docs/``
     select ``docs/`` and its contents, but not a file named ``docs.txt``.
 
     On Windows a ``\\`` in the pattern is read as ``/``. Elsewhere it stays a literal
     character, because a TAR member name can contain one. That is the one CLI-only rule.
-
     A pattern ``match_glob`` refuses (an empty one, ``a//b``, a reversed range such as
     ``[z-a]``) is a usage error.
     """
-
-    __slots__ = ("_predicate", "text")
-
-    def __init__(self, text: str, *, backslash_is_separator: bool) -> None:
-        self.text = text
+    if backslash_is_separator is None:
+        backslash_is_separator = os.sep == "\\"
+    predicates: list[Callable[[ArchiveMember], bool]] = []
+    for text in texts:
         pattern = text.replace("\\", "/") if backslash_is_separator else text
         try:
-            self._predicate = match_glob(pattern, with_contents=True)
+            predicates.append(match_glob(pattern, with_contents=True))
         except ArchiveyUsageError as exc:
             # match_glob's own reason, so the message names only what is wrong here.
             reason = exc.message.removeprefix("match_glob(): ")
             raise CliError(
                 f"invalid member pattern: {reason}", code=EXIT_USAGE
             ) from None
-
-    def matches(self, member: ArchiveMember) -> bool:
-        return self._predicate(member)
-
-
-def _compile(
-    texts: Sequence[str] | None, *, backslash_is_separator: bool | None = None
-) -> list[_Pattern]:
-    if backslash_is_separator is None:
-        backslash_is_separator = os.sep == "\\"
-    return [
-        _Pattern(text, backslash_is_separator=backslash_is_separator)
-        for text in texts or ()
-    ]
+    return predicates
 
 
 class MemberSelection:
@@ -65,7 +52,7 @@ class MemberSelection:
 
     Calling it is the ``members=`` predicate: a member is selected when it matches any
     include (or none are given) and matches no exclude. Includes and excludes match the
-    same way (see :class:`_Pattern`). Each call also records which includes matched and
+    same way (see :func:`_compile`). Each call also records which includes matched and
     whether anything was selected, so the pass that runs the predicate is also the one
     that finds unmatched patterns. Without an index, a second pass to find them would
     decompress the archive again. Calling it twice for one member records nothing new,
@@ -81,12 +68,12 @@ class MemberSelection:
         backslash_is_separator: bool | None = None,
     ) -> None:
         # dict.fromkeys: a repeated include is matched, and reported, once.
+        self._include_texts = list(dict.fromkeys(includes or ()))
         self._includes = _compile(
-            list(dict.fromkeys(includes or ())),
-            backslash_is_separator=backslash_is_separator,
+            self._include_texts, backslash_is_separator=backslash_is_separator
         )
         self._excludes = _compile(
-            excludes, backslash_is_separator=backslash_is_separator
+            excludes or (), backslash_is_separator=backslash_is_separator
         )
         self._include_hit = [False] * len(self._includes)
         self._included_any = False
@@ -106,13 +93,13 @@ class MemberSelection:
             # to check.
             if included and self._include_hit[index]:
                 continue
-            if pattern.matches(member):
+            if pattern(member):
                 included = True
                 self._include_hit[index] = True
         if not included:
             return False
         self._included_any = True
-        if any(pattern.matches(member) for pattern in self._excludes):
+        if any(pattern(member) for pattern in self._excludes):
             return False
         self._selected_any = True
         return True
@@ -120,8 +107,8 @@ class MemberSelection:
     def unmatched_includes(self) -> list[str]:
         """The includes that matched no member offered so far, in command-line order."""
         return [
-            pattern.text
-            for pattern, hit in zip(self._includes, self._include_hit, strict=True)
+            text
+            for text, hit in zip(self._include_texts, self._include_hit, strict=True)
             if not hit
         ]
 
