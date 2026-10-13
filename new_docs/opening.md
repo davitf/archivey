@@ -137,6 +137,11 @@ A name passed in `members=`, to `extract_all` or `stream_members`, matches every
 name, so `stream_members(members=["a.txt"])` gives you each version. To pick one, pass the
 `ArchiveMember` from the listing.
 
+A `stream_members` loop can give you a member before archivey has seen the rest of the archive, so
+it can't yet tell whether a later copy replaces it. Each member then has `is_current` set to `True`
+until the loop ends, and the members you kept are updated then. `member.member_state_final` tells
+you which case you have: it's `False` while a member's fields can still change.
+
 ## Configuration
 
 Settings you'd keep the same across many archives live in `archivey.ArchiveyConfig`, passed as
