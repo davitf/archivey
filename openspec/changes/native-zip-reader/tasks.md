@@ -142,7 +142,13 @@ non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 3.3e and 3.3f,
       `member_state_final` (and `safe-extraction` if the filter re-run needs a
       sentence); `docs/access-and-cost.md`, `docs/formats.md`; handbook §1, §2.2, §5,
       §6; `dev-docs/formats/tar.md`, `7z.md` and `rar.md` for which fields
-      `member_state_final` covers there.
+      `member_state_final` covers there. From 3b1: `archive-reading`'s
+      "`None` SHALL decode every member in-process" (a bit-3 PPMd member from a pipe
+      is refused under `None`), and the same field in `new_docs/security.md`,
+      `docs/extracting.md` (limits table and the PPMd paragraph); in
+      `dev-docs/threat-model.md`, the residual that junk between a bit-3 codec
+      member's end and its descriptor is refused from a file (DR-3) and accepted
+      from a pipe (DR-5a, `design.md` §"Where a member's data ends").
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):

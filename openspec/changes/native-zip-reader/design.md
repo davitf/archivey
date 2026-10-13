@@ -251,11 +251,11 @@ class MemberData(BinaryIO):         # the member's compressed bytes, read forwar
 ```
 
 `settle` reads past the data the caller left and the data descriptor. For a member only
-its codec can end, the caller passes the decoded data's `crc` and the walk finds the
-descriptor among the bytes it kept (§"Where a member's data ends"), or, for a codec that
-counts its input (DEFLATE), `used`, how many compressed bytes the codec consumed; either
-way the bytes the caller's layers read past the descriptor are put back. A central entry's offset is the
-stored one (`base` 0) until the end record gives the stub offset.
+its codec can end, the caller passes the decoded data's `crc`, and the walk finds the
+descriptor among the bytes it kept (§"Where a member's data ends"). A caller whose codec
+counts its input (DEFLATE) may pass that count as `used` instead. Either way the bytes
+the caller's layers read past the descriptor are put back. A central entry's offset is
+the stored one (`base` 0) until the end record gives the stub offset.
 
 The walk stops at the first `PK\x01\x02`, `PK\x06\x06` or `PK\x05\x06` after a member;
 the directory is then read forward from the same stream with the same entry parser.

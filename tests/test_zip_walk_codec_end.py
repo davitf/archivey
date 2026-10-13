@@ -21,6 +21,7 @@ import pytest
 
 from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.internal.backends.zip_local_walk import (
+    _CODEC_RETAIN,
     DataDescriptor,
     LocalHeaderWalk,
     MemberData,
@@ -339,31 +340,51 @@ def test_the_ppmd_codec_refuses_input_runs_on_for_7z_properties() -> None:
         PpmdCodec().open(io.BytesIO(b"x" * 5), params, StreamConfig())
 
 
+def _stored_block(data: bytes, *, final: bool) -> bytes:
+    """A raw DEFLATE stored block holding ``data``."""
+    return (
+        bytes([int(final)]) + struct.pack("<HH", len(data), len(data) ^ 0xFFFF) + data
+    )
+
+
 def test_a_planted_descriptor_ends_a_codec_member_early() -> None:
-    # The codec analogue of the stored scan's planted prefix: stored blocks put a
-    # descriptor for the first ``pos`` bytes, carrying the whole member's CRC and size,
-    # and a local header signature inside the member's compressed data. The first
-    # match wins; the walk then reads on from inside the data, and only the check
-    # against the central entry at the end of the pass (task 3.3b) can catch it.
-    payload = b"payload " * 200
-    crc = zlib.crc32(payload)
-    junk_len = 40
-    # A raw DEFLATE stored block (not final), whose bytes are the planted record.
-    pos = 5  # the stored block's header comes first
-    planted = b"PK\x07\x08" + struct.pack("<III", crc, pos, len(payload))
-    planted += b"PK\x03\x04" + b"\0" * (junk_len - len(planted) - 4)
-    block = b"\x00" + struct.pack("<HH", len(planted), len(planted) ^ 0xFFFF)
-    assert len(block) == pos
-    rest = zlib.compressobj(9, zlib.DEFLATED, -15)
-    packed = block + planted + rest.compress(payload) + rest.flush()
-    # ``settle`` gets the CRC the planted record carries: CRC-32 is linear, so a
-    # crafted member can make its decoded data's CRC agree with it.
-    member = _Member(b"m", 8, 0, planted + payload, packed)
+    # The codec analogue of the stored scan's planted prefix. Past 5 MiB of data (so
+    # the walk has dropped the oldest bytes it kept), a stored block carries a
+    # descriptor for the member up to that point and a local header signature. The
+    # first match wins; the walk then reads on from inside the data, and only the
+    # check against the central entry at the end of the pass (task 3.3b) can catch it.
+    head = zlib.compressobj(1, zlib.DEFLATED, -15)
+    prefix = _RANDOM.randbytes(5 << 20)
+    packed = head.compress(prefix) + head.flush(zlib.Z_FULL_FLUSH)
+    pos = len(packed) + 5  # the planted record follows the stored block's header
+    # A crafted member makes its decoded CRC and size agree with the record (CRC-32
+    # is linear, the size is its own choice); the test hands ``settle`` the
+    # record's values instead of forging them.
+    crc, size = 0x12345678, 1234
+    planted = b"PK\x07\x08" + struct.pack("<III", crc, pos, size)
+    planted += b"PK\x03\x04" + b"\0" * 20
+    packed += _stored_block(planted, final=False)
+    packed += _stored_block(b"tail", final=True)
+    member = _Member(b"m", 8, 0, prefix + planted + b"tail", packed)
     walk = LocalHeaderWalk(_Pipe(_streamed_zip([member])))
     entry = walk.next_entry()
     assert entry is not None
     data = walk.member_data(entry)
-    descriptor = data.settle(crc=crc, file_size=len(payload))
+    stream = open_codec_stream(
+        _codec(8),
+        data,
+        config=StreamConfig(refuse_input_after_end=True),
+        seekable=False,
+    )
+    out = bytearray()
+    with pytest.raises(DataAfterEndError):
+        while chunk := stream.read(1 << 20):
+            out += chunk
+    assert out == member.data
+    # The record is among the bytes handed out, past what the walk still keeps of
+    # the member's start.
+    assert _CODEC_RETAIN < pos < data.consumed
+    descriptor = data.settle(crc=crc, file_size=size)
     assert descriptor is not None
     assert descriptor.compressed_size == pos  # ended inside its own data
     with pytest.raises(CorruptionError):

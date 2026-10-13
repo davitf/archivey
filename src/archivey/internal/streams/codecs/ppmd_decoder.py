@@ -81,8 +81,8 @@ _PPMD_FLUSH_DRAIN_CHUNK = 65536
 
 
 _INPUT_RUNS_ON_IN_PROCESS = (
-    "Decoder limit reached: max_ppmd_in_process_input=None. This PPMd member's size "
-    "is not known until it has been read (a ZIP member read from a stream that cannot "
+    "max_ppmd_in_process_input=None rules out the child process this PPMd member "
+    "needs. Its size is not known until it has been read (a ZIP member read from a stream that cannot "
     "seek), so pyppmd is fed it in pieces, which can crash the process on corrupt "
     "input; it is decoded only in a child process, and None rules that out. Set "
     "DecoderLimits.max_ppmd_in_process_input to a size, or read the archive from a "
