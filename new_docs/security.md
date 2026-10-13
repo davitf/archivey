@@ -57,10 +57,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   and `spool_limits.max_bytes` caps that copy. When the archive records a member's size in
   `member.size`, archivey never decodes more than that, and a member holding more raises
   `CorruptionError`.
-- **`stream_members()` doesn't enforce the listing limits.** It doesn't check `max_members` and
-  `max_metadata_bytes`, except that 7z, RAR and ISO archives still check the member count when they
-  open. `extract_all` checks them even with `streaming=True`, so the files written before it goes
-  over a limit stay on disk.
+- **`extract_all` with `streaming=True` checks the listing limits as it goes,** since it can't
+  count the members before it starts, so the files written before it goes over a limit stay on
+  disk.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
@@ -76,9 +75,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
-- **After a seek, a crafted `.xz` or `.lz` file can return wrong data without an error.** A seek
-  trusts the file's own index, and the integrity check covers a read from start to end with no
-  skipped bytes.
+- **After a seek, a crafted `.xz` or `.lz` file can return different data at a position you've
+  already read.** A seek restarts at the block the file's own index names, and a crafted index can
+  name the wrong one, so reading again after a seek back can give different bytes from the first
+  read, with no error.
 - **On Windows, a folder source is less protected.** Windows can't open a path without following
   links, so a subfolder swapped for a link during the listing can list files from outside the
   folder. Reading a file still checks it's the one listed where the filesystem reports file

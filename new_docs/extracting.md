@@ -135,9 +135,11 @@ drops a leading `/` or drive letter, resolves or drops `..`, removes those reord
 and adds `_` to names Windows reserves, such as `CON`. In a symlink's target it makes only the
 character and reserved-name fixes, and it leaves a hard link's target as stored.
 
-A hard link is a second name for the file at the end of its chain of links, so it is written when
-that file is written and refused when that file is refused, and changing its target in a filter does
-nothing.
+A hard link gets the contents of the file it points to in the archive, whatever happens to that
+file's name. If a filter renamed that file, the link points to the new name. If the file was left
+out, by `members=` or a filter, the link is written as a separate copy of its contents, except with
+`streaming=True`, where that data is gone by then and the link fails. If the file is refused, the
+link is refused too. Changing a hard link's target in a filter does nothing.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, with the path it was written to in `result.path` and the

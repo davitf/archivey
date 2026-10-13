@@ -13,10 +13,9 @@ library handles, such as gzip, bzip2 and xz. The extra adds ISO, lz4, Brotli, zs
 and older, the rarer compression methods in 7z and ZIP, and AES decryption, which most encrypted 7z
 and ZIP archives need.
 
-RAR archives can be listed, and files stored in them without compression or encryption read, with
-nothing else installed. To read compressed files, you also need RARLAB's `unrar` or `rar`, 6.0 or
-later, or `unar` 1.10 or later, which handles fewer RAR archives. [Install](install.md) has the
-details.
+RAR archives can be listed, and files stored in them without compression read, with nothing else
+installed. To read compressed files, you also need RARLAB's `unrar` or `rar`, 6.0 or later, or
+`unar` 1.10 or later, which handles fewer RAR archives. [Install](install.md) has the details.
 
 ## Open and list
 
