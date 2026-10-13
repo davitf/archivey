@@ -547,8 +547,8 @@ One PR each, in order; every PR goes through the review label.
    these methods, so fixtures mean old archives or a test-only encoder, and the
    algorithm names are new public values. Until then such a member lists and its open
    raises `UnsupportedFeatureError`. The plan when it is picked up: two small
-   pure-Python decoders under `internal/streams/codecs/`, registered with the codec layer like the others (DR-20:
-   no native code). Only DOS-era archives use them, so speed does not matter. They need
+   pure-Python decoders under `internal/streams/codecs/`, registered with the codec
+   layer like the others (DR-20: no native code). Only DOS-era archives use them, so speed does not matter. They need
    `CompressionAlgorithm` members, which are public names and go to the maintainer.
    Format-zip spec, `docs/formats.md`, handbook §2.3.
 
