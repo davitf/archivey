@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import archivey
+from archivey.exceptions import ExtractionError
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.extraction import BombTracker
 from archivey.types import (
@@ -288,6 +289,113 @@ def test_a_filter_by_a_name_the_directory_gives_fails_from_a_pipe(
             ExtractionStatus.EXTRACTED if os.name == "nt" else ExtractionStatus.FAILED,
         ),
     ]
+
+
+def test_a_member_dropped_for_its_data_is_an_extraction_error(tmp_path: Path) -> None:
+    """The archive is sound: the pass cannot go back for the bytes."""
+
+    def docs_only(member: ArchiveMember) -> ArchiveMember | None:
+        return member if member.name.startswith("docs/") else None
+
+    source = NonSeekableBytesIO(_dos_docs())
+    with archivey.open_archive(source, streaming=True) as reader:
+        report = reader.extract_all(tmp_path, filter=docs_only, on_error="continue")
+    errors = [r.error for r in report.results if r.error is not None]
+    if os.name == "nt":
+        assert errors == []
+    else:
+        assert len(errors) == 1
+        assert type(errors[0]) is ExtractionError
+
+
+def _seed(dest: Path, files: dict[str, bytes]) -> None:
+    for name, content in files.items():
+        path = dest / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+
+@posix_modes
+@pytest.mark.parametrize("overwrite", ["replace", "skip", "rename", "error"])
+def test_a_member_the_list_leaves_out_in_the_end_keeps_the_callers_file(
+    overwrite: str, tmp_path: Path
+) -> None:
+    """The pass writes ``x\\y`` at ``x/y`` while the list could take it by its DOS
+    spelling; a Unix host leaves it ``x\\y``, which the list does not take, and
+    what the caller had at ``x/y`` is back."""
+    data = _zip([(_entry("x\\y"), b"ARCHIVE")])
+    for where in ("file", "pipe"):
+        _seed(tmp_path / where, {"x/y": b"MINE"})
+    results, tree = _both(
+        data, tmp_path, members=["x/y"], overwrite=overwrite, on_error="continue"
+    )
+    assert results == []
+    assert tree["x/y"][0] == b"MINE"
+    assert sorted(tree) == ["x", "x/y"]
+
+
+@pytest.mark.parametrize("overwrite", ["replace", "skip"])
+def test_a_member_the_list_takes_in_the_end_replaces_the_callers_file(
+    overwrite: str, tmp_path: Path
+) -> None:
+    for where in ("file", "pipe"):
+        _seed(tmp_path / where, {"docs/r.txt": b"MINE"})
+    results, tree = _both(
+        _dos_docs(), tmp_path, members=["docs/r.txt"], overwrite=overwrite
+    )
+    expected = b"read me" if overwrite == "replace" else b"MINE"
+    assert tree["docs/r.txt"][0] == expected
+    assert sorted(tree) == ["docs", "docs/r.txt"]
+
+
+@needs_symlinks
+def test_a_predicate_that_drops_the_member_in_the_end_keeps_the_callers_file(
+    tmp_path: Path,
+) -> None:
+    """``link`` is a file until the directory says it is a link."""
+    for where in ("file", "pipe"):
+        _seed(tmp_path / where, {"link": b"MINE"})
+    results, tree = _both(
+        _link_zip("a.txt"),
+        tmp_path,
+        members=lambda member: member.type is MemberType.FILE,
+        overwrite="replace",
+    )
+    assert [name for name, _, _ in results] == ["a.txt"]
+    assert tree["link"][0] == b"MINE"
+    assert sorted(tree) == ["a.txt", "link"]
+
+
+@needs_symlinks
+def test_a_member_selected_in_the_end_reports_progress(tmp_path: Path) -> None:
+    ticks: dict[str, list[tuple[str, int]]] = {}
+    for where, piped in (("file", False), ("pipe", True)):
+        seen = ticks[where] = []
+        _extract(
+            _link_zip("a.txt"),
+            tmp_path / where,
+            piped=piped,
+            members=lambda member: member.type is MemberType.SYMLINK,
+            on_progress=lambda p, seen=seen: seen.append(
+                (p.member.name, p.members_done)
+            ),
+        )
+    assert ticks["pipe"] == ticks["file"] == [("link", 1)]
+
+
+def test_the_filter_is_told_when_the_member_can_still_change(tmp_path: Path) -> None:
+    """``member_state_final`` on what the filter gets, as on what a predicate gets."""
+    data = _zip([(_entry("a\\"), b"")])
+    seen: list[tuple[str, bool]] = []
+
+    def probe(member: ArchiveMember) -> ArchiveMember:
+        seen.append((member.name, member.member_state_final))
+        return member
+
+    _extract(data, tmp_path, piped=True, filter=probe, on_error="continue")
+    assert seen[-1][1] is True
+    assert all(final is False for _, final in seen[:-1])
+    assert len(seen) == 2
 
 
 def test_a_special_file_the_directory_reveals_is_removed(tmp_path: Path) -> None:

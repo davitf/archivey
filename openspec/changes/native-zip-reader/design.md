@@ -372,8 +372,21 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   failure is the one place a forward pass cannot match the seekable one: a filter
   that selects by a name only the directory gives (a DOS name, `docs/` against a
   stored `docs\r.txt`) sees the stored name during the pass on POSIX (on Windows
-  it already sees `docs/r.txt`). A `members=` predicate is called twice for every
-  member, and the filter twice for one it left out.
+  it already sees `docs/r.txt`). The member fails with `ExtractionError`, as a
+  hard link whose source a forward pass has passed does: the archive is sound. A
+  `members=` predicate is called twice for every member, and the filter twice for
+  one it left out; both read `member_state_final` as `False` on the first call, so
+  either can tell the two apart. A member first handled at the end of the pass is
+  reported to `on_progress` then.
+- What the pass writes before the end of it decides must be undone without loss. An
+  entry the caller had at a destination the pass replaces (`overwrite="replace"`) is
+  moved aside and put back at the end of the run unless the member still lands
+  there. The bomb limits are the exception: what the pass writes is on disk while
+  the pass runs, so it is counted then and given back when it is taken back. A
+  member the selection takes only provisionally (a Unix `x\y` that a list naming
+  `x/y` may take) can therefore stop a run under `max_entries` or
+  `max_extracted_bytes` that the same bytes from a file complete. Not counting it
+  would let an archive write unbounded data the run then deletes.
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
   member) is removed from disk and reported: data outside any member is a warning

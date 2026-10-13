@@ -128,7 +128,12 @@ each lands with nothing half-done reachable:
       that moved is written again from its bytes on disk) and applies metadata the
       directory added, unless the filter set that field
       (`ExtractionCoordinator._settle_revised_members`, `test_zip_pipe_extract.py`,
-      which also extracts the corpus both ways). Left: 3.3i and 3.3g (3b3c).
+      which also extracts the corpus both ways). 3b3b also selects again at the end:
+      `members=` and `filter=` are applied to what each member became, a list matches
+      every spelling a member can end with during the pass, a member taken only at
+      the end fails with `ExtractionError` when its bytes have gone by, and an entry
+      the caller had where the pass wrote is kept aside until the end
+      (`design.md`, "The selection is made again"). Left: 3.3i and 3.3g (3b3c).
 - [x] 3.3a A retyped member goes through the filter and the policy checks again before
       its link is made; refused, its file is removed (test: a pipe ZIP whose directory
       types `payload` as a symlink to `../../etc/passwd` is refused from a pipe and from
@@ -196,7 +201,12 @@ each lands with nothing half-done reachable:
       `docs/extracting.md` (limits table and the PPMd paragraph); in
       `dev-docs/threat-model.md`, the residual that junk between a bit-3 codec
       member's end and its descriptor is refused from a file (DR-3) and accepted
-      from a pipe (DR-5a, `design.md` §"Where a member's data ends").
+      from a pipe (DR-5a, `design.md` §"Where a member's data ends"). From 3b3b: the
+      selection made again at the end of the pass (`design.md`, "The selection is
+      made again") in `docs/extracting.md` (member selection, and beside the other
+      "a filter can see such a member twice" cases), the `MemberSelector`
+      requirement in `archive-reading`, and the bomb-limit divergence in
+      `new_docs/security.md`.
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):
