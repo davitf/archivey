@@ -11,7 +11,6 @@ import subprocess
 import sys
 import types
 import zlib
-from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
@@ -2148,30 +2147,39 @@ def test_encoded_header_unpack_size_is_capped() -> None:
         load_sevenzip_archive(io.BytesIO(blob))
 
 
+# Per-shape ``7z a`` arguments for the archives above the stream cap; see
+# test_archives_above_stream_cap_still_open for why non-solid uses ``-mx=0``.
+_ABOVE_STREAM_CAP_SHAPES = {"solid": [], "nonsolid": ["-ms=off", "-mx=0"]}
+
+
 @pytest.fixture(scope="module")
-def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
-    """A tree of ``_MAX_NUM_STREAMS + 1`` one-byte files, built once.
+def above_stream_cap_archives(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, tuple[Path | None, str]]:
+    """Both 7z archives of ``_MAX_NUM_STREAMS + 1`` one-byte files, built once.
 
-    The tree is removed when the module finishes, or when building it raises; a run
-    killed by the thread-method timeout still leaves it behind. pytest keeps the
-    temporary directories of the last three sessions and deletes older ones when a
-    session starts, so a tree left behind is unlinked file by file by some later
-    run, a single-test run included: measured on a slow container disk, that later
-    run spent about 100 s in the cleanup.
+    Each shape maps to ``(archive, banner)``: the archive is ``None`` when ``7z``
+    could not build it, and the text is then its stderr instead of its banner.
 
-    Both shapes below need the same 65 537 files and nothing mutates them, so
-    the tree is shared rather than rebuilt per shape.
+    Both shapes need the same 65 537 files and nothing mutates them, so one tree
+    is written, both archives are built from it, and the tree is deleted, all
+    inside this setup. The two archives are left for pytest's own pruning. The
+    tree is not, because pruning unlinks it file by file in some later session,
+    a single-test run included: measured on a slow container disk, that later
+    run spent about 100 s in the cleanup. A run killed partway still leaves it.
 
-    Building the tree is the volatile phase of this test: repeated runs of
-    identical work on one idle container spanned 3.8 s to 22.2 s, against a
-    steady ~2 s for either archive build. It runs in the setup of whichever
-    parametrized item goes first, and ``pytest-timeout`` charges setup to that
-    item's budget by default. The mark below passes ``func_only=True`` so it
-    does not: on a slow Windows runner the first item, setup included, went
-    past 120 s, and the thread-method timeout then killed the worker with no
-    traceback. The build is plain file writes with nothing that can hang, so
-    leaving it unbounded costs nothing; the 120 s still bounds the ``7z`` build
-    and the reads, with a margin for the spread rather than the mean.
+    Everything costly happens here so that it lands in setup, which the
+    tests' ``func_only=True`` mark leaves outside their 120 s budget. Without
+    it, ``pytest-timeout`` charges a module fixture's setup to whichever item
+    runs first, and its teardown to the last item of the module on that worker,
+    usually an unrelated test on the 60 s default. On a slow Windows runner the
+    first item, setup included, went past 120 s, and the thread-method timeout
+    killed the worker with no traceback. Writing the tree is the volatile
+    phase: repeated runs of identical work on one idle container spanned 3.8 s
+    to 22.2 s, against a steady ~2 s for either archive build. Setup has no
+    timer, so a stall here falls to the job's own limit without naming the
+    test; the file writes cannot hang, and each ``7z`` call carries its own
+    timeout, which names the shape when it fires.
 
     Every timing here and below is Linux with 7z 23.01. The two runs that timed
     out before the split were macOS and Windows, where 65 537 file creates can
@@ -2191,34 +2199,60 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
     writer's own banner, so a failure on a runner nobody measured says which
     writer produced it.
     """
-    src = tmp_path_factory.mktemp("above-stream-cap") / "many"
+    root = tmp_path_factory.mktemp("above-stream-cap")
+    src = root / "many"
+    built: dict[str, tuple[Path | None, str]] = {}
     try:
         src.mkdir()
         for i in range(_MAX_NUM_STREAMS + 1):
             directory = src / f"d{i // 1000:03d}"
             directory.mkdir(exist_ok=True)
             (directory / f"f{i:05d}.txt").write_bytes(b"x")
-        yield src
+        for shape, extra_args in _ABOVE_STREAM_CAP_SHAPES.items():
+            archive = root / f"{shape}.7z"
+            result = subprocess.run(
+                ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=300,
+            )
+            if result.returncode != 0:
+                built[shape] = (None, repr(result.stderr))
+                continue
+            # The fixture is only useful if it still has the shape it is named for;
+            # a 7z release that laid these out differently would otherwise leave the
+            # test green while covering neither F1 nor F2. CI pins the writer on
+            # Linux only, so name it in the failure: elsewhere it is whatever the
+            # image ships.
+            banner = next(
+                (
+                    line.strip()
+                    for line in result.stdout.decode("utf-8", "replace").splitlines()
+                    if line.strip()
+                ),
+                "7z banner not captured",
+            )
+            built[shape] = (archive, banner)
     finally:
         # Best effort: a file that will not unlink is left for pytest's own pruning
-        # rather than failing a teardown the tests themselves passed.
+        # rather than failing a setup whose archives were built.
         shutil.rmtree(src, ignore_errors=True)
+    return built
 
 
-# func_only: the shared tree is built in setup; see above_stream_cap_tree.
+# func_only: the archives are built in setup; see above_stream_cap_archives.
 @pytest.mark.timeout(120, func_only=True)
 @requires_binary("7z")
 @pytest.mark.parametrize(
-    ("extra_args", "shape", "single_folder"),
+    ("shape", "single_folder"),
     [
-        pytest.param([], "solid", True, id="solid"),
-        pytest.param(["-ms=off", "-mx=0"], "nonsolid", False, id="nonsolid"),
+        pytest.param("solid", True, id="solid"),
+        pytest.param("nonsolid", False, id="nonsolid"),
     ],
 )
 def test_archives_above_stream_cap_still_open(
-    tmp_path: Path,
-    above_stream_cap_tree: Path,
-    extra_args: list[str],
+    above_stream_cap_archives: dict[str, tuple[Path | None, str]],
     shape: str,
     single_folder: bool,
 ) -> None:
@@ -2230,7 +2264,10 @@ def test_archives_above_stream_cap_still_open(
     is the liftable budget and fires at parse, not after allocating the table.
 
     The two shapes are separate tests because they shared one 120 s budget and
-    together came close enough to it to time out on the slower CI runners.
+    together came close enough to it to time out on the slower CI runners. The
+    worst item measured after that split, with its ``7z`` build still in the
+    body, was 25-30 s; the build has since moved into the fixture, and the mark
+    stays at 120 s anyway: the margin is for the spread, not for the mean.
 
     The non-solid archive is built with ``-mx=0``. That is not a shortcut past
     what F2 covers: measured against 7z 23.01, ``-ms=off -mx=0`` produces the
@@ -2251,29 +2288,9 @@ def test_archives_above_stream_cap_still_open(
     from archivey.exceptions import ResourceLimitError
 
     n = _MAX_NUM_STREAMS + 1
-    src = above_stream_cap_tree
-    archive = tmp_path / f"{shape}.7z"
-    result = subprocess.run(
-        ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
-        cwd=src.parent,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        pytest.skip(f"7z CLI cannot build {shape} fixture: {result.stderr!r}")
-
-    # The fixture is only useful if it still has the shape it is named for; a
-    # 7z release that laid these out differently would otherwise leave the test
-    # green while covering neither F1 nor F2. CI pins the writer on Linux only,
-    # so name it in the failure: elsewhere it is whatever the image ships.
-    writer = next(
-        (
-            line.strip()
-            for line in result.stdout.decode("utf-8", "replace").splitlines()
-            if line.strip()
-        ),
-        "7z banner not captured",
-    )
+    archive, writer = above_stream_cap_archives[shape]
+    if archive is None:
+        pytest.skip(f"7z CLI cannot build {shape} fixture: {writer}")
     with archive.open("rb") as raw:
         parsed = load_sevenzip_archive(raw)
     assert sum(parsed.num_unpackstreams_folders) == n, writer

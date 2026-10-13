@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -45,7 +46,6 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
-from archivey.internal.streams.streamtools import base as streamtools_base
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_unar_probe import GOOD_UNAR_EXTRACT
@@ -857,28 +857,34 @@ def test_close_before_end_of_file_is_not_an_error() -> None:
     assert proc.returncode is not None
 
 
-def test_a_stream_that_cannot_be_built_stops_its_process(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_stream_that_cannot_be_built_stops_its_process() -> None:
     """The stream owns the process from its constructor: a raise there reaps it.
 
     The raise itself must reap, not the collection of the half-built stream
     (``IOBase.__del__`` calls ``close()`` on it too). Binding ``refused`` keeps its
     traceback, and with it the half-built stream, alive past the assertion.
 
-    The raise comes from ``is_seekable``, the last step of
-    ``DelegatingStream.__init__`` and the one that can fail on a real inner. Patching
-    the whole ``__init__`` instead leaves fields unset that no real construction
-    leaves unset, and the finalizer's ``close()`` then raised ``AttributeError``
-    as an unraisable warning whenever the stream was collected.
+    The raise comes from the inner's ``seekable()``, which
+    ``DelegatingStream.__init__`` asks last, through ``is_seekable``; that lets
+    anything but ``AttributeError`` through, as a closed file's ``ValueError``
+    would. A raise from there leaves every field ``close()`` reads set, so the
+    finalizer's ``close()`` succeeds. Replacing the whole ``__init__`` instead
+    left fields unset, and that ``close()`` raised ``AttributeError`` as an
+    unraisable warning whenever the stream was collected.
     """
 
-    def refuse(inner: object) -> bool:
-        raise RuntimeError("wrapper refused")
+    class _RefusesSeekable(io.RawIOBase):
+        def __init__(self, inner: BinaryIO) -> None:
+            super().__init__()
+            self._inner = inner
 
-    # Patches the name the shared base class calls; nothing else constructs a
-    # DelegatingStream in this block.
-    monkeypatch.setattr(streamtools_base, "is_seekable", refuse)
+        def seekable(self) -> bool:
+            raise RuntimeError("wrapper refused")
+
+        def close(self) -> None:
+            self._inner.close()
+            super().close()
+
     proc = subprocess.Popen(
         [sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536)"],
         stdout=subprocess.PIPE,
@@ -888,7 +894,7 @@ def test_a_stream_that_cannot_be_built_stops_its_process(
     try:
         with pytest.raises(RuntimeError, match="wrapper refused") as refused:
             unar.UnarOutputStream(
-                proc.stdout,  # type: ignore[arg-type]
+                _RefusesSeekable(proc.stdout),  # type: ignore[arg-type]
                 proc,
                 has_verifiable_digest=False,
             )
