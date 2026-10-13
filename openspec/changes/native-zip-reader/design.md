@@ -430,9 +430,10 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   it is not done.
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
-  Writers put both in the same order; when they differ, member ids follow the
-  directory once it has been read, and so does `is_current`: of two members with the
-  same name, the current one is the later in the directory, in both modes. A streaming
+  Writers put both in the same order; when they differ, `is_current` follows the
+  directory once it has been read: of two members with the same name, the current one
+  is the later in the directory, in both modes. Member ids and the order of the listing
+  stay those of the file: the pass handed the ids out as it went. A streaming
   extraction writes copies in file order, so when the directory order of two same-name
   members is the reverse of their file order, the file on disk holds the copy the
   directory supersedes. That is a failure of the current member at the end of the pass

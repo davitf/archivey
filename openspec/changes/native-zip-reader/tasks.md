@@ -81,9 +81,9 @@ each lands with nothing half-done reachable:
   listing half.
 - 3b3b, extraction's end of the pass: 3.3's modes, symlinks, `OTHER` removal and
   names, 3.3a, 3.3f2.
-- 3b3c, the failures found at the end of the pass: 3.3b, 3.3c, 3.3g, and the local
-  entries no directory entry points to (3.3i), which waits on the maintainer's pick of
-  a diagnostic code.
+- 3b3c, the failures found at the end of the pass, in two PRs: 3b3c1 the reader's
+  half (the listing and `stream_members()` for 3.3b, 3.3c and 3.3i), 3b3c2 the
+  extraction's half (3.3g, and 3.3i's removal from disk).
 - 3b3d, encrypted members from a pipe: 3.2a, and password candidates (3.2b).
 - 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
   (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
@@ -140,10 +140,15 @@ each lands with nothing half-done reachable:
       a file).
 - [ ] 3.3b A size or CRC from a data descriptor that differs from the central entry is
       detected; its outcome is 3.3g's (test: a STORED bit-3 member that embeds a
-      descriptor for a prefix of itself, read from a pipe and seekably).
+      descriptor for a prefix of itself, read from a pipe and seekably). 3b3c1: the
+      reader's half (`ZipForwardReader._failed_at_end`; `stream_members()` raises at
+      the end of the pass),
+      `test_a_descriptor_the_directory_contradicts_fails_at_the_end_of_the_pass`.
 - [ ] 3.3c `is_current` from the directory order; same-name members in reverse order are
       detected at the end of the pass, with 3.3g's outcome (fixture with the two orders
-      reversed).
+      reversed). 3b3c1: `is_current` (`_listed_in_index_order`),
+      `test_the_later_copy_in_the_directory_is_current`; ids and listing order stay
+      the file's.
 - [x] 3.3d A stream that starts neither with a local header nor an end record: scan
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
@@ -178,11 +183,13 @@ each lands with nothing half-done reachable:
       written under the local name is taken back and the member fails, as the
       seekable extraction fails it when it reads the local header.
 - [ ] 3.3i A local entry no directory entry points to: dropped from the listing and,
-      when extracting, from disk, and reported (diagnostic code pending the
-      maintainer's pick, 2026-10-13). Until 3b3b it stays listed as its local header
-      made it. The same goes for directory entries past the size the end record
-      declares, which the seekable read never reads: 3b3a lists them and reports the
-      size (`DirectorySizeMismatch`).
+      when extracting, from disk, and reported (`ARCHIVE_UNLISTED_DATA`, the
+      maintainer's pick 2026-10-13, with `UnlistedDataContext`). 3b3c1: the listing
+      half (`_drop_listed`). Directory entries past the size the end record declares
+      stay listed, with `DirectorySizeMismatch` reported: the seekable read takes the
+      directory as the declared size *before* the end record, not after the first
+      entry, so with a wrong size its offsets are shifted too, and no forward rule
+      matches what it lists.
 - [x] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).

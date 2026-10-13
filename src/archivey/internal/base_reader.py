@@ -1549,7 +1549,35 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_emits = {}
         if error is not None:
             self._stamp_error_context(error)
-        _apply_last_entry_wins_is_current(self._listed)
+        _apply_last_entry_wins_is_current(self._listed_in_index_order())
+
+    def _listed_in_index_order(self) -> list[ArchiveMember]:
+        """``_listed`` in the order the archive's index lists them, which decides which
+        of two same-name members is current.
+
+        The walk's order, unless a backend whose walk is not its index learns the
+        index's order only at the end (a ZIP read from a pipe walks its local headers,
+        and the central directory, read last, decides).
+        """
+        return self._listed
+
+    def _drop_listed(self, dropped: list[ArchiveMember]) -> None:
+        """Take members the walk has yielded out of the listing, at the end of the walk:
+        the backend has learned that the archive's index does not list them.
+
+        They keep their ids, so the ids of the listing have gaps where they were, and
+        nothing changes them from here (``member_state_final``). Not for a discarded
+        listing, which keeps no member to drop.
+        """
+        gone = {id(member) for member in dropped}
+        self._listed = [member for member in self._listed if id(member) not in gone]
+        for member in dropped:
+            listed = self._listed_by_name.get(member.name)
+            if listed is not None:
+                listed[:] = [m for m in listed if id(m) not in gone]
+                if not listed:
+                    del self._listed_by_name[member.name]
+        _settle_listing(dropped, links_too=True)
 
     def _abandon_walk(self, exc: BaseException) -> None:
         """A pull failed without terminal damage: discard the walk, or poison it."""
