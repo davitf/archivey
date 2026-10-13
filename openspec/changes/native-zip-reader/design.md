@@ -276,6 +276,22 @@ the end of the pass (§"Failures found at the end of the pass"). This is not que
 which is about two headers that state the same field differently; here the local header
 stated no size at all.
 
+A codec stream stops after its end without saying how far past it it read: its
+decoder takes input in chunks of up to 1 MiB, and Deflate64 and PPMd cannot say how much
+of the last one they used. So the codec half does not count bytes. The reader decodes
+until the codec stream ends (a `refuse_input_after_end` stream raises
+`DataAfterEndError` at the first byte after the end, which here means "the member is
+over"), then the walk looks for the descriptor in the last 4 MiB it handed out: the
+four bytes of the decoded data's CRC, with a compressed size equal to their own
+position and a ZIP signature after them. A signed descriptor whose CRC differs (the
+data is damaged) is found by its signature and size, and the reader reports the CRC
+mismatch; an unsigned one cannot be told from the data then, and the walk stops with
+`CorruptionError`. PPMd holds its input until the whole member is in, to choose
+between this process and a child; with no size to wait for, a bit-3 PPMd member goes
+straight to a child process (in-process when `max_ppmd_in_process_input` is `None`),
+since its size cannot be shown to be under the limit. pyppmd stops at the end mark and
+reports what it did not use (measured, in-process and in the child).
+
 ### What only the central directory says
 
 The external attributes (Unix mode, symlink and special-file bits, the DOS reparse

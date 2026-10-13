@@ -68,8 +68,9 @@
 ## 3. Streaming (PRs 3a, 3b, 3c)
 
 3a is the forward walk alone (3.1, 3.2's parser half, 3.3d); 3b the reader over a
-non-seekable source (3.2's codec half, 3.3 to 3.3h, 3.4, 3.5, 3.5a); 3c the seekable
-cases (3.0, 3.0a, 3.0b).
+non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 3.3e and 3.3f,
+3b3 the rest (3.2a, 3.3 to 3.3d, 3.3g, 3.3h, 3.4, 3.5, 3.5a); 3c the seekable cases
+(3.0, 3.0a, 3.0b).
 
 - [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
@@ -86,11 +87,18 @@ cases (3.0, 3.0a, 3.0b).
 - [x] 3.1 Central and local headers parsed by the same code in both walks;
       `LocalHeaderWalk` over a forward reader (`zip_local_walk.py`); data descriptor
       parsing (signature optional, 4- or 8-byte sizes).
-- [ ] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
+- [x] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
       STORED + bit 3 descriptor scan; tests with stdlib `zipfile` writing to a pipe.
       3a: the walk's half (sized data, the scan, `settle(used)` putting back what a
-      codec's layers read past its end) is done, tested in `test_zip_local_walk.py`;
-      the codecs' report of the bytes they used is 3b.
+      codec's layers read past its end), tested in `test_zip_local_walk.py`. 3b1: the
+      codec half, `settle(crc=)` finding a codec member's descriptor by its decoded
+      CRC, and PPMd8 with `CodecParams.input_runs_on`; tests for DEFLATE, Deflate64,
+      bzip2, LZMA with EOS, PPMd and Zstandard, signed and unsigned, in
+      `test_zip_walk_codec_end.py`.
+- [ ] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
+      codec's input, so the AES stage authenticates the ciphertext as it goes, holding
+      back the bytes past the codec's end until `settle` says where the data ended
+      (test: an AE-1 and an AE-2 deflated member from a pipe, and a wrong code).
 - [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
       and reported; a missing one is handled per 3.3g.

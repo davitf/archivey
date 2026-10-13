@@ -136,6 +136,15 @@ class PpmdDecoder(BaseDecoder):
     7-Zip does (:meth:`_check_end`); a byte it leaves is ``DataAfterEndError`` through
     the stream.
 
+    ``input_runs_on`` (PPMd8 without ``unpack_size`` only) says the input does not
+    end where the stream does: a ZIP member read from a pipe, whose sizes come after
+    its data, is followed by the rest of the archive. Nothing is then held back: the
+    first input goes to a child process (in-process when ``in_process_max_input`` is
+    ``None``), since a member whose size is unknown cannot be shown to be under the
+    limit, and holding input until the source ends would hold the rest of the archive.
+    The stream ends at the end mark, and a byte after it is
+    :attr:`input_after_end`, so a ``refuse_input_after_end`` stream stops there.
+
     **Invariant:** ``pack_size`` must measure the same byte stream that
     ``feed()`` accumulates into ``_fed_compressed`` (the PPMd coder's compressed
     input — after ZIP method-98 header stripping / as the 7z pack ``SlicingStream``
@@ -155,7 +164,13 @@ class PpmdDecoder(BaseDecoder):
         pack_size: int | None = None,
         in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
         refuse_input_after_end: bool = False,
+        input_runs_on: bool = False,
     ) -> None:
+        if input_runs_on and (variant != 8 or unpack_size is not None):
+            raise ValueError(
+                "input_runs_on is for PPMd8 without unpack_size: only an end mark "
+                "can end a stream whose input runs on"
+            )
         if variant != 8 and unpack_size is None:
             raise ValueError(
                 "PPMd7 (7z var.H) requires unpack_size: the format has no end mark, "
@@ -209,6 +224,9 @@ class PpmdDecoder(BaseDecoder):
         self._refusal: str | None = None
         self._decomp: _PpmdNativeDecoder | None = None
         self._refuse_input_after_end = refuse_input_after_end
+        self._input_runs_on = input_runs_on
+        # Set once an ``input_runs_on`` stream has decoded its end mark.
+        self._end_marked = False
         # Input fed after the output reached ``unpack_size``, before the end check
         # (``_check_end``), and whether that check has run.
         self._tail = b""
@@ -267,6 +285,7 @@ class PpmdDecoder(BaseDecoder):
             pack_size=self._pack_size,
             in_process_max_input=self._in_process_max_input,
             refuse_input_after_end=self._refuse_input_after_end,
+            input_runs_on=self._input_runs_on,
         )
 
     @property
@@ -416,12 +435,24 @@ class PpmdDecoder(BaseDecoder):
             raise ResourceLimitError(self._refusal)
 
     def _release_to_child(self, limit: int) -> bytes:
-        reason = (
-            f"Decoder limit reached: max_ppmd_in_process_input={limit}. This PPMd "
-            "member is larger, and no child process can be started to decode it "
-            "(pyppmd can crash the process on corrupt input past this size). Raise "
-            "DecoderLimits.max_ppmd_in_process_input to decode it in-process."
-        )
+        if self._input_runs_on:
+            reason = (
+                f"Decoder limit reached: max_ppmd_in_process_input={limit}. This "
+                "PPMd member's size is not known until it has been read (a ZIP "
+                "member read from a stream that cannot seek), so it cannot be shown "
+                "to be under the limit, and no child process can be started to "
+                "decode it (pyppmd can crash the process on corrupt input). Set "
+                "DecoderLimits.max_ppmd_in_process_input to None to decode it "
+                "in-process."
+            )
+        else:
+            reason = (
+                f"Decoder limit reached: max_ppmd_in_process_input={limit}. This "
+                "PPMd member is larger, and no child process can be started to "
+                "decode it (pyppmd can crash the process on corrupt input past "
+                "this size). Raise DecoderLimits.max_ppmd_in_process_input to "
+                "decode it in-process."
+            )
         unavailable = ppmd_child_unavailable_reason()
         if unavailable is not None:
             self._refuse(f"{reason} ({unavailable})")
@@ -436,6 +467,10 @@ class PpmdDecoder(BaseDecoder):
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         self._check_refusal()
+        if self._end_marked:
+            if chunk:
+                self._input_after_end = True
+            return DecodeOut(b"")
         if chunk:
             self._fed_compressed += len(chunk)
         if self._held is not None:
@@ -444,7 +479,15 @@ class PpmdDecoder(BaseDecoder):
             # The limit is checked first: a member past it goes to a child even when
             # its whole pack arrived in this one feed. How much one feed carries is up
             # to the caller's read size, which must not decide where a member decodes.
-            if limit is not None and len(self._held) > limit:
+            if self._input_runs_on:
+                if not self._held:
+                    return DecodeOut(b"")
+                chunk = (
+                    self._release_held(in_child=False)
+                    if limit is None
+                    else self._release_to_child(limit)
+                )
+            elif limit is not None and len(self._held) > limit:
                 chunk = self._release_to_child(limit)
             elif self._pack_complete() is True:
                 chunk = self._release_held(in_child=False)
@@ -483,12 +526,32 @@ class PpmdDecoder(BaseDecoder):
             return DecodeOut(b"")
         out = self._decode(chunk, limit)
         self._produced += len(out)
+        if self._input_runs_on:
+            self._note_end_mark(len(out), limit)
         if self._draining and len(out) < limit:
             # All input is in, so a short return is the end: ask pyppmd nothing more
             # on the drain; the stream's next ``flush`` settles the member.
             self._draining = False
         self._maybe_check_end()
         return DecodeOut(out)
+
+    def _note_end_mark(self, produced: int, limit: int) -> None:
+        """Mark an ``input_runs_on`` stream ended once a decode reached its end mark.
+
+        A decode that stops short of its request at ``eof`` has decoded the end mark
+        (see :meth:`_note_decoded`); a full one at ``eof`` may be pyppmd's early
+        ``eof`` on a small request, so it does not count. pyppmd's ``unused_data``
+        is then the input after the end mark, exactly.
+        """
+        if self._end_marked or not self._native.eof:
+            return
+        requested = (
+            _PPMD_UNSIZED_DECODE_CHUNK if limit < 0 else min(limit, _PPMD_MAX_REQUEST)
+        )
+        if produced < requested:
+            self._end_marked = True
+            if _unused(self._native):
+                self._input_after_end = True
 
     def _at_declared_size(self) -> bool:
         """Whether a ``refuse_input_after_end`` member has all its output, its input
@@ -724,6 +787,7 @@ def PpmdDecompressorStream(
     pack_size: int | None = None,
     in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
     refuse_input_after_end: bool = False,
+    input_runs_on: bool = False,
     collector: DiagnosticCollector | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
@@ -746,6 +810,7 @@ def PpmdDecompressorStream(
             pack_size=pack_size,
             in_process_max_input=in_process_max_input,
             refuse_input_after_end=refuse_input_after_end,
+            input_runs_on=input_runs_on,
         ),
         collector=collector,
         codec_name="ppmd",
