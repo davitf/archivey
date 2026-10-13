@@ -268,10 +268,10 @@ row, and §3 has the table.
 against a dictionary size the stream declares before the decoder is built: xz per block,
 through liblzma's `memlimit`; lzip per member, whose format caps the dictionary at 512 MiB
 anyway; LZMA Alone per stream, through liblzma's `memlimit` too, refused on the first read
-so the refusal carries the probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3); zstd per frame, through
-libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4). bzip2, LZ4, Brotli and gzip
-have small fixed windows. The `.Z` decoder's table stays under about 19 MiB (about
-20 MiB on a free-threaded build) whatever the stream does
+so the refusal carries the probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3);
+zstd per frame, through libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4).
+bzip2, LZ4, Brotli and gzip have small fixed windows. The `.Z` decoder's table stays
+under about 19 MiB (about 20 MiB on a free-threaded build) whatever the stream does
 ([`unix-compress.md`](unix-compress.md) §4).
 
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
