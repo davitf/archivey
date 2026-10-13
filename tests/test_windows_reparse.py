@@ -483,11 +483,12 @@ def test_extraction_writes_a_reparse_member_that_is_not_a_link_as_a_file(
 ) -> None:
     """Reading the target during extraction re-types the member; it is written as that.
 
-    Under `read_link_targets=False`, and in a streaming pass under the default, the
-    read that shows the data is no reparse buffer comes after the pass yielded the
-    member as a link, with no data stream. Random access opens the member then. A
-    forward-only pass is already past the content, so that case fails loudly; it must
-    never become a clean `LINK_TARGET_UNAVAILABLE` with nothing written.
+    Under `read_link_targets=False` the read that shows the data is no reparse buffer
+    comes after the pass yielded the member as a link, with no data stream. Random
+    access opens the member then. A forward-only pass is already past the content, so
+    that case fails loudly; it must never become a clean `LINK_TARGET_UNAVAILABLE`
+    with nothing written. Under the default a streaming pass reads the target when it
+    reaches the member, so it yields the member as a file and writes it.
     """
     archive = tmp_path / "odd_reparse.zip"
     _zip_with_reparse_member(
@@ -501,7 +502,7 @@ def test_extraction_writes_a_reparse_member_that_is_not_a_link_as_a_file(
     with open_archive(archive, streaming=streaming, config=config) as opened:
         (result,) = opened.extract_all(dest, on_error=OnError.CONTINUE).results
     assert result.member.type is MemberType.FILE
-    if streaming:
+    if streaming and not read_link_targets:
         assert result.status is ExtractionStatus.FAILED
         assert "streaming pass" in str(result.error)
         assert not os.path.lexists(dest / "weird")
@@ -668,6 +669,52 @@ def test_a_7z_pass_yields_a_non_link_reparse_member_with_its_content(
             ("tree/after.txt", MemberType.FILE, b"next member"),
         ]
     # The pass does not re-type a member after yielding it.
+    assert [member.type for member, _, _ in yielded] == [t for _, t, _ in seen]
+
+
+@pytest.mark.parametrize("read_link_targets", [True, False])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+def test_a_zip_pass_yields_a_non_link_reparse_member_with_its_content(
+    tmp_path: Path, read_link_targets: bool, streaming: bool
+) -> None:
+    """The ZIP pass types such a member when it reaches it, as the 7z pass does.
+
+    A streaming pass used to yield it as a link with no stream and re-type it to a
+    file when the pass ended, so its content never reached the caller. Under
+    `read_link_targets=False` nothing reads link data on its own, and the member stays
+    the link listing typed it as.
+    """
+    archive = tmp_path / "odd_reparse.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, attributes, data in [
+            ("tree/weird", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, _LONG_CONTENT),
+            ("tree/after.txt", 0x20, b"next member"),
+        ]:
+            info = zipfile.ZipInfo(name)
+            info.create_system = 0
+            info.external_attr = attributes
+            zf.writestr(info, data)
+    config = ArchiveyConfig(read_link_targets=read_link_targets)
+    with open_archive(archive, streaming=streaming, config=config) as opened:
+        yielded = [
+            (
+                member,
+                member.type,
+                None if stream is None else _read_whole_member(member, stream),
+            )
+            for member, stream in opened.stream_members()
+        ]
+    seen = [(member.name, member_type, data) for member, member_type, data in yielded]
+    if read_link_targets:
+        assert seen == [
+            ("tree/weird", MemberType.FILE, _LONG_CONTENT),
+            ("tree/after.txt", MemberType.FILE, b"next member"),
+        ]
+    else:
+        assert seen == [
+            ("tree/weird", MemberType.SYMLINK, None),
+            ("tree/after.txt", MemberType.FILE, b"next member"),
+        ]
     assert [member.type for member, _, _ in yielded] == [t for _, t, _ in seen]
 
 

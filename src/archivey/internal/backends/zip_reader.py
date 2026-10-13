@@ -864,6 +864,7 @@ class ZipReader(BaseArchiveReader):
     ``zip_parser``, member data through archivey's decrypt stages and codec layer."""
 
     _MEMBER_LIST_UPFRONT = True
+    _LINK_TARGETS_IN_DATA = True
 
     def __init__(
         self,

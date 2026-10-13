@@ -235,6 +235,17 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
             seen.add(member.name)
 
 
+def _settle_listing(members: list[ArchiveMember], *, links_too: bool = False) -> None:
+    """The walk will not update ``members`` again (``member_state_final``).
+
+    ``links_too``: nor will anything read their unread link targets (the reader closed).
+    """
+    for member in members:
+        member._listing_pending = False
+        if links_too:
+            member._link_target_unread = False
+
+
 @dataclass(frozen=True)
 class _Materialized:
     """The published member listing: the report, frozen when the walk is published.
@@ -444,6 +455,10 @@ class BaseArchiveReader(ArchiveReader):
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
+    # Can a symlink's target be stored as member data, read by ``_ensure_link_target``
+    # (ZIP, 7z, RAR 4)? Such a link reads ``member_state_final=False`` until that read.
+    # Elsewhere the target is set while the member is typed, so nothing is left to read.
+    _LINK_TARGETS_IN_DATA: bool = False
 
     def __init__(
         self,
@@ -776,7 +791,10 @@ class BaseArchiveReader(ArchiveReader):
         not at yield time. A consumer that skips a member (a ``stream_members`` selector,
         a filtered extraction) therefore pays nothing for it — no seek to its data, no
         decompressor setup — and an open-time error (e.g. a wrong password) surfaces only
-        if the member is actually read, not merely iterated past.
+        if the member is actually read, not merely iterated past. The exception is a
+        symlink under ``read_link_targets``: its target is read when the pass reaches
+        it, before the selector runs (link finalization read the same bytes at EOF
+        before), so a strict policy can raise its target diagnostics there.
 
         ``copies`` matters only to a backend with file copies (RAR, which overrides
         this); ``_iter_stream_members`` applies ``copies.streams`` for every backend.
@@ -787,7 +805,20 @@ class BaseArchiveReader(ArchiveReader):
             report = self._materialize_members(enforce_listing_limits=False).report
             members = iter(report.members)
 
+        read_targets = self._config.read_link_targets
+
         def _open(member: ArchiveMember) -> ArchiveStream | None:
+            if read_targets and member.type is MemberType.SYMLINK:
+                # A streaming pass resolves links when it ends, after the caller has
+                # had the member. A reparse point whose data is not a link buffer is a
+                # file, and the caller needs its stream now, so read the target here,
+                # as the 7z pass does. A random-access listing has read it already.
+                try:
+                    self._read_link_target_on_request(member)
+                except CorruptionError:
+                    # The pass's link finalization reads it again and reports it, once,
+                    # as it reports any damaged target.
+                    pass
             if member.is_file:
                 return self._lazy_member_stream(member)
             return None
@@ -1240,6 +1271,10 @@ class BaseArchiveReader(ArchiveReader):
 
     def _publish_materialized(self, *, error: ArchiveyError | None) -> _Materialized:
         members = self._listed
+        # Links are resolved to members now, and is_current was stamped when the walk
+        # ended, so nothing changes these members from here. Not when the walk ends: a
+        # peek can end it long before a pass resolves its links.
+        _settle_listing(members)
         if error is not None:
             self._stamp_error_context(error)
         elif not members:
@@ -1506,6 +1541,8 @@ class BaseArchiveReader(ArchiveReader):
             # without handing the caller a second object for the same member. A
             # discarded listing has no prefix left to replay either.
             self._walk_failure = exc
+            # Nothing stamps the prefix now, so it will not change.
+            _settle_listing(self._listed)
             return
         # Random access hands out no member before the walk ends, so nobody holds the
         # prefix. A later call starts over, and ``_iter_members`` yields the same order;
@@ -1545,6 +1582,7 @@ class BaseArchiveReader(ArchiveReader):
         A backend that keeps its own record of the walk extends this to drop it too.
         """
         _apply_last_entry_wins_is_current(self._listed)
+        _settle_listing(self._listed)
         self._listing_discarded = True
         self._listed = []
         self._listed_by_name = {}
@@ -1752,6 +1790,19 @@ class BaseArchiveReader(ArchiveReader):
             self._emit_empty_link_target(member)
             member.link_target = None
             member._link_target_resolved = True
+        if not self._listing_discarded:
+            # A member the walk keeps is settled when its listing resolves links; one it
+            # does not keep never is, and is in no list a settle walks, so neither flag
+            # is set. (No backend that stores targets as data reaches a discard today:
+            # each counts its members at open and refuses there.)
+            member._listing_pending = True
+            if (
+                member.type is MemberType.SYMLINK
+                and member.link_target is None
+                and not member._link_target_resolved
+                and self._LINK_TARGETS_IN_DATA
+            ):
+                member._link_target_unread = True
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
 
     def _present_member(self, idx: int, member: ArchiveMember) -> None:
@@ -1820,7 +1871,13 @@ class BaseArchiveReader(ArchiveReader):
         """
         if member.link_target is not None or member._link_target_resolved:
             return
-        self._ensure_link_target(member)
+        try:
+            self._ensure_link_target(member)
+        except CorruptionError:
+            # Damaged target data stays damaged: a later read raises the same fault
+            # and sets nothing, so the member will not change.
+            member._link_target_unread = False
+            raise
         if member.type is MemberType.SYMLINK and member.link_target == "":
             # A target stored as member data (ZIP, 7z) of zero bytes. Cleared
             # before the emit, the reverse of `_register_member`: if a strict policy
@@ -1841,6 +1898,7 @@ class BaseArchiveReader(ArchiveReader):
         # A backend that catches EncryptionError returns normally, so the repeated-read
         # case this memo exists for is still covered.
         member._link_target_resolved = True
+        member._link_target_unread = False
 
     def _read_link_target_on_request(self, member: ArchiveMember) -> None:
         """Read ``member``'s target because the caller asked for this link.
@@ -2264,9 +2322,11 @@ class BaseArchiveReader(ArchiveReader):
             # A writer that stores no data for a reparse point has recorded no target
             # for it, and that is knowable from the header alone — no read, and so no
             # dependence on this being a seekable pass. Deciding it here rather than in
-            # the link-target hook is what makes streaming agree: that hook runs at EOF,
-            # after extraction has already decided what to do with the member, which
-            # left a 7-Zip junction raising instead of taking the recorded outcome.
+            # the link-target hook is what makes streaming agree: under
+            # `read_link_targets=False` that hook runs only when extraction reads the
+            # link, and a RAR pass runs it at EOF, after extraction has already decided
+            # what to do with the member, which left a 7-Zip junction raising instead
+            # of taking the recorded outcome. Here it needs no read at all.
             self._apply_reparse_data(
                 member, b"", fallback_type=reparse_fallback, member_id=member_id
             )
@@ -2285,8 +2345,10 @@ class BaseArchiveReader(ArchiveReader):
         records that the archive holds none — so it marks the lookup done. A backend
         that already has the buffer, or already knows there is none, can therefore call
         it while the member is being typed, and ``_resolve_link_target`` will not run
-        the hook again later. That matters because the hook runs at EOF in a streaming
-        pass, long after extraction has decided what to do with the member.
+        the hook again later. That matters wherever the hook runs late: at EOF in a
+        RAR pass, or under ``read_link_targets=False`` only when the link is read, after
+        extraction has decided what to do with the member. A ZIP or 7z pass under the
+        default runs it when it reaches the member.
 
         The reparse tag that separates a junction from a symlink is the first field of
         that buffer, and the buffer is the member's *data*, so this is the same
@@ -3293,6 +3355,9 @@ class BaseArchiveReader(ArchiveReader):
         # still raises ``pending``.
         self._maybe_teardown(pending)
         if self._state.stream_shutdown_done():
+            # A closed reader updates nothing, so a pass left early or a link never
+            # read is as final as it will get.
+            _settle_listing(self._listed, links_too=True)
             self._closed = True
 
     def _finish_stream_shutdown_step(self) -> Exception | None:

@@ -872,6 +872,21 @@ class ArchiveMember:
     ``link_target is None`` alone cannot say whether the target is missing or merely
     not looked for yet, so without this the lookup repeats on every access — re-reading
     the member's data and re-emitting its diagnostic. Not part of the public contract."""
+    _listing_pending: bool = field(default=False, repr=False, compare=False)
+    """Set while the walk that listed this member can still update it in place.
+
+    A forward pass hands each member to the caller before it has seen the rest of the
+    archive, so a later member can still change it (``is_current`` is stamped when the
+    walk ends). Cleared once the listing's links are resolved, when the walk stops
+    keeping members, when the reader closes, and on a :meth:`replace` copy; not when
+    the walk ends, since a peek ends it before any link is resolved. Read it through
+    the public :attr:`member_state_final`. Not part of the public contract."""
+    _link_target_unread: bool = field(default=False, repr=False, compare=False)
+    """Set while this symlink's target is stored as member data nobody has read yet.
+
+    Reading it can set ``link_target`` and, for a Windows reparse point whose data is
+    not a link buffer, change ``type``. Cleared once the backend has looked, found or
+    not. Read it through :attr:`member_state_final`. Not part of the public contract."""
     _link_target_absent: bool = field(default=False, repr=False, compare=False)
     """Set when the archive itself records no target for this link.
 
@@ -977,6 +992,44 @@ class ArchiveMember:
         return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
 
     @property
+    def member_state_final(self) -> bool:
+        """No field of this member will change from here on.
+
+        ``False`` while archivey can still update the member in place, which happens in
+        two cases:
+
+        - A member of a listing whose links have not been resolved yet. That listing
+          is complete, and the member settled, when a call that resolves links
+          returns: ``members()``, ``members_report()`` or ``get()``, or the end of a
+          ``stream_members()`` pass or of iterating the reader. Until then a later
+          member with the same name can still make this one ``is_current=False``, and
+          links get ``link_target_member``. A ``streaming=True`` pass yields every
+          member before that point, in every format. A
+          ``members_report_if_available()`` peek resolves no links, so its members
+          read ``False`` until a later call or pass does. A random-access pass with no
+          listing call first yields from a complete listing in some formats and walks
+          as it goes in others, so read the flag rather than assume. A pass past
+          ``ListingLimits`` stops keeping members: it stamps ``is_current`` over the
+          ones it kept, and stamps nothing from that point on, so a member yielded
+          later reads ``True`` with ``is_current`` as yielded and cannot supersede an
+          earlier one.
+        - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink)
+          that nothing has read yet, which is the case under
+          ``ArchiveyConfig.read_link_targets=False``. Reading it sets
+          :attr:`link_target`, and a Windows reparse point whose data is not a link
+          buffer becomes a ``FILE``. :meth:`~archivey.ArchiveReader.open` and
+          :meth:`~archivey.ForwardArchiveReader.extract_all` read it when they reach
+          the link, on the member they are given, a copy included.
+
+        Everywhere else it is ``True``. Closing the reader makes it ``True`` for every
+        member it listed, since a closed reader updates nothing. A copy made with
+        :meth:`replace` is never stamped, so only its unread link target can change.
+        Attached ``diagnostics`` are not fields and can still grow. Which fields change
+        in practice is listed per format in the user docs.
+        """
+        return not (self._listing_pending or self._link_target_unread)
+
+    @property
     def link_target_unrecorded(self) -> bool:
         """The archive records no target for this link.
 
@@ -1003,8 +1056,15 @@ class ArchiveMember:
         verified statically, so a misspelled field or a wrongly typed value is still
         a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
         would need a per-field ``TypedDict``, which is deliberately deferred.
+
+        No listing holds the copy, so nothing stamps ``is_current`` on it or resolves
+        its links to members; its ``member_state_final`` waits only on an unread link
+        target, which reading the copy fills in place. Closing the reader cannot reach
+        a copy, so a copy whose target is never read keeps reading ``False``.
         """
-        return replace(self, **kwargs)
+        copy = replace(self, **kwargs)
+        copy._listing_pending = False
+        return copy
 
 
 @dataclass(frozen=True)
