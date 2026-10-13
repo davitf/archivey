@@ -111,7 +111,17 @@ same loop written around `open()` would hand you the target's contents. Read
 
 A `stream_members()` pass owns the reader while it runs. Calling `open()`,
 `members()` or another pass inside the loop raises `ArchiveyUsageError` rather than
-quietly disturbing the pass.
+quietly disturbing the pass. On a reader opened with `concurrent_members=True`,
+`open()`, `read()`, `get()`, `members()` and another `stream_members()` all work
+inside the loop, from any thread, on every format. `extract_all()` still raises.
+The pass and the calls beside it share one walk of the archive's headers, so a pass
+nobody gets ahead of costs what it costs on a default reader. A call that needs
+members the pass has not reached yet, such as `members()` in the first iteration,
+reads ahead for it; on a compressed tar the pass's later reads then decode again
+from an earlier point and report `STREAM_REWIND_REDECOMPRESSES`, as calling
+`members()` and then `read()` does. A compressed tar's member streams also share
+one decoder, so reading two of them interleaved makes each read decode again from an
+earlier point. That is slower, but the bytes are still correct.
 
 ## What a read gives you back
 

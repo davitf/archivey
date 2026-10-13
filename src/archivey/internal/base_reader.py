@@ -544,6 +544,17 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_error: CorruptionError | None = None
         self._walk_failure: BaseException | None = None
         self._walk_pulling: bool = False
+        # Every pull, every pass cursor step and link finalization hold this lock, so
+        # the passes and listing calls a CONCURRENT reader runs side by side share the
+        # one walk: each reads ``_listed`` at its own position and pulls the next member
+        # when it reaches the end. Re-entrant, so a callback that re-enters the walk on
+        # the same thread reaches the ``_walk_pulling`` check instead of deadlocking.
+        # It is taken after the materialization election, never before it.
+        self._walk_lock = threading.RLock()
+        # Set once a random-access pass has handed out a member of a walk still running
+        # (TAR's one-pass walk). From then on the walk is never discarded and started
+        # over by a listing call that fails on a limit (see ``_drain_walk``).
+        self._walk_handed_out: bool = False
         self._walk_built: list[ArchiveMember] = []
         self._walk_emits: dict[int, EmitLog] = {}
         self._walk_presented: int = 0
@@ -1264,10 +1275,12 @@ class BaseArchiveReader(ArchiveReader):
         """
         if enforce:
             self._listing_tracker.assert_within_limits()
-        self._finalize_links(
-            error=error, child_scope=child_scope, enforce_listing_limits=enforce
-        )
-        return self._publish_materialized(error=error)
+        # Under the walk lock: a pass cursor beside it links the members it yields.
+        with self._walk_lock:
+            self._finalize_links(
+                error=error, child_scope=child_scope, enforce_listing_limits=enforce
+            )
+            return self._publish_materialized(error=error)
 
     def _publish_materialized(self, *, error: ArchiveyError | None) -> _Materialized:
         members = self._listed
@@ -1436,6 +1449,10 @@ class BaseArchiveReader(ArchiveReader):
         ``_abandon_walk``'s: discarded in random access, where no member has been handed
         out yet, and poisoned in streaming, where the prefix already has.
         """
+        with self._walk_lock:
+            return self._pull_member_locked(enforce=enforce)
+
+    def _pull_member_locked(self, *, enforce: bool) -> ArchiveMember | None:
         if self._walk_done:
             return None
         if self._walk_failure is not None:
@@ -1544,9 +1561,13 @@ class BaseArchiveReader(ArchiveReader):
             # Nothing stamps the prefix now, so it will not change.
             _settle_listing(self._listed)
             return
-        # Random access hands out no member before the walk ends, so nobody holds the
-        # prefix. A later call starts over, and ``_iter_members`` yields the same order;
-        # ``_pull_member`` replays the positions the failed walk reached.
+        # A later call starts over, and ``_iter_members`` yields the same order;
+        # ``_pull_member`` replays the positions the failed walk reached onto the same
+        # objects. A random-access pass that already holds members of this walk (TAR's
+        # one-pass walk, ``_walk_handed_out``) pulls up to its own position again
+        # (``_ProgressivePassIterator._step_locked``), so it gets those same objects;
+        # but a listing call beside it must not end up here over a limit, which is why
+        # ``_drain_walk`` stops enforcing inside the pull once the walk is handed out.
         self._listed = []
         self._listed_by_name = {}
         self._walk_position = 0
@@ -1606,9 +1627,28 @@ class BaseArchiveReader(ArchiveReader):
 
         The caller re-checks the running totals afterwards: members a non-enforcing
         pull (a ``stream_members`` pass) already counted were seen by no enforcing pull.
+
+        Once a pass has members of this walk (``_walk_handed_out``), an enforcing pull
+        that crossed a limit would discard the walk under the pass. So the pulls do not
+        enforce, and the totals are checked before and after each one instead: the
+        first call raises ``ResourceLimitError`` one member past the cap, a later one
+        raises before it pulls, so the listing never holds more than one member past
+        the caps. The walk carries on for the pass, which discards its listing when it
+        pulls past the cap itself.
         """
-        while self._pull_member(enforce=enforce) is not None:
-            pass
+        while True:
+            # Decided under the walk lock, with the pull: a pass on another thread sets
+            # ``_walk_handed_out`` under it, so a flag read before the lock could be
+            # stale by the time this pull runs, and an enforcing pull would then
+            # discard the walk under that pass.
+            with self._walk_lock:
+                shared = enforce and self._walk_handed_out
+                if shared:
+                    self._listing_tracker.assert_within_limits()
+                if self._pull_member(enforce=enforce and not shared) is None:
+                    return
+                if shared:
+                    self._listing_tracker.assert_within_limits()
 
     def _ensure_walked(self, *, enforce: bool) -> None:
         """Drain the walk under the first-touch election, without resolving links.
@@ -1636,10 +1676,9 @@ class BaseArchiveReader(ArchiveReader):
         walk first; a pass that reaches the end then finalizes its links and publishes
         the listing as the streaming pass does, so a 7z or RAR4 symlink whose target is
         its data has that target after the pass in both modes. A pass abandoned early
-        never gets here and resolves nothing. Publishing here, outside the
-        materialization election that ``_ensure_walked`` handed back, is safe because
-        the pass holds the root token: no ``members()`` call can overlap it, under
-        ``CONCURRENT`` as well.
+        never gets here and resolves nothing. Under ``CONCURRENT`` a ``members()`` call
+        beside the pass can publish first; the pass then publishes nothing
+        (``_finalize_pass_links`` goes through the election).
         """
         if self._streaming:
             yield from self._begin_forward_pass()
@@ -2585,12 +2624,22 @@ class BaseArchiveReader(ArchiveReader):
             return
         # Also ends a random-access reader's stream_members() pass (TAR's one-pass
         # walk, and the 7z and solid RAR passes over ``_listed_members()``), which
-        # opens no child scope either.
-        self._finalize_and_publish(
-            error,
-            enforce=self._progressive_enforce_listing_limits,
-            child_scope=False,
-        )
+        # opens no child scope either. Through the election: under CONCURRENT a
+        # members() call beside the pass may be publishing, and then this waits for
+        # it and publishes nothing.
+        if not self._state.begin_materialization():
+            return
+        try:
+            self._finalize_and_publish(
+                error,
+                enforce=self._progressive_enforce_listing_limits,
+                child_scope=False,
+            )
+            self._state.complete_materialization()
+        except BaseException:
+            self._materialized = None
+            self._state.fail_materialization()
+            raise
 
     def _link_progressive_member(self, member: ArchiveMember) -> None:
         """Point a link the pass is about to yield at a member the pass already passed.
@@ -2803,14 +2852,21 @@ class BaseArchiveReader(ArchiveReader):
             return
         # Random access: iteration just walks the already-published immutable member
         # snapshot, so it must NOT hold a reader-wide pass across consumption — that would
-        # reject the common `for m in reader: reader.open(m)` idiom as overlap. Acquire the
-        # pass only around materialization (matching members()), then yield the captured
-        # snapshot with no pass held so open()/get() inside the loop are admitted.
-        token = self._state.acquire_pass("__iter__")
-        try:
-            report = self._materialize_members().report
-        finally:
-            self._state.release_pass(token)
+        # reject the common `for m in reader: reader.open(m)` idiom as overlap. Take a
+        # token only around materialization, the one members() takes, then yield the
+        # captured snapshot with none held so open()/get() inside the loop are admitted.
+        if self._state.concurrent:
+            worker = self._state.acquire_worker("__iter__")
+            try:
+                report = self._materialize_members().report
+            finally:
+                self._state.release_worker(worker)
+        else:
+            token = self._state.acquire_pass("__iter__")
+            try:
+                report = self._materialize_members().report
+            finally:
+                self._state.release_pass(token)
         yield from report.members
         if report.error is not None:
             raise report.error
@@ -3537,20 +3593,14 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         if self._finished:
             raise StopIteration
         reader = self._reader
-        # Whether this step pulled a member without enforcing the limits.
-        unguarded = False
-        try:
-            if not reader._listing_discarded and self._pos < len(reader._listed):
-                member: ArchiveMember | None = reader._listed[self._pos]
-            else:
-                enforce = reader._progressive_enforce_listing_limits
-                member = reader._pull_member(enforce=enforce)
-                unguarded = not enforce
-        except BaseException as exc:
-            # A failed pull poisons the walk as well (``_abandon_walk``); this keeps the
-            # pass's own answer the same whichever of the two a retry reaches first.
-            self._error = exc
-            raise
+        with reader._walk_lock:
+            try:
+                member = self._step_locked()
+            except BaseException as exc:
+                # A failed pull poisons the walk as well (``_abandon_walk``); this keeps
+                # the pass's own answer the same whichever a retry reaches first.
+                self._error = exc
+                raise
         if member is None:
             # The cursor stepped past the last member of an ended walk.
             self._finished = True
@@ -3568,16 +3618,44 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
             if error is not None:
                 raise error
             raise StopIteration
+        return member
+
+    def _step_locked(self) -> ArchiveMember | None:
+        """The member at this cursor, pulling up to it; ``None`` past an ended walk.
+
+        Held under the walk lock. Other cursors (a second pass, a listing call under
+        ``CONCURRENT``) may have pulled past this one, so the member is read from
+        ``_listed`` when it is there. A walk discarded after a failure elsewhere and
+        started over replays onto the same objects, so pulling up to this position
+        again hands back the members this cursor has already yielded before its next.
+        """
+        reader = self._reader
+        enforce = reader._progressive_enforce_listing_limits
+        if reader._listing_discarded:
+            if self._pos != reader._walk_position:
+                # A cursor behind the one that discarded the listing: the members it
+                # would read next are gone.
+                reader._refuse_discarded_listing()
+            member = reader._pull_member(enforce=enforce)
+            if member is None:
+                return None
+            unguarded = not enforce
+        else:
+            unguarded = False
+            while self._pos >= len(reader._listed):
+                pulled = reader._pull_member(enforce=enforce)
+                if pulled is None:
+                    return None
+                unguarded = unguarded or not enforce
+            member = reader._listed[self._pos]
+        if not reader._streaming:
+            reader._walk_handed_out = True
         self._pos += 1
-        try:
-            reader._link_progressive_member(member)
-            if unguarded:
-                # After the link: the member that crosses a limit still resolves
-                # against the listing kept so far, which the caps bound.
-                reader._keep_listing_within_limits()
-        except BaseException as exc:
-            self._error = exc
-            raise
+        reader._link_progressive_member(member)
+        if unguarded:
+            # After the link: the member that crosses a limit still resolves against
+            # the listing kept so far, which the caps bound.
+            reader._keep_listing_within_limits()
         return member
 
 

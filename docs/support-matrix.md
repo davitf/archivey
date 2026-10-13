@@ -115,9 +115,10 @@ job.
 - **The packages in the "No" rows above.** They are not tested under free-threading, and
   since importing them re-enables the GIL, "free-threaded support" is not a meaningful
   question for them yet.
-- **Everything except member streams.** Iteration, materialization, extraction,
-  `stream_members()`, and `close()` are **single-owner** operations. Driving any of them
-  from several threads is a usage error, not a race to be fixed.
+- **Extraction, and anything on a reader without `concurrent_members=True`.**
+  `extract_all()` is a **single-owner** operation, and without `concurrent_members=True`
+  so are iteration, materialization and `stream_members()`. Driving them from several
+  threads is a usage error, not a race to be fixed.
 - **Parallel speedup.** Nothing here promises that fanning out is *faster*; it promises
   it is correct. Decode work may still serialize on a backend lock.
 
@@ -158,8 +159,9 @@ another thread that might still be reading it when the owner closes the reader.
 | `open()` + reading **different** member streams | Yes, with `concurrent_members=True`, after materialization |
 | Reading the **same** member stream object | No — one owner per stream |
 | `members()` / `members_report()` | With `concurrent_members=True`, yes: one thread builds the list and the others wait for it. Otherwise no — single-owner; materialize once, then share the result |
-| `__iter__` | No — single-owner |
-| `extract_all()` / `stream_members()` | No — single-owner passes |
+| `__iter__` | With `concurrent_members=True`, yes. Otherwise no — single-owner |
+| `stream_members()` | With `concurrent_members=True`, yes, beside other passes and random access. Otherwise no — single-owner pass |
+| `extract_all()` | No — single-owner pass |
 | `close()` | Safe to call twice; not safe to race against in-flight opens |
 | Separate `ArchiveReader` objects | Yes — independent readers share no mutable state |
 
