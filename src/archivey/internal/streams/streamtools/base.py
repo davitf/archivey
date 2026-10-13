@@ -238,7 +238,9 @@ class DelegatingStream(ReadOnlyIOStream):
             subclass_closes_inner = type(self)._SUBCLASS_CLOSES_INNER
         self._subclass_closes_inner = subclass_closes_inner
         # Cached at construction; a subclass that swaps ``_inner`` must go through
-        # ``_replace_inner`` so seekable() tracks the new engine.
+        # ``_replace_inner`` so seekable() tracks the new engine. Keep this last: the
+        # inner's seekable() can raise, and the half-built stream's close() (from
+        # __del__ or a subclass's cleanup) needs every field above.
         self._seekable = is_seekable(inner)
 
     def _replace_inner(self, inner: BinaryIO) -> None:
