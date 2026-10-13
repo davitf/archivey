@@ -816,8 +816,8 @@ class DiagnosticPolicy:
     """Which diagnostic codes to ignore and which to raise; every other code is collected.
 
     Matching is by code only. Both arguments take any iterable of :class:`DiagnosticCode`
-    (or code names / values as strings), and the fields always hold a ``frozenset``; a
-    code in both is refused. A policy is built with set operations on the code sets, for example
+    (or their values as strings), and the fields always hold a ``frozenset``; a code in
+    both is refused. A policy is built with set operations on the code sets, for example
     ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.X})``.
 
     Two ready-made instances:
@@ -848,8 +848,8 @@ class DiagnosticPolicy:
         ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
         raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
     ) -> None:
-        # Converted, not only checked: ``resolve`` answers by membership, so a code
-        # spelled as its name would construct fine and then never match.
+        # Converted, not only checked: the collector and the reader answer by membership
+        # in these sets, so a code spelled as its name would be stored and never match.
         call = "DiagnosticPolicy()"
         ignore_parsed = _coerce_policy_codes(ignore, call=call, param="ignore=")
         raise_on_parsed = _coerce_policy_codes(raise_on, call=call, param="raise_on=")

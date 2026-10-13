@@ -168,7 +168,7 @@ in `ignore`:
 DiagnosticPolicy(ignore={DiagnosticCode.PASSWORD_ARGUMENT_UNUSED})
 ```
 
-Both take any collection of codes (or their names or values as strings), and a code in both is
+Both take any collection of codes (or their values as strings), and a code in both is
 refused. The [named presets](#named-policy-presets) below cover the common cases.
 
 Two things a reader might expect here are deliberately not diagnostics: what extraction

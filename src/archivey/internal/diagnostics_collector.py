@@ -417,13 +417,11 @@ class DiagnosticCollector:
                     emit_log.details.append(_EmitDetail(diagnostic, attached))
                 replay.cursor = logged_at + 1
 
-            should_deliver = not ignored
-            should_raise_diagnostic = raising
-            if should_deliver:
+            if not ignored:
                 self._emitting_threads.add(thread_id)
 
         try:
-            if should_deliver:
+            if not ignored:
                 log.warning("%s", diagnostic.message)
                 if self._on_diagnostic is not None:
                     try:
@@ -438,7 +436,7 @@ class DiagnosticCollector:
                 msg = escalate_message if escalate_message is not None else message
                 kwargs = escalate_kwargs if escalate_kwargs is not None else {}
                 raised = escalate_as(msg, **kwargs)
-            elif should_raise_diagnostic:
+            elif raising:
                 raised = DiagnosticRaisedError(message, diagnostic=diagnostic)
             if raised is not None:
                 if replay is not None and logged_at is not None:
