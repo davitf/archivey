@@ -371,7 +371,8 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   target the reader kept, a folder or an empty file) and fails otherwise. That
   failure is the one place a forward pass cannot match the seekable one: a filter
   that selects by a name only the directory gives (a DOS name, `docs/` against a
-  stored `docs\r.txt`) sees the stored name during the pass. A `members=` predicate
+  stored `docs\r.txt`) sees the stored name during the pass on POSIX (on Windows
+  it already sees `docs/r.txt`). A `members=` predicate
   is called twice for every member, and the filter twice for one it left out.
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
