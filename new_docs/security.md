@@ -57,9 +57,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   and `spool_limits.max_bytes` caps that copy. When the archive records a member's size in
   `member.size`, archivey never decodes more than that, and a member holding more raises
   `CorruptionError`.
-- **`extract_all` with `streaming=True` checks the listing limits as it goes,** since it can't
-  count the members before it starts, so the files written before it goes over a limit stay on
-  disk.
+- **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR, or with
+  `streaming=True`, `stream_members()` yields members up to the limit and then raises, and
+  `extract_all` leaves the files it wrote before then on disk. ZIP, 7z, RAR and ISO archives check
+  the limits before the first member.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
