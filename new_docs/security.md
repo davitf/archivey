@@ -36,6 +36,15 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB of
   compressed data by default) and in a child process above it. Under a tight memory limit, such as a
   container's, the in-process decoder can crash instead of raising an error.
+
+    ??? note "Why the split at 16 MiB?"
+        pyppmd, the PPMd decoder, crashes when it's asked to keep decoding after a damaged stream
+        has ended early, and a wrong password or a crafted member gets it there. Handing it the
+        whole member at once avoids that, since nothing more is asked of it afterwards. The cost is
+        memory: archivey holds the whole compressed member, and about as much again while pyppmd
+        copies it. A child process doesn't need that, but it takes time to start for every member,
+        so archivey uses one only for members large enough that the memory matters.
+
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
   default. Everything else needs memory on top of that: the rest of your program, archivey itself,
@@ -68,18 +77,29 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data, and
   DEFLATE data of 16 MiB or more compressed, through rapidgzip. DEFLATE is the compression in gzip
   files and in most ZIP members. rapidgzip marks places in the stream it can restart from as it
-  reads, so a seek jumps to the nearest one instead of decompressing from the start. rapidgzip can
-  crash on some damaged DEFLATE data, so archivey runs it in a separate process, where a crash ends
-  only that read, with an error. Its bzip2 decoder hasn't been seen to crash, but it runs there too
-  as a precaution, since it's part of the same library. Archivey's fuzz tests run them and compare
-  their output with the standard decoders.
-  To avoid them, pass
+  reads, so a seek jumps to the nearest one instead of decompressing from the start. Both run in a
+  separate process. To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
+
+    ??? note "Why a separate process, and why only from 16 MiB?"
+        rapidgzip can crash on some damaged DEFLATE data, and in a separate process a crash ends
+        only that read, with an error. Its bzip2 decoder hasn't been seen to crash, but it runs
+        there too as a precaution, since it's part of the same library. Archivey's fuzz tests run
+        both and compare their output with the standard decoders. Starting that process takes about
+        45 ms, and on a full read rapidgzip saves about 3.4 ms per MB of compressed data, so below
+        about 13 MB the standard DEFLATE decoder finishes first.
+
 - **After a seek, a crafted `.xz` or `.lz` file can return different data at a position you've
   already read.** A seek restarts at the block the file's own index names, and a crafted index can
   name the wrong one, so reading again after a seek back can give different bytes from the first
   read, with no error.
+
+    ??? note "Why trust the index?"
+        Where a block really ends is known only by decompressing it, and not having to decompress is
+        why the index exists. Checking the index first would make every seek decompress from the
+        start, on every honest file too.
+
 - **On Windows, a folder source is less protected.** Windows can't open a path without following
   links, so a subfolder swapped for a link during the listing can list files from outside the
   folder. Reading a file still checks it's the one listed where the filesystem reports file
@@ -119,10 +139,11 @@ in the repository measures what each limit costs in time and memory on your mach
 
 The costs were measured on one 2.8 GHz core.
 
-A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16 for
-RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member, so two
-such members use the whole default, and a third is refused. Each password you try costs the same
-work again.
+??? note "Why 2^25 rounds?"
+    A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16
+    for RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member,
+    so two such members use the whole default, and a third is refused. Each password you try costs
+    the same work again.
 
 Going over a limit raises `ResourceLimitError`.
 

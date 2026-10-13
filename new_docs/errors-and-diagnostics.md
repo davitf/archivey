@@ -67,6 +67,11 @@ with archivey.open_archive("damaged.tar") as archive:
         print("The list stops early:", report.error)
 ```
 
+??? note "Why does `members()` give nothing?"
+    It returns a list, and a shorter list looks just like a complete one, so code that only looks at
+    the list would carry on as if the archive ended there. Iterating hands you each member as it's
+    found, so the exception at the end still tells you the rest is missing.
+
 A TAR archive cut between two members, or inside a member's header, has nothing left that looks
 wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
 `ARCHIVE_EOF_MARKER_MISSING` shows it, and
@@ -122,6 +127,10 @@ what you called:
 All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
 records themselves. An archive keeps at most 256 records by default, counting those attached to
 members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes that.
+
+??? note "Why a cap?"
+    A crafted archive can have a problem in each of a million members, and a record for each would
+    take memory that the listing limits don't count. `counts` stays exact either way.
 
 Each diagnostic is also logged as a warning on a logger under `archivey`, such as
 `archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each. To
