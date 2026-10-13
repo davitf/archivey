@@ -24,6 +24,8 @@ class StoredCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        # Reads nothing from ``config``: ``open_codec_stream`` relies on that and hands
+        # a stored stream source the caller's config without the decoder config work.
         if isinstance(source, (str, os.PathLike)):
             return open(os.fspath(source), "rb")
         return ensure_binaryio(source)
