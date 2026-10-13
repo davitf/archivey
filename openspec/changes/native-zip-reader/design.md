@@ -687,8 +687,9 @@ target has been read (`read_link_targets=False`, or a listing from the index alo
 is true everywhere else, so a caller checks it on each member before reading anything.
 Its documented meaning is "any field of this member may still change"; each format's
 handbook page and `docs/formats.md` name which fields that is in practice (for a ZIP
-forward pass: type, mode, host, comment, `is_current`; for a data-stored link: the
-target).
+forward pass, any field the directory builds: above all type, name, where a DOS host
+makes `\` a separator, mode, host, comment, times from the directory's extra fields,
+and `is_current`; for a data-stored link: the target).
 
 ## Out of scope
 

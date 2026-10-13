@@ -355,6 +355,19 @@ class _AlwaysStopResourceLimitError(ResourceLimitError):
 _AlwaysStopExtractionError = _AlwaysStopResourceLimitError
 
 
+class _CopyCounter:
+    """Counts the chunks ``_copy_to_fileobj`` writes as a copy of bytes this run
+    already wrote (``BombTracker.count_copy``), not as decoded output."""
+
+    __slots__ = ("_tracker",)
+
+    def __init__(self, tracker: BombTracker) -> None:
+        self._tracker = tracker
+
+    def count(self, chunk_bytes: int) -> None:
+        self._tracker.count_copy(chunk_bytes, at_link_limit=False)
+
+
 class BombTracker:
     """Cumulative byte / per-member ratio / archive-wide ratio / entry-count guards.
 
@@ -517,6 +530,10 @@ class BombTracker:
         cross-device copy does not: whether it happens depends on where the caller
         extracts to, not on the archive. Neither counts toward the per-member ratio,
         since a link member's compressed size says nothing about the copy's size.
+
+        A streaming pass that writes a member again from its own earlier copy, once
+        the archive's directory changed the member (``_redo_revised_member``), counts
+        it here too: nothing is decoded a second time.
         """
         self._check_cumulative_bytes(chunk_bytes)
         self._copied_bytes += chunk_bytes
@@ -838,6 +855,10 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
+    # Set by ``_redo_revised_member`` when the FILE body is this run's own earlier
+    # copy, read back from disk: nothing is decoded, so it counts as a copy
+    # (``BombTracker.count_copy``), not toward the decompression ratio.
+    recopy: bool = False
     # A streaming pass's earlier copies of this member's name, left in place while it
     # is handled so it can replace one atomically: path -> index of the superseded
     # result. See ``_park_earlier_copies``.
@@ -1658,8 +1679,9 @@ class ExtractionCoordinator:
         rewrites: frozenset[NameRewrite] = frozenset()
         link_error: ArchiveyError | None = None
         try:
-            if written:
-                self._take_back_written(index)
+            # A BLOCKED result wrote nothing, and is released all the same: what it
+            # was charged, if anything, is refunded rather than charged twice.
+            self._take_back_written(index)
             transformed, presented_name, rewrites = self._transform(member)
             if transformed is None:
                 # Not tallied, then dropped from the report.
@@ -1672,6 +1694,7 @@ class ExtractionCoordinator:
                 if transformed.type is MemberType.FILE:
                     if old_path is not None and old_path in current.parked:
                         held = open(long_path(old_path), "rb")  # noqa: SIM115
+                        current.recopy = True
                     elif member.size == 0:
                         held = io.BytesIO()
                     else:
@@ -3741,7 +3764,9 @@ class ExtractionCoordinator:
                 self._copy_to_fileobj(
                     stream,
                     dst if self._dry is None else self._dry.sink,
-                    self._state.tracker,
+                    _CopyCounter(self._state.tracker)
+                    if self._current.recopy
+                    else self._state.tracker,
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
@@ -3757,7 +3782,7 @@ class ExtractionCoordinator:
     def _copy_to_fileobj(
         stream: BinaryIO | None,
         dst: BinaryIO,
-        tracker: BombTracker | None,
+        tracker: BombTracker | _CopyCounter | None,
         emit_progress: Callable[[], None] | None = None,
     ) -> None:
         """Copy ``stream`` into the already-open ``dst`` in chunks, counting each toward the

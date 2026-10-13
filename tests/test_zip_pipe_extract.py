@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import os
 import stat
+import struct
 import zipfile
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import pytest
 
 import archivey
 from archivey.internal.backends.zip_reader import ZipReadBackend
+from archivey.internal.extraction import BombTracker
 from archivey.types import (
     ArchiveMember,
     ExtractionPolicy,
@@ -59,17 +61,18 @@ def _zip(entries: list[tuple[zipfile.ZipInfo, bytes]]) -> bytes:
     return buf.getvalue()
 
 
-def _tree(root: Path) -> dict[str, object]:
-    """Each entry under ``root``: its bytes, link target or ``dir``, and its mode."""
-    tree: dict[str, object] = {}
+def _tree(root: Path) -> dict[str, tuple[object, ...]]:
+    """Each entry under ``root``: its bytes, link target or ``dir``, and for a file or
+    directory its mode and modification time (a link gets no metadata applied)."""
+    tree: dict[str, tuple[object, ...]] = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
         if path.is_symlink():
             tree[rel] = ("symlink", os.readlink(path))
-        elif path.is_dir():
-            tree[rel] = ("dir", stat.S_IMODE(path.stat().st_mode))
-        else:
-            tree[rel] = (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+            continue
+        st = path.stat()
+        content = "dir" if path.is_dir() else path.read_bytes()
+        tree[rel] = (content, stat.S_IMODE(st.st_mode), int(st.st_mtime))
     return tree
 
 
@@ -91,7 +94,9 @@ def _extract(
 
 def _both(
     data: bytes, tmp_path: Path, **options: object
-) -> tuple[list[tuple[str, ExtractionStatus, str | None]], dict[str, object]]:
+) -> tuple[
+    list[tuple[str, ExtractionStatus, str | None]], dict[str, tuple[object, ...]]
+]:
     """Extract ``data`` from a file and from a pipe; assert both end the same, and
     return the results and the tree."""
     from_file = _extract(data, tmp_path / "file", piped=False, **options)
@@ -121,7 +126,22 @@ def test_modes_from_the_directory_reach_the_files(
     results, tree = _both(data, tmp_path, policy=policy)
     assert {s for _, s, _ in results} == {ExtractionStatus.EXTRACTED}
     if policy is not ExtractionPolicy.STRICT:
-        assert tree["tool/run.sh"] == (b"#!/bin/sh\n", 0o755)
+        assert tree["tool/run.sh"][:2] == (b"#!/bin/sh\n", 0o755)
+
+
+def test_a_time_only_the_directory_holds_is_applied(tmp_path: Path) -> None:
+    """The central entry's extended-timestamp field gives the modification time; the
+    local header's copy is renamed to a field no reader knows, so the pass writes
+    the DOS time first and the directory's time replaces it."""
+    when = 1_600_000_000
+    info = _entry("a.txt", mode=0o100644)
+    info.extra = struct.pack("<HHBl", 0x5455, 5, 1, when)
+    data = bytearray(_zip([(info, b"x")]))
+    name_len, extra_len = struct.unpack_from("<HH", data, 26)
+    assert extra_len == 9
+    data[30 + name_len : 30 + name_len + 2] = b"\x99\x99"
+    _, tree = _both(bytes(data), tmp_path, policy="trusted")
+    assert tree["a.txt"][2] == when
 
 
 def test_a_filter_that_set_a_mode_keeps_it(tmp_path: Path) -> None:
@@ -133,8 +153,8 @@ def test_a_filter_that_set_a_mode_keeps_it(tmp_path: Path) -> None:
     )
     _, tree = _both(data, tmp_path, policy="trusted", filter=chmod)
     if os.name != "nt":
-        assert tree["a"] == (b"x", 0o640)
-        assert tree["b"] == (b"y", 0o755)
+        assert tree["a"][:2] == (b"x", 0o640)
+        assert tree["b"][:2] == (b"y", 0o755)
 
 
 def _link_zip(target: str, *, name: str = "link") -> bytes:
@@ -207,7 +227,30 @@ def test_a_dos_name_moves_to_its_folder(
     )
     results, tree = _both(data, tmp_path, policy=policy)
     assert [name for name, _, _ in results] == ["docs/", "docs/readme.txt"]
-    assert tree["docs/readme.txt"][0] == b"read me"  # type: ignore[index]
+    assert tree["docs/readme.txt"][0] == b"read me"
+
+
+def test_a_rewrite_from_disk_is_counted_as_a_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The renamed file is written again from the bytes already on disk, which the
+    byte cap counts and the decompression ratio does not: nothing is decoded twice."""
+    counted: dict[str, int] = {"decoded": 0, "copied": 0}
+    count, count_copy = BombTracker.count, BombTracker.count_copy
+
+    def decoded(self: BombTracker, n: int) -> None:
+        counted["decoded"] += n
+        count(self, n)
+
+    def copied(self: BombTracker, n: int, *, at_link_limit: bool) -> None:
+        counted["copied"] += n
+        count_copy(self, n, at_link_limit=at_link_limit)
+
+    monkeypatch.setattr(BombTracker, "count", decoded)
+    monkeypatch.setattr(BombTracker, "count_copy", copied)
+    data = _zip([(_entry("docs\\readme.txt", host=0), b"read me")])
+    _extract(data, tmp_path / "pipe", piped=True)
+    assert counted == {"decoded": 7, "copied": 7}
 
 
 @pytest.mark.parametrize("policy", list(ExtractionPolicy))
@@ -240,7 +283,7 @@ def test_a_unix_file_ending_in_a_backslash_with_data_fails_from_a_pipe(
 def test_a_reparse_member_whose_data_is_no_link_stays_a_file(tmp_path: Path) -> None:
     content = b"not a reparse buffer " * 10
     _, tree = _both(_reparse_zip(content), tmp_path)
-    assert tree["tree/entry"][0] == content  # type: ignore[index]
+    assert tree["tree/entry"][0] == content
 
 
 @needs_symlinks
