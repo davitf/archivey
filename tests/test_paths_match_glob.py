@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import ArchiveyUsageError, open_archive
 from archivey.paths import match_glob
 
 NAMES = [
@@ -84,12 +84,32 @@ def test_closing_bracket_first_in_a_set_is_a_member() -> None:
 def test_bracket_never_matches_a_separator() -> None:
     assert not match_glob("a[!x]b")("a/b")
     assert not match_glob("a[--0]b")("a/b")  # "/" sits inside the range "-" to "0"
+    assert not match_glob("a[!--0]b")("a/b")
 
 
-@pytest.mark.parametrize("patterns", [(), ("",), ("*.md", "")])
-def test_no_or_empty_pattern_is_refused(patterns: tuple[str, ...]) -> None:
-    with pytest.raises(ValueError, match="match_glob"):
+def test_negated_set_keeps_its_own_characters() -> None:
+    # "-" first in the set is a literal, not the end of a range starting at "/".
+    predicate = match_glob("a[!-a]b")
+    assert not predicate("a-b")
+    assert predicate("a0b")
+    assert match_glob("a[!--0]b")("a1b")
+
+
+def test_repeated_double_star_is_one() -> None:
+    predicate = match_glob("docs/**/**/*.md")
+    assert [name for name in NAMES if predicate(name)] == [
+        "docs/index.md",
+        "docs/api/guide.md",
+    ]
+
+
+@pytest.mark.parametrize(
+    "patterns", [(), ("",), ("*.md", ""), ("/",), ("//",), ("[z-a]",)]
+)
+def test_bad_patterns_are_a_usage_error(patterns: tuple[str, ...]) -> None:
+    with pytest.raises(ArchiveyUsageError, match="match_glob") as caught:
         match_glob(*patterns)
+    assert isinstance(caught.value, ValueError)
 
 
 def test_repr_names_the_patterns() -> None:
@@ -105,9 +125,9 @@ def test_paths_exports_match_glob_without_re_export() -> None:
 
 
 def _tar(path: Path) -> Path:
-    """A TAR whose ``docs`` directory entry is stored without a trailing ``/``."""
+    """A TAR with a root entry ``.``, as ``tar cf x.tar .`` writes, and two folders."""
     with tarfile.open(path, "w") as tf:
-        for name in ("docs", "docs/api"):
+        for name in (".", "docs", "docs/api"):
             info = tarfile.TarInfo(name)
             info.type = tarfile.DIRTYPE
             info.mode = 0o755
@@ -134,12 +154,23 @@ def test_extract_all_with_match_glob(tmp_path: Path) -> None:
     ]
 
 
+def test_root_entry_matches_as_a_directory(tmp_path: Path) -> None:
+    # "." is the one directory name without a trailing "/": only is_dir marks it.
+    archive_path = _tar(tmp_path / "site.tar")
+    with open_archive(archive_path) as archive:
+        root = archive.get(".")
+    assert root.is_dir
+    assert match_glob("*/")(root)
+    assert not match_glob("*/")(".")
+
+
 def test_directory_members_match_by_type(tmp_path: Path) -> None:
     archive_path = _tar(tmp_path / "site.tar")
     with open_archive(archive_path) as archive:
         members = archive.members()
     dirs_only = match_glob("**/")
     assert sorted(m.name.rstrip("/") for m in members if dirs_only(m)) == [
+        ".",
         "docs",
         "docs/api",
     ]

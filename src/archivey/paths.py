@@ -24,6 +24,8 @@ import re
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
+from archivey.exceptions import _UsageValueError
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -94,6 +96,11 @@ def match_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
     A pattern that matches nothing is not reported: ``MEMBER_SELECTOR_UNMATCHED`` covers
     only the names in the collection form of ``members=``.
 
+    archivey's command-line tool reads its patterns differently on purpose: there ``*``
+    crosses ``/`` and ``docs`` selects the folder and everything in it, as ``tar`` does.
+    The two are separate, so ``archivey extract a.zip '*.md'`` selects ``.md`` files at
+    every depth while ``match_glob("*.md")`` selects top-level ones only.
+
     Args:
         *patterns: One or more glob patterns. A member is selected when any of them
             matches.
@@ -104,7 +111,9 @@ def match_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
         marks a directory.
 
     Raises:
-        ValueError: No pattern was given, or a pattern is empty.
+        ArchiveyUsageError: No pattern was given, a pattern is empty or only ``/``, or a
+            ``[...]`` set is malformed, such as the reversed range ``[z-a]``. It is also a
+            ``ValueError``.
     """
     return _MemberGlob(patterns)
 
@@ -116,15 +125,23 @@ class _MemberGlob:
 
     def __init__(self, patterns: tuple[str, ...]) -> None:
         if not patterns:
-            raise ValueError("match_glob() needs at least one pattern")
-        if not all(patterns):
-            raise ValueError("match_glob() pattern is empty")
+            raise _UsageValueError("match_glob() needs at least one pattern")
+        if not all(p.strip("/") for p in patterns):
+            raise _UsageValueError(
+                "match_glob() got an empty pattern; a pattern must name something "
+                "other than '/'"
+            )
         self.patterns = patterns
         # Patterns ending in "/" select directories only, so they get their own regex.
         any_kind = [p for p in patterns if not p.endswith("/")]
         dirs_only = [p.rstrip("/") for p in patterns if p.endswith("/")]
-        self._any = _compile_globs(any_kind)
-        self._dirs_only = _compile_globs(dirs_only)
+        try:
+            self._any = _compile_globs(any_kind)
+            self._dirs_only = _compile_globs(dirs_only)
+        except re.error as exc:
+            raise _UsageValueError(
+                f"match_glob() got a malformed [...] set: {exc}"
+            ) from None
 
     def __call__(self, member: ArchiveMember | str) -> bool:
         if isinstance(member, str):
@@ -132,12 +149,16 @@ class _MemberGlob:
             is_dir = name.endswith("/")
         else:
             name = member.name
+            # Every directory name ends in "/" except the root entry ".", which a
+            # "tar cf x.tar ." archive lists; is_dir is what marks that one.
             is_dir = member.is_dir or name.endswith("/")
         if name.endswith("/"):
             name = name[:-1]
         if self._any is not None and self._any.fullmatch(name):
             return True
-        return bool(is_dir and self._dirs_only and self._dirs_only.fullmatch(name))
+        return bool(
+            is_dir and self._dirs_only is not None and self._dirs_only.fullmatch(name)
+        )
 
     def __repr__(self) -> str:
         return f"match_glob({', '.join(map(repr, self.patterns))})"
@@ -146,6 +167,7 @@ class _MemberGlob:
 def _compile_globs(patterns: list[str]) -> re.Pattern[str] | None:
     if not patterns:
         return None
+    # DOTALL: a member name can contain a newline, and "**" becomes ".*".
     return re.compile("|".join(f"(?:{_glob_to_regex(p)})" for p in patterns), re.DOTALL)
 
 
@@ -155,7 +177,12 @@ def _glob_to_regex(pattern: str) -> str:
     # Whether the regex so far ends in a component, so the next component needs a "/"
     # before it. A "**" component supplies its own separators.
     after_component = False
-    components = pattern.split("/")
+    # A run of "**" components selects what one does; collapsing it also keeps the
+    # regex from holding several optional groups that backtrack against each other.
+    components: list[str] = []
+    for component in pattern.split("/"):
+        if not (component == "**" and components and components[-1] == "**"):
+            components.append(component)
     for index, component in enumerate(components):
         last = index == len(components) - 1
         if component == "**":
@@ -205,10 +232,9 @@ def _component_to_regex(component: str) -> str:
                 body = body[1:]
             # Escape what is special inside a regex class; keep "-" for ranges.
             body = re.sub(r"([\\\[\]^&~|])", r"\\\1", body)
-            if negate:
-                out.append(f"[^/{body}]")
-            else:
-                out.append(f"(?!/)[{body}]")
+            # The lookahead refuses "/"; putting "/" inside the set would join it to the
+            # caller's characters ("[!-a]" would become the range "/-a").
+            out.append(f"(?!/)[{'^' if negate else ''}{body}]")
         else:
             out.append(re.escape(c))
     return "".join(out)

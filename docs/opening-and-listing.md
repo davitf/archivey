@@ -452,6 +452,9 @@ Names match exactly, and a directory's name ends in `/`. Select the directory `d
 `members=["docs/"]`; `members=["docs"]` selects nothing, and its diagnostic names
 `docs/`. `members=["docs/"]` selects the directory entry only, not the files inside it.
 `reader.get()` and `reader.open()` also need the exact stored name.
+To select by pattern, pass `members=archivey.paths.match_glob("docs/**")`: there `*`
+stays inside one folder and `**` matches any depth (see the
+[front-end helpers](api.md#front-end-helpers)).
 
 A name that matches nothing is not an error, but it is not silent either. Each such entry
 gets a `MEMBER_SELECTOR_UNMATCHED` diagnostic once every member has been offered to the

@@ -382,8 +382,11 @@ is selected when any pattern matches its whole name, case-sensitively:
   `a`; `**` inside a component is `*`.
 - A directory is matched by its name without the trailing `/`. A pattern ending in `/`
   matches only directories (`ArchiveMember.is_dir`, or a `str` ending in `/`).
-- No pattern, or an empty pattern, raises `ValueError`. A pattern that matches nothing
-  records no diagnostic.
+- No pattern, an empty or `/`-only pattern, or a malformed `[...]` set raises
+  `ArchiveyUsageError` (also a `ValueError`). A pattern that matches nothing records no
+  diagnostic.
+- The CLI's own patterns (`*` crosses `/`, tar-style) stay separate and are not built on
+  `match_glob`.
 
 #### Scenario: match_glob patterns
 
@@ -395,4 +398,6 @@ is selected when any pattern matches its whole name, case-sensitively:
 | `docs/*` | `docs/index.md`, `docs/api/` | `docs/api/guide.md` |
 | `*/` | `docs/` | `README.md`, `docs/api/` |
 | `a[*]b` | `a*b` | `axb` |
-| `match_glob()` / `match_glob("")` | Raises `ValueError` | |
+| `match_glob()` / `match_glob("")` / `match_glob("[z-a]")` | Raises `ArchiveyUsageError` | |
+| `a[!-a]b` | `a0b` | `a-b`, `a/b` |
+| `.` member (`is_dir`) with `*/` | Selected | |

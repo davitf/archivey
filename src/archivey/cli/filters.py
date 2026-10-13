@@ -29,7 +29,9 @@ class _Pattern:
 
     This looseness is deliberate and CLI-only: the library's ``members=``, ``get()`` and
     ``open()`` match stored names exactly (maintainer decision, easier to widen later).
-    Do not align the library with this.
+    Do not align the library with this. The library's pattern form is
+    ``archivey.paths.match_glob``, where ``*`` stays inside one folder; the two dialects
+    agree by coincidence only, so neither reuses the other.
     """
 
     __slots__ = ("forms", "text")
