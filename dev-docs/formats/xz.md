@@ -201,13 +201,15 @@ padding only where they run to the end of the file; a stream after them is trail
   declares its own, each `.lzma` stream header one), so the decompressor is built with
   `memlimit` set to the cap plus a 128 KiB allowance for liblzma's own overhead
   (`new_capped_decompressor`). liblzma checks it after reading a header and before
-  allocating. The allowance is small because it is also slack: a cap set within 128 KiB
-  below a size the header declares admits that size. The refusal comes from the first
-  `decompress`, so on read, not at open. For `.lzma` that timing matters: a probe-only
-  claim's read errors are stamped `format_unconfirmed`, and that stamp is attached after
-  open, so a file whose header bytes read as a 2.5 GiB dictionary would otherwise tell the
-  caller to raise the cap for a file that is not LZMA at all. A second stream of a
-  concatenated `.lzma` is refused the same way, when its decoder starts.
+  allocating. The allowance is small because it is also slack: liblzma's own overhead,
+  about 64 KiB and build-dependent, takes part of it, and a cap set within the rest
+  (about 64 KiB) below a size the header declares admits that size. The refusal comes
+  from the first `decompress`, so on read, not at open. For `.lzma` that timing
+  matters: a probe-only claim's read errors are stamped `format_unconfirmed`, and that
+  stamp is attached after open, so a file whose header bytes read as a 2.5 GiB
+  dictionary would otherwise tell the caller to raise the cap for a file that is not
+  LZMA at all. A second stream of a concatenated `.lzma` is refused the same way, when
+  its decoder starts.
 - **lzip**: the exponent in the member header, before the decoder is built. The format's
   own ceiling, 512 MiB, is below the default cap.
 

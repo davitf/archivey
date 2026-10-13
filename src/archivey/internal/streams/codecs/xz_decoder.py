@@ -555,14 +555,15 @@ def _read_xz_index_backwards(
 
 
 # liblzma's ``memlimit`` counts a decoder's whole working set: the dictionary the
-# header declares plus the decoder's own overhead, measured on liblzma 5.4.5 at
-# 65 592 bytes for a lone LZMA2 filter and 67 992 for the longest chain xz allows
-# (four filters), and at 65 408 for an LZMA Alone decoder; other liblzma builds count
-# a little more (an Alone decoder's dictionary 64 KiB over the cap is refused on the
-# macOS and Windows CI runners). The allowance, about twice that, keeps a dictionary exactly at ``max_decoder_memory`` readable, as it is
-# on the raw LZMA and lzip paths, which compare the declared dictionary itself. It is
-# kept small because it is also slack: a cap set 128 KiB or less below a size an xz or
-# .lzma header declares admits that size there.
+# header declares plus the decoder's own overhead. The overhead depends on the liblzma
+# build: measured at 65 592 bytes for a lone LZMA2 filter and 65 408 for an LZMA Alone
+# decoder on Ubuntu's liblzma 5.4.5, and at 66 200 and 66 016 on the liblzma in the
+# python-build-standalone CPython 3.14; the longest chain xz allows (four filters)
+# measured 67 992 on 5.4.5. The allowance, about twice that, keeps a dictionary exactly
+# at ``max_decoder_memory`` readable, as it is on the raw LZMA and lzip paths, which
+# compare the declared dictionary itself. It is kept small because it is also slack:
+# the allowance minus the overhead, about 64 KiB on the builds measured. A cap set that
+# much or less below a size an xz or .lzma header declares admits that size there.
 _LIBLZMA_OVERHEAD_ALLOWANCE = 128 * 1024
 _LIBLZMA_MEMLIMIT_MAX = 2**64 - 1
 

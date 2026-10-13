@@ -375,7 +375,8 @@ Shared by the codecs; each page adds its own.
   allows it ([`brotli.md`](brotli.md) §4); extraction's ratio guard bounds what is written.
 - **A declared dictionary sizes an allocation.** xz, lzip and LZMA Alone declare their
   dictionary before any data, and liblzma reserves it. `DecoderLimits` refuses one over the
-  cap before the decoder is built (§2.3). Detection probes lift the cap and do not
+  cap before the dictionary is allocated: inside liblzma for xz and LZMA Alone, before the
+  decoder is built for lzip (§2.3). Detection probes lift the cap and do not
   reserve the declaration either: a probe sets `StreamConfig.probe_read_bound` to the
   output it reads, and the decoder is built with a dictionary of that size (4 KiB at
   least), which decodes those bytes identically, since a match never reaches back past

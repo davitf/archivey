@@ -617,15 +617,9 @@ def _alone_stream(data: bytes, dict_size: int) -> bytes:
     return bytes(written)
 
 
-def _alone_config(cap: int) -> Any:
-    return dataclasses.replace(
-        DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits(max_decoder_memory=cap)
-    )
-
-
 def _refused(codec: Codec, written: bytes, cap: int) -> bool:
     """Whether ``codec`` refuses ``written`` under ``cap``; a read must succeed otherwise."""
-    with open_codec_stream(codec, io.BytesIO(written), config=_alone_config(cap)) as s:
+    with open_codec_stream(codec, io.BytesIO(written), config=_stream_config(cap)) as s:
         try:
             assert s.read() == _LZMA_MEMBER
         except ResourceLimitError as exc:
@@ -672,10 +666,17 @@ def test_lzma_alone_refuses_on_read_not_on_open() -> None:
     written = lzma.compress(_LZMA_MEMBER, format=lzma.FORMAT_ALONE)
     # 8 MiB (-6's dictionary) is over a 1 MiB cap.
     with open_codec_stream(
-        Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=_alone_config(2**20)
+        Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=_stream_config(2**20)
     ) as stream:
         with pytest.raises(ResourceLimitError, match="max_decoder_memory=1048576"):
             stream.read()
+    # A caller that sizes the member by seeking to its end meets the refusal too,
+    # rather than reading the stream as empty.
+    with open_codec_stream(
+        Codec.LZMA_ALONE, io.BytesIO(written), config=_stream_config(2**20)
+    ) as stream:
+        with pytest.raises(ResourceLimitError, match="max_decoder_memory=1048576"):
+            stream.seek(0, io.SEEK_END)
     with open_codec_stream(
         Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=DEFAULT_STREAM_CONFIG
     ) as stream:
@@ -692,7 +693,7 @@ def test_lzma_alone_second_stream_over_the_cap_is_refused() -> None:
     first = _alone_stream(b"first stream\n" * 20, 1 << 16)
     second = _alone_stream(b"second stream\n" * 20, 64 * 2**20)
     with open_codec_stream(
-        Codec.LZMA_ALONE, io.BytesIO(first + second), config=_alone_config(cap)
+        Codec.LZMA_ALONE, io.BytesIO(first + second), config=_stream_config(cap)
     ) as stream:
         with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={cap}"):
             stream.read()
@@ -718,7 +719,7 @@ def test_lzip_member_dictionary_is_capped(tmp_path: Path) -> None:
     assert str(2**20) in str(excinfo.value)
 
 
-# --- the refusal comes before the decoder is built ---------------------------------------
+# --- the refusal comes before the dictionary is allocated -------------------------------
 
 
 @pytest.fixture
