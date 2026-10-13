@@ -343,6 +343,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The caller's source exception reaches the caller unchanged | `::test_bzip2_callers_source_exception_reaches_the_caller_unchanged`, `tests/test_exception_handlers.py::test_bzip2_accelerator_traps_a_failing_caller_source` |
 | bzip2 runs in a child process; the caller's process never imports rapidgzip | `tests/test_accelerator_truncation_abort.py::test_bzip2_runs_in_a_child_process` |
 | A crash of the child on the data hands the read to the standard library | `tests/test_accelerator_truncation_abort.py::test_after_a_child_crash_the_standard_library_reads_on` |
+| `AUTO` uses the accelerator from 1 MiB of compressed input; `ON` uses it at any size; the 1 MiB sits inside the measured break-even | `tests/test_bzip2_auto_threshold.py` |
 | The rewind report with the accelerator off; `ON` without the package | `tests/test_seekable_streams.py::test_bzip2_accelerator_off_warns_on_rewind`, `::test_bzip2_accelerator_on_without_package_raises` |
 | A `.tar.bz2` with a large first block is found, from a pipe too; a bare one stays `BZ2` | `tests/test_detection.py::test_inner_tar_over_bzip2_large_block_is_tar_bz2`, `::test_inner_tar_over_bzip2_large_block_non_seekable`, `::test_bare_bzip2_large_block_stays_bare_bz2` |
 
