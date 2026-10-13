@@ -2,8 +2,8 @@
 
 A zero-width space makes ``invoice.pdf`` and ``invoice<U+200B>.pdf`` display the same
 and extract side by side. The code reports every character of Unicode category Cf that
-``MEMBER_NAME_BIDI_CONTROL`` does not, in a name or a link target. It is advisory under
-every preset, because a zero-width joiner is part of ordinary emoji sequences.
+``MEMBER_NAME_BIDI_CONTROL`` does not, in a name or a link target. ``STRICT`` does not
+raise on it, because a zero-width joiner is part of ordinary emoji sequences.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _contexts(member: archivey.ArchiveMember, code: DiagnosticCode) -> list[obje
 def test_zero_width_space_is_reported_and_both_files_extract(
     tmp_path: Path, kind: str
 ) -> None:
-    archive = _archive(tmp_path, kind, ["invoice.pdf", "invoice​.pdf"])
+    archive = _archive(tmp_path, kind, ["invoice.pdf", "invoice\u200b.pdf"])
     dest = tmp_path / "out"
     with archivey.open_archive(archive) as reader:
         plain, hidden = reader.members()
@@ -66,13 +66,13 @@ def test_zero_width_space_is_reported_and_both_files_extract(
     assert context.category == "invisible"
     assert context.field == "name"
     assert context.controls == "U+200B"
-    assert context.member_name == "invoice​.pdf"
+    assert context.member_name == "invoice\u200b.pdf"
     assert (dest / "invoice.pdf").read_bytes() == b"0"
-    assert (dest / "invoice​.pdf").read_bytes() == b"1"
+    assert (dest / "invoice\u200b.pdf").read_bytes() == b"1"
 
 
 def test_strict_does_not_refuse_an_invisible_character(tmp_path: Path) -> None:
-    archive = _archive(tmp_path, "zip", ["invoice.pdf", "invoice​.pdf"])
+    archive = _archive(tmp_path, "zip", ["invoice.pdf", "invoice\u200b.pdf"])
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with archivey.open_archive(archive, config=config) as reader:
         report = reader.extract_all(tmp_path / "out")
@@ -80,8 +80,17 @@ def test_strict_does_not_refuse_an_invisible_character(tmp_path: Path) -> None:
         assert reader.diagnostics.counts[_INVISIBLE] == 1
 
 
+def test_pedantic_refuses_an_invisible_character(tmp_path: Path) -> None:
+    archive = _archive(tmp_path, "zip", ["invoice\u200b.pdf"])
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC)
+    with archivey.open_archive(archive, config=config) as reader:
+        with pytest.raises(DiagnosticRaisedError) as excinfo:
+            reader.members()
+    assert excinfo.value.diagnostic.code is _INVISIBLE
+
+
 def test_raise_on_refuses_an_invisible_character(tmp_path: Path) -> None:
-    archive = _archive(tmp_path, "zip", ["invoice​.pdf"])
+    archive = _archive(tmp_path, "zip", ["invoice\u200b.pdf"])
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
             raise_on=frozenset({"member_name_invisible_character"})
@@ -96,11 +105,11 @@ def test_raise_on_refuses_an_invisible_character(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("char", "spelling"),
     [
-        ("­", "U+00AD"),  # soft hyphen
-        ("‌", "U+200C"),  # zero-width non-joiner
-        ("‍", "U+200D"),  # zero-width joiner
-        ("⁠", "U+2060"),  # word joiner
-        ("﻿", "U+FEFF"),  # byte order mark
+        ("\u00ad", "U+00AD"),  # soft hyphen
+        ("\u200c", "U+200C"),  # zero-width non-joiner
+        ("\u200d", "U+200D"),  # zero-width joiner
+        ("\u2060", "U+2060"),  # word joiner
+        ("\ufeff", "U+FEFF"),  # byte order mark
         ("\U000e0067", "U+E0067"),  # tag character, as in subdivision flag emoji
     ],
 )
@@ -120,8 +129,8 @@ def test_each_invisible_format_character_is_named(
     [
         "café.txt",  # printable non-ASCII
         "❤️.txt",  # variation selector: category Mn, not Cf
-        "evil‮gnp.exe",  # bidi override: MEMBER_NAME_BIDI_CONTROL only
-        "‏דוח.pdf",  # bidi mark: MEMBER_NAME_BIDI_CONTROL only
+        "evil\u202egnp.exe",  # bidi override: MEMBER_NAME_BIDI_CONTROL only
+        "\u200fדוח.pdf",  # bidi mark: MEMBER_NAME_BIDI_CONTROL only
     ],
 )
 def test_other_characters_are_not_reported_as_invisible(
@@ -137,7 +146,7 @@ def test_other_characters_are_not_reported_as_invisible(
 def test_bidi_and_invisible_characters_are_reported_under_one_code_each(
     tmp_path: Path,
 ) -> None:
-    archive = _archive(tmp_path, "zip", ["a‮b‍c​d.txt"])
+    archive = _archive(tmp_path, "zip", ["a\u202eb\u200dc\u200bd.txt"])
     with archivey.open_archive(archive) as reader:
         (member,) = reader.members()
         (bidi,) = _contexts(member, _BIDI)
@@ -148,7 +157,7 @@ def test_bidi_and_invisible_characters_are_reported_under_one_code_each(
     assert (invisible.category, invisible.controls) == ("invisible", "U+200D,U+200B")
 
 
-_TARGET = "invoice​.pdf"
+_TARGET = "invoice\u200b.pdf"
 
 
 def _link_archive(tmp_path: Path, kind: str) -> Path:

@@ -1727,7 +1727,7 @@ class BaseArchiveReader(ArchiveReader):
         Runs when the walk pulls the member at ``idx``. A walk started over after a
         discarded failure (``_abandon_walk``) pulls the same positions onto the same
         objects (``_pull_member``); their presentation checks, counted by position in
-        ``_walk_presented``, are not repeated, so one deceptive name is one finding
+        ``_walk_presented``, are not repeated, so a deceptive name is reported once
         whichever backend built it. A check whose emit raised is not counted as run, so
         a strict policy refuses again on the retry. The listing tracker was reset with
         the discarded walk, so the member is counted again.

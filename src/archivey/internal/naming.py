@@ -54,19 +54,6 @@ BIDI_REORDERING_CONTROLS = frozenset(
 )
 
 
-def _invisible_format_characters(text: str) -> list[str]:
-    """The characters of Unicode category Cf in ``text`` that are not bidi controls.
-
-    Bidi controls are Cf too; ``MEMBER_NAME_BIDI_CONTROL`` reports them, so each
-    character is reported under one code only.
-    """
-    return [
-        char
-        for char in text
-        if char not in BIDI_CONTROLS and unicodedata.category(char) == "Cf"
-    ]
-
-
 def _emit_name_controls(
     collector: DiagnosticCollector,
     *,
@@ -78,50 +65,76 @@ def _emit_name_controls(
     """Emit ``MEMBER_NAME_BIDI_CONTROL`` and ``MEMBER_NAME_INVISIBLE_CHARACTER`` for
     ``text``, the member's name or its link target as ``field`` says.
 
-    Each code is emitted at most once, naming every character of its set in order. ASCII
-    text contains neither set, so it skips the per-character scan (listing hot path;
-    perf review H3 / Q1).
+    Bidi controls are Unicode category Cf too; they go to their own code only, so the
+    invisible set is every other Cf character. Each code is emitted at most once, naming
+    every character of its set in order. ASCII text contains neither set, so it skips
+    the per-character scan (listing hot path; perf review H3 / Q1).
     """
     if text.isascii():
+        return
+    bidi: list[str] = []
+    invisible: list[str] = []
+    for char in text:
+        if char in BIDI_CONTROLS:
+            bidi.append(char)
+        elif unicodedata.category(char) == "Cf":
+            invisible.append(char)
+    if not bidi and not invisible:
         return
     where = (
         "Member name" if field == "name" else f"Link target of {quoted(member.name)}"
     )
-    checks: tuple[
-        tuple[DiagnosticCode, Literal["bidi", "invisible"], list[str], str], ...
-    ] = (
-        (
-            DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
-            "bidi",
-            [char for char in text if char in BIDI_CONTROLS],
-            "a bidirectional control character",
-        ),
-        (
-            DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
-            "invisible",
-            _invisible_format_characters(text),
-            "an invisible format character",
-        ),
-    )
-    for code, category, found, what in checks:
-        if not found:
-            continue
-        collector.emit(
-            code=code,
-            message=f"{where} contains {what}: {quoted(text)}",
-            context=MemberNameControlsContext(
-                archive_name=archive_name,
-                member_name=member.name,
-                member_id=member._member_id,
-                raw_name_base64=raw_name_to_base64(member.raw_name),
-                controls=",".join(f"U+{ord(char):04X}" for char in found),
-                field=field,
-                category=category,
-            ),
+    if bidi:
+        _emit_controls(
+            collector,
+            code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+            message=f"{where} contains a bidirectional control character: {quoted(text)}",
             member=member,
-            attach_to_member=True,
-            logger=logger,
+            found=bidi,
+            field=field,
+            category="bidi",
+            archive_name=archive_name,
         )
+    if invisible:
+        _emit_controls(
+            collector,
+            code=DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
+            message=f"{where} contains an invisible format character: {quoted(text)}",
+            member=member,
+            found=invisible,
+            field=field,
+            category="invisible",
+            archive_name=archive_name,
+        )
+
+
+def _emit_controls(
+    collector: DiagnosticCollector,
+    *,
+    code: DiagnosticCode,
+    message: str,
+    member: ArchiveMember,
+    found: list[str],
+    field: Literal["name", "link_target"],
+    category: Literal["bidi", "invisible"],
+    archive_name: str | None,
+) -> None:
+    collector.emit(
+        code=code,
+        message=message,
+        context=MemberNameControlsContext(
+            archive_name=archive_name,
+            member_name=member.name,
+            member_id=member._member_id,
+            raw_name_base64=raw_name_to_base64(member.raw_name),
+            controls=",".join(f"U+{ord(char):04X}" for char in found),
+            field=field,
+            category=category,
+        ),
+        member=member,
+        attach_to_member=True,
+        logger=logger,
+    )
 
 
 def emit_member_name_controls(
