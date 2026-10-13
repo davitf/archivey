@@ -33,8 +33,10 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 costing time. If you plan to read an archive in one pass, setting it catches that mistake,
 even on an ordinary file. You get one pass, through `stream_members` or `extract_all`, and it
 is used up even if you leave the loop early. Inside a `stream_members` loop, `open`, `read` and
-`members()` raise even without `streaming=True`, since the pass is still using the archive. Streams
-from the pass never seek.
+`members()` raise even without `streaming=True`, since the pass is still using the archive. With
+[`concurrent_members=True`](#several-members-at-once) they work once the archive is fully listed,
+which ZIP, 7z, RAR and ISO archives are from the start and a TAR is after `members()` has run.
+Streams from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
 compressed files can come from one. ZIP, 7z, RAR and ISO archives need a file or another source
