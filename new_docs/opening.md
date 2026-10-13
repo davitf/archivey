@@ -25,8 +25,14 @@ for some formats, which [Reading once](reading.md#reading-once) lists.
 Archivey identifies the format from the file's contents, so a ZIP named `backup.bin` still
 opens as a ZIP. It falls back to the file name only when the contents don't settle it. To skip
 detection, pass `format=`, such as `format="zip"` or `format=archivey.ArchiveFormat.TAR_GZ`. If
-the file isn't in the specified format, it fails like a damaged one. `archivey.detect_format(path)`
-tells you the format without opening the archive.
+the file isn't in the specified format, it fails like a damaged one.
+
+`archivey.detect_format(path)` tells you the format without opening the archive. It returns a
+`FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the file starts with
+the format's signature, `PROBABLE` when a test of its contents matched, and `GUESS` when the
+evidence is weak, such as only the file name. `payload_offset` is more than 0 for a self-extracting
+archive, where the archive starts after a program. A file in no format archivey knows raises
+`FormatDetectionError`.
 
 ## Single compressed files
 
