@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, ArchiveyUsageError, open_archive
+from archivey import ArchiveyConfig, ArchiveyUsageError, TruncatedError, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.reader_state import LifecycleState, ReaderState
 from archivey.reader import ArchiveReader
@@ -612,3 +612,32 @@ def test_tar_pass_alone_reads_the_archive_once(
         assert got == files
         assert source.bytes_read <= size + 64 * 1024, (concurrent, source.bytes_read)
         assert rewinds == 0
+
+
+def test_damaged_tar_pass_ends_with_the_same_error_on_both_readers(
+    tmp_path: Path,
+) -> None:
+    """A pass over a cut tar raises the error its own read hit, with or without
+    ``concurrent_members``: the concurrent pass walks as it goes, as the default one
+    does."""
+    path = tmp_path / "cut.tar"
+    with tarfile.open(path, "w") as tf:
+        for i in range(10):
+            info = tarfile.TarInfo(f"f{i}")
+            info.size = 5000
+            tf.addfile(info, io.BytesIO(bytes(5000)))
+    path.write_bytes(path.read_bytes()[:20480])
+    ends = []
+    for concurrent in (False, True):
+        with open_archive(path, concurrent_members=concurrent) as reader:
+            read_errors = []
+            with pytest.raises(TruncatedError) as end:
+                for member, stream in reader.stream_members():
+                    assert stream is not None
+                    try:
+                        stream.read()
+                    except TruncatedError as exc:
+                        read_errors.append((member.name, str(exc)))
+            ends.append((read_errors, str(end.value)))
+    assert ends[0] == ends[1]
+    assert "member='f3'" in ends[1][1]

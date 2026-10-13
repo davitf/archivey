@@ -311,13 +311,13 @@ archive declares.
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
   materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
-  `stream_members()` and `for member in reader` are unguarded: they yield every
-  member, except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing. Their memory
+  `stream_members()` and `for member in reader` are unguarded: they yield every member,
+  except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing. Their memory
   is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
-  reader, and TAR in both modes) counts members as usual and stops keeping them once
-  the totals cross a cap, in `base_reader.py` `_discard_listing`. On a `CONCURRENT`
-  reader a `members()` call beside such a pass raises `ResourceLimitError` one member
-  past the cap without discarding the walk the pass is on (`_drain_walk`). The TAR walker keeps
+  reader, and TAR in both modes) counts members as usual and stops keeping them once the
+  totals cross a cap, in `base_reader.py` `_discard_listing`. On a `CONCURRENT` reader a
+  `members()` call beside such a pass raises `ResourceLimitError` one member past the
+  cap without discarding the walk the pass is on (`_drain_walk`). The TAR walker keeps
   nothing behind the member list, so nothing else is held. After the discard, the
   listing calls raise the same `ResourceLimitError` as `members()`. `extract_all()`
   enforces the caps in both modes, because it resolves hard links against the members
@@ -992,9 +992,10 @@ random-access calls and further `stream_members()` passes also run beside a
 `stream_members()` pass: they share the reader's one member walk, each at its own
 position, and every pull, cursor step and link finalization holds the walk lock
 (`base_reader.py` `_walk_lock`). A TAR pass stream reading through the walk moves to a
-view of its own before the walk moves on for another caller (`_WalkHandoffStream`). Extraction
-and close stay single-owner, as does everything on a reader without `CONCURRENT`. Stream leases defer backend teardown
-until the last stream closes, because an accelerator must close before it is finalized
+view of its own before the walk moves on for another caller (`_WalkHandoffStream`).
+Extraction and close stay single-owner, as does everything on a reader without
+`CONCURRENT`. Stream leases defer backend teardown until the last stream closes, because
+an accelerator must close before it is finalized
 ([`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §6).
 
