@@ -9,6 +9,3 @@ links in this tree, so a broken one goes unnoticed.
 When this tree replaces `docs/`, two pointers outside it move too: `SECURITY.md` links the known
 limits at `docs/extracting.md`, and `dev-docs/threat-model.md` names `docs/extracting.md` as its
 public half. Both now live in `security.md` and `extracting.md` here.
-
-The collapsible "Why?" notes (`??? note`) need the `admonition` and `pymdownx.details`
-extensions in `mkdocs.yml` when this tree replaces `docs/`.

@@ -140,8 +140,10 @@ policy.
     console, and `file:ads` writes data hidden inside `file`.
 
     A name that isn't valid UTF-8 is percent-escaped for the same reason: Linux writes it as is,
-    but macOS refuses it. `%E9` is the byte's value, as in URLs, and a `%` in the name is written
-    as `%25`, so the original name can always be worked out again.
+    but macOS refuses it. `%E9` is the byte's value, as in URLs, and a `%` in a rewritten name is
+    written as `%25`, so the original can be worked out again. A name that already held `%E9` is
+    written unchanged, so only a name archivey rewrote can be reversed: `result.presented_name` and
+    `NameRewrite.PORTABLE_NAME` in `result.rewrites` say which ones those are.
 
 A `filter` sees each member before these checks run, so it can rename one they would refuse, such as
 `../evil.txt`, and that member is then written under its new name. Device files are refused whatever
