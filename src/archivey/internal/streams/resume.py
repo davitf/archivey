@@ -4,7 +4,7 @@
 ``ArchiveStream._maybe_warn_rewind``. This is an archivey concept — seek-point tables
 on decompressing streams. Implementations:
 
-- own a table — ``DecompressorStream``, ``_AcceleratorStream``
+- own a table — ``DecompressorStream``, ``RapidgzipChildStream`` (the child's index)
 - preserve that offset space — ``ArchiveStream``, ``OutputCountingStream``,
   ``VerifyingStream``, ``_GzipTruncationCheckStream``
 - translate the offset space — ``AesDecryptStream`` (ciphertext to plaintext),

@@ -16,8 +16,8 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 
 Names in ``__all__`` are the documented API, and the root exposes no other public
 name apart from submodules. Niche names, such as the ``*Context`` diagnostic payloads
-and ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``, are available only from their submodule
-(:mod:`archivey.diagnostics`, :mod:`archivey.config`).
+and the ``*_AUTO_MIN_COMPRESSED_SIZE`` thresholds, are available only from their
+submodule (:mod:`archivey.diagnostics`, :mod:`archivey.config`).
 """
 
 # Declared here so type checkers see a ``str``; the value comes from the module
