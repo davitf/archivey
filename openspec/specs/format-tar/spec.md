@@ -60,7 +60,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType`. GNU's dumpdir `D` is a `DIRECTORY` whose contents list, structure GNU tar defines and reads, is skipped with no `size` and no report |
 | device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a volume header, an unknown type) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from the PAX `linkpath`, else the GNU long link name, else the header's `linkname` |
-| old-style directory | A regular-file header, typeflag NUL (`AREGTYPE`) or `0` (`REGTYPE`), whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, as GNU tar and 7-Zip read it. `extra["tar.type"]` is the stored byte. When its `size` is non-zero the member SHALL keep that `size`, SHALL be reported with `MEMBER_DIRECTORY_DATA_IGNORED` once at listing, SHALL be created as a directory by extraction with the data blocks skipped, as GNU tar does, and SHALL deliver the blocks through `open()` (the data-model spec's rule for a directory that declares data). A `DIRTYPE` header that declares a size has no data area, so the next header is read straight after it: when that header parses, the directory SHALL list with no `size` and nothing reported, as GNU tar, bsdtar and 7-Zip read it. When the walk ends instead on a zero block inside the span the size declares, in both access modes, the directory SHALL list with no `size` and SHALL be reported with `MEMBER_DIRECTORY_DATA_IGNORED` naming it (in `ARCHIVE_INTEGRITY_CODES`, so `strict()` refuses the archive): the bytes have two readings nobody can tell apart, a zero span read as the end-of-archive marker that hides the members behind it, or blocks never written before the trailer and whatever follows it, so the report says what the header declares and what the walk saw, `open()` refuses the directory for declaring no data, and the end-of-archive checks report the trailer as they would after a file. A block that is neither a member header nor zero where the data would begin SHALL raise `CorruptionError` naming the directory header. A walk that stops at or past the span's end (an extended-header chain filled the span) has read everything the size could hide and SHALL report nothing for the directory. GNU tar reports "Skipping to next header" on that shape and "A lone zero block" on a one-block zero span, and lists the directory alone with no word on a longer zero span, dropping the later members; 7-Zip stops |
+| old-style directory | A regular-file header, typeflag NUL (`AREGTYPE`) or `0` (`REGTYPE`), whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, as GNU tar and 7-Zip read it. `extra["tar.type"]` is the stored byte. When its `size` is non-zero the member SHALL keep that `size`, SHALL be reported with `MEMBER_DIRECTORY_DATA_IGNORED` once at listing, SHALL be created as a directory by extraction with the data blocks skipped, as GNU tar does, and SHALL deliver the blocks through `open()` (the data-model spec's rule for a directory that declares data). A `DIRTYPE` header that declares a size has no data area, so the next header is read straight after it: when that header parses, the directory SHALL list with no `size` and nothing reported, as GNU tar, bsdtar and 7-Zip read it. When the walk ends instead on a zero block inside the span the size declares, in both access modes, the directory SHALL list with no `size` and SHALL be reported with `MEMBER_DIRECTORY_DATA_IGNORED` naming it (in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses the archive): the bytes have two readings nobody can tell apart, a zero span read as the end-of-archive marker that hides the members behind it, or blocks never written before the trailer and whatever follows it, so the report says what the header declares and what the walk saw, `open()` refuses the directory for declaring no data, and the end-of-archive checks report the trailer as they would after a file. A block that is neither a member header nor zero where the data would begin SHALL raise `CorruptionError` naming the directory header. A walk that stops at or past the span's end (an extended-header chain filled the span) has read everything the size could hide and SHALL report nothing for the directory. GNU tar reports "Skipping to next header" on that shape and "A lone zero block" on a one-block zero span, and lists the directory alone with no word on a longer zero span, dropping the later members; 7-Zip stops |
 | `extra["tar.pax_headers"]` | The member's PAX records, the global (`g`) records in force included. Read-only: a change raises `TypeError`. Members with no records of their own share one per set of global records: one copy per member cost the global records again for every 512-byte member header. Read-only so the sharing cannot be seen: a change through one member could otherwise show on the others. It is a `dict` subclass, so `json.dumps` takes it, and a copy, deep copy or pickle round trip gives a plain `dict` |
 | `raw_name` | The stored bytes of whatever supplied the name: the PAX `GNU.sparse.name` or `path` record, else the GNU long name, else the header's `name` (with the `prefix` field joined, under the ustar magic only). Never `None` |
 
@@ -205,7 +205,7 @@ the access mode:
   `expected_marker="second_zero_block"` and `observed_kind="nonzero"` under ordinary
   diagnostic disposition, with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`. GNU tar ("A lone zero
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`. GNU tar ("A lone zero
   block") and 7-Zip list the same archive with a warning. The backend SHALL tell this
   case from a rejected header by why the walk stopped, not by the bytes read, so it
   holds in streaming too. With no member before the zero block
@@ -218,7 +218,7 @@ the access mode:
   byte-identical, so no reader can tell them apart. It SHALL follow ordinary diagnostic
   disposition with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`.
 
 The rejected-header escalation to `CorruptionError` SHALL take precedence over
 `DiagnosticRaisedError`, including when the diagnostic disposition is `IGNORE` or
@@ -311,7 +311,7 @@ backend SHALL scan the bytes that follow, up to 1 MiB past the trailer, whatever
 configuration. The first non-zero byte in that window SHALL emit
 `ARCHIVE_TRAILING_DATA` under ordinary diagnostic disposition, with no escalation of
 its own: a warning by default, `DiagnosticRaisedError` after delivery when the code
-resolves to `RAISE` (as under `DiagnosticPolicy.strict()`), a count alone under
+resolves to `RAISE` (as under `DiagnosticPolicy.STRICT`), a count alone under
 `IGNORE`.
 
 The check SHALL run only after a complete two-block null trailer has been confirmed, or
@@ -346,7 +346,7 @@ listing accounts for.
 
 #### Scenario: trailing-bytes matrix
 
-| Case | Default policy | `DiagnosticPolicy.strict()` |
+| Case | Default policy | `DiagnosticPolicy.STRICT` |
 | --- | --- | --- |
 | Valid tar, trailer, EOF | No diagnostic | No diagnostic |
 | Valid tar + 4 KiB of zeros (`tar` pads to 10 KiB records) | No diagnostic | No diagnostic |

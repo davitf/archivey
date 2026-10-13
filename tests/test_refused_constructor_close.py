@@ -141,7 +141,7 @@ class _CloseFails(io.BytesIO):
             lambda inner: VerifyingStream(
                 inner,
                 {"no-such-digest": b"\x00"},  # type: ignore[dict-item]
-                collector=DiagnosticCollector(policy=DiagnosticPolicy.strict()),
+                collector=DiagnosticCollector(policy=DiagnosticPolicy.STRICT),
             ),
             id="verifying-stream",
         ),
@@ -157,7 +157,7 @@ def test_refusal_outlives_a_failing_owned_inner_close(construct: object) -> None
 
 def test_verifying_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
     inner = io.BytesIO(b"payload")
-    collector = DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
         VerifyingStream(
             inner,
@@ -182,7 +182,7 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
         opened.append(io.BytesIO(b"payload"))
         return opened[-1]
 
-    collector = DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
         ArchiveStream(
             open_fn,

@@ -4,7 +4,7 @@ The image ends at the furthest of its volume space and the partitions its MBR or
 lists: a hybrid ISO appends an EFI partition and a GPT backup header after the volume
 space (``xorriso -append_partition``, measured with xorriso 1.5.6), and those bytes are
 the disk image's. A non-zero byte past that end is a warning by default and refused
-under ``DiagnosticPolicy.strict()``; zero padding is silent.
+under ``DiagnosticPolicy.STRICT``; zero padding is silent.
 """
 
 from __future__ import annotations
@@ -251,7 +251,7 @@ def test_table_that_does_not_count_leaves_junk_reported(
 
 
 def test_strict_policy_refuses_trailing_data() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(io.BytesIO(_iso() + b"JUNK"), config=config) as reader:
             reader.members()
@@ -259,7 +259,7 @@ def test_strict_policy_refuses_trailing_data() -> None:
 
 
 def test_strict_policy_accepts_zero_padding() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(_iso() + bytes(4096)), config=config) as reader:
         assert [m.name for m in reader.members()] == ["A.TXT"]
 

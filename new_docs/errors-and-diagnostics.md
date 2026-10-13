@@ -70,7 +70,7 @@ with archivey.open_archive("damaged.tar") as archive:
 A TAR archive cut between two members, or inside a member's header, has nothing left that looks
 wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
 `ARCHIVE_EOF_MARKER_MISSING` shows it, and
-[`DiagnosticPolicy.strict()`](#raising-or-quieting-a-diagnostic) turns it into an exception.
+[`DiagnosticPolicy.STRICT`](#raising-or-quieting-a-diagnostic) turns it into an exception.
 
 Where the format stores a checksum for each member, reading a member from start to end checks it,
 and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
@@ -81,7 +81,7 @@ checksum of its own, and the checksum of a `.tar.gz` covers the whole file rathe
 ISO images and Brotli, `.Z` and `.lzma` files have no checksums at all, and `.xz`, `.zst` and `.lz4`
 files have one only if the program that wrote them added it. When archivey can't check a member that
 you'd expect to be checked, such as a 7z member encrypted without a CRC, it records the diagnostic
-`DIGEST_UNVERIFIABLE`, which `strict()` also turns into an exception.
+`DIGEST_UNVERIFIABLE`, which `STRICT` also turns into an exception.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)), a
 seek back to the start begins the check again, but after a seek anywhere else, damage may go
@@ -119,24 +119,27 @@ reaches your code.
 ## Raising or quieting a diagnostic
 
 ```python
-config = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.strict())
+config = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
 ```
 
-With `DiagnosticPolicy.strict()`, the diagnostics that say the archive itself is unusual, such as a
+With `DiagnosticPolicy.STRICT`, the diagnostics that say the archive itself is unusual, such as a
 name that displays as a different one, raise `DiagnosticRaisedError` from the call that found them.
 The ones about your own arguments, such as an unused password, and a few others, such as an empty
 archive, are only recorded as before. The [reference](api.md#archivey.DiagnosticPolicy) lists which
-codes raise. `DiagnosticPolicy.pedantic()` raises on every code, including codes a later release
+codes raise. `DiagnosticPolicy.PEDANTIC` raises on every code, including codes a later release
 adds.
 
 ```python
 config = archivey.ArchiveyConfig(
     diagnostic_policy=archivey.DiagnosticPolicy(
-        overrides={archivey.DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: "ignore"},
+        ignore={archivey.DiagnosticCode.PASSWORD_ARGUMENT_UNUSED},
     ),
 )
 ```
 
-To change one code, pass it in `overrides`. With `"ignore"`, it's no longer logged, passed to the
-callback or kept, but `counts` still counts it. `"raise"` makes that one code raise. The
-[reference](api.md#archivey.DiagnosticCode) lists every code.
+A policy is two sets of codes. A code in `ignore` is no longer logged, passed to the callback or
+kept, but `counts` still counts it. A code in `raise_on` raises. Every other code is recorded as
+before. To change a preset, build a policy from the same set: `STRICT` is
+`DiagnosticPolicy(raise_on=archivey.ARCHIVE_INTEGRITY_CODES)`, so
+`raise_on=archivey.ARCHIVE_INTEGRITY_CODES - {archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA}` is
+`STRICT` without that one code. The [reference](api.md#archivey.DiagnosticCode) lists every code.

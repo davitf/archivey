@@ -40,7 +40,7 @@ A directory listed from an old-style regular-file header named ``d/`` keeps its 
 delivers the bytes, extraction creates the directory (DR-3).
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
-fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
+fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
 """
 
 from __future__ import annotations
@@ -841,7 +841,7 @@ class TarReader(BaseArchiveReader):
         end-of-archive marker itself is damaged: every member before it is listed and
         whole, as GNU tar and 7-Zip list them with a warning, so it is
         ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary policy
-        (``DiagnosticPolicy.strict()`` refuses it), and the scan past the trailer runs
+        (``DiagnosticPolicy.STRICT`` refuses it), and the scan past the trailer runs
         from the block after it. A zero block and then a non-null one with no member
         before them is ``CorruptionError``.
         """
@@ -903,7 +903,7 @@ class TarReader(BaseArchiveReader):
         the report says what the header declares and what the walk saw, and the
         directory is listed with no ``size``: the declared bytes cannot be told from
         the trailer, so ``open()`` has nothing to deliver. The code is in
-        ``ARCHIVE_INTEGRITY_CODES``, so ``DiagnosticPolicy.strict()`` refuses the
+        ``ARCHIVE_INTEGRITY_CODES``, so ``DiagnosticPolicy.STRICT`` refuses the
         archive, the weight DR-3 gives a directory's declared data in every format.
         The marker checks that follow report the trailer as they would after a file.
         The finding is attached to the member, as the old-style directory's is, which

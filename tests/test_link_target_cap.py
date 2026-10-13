@@ -322,7 +322,7 @@ def test_the_read_stops_one_byte_past_the_cap_when_the_size_is_unknown() -> None
 @pytest.mark.parametrize("streaming", _MODES)
 def test_a_strict_policy_refuses_the_archive(streaming: bool) -> None:
     data = _zip_with_links(b"c" * (MAX_LINK_TARGET_BYTES + 1))
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(data), streaming=streaming, config=config) as reader:
         with pytest.raises(DiagnosticRaisedError):
             _list(reader, streaming)

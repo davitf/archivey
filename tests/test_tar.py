@@ -33,7 +33,6 @@ from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
@@ -554,9 +553,7 @@ def test_compressed_source_size_generalized(plain_tar: Path) -> None:
 # to RAISE and gets DiagnosticRaisedError.
 _RAISE_ON_MISSING_EOF = ArchiveyConfig(
     diagnostic_policy=DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
-        }
+        raise_on={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING}
     )
 )
 
@@ -725,9 +722,9 @@ def test_minimal_eof_trailer_streaming_silent(
 
 
 def test_minimal_eof_trailer_strict_does_not_raise() -> None:
-    # DiagnosticPolicy.strict() must accept the minimal valid trailer on both access
+    # DiagnosticPolicy.STRICT must accept the minimal valid trailer on both access
     # modes: it raises on both EOF codes, and neither is emitted here.
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     data = _tar_minimal_eof()
     with open_archive(
         io.BytesIO(data),
@@ -1063,16 +1060,11 @@ def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
     # escalate_as=CorruptionError takes precedence over IGNORE (spec matrix).
     from archivey.diagnostics import (
         DiagnosticCode,
-        DiagnosticDisposition,
         DiagnosticPolicy,
     )
 
     data = _tar_corrupt_final_header()
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
-        }
-    )
+    policy = DiagnosticPolicy(ignore={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
     with raises_corruption_not_truncation():
         with open_archive(
             io.BytesIO(data),
@@ -1221,7 +1213,7 @@ def test_damaged_second_eof_block_then_junk_reports_trailing_data() -> None:
 def test_damaged_second_eof_block_refused_under_strict(streaming: bool) -> None:
     data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(
         source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
     ) as ar:
@@ -1529,7 +1521,7 @@ def test_old_style_directory_data_is_refused_by_strict_policy(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
-            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
         ) as ar:
             list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
@@ -1763,7 +1755,7 @@ def test_dirtype_zero_span_is_refused_by_strict_policy(streaming: bool) -> None:
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
-            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
         ) as ar:
             list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
@@ -2442,7 +2434,6 @@ def test_error_mid_streaming_pass_poisons_members_report() -> None:
     the two-member prefix as the complete resolved list."""
     from archivey.diagnostics import (
         DiagnosticCode,
-        DiagnosticDisposition,
         DiagnosticPolicy,
     )
     from archivey.exceptions import DiagnosticRaisedError
@@ -2460,9 +2451,7 @@ def test_error_mid_streaming_pass_poisons_members_report() -> None:
 
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
-            overrides={
-                DiagnosticCode.MEMBER_TIMESTAMP_INVALID: DiagnosticDisposition.RAISE
-            }
+            raise_on={DiagnosticCode.MEMBER_TIMESTAMP_INVALID}
         )
     )
     with open_archive(
@@ -3278,7 +3267,7 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
     import gzip
     import lzma
 
-    from archivey.diagnostics import DiagnosticDisposition, DiagnosticPolicy
+    from archivey.diagnostics import DiagnosticPolicy
 
     payload = bytes(range(256)) * (8 * 1024)
     raw = io.BytesIO()
@@ -3296,9 +3285,7 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
     archive.write_bytes(compress(raw.getvalue()))
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
-            overrides={
-                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: DiagnosticDisposition.RAISE
-            }
+            raise_on={DiagnosticCode.STREAM_REWIND_REDECOMPRESSES}
         )
     )
     report = open_and_extract(archive, tmp_path / "out", config=config)

@@ -131,7 +131,7 @@ header has parsed, the reader SHALL look at most 1 MiB past that end, and a non-
 byte there SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="7z"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
 offset of that byte past the end. It is a warning by default and raises under
-`DiagnosticPolicy.strict()` (DR-3). Zero bytes after the end SHALL be silent. A
+`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. A
 non-zero byte at 1 MiB or more past the end goes unseen: the bound is an effort limit,
 as for the TAR trailer scan. A self-extractor's tail (the certificate table of a
 code-signed one) is reported the same way, measured from the archive's own end, not the
@@ -140,7 +140,7 @@ included; archivey keeps an all-zero tail silent, the DR-3 rule shared with TAR.
 
 #### Scenario: 7z trailing bytes
 
-| Case | Default policy | `strict()` |
+| Case | Default policy | `STRICT` |
 | --- | --- | --- |
 | Archive ends at its next header | Nothing | Opens |
 | 4 KiB of zeros after the next header | Nothing | Opens |

@@ -25,7 +25,6 @@ from archivey import ExtractionStatus, open_archive
 from archivey.config import ArchiveyConfig, ListingLimits, PasswordRequest
 from archivey.diagnostics import (
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
@@ -549,7 +548,7 @@ def test_a_strict_policy_refuses_again_on_a_walk_walked_again(
 ) -> None:
     """A presentation check whose emit raised has not run; the retry raises too."""
     path = _zip(tmp_path, [("a.txt", b"1", False), ("re\u202evil.txt", b"2", False)])
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(path, config=config) as reader:
         with pytest.raises(DiagnosticRaisedError):
             reader.members()
@@ -562,7 +561,7 @@ def test_a_typing_time_raise_is_raised_again_on_a_walk_walked_again(
 ) -> None:
     """An emit that raised stops the retry in the same place, counted once."""
     policy = DiagnosticPolicy(
-        overrides={_NORMALIZED: DiagnosticDisposition.RAISE},
+        raise_on={_NORMALIZED},
     )
     with open_archive(
         _retry_zip(tmp_path), config=ArchiveyConfig(diagnostic_policy=policy)

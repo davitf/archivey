@@ -101,7 +101,7 @@ def _flip_in_stored_body(compressed: bytes, raw: bytes) -> bytes:
     return bytes(damaged)
 
 
-_STRICT = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+_STRICT = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -114,7 +114,7 @@ def test_xz_unsupported_check_type_is_not_silent(
     CPython (which never asks for LZMA_TELL_UNSUPPORTED_CHECK), so a flipped byte in
     the body reads as good data. ``xz -t`` says "Unsupported type of integrity
     check; not verifying file integrity" and exits 2. The maintainer's ruling is to
-    warn and keep reading: ``DIGEST_UNVERIFIABLE``, which ``strict()`` refuses."""
+    warn and keep reading: ``DIGEST_UNVERIFIABLE``, which ``STRICT`` refuses."""
     raw = random.Random(1).randbytes(5000)
     damaged = _flip_in_stored_body(_xz_with_check_id(raw, check_id), raw)
     out, diagnostics = _read_single(damaged, ArchiveFormat.XZ, streaming=streaming)

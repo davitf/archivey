@@ -568,7 +568,7 @@ class SevenZipReader(BaseArchiveReader):
 
         The end is the later of the next header's end and the last packed stream's.
         ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
-        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.STRICT``
         (DR-3). Zero padding is silent under DR-3; 7-Zip warns about any tail, zeros
         included. Runs after the header has parsed, so a wrong header password or a
         damaged header is reported as that, not as this. A self-extractor's tail (the

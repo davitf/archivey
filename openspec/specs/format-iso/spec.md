@@ -252,7 +252,7 @@ The other members of the image MUST NOT be affected.
 | --- | --- |
 | A file whose `TF` entry has version 99 | Lists with its `PX` mode, reads, one `MEMBER_HEADER_RECORD_SKIPPED`; the other members carry nothing |
 | A symlink cut the same way (genisoimage 1.1.11 writes this for a target of about 400 bytes or more) | `link_target is None`; `MEMBER_HEADER_RECORD_SKIPPED` then `SYMLINK_TARGET_UNAVAILABLE` |
-| The same image under `DiagnosticPolicy.strict()` | Refused |
+| The same image under `DiagnosticPolicy.STRICT` | Refused |
 | `pycdlib.PyCdlib().open_fp` on a zisofs image, outside archivey | `pycdlib`'s own `Unknown SUSP record` |
 
 ### Requirement: Read zisofs members
@@ -296,14 +296,14 @@ At open, the reader SHALL look at most 1 MiB past that end, and a non-zero byte 
 SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="iso"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
 offset of that byte past the end. It is a warning by default and raises under
-`DiagnosticPolicy.strict()` (DR-3). Zero bytes SHALL be silent (xorriso pads 300 KiB
+`DiagnosticPolicy.STRICT` (DR-3). Zero bytes SHALL be silent (xorriso pads 300 KiB
 of zeros by default), and a byte at 1 MiB or more past the end goes unseen. A GPT that
 fails either CRC, and an MBR without its signature, widen nothing. An MBR has no
 checksum, so its entries are taken as written, as the volume space size is.
 
 #### Scenario: ISO trailing bytes
 
-| Case | Default policy | `strict()` |
+| Case | Default policy | `STRICT` |
 | --- | --- | --- |
 | Image ending at its volume space, or followed by zeros | Nothing | Opens |
 | `b"JUNK"` after the volume space, or after zeros within 1 MiB | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |

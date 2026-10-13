@@ -1581,7 +1581,7 @@ class IsoReader(BaseArchiveReader):
         """Report a non-zero byte after the end of the image, as DR-3 asks.
 
         ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
-        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``.
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.STRICT``.
         Zero padding is silent. The image ends at the furthest of its volume space and
         the partitions its MBR or GPT lists (:func:`_image_end`): a hybrid ISO, the
         layout Linux installer images use, appends an EFI partition and a GPT backup
