@@ -184,7 +184,11 @@ of formats that apply `max_members` while parsing (7z, RAR and ISO, `archive-rea
 a stage 3 spec edit). A seekable source under `streaming=True` walks the directory
 first, so the walk charges it there. A forward pass has no offset array (it reads data
 in order), but it keeps every member it yielded until the end of the pass to update it
-in place, so it charges `max_members` as members are yielded.
+in place, so it charges `max_members` twice: on the local headers as members are
+yielded, and on the directory's entries as it reads them, since a directory can list
+more entries than the stream held members. The fields the directory adds (a comment
+above all) are weighed against `max_metadata_bytes` when the members are updated, and a
+pass that does not enforce the limits discards its listing there if they took it over.
 
 ### Trailing bytes
 
@@ -269,6 +273,7 @@ the directory is then read forward from the same stream with the same entry pars
 | Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for `PK\x07\x08` followed by a CRC and a compressed size that match the bytes since the data start, and then by a local header, central header or end record signature. libarchive reads it the same way. A descriptor without its signature cannot be found this way: `UnsupportedFeatureError` |
 | Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext. The descriptor's CRC covers the plaintext, so the scan matches on the compressed size and the signature after it only; the CRC (ZipCrypto, AE-1) or the HMAC (AES) then checks the plaintext as for any member |
 | Bit 3, LZMA without the EOS bit, PPMd without an end mark | No way to find the end: `UnsupportedFeatureError` in this mode, naming the reason. A seekable source reads it |
+| Bit 3, encrypted, any method but STORED | Only the decrypted codec finds the end, so the walk needs the key even to skip the member. Until encrypted members are read from a pipe (stage 3b3d), `UnsupportedFeatureError` naming that reason, whether or not the caller reads the member |
 
 The STORED scan can be fooled on purpose: a member that carries, inside its own data, a
 descriptor for a prefix of itself followed by a local header signature ends early, and
@@ -384,7 +389,12 @@ Three things are known only once the directory has been read: a size or CRC from
 descriptor that differs from the central entry, two same-name members whose directory
 order reverses their file order, and a directory entry with no local entry. Each is a
 member-scoped failure of the member it names, handled as `safe-extraction` handles any
-other (the `OnError` requirement):
+other (the `OnError` requirement). Two more are known only then and are not member
+failures: a directory entry pointing at a local header an earlier entry already took
+ends the pass with its own `CorruptionError` (the seekable read lists both; a forward
+pass reads that data once, for one member), and a directory whose entries fill a
+different size than the end record declares is a warning
+(`ARCHIVE_EOF_MARKER_MISSING`, marker `central_directory`), every entry listed:
 
 - In `extract_all`, the end of the pass settles every member the directory changes
   (its `is_current`, type or sizes), and every path such a member was written to:

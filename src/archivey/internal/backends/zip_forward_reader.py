@@ -23,13 +23,14 @@ import zlib
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
-from typing import BinaryIO, cast
+from typing import BinaryIO
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -500,7 +501,7 @@ class ZipForwardReader(ZipReader):
             if entry is None:
                 break
             if max_members is not None and index >= max_members:
-                raise _max_members_error(max_members)
+                raise _max_members_error(max_members, "ZIP stream's local headers name")
             member = self._local_member(entry, index)
             self._pass_data = _PassData(
                 self,
@@ -676,8 +677,9 @@ class ZipForwardReader(ZipReader):
             for member_id, why in self._uncaptured.items()
             if member_id in links
         }
+        self._keep_updated_listing_within_limits(updates)
         self._report_directory_findings(end, len(entries))
-        found = first_nonzero_offset(cast("BinaryIO", walker.source))
+        found = first_nonzero_offset(walker.source)
         if found is not None:
             self._emit_trailing_data(found)
         self._by_offset = {}
@@ -703,6 +705,40 @@ class ZipForwardReader(ZipReader):
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
+
+    def _keep_updated_listing_within_limits(
+        self, updates: list[tuple[ArchiveMember, CentralEntry]]
+    ) -> None:
+        """Discard the listing when what the directory added took it over the limits,
+        in a pass that does not enforce them (``_keep_listing_within_limits``).
+
+        The base checks after each member it yields, and the directory arrives after the
+        last one, so nothing else would. The links the directory made get their
+        targets first, as the end of the pass would give them (``_finalize_links``):
+        a discarded listing is never finalized.
+        """
+        if self._progressive_enforce_listing_limits or self._listing_discarded:
+            return
+        try:
+            self._listing_tracker.assert_within_limits()
+        except ResourceLimitError:
+            pass
+        else:
+            return
+        if self._config.read_link_targets:
+            for member, _ in updates:
+                if (
+                    member.type is MemberType.SYMLINK
+                    and member.link_target is None
+                    and not member._link_target_resolved
+                ):
+                    try:
+                        self._resolve_link_target(member)
+                    except CorruptionError as exc:
+                        self._report_damaged_link_target(member, exc)
+        self._discard_listing()
+        self._captured.clear()
+        self._uncaptured.clear()
 
     def _update_from_directory(
         self, member: ArchiveMember, central: CentralEntry

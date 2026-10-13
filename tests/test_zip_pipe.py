@@ -21,7 +21,11 @@ import pytest
 import archivey
 from archivey.config import ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    SymlinkTargetContext,
+)
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -319,12 +323,16 @@ def test_a_damaged_link_target_is_reported_as_damaged() -> None:
     struct.pack_into("<I", data, cd + 38, 0o120777 << 16)  # a symlink's mode
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
         reader.members_report()
-        reasons = [
-            d.context.reason  # type: ignore[union-attr]
-            for d in reader.diagnostics.retained
-            if d.code == DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
-        ]
-    assert reasons == ["target_data_damaged"]
+        assert _link_target_reasons(reader) == ["target_data_damaged"]
+
+
+def _link_target_reasons(reader: archivey.ArchiveReader) -> list[str]:
+    return [
+        d.context.reason
+        for d in reader.diagnostics.retained
+        if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        and isinstance(d.context, SymlinkTargetContext)
+    ]
 
 
 def test_an_encrypted_link_target_needs_a_password_as_from_a_file() -> None:
@@ -333,17 +341,10 @@ def test_an_encrypted_link_target_needs_a_password_as_from_a_file() -> None:
     cd = data.index(b"PK\x01\x02", data.index(b"PK\x01\x02") + 1)
     data[cd + 8] |= 0x01
 
-    def reasons(source: object, **options: object) -> list[str]:
-        with archivey.open_archive(source, **options) as reader:  # type: ignore[arg-type]
+    for source, streaming in ((_pipe(bytes(data)), True), (io.BytesIO(data), False)):
+        with archivey.open_archive(source, streaming=streaming) as reader:
             reader.members_report()
-            return [
-                d.context.reason  # type: ignore[union-attr]
-                for d in reader.diagnostics.retained
-                if d.code == DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
-            ]
-
-    assert reasons(_pipe(bytes(data)), streaming=True) == ["password_required"]
-    assert reasons(io.BytesIO(bytes(data))) == ["password_required"]
+            assert _link_target_reasons(reader) == ["password_required"]
 
 
 def test_an_encrypted_bit3_compressed_member_ends_the_pass() -> None:
@@ -405,20 +406,59 @@ def test_directory_comments_count_toward_max_metadata_bytes() -> None:
             reader.members_report()
 
 
-def test_a_directory_size_the_entries_do_not_fill_is_reported() -> None:
+@pytest.mark.parametrize(("delta", "kind"), [(-10, "nonzero"), (10, "short")])
+def test_a_directory_size_the_entries_do_not_fill_is_reported(
+    delta: int, kind: str
+) -> None:
     data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
     eocd = data.index(b"PK\x05\x06")
     (size,) = struct.unpack_from("<I", data, eocd + 12)
-    struct.pack_into("<I", data, eocd + 12, size - 10)
+    struct.pack_into("<I", data, eocd + 12, size + delta)
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
         names = [m.name for m in reader.members_report().members]
         found = [
-            d
+            (d.context.expected_marker, d.context.observed_kind)
             for d in reader.diagnostics.retained
-            if d.code == DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+            if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+            and isinstance(d.context, ArchiveEofContext)
         ]
     assert names == ["a.txt", "b.txt"]
-    assert [d.context.expected_marker for d in found] == ["central_directory"]  # type: ignore[union-attr]
+    assert found == [("central_directory", kind)]
+
+
+def test_a_stream_members_pass_discards_a_listing_the_directory_overfills() -> None:
+    """The directory's comments take the listing over the limit after the last
+    member; the pass keeps nothing then, as from a file, and the link it made still
+    gets its target."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(20):
+            info = zipfile.ZipInfo(f"{i}.txt")
+            info.comment = b"c" * 6000
+            zf.writestr(info, b"x")
+        link = zipfile.ZipInfo("link")
+        link.create_system = 3
+        link.external_attr = 0o120777 << 16
+        zf.writestr(link, b"0.txt")
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=100_000)
+    )
+    with archivey.open_archive(
+        _pipe(buf.getvalue()), streaming=True, config=config
+    ) as reader:
+        yielded = [m for m, _ in reader.stream_members()]
+        assert reader._listing_discarded
+        assert reader._listed == []
+    assert (yielded[-1].type, yielded[-1].link_target) == (MemberType.SYMLINK, "0.txt")
+
+
+def test_too_many_local_headers_name_what_was_counted() -> None:
+    data = _zip([(f"{i}.txt", b"x") for i in range(5)])
+    config = archivey.ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
+    with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
+        with pytest.raises(ResourceLimitError, match="local headers"):
+            for _ in reader.stream_members():
+                pass
 
 
 def test_a_directory_entry_with_no_local_header_fails_after_the_members() -> None:

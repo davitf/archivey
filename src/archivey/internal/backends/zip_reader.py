@@ -785,10 +785,14 @@ class _DataBounds:
         return ordered[above] if above < len(ordered) else self._cd_start
 
 
-def _max_members_error(max_members: int) -> ResourceLimitError:
+def _max_members_error(
+    max_members: int, counted: str = "ZIP central directory holds"
+) -> ResourceLimitError:
+    """``counted`` names what crossed the limit: the directory, or the local headers a
+    forward walk met before any directory."""
     return ResourceLimitError(
-        f"Listing limit reached: max_members={max_members} (ZIP central directory "
-        f"holds more than {max_members} entries)"
+        f"Listing limit reached: max_members={max_members} ({counted} more than "
+        f"{max_members} entries)"
     )
 
 
