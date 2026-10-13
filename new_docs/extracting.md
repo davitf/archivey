@@ -33,16 +33,20 @@ with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=lambda member: member.name.endswith(".txt"))
 ```
 
-`archivey.paths.match_glob` builds such a function from wildcard patterns. `*` matches within one
-folder level, and `**` matches any number of levels, so `"docs/**"` selects a folder with
-everything in it:
+`archivey.paths` builds such functions from wildcard patterns, with either of two sets of rules:
 
 ```python
-from archivey.paths import match_glob
+from archivey.paths import match_glob, match_tar_glob
 
 with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=match_glob("docs/**"))
+    archive.extract_all("out/", members=match_tar_glob("*.md"))
 ```
+
+| Function | `*` | A folder's name |
+|---|---|---|
+| `match_glob` | Matches within one folder level, and `**` matches any number of levels, so `"docs/**"` selects a folder with everything in it | Selects only the folder, unless you pass `with_contents=True` |
+| `match_tar_glob` | Matches across folders too, as in `tar`, so `"*.md"` selects every `.md` file at any depth | Selects the folder with everything in it |
 
 Another argument, `filter`, sees each member before it's checked and written. It can change the
 member by returning a changed copy, with a new name or new permissions, for example, or skip it by
