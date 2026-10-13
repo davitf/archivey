@@ -8,10 +8,10 @@ enough, and archivey finds the others. If it can't find them by name, such as vo
 open file objects, you can pass a list of them, in order.
 
 A file object is read from its current position to its end, so an archive that starts partway
-through a larger file opens as is, as long as nothing follows it. If something does, pass a file
-object that ends where the archive ends. A file object that can't seek, such as a pipe or an HTTP
-response, needs `streaming=True` and works only for some formats, which
-[Reading once](reading.md#reading-once) lists.
+through a larger file opens as is. Bytes after the archive don't stop it opening. They're recorded
+as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` turns into an exception. A file
+object that can't seek, such as a pipe or an HTTP response, needs `streaming=True` and works only
+for some formats, which [Reading once](reading.md#reading-once) lists.
 
 ## Format
 
@@ -52,10 +52,12 @@ archivey decodes them that way. It has to guess only for older formats, or archi
 tools. Then it uses UTF-8 if the bytes are valid UTF-8, and otherwise the format's traditional
 encoding, such as cp437 for ZIP. Where there isn't one, it keeps each byte it can't decode as an
 escape, the way Python's `surrogateescape` does. An escape is a placeholder character between U+DC80
-and U+DCFF. If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that
-default for names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR lists as `'caf\udce9.txt'`
-without it and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO and RAR read `encoding=`.
-The other formats decode names their own way, and a value passed to them is ignored and noted in the
+and U+DCFF.
+
+If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
+names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR lists as `'caf\udce9.txt'` without it
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO and RAR read `encoding=`. The other
+formats decode names their own way, and a value passed to them is ignored and noted in the
 diagnostics.
 
 `member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name with an

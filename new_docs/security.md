@@ -33,9 +33,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   standard library's zlib, bz2 and lzma, run inside your process. Archivey runs the decoders known
   to crash in a child process, or feeds them in a way that avoids the crash, but one nobody has
   found yet would still abort yours. Members compressed with PPMd, a method some 7z and ZIP archives
-  use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB by
-  default) and in a child process above it. Under a tight memory limit, such as a container's, the
-  in-process decoder can crash instead of raising an error.
+  use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB of
+  compressed data by default) and in a child process above it. Under a tight memory limit, such as a
+  container's, the in-process decoder can crash instead of raising an error.
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
   default. Everything else needs memory on top of that: the rest of your program, archivey itself,
@@ -57,9 +57,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   and `spool_limits.max_bytes` caps that copy. When the archive records a member's size in
   `member.size`, archivey never decodes more than that, and a member holding more raises
   `CorruptionError`.
-- **A streaming pass doesn't enforce the listing limits.** With `streaming=True` or
-  `stream_members()`, `max_members` and `max_metadata_bytes` aren't checked, except that 7z, RAR and
-  ISO archives still check the member count when they open.
+- **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR, or with
+  `streaming=True`, `stream_members()` yields members up to the limit and then raises, and
+  `extract_all` leaves the files it wrote before then on disk. ZIP, 7z, RAR and ISO archives check
+  the limits before the first member.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
@@ -75,9 +76,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
-- **After a seek, a crafted `.xz` or `.lz` file can return wrong data without an error.** A seek
-  trusts the file's own index, and the integrity check covers reading from start to end without
-  seeking.
+- **After a seek, a crafted `.xz` or `.lz` file can return different data at a position you've
+  already read.** A seek restarts at the block the file's own index names, and a crafted index can
+  name the wrong one, so reading again after a seek back can give different bytes from the first
+  read, with no error.
 - **On Windows, a folder source is less protected.** Windows can't open a path without following
   links, so a subfolder swapped for a link during the listing can list files from outside the
   folder. Reading a file still checks it's the one listed where the filesystem reports file
@@ -117,9 +119,10 @@ in the repository measures what each limit costs in time and memory on your mach
 
 The costs were measured on one 2.8 GHz core.
 
-A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16
-for RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member, so
-two such members reach the default. Each password you try costs the same work again.
+A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16 for
+RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member, so two
+such members use the whole default, and a third is refused. Each password you try costs the same
+work again.
 
 Going over a limit raises `ResourceLimitError`.
 
