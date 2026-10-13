@@ -6,8 +6,10 @@
 files inside it. For a 7z or RAR archive split into several volumes, the path of any one of them is
 enough, and archivey finds the others. If it can't find them by name, such as volumes you hold as
 open file objects, you can pass a list of them, in order. A ZIP split by 7-Zip into `.zip.001`,
-`.zip.002` and so on opens the same way. If a volume is missing, opening raises `TruncatedError`
-naming it, rather than reading a shorter archive.
+`.zip.002` and so on opens the same way. If a part of a numbered set like that (`.7z.001`,
+`.zip.001`) is missing, opening raises `TruncatedError` naming it, rather than reading a shorter
+archive. A RAR set with a volume missing still opens, as `unrar` would, but `members()` raises
+`TruncatedError` naming the missing volume, and so does reading a member with data in it.
 
 A file object is read from its current position to its end, so an archive that starts partway
 through a larger file opens as is. Bytes after the archive don't stop it opening, except after a ZIP,
@@ -28,9 +30,10 @@ detection, pass `format=`, such as `format="zip"` or `format=archivey.ArchiveFor
 the file isn't in the specified format, it fails like a damaged one.
 
 `archivey.detect_format(path)` tells you the format without opening the archive. It returns a
-`FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the file starts with
-the format's signature, `PROBABLE` when a test of its contents matched, and `GUESS` when the
-evidence is weak, such as only the file name. `payload_offset` is more than 0 for a self-extracting
+`FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the format's
+signature matched where the format puts it, `PROBABLE` when a test of its contents matched, and
+`GUESS` when the evidence is weak, such as only the file name. The grade is for a person reading it,
+and may change between releases, so decide what to do from the format, not the grade. `payload_offset` is more than 0 for a self-extracting
 archive, where the archive starts after a program. A file in no format archivey knows raises
 `FormatDetectionError`.
 

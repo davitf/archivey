@@ -52,6 +52,11 @@ with archive.open("holiday/video.mp4") as stream, open("video.mp4", "wb") as out
 
 `archive.get(name)` gives you the member with that name, or `None`.
 
+`open` and `read` follow a link to another member of the archive and give you that member's
+contents. They never follow it outside the archive: a link whose target isn't a member, such as one
+pointing to `/etc/passwd` or to a file the archive doesn't hold, raises `LinkTargetNotFoundError`. A
+directory has no contents to read, so they raise `ArchiveyUsageError`.
+
 On some archives, reading a member means first decompressing the members stored before it, so
 reading them out of order gets slow. [Solid archives](reading.md#solid-archives) explains when this
 happens. The next section shows how to avoid it by reading them all in one pass.
@@ -69,10 +74,7 @@ with archivey.open_archive("backup.tar.gz") as archive:
 `stream_members` goes through the archive in the order it is stored and gives you each member
 with a stream of its contents. It reads each member once, so it is never slower than reading
 them by name, and on some archives it is much faster. Directories and links come with `None` in
-place of a stream, and each stream works only until the loop moves on. `open` and `read` follow a
-link to another member of the archive and give you that member's contents. They never follow it
-outside the archive: a link whose target isn't a member, such as one pointing to `/etc/passwd` or to
-a file the archive doesn't hold, raises `LinkTargetNotFoundError`. On a directory they raise too.
+place of a stream, and each stream works only until the loop moves on.
 
 ## Extract
 

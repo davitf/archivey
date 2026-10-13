@@ -42,8 +42,9 @@ rather than a damaged one.
 
 Mistakes in the calling code raise `ArchiveyUsageError`, which isn't an `ArchiveyError`, so a
 catch-all for archive problems never hides a bug. The ones you're most likely to meet are calling
-`members()`, `open()` or `read()` on a reader opened with `streaming=True`, and opening a second
-member stream while another is still open, without `concurrent_members=True`. [Choosing how to
+`members()`, `open()` or `read()` on a reader opened with `streaming=True`, opening a second
+member stream while another is still open, without `concurrent_members=True`, and calling `open()`
+or `read()` on a directory. [Choosing how to
 read](reading.md) explains both. A source that isn't a path or a file object raises `TypeError`, and
 asking for a member name the archive doesn't have raises `KeyError`, as a dictionary would.
 
@@ -109,8 +110,10 @@ unchecked data, read the whole member into memory or a temporary file first, and
 the read has finished without an error.
 
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
-old ZIP encryption, is in the same position. If you close its stream before the end, archivey logs
-`ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wrong password.
+old ZIP encryption, is in the same position. If you close its stream before the end, or seek past
+bytes without reading them, archivey logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read
+may come from a wrong password. WinZip AES members are the exception: their check holds across
+seeks.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that
