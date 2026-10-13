@@ -200,8 +200,10 @@ characters in the destination. It's safe to delete.
 
 By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
 expands more than 1000 times. When the archive records each member's size, as ZIP, 7z and RAR
-archives do, a member that would expand too much is refused before anything is written. The
-expansion check ignores outputs under 5 MiB, or under 256 MiB for a whole archive read from a pipe.
+archives do, a member that would expand too much is refused before any of it is written. So is one
+that would take the whole archive's expansion over the limit, and the extraction stops there, with
+the members before it already written. The expansion check ignores outputs under 5 MiB, or under
+256 MiB for a whole archive read from a pipe.
 To extract something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn
 them off.
 
