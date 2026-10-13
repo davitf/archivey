@@ -232,7 +232,10 @@ pass that lists as it goes cannot share its walk with them. So a root
 member list before its first yield, as ZIP, ISO, non-solid RAR, directory and
 single-file passes always do. On TAR, 7z and solid RAR this costs one walk of the
 headers before the data (on a compressed TAR a second decode of the stream), plus
-reading data-stored link targets, on the first pass only. A child pass that
+reading data-stored link targets, on the first pass only. On a compressed TAR the
+rewind from the end of the listing to the first member's data emits
+`STREAM_REWIND_REDECOMPRESSES`, as `members()` followed by `read()` already does, so
+under `DiagnosticPolicy.PEDANTIC` that first pass raises `DiagnosticRaisedError`. A child pass that
 `extract_all()` drives keeps its own listing. This listing enforces `ListingLimits`,
 as ZIP, 7z, RAR and ISO already do at open: an archive over a limit raises
 `ResourceLimitError` before the first member. An unguarded pass that lists as it goes

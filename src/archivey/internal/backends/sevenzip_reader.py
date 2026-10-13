@@ -510,7 +510,10 @@ class SevenZipReader(BaseArchiveReader):
         # The link member a data pass is on, and how to open it from that pass's own
         # folder decode. Valid only until the pass moves on; ``extract_all`` reads an
         # accepted link through it (``_link_data_stream``). The thread is the one that
-        # ran the pass step, the only one that may read through that decoder.
+        # ran the pass step, the only one that may read through that decoder. One slot
+        # for every pass: on a CONCURRENT reader several passes can run, and another
+        # pass's step clears or replaces this offer. A cancelled offer costs one decode
+        # of the folder, never wrong bytes (the member and thread checks refuse it).
         self._pass_link: (
             tuple[ArchiveMember, Callable[[], ArchiveStream], threading.Thread] | None
         ) = None

@@ -506,7 +506,10 @@ speculatively passes a password to every call would otherwise raise on every
 unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
 and an override that halts the caller is not an override;
 `STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
-than the archive, and is most useful as a deliberately targeted tripwire;
+than the archive, and is most useful as a deliberately targeted tripwire (that
+includes the rewind a compressed TAR makes from its listing back to member data,
+whether the caller listed first with `members()` or chose `concurrent_members=True`,
+whose `stream_members()` lists before its first member);
 `ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller abandoning the stream
 before EOF (extract never fires it), and putting it in `STRICT` would turn a ZipCrypto
 peek into `DiagnosticRaisedError` (revisit when `stream.verified` lands and this code

@@ -184,8 +184,8 @@ class ReaderState:
         self._stream_shutdown_owner: object | None = None
         self._stream_shutdown_done = False
         # The suspended passes' ``pass_closer``s, handed over by the close transition
-        # with one lease for all of them; see :meth:`take_pass_wind_down`. Like the reader's lease,
-        # that lease is a flag read by _outstanding_leases_locked, so taking and dropping
+        # with one lease for all of them; see :meth:`take_pass_wind_down`. Like the
+        # reader's lease, that lease is a flag read by _outstanding_leases_locked, so taking and dropping
         # it are one store each, and it is tracked apart from the closer so close() can
         # drop it even when an interrupt lost the closer. Only the holder of the
         # stream-shutdown claim drops it, in :meth:`finish_stream_shutdown`; that is a
