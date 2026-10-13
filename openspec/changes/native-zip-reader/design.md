@@ -251,8 +251,10 @@ class MemberData(BinaryIO):         # the member's compressed bytes, read forwar
 ```
 
 `settle` reads past the data the caller left and the data descriptor. For a member only
-its codec can end, `used` is how many compressed bytes the codec consumed; the bytes
-the caller's layers read past that are put back. A central entry's offset is the
+its codec can end, the caller passes the decoded data's `crc` and the walk finds the
+descriptor among the bytes it kept (§"Where a member's data ends"), or, for a codec that
+counts its input (DEFLATE), `used`, how many compressed bytes the codec consumed; either
+way the bytes the caller's layers read past the descriptor are put back. A central entry's offset is the
 stored one (`base` 0) until the end record gives the stub offset.
 
 The walk stops at the first `PK\x01\x02`, `PK\x06\x06` or `PK\x05\x06` after a member;
@@ -281,16 +283,26 @@ decoder takes input in chunks of up to 1 MiB, and Deflate64 and PPMd cannot say 
 of the last one they used. So the codec half does not count bytes. The reader decodes
 until the codec stream ends (a `refuse_input_after_end` stream raises
 `DataAfterEndError` at the first byte after the end, which here means "the member is
-over"), then the walk looks for the descriptor in the last 4 MiB it handed out: the
+over": the descriptor itself is input after the codec's end on every valid member),
+then the walk looks for the descriptor in the last 4 MiB it handed out: the
 four bytes of the decoded data's CRC, with a compressed size equal to their own
 position and a ZIP signature after them. A signed descriptor whose CRC differs (the
 data is damaged) is found by its signature and size, and the reader reports the CRC
 mismatch; an unsigned one cannot be told from the data then, and the walk stops with
-`CorruptionError`. PPMd holds its input until the whole member is in, to choose
-between this process and a child; with no size to wait for, a bit-3 PPMd member goes
-straight to a child process (in-process when `max_ppmd_in_process_input` is `None`),
-since its size cannot be shown to be under the limit. pyppmd stops at the end mark and
-reports what it did not use (measured, in-process and in the child).
+`CorruptionError`.
+
+Because the descriptor dates the end from its own position, bytes between the codec's
+end and the descriptor count into its compressed size. DR-3's check that nothing
+follows the codec's end, which a sized member gets, is not available for these members:
+a member with junk there fails from a file and reads from a pipe. Only a crafted
+archive has that shape, so DR-5a lets the two reads differ.
+
+PPMd holds its input until the whole member is in, and hands it to pyppmd whole: fed in
+pieces, pyppmd can crash the process on corrupt input. A bit-3 PPMd member has no size
+to wait for, and holding until the source ends would hold the rest of the archive, so it
+is fed in pieces and always in a child process; `max_ppmd_in_process_input=None`, which
+rules children out, refuses it with `ResourceLimitError`. pyppmd stops at the end mark
+and reports what it did not use (measured, in-process and in the child).
 
 ### What only the central directory says
 

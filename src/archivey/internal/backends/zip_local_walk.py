@@ -26,8 +26,10 @@ Where a member's data ends (``openspec/changes/native-zip-reader/design.md``):
   it the same way). Under encryption the CRC covers the plaintext, so only the size
   and the signature after the descriptor are matched.
 - Bit 3 and any other method: the codec's own end. The walk cannot see it, so the
-  caller decodes and tells :meth:`MemberData.settle` how many compressed bytes the
-  codec used; the bytes its layers read past that are put back in front of the stream.
+  caller decodes until the codec stream ends and hands :meth:`MemberData.settle` the
+  decoded data's CRC; the walk finds the descriptor among the bytes it kept, and puts
+  what follows it back in front of the stream. A caller whose codec counts the bytes
+  it used (DEFLATE) may pass that count instead.
 
 Like ``zip_parser``, this module decodes no name, runs no codec and emits no
 diagnostic. Damage raises ``CorruptionError``, a stream that ends early
@@ -463,16 +465,22 @@ class _CodecData(MemberData):
         own position and a ZIP signature after it. A signed descriptor whose CRC
         differs (the data is damaged) is found by its signature and size, and the
         caller judges the CRC; an unsigned one cannot be told from the data then.
-        As with the stored scan, a planted descriptor for a prefix can end the member
-        early; the central entry catches it.
+
+        The descriptor dates the data's end from its own position, so bytes between
+        the codec's end and the descriptor count into its compressed size: the check
+        a sized member gets, that nothing follows the codec's end (DR-3), is not
+        available here, and such a member reads from a pipe where it fails from a
+        file. A crafted shape only, so DR-5a lets the two reads differ. As with the
+        stored scan, a planted descriptor for a prefix ends the member early, and the
+        walk reads on from inside its data; comparing the descriptor with the central
+        entry at the end of the pass (task 3.3b) is what will catch it.
         """
-        kept = b"".join(self._kept)
-        self._kept.clear()
-        self._kept_len = 0
-        base = self.consumed - len(kept)
+        base = self.consumed - self._kept_len
         ahead = self._source.read(_DESCRIPTOR_LOOKAHEAD)
         at_end = len(ahead) < _DESCRIPTOR_LOOKAHEAD
-        buffer = kept + ahead
+        buffer = b"".join([*self._kept, ahead])
+        self._kept.clear()
+        self._kept_len = 0
         zip64 = self.entry.zip64
 
         def match(pos: int, *, by_crc: bool) -> DataDescriptor | None:

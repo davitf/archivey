@@ -256,18 +256,22 @@ def test_a_codec_member_ends_where_its_codec_ends(
 
 
 @requires("pyppmd")
-def test_ppmd_with_no_size_goes_to_a_child_or_says_why_not(
+def test_ppmd_with_no_size_decodes_only_in_a_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw = _streamed_zip([_member(b"p", _METHODS["ppmd"].values[0], _SMALL)])
+    # Fed in pieces, pyppmd can crash the process on corrupt input, so a member with no
+    # size never decodes in this one: not when no child can start, not with the limit
+    # off. (``test_a_codec_member_ends_where_its_codec_ends`` decodes ``_BIG``, many
+    # feeds long, in the child.)
+    raw = _streamed_zip([_member(b"p", _METHODS["ppmd"].values[0], _BIG)])
+    in_process = DecoderLimits(max_ppmd_in_process_input=None)
+    with pytest.raises(ResourceLimitError, match="None rules that out"):
+        _read_all(raw, limits=in_process)
     monkeypatch.setattr(
         ppmd_decoder, "ppmd_child_unavailable_reason", lambda: "no child here"
     )
-    with pytest.raises(ResourceLimitError, match="not known until it has been read"):
+    with pytest.raises(ResourceLimitError, match="none can be started"):
         _read_all(raw)
-    # With the limit off, it decodes in this process, as the caller chose.
-    in_process = DecoderLimits(max_ppmd_in_process_input=None)
-    assert _read_all(raw, limits=in_process) == [(b"p", _SMALL)]
 
 
 def test_a_signed_descriptor_with_another_crc_is_found_by_its_size() -> None:
@@ -304,11 +308,66 @@ def test_a_stream_cut_after_the_codec_end_is_truncation() -> None:
 
 
 @requires("pyppmd")
-def test_input_runs_on_is_for_ppmd8_without_a_size() -> None:
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"variant": 7, "unpack_size": 10, "pack_size": 5},
+        {"variant": 8, "unpack_size": 10},
+        {"variant": 8, "refuse_input_after_end": False},
+    ],
+    ids=["ppmd7", "sized", "not-refusing"],
+)
+def test_input_runs_on_is_for_ppmd8_without_a_size(kwargs: dict) -> None:
+    kwargs = {"refuse_input_after_end": True, **kwargs}
     with pytest.raises(ValueError, match="input_runs_on is for PPMd8"):
         ppmd_decoder.PpmdDecoder(
-            order=6, mem_size=1 << 20, variant=8, unpack_size=10, input_runs_on=True
+            order=6, mem_size=1 << 20, input_runs_on=True, **kwargs
         )
+
+
+@requires("pyppmd")
+def test_the_ppmd_codec_refuses_input_runs_on_for_7z_properties() -> None:
+    from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
+
+    params = CodecParams(
+        properties=struct.pack("<BI", 6, 1 << 20),
+        unpack_size=10,
+        pack_size=5,
+        input_runs_on=True,
+    )
+    with pytest.raises(ValueError, match="input_runs_on needs PPMd8"):
+        PpmdCodec().open(io.BytesIO(b"x" * 5), params, StreamConfig())
+
+
+def test_a_planted_descriptor_ends_a_codec_member_early() -> None:
+    # The codec analogue of the stored scan's planted prefix: stored blocks put a
+    # descriptor for the first ``pos`` bytes, carrying the whole member's CRC and size,
+    # and a local header signature inside the member's compressed data. The first
+    # match wins; the walk then reads on from inside the data, and only the check
+    # against the central entry at the end of the pass (task 3.3b) can catch it.
+    payload = b"payload " * 200
+    crc = zlib.crc32(payload)
+    junk_len = 40
+    # A raw DEFLATE stored block (not final), whose bytes are the planted record.
+    pos = 5  # the stored block's header comes first
+    planted = b"PK\x07\x08" + struct.pack("<III", crc, pos, len(payload))
+    planted += b"PK\x03\x04" + b"\0" * (junk_len - len(planted) - 4)
+    block = b"\x00" + struct.pack("<HH", len(planted), len(planted) ^ 0xFFFF)
+    assert len(block) == pos
+    rest = zlib.compressobj(9, zlib.DEFLATED, -15)
+    packed = block + planted + rest.compress(payload) + rest.flush()
+    # ``settle`` gets the CRC the planted record carries: CRC-32 is linear, so a
+    # crafted member can make its decoded data's CRC agree with it.
+    member = _Member(b"m", 8, 0, planted + payload, packed)
+    walk = LocalHeaderWalk(_Pipe(_streamed_zip([member])))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    descriptor = data.settle(crc=crc, file_size=len(payload))
+    assert descriptor is not None
+    assert descriptor.compressed_size == pos  # ended inside its own data
+    with pytest.raises(CorruptionError):
+        walk.next_entry()
 
 
 def test_what_the_stream_read_past_a_large_member_is_put_back() -> None:

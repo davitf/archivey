@@ -508,6 +508,11 @@ class DecoderLimits:
             member, so it always runs in-process. ``None`` decodes every member
             in-process and never starts a child process, at a memory cost that
             grows with the member.
+
+            A ZIP member read from a stream that cannot seek, its sizes stored
+            after its data, has no size to hold it to: it is fed to pyppmd in
+            pieces, always in a child process, whatever its size. With ``None``
+            such a member raises :class:`~archivey.exceptions.ResourceLimitError`.
     """
 
     max_decoder_memory: int | None = 2 * 2**30
