@@ -389,10 +389,11 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   from a file). A run that stops before the end of the pass (`abort_on`,
   `on_error="stop"`, a limit) never learns which members it keeps, so a write over
   a caller's entry is taken back and the entry returns; the members it wrote
-  elsewhere stay, as a stopped run's do. Two effects outlive the take-back. `abort_on` fires before a write
-  begins, which for such a member is before the end decides, so a run can stop for
-  a member that would not have been selected; deferring it would mean writing the
-  member it exists to stop. And the bomb limits: what the pass writes is on disk
+  elsewhere stay, as a stopped run's do. One that stops while the end of the pass
+  settles keeps what it settled. Two effects outlive the take-back. `abort_on`
+  fires before a write begins, which for such a member is before the end decides,
+  so a run can stop for a member that would not have been selected; deferring it
+  would mean writing the member it exists to stop. And the bomb limits: what the pass writes is on disk
   while the pass runs, so it is counted then and given back when it is taken back. A
   member the selection takes only provisionally (a Unix `x\y` that a list naming
   `x/y` may take) can therefore stop a run under `max_entries` or

@@ -399,6 +399,30 @@ def test_a_run_stopped_in_the_pass_puts_the_callers_file_back(
         assert sorted(p.name for p in (tmp_path / where / "x").iterdir()) == ["y"]
 
 
+@needs_symlinks
+def test_a_run_stopped_while_settling_keeps_what_it_settled(tmp_path: Path) -> None:
+    """The directory retypes ``payload`` as a link out of the destination, which
+    stops the run; ``docs/r.txt``, settled before it, replaced the caller's file."""
+    data = _zip(
+        [
+            (_entry("docs\\r.txt", host=0), b"read me"),
+            (_entry("payload", mode=0o120777), b"../../etc/passwd"),
+        ]
+    )
+    for where, piped in (("file", False), ("pipe", True)):
+        _seed(tmp_path / where, {"docs/r.txt": b"MINE"})
+        with pytest.raises(ArchiveyError):
+            _extract(
+                data,
+                tmp_path / where,
+                piped=piped,
+                members=["docs/r.txt", "payload"],
+                overwrite="replace",
+                abort_on=["blocked_member"],
+            )
+        assert (tmp_path / where / "docs/r.txt").read_bytes() == b"read me"
+
+
 @pytest.mark.parametrize("overwrite", ["replace", "skip"])
 def test_a_member_the_list_takes_in_the_end_replaces_the_callers_file(
     overwrite: str, tmp_path: Path

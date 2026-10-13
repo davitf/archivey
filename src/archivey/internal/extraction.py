@@ -1699,6 +1699,9 @@ class ExtractionCoordinator:
                     del revisable[index]
                     if index not in state.dropped:
                         self._unselect_revised_member(index)
+        # The selection is final from here: a member written so far is kept, if
+        # the run stops now, as a file run keeps what it wrote before stopping.
+        state.settled = True
         for index, handled in revisable.items():
             member = state.results[index].member
             if handled is None:
