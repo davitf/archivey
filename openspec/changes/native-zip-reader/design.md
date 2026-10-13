@@ -360,6 +360,19 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   escapes the destination is therefore refused from a pipe as from a file. Links are
   made only after the last member has been written, so no member is ever written
   through one.
+- The selection is made again too, on what each member became. A `members=` list is
+  matched during the pass against every name a member can end with (with `\` as a
+  separator or not, with or without a folder's trailing `/`), so the data of any
+  member it may select is written while the stream holds it; at the end the list
+  selects for good, and what it no longer takes is removed with no result, and
+  nothing is recorded as matched before then. A member a `members=` predicate or the
+  filter left out during the pass is asked about again at the end; if it is taken
+  then, it is written when it needs no bytes the stream has passed (a link, whose
+  target the reader kept, a folder or an empty file) and fails otherwise. That
+  failure is the one place a forward pass cannot match the seekable one: a filter
+  that selects by a name only the directory gives (a DOS name, `docs/` against a
+  stored `docs\r.txt`) sees the stored name during the pass. A `members=` predicate
+  is called twice for every member, and the filter twice for one it left out.
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
   member) is removed from disk and reported: data outside any member is a warning

@@ -619,6 +619,44 @@ def _report_stored_spelling(
         exc.link_target = member.link_target
 
 
+def _final_members_only(
+    selector: Callable[[ArchiveMember], bool],
+) -> Callable[[ArchiveMember], bool]:
+    """``selector`` for the members the walk will not change, and yes for the rest,
+    which the pass selects provisionally (``_provisionally_selected``) and the end
+    of the pass for good."""
+
+    def select(member: ArchiveMember) -> bool:
+        return not member.member_state_final or selector(member)
+
+    return select
+
+
+def _provisionally_selected(
+    selector: Callable[[ArchiveMember], bool], member: ArchiveMember
+) -> bool:
+    """Whether the pass reads and writes a member the walk can still change, before
+    the end of the pass selects it for good (``_settle_revised_members``).
+
+    A ``members=`` collection matches any name the member can end up with, so the
+    data of every member it may select is written while the stream holds it, and
+    nothing is recorded as matched yet. A predicate is asked about the member as it
+    is now; a member it leaves out holds a place, and its bytes, if it has any,
+    cannot be written later.
+    """
+    if isinstance(selector, CollectionSelector):
+        return selector.would_select(member, _possible_names(member.name))
+    return selector(member)
+
+
+def _possible_names(name: str) -> set[str]:
+    """The names a member the walk has yet to settle can end with: a ZIP's
+    directory can make ``\\`` a separator (a DOS host) and a provisional directory
+    a file or a link, which drops the trailing ``/``."""
+    names = {name, name.replace("\\", "/")}
+    return names | {n[:-1] for n in names if n.endswith("/")}
+
+
 def _until_listing_damage(
     reader: BaseArchiveReader,
     pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
@@ -1314,8 +1352,16 @@ class ExtractionCoordinator:
         # otherwise keep it, and an unrar child, alive).
         listing_damage: list[CorruptionError] = []
         revises = reader._REVISES_YIELDED_MEMBERS
+        # A member the walk can still rename or retype is selected on what it
+        # becomes, so the reader yields it whatever the selection says now; the loop
+        # holds its place (``_hold_place``).
+        walk_selector = (
+            stream_selector
+            if stream_selector is None or not revises
+            else _final_members_only(stream_selector)
+        )
         for original, stream in _until_listing_damage(
-            reader, reader._stream_members(stream_selector, copies), listing_damage
+            reader, reader._stream_members(walk_selector, copies), listing_damage
         ):
             member_started = False
             recorded_index: int | None = None
@@ -1330,6 +1376,16 @@ class ExtractionCoordinator:
                 else None
             )
             transformed: ArchiveMember | None = None
+            if (
+                before is not None
+                and stream_selector is not None
+                and not _provisionally_selected(stream_selector, original)
+            ):
+                # The selection is made again on what the member becomes
+                # (``_settle_revised_members``); until then it holds a place.
+                self._close(stream)
+                self._hold_place(original, before)
+                continue
             try:
                 self._park_earlier_copies(
                     original.name, current_by_name.get(original.name)
@@ -1342,7 +1398,10 @@ class ExtractionCoordinator:
                 if transformed is None:
                     # Filter returned None: caller-elected exclusion — no ExtractionResult
                     # (same as a selector exclusion). Still counts as processed for progress.
-                    pass
+                    # A member the walk can still change holds a place until the
+                    # filter has seen what it becomes.
+                    if before is not None:
+                        recorded_index = self._hold_place(original, None)
                 elif not original.is_current:
                     recorded_index = self._append_result(
                         ExtractionResult(
@@ -1446,7 +1505,7 @@ class ExtractionCoordinator:
                 break
 
         if state.revisable:
-            self._settle_revised_members()
+            self._settle_revised_members(stream_selector)
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1591,23 +1650,84 @@ class ExtractionCoordinator:
             else:
                 state.written_paths.discard(path)
 
-    def _settle_revised_members(self) -> None:
+    def _settle_revised_members(
+        self, selector: Callable[[ArchiveMember], bool] | None
+    ) -> None:
         """Bring what the pass wrote in line with the members as the walk left them
         (``_REVISES_YIELDED_MEMBERS``): a ZIP from a pipe learns each member's mode,
         host and full type only from the central directory, after the last member.
 
-        A member whose type or name changed is handled again from the start
+        The selection is made here, on what each member became: one it no longer
+        selects is taken back with no result, as random access never saw it. A member
+        the selection or the filter left out during the pass held a place
+        (``_hold_place``) and is handled now, if it is selected, so the filter sees
+        it again. A member whose type or name changed is handled again from the start
         (``_redo_revised_member``). One whose metadata alone changed gets it applied
         to what was written (``_reapply_revised_metadata``). Nothing else is touched.
         """
         state = self._state
         revisable, state.revisable = state.revisable, {}
+        if selector is not None:
+            # Members inside a folder come after it, so the last are taken back
+            # first and the folder is empty by the time its turn comes.
+            for index in sorted(revisable, reverse=True):
+                if not selector(state.results[index].member):
+                    del revisable[index]
+                    if index not in state.dropped:
+                        self._unselect_revised_member(index)
         for index, (before, written) in revisable.items():
             member = state.results[index].member
-            if member.type is not before.type or member.name != before.name:
+            if index in state.dropped:
+                self._redo_revised_member(index)
+            elif member.type is not before.type or member.name != before.name:
                 self._redo_revised_member(index)
             elif written is not None:
                 self._reapply_revised_metadata(index, before, written)
+
+    def _unselect_revised_member(self, index: int) -> None:
+        """Take back what result ``index`` wrote for a member the selection no longer
+        takes, now that the walk has settled it, and leave it no result. The
+        folders created for it go too, once empty: random access never wrote it."""
+        state = self._state
+        path = state.results[index].path
+        self._current = _MemberState()
+        try:
+            self._take_back_written(index)
+            self._hold_place_at(index)
+        finally:
+            if self._current.parked:
+                self._drop_parked_copies(state.results[index].member.name, None)
+        parent = path.parent if path is not None else None
+        while parent is not None and parent != state.dest:
+            if parent not in state.created_dirs:
+                break
+            try:
+                os.rmdir(long_path(parent))
+            except OSError:
+                break
+            state.created_dirs.discard(parent)
+            parent = parent.parent
+
+    def _hold_place(self, member: ArchiveMember, before: ArchiveMember | None) -> int:
+        """Record a result for ``member`` that the report leaves out unless the end
+        of the pass gives it an outcome (``_settle_revised_members``), and return its
+        index. With ``before``, the member as the pass saw it, it is also marked for
+        that settling here; otherwise the caller marks it."""
+        index = self._append_result(
+            ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
+        )
+        self._state.dropped.add(index)
+        if before is not None:
+            self._state.revisable[index] = (before, None)
+        return index
+
+    def _hold_place_at(self, index: int) -> None:
+        """Turn result ``index`` back into a held place with no outcome."""
+        member = self._state.results[index].member
+        self._set_result(
+            index, ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
+        )
+        self._state.dropped.add(index)
 
     def _reapply_revised_metadata(
         self, index: int, before: ArchiveMember, written: ArchiveMember
@@ -1658,14 +1778,17 @@ class ExtractionCoordinator:
         so a refusal leaves nothing at its path. A file whose name changed is written
         again from the bytes already on disk; a link's target comes from its data,
         which the reader kept. A member that now needs bytes the stream has passed,
-        and that were not written, fails, unless it has none (an empty file). Results
-        other than ``EXTRACTED`` and ``BLOCKED`` stand: nothing was written for them
-        that the change could alter.
+        and that were not written, fails, unless it has none (an empty file). That is
+        also how a member the pass left out (a held place) is handled: its bytes were
+        not written, so it can be a link, a directory or an empty file, and fails
+        otherwise. Results other than ``EXTRACTED`` and ``BLOCKED`` stand: nothing was
+        written for them that the change could alter.
         """
         state = self._state
         result = state.results[index]
         member = result.member
-        if result.status not in (
+        held_place = index in state.dropped
+        if not held_place and result.status not in (
             ExtractionStatus.EXTRACTED,
             ExtractionStatus.BLOCKED,
         ):
@@ -1685,12 +1808,11 @@ class ExtractionCoordinator:
             transformed, presented_name, rewrites = self._transform(member)
             if transformed is None:
                 # Not tallied, then dropped from the report.
-                self._set_result(
-                    index,
-                    ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None),
-                )
-                state.dropped.add(index)
+                self._hold_place_at(index)
+            elif held_place and not member.is_current:
+                state.dropped.discard(index)
             else:
+                state.dropped.discard(index)
                 if transformed.type is MemberType.FILE:
                     if old_path is not None and old_path in current.parked:
                         held = open(long_path(old_path), "rb")  # noqa: SIM115
@@ -1720,6 +1842,7 @@ class ExtractionCoordinator:
             if isinstance(exc, ArchiveyError) and spelled_from is not None:
                 _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
             error, status = self._classify(exc, member.name)
+            state.dropped.discard(index)
             self._set_result(
                 index,
                 ExtractionResult(

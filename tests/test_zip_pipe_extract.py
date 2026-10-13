@@ -207,6 +207,84 @@ def test_a_filter_that_takes_only_files_drops_the_link(tmp_path: Path) -> None:
     assert sorted(tree) == ["a.txt"]
 
 
+@needs_symlinks
+def test_a_filter_that_takes_only_links_keeps_the_link(tmp_path: Path) -> None:
+    """The pass sees a provisional file and the filter drops it; the end of the pass
+    asks the filter again about the link it became, whose target the reader kept."""
+
+    def links_only(member: ArchiveMember) -> ArchiveMember | None:
+        return member if member.type is MemberType.SYMLINK else None
+
+    results, tree = _both(_link_zip("a.txt"), tmp_path, filter=links_only)
+    assert [name for name, _, _ in results] == ["link"]
+    assert tree == {"link": ("symlink", "a.txt")}
+
+
+@needs_symlinks
+def test_a_members_predicate_that_takes_only_links_keeps_the_link(
+    tmp_path: Path,
+) -> None:
+    results, tree = _both(
+        _link_zip("a.txt"),
+        tmp_path,
+        members=lambda member: member.type is MemberType.SYMLINK,
+    )
+    assert [name for name, _, _ in results] == ["link"]
+    assert tree == {"link": ("symlink", "a.txt")}
+
+
+def _dos_docs() -> bytes:
+    return _zip(
+        [
+            (_entry("docs\\", host=0), b""),
+            (_entry("docs\\r.txt", host=0), b"read me"),
+            (_entry("other.txt", host=0), b"other"),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        (["docs/r.txt"], ["docs/r.txt"]),
+        # The name a DOS host's directory never gives: nothing matches, from a pipe
+        # too, though the pass wrote the member before it knew.
+        (["docs\\r.txt"], []),
+        (["docs/"], ["docs/"]),
+    ],
+)
+def test_members_by_name_select_what_the_directory_names(
+    names: list[str], expected: list[str], tmp_path: Path
+) -> None:
+    results, tree = _both(_dos_docs(), tmp_path, members=names)
+    assert [name for name, _, _ in results] == expected
+    assert ("docs/r.txt" in tree) == ("docs/r.txt" in expected)
+
+
+def test_a_filter_by_a_name_the_directory_gives_fails_from_a_pipe(
+    tmp_path: Path,
+) -> None:
+    """The pass offers the filter ``docs\\r.txt``, which it drops; the data has
+    gone by when the directory names it ``docs/r.txt`` (``design.md``)."""
+
+    def docs_only(member: ArchiveMember) -> ArchiveMember | None:
+        return member if member.name.startswith("docs/") else None
+
+    from_file = _extract(_dos_docs(), tmp_path / "file", piped=False, filter=docs_only)
+    from_pipe = _extract(
+        _dos_docs(), tmp_path / "pipe", piped=True, filter=docs_only,
+        on_error="continue",
+    )  # fmt: skip
+    assert [(n, s) for n, s, _ in from_file] == [
+        ("docs/", ExtractionStatus.EXTRACTED),
+        ("docs/r.txt", ExtractionStatus.EXTRACTED),
+    ]
+    assert [(n, s) for n, s, _ in from_pipe] == [
+        ("docs/", ExtractionStatus.EXTRACTED),
+        ("docs/r.txt", ExtractionStatus.FAILED),
+    ]
+
+
 def test_a_special_file_the_directory_reveals_is_removed(tmp_path: Path) -> None:
     data = _zip([(_entry("fifo", mode=0o010644), b""), (_entry("b"), b"after")])
     results, tree = _both(data, tmp_path, on_error="continue")
