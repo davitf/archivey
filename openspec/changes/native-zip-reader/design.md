@@ -386,7 +386,10 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   entry the caller had at a destination the pass replaces (`overwrite="replace"`) is
   moved aside and put back at the end of the run unless the member still lands
   there (on Windows a read-only entry is not moved, so the member fails as it does
-  from a file). Two effects outlive the take-back. `abort_on` fires before a write
+  from a file). A run that stops before the end of the pass (`abort_on`,
+  `on_error="stop"`, a limit) never learns which members it keeps, so a write over
+  a caller's entry is taken back and the entry returns; the members it wrote
+  elsewhere stay, as a stopped run's do. Two effects outlive the take-back. `abort_on` fires before a write
   begins, which for such a member is before the end decides, so a run can stop for
   a member that would not have been selected; deferring it would mean writing the
   member it exists to stop. And the bomb limits: what the pass writes is on disk

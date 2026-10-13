@@ -863,6 +863,9 @@ class _RunState:
     # Held places of members the selection left out, which the pass did not count
     # toward ``members_done``; the end of the pass counts the ones it writes.
     untallied: set[int] = field(default_factory=set)
+    # Whether the pass ended and settled what it wrote (``_settle_revised_members``);
+    # a run stopped before then never knew which provisional writes to keep.
+    settled: bool = False
     # Entries that were at a destination before the run, moved aside so a member
     # the pass wrote there before the walk settled it could be taken back
     # (``_set_aside``): the destination -> where the entry is now.
@@ -1524,6 +1527,7 @@ class ExtractionCoordinator:
 
         if state.revisable:
             self._settle_revised_members(stream_selector, members_done)
+        state.settled = True
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1798,12 +1802,18 @@ class ExtractionCoordinator:
         """Put back each entry ``_set_aside`` moved, unless the run's final write is
         at its path, as random access would have replaced it too; then the entry is
         removed. One whose path holds something else now is left where it was moved,
-        with a warning, rather than lost."""
+        with a warning, rather than lost.
+
+        A run that stopped before the end of its pass never settled what it wrote
+        there, so that write is taken back and the caller's entry returns: whether
+        the member was selected is not known."""
         state = self._state
         set_aside, state.set_aside = state.set_aside, {}
         for path, aside in set_aside.items():
             on_disk = long_path(aside)
             try:
+                if not state.settled and path in state.written_paths:
+                    self._remove_unsettled(path)
                 if path in state.written_paths and not any(
                     path in unremoved for unremoved in state.unremoved.values()
                 ):
@@ -1829,6 +1839,19 @@ class ExtractionCoordinator:
                     str(self._shown(path)),
                     exc,
                 )
+
+    def _remove_unsettled(self, path: Path) -> None:
+        """Remove what the run wrote at ``path`` before its pass was cut short (a
+        file, a link or an empty folder); a folder with entries stays."""
+        state = self._state
+        target = long_path(path)
+        if os.path.isdir(target) and not os.path.islink(target):
+            os.rmdir(target)
+            self._forget_removed_directory(path)
+        else:
+            os.unlink(target)
+            self._note_link_change(path)
+        state.written_paths.discard(path)
 
     def _reapply_revised_metadata(
         self, index: int, before: ArchiveMember, written: ArchiveMember

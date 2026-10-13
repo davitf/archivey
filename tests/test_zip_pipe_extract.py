@@ -10,6 +10,7 @@ these tests open the gate themselves.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import stat
@@ -20,7 +21,8 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey.exceptions import ExtractionError
+from archivey.config import ExtractionLimits
+from archivey.exceptions import ArchiveyError, ExtractionError
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.extraction import BombTracker
 from archivey.types import (
@@ -364,6 +366,37 @@ def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
         for where in ("file", "pipe"):
             os.chmod(tmp_path / where / "docs/r.txt", stat.S_IREAD | stat.S_IWRITE)
     assert sorted(tree) == ["docs", "docs/r.txt"]
+
+
+@posix_modes
+@pytest.mark.parametrize(
+    ("second", "options"),
+    [
+        ("../evil", {"abort_on": ["blocked_member"]}),
+        ("z.txt", {"limits": ExtractionLimits(max_entries=1)}),
+    ],
+)
+def test_a_run_stopped_in_the_pass_puts_the_callers_file_back(
+    second: str, options: dict[str, object], tmp_path: Path
+) -> None:
+    """The run stops before the directory says whether ``x\\y`` is ``x/y``, so
+    nothing the pass wrote at the caller's ``x/y`` is kept."""
+    data = _zip([(_entry("x\\y"), b"ARCHIVE"), (_entry(second), b"Z")])
+    for where, piped in (("file", False), ("pipe", True)):
+        _seed(tmp_path / where, {"x/y": b"MINE"})
+        # From a file the entry limit is never reached: x\\y is not selected.
+        stops = piped or "abort_on" in options
+        with pytest.raises(ArchiveyError) if stops else contextlib.nullcontext():
+            _extract(
+                data,
+                tmp_path / where,
+                piped=piped,
+                members=["x/y", second],
+                overwrite="replace",
+                **options,
+            )
+        assert (tmp_path / where / "x/y").read_bytes() == b"MINE"
+        assert sorted(p.name for p in (tmp_path / where / "x").iterdir()) == ["y"]
 
 
 @pytest.mark.parametrize("overwrite", ["replace", "skip"])
