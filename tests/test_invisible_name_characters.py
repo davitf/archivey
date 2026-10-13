@@ -128,6 +128,7 @@ def test_each_invisible_format_character_is_named(
     "name",
     [
         "café.txt",  # printable non-ASCII
+        "a\u00a0b.txt",  # no-break space: category Zs, shown as a space
         "❤️.txt",  # variation selector: category Mn, not Cf
         "evil\u202egnp.exe",  # bidi override: MEMBER_NAME_BIDI_CONTROL only
         "\u200fדוח.pdf",  # bidi mark: MEMBER_NAME_BIDI_CONTROL only

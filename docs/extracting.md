@@ -189,7 +189,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   control character at all. Listing and reading always present either kind exactly as
   stored, in a name or a link target, with one `MEMBER_NAME_BIDI_CONTROL` diagnostic
   for each; its context's `field` is `"name"` or `"link_target"`. A target stored as the
-  member's data (ZIP, 7z, RAR4) is reported when it is read.
+  member's data (ZIP, 7z, RAR4) is reported when it is read. Other invisible format
+  characters, such as a zero-width space (`invoice<U+200B>.pdf` looks like
+  `invoice.pdf`), are reported the same way with `MEMBER_NAME_INVISIBLE_CHARACTER` and
+  are never rejected: writing them is safe, and a zero-width joiner is part of
+  ordinary emoji.
 
     Unlike the rules above, this one **is** lifted by `TRUSTED`, which extracts the
     member under its stored name. The distinction is that nothing here is unsafe to

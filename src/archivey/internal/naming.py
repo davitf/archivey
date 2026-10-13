@@ -72,6 +72,9 @@ def _emit_name_controls(
     """
     if text.isascii():
         return
+    # One set for the invisible characters, unlike the bidi pair above: nothing in it is
+    # refused, because writing any of them is safe (DR-17). A caller who wants to stop a
+    # zero-width space but not an emoji joiner reads ``controls`` from the context.
     bidi: list[str] = []
     invisible: list[str] = []
     for char in text:

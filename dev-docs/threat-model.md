@@ -274,7 +274,9 @@ bytes. The outcome is the same on every platform. ADR
   marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,
   only the name read back later (ADR
   [0017](decisions/0017-bidi-override-rejection-is-policy-keyed.md)). Listing always
-  presents the stored name with `MEMBER_NAME_BIDI_CONTROL`.
+  presents the stored name with `MEMBER_NAME_BIDI_CONTROL`. Other invisible format
+  characters (Unicode Cf: zero-width space, joiners, BOM, soft hyphen) get
+  `MEMBER_NAME_INVISIBLE_CHARACTER` and are never rejected.
 
 `TRUSTED` keys collisions on the exact path and writes faithful bytes; the local OS
 decides.
