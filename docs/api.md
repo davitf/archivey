@@ -175,3 +175,8 @@ front end that moves or renames what extraction wrote and wants the names a dire
 extraction would have chosen.
 
 ::: archivey.paths.numbered_name
+
+It also holds `match_glob`, which turns shell-style patterns into a `members=` argument,
+for selecting by pattern where `members=` itself matches names exactly.
+
+::: archivey.paths.match_glob
