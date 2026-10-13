@@ -65,7 +65,11 @@
       `docs/formats.md`.
 - [ ] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
 
-## 3. Streaming (PR 3)
+## 3. Streaming (PRs 3a, 3b, 3c)
+
+3a is the forward walk alone (3.1, 3.2's parser half, 3.3d); 3b the reader over a
+non-seekable source (3.2's codec half, 3.3 to 3.3h, 3.4, 3.5, 3.5a); 3c the seekable
+cases (3.0, 3.0a, 3.0b).
 
 - [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
@@ -79,11 +83,14 @@
       a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
       (`CorruptionError` after the members before it); a sized member is seeked over
       (counted reads).
-- [ ] 3.1 `parse_local_header` / `parse_central_header` on bytes, shared by both walks;
-      `LocalHeaderWalk` over a forward reader; data descriptor parsing (signature
-      optional, 4- or 8-byte sizes).
+- [x] 3.1 Central and local headers parsed by the same code in both walks;
+      `LocalHeaderWalk` over a forward reader (`zip_local_walk.py`); data descriptor
+      parsing (signature optional, 4- or 8-byte sizes).
 - [ ] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
       STORED + bit 3 descriptor scan; tests with stdlib `zipfile` writing to a pipe.
+      3a: the walk's half (sized data, the scan, `settle(used)` putting back what a
+      codec's layers read past its end) is done, tested in `test_zip_local_walk.py`;
+      the codecs' report of the bytes they used is 3b.
 - [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
       and reported; a missing one is handled per 3.3g.
@@ -97,7 +104,7 @@
 - [ ] 3.3c `is_current` from the directory order; same-name members in reverse order are
       detected at the end of the pass, with 3.3g's outcome (fixture with the two orders
       reversed).
-- [ ] 3.3d A stream that starts neither with a local header nor an end record: scan
+- [x] 3.3d A stream that starts neither with a local header nor an end record: scan
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
 - [ ] 3.3e Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
