@@ -439,10 +439,10 @@ class DecoderLimits:
             ``-md=1536m``), so declaring more than 2 GiB takes a member over
             2 GiB *and* an explicit ``-md`` above 2g. lzip's field cannot say
             more than 512 MiB. The same number serves both codecs because it
-            answers the same question, and xz is checked through liblzma's own
-            memory limit, which also counts about 64 KiB of the decoder's
-            overhead; a 128 KiB allowance keeps a dictionary exactly at the
-            cap readable there as on every other path.
+            answers the same question, and xz and ``.lzma`` are checked through
+            liblzma's own memory limit, which also counts about 64 KiB of the
+            decoder's overhead; a 128 KiB allowance keeps a dictionary exactly
+            at the cap readable there as on every other path.
 
             What the default is *not* is a promise about the machine. The cap
             bounds what an archive may ask for; whether an allocation succeeds

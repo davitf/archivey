@@ -265,13 +265,13 @@ How sure each codec is that a stream ended early differs a great deal; each page
 row, and §3 has the table.
 
 **Decoder memory.** `DecoderLimits.max_decoder_memory` (2 GiB by default) is checked
-against a dictionary size the stream declares before the decoder is built: xz per block,
+against a dictionary size the stream declares before the dictionary is allocated: xz per block,
 through liblzma's `memlimit`; lzip per member, whose format caps the dictionary at 512 MiB
-anyway; LZMA Alone from its header, refused on the first read so the refusal carries the
-probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3); zstd per frame, through
-libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4). bzip2, LZ4, Brotli and gzip
-have small fixed windows. The `.Z` decoder's table stays under about 19 MiB (about
-20 MiB on a free-threaded build) whatever the stream does
+anyway; LZMA Alone per stream, through liblzma's `memlimit` too, refused on the first read
+so the refusal carries the probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3);
+zstd per frame, through libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4).
+bzip2, LZ4, Brotli and gzip have small fixed windows. The `.Z` decoder's table stays
+under about 19 MiB (about 20 MiB on a free-threaded build) whatever the stream does
 ([`unix-compress.md`](unix-compress.md) §4).
 
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
@@ -375,7 +375,8 @@ Shared by the codecs; each page adds its own.
   allows it ([`brotli.md`](brotli.md) §4); extraction's ratio guard bounds what is written.
 - **A declared dictionary sizes an allocation.** xz, lzip and LZMA Alone declare their
   dictionary before any data, and liblzma reserves it. `DecoderLimits` refuses one over the
-  cap before the decoder is built (§2.3). Detection probes lift the cap and do not
+  cap before the dictionary is allocated: inside liblzma for xz and LZMA Alone, before the
+  decoder is built for lzip (§2.3). Detection probes lift the cap and do not
   reserve the declaration either: a probe sets `StreamConfig.probe_read_bound` to the
   output it reads, and the decoder is built with a dictionary of that size (4 KiB at
   least), which decodes those bytes identically, since a match never reaches back past

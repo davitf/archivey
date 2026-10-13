@@ -409,7 +409,7 @@ Whether the probe's claim was the only evidence is the same question for every e
 read raises.
 The rewritten message for a limit trip SHALL say the read was stopped by a limit
 rather than that decoding failed, since a decoder-memory refusal stops the read
-before any decoder is built; it still MUST NOT imply that nothing was produced.
+before the dictionary is allocated; it still MUST NOT imply that nothing was produced.
 
 **The trigger is provenance, not confidence.** The question this signal answers is "was
 there any evidence besides one probe?", which `DetectionConfidence` does not track:
