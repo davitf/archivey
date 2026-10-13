@@ -36,7 +36,8 @@ asked for a verdict at all.
   finding S28-K1); letting the seek through matches the rewind rule for truncated
   streams (#491). It lives in `ArchiveStream`, so it holds for every format.
 - **A seek loses the digest only by skipping bytes.** (Since 2026-10-10; before, any
-  seek but one to 0 forfeited it.) The verifier hashes from 0 to its furthest read, so
+  seek but one to 0 forfeited it.) The verifier hashes from 0 to its hashing frontier
+  (its furthest read, until a read skips bytes), so
   a seek back keeps the digest, and so does a forward seek whose inner decodes the
   skipped bytes anyway: the verifier asks the inner where it would resume
   (`ask_seek_resume_offset`) and, when that is at or before the frontier, leaves the
@@ -46,8 +47,16 @@ asked for a verdict at all.
   The digest covers the first pass over each byte; bytes read again after a seek back
   are not checked again. A seek to or past the declared size defers the gap to the
   concluding read, which hashes it. Only a read that starts past the frontier, after a
-  jump by a seek index, an accelerator or random access, forfeits the digest. The
+  jump by a seek index, an accelerator or random access, pauses the digest. The
   maintainer asked for this on 2026-10-10.
+- **A seek back gets a paused digest back.** (Since 2026-10-13; before, only a seek to
+  0 did.) A read that skips bytes leaves the hashing frontier where it was; the
+  hashers still hold the state for every byte before it. A seek back to the frontier
+  or behind it, then reads on to the end, completes the hash. Because a read past the
+  jump may already have reached the end and given the length verdict, the digest
+  verdict is tracked apart from it: the read that brings the frontier to the end gives
+  it, and withholds its bytes on a mismatch. The maintainer approved this on
+  2026-10-13 (PR 764 review, item 1).
   One stream opts out: a random-access compressed TAR's archive-level codec stream
   (`open_codec_stream(repeat_verdict=False)`). No caller reads it; the reader's own
   views do, and they seek before every read, so each read would count as rewound and

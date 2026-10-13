@@ -579,8 +579,8 @@ class ArchiveStream(ReadOnlyIOStream):
             self._fail(e)
         if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the
-            # seek may have given up the check that found it (only a seek to 0
-            # re-arms it). Withhold the bytes, as the
+            # seek may have paused the check that found it (a seek back to its
+            # frontier resumes it). Withhold the bytes, as the
             # verifier does with the chunk that fails.
             self._verdict_rewound = False
             self._raise_verdict()

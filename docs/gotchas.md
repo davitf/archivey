@@ -22,7 +22,8 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   the bytes it skipped, as it would have to anyway, and Archivey hashes them as it goes.
   A forward seek that jumps over bytes without decoding them (a stored member, or a seek
   by an index or the `[seekable]` accelerator) gives up the check once you read past the
-  jump, until you seek back to 0. The check covers the first pass over each byte: bytes
+  jump, until you seek back to a point you had already read up to and read on to the
+  end from there. The check covers the first pass over each byte: bytes
   read again after a seek back are not checked again. A WinZip AES member's HMAC is the
   exception: it is still checked when a read reaches the end, and that read first
   re-reads, without decrypting, the ciphertext your seeks skipped. A short read at the

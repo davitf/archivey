@@ -330,8 +330,8 @@ What that does and does not promise:
   the codec's own checks reach still raises. A seek into a `.xz` or `.lz` file jumps
   by the file's own index, and a crafted index can send it to the wrong bytes with no
   error. Checking that would mean decoding everything before the target, which is the
-  cost a seek exists to avoid. When the bytes must be right, seek back to 0 and read to the
-  end.
+  cost a seek exists to avoid. When the bytes must be right, seek back to where your
+  reads had reached before the jump (or to 0) and read to the end.
 - **Once a stream has raised, it keeps raising.** Every later `read()` raises the same
   error. A seek back works and the bytes before the damage read again, but the read
   that reaches the end raises the error again, so seeking back cannot hand you the

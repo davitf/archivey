@@ -337,11 +337,11 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     Whether the digest is lost follows the member verifier's rule (ADR 0014). The
     inner is asked first (``ask_digest_intact``), so a watch above the verifier gets
     its answer. A watch below it (the verifier wraps this stream) applies the same
-    rule to what passes through: a read that starts past the furthest read skips
-    bytes and loses the digest until a seek back to 0, and so does a position past
-    the furthest read but short of ``size``, which the next read would skip. A seek
-    to or behind the furthest read, or to ``size`` (the verifier's conclusion reads
-    the gap), keeps it. A forward seek the verifier keeps the digest across reaches
+    rule to what passes through, with its own hashing frontier (the end of the reads
+    contiguous from 0): a position past it is lost, unless it is at ``size`` with no
+    read past the frontier yet (the verifier's conclusion reads the gap). A read that
+    starts past the frontier leaves it there, and a seek back to it or behind it, then
+    reads on to ``size``, gets the digest back. A forward seek the verifier keeps the digest across reaches
     this stream as reads up to the target. Pass ``seek_forfeits=False`` for a digest
     that survives seeks (the WinZip AES HMAC, which the decrypt stage completes over
     the ciphertext at the end): only a read that reaches ``size`` counts there,
@@ -364,6 +364,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self._on_unverified: Callable[[str], None] | None = on_unverified
         self._watch_pos = 0
         self._watch_furthest = 0
+        self._watch_hashed = 0
         self._delivered = False
         self._reached = size <= 0
         self._forfeited = False
@@ -379,7 +380,12 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         intact = ask_digest_intact(self._inner)
         if intact is not None:
             return not intact
-        return self._watch_furthest < self._watch_pos < self._watch_size
+        if self._watch_pos <= self._watch_hashed:
+            return False
+        return (
+            self._watch_pos < self._watch_size
+            or self._watch_hashed < self._watch_furthest
+        )
 
     def _note_position(self) -> None:
         # "Reads reached ``size``" stands for "the digest ran". That holds only for an
@@ -401,16 +407,13 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             raise
         if data:
             self._delivered = True
-            if (
-                start > self._watch_furthest
-                and self._seek_forfeits
-                and ask_digest_intact(self._inner) is None
-            ):
-                # This read skipped the bytes between the furthest read and ``start``.
-                # A verifier below answers for itself: it may have read them through.
-                self._forfeited = True
             self._watch_pos += len(data)
             self._watch_furthest = max(self._watch_furthest, self._watch_pos)
+            if start <= self._watch_hashed:
+                self._watch_hashed = max(self._watch_hashed, self._watch_pos)
+            # A read that starts past the frontier skipped the bytes before ``start``;
+            # the frontier stays. A verifier below answers for itself (it may have read
+            # them through), and ``_digest_lost`` asks it first.
             self._note_position()
         elif n != 0:
             # EOF: the inner stream has run its end-of-stream check (and a mismatch
@@ -435,6 +438,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         if position == 0:
             self._forfeited = False
             self._watch_furthest = 0
+            self._watch_hashed = 0
         self._watch_pos = position
 
     def nearest_resume_offset(self, target: int) -> int | None:

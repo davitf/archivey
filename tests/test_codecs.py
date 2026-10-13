@@ -1743,10 +1743,10 @@ def test_verify_rewind_to_start_rearms_checksum(first_seek: int) -> None:
     )
     assert stream.read(10) == CONTENT[:10]
     stream.seek(first_seek)
-    stream.read(1)  # skips the gap: the CRC is lost
-    assert not stream._verifier.digests_enabled
+    stream.read(1)  # skips the gap: the CRC is paused
+    assert stream._digest_intact() is False
     stream.seek(0)
-    assert stream._verifier.digests_enabled
+    assert stream._digest_intact() is True
     with pytest.raises(CorruptionError):
         stream.read(-1)
     stream.close()
@@ -1842,6 +1842,49 @@ def test_verify_forward_seek_that_jumps_forfeits_checksum() -> None:
     stream.seek(500)
     assert stream.read(-1) == CONTENT[500:]  # mismatch not checked
     assert stream._digest_intact() is False
+    stream.close()
+
+
+@pytest.mark.parametrize("size", [len(CONTENT), None])
+def test_verify_seek_back_after_a_jump_completes_the_checksum(
+    size: int | None,
+) -> None:
+    """A read that skipped bytes pauses the CRC at the hashing frontier; a seek back
+    to it, then a read on to the end, hashes the rest and checks the CRC."""
+    stream = VerifyingStream(_JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=size)
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(500)
+    assert stream.read() == CONTENT[500:]  # length checked, CRC not yet
+    assert stream._digest_intact() is False
+    stream.seek(10)
+    assert stream._digest_intact() is True
+    with pytest.raises(CorruptionError):
+        stream.read()
+    stream.close()
+
+    stream = VerifyingStream(_JumpingBytesIO(CONTENT), _GOOD_CRC, expected_size=size)
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(500)
+    assert stream.read(1) == CONTENT[500:501]
+    stream.seek(4)  # behind the frontier: the re-read bytes are not hashed twice
+    assert stream.read() == CONTENT[4:]
+    assert stream._digest_intact() is True
+    stream.close()
+
+
+def test_verify_seek_back_after_a_jump_withholds_the_reaching_chunk() -> None:
+    """The bounded read that completes a paused hash gives the digest verdict and
+    withholds its bytes on a mismatch, as a first reaching read does."""
+    stream = VerifyingStream(
+        _JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=len(CONTENT)
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(len(CONTENT) - 5)
+    assert stream.read(5) == CONTENT[-5:]
+    stream.seek(10)
+    assert stream.read(100) == CONTENT[10:110]
+    with pytest.raises(CorruptionError):
+        stream.read(len(CONTENT))
     stream.close()
 
 

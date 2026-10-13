@@ -352,8 +352,8 @@ candidate failure (defined below) on the caller's `read`, `readinto` or forward
 the member may be corrupt, not `CorruptionError`; for an `LZMA` or `PPMd` member, whose
 codec header is read when the member opens, the open raises it. It SHALL NOT be marked
 as a wrong-password verdict: nothing in the archive tells a colliding wrong password
-from a damaged member. A STORED member's forward seek jumps, so a read after it loses
-the CRC until a seek to 0 (`compressed-streams`, ADR 0014) and that seek does not raise;
+from a damaged member. A STORED member's forward seek jumps, so a read after it pauses
+the CRC until a seek back to the frontier (`compressed-streams`, ADR 0014) and that seek does not raise;
 closing that stream emits `ENCRYPTED_MEMBER_UNVERIFIED`. A compressed member's forward
 seek keeps the CRC, as `compressed-streams` describes.
 

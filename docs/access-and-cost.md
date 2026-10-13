@@ -118,7 +118,8 @@ CRC check, and so does a forward seek in a compressed member. That seek itself i
 free: the next read decodes and hashes the bytes it skipped, so that read pays for the
 gap, and a seek you undo or a stream you close before reading costs nothing. A forward
 seek that jumps (a stored member, or a seek by an index or the accelerator) gives the
-CRC up once you read past it, until a seek back to 0. The check covers the first pass
+CRC up once you read past it, until you seek back to a point you had already read up
+to and read on from there to the end. The check covers the first pass
 over each byte: bytes read again after a seek back are not checked again. None of this
 touches WinZip AES's HMAC: the HMAC covers the ciphertext, so the read that reaches
 the member's end first reads, without decrypting, whatever ciphertext your seeks

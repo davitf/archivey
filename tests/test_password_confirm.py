@@ -527,13 +527,26 @@ def test_watch_readinto_counts_as_a_read() -> None:
 
 def test_a_seek_forfeits_the_digest_when_the_inner_drops_it() -> None:
     # A fused verifier stops hashing on a read that skips bytes past its frontier, so
-    # reading on to the end after a skip still never reaches the digest.
+    # reading on to the end after a skip does not reach the digest.
     watch, calls = _watch(b"0123456789")
     watch.read(1)
     watch.seek(5)
     assert watch.read() == b"56789"
     watch.close()
     assert calls.reasons == ["seek"]
+
+
+def test_a_seek_back_after_a_skip_gets_the_digest_back() -> None:
+    # A read that skips bytes leaves the hashing frontier where it was; a seek back to
+    # it, then a read on to the end, completes the digest.
+    watch, calls = _watch(b"0123456789")
+    watch.read(1)
+    watch.seek(5)
+    assert watch.read() == b"56789"
+    watch.seek(1)
+    assert watch.read() == b"123456789"
+    watch.close()
+    assert calls.count == 0
 
 
 def test_a_backward_seek_keeps_the_digest() -> None:

@@ -2293,8 +2293,9 @@ class ZipReader(BaseArchiveReader):
 
         For a password that a check weaker than the member's digest accepted: a wrong
         ZipCrypto password that passes the check byte decrypts to readable garbage,
-        and only the CRC at EOF notices. A seek forfeits the check except under WinZip
-        AES: its HMAC survives seeks, so only a read reaching the end counts.
+        and only the CRC at EOF notices. A read that skips bytes after a seek pauses the
+        check except under WinZip AES: its HMAC survives seeks, so only a read reaching
+        the end counts.
         """
         return self._watch_unverified_read(
             stream,

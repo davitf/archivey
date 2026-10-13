@@ -345,8 +345,9 @@ decoded: a seek back keeps it, a forward seek whose gap must be decoded anyway k
 seek to the end keeps it (the concluding read hashes the gap). A seek that jumps by an
 index, an accelerator or random access, then a read past it, gives the digest up; such
 seeks trust the format's own index and are best-effort. The digest covers the first pass
-over each byte: bytes read again after a seek back are not checked again. A seek back to
-0 re-arms the check.
+over each byte: bytes read again after a seek back are not checked again. A read that
+skips bytes pauses the check where the reads had reached; a seek back to that point or
+before it, then a read on to the end, completes it. A seek back to 0 re-arms the check.
 
 **Why.** A seek that jumps skips the bytes that a check would cover, and the format's
 own tools trust their indexes the same way. When the gap must be decoded anyway, the
@@ -356,7 +357,8 @@ cannot hand the skipped bytes up (the cost claim would break).
 
 **Rulings.** 2026-09-23 (index trust, PR 407); 2026-09-28 (PR 509); seek to 0,
 2026-10-01; keep the digest across seeks that decode anyway, maintainer 2026-10-10
-("we'd only lose the check for indexed or accelerated seeks", PR 743).
+("we'd only lose the check for indexed or accelerated seeks", PR 743); a seek back to
+where the reads had reached completes a paused digest, maintainer 2026-10-13.
 
 ---
 

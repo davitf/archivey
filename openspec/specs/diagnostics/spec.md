@@ -126,8 +126,9 @@ and cross-run id stability are not promised.
 closed before its declared digest was reached **and** the password behind those bytes was
 accepted on a check weaker than that digest. `check` names what accepted the password
 (`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names why the digest was
-not reached (`"partial_read"`, or `"seek"` when a seek forfeited it: a read skipped
-bytes past the furthest read, or the stream was closed while parked there; a WinZip AES
+not reached (`"partial_read"`, or `"seek"` when a seek left it unreached: a read skipped
+bytes past the hashing frontier and no read from it reached the end, or the stream was
+closed while parked past it; a WinZip AES
 HMAC survives seeks, so there `"seek"` means only that a failed seek left the position
 unknown). It SHALL NOT be emitted for a partial read whose password was confirmed
 against an integrity anchor — that restates what the caller already knows, which the
