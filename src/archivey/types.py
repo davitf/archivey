@@ -996,24 +996,28 @@ class ArchiveMember:
         ``False`` while archivey can still update the member in place, which happens in
         two cases:
 
-        - A member yielded by a forward pass (``streaming=True``: ``stream_members()``
-          or iterating the reader), until the pass ends. A later member with the same
-          name can still make this one ``is_current=False``, and link targets are
-          resolved to members when the pass ends. A pass that goes past
-          ``ListingLimits`` stops keeping members and never stamps them, so from there
-          its members read ``True`` with ``is_current`` as yielded: a superseded copy
-          can read current.
+        - A member of a listing whose links have not been resolved yet. That listing is
+          complete, and the member settled, when a call that resolves links returns:
+          ``members()``, ``members_report()`` or ``get()``, or the end of a
+          ``stream_members()`` pass or of iterating the reader. Until then a later member
+          with the same name can still make this one ``is_current=False``, and links
+          get ``link_target_member``. So a member reads ``False`` while a pass yields it
+          (a random-access 7z or solid RAR pass too) and after a
+          ``members_report_if_available()`` peek. A pass past ``ListingLimits`` stops
+          keeping members: it stamps ``is_current`` over the ones it kept, and stamps
+          nothing from that point on, so a member yielded later reads ``True`` with
+          ``is_current`` as yielded and cannot supersede an earlier one.
         - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink)
           that nothing has read yet, which is the case under
           ``ArchiveyConfig.read_link_targets=False``. Reading it sets
           :attr:`link_target`, and a Windows reparse point whose data is not a link
           buffer becomes a ``FILE``. :meth:`~archivey.ArchiveReader.open` and
-          :meth:`~archivey.ForwardArchiveReader.extract_all` read it when they reach the link.
+          :meth:`~archivey.ForwardArchiveReader.extract_all` read it when they reach
+          the link, on the member they are given, a copy included.
 
-        Everywhere else it is ``True``: a random-access listing is complete before any
-        member is returned. Closing the reader makes it ``True`` too, since a closed
-        reader updates nothing, and so is a copy made with :meth:`replace`, which
-        archivey never updates (an unread link's copy keeps ``link_target`` ``None``).
+        Everywhere else it is ``True``. Closing the reader makes it ``True`` for every
+        member it listed, since a closed reader updates nothing. A copy made with
+        :meth:`replace` is never stamped, so only its unread link target can change.
         Attached ``diagnostics`` are not fields and can still grow. Which fields change
         in practice is listed per format in the user docs.
         """
@@ -1047,12 +1051,12 @@ class ArchiveMember:
         a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
         would need a per-field ``TypedDict``, which is deliberately deferred.
 
-        The copy reads ``member_state_final`` ``True``: archivey updates only the
-        members it handed out, never a copy.
+        No listing holds the copy, so nothing stamps ``is_current`` on it or resolves
+        its links to members; its ``member_state_final`` waits only on an unread link
+        target, which reading the copy fills in place.
         """
         copy = replace(self, **kwargs)
         copy._listing_pending = False
-        copy._link_target_unread = False
         return copy
 
 

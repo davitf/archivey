@@ -365,32 +365,40 @@ point-in-time snapshots.
 the member in place, and `True` from the point it cannot. It SHALL be `False`, in every
 format, in two cases:
 
-- A member a forward pass (`streaming=True`) has handed out, until the pass has
-  resolved links to members (the end of the pass, or of the listing call that ends the
-  walk) or stops keeping members because it went past `ListingLimits`. A later
-  member with the same name can still make it `is_current=False`, and links are
-  resolved to members when the pass ends.
+- A member of a listing whose links have not been resolved yet, in either access mode.
+  The listing is complete, and its members settled, when a call that resolves links to
+  members returns (`members()`, `members_report()`, `get()`, the end of a
+  `stream_members()` pass or of iterating the reader). Before that a later member with
+  the same name can still make it `is_current=False`, and links get
+  `link_target_member`: a member a pass yields (a random-access 7z or solid RAR pass
+  included) and a member a `members_report_if_available()` peek returns read `False`.
+  A pass that goes past `ListingLimits` stops keeping members: it stamps last-entry-wins
+  over the members it kept, settles them, and stamps nothing from that point on, so a
+  member yielded after it reads `True` with `is_current` as yielded.
 - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink) until the
   library has read that data, whatever the read found. Reading it sets `link_target`,
-  and a reparse point whose data is not a link buffer becomes a `FILE`.
+  and a reparse point whose data is not a link buffer becomes a `FILE`. `open()` and
+  `extract_all()` read it on the member object they are given, a copy included.
 
-It SHALL be `True` everywhere else: a random-access listing is complete before any
-member is returned. A walk that fails and cannot be resumed settles the members it
-handed out, closing the reader settles every member it listed, and a copy made with
-`replace()` reads `True`. Attached `diagnostics` are not covered and MAY still grow. The documented
-meaning is "no field of this member will change"; each format's user documentation
-names the fields that change in practice.
+It SHALL be `True` everywhere else. A walk that fails and cannot be resumed settles the
+members it handed out, and closing the reader settles every member it listed. A copy
+made with `replace()` belongs to no listing: it is never stamped, so it reads `False`
+only while it is a symlink whose data-stored target is unread. Attached `diagnostics`
+are not covered and MAY still grow. The documented meaning is "no field of this member
+will change"; each format's user documentation names the fields that change in
+practice.
 
 #### Scenario: member_state_final matrix
 
 | Case | Expected |
 | --- | --- |
 | Streaming pass over a TAR holding `a.txt` twice, from a file or a pipe | Each member reads `False` when yielded; all read `True` after the pass, and the first `a.txt` reads `is_current=False` |
-| `members()` or random-access `stream_members()` | Every member reads `True` |
-| Streaming pass over the `ListingLimits` | Members kept before the limit read `True` from the point the pass stops keeping them; later ones read `True` when yielded. None is stamped after that point, so `is_current` stays as yielded and a superseded copy can read current |
-| Peek (`members_report_if_available()`) that ends the walk, then the pass | `False` until the pass resolves links to members, then `True` |
+| `members()`, `members_report()`, or `stream_members()` after either | Every member reads `True` |
+| Random-access 7z `stream_members()` with no listing call first | `False` when yielded, `True` after the pass |
+| Peek (`members_report_if_available()`), either access mode | `False` until a later call or pass resolves links to members, then `True` |
+| Streaming pass over the `ListingLimits` | Members kept before the limit read `True` from the point the pass stops keeping them, with `is_current` stamped over them; later ones read `True` when yielded, and none is stamped after that point |
 | Pass left early, then the reader closed | `True`: a closed reader updates nothing |
-| Copy made with `replace()` | `True`: the library never updates a copy |
+| Copy made with `replace()` | `True`, unless it is a symlink whose data-stored target is unread: `False` until `open()` reads the target into the copy |
 | TAR symlink, either `read_link_targets` | `True`: the header carries the target |
 | ZIP symlink under `read_link_targets=False` | `False` until `open()` or `extract_all()` reads its target, then `True` |
 | ZIP symlink under the default | `True` once listed |

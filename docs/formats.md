@@ -79,7 +79,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 you hold ([Streaming for one pass](opening-and-listing.md#streaming-for-one-pass)).
 The fields that change in practice:
 
-| Format | During a `streaming=True` pass, until it ends | A symlink whose target is unread (`read_link_targets=False`) |
+| Format | During a pass, until it ends | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
 | ZIP | `is_current`, `link_target_member` | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
@@ -89,11 +89,14 @@ The fields that change in practice:
 | Directory | `link_target_member` (names never repeat) | none: the target is read with the entry |
 | Single-file (`.gz`, `.xz`, …) | none in practice: one member, no links | none |
 
-A random-access listing is complete before it returns, so its members read `True`
-unless they are unread symlinks. The flag is `False` in a streaming pass in every
-format, including the two whose fields do not change in practice, so a caller needs no
-per-format rule. A pass past `ListingLimits` stops stamping members: from that point
-they read `True` with `is_current` as yielded.
+`members()`, `members_report()` and `get()` return members that read `True`, unless
+they are unread symlinks. Members read `False` until a call like those, or the end of a
+pass, has resolved the listing's links: while a pass yields them (a random-access 7z
+or solid RAR pass too) and after a `members_report_if_available()` peek. The flag is
+`False` in a pass in every format, including the two whose fields do not change in
+practice, so a caller needs no per-format rule. A pass past `ListingLimits` stops
+stamping members from that point: a member yielded after it reads `True` with
+`is_current` as yielded.
 
 ## ZIP
 

@@ -129,6 +129,22 @@ def test_a_pass_over_the_listing_limits_settles_what_it_stops_keeping(
     assert [m.member_state_final for m, _ in seen] == [True, True, True]
 
 
+def test_a_duplicate_inside_the_kept_prefix_is_still_superseded() -> None:
+    """The pass stamps the members it kept before it stops keeping them."""
+    data = _tar([("a.txt", b"1"), ("a.txt", b"2"), ("b.txt", b"3"), ("c.txt", b"4")])
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with open_archive(
+        NonSeekableBytesIO(data), streaming=True, config=config
+    ) as reader:
+        members = [m for m, _ in reader.stream_members()]
+    assert [(m.member_state_final, m.is_current) for m in members] == [
+        (True, False),
+        (True, True),
+        (True, True),
+        (True, True),
+    ]
+
+
 @pytest.mark.parametrize("read_link_targets", [True, False])
 def test_a_tar_symlink_carries_its_target_in_the_header(
     tmp_path: Path, read_link_targets: bool
@@ -233,18 +249,44 @@ def test_a_pass_left_early_is_settled_when_the_reader_closes(tmp_path: Path) -> 
     assert member.member_state_final
 
 
-def test_a_copy_is_never_updated_so_it_is_final(tmp_path: Path) -> None:
-    """``replace()`` makes an object archivey does not hold, so nothing will change it."""
+def test_a_copy_waits_only_on_its_unread_link_target(tmp_path: Path) -> None:
+    """No listing holds a ``replace()`` copy, so nothing stamps it; reading fills it.
+
+    ``open()`` reads an unread target into the member it is given, a copy included,
+    so the copy reads ``False`` until then and ``True`` with the target after.
+    """
     path = tmp_path / "link.zip"
     _zip(path, [("a.txt", b"x")], symlink=("link", "a.txt"))
     with open_archive(path, config=ArchiveyConfig(read_link_targets=False)) as reader:
-        link = reader.get("link")
-        assert not link.member_state_final
-        copy = link.replace(name="other")
-        assert copy.member_state_final
+        copy = reader.get("link").replace(name="other")
         assert copy.link_target is None
+        assert not copy.member_state_final
+        with reader.open(copy) as stream:
+            assert stream.read() == b"x"
+        assert copy.link_target == "a.txt"
+        assert copy.member_state_final
     path = tmp_path / "dup.tar"
     path.write_bytes(_tar(_DUPLICATES))
     with open_archive(path, streaming=True) as reader:
         for member, _stream in reader.stream_members():
             assert member.replace(name="x").member_state_final
+
+
+def test_a_random_access_peek_settles_when_links_are_resolved(tmp_path: Path) -> None:
+    path = tmp_path / "link.zip"
+    _zip(path, [("a.txt", b"x")], symlink=("link", "a.txt"))
+    with open_archive(path) as reader:
+        report = reader.members_report_if_available()
+        assert report is not None
+        assert [m.member_state_final for m in report.members] == [False, False]
+        assert [m.member_state_final for m in reader.members()] == [True, True]
+
+
+def test_a_random_access_7z_pass_settles_its_members_when_it_ends() -> None:
+    """The 7z pass walks the index as it goes and resolves links when it ends."""
+    path = _FIXTURES / "sevenzip/links_mid_folder_solid.7z"
+    with open_archive(path) as reader:
+        seen = [(m, m.member_state_final) for m, _ in reader.stream_members()]
+    assert seen
+    assert not any(final for _, final in seen)
+    assert all(m.member_state_final for m, _ in seen)
