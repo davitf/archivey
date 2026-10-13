@@ -285,9 +285,14 @@ def disk_field_is_split(value: int) -> bool:
     return value not in (0, _ZIP64_DISK_SENTINEL)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class CentralEntry:
-    """One central directory header, with its ZIP64 extra field applied."""
+    """One central directory header, with its ZIP64 extra field applied.
+
+    Read-only by convention, not ``frozen``: a frozen dataclass sets each of its fields
+    through ``object.__setattr__``, three times the cost of construction, and the walk
+    builds one per member.
+    """
 
     #: Position in the directory, from 0.
     index: int
@@ -403,44 +408,53 @@ class CentralDirectoryWalk:
         self.entries_read = None
         start = end.cd_start
         cd_size = end.cd_size
-        buffer = bytearray()
-        buffer_start = 0  # directory-relative offset of buffer[0]
-        fetched = 0  # directory-relative offset of the end of what has been read
+        base = end.base
+        read_at = self._read_at
+        data = b""  # directory bytes from data_start, never past cd_size
+        data_start = 0  # directory-relative offset of data[0]
 
-        def take(pos: int, n: int) -> bytes:
-            """Up to ``n`` directory bytes from ``pos``, no further than ``cd_size``."""
-            nonlocal buffer, buffer_start, fetched
-            want_end = min(pos + n, cd_size)
-            if want_end > fetched:
-                # Drop what the walk has passed, then read forward in large pieces.
-                del buffer[: pos - buffer_start]
-                buffer_start = pos
-                target = min(max(want_end, fetched + _WALK_CHUNK), cd_size)
-                while fetched < target:
-                    piece = self._read_at(start + fetched, target - fetched)
-                    if not piece:
-                        break
-                    buffer += piece
-                    fetched += len(piece)
-            return bytes(buffer[pos - buffer_start : want_end - buffer_start])
+        def ensure(pos: int, want_end: int) -> None:
+            """Hold the directory bytes up to ``want_end`` (or ``cd_size``), from ``pos``."""
+            nonlocal data, data_start
+            have = data_start + len(data)
+            if want_end <= have or have >= cd_size:
+                return
+            # Drop what the walk has passed, then read forward in large pieces.
+            pieces = [data[pos - data_start :]]
+            data_start = pos
+            target = min(max(want_end, have + _WALK_CHUNK), cd_size)
+            while have < target:
+                piece = read_at(start + have, target - have)
+                if not piece:
+                    break
+                pieces.append(piece)
+                have += len(piece)
+            data = b"".join(pieces)
 
         pos = 0
         index = 0
         while pos < cd_size:
-            fixed = take(pos, CENTRAL_HEADER_SIZE)
-            if len(fixed) != CENTRAL_HEADER_SIZE:
+            ensure(pos, pos + CENTRAL_HEADER_SIZE)
+            off = pos - data_start
+            if len(data) - off < CENTRAL_HEADER_SIZE:
                 raise CorruptionError(
                     f"Truncated central directory: entry #{index} starts "
                     f"{cd_size - pos} bytes before the directory's declared end"
                 )
-            fields = parse_central_fixed(fixed, index)
+            fields = _unpack_central(data, off, index)
+            name_len, extra_len, comment_len = fields[12:15]
             name_at = pos + CENTRAL_HEADER_SIZE
-            extra_at = name_at + fields.name_len
-            comment_at = extra_at + fields.extra_len
-            entry_end = comment_at + fields.comment_len
-            name = take(name_at, fields.name_len)
-            extra = take(extra_at, fields.extra_len)
-            comment = take(comment_at, fields.comment_len)
+            extra_at = name_at + name_len
+            comment_at = extra_at + extra_len
+            entry_end = comment_at + comment_len
+            ensure(pos, entry_end)
+            # Slices stop at the end of what was read, which never passes cd_size.
+            at = name_at - data_start
+            name = data[at : at + name_len]
+            at += name_len
+            extra = data[at : at + extra_len]
+            at += extra_len
+            comment = data[at : at + comment_len]
             if entry_end > cd_size:
                 if extra_at > cd_size:
                     field: Literal["name", "extra field", "comment"] = "name"
@@ -450,9 +464,7 @@ class CentralDirectoryWalk:
                     field = "comment"
                 self.findings.append(EntryOverrun(index, field, entry_end, cd_size))
 
-            yield central_entry(
-                fields, name, extra, comment, index=index, base=end.base
-            )
+            yield _central_entry(fields, name, extra, comment, index=index, base=base)
             index += 1
             pos = entry_end
 
@@ -472,37 +484,58 @@ class CentralDirectoryWalk:
             )
 
 
-@dataclass(frozen=True, slots=True)
-class CentralFixed:
-    """The fixed 46 bytes of a central directory header, unpacked."""
+#: The fixed header's fields as ``_CENTRAL_HEADER`` unpacks them: signature, made-by
+#: version and host, needed version and host, flags, method, DOS time and date, CRC,
+#: both sizes, the three variable lengths, disk, both attribute fields, header offset.
+_CentralFields = tuple[
+    bytes,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+]
 
-    version_made_by: int
-    version_needed: int
-    flags: int
-    method: int
-    dos_time: int
-    dos_date: int
-    crc: int
-    compressed_size: int
-    file_size: int
-    name_len: int
-    extra_len: int
-    comment_len: int
-    disk_start: int
-    internal_attr: int
-    external_attr: int
-    header_offset: int
 
+def _unpack_central(buffer: bytes, offset: int, index: int) -> _CentralFields:
+    """Unpack the fixed 46 bytes of central directory header ``index`` at ``offset``.
 
-def parse_central_fixed(fixed: bytes, index: int) -> CentralFixed:
-    """Unpack the fixed part of central directory header ``index``.
-
-    Separate from the walk because the same 46 bytes are parsed wherever a directory
-    header turns up, not only on a walk that starts at the directory.
-    ``CorruptionError`` when the signature is not there.
+    A tuple, not an object: the walk unpacks one per member. ``CorruptionError`` when
+    the signature is not there.
     """
+    fields = _CENTRAL_HEADER.unpack_from(buffer, offset)
+    if fields[0] != CENTRAL_HEADER_SIGNATURE:
+        raise CorruptionError(
+            f"Bad magic number for central directory (entry #{index})"
+        )
+    return fields
+
+
+def _central_entry(
+    fields: _CentralFields,
+    name: bytes,
+    extra: bytes,
+    comment: bytes,
+    *,
+    index: int,
+    base: int,
+) -> CentralEntry:
+    """Build the entry: apply the ZIP64 extra field, then ``base`` to the offset."""
     (
-        signature,
+        _signature,
         made_version,
         made_system,
         needed_version,
@@ -514,74 +547,40 @@ def parse_central_fixed(fixed: bytes, index: int) -> CentralFixed:
         crc,
         compressed_size,
         file_size,
-        name_len,
-        extra_len,
-        comment_len,
+        _name_len,
+        _extra_len,
+        _comment_len,
         disk_start,
         internal_attr,
         external_attr,
         header_offset,
-    ) = _CENTRAL_HEADER.unpack(fixed)
-    if signature != CENTRAL_HEADER_SIGNATURE:
-        raise CorruptionError(
-            f"Bad magic number for central directory (entry #{index})"
-        )
-    return CentralFixed(
-        version_made_by=(made_system << 8) | made_version,
-        version_needed=(needed_system << 8) | needed_version,
-        flags=flags,
-        method=method,
-        dos_time=dos_time,
-        dos_date=dos_date,
-        crc=crc,
-        compressed_size=compressed_size,
-        file_size=file_size,
-        name_len=name_len,
-        extra_len=extra_len,
-        comment_len=comment_len,
-        disk_start=disk_start,
-        internal_attr=internal_attr,
-        external_attr=external_attr,
-        header_offset=header_offset,
-    )
-
-
-def central_entry(
-    fields: CentralFixed,
-    name: bytes,
-    extra: bytes,
-    comment: bytes,
-    *,
-    index: int,
-    base: int,
-) -> CentralEntry:
-    """Build the entry: apply the ZIP64 extra field, then ``base`` to the offset."""
+    ) = fields
     compressed_size, file_size, header_offset, disk_start = _apply_zip64_extra(
         extra,
-        compressed_size=fields.compressed_size,
-        file_size=fields.file_size,
-        header_offset=fields.header_offset,
-        disk_start=fields.disk_start,
+        compressed_size=compressed_size,
+        file_size=file_size,
+        header_offset=header_offset,
+        disk_start=disk_start,
         index=index,
     )
     return CentralEntry(
-        index=index,
-        version_made_by=fields.version_made_by,
-        version_needed=fields.version_needed,
-        flags=fields.flags,
-        method=fields.method,
-        dos_time=fields.dos_time,
-        dos_date=fields.dos_date,
-        crc=fields.crc,
-        compressed_size=compressed_size,
-        file_size=file_size,
-        header_offset=header_offset + base,
-        disk_start=disk_start,
-        internal_attr=fields.internal_attr,
-        external_attr=fields.external_attr,
-        name=name,
-        extra=extra,
-        comment=comment,
+        index,
+        (made_system << 8) | made_version,
+        (needed_system << 8) | needed_version,
+        flags,
+        method,
+        dos_time,
+        dos_date,
+        crc,
+        compressed_size,
+        file_size,
+        header_offset + base,
+        disk_start,
+        internal_attr,
+        external_attr,
+        name,
+        extra,
+        comment,
     )
 
 

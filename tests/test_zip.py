@@ -1140,7 +1140,7 @@ def test_non_utf8_local_header_name_is_reported_as_a_bad_name() -> None:
     with open_archive(io.BytesIO(bytes(raw))) as ar:
         assert ar.members()[0].name == "data.txt"
         with raises_corruption_not_truncation(
-            match=r"File name in directory b'data\.txt' and header b'.+ata\.txt' differ"
+            match=r"File name in directory .data\.txt. and header .+ata\.txt. differ"
         ):
             ar.read("data.txt")
 

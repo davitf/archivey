@@ -687,12 +687,13 @@ def _zip_timestamp_field(create_system: CreateSystem, slot: str) -> str:
     return {"mtime": "modified", "atime": "accessed"}[slot]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _ZipLocator:
     """What a listed member keeps for reading its data, as ``member._raw``.
 
     Not the ``CentralEntry``: its extra field and comment would stay alive for every
-    member, for data that is read only while listing.
+    member, for data that is read only while listing. Read-only by convention, not
+    ``frozen``, for the construction cost (as ``CentralEntry``).
     """
 
     #: Position in the central directory; tells same-offset entries apart.
@@ -715,6 +716,12 @@ class _ZipLocator:
     #: For an entry flagged as a Windows reparse point, the type it reverts to when
     #: its data is not a link buffer (:func:`_reparse_fallback_type`).
     reparse_fallback: MemberType | None
+
+
+def _stored_text(name: bytes) -> str:
+    """Stored name bytes as message text: UTF-8, with any other byte kept as a lone
+    surrogate for the message's own escaping to show."""
+    return name.decode("utf-8", "surrogateescape")
 
 
 def _bound_offset(offset: int) -> int:
@@ -1055,9 +1062,9 @@ class ZipReader(BaseArchiveReader):
         """Walk the central directory, yielding each member as its entry is parsed.
 
         ``ListingLimits`` therefore see members as they are read. The walk records
-        each header offset for the overlap guard, and charges ``max_members`` itself
-        (one past the limit, so a listing that enforces it raises the base's own
-        error first): the offsets are held in every mode. Damage raises after the
+        each header offset for the overlap guard, and charges ``max_members`` itself,
+        in every mode, because the offsets are held in every mode: it raises before
+        building one member more than the limit. Damage raises after the
         members before it, as a cut TAR does; the end-record findings come after the
         last member.
         """
@@ -1071,7 +1078,7 @@ class ZipReader(BaseArchiveReader):
                 # stamps, so a diagnostic raised while typing can name the member
                 # before it has an id.
                 index = entry.index
-                if max_members is not None and index > max_members:
+                if max_members is not None and index >= max_members:
                     raise _max_members_error(max_members)
                 offsets.append(_bound_offset(entry.header_offset))
                 last = entry
@@ -1200,7 +1207,7 @@ class ZipReader(BaseArchiveReader):
         offsets: array[int] = array("q")
         try:
             for entry in walk:
-                if max_members is not None and entry.index > max_members:
+                if max_members is not None and entry.index >= max_members:
                     self._bounds_error = _max_members_error(max_members)
                     return
                 offsets.append(_bound_offset(entry.header_offset))
@@ -1349,12 +1356,13 @@ class ZipReader(BaseArchiveReader):
     def _to_member(self, entry: CentralEntry, index: int) -> ArchiveMember:
         external_attr = entry.external_attr
         full_mode = external_attr >> 16
-        is_unix = entry.create_system == 3
+        host = entry.version_made_by >> 8  # CentralEntry.create_system, inlined
+        is_unix = host == 3
         # Permission bits only; None when no usable Unix mode was stored.
         mode = stat.S_IMODE(full_mode) if (external_attr != 0 and is_unix) else None
 
         create_system = _CREATE_SYSTEM_BY_VALUE.get(
-            entry.create_system, CreateSystem.UNKNOWN
+            host, CreateSystem.UNKNOWN
         )
         decoded_name = self._decode_member_name(entry)
         name_source = decoded_name.text
@@ -1628,15 +1636,16 @@ class ZipReader(BaseArchiveReader):
             raise CorruptionError(raw_message_of(exc)) from exc
         if header.name != loc.name:
             raise CorruptionError(
-                f"File name in directory {loc.name!r} and header {header.name!r} "
-                "differ."
+                f"File name in directory {quoted(_stored_text(loc.name))} and header "
+                f"{quoted(_stored_text(header.name))} differ."
             )
         # stdlib ZipFile.open's guard, with archivey's own bounds: a member whose
         # compressed payload extends past the next entry's start is a zip bomb.
         length = max(0, loc.compressed_size)
         if header.data_start + length > self._data_bounds().end_for(loc):
             raise CorruptionError(
-                f"Overlapped entries: {loc.name!r} (possible zip bomb)"
+                f"Overlapped entries: {quoted(_stored_text(loc.name))} "
+                "(possible zip bomb)"
             )
         return header.data_start, length
 

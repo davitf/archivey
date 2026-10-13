@@ -526,14 +526,13 @@ def test_a_member_refused_by_the_limit_is_not_counted_again_by_a_pass(
     A ``stream_members()`` pass does not enforce listing limits, so it walks again
     over the member ``members()`` refused.
     """
-    path = _zip(
-        tmp_path,
-        [
-            ("a.txt", b"1", False),
-            ("b.txt", b"2", False),
-            ("re\u202evil.txt", b"3", False),
-        ],
-    )
+    # TAR: ZIP, 7z, RAR and ISO apply max_members at open, so no pass gets this far.
+    path = tmp_path / "t.tar"
+    with tarfile.open(path, "w") as tf:
+        for name, data in (("a.txt", b"1"), ("b.txt", b"2"), ("re\u202evil.txt", b"3")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     with open_archive(path, config=config) as reader:
         with pytest.raises(ResourceLimitError):
