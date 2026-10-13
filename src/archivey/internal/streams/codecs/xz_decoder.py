@@ -622,9 +622,9 @@ def lzma_error_to_archivey(
         cap = limits.max_decoder_memory if limits is not None else None
         if cap is not None:
             return ResourceLimitError(
-                f"Decoder limit reached: max_decoder_memory={cap} (the stream's "
-                f"declared dictionary needs more than that; liblzma refused it before "
-                f"allocating). The archive chose this number; raise "
+                f"Decoder limit reached: max_decoder_memory={cap} ({context}: the "
+                f"stream's declared dictionary needs more than that; liblzma refused "
+                f"it before allocating). The archive chose this number; raise "
                 f"DecoderLimits.max_decoder_memory if the archive is trusted."
             )
         return ResourceLimitError(

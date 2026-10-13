@@ -113,6 +113,8 @@ def test_a_memlimit_refusal_names_the_cap_when_given_the_limits() -> None:
     )
     assert type(translated) is ResourceLimitError
     assert "max_decoder_memory=4096" in str(translated)
+    # The caller's context says which path refused.
+    assert "(ctx: " in str(translated)
     assert "xz" not in str(translated).lower()
     # The codec's translator carries the stream's limits.
     config = replace(
