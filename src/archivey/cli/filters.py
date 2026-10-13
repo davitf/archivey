@@ -1,55 +1,52 @@
-"""Member include/exclude filters for CLI verbs (fnmatch)."""
+"""Member include/exclude filters for CLI verbs (``archivey.paths.match_glob``)."""
 
 from __future__ import annotations
 
-import fnmatch
 import os
 from collections.abc import Callable, Sequence
 from typing import TextIO
 
+from archivey.cli.errors import CliError
+from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.cli.format import escape_path
 from archivey.diagnostics import MemberListReport
+from archivey.exceptions import ArchiveyUsageError
+from archivey.paths import match_glob
 from archivey.types import ArchiveMember
 
 
 class _Pattern:
-    """One member pattern from the command line, as the CLI matches it.
+    """One member pattern from the command line, matched by :func:`archivey.paths.match_glob`.
 
-    Member names use ``/`` and a directory's name ends in ``/``, but a person typing a
-    pattern writes neither reliably. A pattern therefore matches a member when
-    ``fnmatchcase`` matches the name against any of:
-
-    - the pattern as written;
-    - the pattern without a trailing ``/``, plus ``/`` (``docs`` selects ``docs/``);
-    - that same base plus ``/*`` (``docs`` selects everything under ``docs/``, as
-      ``tar`` does). fnmatch's ``*`` also matches ``/``, so this is recursive.
+    The CLI reads patterns as ``match_glob(pattern, with_contents=True)`` does, so a
+    pattern means the same thing on the command line and in that ``members=`` argument:
+    ``*`` stays inside one folder, ``**`` matches any depth, and a pattern that matches a
+    folder also selects everything under it, as ``tar`` does. ``docs`` and ``docs/``
+    select ``docs/`` and its contents, but not a file named ``docs.txt``.
 
     On Windows a ``\\`` in the pattern is read as ``/``. Elsewhere it stays a literal
-    character, because a TAR member name can contain one.
+    character, because a TAR member name can contain one. That is the one CLI-only rule.
 
-    This looseness is deliberate and CLI-only: the library's ``members=``, ``get()`` and
-    ``open()`` match stored names exactly (maintainer decision, easier to widen later).
-    Do not align the library with this. The library's pattern form is
-    ``archivey.paths.match_glob``, where ``*`` stays inside one folder; the two dialects
-    agree by coincidence only, so neither reuses the other.
+    A pattern ``match_glob`` refuses (an empty one, ``a//b``, a reversed range such as
+    ``[z-a]``) is a usage error.
     """
 
-    __slots__ = ("forms", "text")
+    __slots__ = ("_predicate", "text")
 
     def __init__(self, text: str, *, backslash_is_separator: bool) -> None:
         self.text = text
         pattern = text.replace("\\", "/") if backslash_is_separator else text
-        base = pattern.rstrip("/")
-        # dict.fromkeys: "docs/" as written is already its own "base + /" form.
-        self.forms: tuple[str, ...] = (
-            tuple(dict.fromkeys((pattern, base + "/", base + "/*")))
-            if base
-            else (pattern,)
-        )
+        try:
+            self._predicate = match_glob(pattern, with_contents=True)
+        except ArchiveyUsageError:
+            raise CliError(
+                f"invalid member pattern {text!r}: a pattern needs something between "
+                "its '/' separators, and a [...] range must run low to high",
+                code=EXIT_USAGE,
+            ) from None
 
-    def matches(self, name: str) -> bool:
-        # fnmatchcase: deterministic across platforms (fnmatch is case-folding on Windows).
-        return any(fnmatch.fnmatchcase(name, form) for form in self.forms)
+    def matches(self, member: ArchiveMember) -> bool:
+        return self._predicate(member)
 
 
 def _compile(
@@ -103,20 +100,19 @@ class MemberSelection:
         return self if self._includes or self._excludes else None
 
     def __call__(self, member: ArchiveMember) -> bool:
-        name = member.name
         included = not self._includes
         for index, pattern in enumerate(self._includes):
             # Once the member is in, only the includes not yet seen to match are left
             # to check.
             if included and self._include_hit[index]:
                 continue
-            if pattern.matches(name):
+            if pattern.matches(member):
                 included = True
                 self._include_hit[index] = True
         if not included:
             return False
         self._included_any = True
-        if any(pattern.matches(name) for pattern in self._excludes):
+        if any(pattern.matches(member) for pattern in self._excludes):
             return False
         self._selected_any = True
         return True

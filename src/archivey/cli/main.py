@@ -293,14 +293,14 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
         "patterns",
         nargs="*",
         metavar=_PATTERNS_METAVAR,
-        help="fnmatch include patterns (omit to select all members)",
+        help="glob include patterns: * stays in a folder, ** any depth, a folder brings its contents (omit to select all members)",
     )
     parser.add_argument(
         "--exclude",
         action="append",
         default=[],
         metavar="PATTERN",
-        help="fnmatch exclude pattern (repeatable; exclude wins over include)",
+        help="glob exclude pattern, matched like the includes (repeatable; exclude wins over include)",
     )
 
 

@@ -370,7 +370,8 @@ two cannot drift. Names in its `__all__` SHALL carry the same compatibility prom
 
 ### Requirement: archivey.paths.match_glob selects members by glob pattern
 
-`archivey.paths` SHALL also provide `match_glob(*patterns: str)`, returning a predicate
+`archivey.paths` SHALL also provide `match_glob(*patterns: str, with_contents: bool =
+False)`, returning a predicate
 for `members=` (and for any caller filtering names). `members=`, `get()` and `open()`
 keep matching stored names exactly; `match_glob` is the opt-in for patterns. A member
 is selected when any pattern matches its whole name, case-sensitively:
@@ -386,8 +387,16 @@ is selected when any pattern matches its whole name, case-sensitively:
   allowed and matches an absolute member name), or a malformed `[...]` set raises
   `ArchiveyUsageError` (also a `ValueError`). A pattern that matches nothing records no
   diagnostic.
-- The CLI's own patterns (`*` crosses `/`, tar-style) stay separate and are not built on
-  `match_glob`.
+- With `with_contents=True`, a member is also selected when a folder it is in (any
+  `/`-ended prefix of its name, without the `/`) matches as a directory. The CLI's
+  member patterns are `match_glob(pattern, with_contents=True)`.
+
+`archivey.paths` SHALL also provide `match_tar_glob(*patterns: str)`, the `tar` rules
+side by side with `match_glob`: each pattern is matched with `fnmatch.fnmatchcase`
+against the whole name (so `*` also matches `/`), as written and as `base/` and
+`base/*` where `base` is the pattern without trailing `/`, so a folder's name selects
+the folder and everything under it. No pattern or an empty pattern raises
+`ArchiveyUsageError`.
 
 #### Scenario: match_glob patterns
 
@@ -398,6 +407,9 @@ is selected when any pattern matches its whole name, case-sensitively:
 | `docs/**` | `docs/`, `docs/index.md`, `docs/api/guide.md` | `docsx/a.md` |
 | `docs/*` | `docs/index.md`, `docs/api/` | `docs/api/guide.md` |
 | `*/` | `docs/` | `README.md`, `docs/api/` |
+| `docs`, `with_contents=True` | `docs/`, `docs/api/guide.md` | `docs.txt` |
+| `match_tar_glob("*.md")` | `README.md`, `docs/api/guide.md` | `notes.txt` |
+| `match_tar_glob("docs")` | `docs/`, `docs/api/guide.md` | `docs.txt` |
 | `a[*]b` | `a*b` | `axb` |
 | `match_glob()` / `match_glob("")` / `match_glob("[z-a]")` | Raises `ArchiveyUsageError` | |
 | `a[!-a]b` | `a0b` | `a-b`, `a/b` |

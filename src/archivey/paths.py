@@ -6,7 +6,10 @@ archivey's own CLI moves a single top-level directory up out of its wrapper fold
 with this rule.
 
 The library's ``members=``, ``get()`` and ``open()`` match stored names exactly. A caller
-who wants shell-style patterns passes :func:`match_glob` as ``members=``.
+who wants shell-style patterns passes :func:`match_glob` or :func:`match_tar_glob` as
+``members=``. They read the same pattern differently, so pick the one whose rules you
+want: ``"*.md"`` is top-level ``.md`` files to one and ``.md`` files at any depth to the
+other.
 
 **Public, not re-exported.** Import from here (``from archivey.paths import
 numbered_name``); these names are not in :mod:`archivey`. Everything in ``__all__``
@@ -15,11 +18,14 @@ carries the same compatibility promise as ``archivey.__all__``.
 - :func:`numbered_name` — the ``name (N)`` spelling of an
   ``OverwritePolicy.RENAME`` rename.
 - :func:`match_glob` — a ``members=`` predicate from glob patterns, where ``*`` stays
-  inside one folder and ``**`` matches any depth.
+  inside one folder and ``**`` matches any depth. archivey's own CLI matches this way.
+- :func:`match_tar_glob` — a ``members=`` predicate from ``tar``-style patterns, where
+  ``*`` also matches ``/`` and a folder's name selects everything in it.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import PurePath
 from typing import TYPE_CHECKING
@@ -31,7 +37,7 @@ if TYPE_CHECKING:
 
     from archivey.types import ArchiveMember
 
-__all__ = ["match_glob", "numbered_name"]
+__all__ = ["match_glob", "match_tar_glob", "numbered_name"]
 
 
 def numbered_name(name: str, n: int, *, is_dir: bool) -> str:
@@ -66,7 +72,9 @@ def numbered_name(name: str, n: int, *, is_dir: bool) -> str:
     return f"{path.stem} ({n}){path.suffix}"
 
 
-def match_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
+def match_glob(
+    *patterns: str, with_contents: bool = False
+) -> Callable[[ArchiveMember | str], bool]:
     """Return a ``members=`` predicate that selects the members matching any of ``patterns``.
 
     >>> with archivey.open_archive("site.zip") as archive:  # doctest: +SKIP
@@ -90,20 +98,27 @@ def match_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
     selects the folder ``docs/api/`` as well as the file ``docs/index.md``. A pattern that
     ends in ``/`` selects only directories: ``*/`` selects every top-level folder.
 
+    With ``with_contents=True``, a member is also selected when a folder it is in
+    matches, so a folder comes with everything under it: ``match_glob("docs",
+    with_contents=True)`` selects ``docs/`` and ``docs/api/guide.md``, and
+    ``match_glob("*/", with_contents=True)`` selects everything that is in a folder.
+    archivey's command-line tool matches its patterns this way.
+
     A ``\\`` in a pattern is an ordinary character, on Windows too, because member names
     use ``/`` and a TAR member name can contain a ``\\``.
 
     A pattern that matches nothing is not reported: ``MEMBER_SELECTOR_UNMATCHED`` covers
     only the names in the collection form of ``members=``.
 
-    archivey's command-line tool reads its patterns differently on purpose: there ``*``
-    crosses ``/`` and ``docs`` selects the folder and everything in it, as ``tar`` does.
-    The two are separate, so ``archivey extract a.zip '*.md'`` selects ``.md`` files at
-    every depth while ``match_glob("*.md")`` selects top-level ones only.
+    For ``tar``'s rules, where
+    ``*`` also matches ``/`` and ``docs`` selects the folder and everything in it, use
+    :func:`match_tar_glob`: ``match_tar_glob("*.md")`` selects ``.md`` files at every
+    depth, while ``match_glob("*.md")`` selects top-level ones only.
 
     Args:
         *patterns: One or more glob patterns. A member is selected when any of them
             matches.
+        with_contents: Also select every member inside a matching folder.
 
     Returns:
         A callable that takes an :class:`~archivey.ArchiveMember` and returns whether it
@@ -116,15 +131,80 @@ def match_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
             ``[...]`` set is malformed, such as the reversed range ``[z-a]``. It is also a
             ``ValueError``.
     """
-    return _MemberGlob(patterns)
+    return _MemberGlob(patterns, with_contents=with_contents)
+
+
+def match_tar_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
+    """Return a ``members=`` predicate that matches ``patterns`` the way ``tar`` does.
+
+    >>> with archivey.open_archive("site.tar") as archive:  # doctest: +SKIP
+    ...     archive.extract_all("out/", members=match_tar_glob("docs", "*.md"))
+
+    Each pattern is matched against the whole member name with
+    ``fnmatch.fnmatchcase``, so it is case-sensitive and:
+
+    - ``*`` matches any run of characters, ``/`` included: ``*.md`` selects
+      ``README.md`` and ``docs/api/guide.md``. ``**`` is the same as ``*``.
+    - ``?`` matches any one character, ``[abc]`` / ``[!abc]`` one character from, or not
+      from, the set.
+    - A pattern that names a folder, with or without its trailing ``/``, selects the
+      folder and everything under it: ``docs`` and ``docs/`` both select ``docs/`` and
+      ``docs/api/guide.md``, but not a file named ``docs.txt``.
+
+    For patterns where ``*`` stays inside one folder, use :func:`match_glob`. A ``\\`` in
+    a pattern is an ordinary character, on Windows too. A pattern that matches nothing is
+    not reported.
+
+    Args:
+        *patterns: One or more patterns. A member is selected when any of them matches.
+
+    Returns:
+        A callable that takes an :class:`~archivey.ArchiveMember`, or a member name as a
+        ``str``, and returns whether it is selected.
+
+    Raises:
+        ArchiveyUsageError: No pattern was given, or a pattern is empty. It is also a
+            ``ValueError``.
+    """
+    return _TarGlob(patterns)
+
+
+class _TarGlob:
+    """The predicate :func:`match_tar_glob` returns; its ``repr`` names the patterns."""
+
+    __slots__ = ("_forms", "patterns")
+
+    def __init__(self, patterns: tuple[str, ...]) -> None:
+        if not patterns:
+            raise _UsageValueError("match_tar_glob() needs at least one pattern")
+        if not all(patterns):
+            raise _UsageValueError("match_tar_glob() got an empty pattern")
+        self.patterns = patterns
+        forms: list[str] = []
+        for pattern in patterns:
+            base = pattern.rstrip("/")
+            # The pattern as written; and, for a folder named without or with its "/",
+            # the folder entry and everything under it. "*" matching "/" is what makes
+            # "base/*" reach every depth. "/" alone has no base and stays as written.
+            forms.extend((pattern, base + "/", base + "/*") if base else (pattern,))
+        # dict.fromkeys: "docs/" as written is already its own "base + /" form.
+        self._forms = tuple(dict.fromkeys(forms))
+
+    def __call__(self, member: ArchiveMember | str) -> bool:
+        name = member if isinstance(member, str) else member.name
+        # fnmatchcase: the same answer on every platform (fnmatch folds case on Windows).
+        return any(fnmatch.fnmatchcase(name, form) for form in self._forms)
+
+    def __repr__(self) -> str:
+        return f"match_tar_glob({', '.join(map(repr, self.patterns))})"
 
 
 class _MemberGlob:
     """The predicate :func:`match_glob` returns; its ``repr`` names the patterns."""
 
-    __slots__ = ("_any", "_dirs_only", "patterns")
+    __slots__ = ("_any", "_dirs_only", "patterns", "with_contents")
 
-    def __init__(self, patterns: tuple[str, ...]) -> None:
+    def __init__(self, patterns: tuple[str, ...], *, with_contents: bool) -> None:
         if not patterns:
             raise _UsageValueError("match_glob() needs at least one pattern")
         for pattern in patterns:
@@ -138,6 +218,7 @@ class _MemberGlob:
                     "a pattern must name something between its '/' separators"
                 )
         self.patterns = patterns
+        self.with_contents = with_contents
         # Patterns ending in "/" select directories only, so they get their own regex.
         any_kind = [p for p in patterns if not p.endswith("/")]
         dirs_only = [p.removesuffix("/") for p in patterns if p.endswith("/")]
@@ -160,6 +241,17 @@ class _MemberGlob:
             is_dir = member.is_dir or name.endswith("/")
         if name.endswith("/"):
             name = name[:-1]
+        if self._matches(name, is_dir=is_dir):
+            return True
+        if self.with_contents:
+            # Every folder the member is in, outermost first: "a/b/c" is in "a" and
+            # "a/b". A "/" at index 0 starts an absolute name and ends no folder.
+            for index, char in enumerate(name):
+                if char == "/" and index and self._matches(name[:index], is_dir=True):
+                    return True
+        return False
+
+    def _matches(self, name: str, *, is_dir: bool) -> bool:
         if self._any is not None and self._any.fullmatch(name):
             return True
         return bool(
@@ -167,7 +259,10 @@ class _MemberGlob:
         )
 
     def __repr__(self) -> str:
-        return f"match_glob({', '.join(map(repr, self.patterns))})"
+        args = ", ".join(map(repr, self.patterns))
+        return (
+            f"match_glob({args}{', with_contents=True' if self.with_contents else ''})"
+        )
 
 
 def _compile_globs(patterns: list[str]) -> re.Pattern[str] | None:

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyUsageError, open_archive
-from archivey.paths import match_glob
+from archivey.paths import match_glob, match_tar_glob
 
 NAMES = [
     "README.md",
@@ -150,14 +150,96 @@ def test_bad_patterns_are_a_usage_error(patterns: tuple[str, ...]) -> None:
 
 def test_repr_names_the_patterns() -> None:
     assert repr(match_glob("docs/**", "*.md")) == "match_glob('docs/**', '*.md')"
+    assert (
+        repr(match_glob("docs", with_contents=True))
+        == "match_glob('docs', with_contents=True)"
+    )
+    assert repr(match_tar_glob("docs")) == "match_tar_glob('docs')"
+
+
+@pytest.mark.parametrize(
+    ("patterns", "expected"),
+    [
+        (("docs",), ["docs/", "docs/index.md", "docs/api/", "docs/api/guide.md"]),
+        (("docs/api/",), ["docs/api/", "docs/api/guide.md"]),
+        (
+            ("*/",),
+            [
+                "docs/",
+                "docs/index.md",
+                "docs/api/",
+                "docs/api/guide.md",
+                "docsx/a.md",
+                "dir/new\nline.md",
+            ],
+        ),
+        (("*.md",), ["README.md"]),
+        (
+            ("d*",),
+            [
+                "docs/",
+                "docs/index.md",
+                "docs/api/",
+                "docs/api/guide.md",
+                "docsx/a.md",
+                "dir/new\nline.md",
+            ],
+        ),
+    ],
+)
+def test_with_contents_selects_what_a_matching_folder_holds(
+    patterns: tuple[str, ...], expected: list[str]
+) -> None:
+    predicate = match_glob(*patterns, with_contents=True)
+    assert [name for name in NAMES if predicate(name)] == expected
+
+
+def test_with_contents_on_an_absolute_name() -> None:
+    predicate = match_glob("/etc", with_contents=True)
+    assert predicate("/etc/passwd")
+    assert not predicate("etc/passwd")
+
+
+@pytest.mark.parametrize(
+    ("patterns", "expected"),
+    [
+        (
+            ("*.md",),
+            [
+                "README.md",
+                "docs/index.md",
+                "docs/api/guide.md",
+                "docsx/a.md",
+                "dir/new\nline.md",
+            ],
+        ),
+        (("docs",), ["docs/", "docs/index.md", "docs/api/", "docs/api/guide.md"]),
+        (("docs/",), ["docs/", "docs/index.md", "docs/api/", "docs/api/guide.md"]),
+        (("docs/a*",), ["docs/api/", "docs/api/guide.md"]),
+        (("x\\y",), ["x\\y"]),
+        (("README.MD",), []),
+    ],
+)
+def test_tar_glob_lets_star_cross_folders(
+    patterns: tuple[str, ...], expected: list[str]
+) -> None:
+    predicate = match_tar_glob(*patterns)
+    assert [name for name in NAMES if predicate(name)] == expected
+
+
+@pytest.mark.parametrize("patterns", [(), ("",), ("docs", "")])
+def test_tar_glob_refuses_no_or_empty_pattern(patterns: tuple[str, ...]) -> None:
+    with pytest.raises(ArchiveyUsageError, match="match_tar_glob"):
+        match_tar_glob(*patterns)
 
 
 def test_paths_exports_match_glob_without_re_export() -> None:
     import archivey.paths
 
-    assert "match_glob" in archivey.paths.__all__
-    assert "match_glob" not in archivey.__all__
-    assert not hasattr(archivey, "match_glob")
+    for name in ("match_glob", "match_tar_glob"):
+        assert name in archivey.paths.__all__
+        assert name not in archivey.__all__
+        assert not hasattr(archivey, name)
 
 
 def _tar(path: Path) -> Path:
