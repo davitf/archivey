@@ -1249,7 +1249,6 @@ class BaseArchiveReader(ArchiveReader):
             ),
         )
         self._materialized = holder
-        self._state.set_listing_published(True)
         return holder
 
     def _finalize_links(
@@ -1598,8 +1597,8 @@ class BaseArchiveReader(ArchiveReader):
         never gets here and resolves nothing. Publishing here, outside the
         materialization election that ``_ensure_walked`` handed back, is safe because
         the pass holds the root token: no ``members()`` call can overlap it, under
-        ``CONCURRENT`` as well. (A ``CONCURRENT`` pass admits worker calls only once the
-        list is published, and then this pass publishes nothing.)
+        ``CONCURRENT`` as well. (A ``CONCURRENT`` pass, which admits worker calls, has
+        published the list before its first yield, so this pass publishes nothing.)
         """
         if self._streaming:
             yield from self._begin_forward_pass()
@@ -1651,7 +1650,6 @@ class BaseArchiveReader(ArchiveReader):
             # (mark_reader_closed's drain path handles BaseException the same way.) The
             # walk has already discarded itself, if it was the walk that failed.
             self._materialized = None
-            self._state.set_listing_published(False)
             self._state.fail_materialization()
             raise
 
@@ -3089,10 +3087,11 @@ class BaseArchiveReader(ArchiveReader):
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             elif self._state.concurrent and token.kind == "root":
-                # List before the first yield, as ZIP and ISO always do, so the calls
-                # a CONCURRENT reader admits beside a pass (random access, another
-                # pass) work from the first member on every format instead of
-                # depending on whether the format lists as its pass goes.
+                # List before the first yield, as ZIP and ISO always do, through the
+                # election. ReaderState admits random access and further passes
+                # beside a CONCURRENT pass on the strength of this: none of them can
+                # meet a pass that is still walking or finalizing the listing, and a
+                # call that arrives during this listing waits for it in the election.
                 self._materialize_members(enforce_listing_limits=False)
             source = self._iter_with_data(copies)
             self._state.set_pass_closer(token, _closer_of(source))

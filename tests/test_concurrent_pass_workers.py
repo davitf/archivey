@@ -323,11 +323,9 @@ def test_close_inside_the_loop_after_random_calls(tmp_path: Path) -> None:
 # --- ReaderState bookkeeping --------------------------------------------------------
 
 
-def _state(*, concurrent: bool = True, published: bool = True) -> ReaderState:
+def _state(*, concurrent: bool = True) -> ReaderState:
     streams = MemberStreams.CONCURRENT if concurrent else MemberStreams(0)
-    state = ReaderState(member_streams=streams, open_site=None)
-    state.set_listing_published(published)
-    return state
+    return ReaderState(member_streams=streams, open_site=None)
 
 
 def test_pass_starts_beside_another_threads_worker() -> None:
@@ -339,18 +337,11 @@ def test_pass_starts_beside_another_threads_worker() -> None:
 
 
 @pytest.mark.parametrize(
-    ("concurrent", "published", "name"),
-    [
-        (False, True, "stream_members"),
-        (True, False, "stream_members"),
-        (True, True, "extract_all"),
-        (True, True, "members"),
-    ],
+    ("concurrent", "name"),
+    [(False, "stream_members"), (True, "extract_all"), (True, "members")],
 )
-def test_pass_and_worker_still_exclude_each_other(
-    concurrent: bool, published: bool, name: str
-) -> None:
-    state = _state(concurrent=concurrent, published=published)
+def test_pass_and_worker_still_exclude_each_other(concurrent: bool, name: str) -> None:
+    state = _state(concurrent=concurrent)
     worker = _in_thread(lambda: state.acquire_worker("open"))
     with pytest.raises(ArchiveyUsageError, match="still in progress"):
         state.acquire_pass(name)
@@ -487,3 +478,46 @@ def test_ending_the_first_pass_hands_the_reader_to_the_one_beside_it() -> None:
         state.acquire_pass("extract_all")
     state.release_pass(second)
     state.release_pass(state.acquire_pass("extract_all"))
+
+
+@pytest.mark.parametrize("make", [_tar, _zip])
+def test_call_during_the_pass_listing_waits_for_it(
+    tmp_path: Path, make: Callable[[Path], Path]
+) -> None:
+    """A read on another thread while the pass is still listing waits, not raises."""
+    path = make(tmp_path)
+    expected = _expected(path)
+    reader = open_archive(path, concurrent_members=True)
+    listing, release = threading.Event(), threading.Event()
+    real_iter = reader._iter_members
+
+    def slow_iter():  # noqa: ANN202 - test shim
+        members = real_iter()
+        first = next(members)
+        listing.set()
+        assert release.wait(10)
+        yield first
+        yield from members
+
+    reader._iter_members = slow_iter  # type: ignore[method-assign]
+    passes = reader.stream_members()
+    first: list[object] = []
+    pass_thread = threading.Thread(target=lambda: first.append(next(passes)))
+    pass_thread.start()
+    assert listing.wait(10)
+    got: list[object] = []
+    reader_thread = threading.Thread(target=lambda: got.append(reader.read("c.txt")))
+    reader_thread.start()
+    cv = reader._state._materialization_cv
+    for _ in range(1000):
+        if cv._waiters:  # type: ignore[attr-defined]
+            break
+        threading.Event().wait(0.005)
+    assert cv._waiters  # type: ignore[attr-defined]
+    release.set()
+    pass_thread.join(10)
+    reader_thread.join(10)
+    assert got == [expected["c.txt"]]
+    assert first
+    passes.close()
+    reader.close()

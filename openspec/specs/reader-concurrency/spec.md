@@ -248,9 +248,11 @@ own.
 
 **Ownership.** The state machine keeps one root pass and the `stream_members()`
 passes beside it; when the root ends, one of those takes its place, so an
-`extract_all()` stays refused until the last pass ends. The overlap is admitted only
-once the member list is published, which a `CONCURRENT` pass guarantees before it
-yields; the state machine still refuses an overlap with an unpublished list.
+`extract_all()` stays refused until the last pass ends. Admitting the overlap rests on
+listing first: no admitted call or pass can meet a pass that is still walking the
+archive or finalizing its links (which reads member data on 7z and RAR). A call that
+arrives on another thread while the pass is listing waits in the materialization
+election, as concurrent first-touch callers do, rather than raising.
 
 **Close.** `close()` with suspended passes and in-flight workers waits for the
 workers, then decides again: a pass that resumed meanwhile and is executing makes that
@@ -262,6 +264,7 @@ suspended pass is wound down, each once; several wind-down failures surface as o
 
 | Case | Expected |
 | --- | --- |
+| Another thread calls `read()` while a `CONCURRENT` pass is still listing | Waits for the listing, then reads; no `ArchiveyUsageError` |
 | `CONCURRENT`, any format, loop body calls `open()`/`read()`/`get()`/`members()`/iteration, first pass, no prior `members()` | Correct answers and bytes; pass unaffected |
 | Same from another thread while the pass is suspended or reading | Same |
 | Random stream held open, read interleaved with the pass's streams | Both correct |

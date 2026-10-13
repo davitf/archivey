@@ -10,8 +10,8 @@ transition on, or a test of, four independent pieces of state:
   library-internal scopes under it (link reads, the extraction coordinator's own
   opens), and ``_workers`` are short ``open()`` / ``read()`` / ``get()`` calls (and, on a
   ``CONCURRENT`` reader, ``members()`` / ``members_report()``). On a ``CONCURRENT``
-  reader whose member list is published, ``stream_members()`` passes may run beside
-  workers and beside one another (``_side_passes``). Each is
+  reader ``stream_members()`` passes may run beside workers and beside one another
+  (``_side_passes``). Each is
   an :class:`OperationToken` that records the thread that took it, so a callback that
   re-enters the reader on that thread gets a message about the callback, not about a
   second caller.
@@ -139,8 +139,8 @@ class ReaderState:
     reader-wide operation, no overlapping worker calls, and no shared-handle locks
     needed. ``CONCURRENT`` turns those refusals into waits: several live streams,
     a second materializer waits for the first one's snapshot, and ``close()`` drains
-    in-flight worker calls, and once the member list is published a ``stream_members()``
-    pass admits worker calls beside it. Most methods therefore have two behaviours,
+    in-flight worker calls, and a ``stream_members()`` pass admits worker calls and
+    other such passes beside it. Most methods therefore have two behaviours,
     chosen by :attr:`concurrent`. Distinct reader-wide passes and access to one stream
     stay single-owner (caller-synchronized) either way.
     """
@@ -203,10 +203,6 @@ class ReaderState:
         # The thread that currently owns the materialization election, for same-thread
         # re-entry detection (deep review N4a).
         self._materializing_thread: int | None = None
-        # Whether the reader has published its complete member list (see
-        # :meth:`set_listing_published`). Distinct from ``cache_state``: a data pass
-        # that walked the whole archive publishes the list outside the election.
-        self._listing_published = False
 
     @property
     def concurrent(self) -> bool:
@@ -244,32 +240,22 @@ class ReaderState:
         """Whether the CURRENT thread is inside a library-internal open window."""
         return self._internal_open_threads.get(threading.get_ident(), 0) > 0
 
-    def set_listing_published(self, published: bool) -> None:
-        """Record whether the reader's complete member list has been published.
-
-        Set when the list is published, by a listing call or by a data pass that
-        reached the end; cleared only when a failed materialization withdraws it.
-        Read by :meth:`_pass_admits_overlap_locked`.
-        """
-        with self._lock:
-            self._listing_published = published
-
     def _pass_admits_overlap_locked(self, pass_name: str) -> bool:
         """Whether a ``stream_members()`` pass may overlap workers and other such passes.
 
-        Only on a ``CONCURRENT`` reader whose member list is already published. Then a
-        worker (``open()``, ``read()``, ``get()``, ``members()``) answers from the
-        published list and opens its own stream, as concurrent opens do, and a second
-        pass reads the published list with streams of its own, so neither moves the
-        pass nor waits for it. Before the list is complete, either would have to list
-        the archive while the pass walks it, so the overlap is refused. Other
-        reader-wide passes (``extract_all()``, a listing) never overlap anything.
+        Only on a ``CONCURRENT`` reader, whose root ``stream_members()`` pass lists the
+        archive through the materialization election before its first yield
+        (``BaseArchiveReader._iter_stream_members``). So the pass never walks the
+        archive while a worker or another pass runs: a worker or pass that arrives
+        while the list is being built waits in the election, as concurrent first-touch
+        callers do, and every one of them then answers from the published list and
+        reads through streams of its own. A pass that lists as it goes (a
+        random-access TAR, a 7z or solid RAR that finalizes its links at the end)
+        would not allow this, which is why only the ``CONCURRENT`` pass lists first.
+        Other reader-wide passes (``extract_all()``, a default reader's listing)
+        never overlap anything.
         """
-        return (
-            self.concurrent
-            and self._listing_published
-            and pass_name == "stream_members"
-        )
+        return self.concurrent and pass_name == "stream_members"
 
     def acquire_pass(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
@@ -393,8 +379,8 @@ class ReaderState:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
 
         Rejected while a reader-wide root pass is active (unless under library-internal
-        opens), except a ``stream_members()`` pass on a ``CONCURRENT`` reader whose
-        member list is published (:meth:`_pass_admits_overlap_locked`). Idle open
+        opens), except a ``stream_members()`` pass on a ``CONCURRENT`` reader
+        (:meth:`_pass_admits_overlap_locked`). Idle open
         streams (leases only) do not block workers. Stream I/O after this token is
         released does not re-check the gate.
         """
