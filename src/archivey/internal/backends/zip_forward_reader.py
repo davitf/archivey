@@ -20,16 +20,16 @@ from __future__ import annotations
 
 import io
 import zlib
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    EncryptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -42,6 +42,7 @@ from archivey.internal.backends.zip_local_walk import (
 from archivey.internal.backends.zip_parser import (
     CentralEntry,
     CommentCutShort,
+    DirectorySizeMismatch,
     EndRecord,
     EntryCountMismatch,
 )
@@ -60,14 +61,15 @@ from archivey.internal.backends.zip_reader import (
 )
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.logs import backends as logger
+from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import open_codec_stream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from archivey.internal.streams.streamtools import ReadableStream
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
-from archivey.internal.trailing_scan import MAX_TRAILING_SCAN
+from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -344,29 +346,62 @@ class _PassData:
 
         A member whose local header states its size is skipped without decoding,
         unless it is short enough to be a link target: the directory may yet make it
-        one, and its target is these bytes. A bit-3 member is decoded to its end,
-        which is the only way to find it.
+        one, and its target is these bytes. That decode is only for the target, so
+        its failure loses the bytes and nothing else, as a member nobody reads costs
+        nothing from a file. A bit-3 member is decoded to its end, which is the only
+        way to find it, so there a failure ends the walk.
         """
         if self.done:
             return
         header = self.entry.header
         encrypted = _is_encrypted_entry(header.flags, header.method)
-        if self._deferred():
+        deferred = self._deferred()
+        if deferred:
+            if encrypted and header.method != 0:
+                # Only the decrypted codec finds the end of this one (3b3d).
+                raise UnsupportedFeatureError(
+                    "An encrypted ZIP member whose sizes are in a data descriptor "
+                    "cannot be read past from a source that cannot seek: only "
+                    "decrypting it finds where its data ends",
+                    archive_name=self._reader._archive_name,
+                    member_name=self.member.name,
+                    source_format=ArchiveFormat.ZIP,
+                )
             # Encrypted STORED data ends where its scan finds the descriptor, with no
             # key needed; anything else is decoded to find its end.
-            skip = encrypted and header.method == 0
+            skip = encrypted
         else:
             skip = encrypted or header.file_size > MAX_LINK_TARGET_BYTES
+        if not skip:
+            try:
+                while self._read_chunk(_DRAIN_CHUNK):
+                    pass
+            except ArchiveyError:
+                if deferred:
+                    raise
+                skip = True
         if skip:
             self.done = True
             self._capture = None
             self._close_decoded()
             self._data.settle()
             return
-        while self._read_chunk(_DRAIN_CHUNK):
-            pass
         if not self.done:
             self._finish(raise_mismatch=False)
+
+    @property
+    def uncaptured(self) -> str | None:
+        """Why a drained member's bytes were not kept, when not for their length:
+        ``"encrypted"`` or ``"damaged"`` (see ``ZipForwardReader._link_target_opener``).
+        """
+        header = self.entry.header
+        if _is_encrypted_entry(header.flags, header.method):
+            return "encrypted"
+        if not self.verified and (
+            self._deferred() or header.file_size <= MAX_LINK_TARGET_BYTES
+        ):
+            return "damaged"
+        return None
 
     def abandon(self) -> None:
         """Release the decoder of a pass that will not read on."""
@@ -428,11 +463,18 @@ class ZipForwardReader(ZipReader):
         # members then stay as their local headers made them.
         self._by_offset: dict[int, ArchiveMember] = {}
         # Every local header offset the walk met, which the directory must account
-        # for. ``max_members`` bounds it, as it bounds the seekable read's offsets.
+        # for. Kept when the listing is discarded, unlike the two maps beside it:
+        # without it every directory entry would look like one with no local header.
+        # ``max_members`` bounds its length, as it bounds the seekable read's offsets,
+        # though a set costs some 60 bytes an offset against their array's 8, for a
+        # lookup per directory entry.
         self._local_offsets: set[int] = set()
         # Member id -> its whole data, when short enough to be a link target, until
         # the directory says which members are links. Weighed by the listing tracker.
         self._captured: dict[int, bytes] = {}
+        # Member id -> why its bytes were not kept, when not for their length
+        # (``_PassData.uncaptured``), so a link's missing target says why.
+        self._uncaptured: dict[int, str] = {}
         self._end_record: EndRecord | None = None
         # The first header is parsed at open, so a stream that is no ZIP fails here
         # (DR-15b), as a TAR's does.
@@ -490,13 +532,19 @@ class ZipForwardReader(ZipReader):
         finally:
             self._pass_data = None
         captured = current.captured
-        if captured is not None and not self._listing_discarded:
+        if not self._listing_discarded:
             assert member._member_id is not None
-            self._captured[member._member_id] = captured
-            self._listing_tracker.account_retained_bytes(len(captured), enforce=False)
+            if captured is not None:
+                self._captured[member._member_id] = captured
+                self._listing_tracker.account_retained_bytes(
+                    len(captured), enforce=False
+                )
+            elif (why := current.uncaptured) is not None:
+                self._uncaptured[member._member_id] = why
         if self._listing_discarded:
             self._by_offset.clear()
             self._captured.clear()
+            self._uncaptured.clear()
 
     def _local_member(self, entry: LocalEntry, index: int) -> ArchiveMember:
         """The member as its local header describes it, until the directory arrives.
@@ -573,29 +621,43 @@ class ZipForwardReader(ZipReader):
     def _read_directory(self) -> None:
         """Read the directory and end records, and update the members in place.
 
-        Each local entry is matched to its directory entry by offset. The directory is
-        authoritative: a member it describes is rebuilt from it, as the seekable read
-        builds it, and the yielded object takes every field of that build.
+        Each local entry is matched to its directory entry by offset, once the end
+        record has said where the offsets count from. The directory is authoritative:
+        a member it describes is rebuilt from it, as the seekable read builds it, and
+        the yielded object takes every field of that build. The entries are charged
+        against ``max_members`` as they are read, as the seekable read's directory
+        walk charges them.
         """
         walker = self._walker
-        updates: list[tuple[ArchiveMember, CentralEntry]] = []
-        directory_only: list[CentralEntry] = []
+        max_members = self._config.listing_limits.max_members
+        entries: list[CentralEntry] = []
         with self._translated_errors():
-            entries = list(walker.directory())
+            for central in walker.directory():
+                if max_members is not None and len(entries) >= max_members:
+                    raise _max_members_error(max_members)
+                entries.append(central)
             end = walker.end
             assert end is not None
         self._end_record = self._end = end
+        local_offsets = self._local_offsets
         by_offset = self._by_offset
+        updates: list[tuple[ArchiveMember, CentralEntry]] = []
         matched: set[int] = set()
+        # Entries pointing where no local header was, and entries pointing at a local
+        # header an earlier entry already took.
+        unmatched: list[CentralEntry] = []
+        shared: list[CentralEntry] = []
         for central in entries:
             offset = central.header_offset + end.base
-            if offset not in self._local_offsets or offset in matched:
-                directory_only.append(central)
-                continue
-            matched.add(offset)
-            member = by_offset.get(offset)
-            if member is not None:
-                updates.append((member, central))
+            if offset not in local_offsets:
+                unmatched.append(central)
+            elif offset in matched:
+                shared.append(central)
+            else:
+                matched.add(offset)
+                member = by_offset.get(offset)
+                if member is not None:
+                    updates.append((member, central))
         for member, central in updates:
             self._update_from_directory(member, central)
         # Only a link's bytes are read again, for its target.
@@ -609,17 +671,35 @@ class ZipForwardReader(ZipReader):
             for member_id, data in self._captured.items()
             if member_id in links
         }
+        self._uncaptured = {
+            member_id: why
+            for member_id, why in self._uncaptured.items()
+            if member_id in links
+        }
         self._report_directory_findings(end, len(entries))
-        self._report_trailing_bytes()
+        found = first_nonzero_offset(cast("BinaryIO", walker.source))
+        if found is not None:
+            self._emit_trailing_data(found)
         self._by_offset = {}
         self._local_offsets = set()
-        if directory_only:
-            first = directory_only[0]
-            name = self._decode_member_name(first).text
+        if unmatched:
+            first = unmatched[0]
             raise CorruptionError(
-                f"ZIP central directory entry {quoted(name)} points to offset "
+                "ZIP central directory entry "
+                f"{quoted(self._decode_member_name(first).text)} points to offset "
                 f"{first.header_offset + end.base}, where the stream held no local "
-                f"header ({len(directory_only)} such entries)",
+                f"header ({len(unmatched)} such entries)",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        if shared:
+            first = shared[0]
+            raise CorruptionError(
+                "ZIP central directory entry "
+                f"{quoted(self._decode_member_name(first).text)} points to the local "
+                f"header at offset {first.header_offset + end.base}, which an earlier "
+                f"entry already describes ({len(shared)} such entries); a source that "
+                "cannot seek reads that data once, for one member",
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
@@ -631,12 +711,19 @@ class ZipForwardReader(ZipReader):
         member_id = member._member_id
         assert member_id is not None
         old_name = member.name
+        weighed = member_metadata_bytes(member)
         fresh = self._to_member(central, member_id)
         for f in fields(ArchiveMember):
             if f.name in _KEPT_ON_UPDATE:
                 continue
             setattr(member, f.name, getattr(fresh, f.name))
         member._diagnostics = member._diagnostics + fresh._diagnostics
+        # The directory adds what no local header holds (a comment, its own extra
+        # field); the limits weigh it when the pass is published, as they weigh the
+        # seekable read's members when it lists them.
+        self._listing_tracker.account_retained_bytes(
+            member_metadata_bytes(member) - weighed, enforce=False
+        )
         if member.name != old_name:
             self._reindex_name(member, old_name)
         if (
@@ -657,8 +744,22 @@ class ZipForwardReader(ZipReader):
             self._index_member_name(member)
 
     def _report_directory_findings(self, end: EndRecord, read: int) -> None:
-        """The end record's disagreements with the directory, as the seekable read
-        reports them (``CentralDirectoryWalk.findings``)."""
+        """The end record's disagreements with the directory.
+
+        The entry count and the comment are checked as the seekable read checks them
+        (``CentralDirectoryWalk.findings``). The declared directory size is not:
+        the seekable read reads only that many bytes, and reports an entry that runs
+        past them (``EntryOverrun``), where this walk has read every entry before the
+        end record sized them. So a size the entries do not fill is reported as such
+        (``DirectorySizeMismatch``), and every entry stays listed.
+        """
+        walker = self._walker
+        assert walker.cd_start is not None and walker.cd_end is not None
+        held = walker.cd_end - walker.cd_start
+        if held != end.cd_size:
+            self._emit_walk_finding(
+                DirectorySizeMismatch(declared=end.cd_size, held=held), None
+            )
         if end.entries_declared != read:
             self._emit_walk_finding(
                 EntryCountMismatch(
@@ -673,40 +774,6 @@ class ZipForwardReader(ZipReader):
                 ),
                 None,
             )
-
-    def _report_trailing_bytes(self) -> None:
-        """Report a non-zero byte after the end record, as the seekable read does."""
-        source = self._walker.source
-        offset = 0
-        while offset < MAX_TRAILING_SCAN:
-            chunk = source.read(min(_DRAIN_CHUNK, MAX_TRAILING_SCAN - offset))
-            if not chunk:
-                return
-            stripped = chunk.lstrip(b"\x00")
-            if stripped:
-                found = offset + len(chunk) - len(stripped)
-                break
-            offset += len(chunk)
-        else:
-            return
-        self._diagnostics_collector.emit(
-            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
-            message=(
-                "ZIP archive continues past its end: a non-zero byte appears "
-                f"{found} bytes after the end of central directory record and its "
-                "comment. The listing does not account for it (this file may hold "
-                "something appended to the archive)."
-            ),
-            context=ArchiveEofContext(
-                archive_name=self._archive_name,
-                format="zip",
-                expected_marker="zeros_to_eof",
-                expected_bytes=0,
-                observed_bytes=found,
-                observed_kind="nonzero",
-            ),
-            logger=logger,
-        )
 
     # -- data ----------------------------------------------------------------------
 
@@ -736,26 +803,41 @@ class ZipForwardReader(ZipReader):
             _PassStream(current), member.name, size=member.size
         )
 
-    def _ensure_link_target(self, member: ArchiveMember) -> None:
-        if member.type != MemberType.SYMLINK or member.link_target is not None:
-            return
-        loc = member._raw
-        assert isinstance(loc, _ZipLocator)
-        assert member._member_id is not None
-        captured = self._captured.get(member._member_id)
+    def _link_target_opener(
+        self, member: ArchiveMember
+    ) -> Callable[[], AbstractContextManager[ReadableStream]]:
+        """The bytes the pass kept for the link (``_leave_member``); without them, the
+        error that says why, so the target is reported as the file read reports it."""
+        member_id = member._member_id
+        assert member_id is not None
+        captured = self._captured.get(member_id)
+        why = self._uncaptured.get(member_id)
+
+        def missing() -> ArchiveyError:
+            if why == "encrypted":
+                return EncryptionError(
+                    f"The symlink target of {quoted(member.name)} is encrypted, and "
+                    "an encrypted member cannot be read from a source that cannot "
+                    "seek"
+                )
+            if why == "damaged":
+                return CorruptionError(
+                    f"The data of symlink {quoted(member.name)} failed its check as "
+                    "the pass read it"
+                )
+            cap = MAX_LINK_TARGET_BYTES
+            return CorruptionError(
+                f"The symlink target of {quoted(member.name)} was not kept as the "
+                f"pass read its data: it is over {cap} bytes"
+            )
 
         @contextmanager
-        def open_data() -> Iterator[BinaryIO]:
+        def open_data() -> Iterator[ReadableStream]:
             if captured is None:
-                raise CorruptionError(
-                    f"The symlink target of {quoted(member.name)} was not kept as "
-                    "the pass read its data"
-                )
+                raise missing()
             yield io.BytesIO(captured)
 
-        self._link_target_from_data(
-            member, open_data, reparse_fallback=loc.reparse_fallback
-        )
+        return open_data
 
     # -- what the caller sees ------------------------------------------------------
 

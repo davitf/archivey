@@ -100,6 +100,7 @@ from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
+    DirectorySizeMismatch,
     EndRecord,
     EntryCountMismatch,
     EntryOverrun,
@@ -183,7 +184,11 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from _typeshed import WriteableBuffer
+
+    from archivey.internal.streams.streamtools import ReadableStream
 
 # Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
 # default, which maps every byte and therefore never fails). An unflagged comment goes
@@ -1030,8 +1035,12 @@ class ZipReader(BaseArchiveReader):
             found = first_nonzero_offset(tail)
         finally:
             tail.close()
-        if found is None:
-            return
+        if found is not None:
+            self._emit_trailing_data(found)
+
+    def _emit_trailing_data(self, found: int) -> None:
+        """Report a non-zero byte ``found`` bytes past the end record's comment; the
+        seekable read and the forward walk both find it."""
         self._diagnostics_collector.emit(
             code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
             message=(
@@ -1119,7 +1128,10 @@ class ZipReader(BaseArchiveReader):
 
     def _emit_walk_finding(
         self,
-        finding: EntryCountMismatch | CommentCutShort | EntryOverrun,
+        finding: EntryCountMismatch
+        | CommentCutShort
+        | EntryOverrun
+        | DirectorySizeMismatch,
         last: CentralEntry | None,
     ) -> None:
         """One disagreement between the end record and the central directory."""
@@ -1138,6 +1150,20 @@ class ZipReader(BaseArchiveReader):
                 expected_bytes=0,
                 observed_bytes=end.eocd_offset,
                 observed_kind="nonzero",
+            )
+        elif isinstance(finding, DirectorySizeMismatch):
+            message = (
+                f"ZIP end record declares a central directory of {finding.declared} "
+                f"bytes, but the stream holds {finding.held} bytes of directory "
+                "entries; read from a source that cannot seek, every entry is listed."
+            )
+            context = ArchiveEofContext(
+                archive_name=archive_name,
+                format="zip",
+                expected_marker="central_directory",
+                expected_bytes=finding.declared,
+                observed_bytes=finding.held,
+                observed_kind="short" if finding.held < finding.declared else "nonzero",
             )
         elif isinstance(finding, CommentCutShort):
             message = (
@@ -2614,9 +2640,16 @@ class ZipReader(BaseArchiveReader):
         # errors surface translated like any member-read error.
         self._link_target_from_data(
             member,
-            lambda: self._open_member(member),
+            self._link_target_opener(member),
             reparse_fallback=loc.reparse_fallback,
         )
+
+    def _link_target_opener(
+        self, member: ArchiveMember
+    ) -> Callable[[], AbstractContextManager[ReadableStream]]:
+        """How ``_ensure_link_target`` opens a link's data: the member itself here; the
+        bytes the pass kept in a forward walk."""
+        return lambda: self._open_member(member)
 
     def _locked_link_target_report(
         self, member: ArchiveMember, exc: EncryptionError

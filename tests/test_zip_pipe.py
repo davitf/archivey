@@ -29,7 +29,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.types import ArchiveMember, MemberType
-from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
+from tests.sample_archives import (
+    CORPUS,
+    CorpusEntry,
+    build_archive,
+    skip_unless_runnable,
+)
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 
@@ -86,6 +91,17 @@ def _symlink_zip() -> bytes:
     return buf.getvalue()
 
 
+def _symlink_zip_stored() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.txt", b"hello")
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3
+        info.external_attr = 0o120777 << 16
+        zf.writestr(info, b"a.txt")
+    return buf.getvalue()
+
+
 def _pipe(data: bytes) -> NonSeekableBytesIO:
     return NonSeekableBytesIO(data)
 
@@ -129,7 +145,7 @@ def _piped_view(
     return [_visible(m) for m in listed], contents
 
 
-def _corpus_zips() -> Iterator[object]:
+def _corpus_zips() -> Iterator[pytest.ParameterSet]:
     for entry in CORPUS:
         if "zip" in entry.formats and not entry.passwords:
             yield pytest.param(entry, id=entry.id)
@@ -139,15 +155,15 @@ def _corpus_zips() -> Iterator[object]:
 @pytest.mark.parametrize("entry", list(_corpus_zips()))
 @pytest.mark.parametrize("written", ["sized", "streamed"])
 def test_a_pipe_lists_the_corpus_as_the_seekable_read_does(
-    entry: object, written: str, tmp_path: Path
+    entry: CorpusEntry, written: str, tmp_path: Path
 ) -> None:
     """Same members, fields, diagnostics and contents after the pass as from a file.
 
     ``streamed`` writes every member with bit 3 and a data descriptor, as stdlib
     ``zipfile`` does to a pipe."""
-    skip_unless_runnable(entry, "zip")  # type: ignore[arg-type]
+    skip_unless_runnable(entry, "zip")
     path = tmp_path / "corpus.zip"
-    build_archive(entry, "zip", path)  # type: ignore[arg-type]
+    build_archive(entry, "zip", path)
     data = path.read_bytes()
     if written == "streamed":
         data = _streamed(data)
@@ -219,15 +235,34 @@ def _corrupt_stored(data: bytes, payload: bytes) -> bytes:
     return data[:at] + bytes([payload[0] ^ 0xFF]) + data[at + 1 :]
 
 
-def test_a_damaged_member_fails_when_read_and_not_when_skipped() -> None:
+def _corrupt_data(data: bytes, method: int) -> bytes:
+    """``data`` with the middle of its first member's data overwritten."""
+    if method == zipfile.ZIP_STORED:
+        return _corrupt_stored(data, b"payload bytes " * 100)
+    name_len, extra_len = struct.unpack_from("<HH", data, 26)
+    (size,) = struct.unpack_from("<I", data, 18)
+    at = 30 + name_len + extra_len + size // 2
+    return data[:at] + b"\xff" * 8 + data[at + 8 :]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
+)
+def test_a_damaged_member_fails_when_read_and_not_when_skipped(method: int) -> None:
+    """Short enough to be a link target, the skipped member is decoded anyway (its
+    bytes would be the target); that decode failing costs only those bytes."""
     payload = b"payload bytes " * 100
-    data = _zip([("bad.bin", payload), ("ok.txt", b"fine")], method=zipfile.ZIP_STORED)
-    data = _corrupt_stored(data, payload)
+    data = _zip([("bad.bin", payload), ("ok.txt", b"fine")], method=method)
+    data = _corrupt_data(data, method)
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        with pytest.raises(CorruptionError):
+            reader.read(reader.get("bad.bin"))
     with archivey.open_archive(_pipe(data), streaming=True) as reader:
         for member, stream in reader.stream_members():
             if member.name == "bad.bin":
                 assert stream is not None
-                with pytest.raises(CorruptionError, match="CRC"):
+                with pytest.raises(CorruptionError):
                     stream.read()
     with archivey.open_archive(_pipe(data), streaming=True) as reader:
         names = [
@@ -271,6 +306,119 @@ def _drop_local_member(data: bytes, name: bytes) -> bytes:
             return bytes(out)
         cd = out.find(b"PK\x01\x02", cd + 46 + name_len + extra_len + comment_len)
     raise AssertionError(name)
+
+
+def test_a_damaged_link_target_is_reported_as_damaged() -> None:
+    data = _zip(
+        [("link", b"payload bytes " * 100), ("ok.txt", b"fine")],
+        method=zipfile.ZIP_DEFLATED,
+    )
+    data = bytearray(_corrupt_data(data, zipfile.ZIP_DEFLATED))
+    cd = data.index(b"PK\x01\x02")
+    data[cd + 5] = 3  # made on Unix
+    struct.pack_into("<I", data, cd + 38, 0o120777 << 16)  # a symlink's mode
+    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
+        reader.members_report()
+        reasons = [
+            d.context.reason  # type: ignore[union-attr]
+            for d in reader.diagnostics.retained
+            if d.code == DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+    assert reasons == ["target_data_damaged"]
+
+
+def test_an_encrypted_link_target_needs_a_password_as_from_a_file() -> None:
+    data = bytearray(_symlink_zip_stored())
+    data[data.index(b"PK\x03\x04", 1) + 6] |= 0x01
+    cd = data.index(b"PK\x01\x02", data.index(b"PK\x01\x02") + 1)
+    data[cd + 8] |= 0x01
+
+    def reasons(source: object, **options: object) -> list[str]:
+        with archivey.open_archive(source, **options) as reader:  # type: ignore[arg-type]
+            reader.members_report()
+            return [
+                d.context.reason  # type: ignore[union-attr]
+                for d in reader.diagnostics.retained
+                if d.code == DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+            ]
+
+    assert reasons(_pipe(bytes(data)), streaming=True) == ["password_required"]
+    assert reasons(io.BytesIO(bytes(data))) == ["password_required"]
+
+
+def test_an_encrypted_bit3_compressed_member_ends_the_pass() -> None:
+    """Nothing but its decrypted codec finds where its data ends."""
+    data = bytearray(_streamed(_zip([("a.txt", b"one" * 50), ("b.txt", b"two")])))
+    data[6] |= 0x01
+    data[data.index(b"PK\x01\x02") + 8] |= 0x01
+    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
+        with pytest.raises(UnsupportedFeatureError, match="only decrypting"):
+            for _ in reader.stream_members(lambda m: m.name == "b.txt"):
+                pass
+
+
+def _repeat_directory(data: bytes, times: int) -> bytes:
+    """``data`` (one member) with its one central entry repeated ``times`` times."""
+    cd = data.index(b"PK\x01\x02")
+    eocd = data.index(b"PK\x05\x06")
+    entry = data[cd:eocd]
+    end = bytearray(data[eocd:])
+    struct.pack_into("<HHI", end, 8, times, times, len(entry) * times)
+    return data[:cd] + entry * times + bytes(end)
+
+
+@pytest.mark.parametrize("source", ["pipe", "file"])
+def test_max_members_counts_the_directory_entries(source: str) -> None:
+    data = _repeat_directory(_zip([("a.txt", b"one")], method=zipfile.ZIP_STORED), 50)
+    config = archivey.ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    opened = _pipe(data) if source == "pipe" else io.BytesIO(data)
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        with archivey.open_archive(opened, streaming=True, config=config) as reader:
+            for _ in reader.stream_members():
+                pass
+
+
+def test_two_entries_for_one_local_header_are_named_as_such() -> None:
+    data = _repeat_directory(_zip([("a.txt", b"one")], method=zipfile.ZIP_STORED), 2)
+    with archivey.open_archive(_pipe(data), streaming=True) as reader:
+        report = reader.members_report()
+    assert isinstance(report.error, CorruptionError)
+    assert "an earlier entry already describes" in str(report.error)
+
+
+def test_directory_comments_count_toward_max_metadata_bytes() -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(20):
+            info = zipfile.ZipInfo(f"{i}.txt")
+            info.comment = b"c" * 6000
+            zf.writestr(info, b"x")
+    data = buf.getvalue()
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=100_000)
+    )
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        with archivey.open_archive(io.BytesIO(data), config=config) as reader:
+            reader.members()
+    with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            reader.members_report()
+
+
+def test_a_directory_size_the_entries_do_not_fill_is_reported() -> None:
+    data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
+    eocd = data.index(b"PK\x05\x06")
+    (size,) = struct.unpack_from("<I", data, eocd + 12)
+    struct.pack_into("<I", data, eocd + 12, size - 10)
+    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        found = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code == DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+        ]
+    assert names == ["a.txt", "b.txt"]
+    assert [d.context.expected_marker for d in found] == ["central_directory"]  # type: ignore[union-attr]
 
 
 def test_a_directory_entry_with_no_local_header_fails_after_the_members() -> None:

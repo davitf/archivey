@@ -162,7 +162,9 @@ each lands with nothing half-done reachable:
 - [ ] 3.3i A local entry no directory entry points to: dropped from the listing and,
       when extracting, from disk, and reported (diagnostic code pending the
       maintainer's pick, 2026-10-13). Until 3b3b it stays listed as its local header
-      made it.
+      made it. The same goes for directory entries past the size the end record
+      declares, which the seekable read never reads: 3b3a lists them and reports the
+      size (`DirectorySizeMismatch`).
 - [x] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).
