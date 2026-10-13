@@ -124,9 +124,17 @@ can no longer raise `UnicodeDecodeError` there.
 
 ### `zip_reader.py`
 
-- `member._raw` holds the `CentralEntry`. Every `info.X` read maps to an entry field:
-  `orig_filename` to `name` (no cp437 round trip), `_raw_time` to `dos_time`,
+- The member is built from the `CentralEntry`; every `info.X` read maps to an entry
+  field: `orig_filename` to `name` (no cp437 round trip), `_raw_time` to `dos_time`,
   `date_time` to a decode of `dos_date`/`dos_time`, `is_dir()` to "name ends in `/`".
+  `member._raw` then keeps only a small frozen locator with what is read after listing
+  (header offset, both sizes, CRC, flags, method, DOS time for the ZipCrypto check byte,
+  and the WinZip AES strength and real method), not the entry: the entry's extra and
+  comment bytes would otherwise stay alive per member. The raw-member-info measurement
+  (2026-10-13, `reports/raw-member-info-2026-10-13.md` in the project files) puts
+  today's `ZipInfo` at about 400 B per member, a quarter of listing memory. The
+  later stages that need the directory entry (the end-of-pass update in stage 3, the
+  header comparison in stage 5) use it while it is in hand, or the locator's fields.
 - The handle is `self._source` (or the seek-counting and slicing wrappers over it), for a
   path source too. stdlib opened its own file for a path; the reader now opens nothing
   itself, and the path-or-handle branch in `__init__` goes.

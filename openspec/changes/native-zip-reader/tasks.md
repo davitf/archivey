@@ -53,6 +53,8 @@
       `expected_marker="zeros_to_eof"`, zeros silent, strict refuses; the constant and
       zero-byte loop move to `internal/trailing_scan.py`); tests first,
       including a first non-zero byte past 1 MiB (silent) and a pipe.
+- [ ] 2.6b `member._raw` is a slotted locator, not the `CentralEntry` (design §"`zip_reader.py`");
+      a tracemalloc test bounds the per-member listing cost below today's.
 - [ ] 2.7 Remove every row of `design.md` §"What the parser removes" except the name
       decode; tests that read `ZipInfo` off `member._raw` move to `CentralEntry`.
 - [ ] 2.8 New ADR superseding 0006; format-zip spec; the `diagnostics` spec row and the
