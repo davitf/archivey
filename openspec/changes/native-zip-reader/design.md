@@ -221,26 +221,39 @@ for `streaming=True` on a non-seekable source, which ZIP refuses today. ZIP then
 
 ### Parser support
 
-The fixed-header parsing is shared by both walks; only where the bytes come from
-differs. `parse_central_header(buf, pos)` and `parse_local_header(buf, pos)` work on
-bytes. `CentralDirectoryWalk` feeds them from `read_at`. The forward walk takes the
+The forward walk is `internal/backends/zip_local_walk.py`, beside `zip_parser.py`. It
+parses each central header with the parser's own `_unpack_central` and `_central_entry`,
+and each local header with the same struct `read_local_header` uses. It takes the
 source as a `BinaryIO` that it only reads, never seeks, and counts the bytes it has
 consumed, which is the offset every local entry is matched by. That is the shape
-`TarWalker` uses for a forward-only stream; there is no new reader type.
+`TarWalker` uses for a forward-only stream. Bytes a member's reader took past the
+member's end are put back in front of the stream (`ForwardSource.unread`).
 
 ```python
 class LocalEntry:                 # what one local header says, plus where it was
-    offset: int                   # bytes consumed before its signature
-    header: LocalHeader           # incl. ZIP64 extra applied to the sizes
-    sizes_known: bool             # False under bit 3: the data descriptor has them
+    index: int                    # position in file order
+    offset: int                   # stream offset of its signature
+    header: LocalHeader           # data_start a stream offset; ZIP64 extra applied
+    zip64: bool                   # a ZIP64 extra field: 8-byte descriptor sizes
+    deferred: bool                # bit 3: the data descriptor has the CRC and sizes
 
 class LocalHeaderWalk:
-    def __init__(self, stream: BinaryIO) -> None: ...
-    def __iter__(self) -> Iterator[LocalEntry]: ...   # the caller consumes each body
-    def finish_member(self, consumed: int, crc: int) -> DataDescriptor | None: ...
-    def central_directory(self) -> Iterator[CentralEntry]: ...  # after the last member
+    def __init__(self, stream: BinaryIO, *, offset=0, find_start=True) -> None: ...
+    def next_entry(self) -> LocalEntry | None: ...    # None once the directory follows
+    def member_data(self, entry, *, encrypted=False) -> MemberData: ...
+    def directory(self) -> Iterator[CentralEntry]: ... # after the last member
     end: EndRecord | None           # set once the end record has been read
+    gap: tuple[int, int] | None     # bytes read past before the directory
+
+class MemberData(BinaryIO):         # the member's compressed bytes, read forward
+    consumed: int                   # bytes handed out
+    def settle(self, used=None, *, crc=None, file_size=None) -> DataDescriptor | None: ...
 ```
+
+`settle` reads past the data the caller left and the data descriptor. For a member only
+its codec can end, `used` is how many compressed bytes the codec consumed; the bytes
+the caller's layers read past that are put back. A central entry's offset is the
+stored one (`base` 0) until the end record gives the stub offset.
 
 The walk stops at the first `PK\x01\x02`, `PK\x06\x06` or `PK\x05\x06` after a member;
 the directory is then read forward from the same stream with the same entry parser.
@@ -509,10 +522,14 @@ One PR each, in order; every PR goes through the review label.
    superseded by a new ADR; format-zip spec, the `diagnostics` spec row and the
    `ArchiveEofContext` docstring for `"zeros_to_eof"`, `docs/gotchas.md` (trailing data
    and the open-pipe note), handbook §2.2, §5 and §6 updated.
-3. **Streaming.** The forward local-header walk and the end-of-pass reconciliation,
-   for non-seekable sources (seekable ones read the directory first, question C), and
-   for a seekable source whose end record the tail search does not find
-   (§"A seekable source whose end record is not in the tail"). `stream_members()` and
+3. **Streaming**, in three PRs: 3a the forward walk in the parser layer
+   (`zip_local_walk.py`, no reader change); 3b the reader over a non-seekable source and
+   the end-of-pass reconciliation; 3c a seekable source under `streaming=True` and the
+   fallback when the tail search finds no end record. Together: the forward
+   local-header walk and the end-of-pass reconciliation, for non-seekable sources
+   (seekable ones read the directory first, question C), and for a seekable source
+   whose end record the tail search does not find (§"A seekable source whose end
+   record is not in the tail"). `stream_members()` and
    `extract_all()` over a pipe, tested against the same archives read seekably: the
    files on disk must match. This stage changes a public declaration: ZIP's
    `SUPPORTS_STREAMING_NON_SEEKABLE` becomes true, so `required_source` for ZIP moves
