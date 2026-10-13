@@ -1520,9 +1520,13 @@ class BaseArchiveReader(ArchiveReader):
             # discarded listing has no prefix left to replay either.
             self._walk_failure = exc
             return
-        # Random access hands out no member before the walk ends, so nobody holds the
-        # prefix. A later call starts over, and ``_iter_members`` yields the same order;
-        # ``_pull_member`` replays the positions the failed walk reached.
+        # A later call starts over, and ``_iter_members`` yields the same order;
+        # ``_pull_member`` replays the positions the failed walk reached onto the same
+        # objects. A random-access pass that already holds members of this walk (TAR's
+        # one-pass walk, ``_walk_handed_out``) pulls up to its own position again
+        # (``_ProgressivePassIterator._step_locked``), so it gets those same objects;
+        # but a listing call beside it must not end up here over a limit, which is why
+        # ``_drain_walk`` stops enforcing inside the pull once the walk is handed out.
         self._listed = []
         self._listed_by_name = {}
         self._walk_position = 0
@@ -1591,13 +1595,18 @@ class BaseArchiveReader(ArchiveReader):
         pulls past the cap itself.
         """
         while True:
-            shared = enforce and self._walk_handed_out
-            if shared:
-                self._listing_tracker.assert_within_limits()
-            if self._pull_member(enforce=enforce and not shared) is None:
-                return
-            if shared:
-                self._listing_tracker.assert_within_limits()
+            # Decided under the walk lock, with the pull: a pass on another thread sets
+            # ``_walk_handed_out`` under it, so a flag read before the lock could be
+            # stale by the time this pull runs, and an enforcing pull would then
+            # discard the walk under that pass.
+            with self._walk_lock:
+                shared = enforce and self._walk_handed_out
+                if shared:
+                    self._listing_tracker.assert_within_limits()
+                if self._pull_member(enforce=enforce and not shared) is None:
+                    return
+                if shared:
+                    self._listing_tracker.assert_within_limits()
 
     def _ensure_walked(self, *, enforce: bool) -> None:
         """Drain the walk under the first-touch election, without resolving links.
