@@ -16,7 +16,6 @@ import lzma
 import os
 import struct
 import subprocess
-import sys
 import types
 import zipfile
 import zlib
@@ -27,10 +26,15 @@ import pytest
 
 import archivey
 from archivey.config import AcceleratorMode, ArchiveyConfig
-from archivey.diagnostics import DiagnosticCode, SymlinkTargetContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticPolicy,
+    SymlinkTargetContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    DiagnosticRaisedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
@@ -54,6 +58,7 @@ class _Entry:
     extract_version: int = 20
     external_attr: int = 0o100644 << 16
     flags: int = 0  # general-purpose bit flags, both headers
+    comment: bytes = b""  # central-directory per-member comment
     create_system: int = 3  # "version made by" high byte; 3 is Unix
     date: int = 0x21  # DOS date, both headers: 1980-01-01
 
@@ -104,13 +109,13 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             min(usize, 0xFFFFFFFF),
             len(e.name),
             len(e.extra),
-            0,  # comment length
+            len(e.comment),
             0,  # disk number start
             0,  # internal attributes
             e.external_attr,
             min(header_offset, 0xFFFFFFFF),
         )
-        cd += e.name + e.extra
+        cd += e.name + e.extra + e.comment
     out += cd
     out += struct.pack(
         "<4sHHHHIIH",
@@ -201,7 +206,7 @@ def test_zip64_header_offset_past_ssize_max_symlink_lists() -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# Z6: the Info-ZIP Unicode Path extra field (0x7075) is ignored.
+# Z6: the Info-ZIP Unicode Path extra field (0x7075) names an unflagged member.
 # ---------------------------------------------------------------------------------------
 
 
@@ -263,12 +268,6 @@ def test_unicode_path_extra_field_wins_over_encoding() -> None:
         # Stale: the entry was renamed and the field kept the old name's CRC.
         pytest.param(_unicode_path_field(stored=b"old.txt"), id="crc_mismatch"),
         pytest.param(_unicode_path_field(version=2), id="unknown_version"),
-        pytest.param(
-            _unicode_path_field(name=b""),
-            id="empty_name",
-            # stdlib zipfile 3.12+ warns about it while reading the directory.
-            marks=pytest.mark.filterwarnings("ignore:Empty unicode path extra field"),
-        ),
     ],
 )
 def test_unicode_path_extra_field_that_does_not_vouch_is_ignored(field: bytes) -> None:
@@ -285,17 +284,144 @@ def test_unicode_path_extra_field_that_does_not_vouch_is_ignored(field: bytes) -
         assert member.raw_name == _UNICODE_PATH_STORED
 
 
-def test_unicode_path_extra_field_with_invalid_utf8() -> None:
-    blob, _ = _unicode_path_zip(extra=_unicode_path_field(name=b"\xff.txt"))
-    if sys.version_info >= (3, 12):
-        # stdlib zipfile refuses the whole directory over it; archivey types that.
-        with pytest.raises(CorruptionError, match="0x7075"):
-            archivey.open_archive(io.BytesIO(blob))
-        return
+def _short_unicode_path_field(length: int) -> bytes:
+    """A 0x7075 field too short to hold its version byte and name CRC."""
+    return struct.pack("<HH", 0x7075, length) + b"\x01" * length
+
+
+def _cut_unicode_path_field(stored: bytes) -> bytes:
+    """A 0x7075 field whose declared size runs past the end of the extra field: the
+    CRC matches, but the name is cut short."""
+    field = _unicode_path_field(stored, name="Привет.txt".encode())
+    return field[:2] + struct.pack("<H", len(field) - 4 + 6) + field[4:]
+
+
+_OTHER_STORED = b"\x8f\xe0.txt"  # not UTF-8, so the sniff leaves it to cp437
+
+_MALFORMED_UNICODE_PATH_FIELDS = [
+    pytest.param(
+        _unicode_path_field(_OTHER_STORED, name=b"\xff.txt"),
+        "UTF-8",
+        id="invalid_utf8",
+    ),
+    pytest.param(
+        _unicode_path_field(_OTHER_STORED, name=b""), "no name", id="empty_name"
+    ),
+    pytest.param(
+        _cut_unicode_path_field(_OTHER_STORED), "ends inside it", id="cut_short"
+    ),
+    pytest.param(_short_unicode_path_field(0), "shorter", id="zero_bytes"),
+    pytest.param(_short_unicode_path_field(4), "shorter", id="four_bytes"),
+]
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(("field", "reason"), _MALFORMED_UNICODE_PATH_FIELDS)
+def test_malformed_unicode_path_field_is_dropped_with_a_diagnostic(
+    field: bytes, reason: str
+) -> None:
+    # A field that vouches for the stored name (or is too short to say) but cannot name
+    # the member is a malformed optional record: dropped, reported, the member listed
+    # from its header bytes. stdlib zipfile 3.12+ refuses the whole archive over the
+    # short and invalid-UTF-8 shapes and prints a raw UserWarning for the empty one;
+    # archivey does neither, on any Python version.
+    good = _Entry(_UNICODE_PATH_STORED, b"hi", extra=_unicode_path_field())
+    bad = _Entry(_OTHER_STORED, b"yo", extra=field)
+    blob = _build_zip([good, bad])
     with archivey.open_archive(io.BytesIO(blob)) as ar:
+        first, second = ar.members()
+        # The other member's field still names it.
+        assert first.name == _UNICODE_PATH_REAL
+        assert first.diagnostics == ()
+        assert second.name == _OTHER_STORED.decode("cp437")
+        assert second.raw_name == _OTHER_STORED
+        assert "alternate_raw_name" not in second.extra
+        (diagnostic,) = second.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.record == "unicode_path"
+        assert diagnostic.context.record_id == 0x7075
+        assert diagnostic.context.member_id == 1
+        assert reason in diagnostic.context.reason
+        assert ar.read(second) == b"yo"
+
+
+def test_malformed_unicode_path_field_refuses_under_strict() -> None:
+    blob, _ = _unicode_path_zip(extra=_short_unicode_path_field(2))
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with pytest.raises(DiagnosticRaisedError) as raised:
+        with archivey.open_archive(io.BytesIO(blob), config=strict) as ar:
+            ar.members()
+    assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+
+
+@pytest.mark.filterwarnings("error")
+def test_malformed_unicode_path_field_on_a_utf8_flagged_name_is_not_consulted() -> None:
+    # The field is read only for an unflagged name (as in 7-Zip); on a flagged one it
+    # is an unused record, so a bad one costs nothing and says nothing.
+    entry = _Entry(
+        "ünï.txt".encode(), b"hi", extra=_short_unicode_path_field(3), flags=0x800
+    )
+    with archivey.open_archive(io.BytesIO(_build_zip([entry]))) as ar:
         (member,) = ar.members()
-        assert member.raw_name == _UNICODE_PATH_STORED
-        assert "alternate_raw_name" not in member.extra
+        assert member.name == "ünï.txt"
+        assert member.diagnostics == ()
+
+
+def test_malformed_unicode_path_field_from_a_file_path(tmp_path: Path) -> None:
+    # A path source reads through the same handle as a stream.
+    path = tmp_path / "bad.zip"
+    path.write_bytes(_unicode_path_zip(extra=_short_unicode_path_field(1))[0])
+    with archivey.open_archive(path) as ar:
+        (member,) = ar.members()
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+        assert ar.read(member) == b"hi"
+
+
+def _central_entry_lookalike() -> bytes:
+    """A member comment shaped like a central directory entry carrying a 0x7075 field.
+
+    A walk of the central directory that skips the comment's length takes it for the
+    next entry, which shifts every later entry's index by one.
+    """
+    field = _unicode_path_field(b"z", name=b"z")
+    header = bytearray(46)
+    header[0:4] = b"PK\x01\x02"
+    struct.pack_into("<HHH", header, 28, 0, len(field), 0)
+    return bytes(header) + field
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    "comment",
+    [
+        pytest.param(b"a member note", id="text"),
+        pytest.param(_central_entry_lookalike(), id="entry_lookalike"),
+    ],
+)
+def test_unicode_path_fields_after_a_member_comment(comment: bytes) -> None:
+    # The directory walk steps over each entry's comment by its length. A comment
+    # shaped like an entry, before the entries that carry the field, must not be read
+    # as one, or the fields would land on other members.
+    blob = _build_zip(
+        [
+            _Entry(b"a.txt", b"hi", comment=comment),
+            _Entry(_UNICODE_PATH_STORED, b"yo", extra=_unicode_path_field()),
+            _Entry(_OTHER_STORED, b"zz", extra=_short_unicode_path_field(2)),
+        ]
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        first, second, third = ar.members()
+        assert first.comment == comment.decode("cp437")
+        assert first.diagnostics == ()
+        assert second.name == _UNICODE_PATH_REAL
+        assert second.diagnostics == ()
+        assert third.name == _OTHER_STORED.decode("cp437")
+        assert [d.code for d in third.diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+        assert ar.read(second) == b"yo"
 
 
 def test_unicode_path_extra_field_is_read_from_the_central_directory() -> None:

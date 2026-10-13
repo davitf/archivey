@@ -66,6 +66,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    MemberHeaderRecordContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -798,6 +799,8 @@ class _DecodedName(NamedTuple):
     """The header's bytes, when the Unicode Path field named the entry instead."""
     inferred_encoding: str | None
     """The codec a sniff chose over the default, for the diagnostic."""
+    unicode_extra_fault: str | None
+    """Why a malformed Unicode Path field was dropped, for the diagnostic."""
 
 
 def _stored_as_directory(name: str, create_system: CreateSystem) -> bool:
@@ -1325,13 +1328,17 @@ class ZipReader(BaseArchiveReader):
         # header's bytes are kept in extra. The field is authoritative, not a guess, so
         # no member_name_encoding_inferred diagnostic is emitted for a name taken from
         # it; the header's spelling stays visible as extra["alternate_raw_name"].
-        # Only the central directory's field is read:
-        # the listing comes from there, and the local header's name is only checked
-        # against the central one.
+        # A malformed field is dropped with a MEMBER_HEADER_RECORD_SKIPPED diagnostic
+        # and the name decoded as if it were absent (`_unicode_path_name`). Only the
+        # central directory's field is read: the listing comes from there, and the
+        # local header's name is only checked against the central one.
         alternate_raw_name: bytes | None = None
         unicode_name: bytes | None = None
+        unicode_extra_fault: str | None = None
         if not is_utf8_flagged and entry.extra:
-            unicode_name = _unicode_path_name(entry.extra, raw_name)
+            unicode_path = _unicode_path_name(entry.extra, raw_name)
+            unicode_name = unicode_path.name
+            unicode_extra_fault = unicode_path.fault
             if unicode_name is not None:
                 name_source = unicode_name.decode("utf-8")
                 if unicode_name != raw_name:
@@ -1351,6 +1358,7 @@ class ZipReader(BaseArchiveReader):
             raw_name=raw_name,
             alternate_raw_name=alternate_raw_name,
             inferred_encoding=inferred_encoding,
+            unicode_extra_fault=unicode_extra_fault,
         )
 
     def _to_member(self, entry: CentralEntry, index: int) -> ArchiveMember:
@@ -1361,9 +1369,7 @@ class ZipReader(BaseArchiveReader):
         # Permission bits only; None when no usable Unix mode was stored.
         mode = stat.S_IMODE(full_mode) if (external_attr != 0 and is_unix) else None
 
-        create_system = _CREATE_SYSTEM_BY_VALUE.get(
-            host, CreateSystem.UNKNOWN
-        )
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(host, CreateSystem.UNKNOWN)
         decoded_name = self._decode_member_name(entry)
         name_source = decoded_name.text
         raw_name = decoded_name.raw_name
@@ -1530,6 +1536,27 @@ class ZipReader(BaseArchiveReader):
                     f"ZIP member name decoded as {inferred_encoding!r} rather than "
                     f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
                 ),
+            )
+        unicode_extra_fault = decoded_name.unicode_extra_fault
+        if unicode_extra_fault is not None:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"The Unicode Path extra field (0x7075) of ZIP member "
+                    f"{quoted(member.name)} is malformed and was dropped "
+                    f"({unicode_extra_fault}); the name was decoded from the header."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="unicode_path",
+                    record_id=_ZIP_EXTRA_UNICODE_PATH,
+                    reason=unicode_extra_fault,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
             )
         emit_member_name_normalized(
             self._diagnostics_collector,
@@ -2621,30 +2648,58 @@ class ZipReader(BaseArchiveReader):
             fp.close()
 
 
-def _unicode_path_name(extra: bytes, stored_name: bytes) -> bytes | None:
-    """The UTF-8 name an Info-ZIP Unicode Path extra field (0x7075) gives, or ``None``.
+class _UnicodePath(NamedTuple):
+    """What the first Info-ZIP Unicode Path extra field (0x7075) of a name says.
+
+    ``name`` is the UTF-8 name when the field names the member. ``fault`` says why a
+    field that should have named it could not, when it is malformed rather than merely
+    not about this name; the reader drops it and reports that.
+    """
+
+    name: bytes | None = None
+    fault: str | None = None
+
+
+_NO_UNICODE_PATH = _UnicodePath()
+
+
+def _unicode_path_name(extra: bytes, stored_name: bytes) -> _UnicodePath:
+    """Read the Info-ZIP Unicode Path extra field (0x7075) of a name, if any.
 
     The field is version 1, a CRC-32 of the header's name bytes, then the name as UTF-8.
     The CRC ties it to ``stored_name``, so a tool that renamed the entry without
     updating the field leaves a stale field that does not match. Only the first such
-    field counts, as in 7-Zip, and it counts only when it matches, holds valid UTF-8
-    and is not empty; any other field is ignored.
+    field counts, as in 7-Zip. A stale field and an unknown version are not about this
+    name and are ignored like any unknown record. A field too short for its version and
+    CRC, one the extra field's end cuts short, or one whose CRC matches but whose name
+    is empty or not UTF-8, is malformed: it names nothing, and the caller reports it as
+    a dropped record.
     """
     for extra_field in iter_extra_fields(extra):
         if extra_field.tag != _ZIP_EXTRA_UNICODE_PATH:
             continue
         field = extra_field.data
-        if not extra_field.complete or len(field) < 6 or field[0] != 1:
-            return None
-        if struct.unpack_from("<I", field, 1)[0] != zlib.crc32(stored_name):
-            return None
+        if len(field) < 5:
+            return _UnicodePath(
+                fault=f"{len(field)} bytes, shorter than its version and name CRC"
+            )
+        if field[0] != 1 or struct.unpack_from("<I", field, 1)[0] != zlib.crc32(
+            stored_name
+        ):
+            return _NO_UNICODE_PATH
+        if not extra_field.complete:
+            return _UnicodePath(
+                fault="its CRC matches but the extra field ends inside it"
+            )
         name = field[5:]
+        if not name:
+            return _UnicodePath(fault="its CRC matches but it holds no name")
         try:
             name.decode("utf-8")
         except UnicodeDecodeError:
-            return None
-        return name
-    return None
+            return _UnicodePath(fault="its CRC matches but its name is not valid UTF-8")
+        return _UnicodePath(name=name)
+    return _NO_UNICODE_PATH
 
 
 def _is_encrypted_entry(flags: int, method: int) -> bool:
