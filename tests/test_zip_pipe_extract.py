@@ -383,6 +383,7 @@ def test_a_member_selected_in_the_end_reports_progress(tmp_path: Path) -> None:
     assert ticks["pipe"] == ticks["file"] == [("link", 1)]
 
 
+@posix_modes
 def test_the_filter_is_told_when_the_member_can_still_change(tmp_path: Path) -> None:
     """``member_state_final`` on what the filter gets, as on what a predicate gets."""
     data = _zip([(_entry("a\\"), b"")])
