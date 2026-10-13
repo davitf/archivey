@@ -75,7 +75,6 @@ no extra can supply. RAR5 BLAKE2sp verification needs no package at all — it i
 stdlib `hashlib`.
 
 **Stdlib** (always): [`zipfile`](https://docs.python.org/3/library/zipfile.html),
-[`tarfile`](https://docs.python.org/3/library/tarfile.html),
 [`gzip`](https://docs.python.org/3/library/gzip.html),
 [`bz2`](https://docs.python.org/3/library/bz2.html),
 [`lzma`](https://docs.python.org/3/library/lzma.html),

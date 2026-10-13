@@ -24,7 +24,6 @@ from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     DiagnosticContext,
-    DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticSummary,
     OnDiagnostic,
@@ -340,7 +339,8 @@ class DiagnosticCollector:
         ``escalate_as`` only when the disposition is already ``RAISE``.
         """
         validate_code_context(code, context)
-        disposition = self._policy.resolve(code)
+        ignored = code in self._policy.ignore
+        raising = code in self._policy.raise_on
         log = logger if logger is not None else self._logger
         thread_id = threading.get_ident()
 
@@ -392,7 +392,7 @@ class DiagnosticCollector:
 
             retained_aggregate = False
             attached = False
-            if disposition is not DiagnosticDisposition.IGNORE:
+            if not ignored:
                 if self._slots_used < self._max_retained:
                     self._retained.append(
                         _RetainedEntry(sequence=sequence, diagnostic=diagnostic)
@@ -417,13 +417,11 @@ class DiagnosticCollector:
                     emit_log.details.append(_EmitDetail(diagnostic, attached))
                 replay.cursor = logged_at + 1
 
-            should_deliver = disposition is not DiagnosticDisposition.IGNORE
-            should_raise_diagnostic = disposition is DiagnosticDisposition.RAISE
-            if should_deliver:
+            if not ignored:
                 self._emitting_threads.add(thread_id)
 
         try:
-            if should_deliver:
+            if not ignored:
                 log.warning("%s", diagnostic.message)
                 if self._on_diagnostic is not None:
                     try:
@@ -438,7 +436,7 @@ class DiagnosticCollector:
                 msg = escalate_message if escalate_message is not None else message
                 kwargs = escalate_kwargs if escalate_kwargs is not None else {}
                 raised = escalate_as(msg, **kwargs)
-            elif should_raise_diagnostic:
+            elif raising:
                 raised = DiagnosticRaisedError(message, diagnostic=diagnostic)
             if raised is not None:
                 if replay is not None and logged_at is not None:
@@ -482,7 +480,7 @@ class DiagnosticCollector:
         the first one.
         """
         validate_code_context(code, context)
-        if self._policy.resolve(code) is not DiagnosticDisposition.RAISE:
+        if code not in self._policy.raise_on:
             return
         raised = DiagnosticRaisedError(
             message,
@@ -519,13 +517,14 @@ def resolve_collector(collector: DiagnosticCollector | None) -> DiagnosticCollec
     through. What falls through to the throwaway:
 
     - is judged by the **library default** policy, not the caller's, so a caller on
-      ``DiagnosticPolicy.strict()`` does not get the raise it asked for;
+      ``DiagnosticPolicy.STRICT`` does not get the raise it asked for;
     - never reaches ``reader.diagnostics`` or the caller's ``on_diagnostic`` callback.
       Only the WARNING log line survives.
 
     Codec streams get the caller's collector through ``StreamConfig.collector``, which
     :func:`~archivey.internal.streams.codecs.open_codec_stream` fills from its
-    ``collector`` argument. A caller that builds a codec stream without one (the
+    ``collector`` argument (except a stored stream source, whose codec emits nothing:
+    there the collector reaches only the returned stream). A caller that builds a codec stream without one (the
     single-file reader's listing-time size probe, detection, direct stream tests) still
     lands here. Prefer passing the shared collector wherever one exists.
 

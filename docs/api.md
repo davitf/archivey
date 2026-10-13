@@ -64,7 +64,6 @@ spec for lifecycle, retention, and policy.
 ::: archivey.Diagnostic
 ::: archivey.DiagnosticContext
 ::: archivey.DiagnosticCode
-::: archivey.DiagnosticDisposition
 ::: archivey.DiagnosticPolicy
 ::: archivey.ARCHIVE_INTEGRITY_CODES
 ::: archivey.DiagnosticSummary

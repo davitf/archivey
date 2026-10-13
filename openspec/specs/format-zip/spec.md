@@ -315,7 +315,7 @@ listing's last member so the listing completes, each of:
   directory, so stdlib cuts that field at the directory's end
   (`expected_marker="central_directory"`, `observed_kind="nonzero"`).
 
-None of them SHALL raise under the default policy; `strict()` refuses the archive.
+None of them SHALL raise under the default policy; `STRICT` refuses the archive.
 Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
 every member.
 
@@ -336,7 +336,7 @@ while 7-Zip searches further back and lists the real members.
 | Consistent classic or ZIP64 end record | No diagnostic |
 | 65537 entries, classic record only, count 1 (65537 modulo 65536) | All 65537 members listed; no diagnostic |
 | Archive comment holding an end-record signature followed by 30 zero bytes | No members listed; one `EMPTY_ARCHIVE` and no `ARCHIVE_EOF_MARKER_MISSING` |
-| Any of the above under `strict()` | `DiagnosticRaisedError` from the listing |
+| Any of the above under `STRICT` | `DiagnosticRaisedError` from the listing |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 
@@ -347,15 +347,15 @@ passes the byte check before accepting it, following `archive-reading` weak-chec
 confirmation and bounded-storage rules. With one distinct static candidate
 (duplicates included), the reader SHALL keep the normal lazy stream path, with no
 confirmation read. Because only the verification byte vouched for that password, a
-candidate failure (defined below) on the caller's `read`, `readinto` or forward
-`seek` SHALL raise `EncryptionError` explaining that the password may be wrong or
-the member may be corrupt, not `CorruptionError`; for an `LZMA` or `PPMd` member, whose
-codec header is read when the member opens, the open raises it. It SHALL NOT be marked
-as a wrong-password verdict: nothing in the archive tells a colliding wrong password
-from a damaged member. A STORED member's forward seek jumps, so a read after it loses
-the CRC until a seek to 0 (`compressed-streams`, ADR 0014) and that seek does not raise;
-closing that stream emits `ENCRYPTED_MEMBER_UNVERIFIED`. A compressed member's forward
-seek keeps the CRC, as `compressed-streams` describes.
+candidate failure (defined below) on the caller's `read`, `readinto` or forward `seek`
+SHALL raise `EncryptionError` explaining that the password may be wrong or the member
+may be corrupt, not `CorruptionError`; for an `LZMA` or `PPMd` member, whose codec
+header is read when the member opens, the open raises it. It SHALL NOT be marked as a
+wrong-password verdict: nothing in the archive tells a colliding wrong password from a
+damaged member. A STORED member's forward seek jumps, so a read after it pauses the CRC
+until a seek back to the frontier (`compressed-streams`, ADR 0014) and that seek does
+not raise; closing that stream emits `ENCRYPTED_MEMBER_UNVERIFIED`. A compressed
+member's forward seek keeps the CRC, as `compressed-streams` describes.
 
 ZIP's two per-open checks are the `archive-reading` ladder's **cheap key check** rung:
 ZipCrypto's one header verification byte (2⁻⁸) and WinZip AES's two-byte `pw_verify`

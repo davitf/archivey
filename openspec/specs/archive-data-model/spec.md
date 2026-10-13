@@ -99,23 +99,28 @@ carry `extra["special_file_type"]` ∈ `{"fifo","char_device","block_device","so
 "unknown"}`, whatever type the member ends up with (a RAR file copy is `FILE` by its
 redirect record; a ZIP directory marker, an ISO directory record or a reparse-point bit
 over such a mode makes a `DIRECTORY` or `SYMLINK` that keeps the key), so the stored
-kind is never lost; an `OTHER` member that recorded no
-such mode (a GNU dumpdir, an ISO file record with a directory's `S_IFDIR` mode) has no
-key. `MemberType.ANTI` SHALL be a
+kind is never lost; a member that recorded no such mode (a GNU dumpdir, which is a
+`DIRECTORY`; an ISO file record with a directory's `S_IFDIR` mode, which is `OTHER`)
+has no key. `MemberType.ANTI` SHALL be a
 deletion/tombstone marker (`is_file` false, no payload); it SHALL NOT be treated as
 `OTHER`.
 
-A directory entry whose header declares data (ZIP, RAR; no format gives a directory
-content) SHALL stay `MemberType.DIRECTORY` with `size` as declared, SHALL be reported
-with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`) once per member at
-listing, and SHALL be created as a directory by extraction, as every official tool does.
+A directory entry whose header declares data (ZIP, TAR, RAR; no format gives a
+directory content) SHALL stay `MemberType.DIRECTORY` with `size` as declared, SHALL
+be reported with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`) once
+per member at listing, and SHALL be created as a directory by extraction, as every
+official tool does. The one exception is GNU tar's dumpdir (`D`, from `tar -G`): its
+data is the directory's contents list at dump time, structure that GNU tar defines and
+reads itself, so it is a `DIRECTORY` with no `size` and no report, and `open()`
+refuses it for declaring no data.
 `open()` SHALL refuse a directory for declaring no data, and a tombstone or a special
 entry for its type (a special entry that stores data is a `FILE`): `ANTI`, `OTHER` and a directory
 declaring no size raise `ArchiveyUsageError`, while a directory declaring data opens
 and delivers the bytes where the backend can decode them (ZIP decodes any method;
-RAR delivers stored, unencrypted directory data and raises `UnsupportedFeatureError`
-for the rest, since `unrar` emits nothing for a directory entry), checked against
-the stored digest like a file's when the header carries one. A ZIP directory entry
+TAR reads the blocks of an old-style `d/` regular-file header; RAR delivers stored,
+unencrypted directory data and raises `UnsupportedFeatureError` for the rest, since
+`unrar` emits nothing for a directory entry), checked against the stored digest like
+a file's when the header carries one. A ZIP directory entry
 whose CRC-32 field is 0, the conventional value for a directory, carries no digest;
 `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) SHALL say so instead of
 refusing the bytes as damaged when that CRC was the entry's only check (unencrypted
@@ -152,12 +157,12 @@ whose data-stored target has not been read yet (`read_link_targets=False`).
 | --- | --- |
 | TAR contains a device node or FIFO † | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
 | ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set), with no data | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
-| The same entry storing data (`zip -FI` on a named pipe), or an ISO Rock Ridge special mode over a non-empty extent | `member.type == MemberType.FILE`; `size` is the stored size; `extra["special_file_type"]` set; `MEMBER_SPECIAL_FILE_HAS_DATA` with `SpecialFileDataContext`; `strict()` does not raise |
-| ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes; extraction creates the directory; `strict()` raises |
+| The same entry storing data (`zip -FI` on a named pipe), or an ISO Rock Ridge special mode over a non-empty extent | `member.type == MemberType.FILE`; `size` is the stored size; `extra["special_file_type"]` set; `MEMBER_SPECIAL_FILE_HAS_DATA` with `SpecialFileDataContext`; `STRICT` does not raise |
+| ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes; extraction creates the directory; `STRICT` raises |
 | ZIP directory entry declaring 12 bytes whose stored body was altered | `read()` raises `CorruptionError` (CRC-32 mismatch), as for a file |
 | ZIP directory entry declaring 12 bytes with a CRC-32 field of 0 | `hashes` empty; `MEMBER_DIRECTORY_DATA_IGNORED` and `DIGEST_UNVERIFIABLE`; `read()` returns the 12 bytes |
 | ZIP directory entry with compressed size 2 and size 0 (the `jar` shape) | `DIRECTORY`; no diagnostic; `read()` → `ArchiveyUsageError` |
-| ZIP or RAR directory entry with size 0 over a 2000-byte stored body | `DIRECTORY`, `size == 0`, `compressed_size == 2000`; `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; `read()` → `ArchiveyUsageError`; `strict()` raises |
+| ZIP or RAR directory entry with size 0 over a 2000-byte stored body | `DIRECTORY`, `size == 0`, `compressed_size == 2000`; `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; `read()` → `ArchiveyUsageError`; `STRICT` raises |
 | RAR directory entry with compressed or encrypted data | `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` → `UnsupportedFeatureError` |
 | ZIP whose member carries a junction's reparse data † | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True`; `link_target` is the buffer's substitute name |
 | ZIP whose member has the reparse bit and no reparse data | `member.type == MemberType.SYMLINK`; `link_target is None`; `is_junction` unset, the tag that would establish it being in the data that was not written |

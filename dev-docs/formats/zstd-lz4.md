@@ -156,7 +156,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `lz4 -l` (legacy frame, magic `02 21 4c 18`), one block and several | Detected and read |
 | `lz4 -l` output, a modern frame and another `lz4 -l` output concatenated | Reads, as `lz4 -dc` does |
 | `lz4 -l` output followed by `junk` / by three zero bytes | Reads, then `ARCHIVE_TRAILING_DATA` / reads clean; `lz4 -dc` accepts the first and refuses the second ("Error 40 : Unrecognized header", exit 40) |
-| A frame, 4 zero bytes, a frame (crafted: no known writer emits this) | The first payload, then `ARCHIVE_TRAILING_DATA` at the second frame's first byte; `DiagnosticPolicy.strict()` raises. `zstd -dc` 1.5.5 writes the first payload, then "unsupported format", exit 1; `lz4 -dc` 1.9.4 writes it and exits 1. `bsdcat` fails on the `.zst` ("Unknown frame descriptor") and writes the first payload of the `.lz4`; `lz4.frame.decompress` returns the first payload. 7-Zip 16.02 opens neither |
+| A frame, 4 zero bytes, a frame (crafted: no known writer emits this) | The first payload, then `ARCHIVE_TRAILING_DATA` at the second frame's first byte; `DiagnosticPolicy.STRICT` raises. `zstd -dc` 1.5.5 writes the first payload, then "unsupported format", exit 1; `lz4 -dc` 1.9.4 writes it and exits 1. `bsdcat` fails on the `.zst` ("Unknown frame descriptor") and writes the first payload of the `.lz4`; `lz4.frame.decompress` returns the first payload. 7-Zip 16.02 opens neither |
 | A frame, then 4 zero bytes at the end of the file | Reads, with no diagnostic. `zstd -dc` and `lz4 -dc` write the payload and exit 1 on the zeros; archivey keeps them silent, as for every codec (§6) |
 
 The legacy format is what Linux kernel images and initramfs files compressed with LZ4 use.
@@ -217,7 +217,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | An `lz4 -l` file cut between two blocks reads short with no error | **format** | The legacy stream has no end mark (§2.3) |
 | An LZ4 file starting with a skippable frame is not detected by content | **archivey** | The skippable-frame walk is zstd's only |
 | A damaged `--no-check` file reads with no error | **format** | No checksum (§1) |
-| A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
+| A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
 | A backward seek re-decodes from the start | **format** / **archivey** | No seek table for either (§7) |
 
 ## 6. Decisions

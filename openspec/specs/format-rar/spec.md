@@ -724,7 +724,7 @@ Dropping a record SHALL NOT be silent: the reader SHALL emit
 `MEMBER_HEADER_RECORD_SKIPPED` (see `diagnostics`) naming the member, the record and the
 parse failure, attached to the member. Because that code is in `ARCHIVE_INTEGRITY_CODES`,
 a caller who wants the archive refused instead SHALL get that from
-`DiagnosticPolicy.strict()`.
+`DiagnosticPolicy.STRICT`.
 
 A crafted extra area SHALL NOT retain one skipped record per attacker byte, nor cost one
 parse per attacker byte. The number of dropped records retained per member is a structural
@@ -1223,7 +1223,7 @@ with an intact block. The damage is after the last member, so it SHALL be report
 `ARCHIVE_EOF_MARKER_MISSING` after the members, once per damaged volume (`format="rar"`,
 `expected_marker="end_of_archive_block"`, `observed_kind="nonzero"`, `observed_bytes`
 the offset where the block starts in its volume, `expected_bytes` 0).
-`members_report().error` SHALL be `None`, and `DiagnosticPolicy.strict()` SHALL refuse
+`members_report().error` SHALL be `None`, and `DiagnosticPolicy.STRICT` SHALL refuse
 the archive after the listing is delivered. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes. It matches `unrar` 7.00, which lists such an archive, tests each
 member OK, and then reports one error.
@@ -1279,7 +1279,7 @@ look at most 1 MiB further in that volume, and a non-zero byte there SHALL emit 
 `ARCHIVE_TRAILING_DATA` per volume after the members (`format="rar"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"`, `observed_bytes` the
 offset of that byte past the end block). It is a warning by default and raises under
-`DiagnosticPolicy.strict()` (DR-3). Zero bytes after the block SHALL be silent, and a
+`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the block SHALL be silent, and a
 byte at 1 MiB or more past it goes unseen. With encrypted headers the block ends after
 its AES padding. In a set the message names the volume. A damaged end block is taken
 for one only when nothing but zeros follows it (previous requirement), so this check
@@ -1290,7 +1290,7 @@ an all-zero tail silent, because `rar` pads volumes with zeros.
 
 #### Scenario: RAR trailing bytes
 
-| Case | Default policy | `strict()` |
+| Case | Default policy | `STRICT` |
 | --- | --- | --- |
 | RAR 1.5-4 or RAR5, headers plain or encrypted, ending at the end block | Nothing | Opens |
 | 4 KiB of zeros after the end block | Nothing | Opens |

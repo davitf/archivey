@@ -7,7 +7,7 @@ side-effect imports below.
 Module map:
 
 - :mod:`.zip_reader` — ZIP (stdlib central directory; codecs/crypto for member data)
-- :mod:`.tar_reader` — TAR / compressed TAR (stdlib ``tarfile``)
+- :mod:`.tar_reader` — TAR / compressed TAR (native :mod:`.tar_parser`)
 - :mod:`.udif` — UDIF disk images (``.dmg``); recognised and refused, not read
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive

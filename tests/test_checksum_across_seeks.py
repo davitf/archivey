@@ -1,9 +1,10 @@
 """A member's stored checksum survives seeks that decode the skipped bytes anyway.
 
-ADR 0014: the member verifier hashes from 0 to its furthest read. A seek back keeps the
-checksum, and so does a forward seek whose inner decodes the gap anyway (the verifier
-reads it itself). Only a read that skips bytes the inner jumped over (a stored member,
-an index) loses it. These run the rule end to end through ``open_archive``.
+ADR 0014: the member verifier hashes from 0 to its hashing frontier. A seek back keeps
+the checksum, and so does a forward seek whose inner decodes the gap anyway (the
+verifier reads it itself). A read that skips bytes the inner jumped over (a stored
+member, an index) pauses it, until a seek back to the frontier and a read on to the end.
+These run the rule end to end through ``open_archive``.
 """
 
 from __future__ import annotations
@@ -89,11 +90,12 @@ def test_stored_member_checksum_survives_a_backward_seek(tmp_path: Path) -> None
         _read_after(bad, _MOVES["backward"])
 
 
-def test_stored_member_forward_seek_jumps_and_loses_the_checksum(
+def test_stored_member_forward_seek_jumps_and_pauses_the_checksum(
     tmp_path: Path,
 ) -> None:
     # A stored member seeks straight to the target; reading on from there skips bytes
-    # nothing decoded, so the CRC cannot be checked. The digest is reported lost.
+    # nothing decoded, so the CRC cannot be checked from there. The digest is reported
+    # not intact until a seek back to the frontier.
     bad = _zip_with_crc(tmp_path, zipfile.ZIP_STORED, bad_crc=True)
     with open_archive(bad, seekable_members=True) as reader:
         with reader.open("m.txt") as stream:
@@ -101,6 +103,17 @@ def test_stored_member_forward_seek_jumps_and_loses_the_checksum(
             stream.seek(150_000)
             assert stream.read() == _DATA[150_000:]
             assert stream._digest_intact() is False
+
+
+def test_stored_member_seek_back_after_a_jump_checks_the_crc(tmp_path: Path) -> None:
+    # A jump pauses the CRC where the reads had reached; seeking back there and
+    # reading on to the end hashes the rest and checks it.
+    moves = [("read", 10), ("seek", 150_000), ("read", 1), ("seek", 10)]
+    bad = _zip_with_crc(tmp_path, zipfile.ZIP_STORED, bad_crc=True)
+    with pytest.raises(CorruptionError):
+        _read_after(bad, moves)
+    good = _zip_with_crc(tmp_path, zipfile.ZIP_STORED, bad_crc=False)
+    assert _read_after(good, moves) == _DATA[10:]
 
 
 def test_seek_to_the_end_then_read_checks_the_crc(tmp_path: Path) -> None:

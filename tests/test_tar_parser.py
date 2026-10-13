@@ -33,6 +33,7 @@ from archivey.internal.backends.tar_parser import (
     TarEntry,
     TarWalker,
     ZeroBlock,
+    _checksum_matches,
     parse_header_block,
     parse_number,
     parse_pax_records,
@@ -210,6 +211,20 @@ def test_signed_checksum_is_accepted() -> None:
     assert parsed.name == name
 
 
+@pytest.mark.parametrize("fill", [0x00, 0x01, 0x7F, 0x80, 0xFF])
+def test_checksum_sum_is_exact_for_any_byte_values(fill: int) -> None:
+    """The block sum behind the checksum check is exact even when every byte is at
+    its largest, where a half block sums closest to the Adler-32 modulus it is
+    computed with. Summing whole 512-byte blocks (``_SUM_PIECE = 512``) fails the
+    0xFF case: 128 776 is past the modulus."""
+    block = bytearray([fill]) * BLOCKSIZE
+    block[148:156] = b" " * 8
+    unsigned = sum(block)
+    assert _checksum_matches(bytes(block), unsigned)
+    assert not _checksum_matches(bytes(block), unsigned + 1)
+    assert not _checksum_matches(bytes(block), unsigned - 1)
+
+
 def test_header_layouts() -> None:
     ustar = parse_header_block(_block(b"name", prefix=b"some/dir"), 0)
     assert isinstance(ustar, HeaderBlock)
@@ -228,19 +243,27 @@ def test_header_layouts() -> None:
 # ---------------------------------------------------------------------- PAX records
 
 
-def test_pax_records_in_order_with_padding() -> None:
+def test_pax_records_with_padding() -> None:
     data = _rec(b"path", b"abc") + _rec(b"a", b"\xff\xfe") + b"\x00" * 20
     records = parse_pax_records(data, binary_default=False)
-    assert [(k, v.value, v.binary) for k, v in records] == [
+    assert [(k, v.value, v.binary) for k, v in records.values.items()] == [
         (b"path", b"abc", False),
         (b"a", b"\xff\xfe", False),
     ]
 
 
+def test_pax_repeated_key_keeps_its_last_value() -> None:
+    data = _rec(b"a", b"1") + _rec(b"a", b"2") + _rec(b"b", b"3")
+    records = parse_pax_records(data, binary_default=False).values
+    assert {k: v.value for k, v in records.items()} == {b"a": b"2", b"b": b"3"}
+
+
 def test_pax_hdrcharset_binary_marks_the_block() -> None:
     data = _rec(b"hdrcharset", b"BINARY") + _rec(b"path", b"abc")
-    assert all(v.binary for _, v in parse_pax_records(data, binary_default=False))
-    assert parse_pax_records(b"12 path=abc\n", binary_default=True)[0][1].binary
+    records = parse_pax_records(data, binary_default=False).values
+    assert all(v.binary for v in records.values())
+    records = parse_pax_records(b"12 path=abc\n", binary_default=True).values
+    assert records[b"path"].binary
 
 
 @pytest.mark.parametrize(
@@ -305,7 +328,9 @@ def test_sparse_numbers_past_any_file_are_damage() -> None:
             binary_default=False,
         )
         with pytest.raises(CorruptionError, match=r"has \d+, past any file"):
-            sparse_map_0_0(records, "f", _budget(10**6))
+            sparse_map_0_0(
+                records.sparse_offsets, records.sparse_numbytes, "f", _budget(10**6)
+            )
         map_text = _data(b"1\n0\n" + value + b"\n")
         with pytest.raises(CorruptionError, match=r"has \d+, past any file"):
             read_sparse_map_1_0(_reader(map_text), BLOCKSIZE, "f", _budget(10**6))
@@ -326,10 +351,11 @@ def test_sparse_0_0() -> None:
         + _rec(b"GNU.sparse.numbytes", b"3"),
         binary_default=False,
     )
-    sparse = sparse_map_0_0(records, "f", _budget(48))
+    offsets, lengths = records.sparse_offsets, records.sparse_numbytes
+    sparse = sparse_map_0_0(offsets, lengths, "f", _budget(48))
     assert (list(sparse.offsets), list(sparse.lengths)) == ([0, 100], [5, 3])
     with pytest.raises(CorruptionError):
-        sparse_map_0_0(records[:3], "f", _budget(48))
+        sparse_map_0_0(offsets, lengths[:1], "f", _budget(48))
 
 
 def test_sparse_0_0_holds_one_number_per_record() -> None:
@@ -338,7 +364,9 @@ def test_sparse_0_0_holds_one_number_per_record() -> None:
         binary_default=False,
     )
     with pytest.raises(CorruptionError):
-        sparse_map_0_0(records, "f", _budget(10**6))
+        sparse_map_0_0(
+            records.sparse_offsets, records.sparse_numbytes, "f", _budget(10**6)
+        )
 
 
 def test_sparse_map_refuses_an_entry_too_large_to_store() -> None:
@@ -1078,10 +1106,10 @@ def test_forward_only_data_stream() -> None:
     walker = TarWalker(io.BytesIO(data), seekable=False)
     a = walker.next_entry()
     assert isinstance(a, TarEntry)
-    stream = walker.open_data(a)
+    stream = walker.open_data(a.span())
     assert stream.read(2) == b"he"
     b = walker.next_entry()  # reads through the rest of "a"
     assert isinstance(b, TarEntry)
     with pytest.raises(ValueError):
         stream.read()
-    assert walker.open_data(b).read() == b"world"
+    assert walker.open_data(b.span()).read() == b"world"

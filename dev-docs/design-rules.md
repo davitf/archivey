@@ -316,8 +316,8 @@ the right weight.
   `MEMBER_DIRECTORY_DATA_IGNORED` (a warning; strict refuses) and keeps the bytes
   readable through `open()` (2026-10-10, DR-25): nothing is misread, so this is the
   "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
-  Applied by PR 731 for ZIP and RAR; the TAR half (an old-style `d/` file entry with
-  data) waits on PR 706.
+  Applied by PR 731 for ZIP and RAR and by PR 763 for TAR (an old-style `d/` file
+  entry with data).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 
@@ -345,8 +345,9 @@ decoded: a seek back keeps it, a forward seek whose gap must be decoded anyway k
 seek to the end keeps it (the concluding read hashes the gap). A seek that jumps by an
 index, an accelerator or random access, then a read past it, gives the digest up; such
 seeks trust the format's own index and are best-effort. The digest covers the first pass
-over each byte: bytes read again after a seek back are not checked again. A seek back to
-0 re-arms the check.
+over each byte: bytes read again after a seek back are not checked again. A read that
+skips bytes pauses the check where the reads had reached; a seek back to that point or
+before it, then a read on to the end, completes it. A seek back to 0 re-arms the check.
 
 **Why.** A seek that jumps skips the bytes that a check would cover, and the format's
 own tools trust their indexes the same way. When the gap must be decoded anyway, the
@@ -356,7 +357,8 @@ cannot hand the skipped bytes up (the cost claim would break).
 
 **Rulings.** 2026-09-23 (index trust, PR 407); 2026-09-28 (PR 509); seek to 0,
 2026-10-01; keep the digest across seeks that decode anyway, maintainer 2026-10-10
-("we'd only lose the check for indexed or accelerated seeks", PR 743).
+("we'd only lose the check for indexed or accelerated seeks", PR 743); a seek back to
+where the reads had reached completes a paused digest, maintainer 2026-10-13.
 
 ---
 
@@ -477,10 +479,10 @@ directory entry that declares data, are reported with `MEMBER_DIRECTORY_DATA_IGN
 warning; strict refuses) and stay readable: `open()` refuses a member that has no data (an
 anti item, a stream-less `OTHER`, a directory with none), not a member by its type.
 
-Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format) and PR 731
-(directory data in ZIP and RAR, and `open()` by data); the TAR half of the directory case
-waits on PR 706. Until those merge, the tree still types a data-bearing special entry
-`OTHER` and refuses `open()` by type.
+Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format), PR 731
+(directory data in ZIP and RAR, and `open()` by data) and PR 763 (directory data in TAR;
+a `DIRTYPE` header with a size that the walk ends right after is reported the same
+way, since its blocks cannot be told from the trailer).
 
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar

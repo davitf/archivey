@@ -126,8 +126,9 @@ and cross-run id stability are not promised.
 closed before its declared digest was reached **and** the password behind those bytes was
 accepted on a check weaker than that digest. `check` names what accepted the password
 (`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names why the digest was
-not reached (`"partial_read"`, or `"seek"` when a seek forfeited it: a read skipped
-bytes past the furthest read, or the stream was closed while parked there; a WinZip AES
+not reached (`"partial_read"`, or `"seek"` when a seek left it unreached: a read skipped
+bytes past the hashing frontier and no read from it reached the end, or the stream was
+closed while parked past it; a WinZip AES
 HMAC survives seeks, so there `"seek"` means only that a failed seek left the position
 unknown). It SHALL NOT be emitted for a partial read whose password was confirmed
 against an integrity anchor — that restates what the caller already knows, which the
@@ -251,9 +252,34 @@ extracting.
 
 ### Requirement: Complete per-code policy and delivery contract
 
-The system SHALL provide a frozen `DiagnosticPolicy` with a default disposition
-and immutable per-code overrides. The only dispositions SHALL be `IGNORE`,
-`COLLECT`, and `RAISE` (no logger matching).
+The system SHALL provide a frozen `DiagnosticPolicy` with two keyword-only code sets,
+`ignore` and `raise_on`. A code in `raise_on` resolves to `RAISE`, a code in `ignore` to
+`IGNORE`, and every other code to `COLLECT`. The only dispositions SHALL be `IGNORE`,
+`COLLECT`, and `RAISE` (no logger matching). The dispositions are the contract's
+vocabulary, not a public type: a caller reads a policy through its two sets, and the
+policy SHALL NOT expose a resolve method or a disposition enum.
+
+```python
+DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
+                 raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None)
+policy.ignore: frozenset[DiagnosticCode]
+policy.raise_on: frozenset[DiagnosticCode]
+```
+
+`DiagnosticCodeStr` SHALL be a `Literal` of every code's value and its dash form, as the
+other enum arguments' aliases are, so a type checker rejects a misspelled code. The test
+suite SHALL fail when a code is added without its spellings.
+
+Each argument SHALL accept any iterable of codes, a code's name or value as a string
+included, and the field SHALL hold a `frozenset` of members, so a caller builds a policy
+with set operations on the public code sets. A code in both sets SHALL raise
+`ArchiveyUsageError`: keyword arguments have no order, so neither can win, and keeping
+either silently drops what the other asked for. A bare string SHALL raise
+`ArchiveyUsageError` rather than be read as a set of characters, and so SHALL a mapping
+(it iterates as its keys, so the removed `{code: disposition}` shape would drop every
+disposition) and a single code where a set was meant. There SHALL be no
+default disposition other than `COLLECT`: "raise on everything but X" is
+`raise_on=frozenset(DiagnosticCode) - {X}`.
 
 | Disposition | Counts | Retain/attach | WARNING log | Callback | Raise |
 | --- | --- | --- | --- | --- | --- |
@@ -305,6 +331,11 @@ evaluates afresh.
 | Case | Expected |
 | --- | --- |
 | Code → `IGNORE` | Count++; no retain/attach/log/callback/raise |
+| Same code in `ignore` and `raise_on` | `ArchiveyUsageError` at construction |
+| `ignore="archive_trailing_data"` (bare string) | `ArchiveyUsageError` at construction |
+| `ignore={ARCHIVE_TRAILING_DATA: RAISE}` (a mapping) | `ArchiveyUsageError` at construction, naming both sets |
+| `raise_on=STRICT.raise_on - {ARCHIVE_TRAILING_DATA}` | Same as built from `ARCHIVE_INTEGRITY_CODES`; the field is a `frozenset` |
+| `raise_on=ARCHIVE_INTEGRITY_CODES - {ARCHIVE_TRAILING_DATA}` | `STRICT` except that code, which is collected |
 | Callback reads `reader.diagnostics` | Sees current event counted/retained; no lock held |
 | Callback raises during `RAISE` | Callback error propagates; no replacement `DiagnosticRaisedError`; no `OnError.CONTINUE` |
 | Callback starts op on same emitting reader | `ArchiveyUsageError` from the reader's operation gate |
@@ -448,14 +479,14 @@ path opened with `format=DIRECTORY` counts as chosen by the filesystem, not by a
 
 ### Requirement: Named diagnostic policy presets and taxonomy-growth contract
 
-The system SHALL provide named `DiagnosticPolicy` constructors so a caller can express
-a coarse strictness without enumerating the taxonomy:
+The system SHALL provide named `DiagnosticPolicy` instances, as class attributes, so a
+caller can express a coarse strictness without enumerating the taxonomy:
 
 ```python
 ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode]
 
-DiagnosticPolicy.strict()    # RAISE on ARCHIVE_INTEGRITY_CODES, COLLECT otherwise
-DiagnosticPolicy.pedantic()  # RAISE on every code
+DiagnosticPolicy.STRICT    # DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)
+DiagnosticPolicy.PEDANTIC  # DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))
 ```
 
 `ARCHIVE_INTEGRITY_CODES` SHALL be a public frozen set covering the codes that report
@@ -475,31 +506,33 @@ and an override that halts the caller is not an override;
 `STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
 than the archive, and is most useful as a deliberately targeted tripwire;
 `ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller abandoning the stream
-before EOF (extract never fires it), and putting it in `strict` would turn a ZipCrypto
+before EOF (extract never fires it), and putting it in `STRICT` would turn a ZipCrypto
 peek into `DiagnosticRaisedError` (revisit when `stream.verified` lands and this code
 is retired); and
 `PROBE_FORMAT_UNCONFIRMED` because a probe-only identification is an advisory about
 what the file *is* (its bytes did pass that format's content check), not a finding
 about the archive's own bytes, and the code only ever accompanies a read that has
-already failed with a typed error, so `strict` would have nothing further to stop;
+already failed with a typed error, so `STRICT` would have nothing further to stop;
 and `MEMBER_SPECIAL_FILE_HAS_DATA` because a documented writer option produces the
 shape it reports (Info-ZIP's `zip -FI` stores a named pipe's content under the FIFO
 mode) and every official extractor writes the bytes out, so the member is well-formed
-and `strict` refusing it would hide data rather than damage.
+and `STRICT` refusing it would hide data rather than damage.
 (The emit keeps that typed error through `escalate_as` when a policy does resolve the
 code to RAISE, so the exclusion is not what protects it.)
 `EXTENSION_FORMAT_UNCONFIRMED`, its sibling, is **in** the set because it also fires
 on a successful open: an extension-only empty listing, where no byte confirmed the
-format at all, is exactly the case a `strict` caller wants stopped.
+format at all, is exactly the case a `STRICT` caller wants stopped.
 
-Presets SHALL return ordinary frozen `DiagnosticPolicy` values with per-code
-overrides — no new resolution axis, and no field on `Diagnostic`. A caller MAY build
-its own policy from `ARCHIVE_INTEGRITY_CODES`.
+Presets SHALL be ordinary frozen `DiagnosticPolicy` values — no new resolution axis,
+and no field on `Diagnostic`. A caller adjusts a preset by building another policy from
+the same sets, for example
+`DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES, ignore={PASSWORD_ARGUMENT_UNUSED})`.
 
-**Taxonomy growth.** New `DiagnosticCode` members MAY be added in minor releases. A
-policy with `default=RAISE` therefore SHALL NOT be described as version-stable: a
+**Taxonomy growth.** New `DiagnosticCode` members MAY be added in minor releases.
+`PEDANTIC`, and any policy built from `frozenset(DiagnosticCode)`, takes every code of
+the installed version, and therefore SHALL NOT be described as version-stable: a
 caller running it starts raising on events their working program never produced. The
-documentation SHALL state this, and SHALL present `strict()` — whose membership is
+documentation SHALL state this, and SHALL present `STRICT` — whose membership is
 versioned alongside the taxonomy — as the recommended strict mode. Removing a code
 remains a breaking change.
 
@@ -507,28 +540,28 @@ remains a breaking change.
 
 | Case | Expected |
 | --- | --- |
-| `strict()`, archive with a truncated TAR trailer | `DiagnosticRaisedError` on `ARCHIVE_EOF_MARKER_MISSING` |
-| `strict()`, unencrypted archive opened with `password=` | No raise; `PASSWORD_ARGUMENT_UNUSED` is collected |
-| `pedantic()`, same call | `DiagnosticRaisedError` on `PASSWORD_ARGUMENT_UNUSED` |
-| `strict()`, legitimately empty tar | No raise; `EMPTY_ARCHIVE` collected |
+| `STRICT`, archive with a truncated TAR trailer | `DiagnosticRaisedError` on `ARCHIVE_EOF_MARKER_MISSING` |
+| `STRICT`, unencrypted archive opened with `password=` | No raise; `PASSWORD_ARGUMENT_UNUSED` is collected |
+| `PEDANTIC`, same call | `DiagnosticRaisedError` on `PASSWORD_ARGUMENT_UNUSED` |
+| `STRICT`, legitimately empty tar | No raise; `EMPTY_ARCHIVE` collected |
 | Preset value compared to an equivalent hand-built policy | Equal; presets add no resolution axis |
-| A new code added in a later minor release | `strict()` membership is explicit; a `default=RAISE` policy silently gains it |
+| A new code added in a later minor release | `STRICT` membership is explicit; `PEDANTIC` silently gains it |
 | `ENCRYPTED_MEMBER_UNVERIFIED in ARCHIVE_INTEGRITY_CODES` | False |
-| `strict()`, ZipCrypto member, `read(1)`, close | No raise; `ENCRYPTED_MEMBER_UNVERIFIED` collected |
-| `pedantic()`, same call | `DiagnosticRaisedError` |
+| `STRICT`, ZipCrypto member, `read(1)`, close | No raise; `ENCRYPTED_MEMBER_UNVERIFIED` collected |
+| `PEDANTIC`, same call | `DiagnosticRaisedError` |
 
 #### Scenario: probe code stays out of strict
 
 | Case | Expected |
 | --- | --- |
 | `PROBE_FORMAT_UNCONFIRMED in ARCHIVE_INTEGRITY_CODES` | False |
-| `DiagnosticPolicy.strict()` disposition for that code | COLLECT (via default) |
+| `DiagnosticPolicy.STRICT` disposition for that code | COLLECT (in neither set) |
 
 #### Scenario: Strictness keeps the refuse-the-archive behaviour a lenient parse gives up
 
 - **GIVEN** a backend that drops a malformed optional member-header record and lists the
   member, emitting `MEMBER_HEADER_RECORD_SKIPPED`
-- **WHEN** the caller passes `DiagnosticPolicy.strict()`
+- **WHEN** the caller passes `DiagnosticPolicy.STRICT`
 - **THEN** the listing SHALL raise, because the code is in `ARCHIVE_INTEGRITY_CODES`
 - **AND** this is why a backend MAY become lenient about such a record without removing
   the strict outcome: leniency moves the default, the policy keeps the choice
@@ -575,7 +608,7 @@ strict set: a probe-only identification is an advisory about what the file is, n
 finding about the archive's own bytes, and the code only accompanies a read that has
 already failed with a typed `TruncatedError` / `CorruptionError`.
 Default disposition is COLLECT. When a caller's policy resolves this code to RAISE
-(notably `DiagnosticPolicy.pedantic()`), the emit SHALL surface the same typed error
+(notably `DiagnosticPolicy.PEDANTIC`), the emit SHALL surface the same typed error
 via `escalate_as` (carrying `format_unconfirmed=True`) rather than
 `DiagnosticRaisedError`. The diagnostic is emitted at most once per reader.
 
@@ -598,9 +631,9 @@ itself, and re-emitting would buy a duplicate record rather than a stop.
 | --- | --- |
 | Probe-only decode failure | `exc.format_unconfirmed is True` **and** a `PROBE_FORMAT_UNCONFIRMED` diagnostic |
 | Corroborated decode failure | `exc.format_unconfirmed is False`; no probe-unconfirmed diagnostic |
-| `pedantic()`, probe-only decode failure | Same typed `TruncatedError`/`CorruptionError` with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
+| `PEDANTIC`, probe-only decode failure | Same typed `TruncatedError`/`CorruptionError` with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
 | Three retried reads on one probe-only member | Diagnostic count stays 1; each exception still has `format_unconfirmed=True` |
-| `pedantic()`, three retried reads on one probe-only member | Count and retention stay 1; every read still raises the typed error with `format_unconfirmed=True` |
+| `PEDANTIC`, three retried reads on one probe-only member | Count and retention stay 1; every read still raises the typed error with `format_unconfirmed=True` |
 
 ### Requirement: Report a selector entry that matched no member
 
@@ -628,5 +661,5 @@ disposition is `COLLECT`.
 | Case | Expected |
 | --- | --- |
 | `extract_all(members=["a.txt", "typo.txt"])` on an archive holding `a.txt` | `a.txt` extracted; the report carries one `MEMBER_SELECTOR_UNMATCHED` with `entry="typo.txt"`, `entry_kind="name"` |
-| Same call under `DiagnosticPolicy.strict()` | No raise; the diagnostic is collected |
+| Same call under `DiagnosticPolicy.STRICT` | No raise; the diagnostic is collected |
 | `stream_members(members=lambda m: False)` | No `MEMBER_SELECTOR_UNMATCHED` |

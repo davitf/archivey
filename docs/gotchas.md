@@ -22,11 +22,12 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   the bytes it skipped, as it would have to anyway, and Archivey hashes them as it goes.
   A forward seek that jumps over bytes without decoding them (a stored member, or a seek
   by an index or the `[seekable]` accelerator) gives up the check once you read past the
-  jump, until you seek back to 0. The check covers the first pass over each byte: bytes
-  read again after a seek back are not checked again. A WinZip AES member's HMAC is the
-  exception: it is still checked when a read reaches the end, and that read first
-  re-reads, without decrypting, the ciphertext your seeks skipped. A short read at the
-  end of a large AES member can therefore read the whole member from the archive.
+  jump, until you seek back to a point you had already read up to and read on to the end
+  from there. The check covers the first pass over each byte: bytes read again after a
+  seek back are not checked again. A WinZip AES member's HMAC is the exception: it is
+  still checked when a read reaches the end, and that read first re-reads, without
+  decrypting, the ciphertext your seeks skipped. A short read at the end of a large AES
+  member can therefore read the whole member from the archive.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
@@ -96,7 +97,7 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   carries a trailing newline; strip it. → [RAR](formats.md#rar)
 - **A trailer-less TAR is warned about, not raised.** A trailer-less or `cat`-joined
   tar is byte-identical to a truncation at a member boundary; set
-  `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or use `DiagnosticPolicy.strict()`) when you
+  `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or use `DiagnosticPolicy.STRICT`) when you
   need a provably complete listing. A corrupt member header raises `CorruptionError` by
   default in both access modes. → [TAR](formats.md#tar-and-compressed-tar)
 - **TAR trailing data is checked only 1 MiB past the trailer.** A non-zero byte in that
@@ -126,7 +127,7 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   → [Single-file compressors](formats.md#single-file-compressors)
 - **Bytes after a compressed stream are reported, not refused.** A `.gz`, `.xz`, `.zst`
   or other single-file codec followed by extra bytes reads its whole payload, then emits
-  `ARCHIVE_TRAILING_DATA` (raised under `DiagnosticPolicy.strict()`). The `xz`, `lzma`
+  `ARCHIVE_TRAILING_DATA` (raised under `DiagnosticPolicy.STRICT`). The `xz`, `lzma`
   and `zstd` command-line tools refuse such a file, so archivey reading it is not proof
   the file is clean; check `reader.diagnostics` or use the strict policy. From a pipe,
   bytes after a Brotli stream raise `CorruptionError`, because telling them from damage

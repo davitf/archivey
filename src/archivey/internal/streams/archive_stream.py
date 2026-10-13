@@ -178,6 +178,7 @@ class ArchiveStream(ReadOnlyIOStream):
         archive_name: str | None = None,
         verifier: MemberVerifier | None = None,
         member_name: str | None = None,
+        repeat_verdict: bool = True,
     ) -> None:
         super().__init__()
         # Named in the closed-source error and returned by ``name``; ``None`` for a
@@ -207,6 +208,11 @@ class ArchiveStream(ReadOnlyIOStream):
         # Whether the caller has seeked since the verdict last raised. A seek restarts
         # the decode, so the prefix reads again; the read that reaches the end raises.
         self._verdict_rewound = False
+        # False for a stream that only a reader's own views read. A read seeks the
+        # shared handle when it is not already there. Some reads still seek, and one
+        # seek is enough to mark the stream rewound, so a short read that ends at the
+        # damage would lose its prefix. The member streams over those views keep theirs.
+        self._repeat_verdict = repeat_verdict
         # A stream's diagnostics are everything emitted from its open onward: capture the
         # collector position here and difference against "now" on each query. No per-stream
         # bookkeeping is retained collector-side.
@@ -458,12 +464,13 @@ class ArchiveStream(ReadOnlyIOStream):
         not the seek forfeited the digest check: a caller who catches it and seeks back
         cannot re-read the damaged member as complete, clean data. A content error that
         a rewound read raises is that same verdict found again (a seek to 0 re-arms the
-        verifier), so the stream raises the error object it raised first.
+        verifier), so the stream raises the error object it raised first. A stream built
+        with ``repeat_verdict=False`` remembers nothing and raises each error as it comes.
         """
         try:
             self._raise_translated(e)
         except ArchiveyError as raised:
-            if not _is_content_verdict(raised):
+            if not self._repeat_verdict or not _is_content_verdict(raised):
                 raise
             repeat = self._verdict is not None and self._verdict_rewound
             if self._verdict is None:
@@ -572,8 +579,8 @@ class ArchiveStream(ReadOnlyIOStream):
             self._fail(e)
         if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the
-            # seek may have given up the check that found it (only a seek to 0
-            # re-arms it). Withhold the bytes, as the
+            # seek may have paused the check that found it (a seek back to its
+            # frontier resumes it). Withhold the bytes, as the
             # verifier does with the chunk that fails.
             self._verdict_rewound = False
             self._raise_verdict()

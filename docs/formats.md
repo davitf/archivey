@@ -121,7 +121,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
   directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
-  which ``DiagnosticPolicy.strict()`` raises.
+  which ``DiagnosticPolicy.STRICT`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
 - An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as
   `MemberType.OTHER`, so extraction skips it. One that stores data is a `FILE` (`zip -FI`
@@ -173,12 +173,19 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 
 ## TAR (and compressed TAR)
 
-- Uncompressed seekable TAR: random access via `tarfile`.
+- Uncompressed seekable TAR: random access, each member read straight from its place in
+  the file. Archivey parses the headers itself, the same way on every Python version.
 - Compressed variants (`.tar.gz` etc.) behave as **solid** for random member opens —
   prefer a single forward pass.
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
 - `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
+- **An old-style directory that declares data is reported.** A regular-file header
+  (typeflag NUL or `0`) whose name ends in `/` is a directory, as GNU tar and 7-Zip
+  read it. When its size field is not zero, the directory keeps that `size`,
+  `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction creates the directory and
+  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them.
+  `DiagnosticPolicy.STRICT` refuses the archive.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
@@ -188,36 +195,52 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before you extract. For a sparse archive you trust, raise the limit:
   `reader.extract_all(dest, limits=ExtractionLimits(max_ratio=...))`, or
   `max_ratio=None`.
-- **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
-  corrupt member header *after the first* as a clean end of archive — no exception is
-  raised; iteration just stops early. Archivey backstops this with its end-of-archive
-  marker check:
-    - When the shortened scan stops on a **header `tarfile` rejected**, archivey raises
-      `CorruptionError` **by default** — a well-formed tar never ends that way. This
-      holds in random-access and streaming reads alike, whatever follows the bad header:
-      more members, nothing (it is the archive's *final* block), or a block of zeros.
+- **Archivey checks how the archive ends.** A tar has no member count, so a corrupt
+  member header *after the first* could otherwise pass for the end of the archive and
+  shorten the listing without an error:
+    - When the walk stops on a **header that does not parse**, archivey raises
+      `CorruptionError` whatever the diagnostic policy — a well-formed tar never ends
+      that way. This holds in random-access and streaming reads alike, whatever follows
+      the bad header: more members, nothing (it is the archive's *final* block), or a
+      block of zeros.
     - A tar that merely **ends cleanly on a member boundary without the two-block null
       trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
       not raised. When a provably complete listing matters (inventory/dedupe sweeps), set
-      that code to `RAISE` in the diagnostic policy (`DiagnosticPolicy.strict()` does) to
+      that code to `RAISE` in the diagnostic policy (`DiagnosticPolicy.STRICT` does) to
       turn the warning into `DiagnosticRaisedError`.
     - A trailer whose **first block is zero and whose second is not** is reported the
       same way, `ARCHIVE_EOF_MARKER_MISSING` with
       `context.expected_marker="second_zero_block"`. The zero block ends the members,
       so every member is listed and reads normally, as GNU tar ("A lone zero block")
-      and 7-Zip list them; `strict()` raises it. The trailing-data check below then
+      and 7-Zip list them; `STRICT` raises it. The trailing-data check below then
       runs from the block after the damaged one. This needs at least one member before
       the zero block: a file that is only a zero block and then other bytes is not shown
       to be a TAR archive, and it raises `CorruptionError`.
     - A **device, FIFO or socket header that declares data** (typeflag `3`, `4` or `6`
       with a non-zero size) raises `CorruptionError` at that header, before the
-      end-marker check runs. Such an entry has no data, GNU tar skips the header as
-      damaged, and `tarfile` would read an all-zero payload as the end of the archive
-      and drop every member after it.
+      end-marker check runs. Such an entry has no data, and GNU tar skips the header as
+      damaged. Reading on from the next block, an all-zero payload would look like the
+      end of the archive and drop every member after it.
+    - A **directory header (typeflag `5`) that declares data** has no data area either,
+      so the next header is read straight after it. When that header parses, the
+      directory lists with no size, as GNU tar, bsdtar and 7-Zip list it. When the
+      walk ends instead on a zero block inside the span the size declares, the
+      directory is listed with no size and reported with
+      `MEMBER_DIRECTORY_DATA_IGNORED` (`STRICT` refuses the archive): the declared
+      blocks, if they are there, were read as the end-of-archive marker and the
+      members behind them are not listed, as GNU tar lists them, and nothing in the
+      file tells that from a trailer after blocks that were never written, so the
+      report says what the header declares and the trailer checks above report the
+      rest. `open()` refuses the directory, since its bytes cannot be told from the
+      trailer. A block that is neither a header nor zero where the data would begin
+      raises `CorruptionError` naming the directory header. A walk that gets past the
+      declared span (extended headers filled it) has read all it could hide, and
+      nothing is reported. An old-style directory, a regular-file header named `d/`,
+      is the other case: see above.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
-      default policy and raised under `strict()`. Zero padding passes — `tar` writes
+      default policy and raised under `STRICT`. Zero padding passes — `tar` writes
       10 KiB records, so "nothing but zeros" is the strongest rule that does not flag
       what `tar` itself produces. The check looks at most 1 MiB past the trailer, so a
       byte further out goes unseen; on a compressed tar that 1 MiB is decompressed to
@@ -226,8 +249,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       [Single-file compressors](#single-file-compressors). A tail that does not
       decompress (a missing gzip footer) ends the check quietly rather than failing the
       listing.
-    - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
-      whatever the policy.
+    - Truncation *inside* a member's data always raises `TruncatedError`, whatever the
+      policy: in a listing or a pass when the walk reaches the cut, and from a member
+      stream on the read that reaches it. A read with a size returns the bytes before the
+      cut first; `read()` with no size raises and returns nothing.
 
 ## 7z
 
@@ -282,11 +307,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   rejected as `EncryptionError` (never a silent empty listing).
 - **Bytes after the archive's end** (its next header or its last packed stream,
   whichever is later) are reported as `ARCHIVE_TRAILING_DATA` with `format="7z"`: a
-  warning under the default policy, raised under `strict()`. Zero padding passes,
+  warning under the default policy, raised under `STRICT`. Zero padding passes,
   although 7-Zip warns "There are data after the end of archive" for zeros too. The
   check looks at most 1 MiB past the end, as the TAR one does. A code-signed
   self-extracting `.exe` carries its signature after the archive, so it gets the
-  warning, and `strict()` refuses it.
+  warning, and `STRICT` refuses it.
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
   values 25–62 raise `UnsupportedFeatureError`.
 - Writing is not shipped in the current release (`py7zr` is a **dev oracle** only).
@@ -364,7 +389,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **A RAR5 archive cut exactly between two blocks is warned about, not raised.** RAR5
   always ends each volume with an end-of-archive block, so archivey lists the members
   before the cut and then emits `ARCHIVE_EOF_MARKER_MISSING`
-  (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
+  (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.STRICT` raises.
   A cut inside a member's data or inside a header lists the members before the cut and
   is `TruncatedError` on the listing, and other damage to an encrypted header is
   `CorruptionError`. In an encrypted header, both need the password proven first: by
@@ -380,7 +405,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **A damaged end-of-archive block keeps the listing.** When the block after the last
   member fails its header checksum (RAR 1.5-4 or RAR5), every member is listed and
   reads normally, and archivey emits `ARCHIVE_EOF_MARKER_MISSING` with
-  `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
+  `observed_kind="nonzero"` after them, which `DiagnosticPolicy.STRICT` raises. This
   is what `unrar t` does: each member tests OK, then it reports one error. A damaged
   header counts as the end block only if it has an end block's shape and nothing but
   zeros follows it within 1 MiB (`rar` pads a volume cut at exactly the `-v` size with
@@ -391,7 +416,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before that it is `EncryptionError`.
 - **Bytes after the end-of-archive block** are reported as `ARCHIVE_TRAILING_DATA`
   with `format="rar"`, once per volume that has them: a warning under the default
-  policy, raised under `strict()`. Zero padding passes, because `rar` pads volumes
+  policy, raised under `STRICT`. Zero padding passes, because `rar` pads volumes
   with zeros, and the check looks at most 1 MiB past the block. `unrar` says nothing
   about such bytes; 7-Zip warns "There are data after the end of archive", for zeros
   too.
@@ -572,7 +597,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
 - **Bytes after the image's end** are reported as `ARCHIVE_TRAILING_DATA` with
-  `format="iso"`: a warning under the default policy, raised under `strict()`. Zero
+  `format="iso"`: a warning under the default policy, raised under `STRICT`. Zero
   padding passes, and the check looks at most 1 MiB past the end. The end counts the
   partitions the image's MBR lists, and those of its GPT when the GPT's checksums match,
   so a hybrid installer image, whose EFI partition and GPT backup header sit after the
@@ -652,7 +677,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   a tool that pads its output) do not stop the read. For gzip, zlib, bzip2, xz, lzip,
   LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then emits one
   `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of the first appended
-  byte. It is a warning under the default policy; under `DiagnosticPolicy.strict()` the
+  byte. It is a warning under the default policy; under `DiagnosticPolicy.STRICT` the
   read that reaches it raises `DiagnosticRaisedError`. Zero bytes after the end are
   padding and report nothing, as for TAR. A second stream of the same codec (a
   concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more data, not trailing

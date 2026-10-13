@@ -31,7 +31,6 @@ from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticSummary,
     DirectoryDataContext,
     EmptyArchiveContext,
@@ -548,7 +547,7 @@ class BaseArchiveReader(ArchiveReader):
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
         # A backend that shares one underlying handle across member streams (zipfile fp,
-        # tarfile fileobj, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
+        # the TAR walk's stream, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
         # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
         # handle to serialize (default readers, path-per-open backends).
@@ -722,8 +721,8 @@ class BaseArchiveReader(ArchiveReader):
 
         Backends supply an ``open_member`` hook (return ``None`` for non-file members)
         and an optional ``cleanup`` for pass-scoped resources (solid block, ``unrar``
-        pipe). ``close_previous=False`` is for TAR streaming, where tarfile invalidates
-        the prior ``extractfile`` handle on advance.
+        pipe). ``close_previous=False`` is for TAR streaming, where the walk invalidates
+        the prior member stream on advance.
 
         The driver **always** closes the last still-open stream in its ``finally``
         before running ``cleanup`` — never tear down a solid block / pipe under a live
@@ -800,22 +799,31 @@ class BaseArchiveReader(ArchiveReader):
             after_members=_raise_report_error,
         )
 
-    def _lazy_member_stream(self, member: ArchiveMember) -> ArchiveStream:
+    def _lazy_member_stream(
+        self,
+        member: ArchiveMember,
+        open_member: Callable[[ArchiveMember], BinaryIO] | None = None,
+        *,
+        track_output: bool = False,
+    ) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
-        already returns an ``ArchiveStream``; nesting is collapsed inside
+        returns an ``ArchiveStream``; nesting is collapsed inside
         :meth:`ArchiveStream._ensure_open` so the public handle is a **single**
-        wrapper. Deferral does not change what a failed open raises — only when.
+        wrapper. ``open_member`` replaces it, and may return a raw byte stream
+        instead: then ``track_output=True``, because nothing inside the opener counts
+        the bytes. Deferral does not change what a failed open raises — only when.
         """
+        opener = self._open_member if open_member is None else open_member
         return self._register_public_stream(
             self._wrap_member_stream(
                 None,
                 member.name,
-                open_fn=lambda: self._open_member(member),
+                open_fn=lambda: opener(member),
                 size=member.size,
-                # ``_open_member`` already applied output tracking inside its wrap.
-                track_output=False,
+                # Default False: ``_open_member`` already counts inside its wrap.
+                track_output=track_output,
                 seekable=self._seek_declared(),
             )
         )
@@ -1157,15 +1165,12 @@ class BaseArchiveReader(ArchiveReader):
         if self._unconfirmed_failure_emitted:
             return
 
-        # Under pedantic() (default=RAISE), a bare emit would raise DiagnosticRaisedError
+        # Under PEDANTIC (RAISE on every code), a bare emit would raise DiagnosticRaisedError
         # mid-raise and destroy the typed TruncatedError/CorruptionError/
         # ResourceLimitError. escalate_as keeps that type when RAISE fires; under
         # COLLECT we leave it unset so the already-stamped ``exc`` is re-raised by the
         # caller.
-        raising = (
-            self._diagnostics_collector.policy.resolve(code)
-            is DiagnosticDisposition.RAISE
-        )
+        raising = code in self._diagnostics_collector.policy.raise_on
 
         # Set before emitting: under RAISE the emit does not return, and a flag set
         # afterwards would never be reached — every retried read would record the
@@ -1533,8 +1538,7 @@ class BaseArchiveReader(ArchiveReader):
         stamp it, so a duplicate name in the prefix is superseded by a later copy in
         the prefix; a copy the pass yields after the discard cannot supersede it.
 
-        A backend that keeps its own record of the walk (TAR's ``tarfile``) extends
-        this to drop it too.
+        A backend that keeps its own record of the walk extends this to drop it too.
         """
         _apply_last_entry_wins_is_current(self._listed)
         self._listing_discarded = True
@@ -2982,8 +2986,8 @@ class BaseArchiveReader(ArchiveReader):
         # A tombstone and a special entry are refused by type: there is nothing to
         # deliver for them even where a header declares a size. A directory is
         # refused by data: it has none unless its header declares some, and one that
-        # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP and
-        # RAR; a 7z directory can carry a size too until the sweep that types a
+        # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP, TAR
+        # and RAR; a 7z directory can carry a size too until the sweep that types a
         # member with a stream as a file lands) opens here, and only here: the bytes
         # the backend can decode are reachable through ``open()``, while
         # ``stream_members()`` and extraction still route by type and skip them.

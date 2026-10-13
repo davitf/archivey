@@ -253,7 +253,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
 | LZMA Alone followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`. Junk that passes the next-stream check (about one random tail in 870) fails with `CorruptionError` |
 | Two LZMA Alone streams concatenated | Reads both, as `lzma.LZMAFile` does; the second is recognised by its header (§2.3 of [`single-file.md`](single-file.md)) |
-| An LZMA Alone stream, 4 zero bytes, a stream (crafted: no known writer emits this) | The first payload, then `ARCHIVE_TRAILING_DATA` at the second stream's first byte; `DiagnosticPolicy.strict()` raises. `xz --format=lzma -dc` and `lzma -dc` 5.4.5 write the first payload, then "Compressed data is corrupt", exit 1. 7-Zip 16.02 writes it and reports "There are some data after the end of the payload data"; `bsdcat` and Python's `lzma` (`FORMAT_ALONE`) return the first payload |
+| An LZMA Alone stream, 4 zero bytes, a stream (crafted: no known writer emits this) | The first payload, then `ARCHIVE_TRAILING_DATA` at the second stream's first byte; `DiagnosticPolicy.STRICT` raises. `xz --format=lzma -dc` and `lzma -dc` 5.4.5 write the first payload, then "Compressed data is corrupt", exit 1. 7-Zip 16.02 writes it and reports "There are some data after the end of the payload data"; `bsdcat` and Python's `lzma` (`FORMAT_ALONE`) return the first payload |
 | An LZMA Alone stream, then 4 zero bytes at the end of the file | Reads, with no diagnostic. `xz --format=lzma -dc` writes the payload and exits 1 on the zeros, and Python's `lzma` raises; archivey keeps them silent, as for every codec ([`single-file.md`](single-file.md) §6) |
 | 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
@@ -300,7 +300,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | A backward seek in a default `xz` or `lzip` file re-decodes from the start | **format** | One block or one member (§1). Write with `xz -T` / `--block-size`, or `plzip -B` |
 | The rewind warning says "this codec has no random-access index" for a multi-block xz or lzip file | **archivey** | The message is shared by every codec; the seek did re-decode, from the nearest point. Tracked internally |
-| A file `xz -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the stream are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
+| A file `xz -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the stream are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
 | More than 1 MiB after the last stream loses `size` and seeks | **archivey** | The index search is bounded (§2.2) |
 | `size` is `None` on a pipe | **format** | The index is at the end |
 | An `xz` block with a filter this liblzma lacks raises `UnsupportedFeatureError` | **library** | Not damage (§2.3) |

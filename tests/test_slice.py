@@ -738,3 +738,30 @@ class TestSliceResumeOffset:
         constructed = lock.entered
         assert view.nearest_resume_offset(25) == 30
         assert lock.entered == constructed + 1
+
+    def test_sequential_reads_seek_once(self) -> None:
+        """A handle already at the view's offset is not seeked again.
+
+        A seek to the current position is an lseek once the buffer is empty.
+        Skipping it is what this pins: a stream already at the start is not
+        seeked at all.
+        """
+        payload = b"abcdefghij" * 50
+        counter = SeekCounter()
+        wrapped = SeekCountingStream(io.BytesIO(payload), counter)
+        view = SharedView(wrapped, start=0, lock=threading.Lock())
+        for _ in range(20):
+            assert len(view.read(10)) == 10
+        assert counter.count == 0
+        assert view.read() == payload[200:]
+
+    def test_interleaved_views_still_reseek(self) -> None:
+        payload = bytes(range(256))
+        lock = threading.Lock()
+        raw = io.BytesIO(payload)
+        first = SharedView(raw, start=0, length=10, lock=lock)
+        second = SharedView(raw, start=10, length=10, lock=lock)
+        assert first.read(4) == payload[0:4]
+        assert second.read(4) == payload[10:14]
+        assert first.read(4) == payload[4:8]
+        assert second.read() == payload[14:20]

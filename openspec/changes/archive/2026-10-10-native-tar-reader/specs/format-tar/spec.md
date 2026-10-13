@@ -194,7 +194,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | PAX `mtime` | Overrides the header's `mtime`, preserving sub-second precision / timezone information |
 | `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number is ignored) |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
-| device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a GNU dumpdir, a volume header) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
+| device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a volume header, an unknown type) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from the PAX `linkpath`, else the GNU long link name, else the header's `linkname` |
 | old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
 | `extra["tar.pax_headers"]` | The member's PAX records, the global (`g`) records in force included. Read-only: a change raises `TypeError`. Members with no records of their own share one per set of global records: one copy per member cost the global records again for every 512-byte member header. Read-only so the sharing cannot be seen: a change through one member could otherwise show on the others. It is a `dict` subclass, so `json.dumps` takes it, and a copy, deep copy or pickle round trip gives a plain `dict` |
@@ -340,7 +340,7 @@ the access mode:
   `expected_marker="second_zero_block"` and `observed_kind="nonzero"` under ordinary
   diagnostic disposition, with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`. GNU tar ("A lone zero
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`. GNU tar ("A lone zero
   block") and 7-Zip list the same archive with a warning. The backend SHALL tell this
   case from a rejected header by why the walk stopped, not by the bytes read, so it
   holds in streaming too. With no member before the zero block
@@ -353,7 +353,7 @@ the access mode:
   byte-identical, so no reader can tell them apart. It SHALL follow ordinary diagnostic
   disposition with no escalation of its own: a warning by default,
   `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
+  `DiagnosticPolicy.STRICT`), a count alone under `IGNORE`.
 
 The rejected-header escalation to `CorruptionError` SHALL take precedence over
 `DiagnosticRaisedError`, including when the diagnostic disposition is `IGNORE` or
@@ -375,8 +375,15 @@ The check SHALL raise the escalation from the member scan (so the report model r
 `error`); it SHALL NOT record the archive-level EOF only on a separate report field.
 
 Truncation *inside* a member's data or across a partial header block is out of scope of
-this end-of-marker check: it raises `TruncatedError` **during iteration**, whatever the
-diagnostic policy, in both random-access and streaming modes.
+this end-of-marker check. It raises `TruncatedError`, whatever the diagnostic policy, in
+both access modes, and whether or not the source size is known:
+
+- `members()`, `members_report()` and a `stream_members()` pass raise when the walk reaches
+  the cut. A pass that read part of the cut member raises that member's error again.
+- A member stream, from `open()`, `read()` or a pass, raises on the read that reaches the
+  cut. A sized `read(n)` returns the bytes before the cut, short, and the next read
+  raises. A `read()` with no size raises and returns nothing. `open()` and `read()` find
+  the cut themselves; they do not need a listing to reach it first.
 
 #### Scenario: TAR EOF matrix
 

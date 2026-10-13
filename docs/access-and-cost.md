@@ -21,7 +21,8 @@ rather than here — they go stale faster than this page is revised.
 | --- | --- |
 | Large-member ZIP/TAR/gzip **read** (decompression-dominated) | ≤ **1.3×** stdlib peer |
 | ZIP/TAR **extract** (safety floor) | ≤ ~**2×** stdlib peer |
-| ZIP/TAR **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` / `tarfile` |
+| ZIP **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` |
+| TAR **open+list** (native parser) | ≤ **2–3×** `tarfile` |
 | 7z/RAR **open+list** (native parsers) | ≈parity (~**1.25×**) vs `py7zr` / `rarfile` |
 
 These are the targets, not a claim about your machine. Measured ratios are
@@ -117,20 +118,20 @@ CRC check, and so does a forward seek in a compressed member. That seek itself i
 free: the next read decodes and hashes the bytes it skipped, so that read pays for the
 gap, and a seek you undo or a stream you close before reading costs nothing. A forward
 seek that jumps (a stored member, or a seek by an index or the accelerator) gives the
-CRC up once you read past it, until a seek back to 0. The check covers the first pass
-over each byte: bytes read again after a seek back are not checked again. None of this
-touches WinZip AES's HMAC: the HMAC covers the ciphertext, so the read that reaches
-the member's end first reads, without decrypting, whatever ciphertext your seeks
-skipped, and then checks it.
+CRC up once you read past it, until you seek back to a point you had already read up
+to and read on from there to the end. The check covers the first pass over each byte:
+bytes read again after a seek back are not checked again. None of this touches WinZip
+AES's HMAC: the HMAC covers the ciphertext, so the read that reaches the member's end
+first reads, without decrypting, whatever ciphertext your seeks skipped, and then
+checks it.
 
 A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
 seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
 or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
 relative seek before its start reaches the OS and raises `OSError`. A seek past the end
-of a TAR member returns the member size rather than the position you asked for, where
-other formats return the target; reads from there return `b""` either way. An offset or
-`whence` that is not an integer (`seek(1.5)`, `seek(None)`) raises `TypeError`, as on
-`io.BytesIO`, and leaves the position where it was. A `read` size that is neither an
+of a member returns the position you asked for, and reads from there return `b""`. An
+offset or `whence` that is not an integer (`seek(1.5)`, `seek(None)`) raises `TypeError`,
+as on `io.BytesIO`, and leaves the position where it was. A `read` size that is neither an
 integer nor `None` (`read(1.5)`) raises `TypeError` the same way, and an integer
 outside the platform's index range (`read(2**70)`, `read(-2**70)`) raises
 `OverflowError`, both before anything is read.
