@@ -851,11 +851,9 @@ class DiagnosticPolicy:
         # Converted, not only checked: ``resolve`` answers by membership, so a code
         # spelled as its name would construct fine and then never match.
         call = "DiagnosticPolicy()"
-        codes = {
-            param: _coerce_policy_codes(value, call=call, param=param)
-            for param, value in (("ignore=", ignore), ("raise_on=", raise_on))
-        }
-        both = codes["ignore="] & codes["raise_on="]
+        ignore_parsed = _coerce_policy_codes(ignore, call=call, param="ignore=")
+        raise_on_parsed = _coerce_policy_codes(raise_on, call=call, param="raise_on=")
+        both = ignore_parsed & raise_on_parsed
         if both:
             # Keyword arguments have no order, so neither can win: keeping either would
             # silently drop what the other asked for.
@@ -863,8 +861,8 @@ class DiagnosticPolicy:
             raise _UsageValueError(
                 f"{call} got codes in both ignore= and raise_on=: {names}."
             )
-        object.__setattr__(self, "ignore", codes["ignore="])
-        object.__setattr__(self, "raise_on", codes["raise_on="])
+        object.__setattr__(self, "ignore", ignore_parsed)
+        object.__setattr__(self, "raise_on", raise_on_parsed)
 
 
 DiagnosticPolicy.STRICT = DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)
