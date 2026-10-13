@@ -119,7 +119,7 @@ each lands with nothing half-done reachable:
       codec's input, so the AES stage authenticates the ciphertext as it goes, holding
       back the bytes past the codec's end until `settle` says where the data ended
       (test: an AE-1 and an AE-2 deflated member from a pipe, and a wrong code).
-- [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
+- [x] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
       and reported; a missing one is handled per 3.3g. 3b3b: extraction keeps what it
       wrote each member of a pass that can still change as
@@ -133,22 +133,23 @@ each lands with nothing half-done reachable:
       every spelling a member can end with during the pass, a member taken only at
       the end fails with `ExtractionError` when its bytes have gone by, and an entry
       the caller had where the pass wrote is kept aside until the end
-      (`design.md`, "The selection is made again"). Left: 3.3i and 3.3g (3b3c).
+      (`design.md`, "The selection is made again"). 3b3c: 3.3i and 3.3g.
 - [x] 3.3a A retyped member goes through the filter and the policy checks again before
       its link is made; refused, its file is removed (test: a pipe ZIP whose directory
       types `payload` as a symlink to `../../etc/passwd` is refused from a pipe and from
       a file).
-- [ ] 3.3b A size or CRC from a data descriptor that differs from the central entry is
+- [x] 3.3b A size or CRC from a data descriptor that differs from the central entry is
       detected; its outcome is 3.3g's (test: a STORED bit-3 member that embeds a
       descriptor for a prefix of itself, read from a pipe and seekably). 3b3c1: the
       reader's half (`ZipForwardReader._failed_at_end`; `stream_members()` raises at
       the end of the pass),
       `test_a_descriptor_the_directory_contradicts_fails_at_the_end_of_the_pass`.
-- [ ] 3.3c `is_current` from the directory order; same-name members in reverse order are
+      3b3c2: extraction (`_settle_failures_at_end`).
+- [x] 3.3c `is_current` from the directory order; same-name members in reverse order are
       detected at the end of the pass, with 3.3g's outcome (fixture with the two orders
       reversed). 3b3c1: `is_current` (`_listed_in_index_order`),
       `test_the_later_copy_in_the_directory_is_current`; ids and listing order stay
-      the file's.
+      the file's. 3b3c2: extraction; results stay in the order the pass met them.
 - [x] 3.3d A stream that starts neither with a local header nor an end record: scan
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
@@ -173,7 +174,7 @@ each lands with nothing half-done reachable:
 - [x] 3.3f2 From a pipe such a member stays a file (test). 3b3a: the listing half,
       `test_a_reparse_member_whose_data_is_no_link_stays_a_file`; extraction (3b3b), the
       test of the same name in `test_zip_pipe_extract.py`.
-- [ ] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
+- [x] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
       the pass" states them, under `OnError.CONTINUE` and `STOP`, for 3.3b, 3.3c and a
       directory entry with no local entry. Each test checks every affected result and
       what is at the path afterwards (the reversed pair: `M1` `FAILED`, `M2`
@@ -181,11 +182,19 @@ each lands with nothing half-done reachable:
       entry, not for 3.3c. A member whose local header and directory entry store
       different names (3b3a raises after the pass) gets the same treatment: the file
       written under the local name is taken back and the member fails, as the
-      seekable extraction fails it when it reads the local header.
-- [ ] 3.3i A local entry no directory entry points to: dropped from the listing and,
+      seekable extraction fails it when it reads the local header. 3b3c2:
+      `ExtractionCoordinator._settle_failures_at_end`, the tests after "Failures
+      found at the end of the pass" in `test_zip_pipe_extract.py`; a directory entry
+      with no local entry is built from the directory (`_missing_member`) and gets a
+      `FAILED` result when selected; a current copy that needs no bytes (an empty
+      file, a folder) is written at the end. Recorded divergence: a member whose data
+      fails as the pass writes it stops an `on_error="stop"` run, though the
+      directory may then not list it.
+- [x] 3.3i A local entry no directory entry points to: dropped from the listing and,
       when extracting, from disk, and reported (`ARCHIVE_UNLISTED_DATA`, the
       maintainer's pick 2026-10-13, with `UnlistedDataContext`). 3b3c1: the listing
-      half (`_drop_listed`). Directory entries past the size the end record declares
+      half (`_drop_listed`); 3b3c2: extraction takes back what it wrote, as for a
+      member the selection drops at the end. Directory entries past the size the end record declares
       stay listed, with `DirectorySizeMismatch` reported: the seekable read takes the
       directory as the declared size *before* the end record, not after the first
       entry, so with a wrong size its offsets are shifted too, and no forward rule
@@ -215,7 +224,12 @@ each lands with nothing half-done reachable:
       requirement in `archive-reading`; the bomb-limit and `abort_on` divergences in
       `docs/extracting.md` (beside the limits table), `new_docs/security.md` and
       `docs/errors-and-diagnostics.md`; and the `members_done` divergence wherever
-      `on_progress` is described (`new_docs/extracting.md`).
+      `on_progress` is described (`new_docs/extracting.md`). From 3b3c: the failures
+      found at the end of the pass (`design.md`, same heading) and the
+      `on_error="stop"` divergence in `docs/extracting.md` and the `safe-extraction`
+      `OnError` requirement; `ARCHIVE_UNLISTED_DATA` in `docs/formats.md` (ZIP) and
+      `new_docs/errors-and-diagnostics.md`; `format-zip` for `is_current` from the
+      directory order from a pipe.
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):

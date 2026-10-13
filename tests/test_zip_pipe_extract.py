@@ -23,7 +23,7 @@ import pytest
 
 import archivey
 from archivey.config import ExtractionLimits
-from archivey.exceptions import ArchiveyError, ExtractionError
+from archivey.exceptions import ArchiveyError, CorruptionError, ExtractionError
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.extraction import BombTracker
 from archivey.types import (
@@ -35,7 +35,7 @@ from archivey.types import (
 )
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
 from tests.streams_util import NonSeekableBytesIO
-from tests.test_zip_pipe import _reparse_zip, _streamed
+from tests.test_zip_pipe import _Hand, _planted_prefix_zip, _reparse_zip, _streamed
 
 needs_symlinks = pytest.mark.skipif(
     not hasattr(os, "symlink") or os.name == "nt", reason="needs POSIX symlinks"
@@ -653,3 +653,136 @@ def test_the_corpus_extracts_from_a_pipe_as_from_a_file(
     path = tmp_path / "corpus.zip"
     build_archive(entry, "zip", path)  # type: ignore[arg-type]
     _both(path.read_bytes(), tmp_path, on_error=OnError.CONTINUE)
+
+
+# -- Failures found at the end of the pass (design.md, same heading) -----------------
+
+
+def _piped_report(
+    data: bytes, dest: Path, **options: object
+) -> archivey.ExtractionReport:
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        return reader.extract_all(dest, **options)  # type: ignore[arg-type]
+
+
+def _outcomes(
+    report: archivey.ExtractionReport,
+) -> list[tuple[str, ExtractionStatus, type[BaseException] | None]]:
+    return [
+        (r.member.name, r.status, None if r.error is None else type(r.error))
+        for r in report.results
+    ]
+
+
+def test_an_unlisted_local_entry_is_taken_back(tmp_path: Path) -> None:
+    hand = _Hand()
+    hand.local(b"a.txt", b"one")
+    hand.local(b"sub/planted.txt", b"not listed")
+    hand.local(b"b.txt", b"two")
+    results, tree = _both(hand.directory(0, 2), tmp_path)
+    assert [name for name, _, _ in results] == ["a.txt", "b.txt"]
+    assert sorted(tree) == ["a.txt", "b.txt"]
+
+
+def _reversed_pair() -> bytes:
+    hand = _Hand()
+    hand.local(b"dup.txt", b"first")
+    hand.local(b"dup.txt", b"second")
+    hand.local(b"other.txt", b"other")
+    return hand.directory(1, 0, 2)
+
+
+def test_a_reversed_same_name_pair_fails_the_current_copy(tmp_path: Path) -> None:
+    """The pass wrote the second copy; the directory makes the first current, whose
+    bytes have gone by. Random access writes "first" there."""
+    data = _reversed_pair()
+    report = _piped_report(data, tmp_path / "pipe", on_error=OnError.CONTINUE)
+    assert _outcomes(report) == [
+        ("dup.txt", ExtractionStatus.FAILED, CorruptionError),
+        ("dup.txt", ExtractionStatus.SUPERSEDED, None),
+        ("other.txt", ExtractionStatus.EXTRACTED, None),
+    ]
+    assert sorted(p.name for p in (tmp_path / "pipe").iterdir()) == ["other.txt"]
+    _extract(data, tmp_path / "file", piped=False)
+    assert (tmp_path / "file" / "dup.txt").read_bytes() == b"first"
+
+
+def test_a_reversed_pair_under_stop_raises_after_settling(tmp_path: Path) -> None:
+    with pytest.raises(CorruptionError, match="current copy") as raised:
+        _piped_report(_reversed_pair(), tmp_path, on_error=OnError.STOP)
+    assert raised.value.member_name == "dup.txt"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["other.txt"]
+
+
+def test_an_empty_current_copy_is_written_again(tmp_path: Path) -> None:
+    """A copy that needs no bytes can be written at the end."""
+    hand = _Hand()
+    hand.local(b"dup.txt", b"")
+    hand.local(b"dup.txt", b"second")
+    report = _piped_report(hand.directory(1, 0), tmp_path)
+    # In the order the pass met them; random access lists the directory's order.
+    assert _outcomes(report) == [
+        ("dup.txt", ExtractionStatus.EXTRACTED, None),
+        ("dup.txt", ExtractionStatus.SUPERSEDED, None),
+    ]
+    assert (tmp_path / "dup.txt").read_bytes() == b""
+
+
+def test_a_contradicted_descriptor_fails_the_member(tmp_path: Path) -> None:
+    data, _whole = _planted_prefix_zip()
+    report = _piped_report(data, tmp_path, on_error=OnError.CONTINUE)
+    assert _outcomes(report) == [
+        ("outer.bin", ExtractionStatus.FAILED, CorruptionError),
+        ("after.txt", ExtractionStatus.EXTRACTED, None),
+    ]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["after.txt"]
+
+
+def test_a_contradicted_descriptor_under_stop_raises(tmp_path: Path) -> None:
+    data, _whole = _planted_prefix_zip()
+    # The planted member's data fails its check as the pass writes it, which would
+    # stop the run first (a failure during the pass stops it before the directory
+    # can say the member is not listed), so the filter leaves it out.
+    with pytest.raises(CorruptionError, match="data descriptor") as raised:
+        _piped_report(
+            data,
+            tmp_path,
+            on_error=OnError.STOP,
+            filter=lambda m: None if m.name == "inner" else m,
+        )
+    assert raised.value.member_name == "outer.bin"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["after.txt"]
+
+
+def test_a_directory_entry_with_no_local_entry_gets_a_failed_result(
+    tmp_path: Path,
+) -> None:
+    hand = _Hand()
+    hand.local(b"a.txt", b"one")
+    hand.local(b"b.txt", b"two")
+    data = bytearray(hand.directory(0, 1))
+    # b.txt's directory entry points past the stream's last local header.
+    cd = data.rindex(b"PK\x01\x02")
+    struct.pack_into("<I", data, cd + 42, 999_999)
+    report = _piped_report(bytes(data), tmp_path, on_error=OnError.CONTINUE)
+    assert _outcomes(report) == [
+        ("a.txt", ExtractionStatus.EXTRACTED, None),
+        ("b.txt", ExtractionStatus.FAILED, CorruptionError),
+    ]
+    # b.txt's local entry is one the directory does not list, so it is taken back.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+
+
+def test_a_name_the_two_headers_disagree_on_fails_the_member(tmp_path: Path) -> None:
+    hand = _Hand()
+    hand.local(b"a.txt", b"one")
+    hand.local(b"b.txt", b"two")
+    data = bytearray(hand.directory(0, 1))
+    cd = data.rindex(b"PK\x01\x02")
+    data[cd + 46 : cd + 51] = b"z.txt"
+    report = _piped_report(bytes(data), tmp_path, on_error=OnError.CONTINUE)
+    assert _outcomes(report) == [
+        ("a.txt", ExtractionStatus.EXTRACTED, None),
+        ("b.txt", ExtractionStatus.FAILED, CorruptionError),
+    ]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]

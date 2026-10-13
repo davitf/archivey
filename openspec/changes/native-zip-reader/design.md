@@ -399,6 +399,9 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   therefore stop a run under `max_entries` or `max_extracted_bytes` that the same
   bytes from a file complete. Not counting it would let an archive write unbounded
   data the run then deletes.
+  So does `on_error="stop"`: a member whose data fails as the pass writes it stops
+  the run, though the directory may then not list it (an unlisted local entry, which
+  random access never reads).
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
   member) is removed from disk and reported: data outside any member is a warning

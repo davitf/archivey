@@ -1525,9 +1525,18 @@ class ExtractionCoordinator:
             if selected_total is not None and members_done >= selected_total:
                 break
 
-        if state.revisable:
-            self._settle_revised_members(stream_selector, members_done)
+        failed_at_end: list[tuple[int, ArchiveyError]] = []
+        if state.revisable or reader._failed_at_end:
+            failed_at_end = self._settle_revised_members(stream_selector, members_done)
         state.settled = True
+        if failed_at_end and self._stops_on_failure():
+            # The first such failure, now that every revision is made.
+            raise min(failed_at_end, key=lambda found: found[0])[1]
+        if listing_damage and any(
+            listing_damage[0] is error for _, error in reader._failed_at_end
+        ):
+            # The walk raised for a member it fails: that member's result says so.
+            listing_damage.clear()
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1674,7 +1683,7 @@ class ExtractionCoordinator:
 
     def _settle_revised_members(
         self, selector: Callable[[ArchiveMember], bool] | None, members_done: int
-    ) -> None:
+    ) -> list[tuple[int, ArchiveyError]]:
         """Bring what the pass wrote in line with the members as the walk left them
         (``_REVISES_YIELDED_MEMBERS``): a ZIP from a pipe learns each member's mode,
         host and full type only from the central directory, after the last member.
@@ -1687,18 +1696,25 @@ class ExtractionCoordinator:
         then, as the pass did not count it. A member whose type or name changed is
         handled again from the start (``_redo_revised_member``). One whose metadata
         alone changed gets it applied to what was written
-        (``_reapply_revised_metadata``). Nothing else is touched.
+        (``_reapply_revised_metadata``). A member the walk took out of the listing is
+        taken back as an unselected one is. Then the failures only the end of the
+        walk finds are settled (``_settle_failures_at_end``), and returned for the
+        run to stop on. Nothing else is touched.
         """
         state = self._state
+        reader = state.reader
+        assert reader is not None
         revisable, state.revisable = state.revisable, {}
-        if selector is not None:
-            # Members inside a folder come after it, so the last are taken back
-            # first and the folder is empty by the time its turn comes.
-            for index in sorted(revisable, reverse=True):
-                if not selector(state.results[index].member):
-                    del revisable[index]
-                    if index not in state.dropped:
-                        self._unselect_revised_member(index)
+        # Members inside a folder come after it, so the last are taken back first and
+        # the folder is empty by the time its turn comes.
+        for index in sorted(revisable, reverse=True):
+            member = state.results[index].member
+            if id(member) in reader._dropped_listed or (
+                selector is not None and not selector(member)
+            ):
+                del revisable[index]
+                if index not in state.dropped:
+                    self._unselect_revised_member(index)
         # The selection is final from here: a member written so far is kept, if
         # the run stops now, as a file run keeps what it wrote before stopping.
         state.settled = True
@@ -1720,6 +1736,122 @@ class ExtractionCoordinator:
                 self._redo_revised_member(index)
             elif written is not None:
                 self._reapply_revised_metadata(index, before, written)
+        return self._settle_failures_at_end(list(revisable), selector)
+
+    def _settle_failures_at_end(
+        self,
+        indices: list[int],
+        selector: Callable[[ArchiveMember], bool] | None,
+    ) -> list[tuple[int, ArchiveyError]]:
+        """Give the results at ``indices`` the outcome random access would, for what
+        only the end of the walk finds (``design.md`` of the native ZIP reader,
+        "Failures found at the end of the pass"), and return the failures, by result
+        index, for the run to stop on once all of them are made.
+
+        - A member the walk made not current, which the pass wrote, is taken back and
+          ``SUPERSEDED``: random access never writes it.
+        - A member the walk fails (``_failed_at_end``: its data is not what the index
+          describes) is taken back and ``FAILED`` with the walk's error, if it is
+          current.
+        - A member the walk made current after the pass superseded it is handled
+          again; its bytes were not written, so it fails unless it needs none.
+        - A member the walk fails that it never yielded (an index entry with no data
+          in the stream) gets a ``FAILED`` result, if it is selected.
+
+        Whatever was at the path stays only if a member's result there is
+        ``EXTRACTED``: the bytes random access would write there have gone by.
+        """
+        state = self._state
+        reader = state.reader
+        assert reader is not None
+        failures: list[tuple[int, ArchiveyError]] = []
+        for index in indices:
+            result = state.results[index]
+            if (
+                index not in state.dropped
+                and result.status is ExtractionStatus.EXTRACTED
+                and not result.member.is_current
+            ):
+                self._current = _MemberState()
+                try:
+                    self._supersede_written_copy(index)
+                finally:
+                    if self._current.parked:
+                        self._drop_parked_copies(result.member.name, None)
+        failing = {id(member): error for member, error in reader._failed_at_end}
+        for index in indices:
+            result = state.results[index]
+            member = result.member
+            if index in state.dropped:
+                failing.pop(id(member), None)
+                continue
+            error = failing.pop(id(member), None)
+            if error is not None:
+                if result.status is ExtractionStatus.EXTRACTED or (
+                    member.is_current and result.status is ExtractionStatus.SUPERSEDED
+                ):
+                    self._fail_at_end(index, error)
+                    failures.append((index, error))
+            elif result.status is ExtractionStatus.SUPERSEDED and member.is_current:
+                self._hold_place_at(index)
+                self._redo_revised_member(index, damaged=True, failures=failures)
+        for member, error in reader._failed_at_end:
+            if id(member) not in failing:
+                continue
+            if selector is not None and not selector(member):
+                continue
+            self._current = _MemberState()
+            try:
+                transformed, _, _ = self._transform(member)
+            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
+                raise
+            except (ArchiveyError, OSError) as exc:
+                found, status = self._classify(exc, member.name)
+                index = self._append_result(
+                    ExtractionResult(member, None, status, found)
+                )
+                if (
+                    isinstance(found, ArchiveyError)
+                    and status is ExtractionStatus.FAILED
+                ):
+                    failures.append((index, found))
+                continue
+            if transformed is None:
+                continue
+            index = self._append_result(
+                ExtractionResult(member, None, ExtractionStatus.FAILED, error)
+            )
+            failures.append((index, error))
+        for index, error in failures:
+            logger.warning(
+                "Skipping %s %r: %s",
+                state.results[index].member.type.value,
+                state.results[index].member.name,
+                error,
+            )
+        return failures
+
+    def _fail_at_end(self, index: int, error: ArchiveyError) -> None:
+        """Take back what result ``index`` wrote, and record it ``FAILED``."""
+        state = self._state
+        prior = state.results[index]
+        self._current = _MemberState()
+        try:
+            self._take_back_written(index)
+        finally:
+            if self._current.parked:
+                self._drop_parked_copies(prior.member.name, None)
+        self._set_result(
+            index,
+            ExtractionResult(
+                prior.member,
+                None,
+                ExtractionStatus.FAILED,
+                error,
+                presented_name=prior.presented_name,
+                rewrites=prior.rewrites,
+            ),
+        )
 
     def _unselect_revised_member(self, index: int) -> None:
         """Take back what result ``index`` wrote for a member the selection no longer
@@ -1896,7 +2028,13 @@ class ExtractionCoordinator:
         elif not os.path.islink(long_path(path)):
             self._apply_metadata(path, revised)
 
-    def _redo_revised_member(self, index: int) -> None:
+    def _redo_revised_member(
+        self,
+        index: int,
+        *,
+        damaged: bool = False,
+        failures: list[tuple[int, ArchiveyError]] | None = None,
+    ) -> None:
         """Handle result ``index``'s member again, now that the walk has changed its
         type or name, as random access would have handled it from the start.
 
@@ -1910,6 +2048,10 @@ class ExtractionCoordinator:
         not written, so it can be a link, a directory or an empty file, and fails
         otherwise. Results other than ``EXTRACTED`` and ``BLOCKED`` stand: nothing was
         written for them that the change could alter.
+
+        ``damaged``: the walk changed the member because the archive contradicts
+        itself, so a failure for passed bytes is ``CorruptionError``. ``failures``:
+        a failure is appended there for the caller to stop on, not stopped on here.
         """
         state = self._state
         result = state.results[index]
@@ -1946,6 +2088,13 @@ class ExtractionCoordinator:
                         current.recopy = True
                     elif member.size == 0:
                         held = io.BytesIO()
+                    elif damaged:
+                        raise CorruptionError(
+                            f"The data of {quoted(member.name)} was passed before "
+                            "the archive's directory made it the current copy of its "
+                            "name, and was not written",
+                            member_name=member.name,
+                        )
                     else:
                         raise ExtractionError(
                             f"The data of {quoted(member.name)} was passed before "
@@ -1981,9 +2130,16 @@ class ExtractionCoordinator:
                     collided_with=current.collided_with,
                 ),
             )
-            self._stop_or_log(
-                exc, error, status, kind=member.type.value, name=member.name
-            )
+            if (
+                failures is not None
+                and status is ExtractionStatus.FAILED
+                and isinstance(error, ArchiveyError)
+            ):
+                failures.append((index, error))
+            else:
+                self._stop_or_log(
+                    exc, error, status, kind=member.type.value, name=member.name
+                )
         finally:
             self._close(held)
             if current.parked:

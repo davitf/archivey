@@ -172,6 +172,15 @@ def _descriptor_error(
     )
 
 
+def _missing_error(member: ArchiveMember, offset: int) -> CorruptionError:
+    return CorruptionError(
+        f"ZIP central directory entry {quoted(member.name)} points to offset "
+        f"{offset}, where the stream held no local header",
+        member_name=member.name,
+        source_format=ArchiveFormat.ZIP,
+    )
+
+
 def _renamed_error(local_name: bytes, central: CentralEntry) -> CorruptionError:
     return CorruptionError(
         f"File name in directory {quoted(_stored_text(central.name))} and header "
@@ -525,10 +534,6 @@ class ZipForwardReader(ZipReader):
         self._descriptors: dict[int, tuple[int, int, int]] = {}
         # The kept members in the directory's order, once it has been read.
         self._directory_order: list[ArchiveMember] | None = None
-        # Members the directory fails at the end of the pass, in its order, with why.
-        # Extraction is to give each its result when it settles the pass; nothing
-        # reads it yet.
-        self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
         self._end_record: EndRecord | None = None
         # The first header is parsed at open, so a stream that is no ZIP fails here
         # (DR-15b), as a TAR's does.
@@ -733,15 +738,20 @@ class ZipForwardReader(ZipReader):
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
         matched: set[int] = set()
         order: list[ArchiveMember] = []
-        # Entries pointing where no local header was, and entries pointing at a local
-        # header an earlier entry already took (by position in the directory).
+        # Entries pointing where no local header was, when their text was not kept
+        # to build a member from, and entries pointing at a local header an earlier
+        # entry already took (by position in the directory).
         unmatched: list[int] = []
         shared: list[int] = []
         failed: list[tuple[int, ArchiveMember, CorruptionError]] = []
         for position, stored in enumerate(stored_offsets):
             offset = stored + end.base
             if offset not in local_offsets:
-                unmatched.append(position)
+                if entries is None:
+                    unmatched.append(position)
+                else:
+                    missing = self._missing_member(entries[position], len(failed))
+                    failed.append((position, missing, _missing_error(missing, offset)))
                 continue
             if offset in matched:
                 shared.append(position)
@@ -807,6 +817,7 @@ class ZipForwardReader(ZipReader):
         self._local_offsets = set()
         self._descriptors = {}
         if unmatched:
+            # No member to fail: the entry's text was not kept.
             first = unmatched[0]
             raise CorruptionError(
                 f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
@@ -828,6 +839,18 @@ class ZipForwardReader(ZipReader):
         if failed:
             _, _, error = failed[0]
             raise error
+
+    def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:
+        """The member a directory entry with no local entry describes, for the end of
+        the pass to fail (``_failed_at_end``).
+
+        The pass never yielded it and the listing does not keep it; its id follows
+        those the walk gave out, so it is told apart from every listed member.
+        """
+        member = self._to_member(central, self._walk_position + nth)
+        member._member_id = self._walk_position + nth
+        member._archive_id = self._archive_id
+        return member
 
     def _report_unlisted(self, offsets: list[int]) -> None:
         """Drop the members at ``offsets`` from the listing, and report each.
