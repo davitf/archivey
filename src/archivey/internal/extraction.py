@@ -322,10 +322,14 @@ class BombTracker:
         max_entries: int | None = ExtractionLimits.max_entries,
         *,
         source: BaseArchiveReader | None = None,
+        live_ratio_activation_threshold: int = (
+            ExtractionLimits.live_ratio_activation_threshold
+        ),
     ) -> None:
         self._max_bytes = max_bytes
         self._max_ratio = max_ratio
         self._ratio_floor = ratio_activation_threshold
+        self._live_ratio_floor = live_ratio_activation_threshold
         # Archive-wide ratio denominators, taken from the reader so the coordinator just
         # hands over the source: the static outer compressed size when it is cheaply known
         # (captured once), otherwise a LIVE sample of the compressed bytes consumed from the
@@ -478,7 +482,12 @@ class BombTracker:
                         f"{output / css:.0f}:1 exceeds limit "
                         f"max_ratio={self._max_ratio:.0f}:1{detail}"
                     )
-            elif self._source is not None:
+            elif self._source is not None and output > self._live_ratio_floor:
+                # The live denominator only grows, so a blank run at the start of the
+                # source reads far above the ratio it will end at once the data after it
+                # arrives. Waiting for the larger live floor lets such a start pass as it
+                # does when the whole size is known; once the source is read to its end,
+                # ``consumed`` is that whole size and this check matches the static one.
                 consumed = self._source.compressed_bytes_consumed
                 if consumed and consumed > 0 and output / consumed > self._max_ratio:
                     raise _AlwaysStopResourceLimitError(
@@ -1011,6 +1020,9 @@ class ExtractionCoordinator:
             self._limits.ratio_activation_threshold,
             self._limits.max_entries,
             source=reader,
+            live_ratio_activation_threshold=(
+                self._limits.live_ratio_activation_threshold
+            ),
         )
 
         selector = self._selector

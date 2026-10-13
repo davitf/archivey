@@ -18,6 +18,7 @@ import unicodedata
 import warnings
 import zipfile
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -463,10 +464,31 @@ def test_archive_wide_ratio_live_denominator() -> None:
         source=SimpleNamespace(
             compressed_source_size=None, compressed_bytes_consumed=10
         ),
+        live_ratio_activation_threshold=10,
     )
     t.start_member(_member("f"))
     with pytest.raises(_AlwaysStopResourceLimitError):
         t.count(30)  # total 30 > floor 10, live 30/10 = 3 > 2
+
+
+def test_live_ratio_waits_for_its_own_floor() -> None:
+    # The live denominator is what has been read so far, so a blank start reads far
+    # above the ratio the whole archive ends at. The live check waits for its own,
+    # larger floor; the static check keeps the ordinary one.
+    source = SimpleNamespace(compressed_source_size=None, compressed_bytes_consumed=10)
+    t = BombTracker(
+        max_bytes=10**12,
+        max_ratio=2.0,
+        ratio_activation_threshold=10,
+        source=source,
+        live_ratio_activation_threshold=100,
+    )
+    t.start_member(_member("f"))
+    t.count(90)  # 90:10 is 9:1, but output is still under the live floor
+    source.compressed_bytes_consumed = 60  # the data after the blank start arrives
+    t.count(20)  # past the floor: 110:60 is under 2:1
+    with pytest.raises(_AlwaysStopResourceLimitError, match="Live decompression"):
+        t.count(30)  # 140:60 is over 2:1
 
 
 def test_ratio_skipped_when_denominators_unknown() -> None:
@@ -2374,6 +2396,7 @@ def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                 limits=ExtractionLimits(
                     max_ratio=10.0,
                     ratio_activation_threshold=1024,
+                    live_ratio_activation_threshold=1024,
                     max_extracted_bytes=100
                     * 2**20,  # high, so the cap is not what trips
                 ),
@@ -2392,6 +2415,7 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
                 limits=ExtractionLimits(
                     max_ratio=10.0,
                     ratio_activation_threshold=1024,
+                    live_ratio_activation_threshold=1024,
                     max_extracted_bytes=100 * 2**20,
                 ),
                 on_error=OnError.CONTINUE,  # global guard halts anyway
@@ -2441,6 +2465,7 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                 limits=ExtractionLimits(
                     max_ratio=10.0,
                     ratio_activation_threshold=1024,
+                    live_ratio_activation_threshold=1024,
                     max_extracted_bytes=100 * 2**20,
                 ),
             )
@@ -2463,6 +2488,7 @@ def test_pipe_size_claim_does_not_switch_off_live_ratio(
     limits = ExtractionLimits(
         max_ratio=10.0,
         ratio_activation_threshold=1024,
+        live_ratio_activation_threshold=1024,
         max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
     )
     with open_archive(SizedNonSeekable(raw, size=10**9), streaming=True) as r:
@@ -2470,6 +2496,39 @@ def test_pipe_size_claim_does_not_switch_off_live_ratio(
         assert r.compressed_bytes_consumed is not None
         with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
             r.extract_all(tmp_path / "out", limits=limits)
+
+
+def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
+    # Regression: a .tar.gz whose member starts with a long run of zeros was refused
+    # from a pipe ("Live decompression ratio 1008:1") while the same file extracted
+    # from disk. The live denominator is only what has been read so far, so the blank
+    # start read as a bomb until the data after it arrived. Scaled down here: 16 MiB of
+    # zeros then 1 MiB of random bytes, about 17:1 overall.
+    from tests.streams_util import NonSeekableBytesIO
+
+    payload = b"\x00" * (16 * 2**20) + os.urandom(2**20)
+    raw = _tar_bytes([("file", "img.bin", payload)], mode="w:gz")
+    limits = ExtractionLimits(
+        max_ratio=100.0,
+        ratio_activation_threshold=1024,
+        live_ratio_activation_threshold=32 * 2**20,  # more than the blank start
+    )
+    for name, src in [
+        ("file", io.BytesIO(raw)),
+        ("pipe", NonSeekableBytesIO(raw)),
+    ]:
+        with open_archive(src, streaming=True) as r:
+            r.extract_all(tmp_path / name, limits=limits)
+        assert (tmp_path / name / "img.bin").read_bytes() == payload
+
+    # A live floor under the blank start judges it before the data arrives: this is the
+    # trade-off the floor sets, and what the old behaviour did at 5 MiB.
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
+            r.extract_all(
+                tmp_path / "low",
+                limits=replace(limits, live_ratio_activation_threshold=1024),
+            )
 
 
 def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
@@ -3246,6 +3305,7 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
                 limits=ExtractionLimits(
                     max_ratio=10.0,
                     ratio_activation_threshold=1024,
+                    live_ratio_activation_threshold=1024,
                     max_extracted_bytes=100
                     * 2**20,  # high, so the cap is not what trips
                 ),

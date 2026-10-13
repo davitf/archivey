@@ -153,9 +153,9 @@ class ExtractionLimits:
     Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
     ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
-    guard fields to ``None``; :attr:`ratio_activation_threshold` is a parameter of the
-    ratio guard rather than a guard of its own, and is moot once ``max_ratio`` is
-    ``None``.
+    guard fields to ``None``; :attr:`ratio_activation_threshold` and
+    :attr:`live_ratio_activation_threshold` are parameters of the ratio guard rather than
+    guards of their own, and are moot once ``max_ratio`` is ``None``.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
@@ -175,7 +175,9 @@ class ExtractionLimits:
     moves on) and across the archive (which stops the extraction). The per-member check
     needs the member's compressed size; where the format or access mode does not give
     one, only the archive-wide check applies. Neither check starts before
-    :attr:`ratio_activation_threshold` bytes of output. The archive-wide check also
+    :attr:`ratio_activation_threshold` bytes of output, and the archive-wide check on a
+    source of unknown size, such as a pipe, not before
+    :attr:`live_ratio_activation_threshold`. The archive-wide check also
     counts the copies written when a file runs out of hard-link slots (1024 names on
     NTFS), since the archive's declared link count drives them.
     """
@@ -187,6 +189,25 @@ class ExtractionLimits:
     judged once a member (or the archive, for the archive-wide check) has produced this
     much. It cannot be ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio
     guard off.
+    """
+
+    live_ratio_activation_threshold: int = 256 * 2**20
+    """Output bytes before the archive-wide ratio is checked on a source of unknown size. 256 MiB.
+
+    When the archive's size is not known up front, as for a ``.tar.gz`` read from a
+    pipe, the archive-wide check divides the output by the compressed bytes read so
+    far. An honest archive whose data starts with a long blank run, such as a disk
+    image, looks like a bomb until the data after that run arrives: blank data
+    compresses past 1000:1. The same archive read from a file passes, because there
+    the check divides by the whole file. So from such a source the archive-wide check
+    waits for this much output, and a blank start shorter than this passes as it does
+    from a file. Past it, the check still divides by the bytes read so far, so a longer
+    blank start can still be refused; once the source has been read to its end, the
+    two checks agree. A bomb read this way can write this much
+    before the check stops it; :attr:`max_extracted_bytes` still bounds the total.
+    Lower it to stop such a bomb sooner; raise it for piped archives with longer blank
+    starts. A value below :attr:`ratio_activation_threshold` has no effect. It cannot be
+    ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio guard off.
     """
 
     max_entries: int | None = 262_144

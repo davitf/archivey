@@ -1129,6 +1129,7 @@ class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
     max_ratio: float | None = 1000.0
     ratio_activation_threshold: int = 5 * 2**20
+    live_ratio_activation_threshold: int = 256 * 2**20
     max_entries: int | None = 262_144
     UNLIMITED: ClassVar["ExtractionLimits"]
 
