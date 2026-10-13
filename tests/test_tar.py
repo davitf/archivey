@@ -3047,7 +3047,10 @@ def test_a_whole_read_of_a_cut_member_raises_with_nothing_in_every_mode(
 
 def test_a_member_keeps_no_parsed_pax_records() -> None:
     """The member's PAX records live on as ``extra["tar.pax_headers"]``; the parsed
-    copy the entry carried is dropped once the member is built."""
+    entry that carried them is dropped once the member is built, and the member keeps
+    only its data span."""
+    from archivey.internal.backends.tar_parser import TarSpan
+
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
         info = tarfile.TarInfo("a")
@@ -3056,7 +3059,7 @@ def test_a_member_keeps_no_parsed_pax_records() -> None:
     with open_archive(io.BytesIO(buf.getvalue())) as ar:
         (member,) = ar.members()
         assert member.extra["tar.pax_headers"]["comment"] == "c" * 100
-        assert not member._raw.pax
+        assert type(member._raw) is TarSpan
 
 
 def test_global_pax_path_wins_over_a_gnu_long_name() -> None:
@@ -3441,15 +3444,17 @@ def test_gnu_dumpdir_entry_is_a_directory(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
-def test_a_pass_holds_one_entry_per_member(streaming: bool) -> None:
-    """A pass over many members keeps one parsed entry per member, on the member list.
+def test_a_pass_keeps_no_parsed_entries(streaming: bool) -> None:
+    """A pass over many members keeps no parsed entry or header block behind it.
 
     tarfile kept its own list of every header beside the reader's member list, so a
-    listing held each header twice. Nothing in the walk may keep entries behind it.
+    listing held each header twice. Each member now keeps only its data span (a
+    ``TarSpan``), held by the member alone; the entry and its header block go once the
+    member is built.
     """
     import gc
 
-    from archivey.internal.backends.tar_parser import HeaderBlock, TarEntry
+    from archivey.internal.backends.tar_parser import HeaderBlock, TarEntry, TarSpan
 
     count = 2_000
     buf = io.BytesIO()
@@ -3463,22 +3468,19 @@ def test_a_pass_holds_one_entry_per_member(streaming: bool) -> None:
         return name.startswith(b"held-once-")
 
     with open_archive(io.BytesIO(buf.getvalue()), streaming=streaming) as reader:
-        names = [m.name for m, _ in reader.stream_members()]
+        members = [m for m, _ in reader.stream_members()]
         gc.collect()
-        entries = [
-            o for o in gc.get_objects() if isinstance(o, TarEntry) and ours(o.name)
-        ]
+        entries = sum(
+            isinstance(o, TarEntry) and ours(o.name) for o in gc.get_objects()
+        )
         headers = sum(
             isinstance(o, HeaderBlock) and ours(o.name) for o in gc.get_objects()
         )
-        # Each entry is held by its member alone, not by a list of the walk's.
-        holders = [
-            type(r).__name__ for r in gc.get_referrers(entries[-1]) if r is not entries
-        ]
-        entry_count = len(entries)
-        del entries
-    assert len(names) == count
-    assert (entry_count, headers) == (count, count)
+        span = members[-1]._raw
+        assert type(span) is TarSpan
+        holders = [type(r).__name__ for r in gc.get_referrers(span)]
+    assert len(members) == count
+    assert (entries, headers) == (0, 0)
     assert holders == ["ArchiveMember"]
 
 

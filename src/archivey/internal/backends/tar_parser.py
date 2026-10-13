@@ -636,9 +636,7 @@ class TarEntry:
     uid: int
     gid: int
     # The PAX records in force: the global records, then the member's own on top.
-    # Shared, read-only, between members that have none of their own. The reader
-    # empties it once it has built the member from an entry with records of its own,
-    # and has_own_pax stays true.
+    # Shared, read-only, between members that have none of their own.
     pax: Mapping[bytes, PaxValue]
     has_own_pax: bool
     # An AREGTYPE (NUL) or REGTYPE (0) entry whose final name ends in "/": a
@@ -654,10 +652,36 @@ class TarEntry:
     def typeflag(self) -> bytes:
         return self.header.typeflag
 
+    def span(self) -> TarSpan:
+        """The fields a reader needs after listing: where the data is and how to
+        read it. Kept in place of the entry, which holds the parsed header, names
+        and PAX records (~500 bytes a member) that the member no longer needs."""
+        return TarSpan(
+            self.header.typeflag,
+            self.data_offset,
+            self.stored_size,
+            self.size,
+            self.sparse,
+        )
+
     @property
     def data_end(self) -> int:
         """Where the next header starts."""
         return self.data_offset + _round_up(self.stored_size)
+
+
+@dataclass(slots=True)
+class TarSpan:
+    """A member's data area, as :meth:`TarEntry.span` keeps it after listing.
+
+    The fields mean what they mean on :class:`TarEntry`.
+    """
+
+    typeflag: bytes
+    data_offset: int
+    stored_size: int
+    size: int
+    sparse: SparseMap | None
 
 
 def _round_up(n: int) -> int:
@@ -836,7 +860,7 @@ class TarWalker:
         """Where the next header starts (the end of the last member's data area)."""
         return self._pos
 
-    def open_data(self, entry: TarEntry) -> _ForwardSlice:
+    def open_data(self, entry: TarEntry | TarSpan) -> _ForwardSlice:
         """A forward-only stream over ``entry``'s data area (``stored_size`` bytes),
         read through the walk's own stream. It is good while the walk stays at the
         data, that is until the next :meth:`next_entry`; its ``in_place()`` tells
