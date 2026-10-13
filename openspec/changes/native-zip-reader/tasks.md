@@ -168,7 +168,10 @@ each lands with nothing half-done reachable:
       directory entry with no local entry. Each test checks every affected result and
       what is at the path afterwards (the reversed pair: `M1` `FAILED`, `M2`
       `SUPERSEDED`, the path empty); `stream_members()` raises for 3.3b and the missing
-      entry, not for 3.3c.
+      entry, not for 3.3c. A member whose local header and directory entry store
+      different names (3b3a raises after the pass) gets the same treatment: the file
+      written under the local name is taken back and the member fails, as the
+      seekable extraction fails it when it reads the local header.
 - [ ] 3.3i A local entry no directory entry points to: dropped from the listing and,
       when extracting, from disk, and reported (diagnostic code pending the
       maintainer's pick, 2026-10-13). Until 3b3b it stays listed as its local header
