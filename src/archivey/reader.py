@@ -137,10 +137,9 @@ class ForwardArchiveReader(ABC):
         ``break``), so no later pass is possible; after a completed pass it returns the
         cached report.
 
-        A :meth:`stream_members` or ``for member in reader`` pass does not enforce
-        ``ListingLimits``, but it stops keeping the listing once the totals cross a
-        limit, so its memory stays bounded by the limits. After such a pass this raises
-        the same ``ResourceLimitError`` that ``members()`` raises on the archive.
+        A :meth:`stream_members` or ``for member in reader`` pass enforces
+        ``ListingLimits`` too: it raises the same ``ResourceLimitError`` at the member
+        that crosses a limit.
 
         For a complete-or-raise list on a streaming reader::
 
@@ -154,8 +153,7 @@ class ForwardArchiveReader(ABC):
     def members_report_if_available(self) -> MemberListReport | None:
         """A member-list report if available without scanning, else ``None``.
         Never scans or consumes the forward pass, so it is safe to call on any reader
-        (including a streaming one). It is ``None`` too after a :meth:`stream_members`
-        pass that went past ``ListingLimits``, which keeps no listing."""
+        (including a streaming one)."""
         ...
 
     @abstractmethod
@@ -180,12 +178,13 @@ class ForwardArchiveReader(ABC):
         stream is valid only until the iterator advances; it is ``None`` for non-file
         members.
 
-        The pass does not enforce ``ListingLimits``: it yields every member, and on an
-        archive over a limit the listing calls after it raise ``ResourceLimitError``.
-        A pass that lists as it goes (every streaming reader, and TAR) stops keeping
-        members once they cross a limit, so its memory stays bounded by the limits and
-        a link it yields after that point gets no ``link_target_member``.
-        ``ListingLimits.UNLIMITED`` keeps them all.
+        The pass enforces ``ListingLimits`` as ``members()`` does. A pass that lists
+        as it goes (every streaming reader, and TAR) yields the members before the
+        limit and then raises ``ResourceLimitError`` at the member that crosses it;
+        the other readers list the whole archive first, so they raise before the first
+        yield. An archive with more members than the default ``max_members`` needs a
+        higher limit, or ``ListingLimits.UNLIMITED``, to be streamed; the reader then
+        keeps every member until it closes.
 
         ``file_copy_streams=False`` also yields ``None`` for a file that the archive
         stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file
@@ -281,10 +280,10 @@ class ArchiveReader(ForwardArchiveReader):
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
         on a streaming reader (there, use :meth:`~ForwardArchiveReader.members_report`,
-        which uses up the pass and applies :class:`~archivey.config.ListingLimits`, or
-        iterate :meth:`~ForwardArchiveReader.stream_members` and ignore the streams,
-        which ``ListingLimits`` does not cap). Raises terminal archive-level listing
-        errors instead of returning an incomplete list."""
+        which uses up the pass, or iterate :meth:`~ForwardArchiveReader.stream_members`
+        and ignore the streams; both apply :class:`~archivey.config.ListingLimits`).
+        Raises terminal archive-level listing errors instead of returning an
+        incomplete list."""
         ...
 
     @abstractmethod

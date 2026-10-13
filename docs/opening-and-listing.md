@@ -95,13 +95,13 @@ carry none ([details](formats.md#single-file-compressors)).
 
 Its other limitations:
 
-- **Listing limits on the pass.** On a streaming reader, `stream_members()` and
-  `for member in reader` are deliberately outside `ListingLimits`: they yield every
-  member. Past a limit the reader stops keeping the members it has yielded, so memory
-  stays bounded and a link yielded after that point has no `link_target_member`.
-  `members_report()` and `extract_all()` enforce the limits as `members()` does, so
-  after such a pass `members_report()` raises `ResourceLimitError`. 7z, RAR and ISO
-  check `max_members` when the archive is opened. See [Limits](extracting.md#limits).
+- **Listing limits on the pass.** `stream_members()` and `for member in reader`
+  enforce `ListingLimits` as `members()` does. The pass yields the members within the
+  limits, then raises `ResourceLimitError` at the member that crosses one. To stream
+  an archive with more members than the defaults allow, open it with a higher
+  `listing_limits.max_members`, or `ListingLimits.UNLIMITED`; the reader then keeps
+  every member until it closes. 7z, RAR and ISO check `max_members` when the archive
+  is opened. See [Limits](extracting.md#limits).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).

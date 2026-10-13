@@ -424,8 +424,8 @@ live against compressed bytes consumed, which is why a piped `.tar.gz` bomb stop
 mid-pass. A plain tar has nothing to decompress and is checked against the archive size.
 
 **`extract_all` is one forward pass in both modes.** Random access does not list the
-archive first: `TarReader._extraction_listing` has the pass enforce `ListingLimits` as
-members arrive (`ResourceLimitError` at the member that crosses a cap, before it is
+archive first: `TarReader._list_before_extraction` leaves the listing to the pass, which
+enforces `ListingLimits` as members arrive (`ResourceLimitError` at the member that crosses a cap, before it is
 written), so a `.tar.gz` is decoded once and no rewind is reported. What that gives up is
 knowledge of the future, the same as a streaming pass: a corrupt header raises after the
 members before it are written (no longer fails closed), and the duplicate-name cases

@@ -308,18 +308,16 @@ archive declares.
 
 **Mechanism.**
 - `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
-  `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
-  materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
-  raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
-  `stream_members()` and `for member in reader` are unguarded: they yield every
-  member, except on 7z, RAR and ISO, which check the caps while parsing. Their memory
-  is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
-  reader, and TAR in both modes) counts members as usual and stops keeping them once
-  the totals cross a cap, in `base_reader.py` `_discard_listing`. The TAR walker keeps
-  nothing behind the member list, so nothing else is held. After the discard, the
-  listing calls raise the same `ResourceLimitError` as `members()`. `extract_all()`
-  enforces the caps in both modes, because it resolves hard links against the members
-  it keeps. Unguarded bounds memory, not work: a forward-only TAR walk reads through
+  `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
+  reader's member walk, by every call that lists: `members()`, `members_report()`,
+  `stream_members()`, `for member in reader` and `extract_all()`, in both access modes.
+  Crossing a cap raises `ResourceLimitError` at the member that crosses it, before it
+  is listed; a TAR walk parses no header after it. `None` (`ListingLimits.UNLIMITED`)
+  disables it. 7z, RAR and ISO also check the caps while parsing, at `open_archive`.
+  The TAR walker keeps nothing behind the member list, so nothing else is held. ZIP
+  (through `zipfile`) reads its whole central directory at open, before any cap is
+  checked: the source holds that index uncompressed, so its size follows the
+  archive's. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, for the bytes present rather than the size a header declares
   (a member declaring more than the archive holds raises `TruncatedError` at the first
   short read).
@@ -448,8 +446,8 @@ record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
-`test_stream_members_unguarded_when_members_would_fail`,
-`test_unguarded_pass_memory_is_bounded_by_listing_limits`);
+`test_stream_members_enforces_max_members`,
+`test_pass_raises_at_the_member_that_crosses_the_cap`);
 `tests/test_sevenzip_reader.py::test_num_unpack_streams_count_is_bounded`,
 `::test_num_unpack_streams_sum_across_folders_is_bounded`,
 `::test_member_scaled_counts_respect_max_members`,

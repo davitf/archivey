@@ -217,13 +217,14 @@ ExtractionLimits.UNLIMITED = ExtractionLimits(
 
 @dataclass(frozen=True)
 class ListingLimits:
-    """Caps for materializing a member list (``members`` / ``members_report`` / extract prep).
+    """Caps on the member listing a reader builds and keeps.
 
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
-    ``stream_members`` and ``for member in reader`` do not enforce these caps: they
-    yield every member, but stop keeping the listing once a cap is crossed, so their
-    memory stays bounded by it. ``extract_all`` enforces them in both access modes.
+    Every call that lists members enforces them, in both access modes: ``members()``,
+    ``members_report()``, ``stream_members()``, ``for member in reader`` and
+    ``extract_all``. Each raises :class:`~archivey.exceptions.ResourceLimitError` at
+    the member that crosses a cap.
     7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its comments against
     ``max_metadata_bytes`` (the declared sizes of compressed RAR 1.5/2.x comments
     before decoding them), and ISO the directory records, path tables and UDF

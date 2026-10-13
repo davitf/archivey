@@ -9,7 +9,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Generator, Iterator, Mapping
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -514,12 +514,8 @@ class BaseArchiveReader(ArchiveReader):
         # attached. A streaming walk keeps neither.
         # ``_walk_presented`` counts the positions whose presentation checks have run,
         # and ``_walk_position`` the members the walk has produced.
-        # ``_listing_discarded`` is set when an unguarded pass (``stream_members()``)
-        # crosses ``ListingLimits``: from then on the walk keeps nothing, so memory
-        # stays bounded by the caps (see ``_discard_listing``).
         self._listed: list[ArchiveMember] = []
         self._listed_by_name: dict[str, list[ArchiveMember]] = {}
-        self._listing_discarded: bool = False
         self._walk_position: int = 0
         self._walk: Iterator[ArchiveMember] | None = None
         self._walk_done: bool = False
@@ -541,9 +537,6 @@ class BaseArchiveReader(ArchiveReader):
         self._unconfirmed_failure_emitted: bool = False
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
-        # When true, progressive registration enforces ListingLimits (members_report).
-        # stream_members leaves this false so iteration stays the unguarded escape hatch.
-        self._progressive_enforce_listing_limits: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
         # A backend that shares one underlying handle across member streams (zipfile fp,
@@ -780,7 +773,7 @@ class BaseArchiveReader(ArchiveReader):
         report: MemberListReport | None = None
         members = self._begin_forward_pass() if self._streaming else None
         if members is None:
-            report = self._materialize_members(enforce_listing_limits=False).report
+            report = self._materialize_members().report
             members = iter(report.members)
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
@@ -1212,26 +1205,20 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _finalize_and_publish(
-        self, error: ArchiveyError | None, *, enforce: bool, child_scope: bool
+        self, error: ArchiveyError | None, *, child_scope: bool
     ) -> _Materialized:
         """Resolve the walk's links, then publish it as the report.
 
-        ``enforce`` does two things. It gates a re-check of the running totals before
-        anything is resolved: a non-enforcing pull (a ``stream_members`` pass) may have
-        counted members past a limit, and an enforcing caller must not publish that. It
-        is also passed to ``_finalize_links`` as ``enforce_listing_limits``, so it
-        decides whether link targets read during finalization are weighed under the
-        limits.
+        The running totals are re-checked first: a target read on request
+        (``_read_link_target_on_request``) is weighed without enforcing, and a listing
+        over the limits is never published.
 
         ``child_scope`` makes the link-target reads a private child scope of the active
         operation, exempt from the live-stream gate: true for random-access
         materialization, false when a forward pass finalizes.
         """
-        if enforce:
-            self._listing_tracker.assert_within_limits()
-        self._finalize_links(
-            error=error, child_scope=child_scope, enforce_listing_limits=enforce
-        )
+        self._listing_tracker.assert_within_limits()
+        self._finalize_links(error=error, child_scope=child_scope)
         return self._publish_materialized(error=error)
 
     def _publish_materialized(self, *, error: ArchiveyError | None) -> _Materialized:
@@ -1256,7 +1243,6 @@ class BaseArchiveReader(ArchiveReader):
         *,
         error: ArchiveyError | None,
         child_scope: bool,
-        enforce_listing_limits: bool,
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
 
@@ -1270,8 +1256,7 @@ class BaseArchiveReader(ArchiveReader):
         Eager materialization uses a child scope + internal-open exemption for
         link-data reads; a streaming pass's finalization does not open a child scope.
         ``is_current`` is not stamped here: the walk stamps it once, when it ends
-        (``_end_walk``) or when a pass discards it (``_discard_listing``), and link
-        resolution never reads it.
+        (``_end_walk``), and link resolution never reads it.
 
         Targets stored as member data are read here only under
         ``ArchiveyConfig.read_link_targets``. With it off this is listing, or a pass
@@ -1283,8 +1268,8 @@ class BaseArchiveReader(ArchiveReader):
 
         A target read from member data here was still ``None`` when the member was
         registered, so registration weighed it as nothing. It is added to the listing
-        tracker as it arrives, under ``enforce_listing_limits``, so
-        ``max_metadata_bytes`` covers every target the published list will carry.
+        tracker as it arrives, with the limits enforced, so ``max_metadata_bytes``
+        covers every target the published list will carry.
         """
         members = self._listed
         if not any(member.is_link for member in members):
@@ -1309,9 +1294,7 @@ class BaseArchiveReader(ArchiveReader):
                         self._report_damaged_link_target(member, exc)
                         continue
                     if member.link_target is not None:
-                        self._listing_tracker.account_link_target(
-                            member.link_target, enforce=enforce_listing_limits
-                        )
+                        self._listing_tracker.account_link_target(member.link_target)
             # One memo per finalize: every link on a walked chain shares its terminal,
             # so a chain of N links costs O(N) rather than a fresh walk per member.
             terminals: dict[int, ArchiveMember | None] = {}
@@ -1384,12 +1367,12 @@ class BaseArchiveReader(ArchiveReader):
     # walked: the index-only peek, materialization, the streaming pass, and a backend's
     # own data pass. A member is stamped, checked and counted once, when it is pulled.
 
-    def _pull_member(self, *, enforce: bool) -> ArchiveMember | None:
+    def _pull_member(self) -> ArchiveMember | None:
         """Pull the next member from the walk, or ``None`` once the walk has ended.
 
-        Registers the member (id stamp, presentation checks, listing accounting under
-        ``enforce``), indexes its name and appends it to ``_listed``, unless the listing
-        has been discarded (``_discard_listing``).
+        Registers the member (id stamp, presentation checks, listing accounting with
+        the limits enforced), indexes its name and appends it to ``_listed``. A member
+        that crosses a limit raises ``ResourceLimitError`` here, before it is listed.
 
         The walk ends when the backend's generator is exhausted or raises terminal
         archive damage (``CorruptionError`` / ``TruncatedError``); the damage is kept in
@@ -1417,14 +1400,13 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_pulling = True
         try:
             if self._walk is None:
-                self._account_archive_comment(enforce=enforce)
+                self._account_archive_comment()
                 self._walk = self._iter_members()
             position = self._walk_position
             try:
-                if self._streaming or self._listing_discarded:
-                    # A streaming walk, or one whose listing was discarded, is never
-                    # started over (``_abandon_walk`` poisons it), so it has nothing to
-                    # replay and keeps no log.
+                if self._streaming:
+                    # A streaming walk is never started over (``_abandon_walk`` poisons
+                    # it), so it has nothing to replay and keeps no log.
                     member = next(self._walk)
                 else:
                     member = self._pull_replayable(position)
@@ -1434,11 +1416,10 @@ class BaseArchiveReader(ArchiveReader):
             except CorruptionError as exc:
                 self._end_walk(exc)
                 return None
-            self._register_member(position, member, enforce_listing_limits=enforce)
+            self._register_member(position, member)
             self._walk_position = position + 1
-            if not self._listing_discarded:
-                self._index_member_name(member)
-                self._listed.append(member)
+            self._index_member_name(member)
+            self._listed.append(member)
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
@@ -1477,8 +1458,7 @@ class BaseArchiveReader(ArchiveReader):
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
 
         This is where ``is_current`` is stamped for duplicate names, whichever consumer
-        ended the walk; the only other place is ``_discard_listing``, over the prefix it
-        drops. On terminal damage it covers the recovered prefix the
+        ended the walk. On terminal damage it covers the recovered prefix the
         incomplete report holds: ``is_current`` defaults to ``True``, so an unstamped
         prefix would read every shadowed duplicate as current.
         """
@@ -1497,10 +1477,9 @@ class BaseArchiveReader(ArchiveReader):
         self._walk = None
         if close is not None:
             close()
-        if self._streaming or self._listing_discarded:
+        if self._streaming:
             # The pass has already yielded the prefix, so it cannot be walked again
-            # without handing the caller a second object for the same member. A
-            # discarded listing has no prefix left to replay either.
+            # without handing the caller a second object for the same member.
             self._walk_failure = exc
             return
         # Random access hands out no member before the walk ends, so nobody holds the
@@ -1511,64 +1490,12 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_position = 0
         self._listing_tracker.reset()
 
-    def _keep_listing_within_limits(self) -> None:
-        """After an unguarded pull, discard the listing once it is over ``ListingLimits``.
-
-        Only a pass that does not enforce the limits calls this (``stream_members()``,
-        ``for member in reader``): it keeps yielding past the caps, so what it keeps
-        must stop growing there. An enforcing pull raises at the caps instead.
-        """
-        if self._listing_discarded:
-            return
-        try:
-            self._listing_tracker.assert_within_limits()
-        except ResourceLimitError:
-            self._discard_listing()
-
-    def _discard_listing(self) -> None:
-        """Stop keeping the walk's members: the listing is over ``ListingLimits``.
-
-        Keeping it would make memory grow with a member count the archive chooses,
-        and no listing method could serve it anyway, since each one refuses a listing
-        over the limits (``_refuse_discarded_listing``). The pass that crossed them
-        keeps yielding, but the walk keeps no member, name index or replay log from
-        here on. So links in members the pass yields later resolve against no earlier
-        member, and the pass publishes nothing when it ends (``_finalize_pass_links``).
-        Last-entry-wins is stamped over the kept prefix first, as ``_end_walk`` would
-        stamp it, so a duplicate name in the prefix is superseded by a later copy in
-        the prefix; a copy the pass yields after the discard cannot supersede it.
-
-        A backend that keeps its own record of the walk extends this to drop it too.
-        """
-        _apply_last_entry_wins_is_current(self._listed)
-        self._listing_discarded = True
-        self._listed = []
-        self._listed_by_name = {}
-        self._walk_built = []
-        self._walk_emits = {}
-
-    def _refuse_discarded_listing(self) -> None:
-        """Raise the listing-limit error for a listing a pass discarded, if it did.
-
-        The totals that crossed the limits never go back down: ``_abandon_walk`` does
-        not reset a discarded walk. So this is the ``ResourceLimitError`` that
-        ``members()`` raises on the same archive.
-        """
-        if not self._listing_discarded:
-            return
-        self._listing_tracker.assert_within_limits()
-        raise AssertionError("a discarded listing is within ListingLimits")
-
-    def _drain_walk(self, *, enforce: bool) -> None:
-        """Pull to the end of the walk, each pull under ``enforce``.
-
-        The caller re-checks the running totals afterwards: members a non-enforcing
-        pull (a ``stream_members`` pass) already counted were seen by no enforcing pull.
-        """
-        while self._pull_member(enforce=enforce) is not None:
+    def _drain_walk(self) -> None:
+        """Pull to the end of the walk."""
+        while self._pull_member() is not None:
             pass
 
-    def _ensure_walked(self, *, enforce: bool) -> None:
+    def _ensure_walked(self) -> None:
         """Drain the walk under the first-touch election, without resolving links.
 
         For the consumers that need the whole list but not its link targets: the peek
@@ -1580,11 +1507,10 @@ class BaseArchiveReader(ArchiveReader):
         # A walk published while we waited on the election has ended too.
         if not self._walk_done and self._state.begin_materialization():
             try:
-                self._drain_walk(enforce=enforce)
+                self._drain_walk()
             finally:
                 self._state.fail_materialization()
-        if enforce:
-            self._listing_tracker.assert_within_limits()
+        self._listing_tracker.assert_within_limits()
 
     def _listed_members(self) -> Iterator[ArchiveMember]:
         """The listed members for a backend's own data pass, then the walk's damage.
@@ -1602,16 +1528,14 @@ class BaseArchiveReader(ArchiveReader):
         if self._streaming:
             yield from self._begin_forward_pass()
             return
-        self._ensure_walked(enforce=False)
+        self._ensure_walked()
         yield from list(self._listed)
         error = self._walk_error
         self._finalize_pass_links(error=error)
         if error is not None:
             raise error
 
-    def _materialize_members(
-        self, *, enforce_listing_limits: bool = True
-    ) -> _Materialized:
+    def _materialize_members(self) -> _Materialized:
         """Materialize members into one report plus name index.
 
         ``CorruptionError`` / ``TruncatedError`` during listing publish an incomplete
@@ -1620,23 +1544,21 @@ class BaseArchiveReader(ArchiveReader):
         walk: the members may already have been handed out by a peek, and a retry
         resolves the links that were not finished.
         """
-        published = self._published_within_limits(enforce=enforce_listing_limits)
+        published = self._published_within_limits()
         if published is not None:
             return published
 
         if not self._state.begin_materialization():
             # Another thread published while we waited (or cache was already ready).
-            published = self._published_within_limits(enforce=enforce_listing_limits)
+            published = self._published_within_limits()
             assert published is not None
             return published
 
         try:
-            self._drain_walk(enforce=enforce_listing_limits)
+            self._drain_walk()
             # Prefer the original listing error on the report; leave unresolved links
             # as-is when a secondary link-target fault is swallowed.
-            holder = self._finalize_and_publish(
-                self._walk_error, enforce=enforce_listing_limits, child_scope=True
-            )
+            holder = self._finalize_and_publish(self._walk_error, child_scope=True)
             self._state.complete_materialization()
             return holder
         except BaseException:
@@ -1652,65 +1574,42 @@ class BaseArchiveReader(ArchiveReader):
             self._state.fail_materialization()
             raise
 
-    def _published_within_limits(self, *, enforce: bool) -> _Materialized | None:
-        """The published listing, or ``None``; under ``enforce``, re-check its totals.
+    def _published_within_limits(self) -> _Materialized | None:
+        """The published listing, or ``None``; a published one is re-checked first.
 
-        A report a non-enforcing pass published (``stream_members``) may be over the
-        limits, so a caller that enforces them refuses it on the way out. A listing such
-        a pass discarded is refused whatever ``enforce`` says: there is none to return.
+        A link target read on request after publication (``_read_link_target_on_request``)
+        is weighed without enforcing, so the totals can cross a limit after the report
+        was published; the listing methods then refuse it on the way out.
         """
-        self._refuse_discarded_listing()
         materialized = self._materialized
-        if materialized is not None and enforce:
+        if materialized is not None:
             self._listing_tracker.assert_within_limits()
         return materialized
 
-    @contextmanager
-    def _enforcing_listing_limits(self) -> Iterator[None]:
-        """Have the forward pass enforce ``ListingLimits`` as it registers members.
+    def _list_before_extraction(self) -> None:
+        """List the archive before an extraction, if this reader lists first.
 
-        ``members_report()`` and an extraction's one pass enforce them;
-        ``stream_members()`` does not. The previous setting comes back on exit.
-        """
-        previous = self._progressive_enforce_listing_limits
-        self._progressive_enforce_listing_limits = True
-        try:
-            yield
-        finally:
-            self._progressive_enforce_listing_limits = previous
-
-    def _extraction_listing(self) -> AbstractContextManager[None]:
-        """Apply ``ListingLimits`` for an extraction over this reader.
-
-        Called by the extraction coordinator before its pass, which it runs inside the
-        returned context. On a random-access reader the default lists every member
-        first, with the limits enforced, so nothing is written from an archive over
-        them. A backend whose listing is itself a scan of the data may instead enforce
-        them as members arrive during the pass (TAR), and not decode the archive twice.
-        A streaming reader always does that: its one pass is the listing.
-
-        The pass resolves hard links against the members it has listed, so it keeps
-        them all; enforcing the limits is what bounds that, where an unguarded
-        ``stream_members()`` pass discards its listing instead (``_discard_listing``).
+        Called by the extraction coordinator before its pass. On a random-access reader
+        the default lists every member first, with the limits enforced, so nothing is
+        written from an archive over them. A backend whose listing is itself a scan of
+        the data may instead list as members arrive during the pass (TAR), and not
+        decode the archive twice. A streaming reader always does that: its one pass is
+        the listing. Every pass enforces the limits as it registers members.
 
         A listing that ends in damage does not raise here: the pass writes the
         members listed before it and then raises the damage, as a TAR pass does.
         """
-        if self._streaming:
-            return self._enforcing_listing_limits()
-        self._materialize_members(enforce_listing_limits=True)
-        return nullcontext()
+        if not self._streaming:
+            self._materialize_members()
 
-    def _account_archive_comment(self, *, enforce: bool) -> None:
+    def _account_archive_comment(self) -> None:
         comment = self._get_archive_info().comment
-        self._listing_tracker.account_archive_comment(comment, enforce=enforce)
+        self._listing_tracker.account_archive_comment(comment)
 
     def _register_member(
         self,
         idx: int,
         member: ArchiveMember,
-        *,
-        enforce_listing_limits: bool = False,
     ) -> None:
         """Assign identity, run backend-independent presentation checks, and account.
 
@@ -1747,7 +1646,7 @@ class BaseArchiveReader(ArchiveReader):
             self._emit_empty_link_target(member)
             member.link_target = None
             member._link_target_resolved = True
-        self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
+        self._listing_tracker.account_member(member)
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:
         """Report a symlink whose stored target is the empty string.
@@ -2478,20 +2377,13 @@ class BaseArchiveReader(ArchiveReader):
             member.link_target_member = terminal
 
     def _finalize_pass_links(self, *, error: ArchiveyError | None = None) -> None:
-        """Resolve all links after a forward pass reaches EOF or terminal damage.
-
-        A pass whose listing was discarded has nothing to resolve or publish.
-        """
-        if self._materialized is not None or self._listing_discarded:
+        """Resolve all links after a forward pass reaches EOF or terminal damage."""
+        if self._materialized is not None:
             return
         # Also ends a random-access reader's stream_members() pass (TAR's one-pass
         # walk, and the 7z and solid RAR passes over ``_listed_members()``), which
         # opens no child scope either.
-        self._finalize_and_publish(
-            error,
-            enforce=self._progressive_enforce_listing_limits,
-            child_scope=False,
-        )
+        self._finalize_and_publish(error, child_scope=False)
 
     def _link_progressive_member(self, member: ArchiveMember) -> None:
         """Point a link the pass is about to yield at a member the pass already passed.
@@ -2542,18 +2434,16 @@ class BaseArchiveReader(ArchiveReader):
         happens to have an index loaded. The message names the route that fits
         ``op``: for member data (``get()``, ``open()``/``read()``), iterate
         :meth:`stream_members` and read each stream as the pass reaches it; for the
-        listing (``members()``), use :meth:`members_report` (which applies
-        ``ListingLimits``), iterate :meth:`stream_members` (which ``ListingLimits`` does
-        not cap), or peek with :meth:`members_report_if_available`.
+        listing (``members()``), use :meth:`members_report`, iterate
+        :meth:`stream_members`, or peek with :meth:`members_report_if_available`.
         """
         self._state.require_open(op)
         if self._streaming:
             if op == "members()":
                 advice = (
                     "Call members_report() for the member list (it uses up the "
-                    "forward pass and applies ListingLimits; raise report.error for "
-                    "complete-or-raise), iterate stream_members() and ignore the "
-                    "streams (not capped by ListingLimits), or call "
+                    "forward pass; raise report.error for complete-or-raise), "
+                    "iterate stream_members() and ignore the streams, or call "
                     "members_report_if_available() for an index-only peek."
                 )
             else:
@@ -2753,23 +2643,22 @@ class BaseArchiveReader(ArchiveReader):
 
         token = self._state.acquire_pass("members_report")
         try:
-            published = self._published_within_limits(enforce=True)
+            published = self._published_within_limits()
             if published is not None:
                 return published.report
-            with self._enforcing_listing_limits():
-                self._forward_pass_started = True
-                gen = self._begin_forward_pass()
-                while True:
-                    try:
-                        next(gen)
-                    except StopIteration:
-                        break
-                    except CorruptionError:
-                        assert self._materialized is not None
-                        break
-                published = self._published_within_limits(enforce=True)
-                assert published is not None
-                return published.report
+            self._forward_pass_started = True
+            gen = self._begin_forward_pass()
+            while True:
+                try:
+                    next(gen)
+                except StopIteration:
+                    break
+                except CorruptionError:
+                    assert self._materialized is not None
+                    break
+            published = self._published_within_limits()
+            assert published is not None
+            return published.report
         finally:
             self._state.release_pass(token)
 
@@ -2788,20 +2677,14 @@ class BaseArchiveReader(ArchiveReader):
         On an upfront index this drains the reader's one member walk, which reads no
         member data. A walk that ends in terminal archive damage is returned as the
         incomplete report (prefix plus ``error``), not raised.
-
-        After a ``stream_members()`` pass that went past ``ListingLimits`` and so
-        discarded its listing (``_discard_listing``), nothing is cached: this returns
-        ``None``, and the listing methods raise the limit error.
         """
         self._state.require_open("members_report_if_available()")
-        if self._listing_discarded:
-            return None
-        published = self._published_within_limits(enforce=True)
+        published = self._published_within_limits()
         if published is not None:
             return published.report
         if not self._MEMBER_LIST_UPFRONT:
             return None
-        self._ensure_walked(enforce=True)
+        self._ensure_walked()
         materialized = self._materialized
         if materialized is not None:
             # Published while this call waited on another thread's materialization.
@@ -3406,8 +3289,6 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
     """
 
     def __init__(self, reader: BaseArchiveReader) -> None:
-        # A pass starts at the first member, which a discarded listing no longer has.
-        reader._refuse_discarded_listing()
         self._reader = reader
         self._pos = 0
         self._finished = False
@@ -3431,15 +3312,11 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         if self._finished:
             raise StopIteration
         reader = self._reader
-        # Whether this step pulled a member without enforcing the limits.
-        unguarded = False
         try:
-            if not reader._listing_discarded and self._pos < len(reader._listed):
+            if self._pos < len(reader._listed):
                 member: ArchiveMember | None = reader._listed[self._pos]
             else:
-                enforce = reader._progressive_enforce_listing_limits
-                member = reader._pull_member(enforce=enforce)
-                unguarded = not enforce
+                member = reader._pull_member()
         except BaseException as exc:
             # A failed pull poisons the walk as well (``_abandon_walk``); this keeps the
             # pass's own answer the same whichever of the two a retry reaches first.
@@ -3465,10 +3342,6 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         self._pos += 1
         try:
             reader._link_progressive_member(member)
-            if unguarded:
-                # After the link: the member that crosses a limit still resolves
-                # against the listing kept so far, which the caps bound.
-                reader._keep_listing_within_limits()
         except BaseException as exc:
             self._error = exc
             raise
