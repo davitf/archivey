@@ -409,9 +409,8 @@ that is right on one format and wrong on another breaks callers silently.
   ZIP could serve them cheaply, so the mistake shows on the first archive tested
   (2026-09-29, "Why these aren't on by default" in the user docs).
 - Under `concurrent_members=True`, `open`, `read`, `get` and `members()` work during a
-  `stream_members` pass (2026-10-13). Until passes can share one walk, they still raise
-  on an archive whose listing that pass is still building (TAR, 7z and solid RAR, until
-  `members()` has run or a pass has reached the end); that gap is open.
+  `stream_members` pass, on every format and from any thread, because they share one lazy
+  walk of the archive with the pass (2026-10-13). `extract_all` beside a pass still raises.
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.

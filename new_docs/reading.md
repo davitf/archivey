@@ -34,9 +34,8 @@ costing time. If you plan to read an archive in one pass, setting it catches tha
 even on an ordinary file. You get one pass, through `stream_members` or `extract_all`, and it
 is used up even if you leave the loop early. Inside a `stream_members` loop, `open`, `read` and
 `members()` raise even without `streaming=True`, since the pass is still using the archive. With
-[`concurrent_members=True`](#several-members-at-once) they work once the archive is fully listed.
-ZIP, ISO and non-solid RAR archives are from the start. TAR, 7z and solid RAR archives are after
-`members()` has run, or after an earlier pass has reached the end.
+[`concurrent_members=True`](#several-members-at-once) they work, from any thread, on every format.
+`extract_all` still can't run while a pass is going.
 Streams from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
