@@ -186,9 +186,17 @@ first, so the walk charges it there. A forward pass has no offset array (it read
 in order), but it keeps every member it yielded until the end of the pass to update it
 in place, so it charges `max_members` twice: on the local headers as members are
 yielded, and on the directory's entries as it reads them, since a directory can list
-more entries than the stream held members. The fields the directory adds (a comment
-above all) are weighed against `max_metadata_bytes` when the members are updated, and a
-pass that does not enforce the limits discards its listing there if they took it over.
+more entries than the stream held members. The entries wait for the end record, which
+says where their offsets count from, so their names, extra fields and comments are
+weighed against `max_metadata_bytes` as they arrive: past it an enforcing pass raises,
+and one that does not enforce the limits discards its listing and keeps only each
+entry's offset, so it holds about that much directory text, as the seekable streaming
+pass holds about that much listing. Its members then stay as their local headers made
+them. The seekable read weighs the members it builds rather than the raw entries, so a
+directory whose extra fields alone pass the cap is refused from a pipe only (DR-5a: a
+crafted shape). The fields the directory adds (a comment above all) are weighed again
+when the members are updated, and a pass that does not enforce the limits discards its
+listing there if they took it over.
 The links the directory made are read before the listing is dropped, because the pass
 cannot read them later, and a target that fails is reported there; the seekable pass
 leaves that report to its link finalization, which a discarded listing never reaches.
@@ -428,7 +436,9 @@ a little; matching them would mean buffering every member until the directory ar
 Two more things are known only once the directory has been read, and neither is a member
 failure. A directory entry pointing at a local header an earlier entry already took ends
 the pass with its own `CorruptionError`: the seekable read lists both, and a forward
-pass reads that data once, for one member. A directory whose entries fill a different
+pass reads that data once, for one member. So does a member whose directory entry and
+local header store different names (question A, case 3): the seekable read refuses it
+when it reads the local header, and a forward pass has both names only now. A directory whose entries fill a different
 size than the end record declares is a warning (`ARCHIVE_EOF_MARKER_MISSING`, marker
 `central_directory`), and every entry stays listed.
 

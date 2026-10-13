@@ -31,6 +31,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.zip_forward_reader import ZipForwardReader
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.types import ArchiveMember, MemberType
 from tests.sample_archives import (
@@ -427,7 +428,9 @@ def test_a_directory_size_the_entries_do_not_fill_is_reported(
 
 
 def _overfilled_with_link(target: bytes, *, damaged: bool = False) -> bytes:
-    """A link first, then 20 members whose directory comments cross 100 000 bytes."""
+    """A link first, then 20 members whose long names and directory comments take the
+    listing past 100 000 bytes, while the directory's own text stays under it (the
+    listing weighs each name twice, as text and as raw bytes)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         link = zipfile.ZipInfo("link")
@@ -435,8 +438,8 @@ def _overfilled_with_link(target: bytes, *, damaged: bool = False) -> bytes:
         link.external_attr = 0o120777 << 16
         zf.writestr(link, target)
         for i in range(20):
-            info = zipfile.ZipInfo(f"{i}.txt")
-            info.comment = b"c" * 6000
+            info = zipfile.ZipInfo(f"{i}-" + "n" * 1900 + ".txt")
+            info.comment = b"c" * 2000
             zf.writestr(info, b"x")
     data = buf.getvalue()
     return _corrupt_data(data, zipfile.ZIP_DEFLATED) if damaged else data
@@ -473,6 +476,82 @@ def test_a_damaged_link_target_is_reported_before_the_discard() -> None:
             pass
         assert reader._listing_discarded
         assert _link_target_reasons(reader) == ["target_data_damaged"]
+
+
+def _commented(count: int, comment_len: int) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(count):
+            info = zipfile.ZipInfo(f"{i}.txt")
+            info.comment = b"c" * comment_len
+            zf.writestr(info, b"x")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("source", ["pipe", "file"])
+def test_directory_text_is_held_only_up_to_max_metadata_bytes(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entries wait for the end record, which says where their offsets count
+    from; their text is weighed as they arrive, so the pass holds about
+    ``max_metadata_bytes`` of it, not the whole directory. Past it the pass
+    discards its listing, as the seekable streaming pass does on the same archive."""
+    data = _commented(40, 6000)
+    held: list[int] = []
+    original = ZipForwardReader._drop_held_directory
+
+    def spy(self: ZipForwardReader, nbytes: int) -> None:
+        held.append(nbytes)
+        original(self, nbytes)
+
+    monkeypatch.setattr(ZipForwardReader, "_drop_held_directory", spy)
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=30_000)
+    )
+    opened = _pipe(data) if source == "pipe" else io.BytesIO(data)
+    with archivey.open_archive(opened, streaming=True, config=config) as reader:
+        yielded = [m for m, _ in reader.stream_members()]
+        assert len(yielded) == 40
+        assert reader._listing_discarded
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            reader.members_report()
+    if source == "pipe":
+        assert len(held) == 1
+        assert 30_000 < held[0] <= 30_000 + 6100
+        # The members stay as their local headers made them.
+        assert yielded[-1].comment is None
+    else:
+        assert held == []
+
+
+def test_directory_entries_past_the_held_text_are_still_matched() -> None:
+    data = _drop_local_member(_commented(10, 6000), b"9.txt")
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=20_000)
+    )
+    with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
+        with pytest.raises(CorruptionError, match="entry #9 points to offset"):
+            for _ in reader.stream_members():
+                pass
+
+
+def test_a_name_that_differs_between_the_two_headers_is_refused() -> None:
+    """As from a file, where reading the member compares the two."""
+    data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
+    cd = data.index(b"PK\x01\x02")
+    at = data.index(b"b.txt", cd)
+    data[at : at + 5] = b"c.txt"
+    with archivey.open_archive(io.BytesIO(bytes(data))) as reader:
+        with pytest.raises(CorruptionError, match="differ"):
+            reader.read(reader.get("c.txt"))
+    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
+        names = []
+        with pytest.raises(
+            CorruptionError, match=r"directory 'c\.txt' and header 'b\.txt' differ"
+        ):
+            for member, _ in reader.stream_members():
+                names.append(member.name)
+    assert names == ["a.txt", "b.txt"]
 
 
 def test_too_many_local_headers_name_what_was_counted() -> None:

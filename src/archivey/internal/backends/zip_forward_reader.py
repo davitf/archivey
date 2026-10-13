@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import io
 import zlib
+from array import array
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.exceptions import (
@@ -54,6 +55,7 @@ from archivey.internal.backends.zip_reader import (
     ZipReader,
     _is_encrypted_entry,
     _max_members_error,
+    _stored_text,
     _uses_strong_encryption,
     _zip_created,
     _zip_timestamps,
@@ -627,14 +629,34 @@ class ZipForwardReader(ZipReader):
         the yielded object takes every field of that build. The entries are charged
         against ``max_members`` as they are read, as the seekable read's directory
         walk charges them.
+
+        The end record comes after the last entry, so the entries are held until then.
+        Their names, extra fields and comments are weighed against
+        ``max_metadata_bytes`` as they arrive (``_drop_held_directory``); past it only
+        each entry's offset is kept, which the checks below need.
         """
         walker = self._walker
-        max_members = self._config.listing_limits.max_members
-        entries: list[CentralEntry] = []
+        limits = self._config.listing_limits
+        max_members = limits.max_members
+        max_meta = limits.max_metadata_bytes
+        # Every entry's offset as stored, in directory order, and the entries
+        # themselves while their text is within max_metadata_bytes. A discarded
+        # listing has no member left to update, so it keeps none.
+        stored_offsets = array("Q")
+        entries: list[CentralEntry] | None = None if self._listing_discarded else []
+        held = 0
         with self._translated_errors():
             for central in walker.directory():
-                if max_members is not None and len(entries) >= max_members:
+                if max_members is not None and len(stored_offsets) >= max_members:
                     raise _max_members_error(max_members)
+                stored_offsets.append(central.header_offset)
+                if entries is None:
+                    continue
+                held += len(central.name) + len(central.extra) + len(central.comment)
+                if max_meta is not None and held > max_meta:
+                    entries = None
+                    self._drop_held_directory(held)
+                    continue
                 entries.append(central)
             end = walker.end
             assert end is not None
@@ -643,21 +665,30 @@ class ZipForwardReader(ZipReader):
         by_offset = self._by_offset
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
         matched: set[int] = set()
-        # Entries pointing where no local header was, and entries pointing at a local
-        # header an earlier entry already took.
-        unmatched: list[CentralEntry] = []
-        shared: list[CentralEntry] = []
-        for central in entries:
-            offset = central.header_offset + end.base
+        # Entries pointing where no local header was, entries pointing at a local
+        # header an earlier entry already took (by position in the directory), and
+        # members whose two headers name them differently.
+        unmatched: list[int] = []
+        shared: list[int] = []
+        renamed: list[tuple[bytes, CentralEntry]] = []
+        for position, stored in enumerate(stored_offsets):
+            offset = stored + end.base
             if offset not in local_offsets:
-                unmatched.append(central)
+                unmatched.append(position)
             elif offset in matched:
-                shared.append(central)
+                shared.append(position)
             else:
                 matched.add(offset)
                 member = by_offset.get(offset)
-                if member is not None:
-                    updates.append((member, central))
+                if member is not None and entries is not None:
+                    central = entries[position]
+                    local_name = cast("_ZipLocator", member._raw).name
+                    if central.name != local_name:
+                        # The seekable read refuses this member when it reads its
+                        # local header; a forward pass has both copies only now.
+                        renamed.append((local_name, central))
+                    else:
+                        updates.append((member, central))
         for member, central in updates:
             self._update_from_directory(member, central)
         # Only a link's bytes are read again, for its target.
@@ -677,7 +708,7 @@ class ZipForwardReader(ZipReader):
             if member_id in links
         }
         self._keep_updated_listing_within_limits(updates)
-        self._report_directory_findings(end, len(entries))
+        self._report_directory_findings(end, len(stored_offsets))
         found = first_nonzero_offset(walker.source)
         if found is not None:
             self._emit_trailing_data(found)
@@ -686,24 +717,58 @@ class ZipForwardReader(ZipReader):
         if unmatched:
             first = unmatched[0]
             raise CorruptionError(
-                "ZIP central directory entry "
-                f"{quoted(self._decode_member_name(first).text)} points to offset "
-                f"{first.header_offset + end.base}, where the stream held no local "
-                f"header ({len(unmatched)} such entries)",
+                f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
+                f"points to offset {stored_offsets[first] + end.base}, where the stream "
+                f"held no local header ({len(unmatched)} such entries)",
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
         if shared:
             first = shared[0]
             raise CorruptionError(
-                "ZIP central directory entry "
-                f"{quoted(self._decode_member_name(first).text)} points to the local "
-                f"header at offset {first.header_offset + end.base}, which an earlier "
-                f"entry already describes ({len(shared)} such entries); a source that "
-                "cannot seek reads that data once, for one member",
+                f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
+                f"points to the local header at offset {stored_offsets[first] + end.base}, "
+                f"which an earlier entry already describes ({len(shared)} such entries); "
+                "a source that cannot seek reads that data once, for one member",
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
+        if renamed:
+            local_name, central = renamed[0]
+            raise CorruptionError(
+                f"File name in directory {quoted(_stored_text(central.name))} and header "
+                f"{quoted(_stored_text(local_name))} differ.",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+
+    def _directory_entry_label(
+        self, entries: list[CentralEntry] | None, position: int
+    ) -> str:
+        """The entry's name when its text was kept, else its position."""
+        if entries is None:
+            return f"#{position}"
+        return quoted(self._decode_member_name(entries[position]).text)
+
+    def _drop_held_directory(self, held: int) -> None:
+        """Stop holding directory entries: their text passed ``max_metadata_bytes``.
+
+        The seekable read builds a member from each entry as it reads it and weighs
+        that; a forward pass must hold the entries until the end record, and the held
+        text is what it weighs instead. It is charged to the listing, which it would
+        have become: an enforcing pass raises here, and one that does not enforce the
+        limits discards its listing, as ``_keep_updated_listing_within_limits`` does,
+        so the members it yielded stay as their local headers made them. The links
+        among them get no target: matching them needs the end record (DR-5a; the
+        seekable pass reports nothing either once it discards).
+        """
+        self._listing_tracker.account_retained_bytes(
+            held, enforce=self._progressive_enforce_listing_limits
+        )
+        self._discard_listing()
+        self._by_offset.clear()
+        self._captured.clear()
+        self._uncaptured.clear()
 
     def _keep_updated_listing_within_limits(
         self, updates: list[tuple[ArchiveMember, CentralEntry]]
