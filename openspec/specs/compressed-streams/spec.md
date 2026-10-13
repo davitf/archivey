@@ -334,11 +334,12 @@ a first read is, for every format. Length / truncation / over-run checks SHALL r
 active and SHALL key off bytes actually read (not a seek-updated logical position
 alone). When a seek jumps the logical position to/past the declared size without reading
 the intervening bytes, concluding SHALL read that skipped gap (bounded by the declared
-size, through the digests when the hashing frontier sits at its start) **and probe one byte past the declared
-size**, reproducing the same length + over-run verdict a sequential reaching read runs,
-rather than returning `b""` blind. So a past-EOF `seek(declared_size)` on a
-**truncated** member MUST NOT silence `TruncatedError`, and on an **over-long** member
-(one that decodes past its declared size) MUST NOT silence `CorruptionError`.
+size, through the digests when the hashing frontier sits at its start) **and probe one
+byte past the declared size**, reproducing the same length + over-run verdict a
+sequential reaching read runs, rather than returning `b""` blind. So a past-EOF
+`seek(declared_size)` on a **truncated** member MUST NOT silence `TruncatedError`, and
+on an **over-long** member (one that decodes past its declared size) MUST NOT silence
+`CorruptionError`.
 Symmetrically, the same jump on a **complete** member MUST NOT fabricate either fault: a
 seek to/past the declared size followed by `read` returns `b""` (standard `BinaryIO`
 past-EOF semantics), and the `seek(member.size); read(1)` completeness idiom works. A

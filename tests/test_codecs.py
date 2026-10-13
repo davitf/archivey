@@ -1781,6 +1781,18 @@ class _JumpingBytesIO(io.BytesIO):
         return target
 
 
+class _SparseRestartBytesIO(io.BytesIO):
+    """A ``BytesIO`` with restart points at 0 and at ``point`` only, like a seek index
+    with one far entry: a far seek jumps, a near one decodes from the start."""
+
+    def __init__(self, data: bytes, point: int) -> None:
+        super().__init__(data)
+        self._point = point
+
+    def nearest_resume_offset(self, target: int) -> int:
+        return self._point if target >= self._point else 0
+
+
 _BAD_CRC = {HashAlgorithm.CRC32: _crc32(CONTENT + b"x")}
 _GOOD_CRC = {HashAlgorithm.CRC32: _crc32(CONTENT)}
 
@@ -1869,6 +1881,37 @@ def test_verify_seek_back_after_a_jump_completes_the_checksum(
     stream.seek(4)  # behind the frontier: the re-read bytes are not hashed twice
     assert stream.read() == CONTENT[4:]
     assert stream._digest_intact() is True
+    stream.close()
+
+
+@pytest.mark.parametrize("crc", ["good", "bad"])
+def test_verify_paused_checksum_completes_through_a_deferred_read_through(
+    crc: str,
+) -> None:
+    """After a jump concluded the length with the CRC paused, a seek back to the
+    frontier then a near forward seek defers the gap to the next read, which hashes
+    it and lets the read to the end check the CRC."""
+    far = len(CONTENT) * 3 // 4
+    near = len(CONTENT) // 2
+    expected = _GOOD_CRC if crc == "good" else _BAD_CRC
+    stream = VerifyingStream(
+        _SparseRestartBytesIO(CONTENT, far), expected, expected_size=len(CONTENT)
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(far)  # jumps
+    assert stream.read() == CONTENT[far:]  # length concluded, CRC paused
+    assert stream._digest_intact() is False
+    stream.seek(10)
+    assert stream._digest_intact() is True
+    assert stream.seek(near) == near
+    assert stream._verifier._read_through_due is not None  # deferred, not jumped
+    assert stream.tell() == near
+    if crc == "bad":
+        with pytest.raises(CorruptionError):
+            stream.read()
+    else:
+        assert stream.read() == CONTENT[near:]
+        assert stream._verifier._digest_checked
     stream.close()
 
 

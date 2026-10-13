@@ -750,18 +750,17 @@ class MemberVerifier:
     def note_seek(self, result: int) -> None:
         """Update the position after a successful (or raised but moved) inner seek.
 
-        A seek to position 0 re-arms every check (``_rearm``): the hashers start
-        again and the frontiers, concluded and digest-checked state are cleared, so a read from 0
-        to the end is verified as a first read is, digests included. Any other seek
-        only moves the position: the hashers cover ``[0, frontier)``, a read from at
-        or behind the frontier hashes only what lies past it, and a read that starts
+        A seek to position 0 re-arms every check (``_rearm``): the hashers start again
+        and the frontiers, concluded and digest-checked state are cleared, so a read
+        from 0 to the end is verified as a first read is, digests included. Any other
+        seek only moves the position: the hashers cover ``[0, frontier)``, a read from
+        at or behind the frontier hashes only what lies past it, and a read that starts
         past it pauses the **checksum** until a read from at or behind the frontier
-        again (``_record_read``). Length / truncation /
-        over-run checks stay enabled and key off bytes actually read
-        (``_furthest_read_pos``); a seek that jumps to/past the declared size has the
-        skipped gap read back and a byte probed past the size at conclusion
-        (``_conclude``), so ``seek(declared_size)`` cannot silence truncation (short)
-        or over-run (long) (ADR 0014).
+        again (``_record_read``). Length / truncation / over-run checks stay enabled and
+        key off bytes actually read (``_furthest_read_pos``); a seek that jumps to/past
+        the declared size has the skipped gap read back and a byte probed past the size
+        at conclusion (``_conclude``), so ``seek(declared_size)`` cannot silence
+        truncation (short) or over-run (long) (ADR 0014).
         """
         self._read_through_due = None
         if result == 0:

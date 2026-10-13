@@ -334,18 +334,18 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     reports. A seek that raised has not: the caller can catch it and keep reading, so
     the report stays armed.
 
-    Whether the digest is lost follows the member verifier's rule (ADR 0014). The
-    inner is asked first (``ask_digest_intact``), so a watch above the verifier gets
-    its answer. A watch below it (the verifier wraps this stream) applies the same
-    rule to what passes through, with its own hashing frontier (the end of the reads
-    contiguous from 0): a position past it is lost, unless it is at ``size`` with no
-    read past the frontier yet (the verifier's conclusion reads the gap). A read that
-    starts past the frontier leaves it there, and a seek back to it or behind it, then
-    reads on to ``size``, gets the digest back. A forward seek the verifier keeps the digest across reaches
-    this stream as reads up to the target. Pass ``seek_forfeits=False`` for a digest
-    that survives seeks (the WinZip AES HMAC, which the decrypt stage completes over
-    the ciphertext at the end): only a read that reaches ``size`` counts there,
-    wherever it started.
+    Whether the digest is lost follows the member verifier's rule (ADR 0014). The inner
+    is asked first (``ask_digest_intact``), so a watch above the verifier gets its
+    answer. A watch below it (the verifier wraps this stream) applies the same rule to
+    what passes through, with its own hashing frontier (the end of the reads contiguous
+    from 0): a position past it is lost, unless it is at or past ``size`` with no read
+    past the frontier yet (the verifier's conclusion reads the gap). A read that starts
+    past the frontier leaves it there, and a seek back to it or behind it, then reads on
+    to ``size``, gets the digest back. A forward seek the verifier keeps the digest
+    across reaches this stream as reads up to the target. Pass ``seek_forfeits=False``
+    for a digest that survives seeks (the WinZip AES HMAC, which the decrypt stage
+    completes over the ciphertext at the end): only a read that reaches ``size`` counts
+    there, wherever it started.
     """
 
     readinto_passthrough = False
