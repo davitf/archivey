@@ -13,8 +13,9 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import unicodedata
 from collections.abc import Collection
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -52,42 +53,114 @@ BIDI_REORDERING_CONTROLS = frozenset(
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 )
 
+# The other Unicode format characters (category Cf) display as nothing, so a name that
+# holds one looks like a name that does not: "invoice\u200b.pdf" beside "invoice.pdf".
+#
+# TWO CODES AGAIN, split the way the bidi sets are. These three have no use inside a
+# filename: zero-width space U+200B, word joiner U+2060 and BOM / zero-width no-break
+# space U+FEFF. They get MEMBER_NAME_ZERO_WIDTH_CHARACTER, which is in
+# ARCHIVE_INTEGRITY_CODES, so the STRICT *diagnostic policy* raises on it. Every other
+# Cf character gets the advisory MEMBER_NAME_INVISIBLE_CHARACTER: ZWJ U+200D and ZWNJ
+# U+200C are part of emoji sequences and of Persian and Indic spelling, the tag
+# characters U+E0020-E007F spell subdivision flags, and a soft hyphen U+00AD is a
+# hyphenation hint. No extraction filter refuses either set: writing them is safe
+# (DR-17), only the name read back later can mislead.
+ZERO_WIDTH_CHARACTERS = frozenset("\u200b\u2060\ufeff")
 
-def emit_member_name_bidi_control(
+_Category = Literal["bidi", "zero_width", "invisible"]
+
+
+def _emit_name_controls(
     collector: DiagnosticCollector,
     *,
     member: ArchiveMember,
-    archive_name: str | None = None,
+    text: str,
+    field: Literal["name", "link_target"],
+    archive_name: str | None,
 ) -> None:
-    """Emit ``MEMBER_NAME_BIDI_CONTROL`` when a presented name carries a bidi control.
+    """Emit ``MEMBER_NAME_BIDI_CONTROL``, ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` and
+    ``MEMBER_NAME_INVISIBLE_CHARACTER`` for ``text``, the member's name or its link
+    target as ``field`` says.
 
-    Called by ``BaseArchiveReader`` while assigning member identity, not by individual
-    decoders, so directory and inferred single-file names receive the same diagnostic and
-    a backend that uses :func:`normalize_member_name` cannot emit a duplicate.
-
-    The context records *which* controls were found rather than just that there were
-    some: overrides and isolates reorder surrounding text and are what the ``…gnp.exe``
-    disguise needs, while the three directional marks occur in legitimate Arabic and
-    Hebrew filenames, and a caller (or a policy) may want to treat them differently.
-
-    ASCII names cannot contain bidi controls — skip the per-character scan (listing
-    hot path; perf review H3 / Q1).
+    Bidi controls and the zero-width characters are Unicode category Cf too; each goes
+    to its own code only, so the invisible set is every other Cf character. Each code is
+    emitted at most once, naming every character of its set in order. ASCII text
+    contains none of them, so it skips the per-character scan (listing hot path; perf
+    review H3 / Q1).
     """
-    name = member.name
-    if name.isascii():
+    if text.isascii():
         return
-    found = [char for char in name if char in BIDI_CONTROLS]
-    if not found:
+    bidi: list[str] = []
+    zero_width: list[str] = []
+    invisible: list[str] = []
+    for char in text:
+        if char in BIDI_CONTROLS:
+            bidi.append(char)
+        elif char in ZERO_WIDTH_CHARACTERS:
+            zero_width.append(char)
+        elif unicodedata.category(char) == "Cf":
+            invisible.append(char)
+    if not bidi and not zero_width and not invisible:
         return
+    where = (
+        "Member name" if field == "name" else f"Link target of {quoted(member.name)}"
+    )
+    found_sets: tuple[tuple[DiagnosticCode, _Category, list[str], str], ...] = (
+        (
+            DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+            "bidi",
+            bidi,
+            "a bidirectional control character",
+        ),
+        (
+            DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
+            "zero_width",
+            zero_width,
+            "a zero-width character",
+        ),
+        (
+            DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
+            "invisible",
+            invisible,
+            "an invisible format character",
+        ),
+    )
+    for code, category, found, what in found_sets:
+        if found:
+            _emit_controls(
+                collector,
+                code=code,
+                message=f"{where} contains {what}: {quoted(text)}",
+                member=member,
+                found=found,
+                field=field,
+                category=category,
+                archive_name=archive_name,
+            )
+
+
+def _emit_controls(
+    collector: DiagnosticCollector,
+    *,
+    code: DiagnosticCode,
+    message: str,
+    member: ArchiveMember,
+    found: list[str],
+    field: Literal["name", "link_target"],
+    category: _Category,
+    archive_name: str | None,
+) -> None:
     collector.emit(
-        code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
-        message=f"Member name contains a bidirectional control character: {quoted(name)}",
+        code=code,
+        message=message,
         context=MemberNameControlsContext(
             archive_name=archive_name,
-            member_name=name,
+            member_name=member.name,
             member_id=member._member_id,
             raw_name_base64=raw_name_to_base64(member.raw_name),
             controls=",".join(f"U+{ord(char):04X}" for char in found),
+            field=field,
+            category=category,
         ),
         member=member,
         attach_to_member=True,
@@ -95,42 +168,70 @@ def emit_member_name_bidi_control(
     )
 
 
-def emit_link_target_bidi_control(
+def name_controls_possible(member: ArchiveMember) -> bool:
+    """Whether :func:`emit_member_name_controls` or :func:`emit_link_target_controls`
+    could emit anything for ``member``: its name or its known target is not ASCII.
+
+    The emitters skip ASCII text themselves; this lets a caller skip setup it would only
+    need for an emit (listing hot path).
+    """
+    target = member.link_target
+    return not member.name.isascii() or (target is not None and not target.isascii())
+
+
+def emit_member_name_controls(
     collector: DiagnosticCollector,
     *,
     member: ArchiveMember,
     archive_name: str | None = None,
 ) -> None:
-    """Emit ``MEMBER_NAME_BIDI_CONTROL`` when a link's stored target carries a bidi
-    control, with ``field="link_target"``.
+    """Emit ``MEMBER_NAME_BIDI_CONTROL`` when a presented name carries a bidi control,
+    ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` when it carries one of
+    ``ZERO_WIDTH_CHARACTERS``, and ``MEMBER_NAME_INVISIBLE_CHARACTER`` when it carries
+    another Cf character.
 
-    The same characters, the same code and the same context as for a name: a target is
+    Called by ``BaseArchiveReader`` while assigning member identity, not by individual
+    decoders, so directory and inferred single-file names receive the same diagnostics
+    and a backend that uses :func:`normalize_member_name` cannot emit a duplicate.
+
+    The context records *which* characters were found rather than just that there were
+    some: overrides and isolates reorder surrounding text and are what the ``…gnp.exe``
+    disguise needs, while the three directional marks occur in legitimate Arabic and
+    Hebrew filenames; a zero-width space has no use in a name, while a zero-width
+    joiner is part of ordinary emoji. A caller (or a policy) may want to treat them
+    differently.
+    """
+    _emit_name_controls(
+        collector,
+        member=member,
+        text=member.name,
+        field="name",
+        archive_name=archive_name,
+    )
+
+
+def emit_link_target_controls(
+    collector: DiagnosticCollector,
+    *,
+    member: ArchiveMember,
+    archive_name: str | None = None,
+) -> None:
+    """The same check as :func:`emit_member_name_controls`, on a link's stored target,
+    with ``field="link_target"``.
+
+    The same characters, the same codes and the same context as for a name: a target is
     displayed to a person as a path, and the same disguise works on it. The caller runs
     this once per member, when the target becomes known.
     """
     target = member.link_target
-    if target is None or target.isascii():
+    if target is None:
         return
-    found = [char for char in target if char in BIDI_CONTROLS]
-    if not found:
-        return
-    collector.emit(
-        code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
-        message=(
-            f"Link target of {quoted(member.name)} contains a bidirectional control "
-            f"character: {quoted(target)}"
-        ),
-        context=MemberNameControlsContext(
-            archive_name=archive_name,
-            member_name=member.name,
-            member_id=member._member_id,
-            raw_name_base64=raw_name_to_base64(member.raw_name),
-            controls=",".join(f"U+{ord(char):04X}" for char in found),
-            field="link_target",
-        ),
+    _emit_name_controls(
+        collector,
         member=member,
-        attach_to_member=True,
-        logger=logger,
+        text=target,
+        field="link_target",
+        archive_name=archive_name,
     )
 
 

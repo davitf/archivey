@@ -20,9 +20,11 @@ optimization over this core, not a correctness requirement.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import errno
 import os
+import posixpath
 import shutil
 import stat
 import tempfile
@@ -58,6 +60,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
+from archivey.internal.long_paths import long_path, plain
 from archivey.internal.selection import CollectionSelector
 from archivey.paths import numbered_name
 from archivey.terminal import display_path, quoted
@@ -99,6 +102,12 @@ _DRY_RUN_PREFIX = "archivey-dry-run-"
 # on POSIX.
 _WINDOWS = os.name == "nt"
 
+# Whether ``os.symlink`` makes two kinds of link, one for a file target and one for a
+# directory target (``target_is_directory``). Windows does, and a link of the wrong kind
+# does not work: a file link to a directory cannot be entered. POSIX has one kind.
+# Separate from ``_WINDOWS`` so a test can take this route alone on POSIX.
+_DIRECTORY_LINKS = _WINDOWS
+
 
 def _dir_mode_as_stored(mode: int) -> int:
     """The mode ``os.stat`` reports for a directory after ``os.chmod(path, mode)``.
@@ -114,6 +123,7 @@ def _dir_mode_as_stored(mode: int) -> int:
 
 
 # Win32 error codes matched on ``OSError.winerror``, which exists only on Windows.
+_ERROR_PATH_NOT_FOUND = 3
 _ERROR_INVALID_NAME = 123
 _ERROR_FILENAME_EXCED_RANGE = 206
 _ERROR_TOO_MANY_LINKS = 1142
@@ -176,11 +186,21 @@ def _typed_os_error(
     privilege, so the message names symlinks as the likely cause rather than as the
     call that failed. They become a typed per-member failure. Every other ``OSError``
     stays as it is.
+
+    A path of ``MAX_PATH`` (260) characters or more that a call took without the
+    extended prefix fails with ``winerror`` 3 (``ERROR_PATH_NOT_FOUND``) unless the
+    machine enables long paths. The coordinator gives such a path the prefix
+    (``long_paths``), so this is the rest: a call it does not route, or a component
+    longer than the filesystem allows. It is typed as too long only when the path in
+    the error is that long and not in the extended form; a short missing path stays
+    the ``FileNotFoundError`` it is.
     """
     if not isinstance(exc, OSError):
         return exc
     # ``winerror`` exists only on Windows; elsewhere it is None.
     winerror = getattr(exc, "winerror", None)
+    if winerror == _ERROR_PATH_NOT_FOUND and _past_max_path(exc):
+        winerror = _ERROR_FILENAME_EXCED_RANGE
     if exc.errno == errno.EILSEQ or winerror == _ERROR_INVALID_NAME:
         message = (
             "Member name or link target cannot be represented on the destination "
@@ -202,10 +222,31 @@ def _typed_os_error(
     return error
 
 
+# Win32's limit on a path without the extended prefix, the terminating NUL included.
+_MAX_PATH = 260
+
+
+def _past_max_path(exc: OSError) -> bool:
+    """Whether a file name in ``exc`` is too long for Win32 without the extended
+    prefix."""
+    for name in (exc.filename, exc.filename2):
+        if isinstance(name, str) and len(name) >= _MAX_PATH - 1 and plain(name) == name:
+            return True
+    return False
+
+
+def _plain_os_error(exc: OSError) -> None:
+    """Name the paths in ``exc`` without the extended prefix, in place."""
+    for attr in ("filename", "filename2"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, str):
+            setattr(exc, attr, plain(value))
+
+
 def _is_regular_file(path: Path) -> bool:
     """Whether ``path`` is a regular file itself, not a symlink to one."""
     try:
-        return stat.S_ISREG(os.lstat(path).st_mode)
+        return stat.S_ISREG(os.lstat(long_path(path)).st_mode)
     except OSError:
         return False
 
@@ -224,13 +265,16 @@ def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
     try:
         while pending:
             directory = pending.pop()
-            with os.scandir(directory) as entries:
+            # Listed in the long-path form, so a deep directory can be read; each
+            # entry's path is named plain again to be placed under ``root``.
+            with os.scandir(long_path(directory)) as entries:
                 for entry in entries:
+                    path = Path(plain(entry.path))
                     if entry.is_symlink():
-                        rel = Path(entry.path).relative_to(root).as_posix()
-                        links.append((rel, os.readlink(entry.path)))
+                        rel = path.relative_to(root).as_posix()
+                        links.append((rel, plain(os.readlink(entry.path))))
                     elif entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
+                        pending.append(path)
     except OSError:
         return None
     return tuple(sorted(links))
@@ -250,13 +294,15 @@ def _remove_scratch(root: Path) -> None:
     outcome is what the caller needs to see.
     """
     try:
-        os.chmod(root, 0o700)
-        for parent, dirnames, filenames in os.walk(root):
+        # In the long-path form throughout, so the walk can reach a deep entry.
+        top = long_path(root)
+        os.chmod(top, 0o700)
+        for parent, dirnames, filenames in os.walk(top):
             for name in (*dirnames, *filenames):
                 path = os.path.join(parent, name)
                 if not os.path.islink(path):
                     os.chmod(path, 0o700 if name in dirnames else 0o600)
-        shutil.rmtree(root)
+        shutil.rmtree(top)
     except OSError as exc:
         logger.warning(
             "Could not remove dry-run scratch directory %r: %s", str(root), exc
@@ -274,7 +320,7 @@ def _open_new_file(path: Path, mode: int) -> int:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     for extra in ("O_NOFOLLOW", "O_BINARY", "O_NOINHERIT"):
         flags |= getattr(os, extra, 0)
-    return os.open(path, flags, mode)
+    return os.open(long_path(path), flags, mode)
 
 
 class _AbortExtraction(Exception):
@@ -389,6 +435,41 @@ class BombTracker:
         """
         self._entry_count -= 1
         self._refunded_bytes += member_bytes
+
+    def check_recorded_size(self) -> None:
+        """Refuse the current member before its data is read, when its recorded size
+        is over the per-member ratio.
+
+        Called once the member is about to be decoded, after every check that could
+        still skip it, so a member that would not be decoded is never refused here.
+        A member's output never passes its recorded size: the member stream refuses
+        a byte past it (``CorruptionError``). So a member whose recorded size is over
+        the per-member ratio is one ``count()`` would refuse after decoding past the
+        activation threshold, and it is refused now instead, with the same skippable
+        error. The one difference is a member whose data stops short of its recorded
+        size: ``count()`` might never refuse it, and the read would fail as damaged
+        instead. Both fail that member alone.
+
+        The archive-wide ratios are left to ``count()``. Refusing early on the archive's
+        recorded sizes would stop the whole run on a size nothing has verified, losing
+        the intact members after a damaged one; and ``count()`` already stops at the
+        chunk that crosses the archive-wide limit, so an early check would save little.
+        ``count()`` still runs on every chunk.
+        """
+        member = self._member
+        if self._max_ratio is None or member is None:
+            return
+        size = member.size
+        cs = member.compressed_size
+        if size is None or not cs or cs <= 0:
+            return
+        if size > max(self._ratio_floor, self._max_ratio * cs):
+            raise ResourceLimitError(
+                f"Decompression ratio {size / cs:.0f}:1 exceeds limit "
+                f"max_ratio={self._max_ratio:.0f}:1 (from recorded sizes: "
+                f"{size} bytes from {cs} compressed)",
+                member_name=member.name,
+            )
 
     def count(self, chunk_bytes: int) -> None:
         """Count a chunk that is about to be written; raise instead if it may not be."""
@@ -620,6 +701,11 @@ class _RunState:
     collision_map: dict[str, _Claim] = field(default_factory=dict)
     # The key each claimed path was claimed under (see ``_claim``).
     claim_keys: dict[Path, str] = field(default_factory=dict)
+    # Claimed files by identity, (st_dev, st_ino) -> the path claimed, for a name the
+    # filesystem makes a second name of one (``_alias_claim``). Filled lazily: a path
+    # waits in ``unindexed_claims`` until the first lookup after it was claimed.
+    claim_ids: dict[tuple[int, int], Path] = field(default_factory=dict)
+    unindexed_claims: list[Path] = field(default_factory=list)
     # RENAME: the last ``N`` tried per collision key of the requested name, so the
     # next member colliding on that key resumes after it instead of rescanning from
     # ``(1)``. Cleared whenever a claim is released (a freed name may be the first
@@ -679,6 +765,16 @@ class _RunState:
     # The symlinks this run created and the paths each one's resolution depends on,
     # so a later member that changes such a path gets them rechecked.
     links: LinkWatch | None = None
+    # Where the platform has two kinds of symlink (``_DIRECTORY_LINKS``): each symlink
+    # this run created -> the target it was created with and whether it was made a
+    # directory link, so the end of the run can remake one whose target turned out
+    # the other kind (``_settle_link_kinds``).
+    link_kinds: dict[Path, tuple[str, bool]] = field(default_factory=dict)
+    # The archive's listing, when the run has one for free, and its names folded and
+    # sorted with the set of directory members' names (``_listed_directory``, built on
+    # first use).
+    listed: list[ArchiveMember] | None = None
+    listed_names: tuple[list[str], set[str]] | None = None
     # The stored target of each tracked symlink whose target was written differently
     # (a disk spelling, Windows separators, a dry run's scratch path), by result
     # index, so a recheck error names it as listed.
@@ -833,10 +929,10 @@ class _DryRun:
         """
         dest = self.shown_dest
         child, ancestor = dest, dest.parent
-        while not os.path.lexists(ancestor) and ancestor != ancestor.parent:
+        while not os.path.lexists(long_path(ancestor)) and ancestor != ancestor.parent:
             child, ancestor = ancestor, ancestor.parent
         try:
-            st = os.stat(ancestor)
+            st = os.stat(long_path(ancestor))
         except OSError as exc:
             if exc.errno == errno.ENOENT:
                 # A dangling symlink: mkdir meets it as an existing entry.
@@ -853,9 +949,9 @@ class _DryRun:
             # os.access there reads the read-only attribute, which does not stop
             # creating entries in a directory.
             return
-        if not os.access(ancestor, os.X_OK):
+        if not os.access(long_path(ancestor), os.X_OK):
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(dest))
-        if not os.access(ancestor, os.W_OK):
+        if not os.access(long_path(ancestor), os.W_OK):
             # The first directory mkdir creates is the one it is refused.
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(child))
 
@@ -930,7 +1026,11 @@ class ExtractionCoordinator:
         """
         dest = Path(dest)
         if not self._dry_run:
-            return self._run(reader, dest)
+            try:
+                return self._run(reader, dest)
+            except OSError as exc:
+                _plain_os_error(exc)
+                raise
         given = Path(os.path.abspath(dest))
         try:
             resolved = resolve_or_raise_on_loop(given)
@@ -963,15 +1063,16 @@ class ExtractionCoordinator:
                     sink=sink,
                 )
                 try:
-                    work.mkdir()
+                    os.mkdir(long_path(work))
                     if detour is not None:
-                        detour.mkdir()
+                        os.mkdir(long_path(detour))
                     results = self._run(reader, work_given)
                 except OSError as exc:
+                    _plain_os_error(exc)
                     dry.rebase_os_error(exc)
                     raise
             with contextlib.suppress(OSError):
-                with os.scandir(work) as entries:
+                with os.scandir(long_path(work)) as entries:
                     self.dry_run_top_level = tuple(
                         sorted(
                             (entry.name, entry.is_dir(follow_symlinks=False))
@@ -1009,7 +1110,9 @@ class ExtractionCoordinator:
         return path if self._dry is None else self._dry.shown(path)
 
     def _rebase_os_error(self, exc: OSError) -> None:
-        """Point a dry run's filesystem error at the caller's dest, in place."""
+        """Point a filesystem error at the paths the caller sees, in place: without the
+        long-path prefix, and under a dry run at the caller's dest."""
+        _plain_os_error(exc)
         if self._dry is not None:
             self._dry.rebase_os_error(exc)
 
@@ -1073,6 +1176,7 @@ class ExtractionCoordinator:
             # Rechecks share the entry-count bound: a hostile archive can make each
             # member recheck every link so far, and max_entries is what bounds members.
             links=LinkWatch(dest_root, self._limits.max_entries),
+            listed=all_members if _DIRECTORY_LINKS else None,
         )
 
         # Extract-prep: enforce ListingLimits. Indexed backends may already have been
@@ -1126,8 +1230,11 @@ class ExtractionCoordinator:
             # write begins, and FILE writes land atomically in any case.
             raise abort.error from None
         finally:
-            # Also when the run stops early: the directories it did write end with
-            # their stored metadata, as the ones of a completed run do.
+            # Also when the run stops early. Links first: remaking one changes its
+            # directory, whose times come next.
+            self._settle_link_kinds()
+            # The directories the run did write end with their stored metadata, as
+            # the ones of a completed run do.
             self._apply_directory_metadata()
 
         if unmatched_pending is not None:
@@ -1346,12 +1453,13 @@ class ExtractionCoordinator:
         ):
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
-            if path.is_dir() and not path.is_symlink():
+            on_disk = long_path(path)
+            if os.path.isdir(on_disk) and not os.path.islink(on_disk):
                 # Random access never writes the superseded copy, so its metadata
                 # is not applied, whether or not the directory stays as a parent.
                 self._drop_pending_dir(path)
                 with contextlib.suppress(OSError):  # not empty: members live under it
-                    os.rmdir(path)
+                    os.rmdir(on_disk)
                     state.written_paths.discard(path)
             else:
                 state.written_paths.discard(path)
@@ -1399,11 +1507,11 @@ class ExtractionCoordinator:
         for path, index in parked.items():
             if path == landed:
                 continue
-            if path.is_symlink():
+            if os.path.islink(long_path(path)):
                 self._note_link_change(path)
             try:
                 with self._readonly_cleared(path, ours=True):
-                    os.unlink(path)
+                    os.unlink(long_path(path))
             except FileNotFoundError:
                 state.written_paths.discard(path)
             except OSError as exc:
@@ -1419,7 +1527,7 @@ class ExtractionCoordinator:
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a parked superseded copy."""
-        return path not in self._current.parked and os.path.lexists(path)
+        return path not in self._current.parked and os.path.lexists(long_path(path))
 
     # --- selection / transform -----------------------------------------------------
 
@@ -1850,7 +1958,7 @@ class ExtractionCoordinator:
                 # 0o755, or to a world-writable 0o777 under STANDARD. GNU tar has
                 # the same rule as --no-overwrite-dir.
                 wanted = self._effective_mode(transformed)
-                current = stat.S_IMODE(os.stat(dest_path).st_mode)
+                current = stat.S_IMODE(os.stat(long_path(dest_path)).st_mode)
                 if wanted is not None and _dir_mode_as_stored(wanted) != current:
                     kept_mode = current
             else:
@@ -1959,6 +2067,10 @@ class ExtractionCoordinator:
         ):
             return requested, None, None
         prior = self._state.collision_map.get(self._collision_key(requested))
+        if prior is None and self._policy is not ExtractionPolicy.TRUSTED:
+            # TRUSTED reports no collision event (``collided`` below), so an alias
+            # found there would change nothing; the guard saves its ``lstat``.
+            prior = self._alias_claim(requested)
         collided = (
             prior.path
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
@@ -1983,7 +2095,7 @@ class ExtractionCoordinator:
         if not self._occupied(path):
             return False
         try:
-            return not stat.S_ISDIR(os.lstat(path).st_mode)
+            return not stat.S_ISDIR(os.lstat(long_path(path)).st_mode)
         except (OSError, ValueError):
             return False
 
@@ -2027,10 +2139,12 @@ class ExtractionCoordinator:
         not the filesystem's state, so they become typed failures, as does Windows
         refusing a symlink for want of privilege: see ``_typed_os_error``.
         """
-        if isinstance(exc, OSError):
-            # Before it is recorded or logged: a dry run's error names dest.
-            self._rebase_os_error(exc)
+        # Typed first: whether a path was too long is read from the path the call took.
         error = _typed_os_error(exc, member_name)
+        if isinstance(exc, OSError):
+            # Before it is recorded or logged: a dry run's error names dest. The typed
+            # error keeps ``exc`` as its cause, so this reaches that too.
+            self._rebase_os_error(exc)
         if isinstance(error, FilterRejectionError):
             return error, ExtractionStatus.BLOCKED
         return error, ExtractionStatus.FAILED
@@ -2107,6 +2221,53 @@ class ExtractionCoordinator:
         key = self._collision_key(path)
         self._state.collision_map[key] = _Claim(path, index, self._physical_path(path))
         self._state.claim_keys[path] = key
+        self._state.unindexed_claims.append(path)
+
+    def _alias_claim(self, path: Path) -> _Claim | None:
+        """The claim on the file at ``path`` when ``path`` is another name the
+        filesystem gives a file this run wrote under its own name; else ``None``.
+
+        An 8.3 short name (``LONGFI~1.TXT`` for ``longfilename.txt``) is such a name on
+        Windows, on a volume that makes them; so is a spelling that NTFS's upcase table
+        folds and ``casefold`` does not. The collision key does not see it, so without
+        this the member would meet the file as one already there: refused under
+        ``ERROR``, and under ``REPLACE`` written over the earlier member while that
+        member's result still says ``EXTRACTED``. Matched by identity
+        (``st_dev``, ``st_ino``) with the files this run claimed, so it goes through
+        the same collision handling as a case variant does. A filesystem that reports
+        inode 0 cannot be matched, and an entry there stays one already there.
+
+        Only a name that holds an entry and has no claim of its own gets here, so a
+        run into an empty destination costs nothing. Each claimed path is looked at
+        once, on the first lookup after it was claimed; a hit is checked against the
+        claimed path again, as that path may hold a newer file by now.
+        """
+        if not self._occupied(path):
+            return None
+        try:
+            st = os.lstat(long_path(path))
+        except OSError:
+            return None
+        if st.st_ino == 0:
+            return None
+        state = self._state
+        for claimed in state.unindexed_claims:
+            with contextlib.suppress(OSError):
+                cst = os.lstat(long_path(claimed))
+                state.claim_ids[cst.st_dev, cst.st_ino] = claimed
+        state.unindexed_claims.clear()
+        claimed = state.claim_ids.get((st.st_dev, st.st_ino))
+        if claimed is None or claimed == path:
+            return None
+        claim = state.collision_map.get(self._claimed_key(claimed))
+        if claim is None or claim.path != claimed:
+            return None
+        try:
+            if not os.path.samestat(st, os.lstat(long_path(claimed))):
+                return None
+        except OSError:
+            return None
+        return claim
 
     def _claimed_key(self, path: Path) -> str:
         """The key ``path`` was claimed under, or its current key if it was not."""
@@ -2228,7 +2389,7 @@ class ExtractionCoordinator:
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
         try:
-            st = os.lstat(dest_path)
+            st = os.lstat(long_path(dest_path))
         except FileNotFoundError:
             written_paths.discard(dest_path)
             self._release_claim(dest_path)
@@ -2237,11 +2398,11 @@ class ExtractionCoordinator:
             )
         with self._readonly_cleared(dest_path):
             if stat.S_ISDIR(st.st_mode):
-                os.rmdir(dest_path)
+                os.rmdir(long_path(dest_path))
                 # Its member's metadata has no directory left to go on.
                 self._drop_pending_dir(dest_path)
             else:
-                os.unlink(dest_path)
+                os.unlink(long_path(dest_path))
             if stat.S_ISLNK(st.st_mode):
                 self._note_link_change(dest_path)
         written_paths.discard(dest_path)
@@ -2310,7 +2471,7 @@ class ExtractionCoordinator:
             # A file that cannot be looked at now is simply not copied from.
             with contextlib.suppress(OSError):
                 state.written_files[original.member_id, dest_path] = _file_identity(
-                    os.stat(dest_path, follow_symlinks=False)
+                    os.stat(long_path(dest_path), follow_symlinks=False)
                 )
 
         # Record this FILE's path under the ORIGINAL member id so later hardlinks whose
@@ -2360,7 +2521,7 @@ class ExtractionCoordinator:
             if expected is None or path == dest_path:
                 continue
             try:
-                f = open(path, "rb")  # noqa: SIM115 - returned open
+                f = open(long_path(path), "rb")  # noqa: SIM115 - returned open
             except OSError:
                 continue
             try:
@@ -2415,7 +2576,12 @@ class ExtractionCoordinator:
         # a per-member OnError failure; no copy-the-target fallback. A dry run creates
         # an absolute target that names dest pointing into its scratch copy instead.
         on_disk = self._link_target_on_disk(target)
-        os.symlink(on_disk, dest_path)
+        if _DIRECTORY_LINKS:
+            is_dir = self._link_to_directory(dest_path, target, on_disk)
+            os.symlink(on_disk, long_path(dest_path), target_is_directory=is_dir)
+            self._state.link_kinds[dest_path] = (on_disk, is_dir)
+        else:
+            os.symlink(on_disk, long_path(dest_path))
         self._resolutions_changed()
 
         # Re-validate the symlink target AFTER creating it, resolving through the real
@@ -2438,7 +2604,7 @@ class ExtractionCoordinator:
         # this link resolves to; the caller records the link in ``links`` for that.
         if _symlink_escapes(dest_path, on_disk, self._state.dest_root):
             try:
-                dest_path.unlink()
+                os.unlink(long_path(dest_path))
             except OSError:
                 pass
             self._resolutions_changed()
@@ -2449,6 +2615,119 @@ class ExtractionCoordinator:
             )
 
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+
+    def _link_to_directory(self, dest_path: Path, target: str, on_disk: str) -> bool:
+        """Whether the symlink at ``dest_path`` is made a directory link, where the
+        platform has two kinds (``_DIRECTORY_LINKS``).
+
+        Yes when its target is a directory now, or when the archive's listing shows
+        the target is one (``_listed_directory``). A target the run has not written
+        yet and the listing cannot place, as in a streaming pass, gets a file link;
+        ``_settle_link_kinds`` remakes it once the run is done if it turned out a
+        directory.
+        """
+        if os.path.isdir(long_path(os.path.join(dest_path.parent, on_disk))):
+            return True
+        return self._listed_directory(dest_path, target)
+
+    def _listed_directory(self, dest_path: Path, target: str) -> bool:
+        """Whether the archive's listing shows the target of a symlink at ``dest_path``
+        is a directory: a directory member, or a name other members are inside.
+
+        Matched by name, lexically from the link's place under the destination, and
+        casefolded, as Windows matches names. A target that leaves the destination, or
+        is absolute, is not placed. A name the policy or a filter writes elsewhere is
+        missed and left to ``_settle_link_kinds``.
+        """
+        state = self._state
+        if state.listed is None:
+            return False
+        if state.listed_names is None:
+            # One string per member: an ancestor is found by a prefix search, so no
+            # string is built for each directory a deep name passes through.
+            names: list[str] = []
+            dirs: set[str] = set()
+            for member in state.listed:
+                name = posixpath.normpath(member.name.replace("\\", "/").strip("/"))
+                folded = name.casefold()
+                names.append(folded)
+                if member.type == MemberType.DIRECTORY:
+                    dirs.add(folded)
+            names.sort()
+            state.listed_names = (names, dirs)
+        try:
+            rel_parent = dest_path.parent.relative_to(state.dest).as_posix()
+        except ValueError:
+            return False
+        spelled = target.replace("\\", "/")
+        if spelled.startswith("/"):
+            return False
+        named = posixpath.normpath(posixpath.join(rel_parent, spelled))
+        if named == ".." or named.startswith("../"):
+            return False
+        folded = named.casefold()
+        names, dirs = state.listed_names
+        if folded in dirs:
+            return True
+        inside = folded + "/"
+        at = bisect.bisect_left(names, inside)
+        return at < len(names) and names[at].startswith(inside)
+
+    def _settle_link_kinds(self) -> None:
+        """Remake each symlink this run made of the wrong kind for what its target is
+        now: a file link to a directory, or a directory link to anything else. Where
+        the platform has one kind (POSIX), there is nothing to do.
+
+        Only a link still at its path with the target it was made with is remade, so
+        nothing a later member put there is touched. The new link is made under a
+        temporary name and renamed into place. A failure is logged and leaves the
+        link as it was, as metadata is best-effort.
+        """
+        state = self._state
+        kinds, state.link_kinds = state.link_kinds, {}
+        for path, (on_disk, is_dir) in kinds.items():
+            if path not in state.written_paths:
+                continue
+            try:
+                # Windows hands back an absolute target with the extended
+                # prefix: compared plain, as it was created.
+                if plain(os.readlink(long_path(path))) != on_disk:
+                    continue
+            except OSError:
+                continue
+            wanted = os.path.isdir(long_path(os.path.join(path.parent, on_disk)))
+            if wanted == is_dir:
+                continue
+            tmp = self._temp_sibling(path.parent)
+            try:
+                os.symlink(on_disk, long_path(tmp), target_is_directory=wanted)
+            except OSError as exc:
+                self._rebase_os_error(exc)
+                logger.warning(
+                    "Could not remake symlink %r for its target: %s",
+                    str(self._shown(path)),
+                    exc,
+                )
+                continue
+            try:
+                # Not os.replace: Windows will not replace a directory link by name.
+                os.unlink(long_path(path))
+                try:
+                    os.rename(long_path(tmp), long_path(path))
+                except OSError:
+                    # Put the link back as it was.
+                    with contextlib.suppress(OSError):
+                        os.symlink(on_disk, long_path(path), target_is_directory=is_dir)
+                    raise
+            except OSError as exc:
+                self._rebase_os_error(exc)
+                logger.warning(
+                    "Could not remake symlink %r for its target: %s",
+                    str(self._shown(path)),
+                    exc,
+                )
+                with contextlib.suppress(OSError):
+                    os.unlink(long_path(tmp))
 
     def _write_hardlink(
         self,
@@ -2829,7 +3108,7 @@ class ExtractionCoordinator:
             or path in self._current.parked
         ):
             with contextlib.suppress(OSError):
-                st = os.lstat(path)
+                st = os.lstat(long_path(path))
         if (
             st is None
             or not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode))
@@ -2843,19 +3122,20 @@ class ExtractionCoordinator:
             for paths in state.source_paths.values():
                 for other in paths:
                     with contextlib.suppress(OSError):
-                        ost = os.lstat(other)
+                        ost = os.lstat(long_path(other))
                         if other != path and (ost.st_dev, ost.st_ino) == identity:
                             others.append(other)
-        os.chmod(path, st.st_mode | stat.S_IWRITE)
+        os.chmod(long_path(path), st.st_mode | stat.S_IWRITE)
         try:
             yield
         except BaseException:
             with contextlib.suppress(OSError):
-                os.chmod(path, st.st_mode)  # still the same file: the block failed
+                # Still the same file: the block failed.
+                os.chmod(long_path(path), st.st_mode)
             raise
         for other in others:
             with contextlib.suppress(OSError):
-                os.chmod(other, st.st_mode)
+                os.chmod(long_path(other), st.st_mode)
 
     def _forget_source_path(self, path: Path) -> bool:
         """Stop offering ``path`` as a hardlink source: something else is going there.
@@ -2974,7 +3254,7 @@ class ExtractionCoordinator:
         kept: list[int] = []
         for index in indices:
             path = self._state.results[index].path
-            if path is not None and os.path.lexists(path):
+            if path is not None and os.path.lexists(long_path(path)):
                 kept.append(index)
             else:
                 self._revise_to_overwritten(index)
@@ -3025,18 +3305,19 @@ class ExtractionCoordinator:
         by mistake (e.g. a CLI given a file argument where a directory was meant).
         """
         named = dest if self._dry is None else self._dry.shown_dest
-        if named.is_dir():  # real directory or symlink resolving to one: reuse / follow
+        # A real directory or a symlink resolving to one: reuse / follow.
+        if os.path.isdir(long_path(named)):
             return False
         # ``lexists`` (not ``exists``) so a dangling symlink is caught here rather than
         # surfacing as a raw FileExistsError from ``mkdir`` below.
-        if os.path.lexists(named):
+        if os.path.lexists(long_path(named)):
             raise ExtractionError(
                 f"Destination exists and is not a directory: {display_path(named)}"
             )
         if self._dry is not None:
             self._dry.check_creatable()
         else:
-            dest.mkdir(parents=True, exist_ok=True)
+            os.makedirs(long_path(dest), exist_ok=True)
         return True
 
     def _makedirs(self, path: Path, member: ArchiveMember) -> None:
@@ -3056,17 +3337,19 @@ class ExtractionCoordinator:
         # member naming one later is not the caller's (``_is_callers_directory``).
         missing: list[Path] = []
         probe = path
-        while probe != probe.parent and not os.path.lexists(probe):
+        while probe != probe.parent and not os.path.lexists(long_path(probe)):
             missing.append(probe)
             probe = probe.parent
         try:
-            os.makedirs(path, exist_ok=True)
+            os.makedirs(long_path(path), exist_ok=True)
         except (FileExistsError, NotADirectoryError, FileNotFoundError) as exc:
             # FileNotFoundError too: Windows can report a directory created under a file
             # as a missing path. Nearest the root first, because that component is the
             # one that stops the rest.
             for component in (*reversed(path.parents), path):
-                if component in self._state.written_paths and not component.is_dir():
+                if component in self._state.written_paths and not os.path.isdir(
+                    long_path(component)
+                ):
                     raise ExtractionError(
                         f"Cannot create {quoted(member.name)}: "
                         f"{quoted(self._rel_name(component))} is a "
@@ -3087,7 +3370,7 @@ class ExtractionCoordinator:
         if path == state.dest:
             return path not in state.created_dirs
         try:
-            st = os.lstat(path)
+            st = os.lstat(long_path(path))
         except OSError:
             return False
         return stat.S_ISDIR(st.st_mode) and not self._is_run_directory(path, st)
@@ -3115,7 +3398,7 @@ class ExtractionCoordinator:
             return False
         for other in recorded:
             try:
-                if os.path.samestat(st, os.lstat(other)):
+                if os.path.samestat(st, os.lstat(long_path(other))):
                     return True
             except OSError:
                 continue
@@ -3139,7 +3422,7 @@ class ExtractionCoordinator:
         must be created at its final name for the escape re-validation's cycle check, and
         a directory cannot be renamed over a file at all."""
         try:
-            existing = os.lstat(dest_path).st_mode
+            existing = os.lstat(long_path(dest_path)).st_mode
         except (OSError, ValueError):  # the same errors ``os.path.lexists`` absorbs
             return True
         # Replacing a symlink or a directory can move where an earlier link resolves;
@@ -3180,7 +3463,7 @@ class ExtractionCoordinator:
                 # --recursive-unlink. Removing a tree takes the members this run wrote
                 # into it, which would then still report EXTRACTED, and the caller's
                 # own files when the directory was already there.
-                with os.scandir(dest_path) as entries:
+                with os.scandir(long_path(dest_path)) as entries:
                     if next(entries, None) is not None:
                         raise ExtractionError(
                             f"Destination is a directory that is not empty: "
@@ -3189,7 +3472,7 @@ class ExtractionCoordinator:
                         )
                 self._note_link_change(dest_path)
                 with self._readonly_cleared(dest_path):
-                    os.rmdir(dest_path)
+                    os.rmdir(long_path(dest_path))
                 # Its member's metadata has no directory left to go on.
                 self._drop_pending_dir(dest_path)
                 self._current.removed_existing = True
@@ -3208,7 +3491,7 @@ class ExtractionCoordinator:
             self._note_link_change(dest_path)
         if not atomic:
             with self._readonly_cleared(dest_path):
-                dest_path.unlink()
+                os.unlink(long_path(dest_path))
             # A parked copy's result is already SUPERSEDED: nothing to revise.
             if not parked:
                 self._current.removed_existing = True
@@ -3231,13 +3514,19 @@ class ExtractionCoordinator:
         ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
         final mode. STRICT and STANDARD give a mode-less member their own default instead
         (see ``_effective_mode``), so this arm is TRUSTED's alone."""
+        # Every check that could still skip the member has passed, so a member whose
+        # recorded size is already over the ratio is refused before any temp file
+        # exists.
+        self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
             tmp = self._temp_sibling(dest_path.parent)
             fd = _open_new_file(tmp, 0o666)
         else:
             # mkstemp hands back an already-open fd; write straight into it (no
             # close+reopen). Its 0o600 keeps the content private until the chmod below.
-            fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=_TMP_PREFIX)
+            fd, tmp_name = tempfile.mkstemp(
+                dir=long_path(dest_path.parent), prefix=_TMP_PREFIX
+            )
             tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as dst:
@@ -3255,7 +3544,7 @@ class ExtractionCoordinator:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
             with contextlib.suppress(OSError):
-                os.unlink(tmp)
+                os.unlink(long_path(tmp))
             raise
 
     @staticmethod
@@ -3360,7 +3649,7 @@ class ExtractionCoordinator:
                 if copy_from is None:
                     copy_from = candidate
                 try:
-                    os.link(candidate, tmp)
+                    os.link(long_path(candidate), long_path(tmp))
                 except OSError as exc:
                     if not _link_refused_here(exc):
                         raise
@@ -3383,7 +3672,7 @@ class ExtractionCoordinator:
                     0o600 if self._effective_mode(member) is not None else 0o666
                 )
                 with (
-                    open(copy_from, "rb") as src,
+                    open(long_path(copy_from), "rb") as src,
                     os.fdopen(_open_new_file(tmp, create_mode), "wb") as dst,
                 ):
                     while chunk := src.read(_CHUNK):
@@ -3399,7 +3688,7 @@ class ExtractionCoordinator:
             self._swap_into_place(tmp, new_path)
         except BaseException:
             with contextlib.suppress(OSError):
-                os.unlink(tmp)
+                os.unlink(long_path(tmp))
             raise
         self._state.source_paths.setdefault(source_id, []).append(new_path)
 
@@ -3426,9 +3715,9 @@ class ExtractionCoordinator:
         ``dest``'s file, and in the same-file case the temp is one of them, so an unlink
         after the block would fail."""
         with self._readonly_cleared(dest):
-            os.replace(tmp, dest)
+            os.replace(long_path(tmp), long_path(dest))
             with contextlib.suppress(OSError):
-                os.unlink(tmp)
+                os.unlink(long_path(tmp))
 
     @staticmethod
     def _temp_sibling(parent: Path) -> Path:
@@ -3440,7 +3729,7 @@ class ExtractionCoordinator:
         underneath us, so a uuid4 name is enough."""
         while True:
             candidate = parent / f"{_TMP_PREFIX}{uuid.uuid4().hex}"
-            if not os.path.lexists(candidate):
+            if not os.path.lexists(long_path(candidate)):
                 return candidate
 
     def _defer_directory_metadata(self, path: Path, member: ArchiveMember) -> None:
@@ -3453,7 +3742,7 @@ class ExtractionCoordinator:
         bsdtar and Python's ``tarfile`` defer them the same way.
         """
         try:
-            st = os.lstat(path)
+            st = os.lstat(long_path(path))
         except OSError:
             return
         physical = self._physical_path(path)
@@ -3479,7 +3768,7 @@ class ExtractionCoordinator:
             return
         physical = self._physical_path(path)
         for other in list(pending):
-            if other == physical or not os.path.lexists(other):
+            if other == physical or not os.path.lexists(long_path(other)):
                 del pending[other]
         if not pending:
             del self._state.pending_dirs[key]
@@ -3517,7 +3806,7 @@ class ExtractionCoordinator:
         ):
             if by_fd:
                 try:
-                    fd = os.open(path, flags)
+                    fd = os.open(long_path(path), flags)
                 except PermissionError:
                     pass
                 except OSError:
@@ -3530,7 +3819,7 @@ class ExtractionCoordinator:
                         os.close(fd)
                     continue
             try:
-                if is_ours(os.lstat(path), identity):
+                if is_ours(os.lstat(long_path(path)), identity):
                     self._apply_metadata(path, member)
             except OSError:
                 pass
@@ -3557,6 +3846,7 @@ class ExtractionCoordinator:
         even when root calls it, so a ``chmod`` before it would lose exactly the bits
         TRUSTED promises to keep. GNU tar orders the two the same way for this reason.
         """
+        target = path if isinstance(path, int) else long_path(path)
         # Ownership only under TRUSTED as root (STRICT/STANDARD never chown). A
         # negative id is skipped (-1 means "leave unchanged" to chown), and one past
         # uid_t raises OverflowError before any syscall: both are archive content.
@@ -3570,19 +3860,19 @@ class ExtractionCoordinator:
             and os.geteuid() == 0
         ):
             try:
-                os.chown(path, member.uid, member.gid)
+                os.chown(target, member.uid, member.gid)
             except (OSError, OverflowError):
                 pass
         mode = self._effective_mode(member)
         if mode is not None:
             try:
-                os.chmod(path, mode)
+                os.chmod(target, mode)
             except OSError:
                 pass
         if member.modified is not None:
             try:
                 ts = member.modified.timestamp()
-                os.utime(path, (ts, ts))
+                os.utime(target, (ts, ts))
             except (OSError, ValueError, OverflowError):
                 pass
 

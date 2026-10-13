@@ -1,4 +1,4 @@
-"""CLI member patterns: a missing trailing ``/``, directory contents, Windows ``\\``."""
+"""CLI member patterns: ``match_glob(..., with_contents=True)``, plus Windows ``\\``."""
 
 from __future__ import annotations
 
@@ -11,11 +11,12 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.filters import MemberSelection
 from archivey.cli.main import main
 from archivey.exceptions import ReadError
 from archivey.internal.base_reader import BaseArchiveReader
+from archivey.paths import match_glob
 from archivey.types import ArchiveMember
 from tests.test_extraction_damaged_listing import _rar_cut
 
@@ -63,15 +64,25 @@ def _selected(
     return [m.name for m in members if pred(m)]
 
 
-def test_a_bare_directory_name_selects_the_directory_and_its_contents(
-    tmp_path: Path,
-) -> None:
-    """``docs`` selects ``docs/`` and everything under it, as ``tar`` does, but not
-    the sibling file ``docs.txt``."""
+def test_cli_patterns_match_like_match_glob_with_contents(tmp_path: Path) -> None:
+    """``*`` stays inside one folder; a pattern matching a folder selects the folder and
+    everything under it, as ``tar`` does, but not the sibling file ``docs.txt``."""
     members = _members(tmp_path)
-    expected = ["docs/", "docs/a.txt", "docs/sub/", "docs/sub/b.txt"]
-    assert _selected(members, ["docs"]) == expected
-    assert _selected(members, ["docs/"]) == expected
+    contents = ["docs/", "docs/a.txt", "docs/sub/", "docs/sub/b.txt"]
+    assert _selected(members, ["docs"]) == contents
+    assert _selected(members, ["docs/"]) == contents
+    assert _selected(members, ["docs/**"]) == contents
+    assert _selected(members, ["*.txt"]) == ["docs.txt"]
+    assert _selected(members, ["**/*.txt"]) == [
+        "docs/a.txt",
+        "docs/sub/b.txt",
+        "docs.txt",
+    ]
+    for pattern in ["docs", "docs/**", "*.txt", "**/*.txt", "src", "*/"]:
+        predicate = match_glob(pattern, with_contents=True)
+        assert _selected(members, [pattern]) == [
+            m.name for m in members if predicate(m)
+        ]
 
 
 def test_a_directory_pattern_does_not_select_a_file_of_that_name(
@@ -85,7 +96,8 @@ def test_a_directory_pattern_does_not_select_a_file_of_that_name(
 def test_a_nested_directory_and_a_wildcard_still_work(tmp_path: Path) -> None:
     members = _members(tmp_path)
     assert _selected(members, ["docs/sub"]) == ["docs/sub/", "docs/sub/b.txt"]
-    assert _selected(members, ["*.py"]) == ["src/main.py"]
+    assert _selected(members, ["*.py"]) == []
+    assert _selected(members, ["**/*.py"]) == ["src/main.py"]
     # A directory stored only through its files (no "src/" entry) is still selected.
     assert _selected(members, ["src"]) == ["src/main.py"]
 
@@ -116,7 +128,30 @@ def test_unmatched_patterns_use_the_same_rule(tmp_path: Path) -> None:
     assert selection.unmatched_includes() == ["docs.txt/", "missing"]
 
 
-@pytest.mark.parametrize("pattern", ["docs", "docs/"])
+@pytest.mark.parametrize(
+    ("pattern", "reason", "unrelated"),
+    [
+        ("a//b", "has an empty component", "[...]"),
+        ("[z-a]", "has a malformed [...] set: bad character range z-a", "'/'"),
+    ],
+)
+def test_an_invalid_pattern_is_a_usage_error(
+    pattern: str,
+    reason: str,
+    unrelated: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The message carries match_glob's own reason, so it names only what is wrong.
+    archive = _tar(tmp_path / "t.tar", _TREE)
+    assert main(["list", str(archive), pattern]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert f"archivey: invalid member pattern: {pattern!r} {reason}" in err
+    assert unrelated not in err
+    assert "position" not in err
+
+
+@pytest.mark.parametrize("pattern", ["docs", "docs/", "docs/**"])
 def test_extract_a_directory_by_name(
     pattern: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -165,15 +200,6 @@ def test_a_matching_pattern_wins_over_the_dash_d_hint(
     assert "did you mean -d" not in err
     assert (work / "out" / "a.txt").read_bytes() == b"a"
     assert not (work / "top.txt").exists()
-
-
-def test_a_pattern_written_with_the_slash_compiles_no_duplicate_form() -> None:
-    from archivey.cli.filters import _Pattern
-
-    assert _Pattern("docs/", backslash_is_separator=False).forms == (
-        "docs/",
-        "docs/*",
-    )
 
 
 # --- One pass, and an empty selection fails the same way -------------------------

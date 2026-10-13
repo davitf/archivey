@@ -88,6 +88,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.listing_limits import check_metadata_bytes, text_bytes
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
@@ -269,6 +270,7 @@ HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 # Omitting max_members on the archive-level entry point means the ListingLimits
 # default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+_DEFAULT_MAX_METADATA_BYTES = ListingLimits().max_metadata_bytes
 
 
 def load_sevenzip_archive(
@@ -279,11 +281,13 @@ def load_sevenzip_archive(
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
+    max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
     The one open flow: :class:`SevenZipReader` and the fuzz harnesses both call it.
-    ``fp`` starts at the signature header.
+    ``fp`` starts at the signature header. ``max_members`` and ``max_metadata_bytes``
+    are the reader's ``ListingLimits``; both hold at open (``None`` disables one).
     """
     signature = read_signature_and_next_header(fp)
     if not signature.header_data:
@@ -305,11 +309,38 @@ def load_sevenzip_archive(
             max_members=max_members,
         )
     assert isinstance(block, PlainHeader)
+    _check_header_metadata(block, max_metadata_bytes)
     return materialize_archive(
         signature,
         block,
         is_header_encrypted=header_encrypted,
         encoded_streams_end=encoded_streams_end,
+    )
+
+
+def _check_header_metadata(header: PlainHeader, max_metadata_bytes: int | None) -> None:
+    """Hold the names and comment a parsed header keeps to ``max_metadata_bytes``.
+
+    Checked once the header has parsed, plain or decoded, so a refused archive fails
+    at open, as ``max_members`` does, instead of when its members are registered. A
+    wrong-password decode never reaches here: the candidate loop has already judged
+    it. Each stored name is weighed by registration's weights, as ``name`` and as
+    ``raw_name`` (two bytes per character, which under-weighs a character outside
+    the BMP: it is two UTF-16 units). Registration weighs the normalized name, which
+    can be shorter (``a/./b`` lists as ``a/b``), so such a name weighs a little more
+    here. The header has its own bound, ``MAX_NEXT_HEADER_SIZE`` (64 MiB, stored or
+    decoded); that is a fixed parser limit, not this budget, so it does not follow
+    the caller's setting.
+    """
+    if max_metadata_bytes is None:
+        return
+    total = text_bytes(header.comment)
+    for record in header.files:
+        total += text_bytes(record.filename) + 2 * len(record.filename)
+    check_metadata_bytes(
+        max_metadata_bytes,
+        total,
+        detail=f"7z header names and comment hold {total} bytes",
     )
 
 
@@ -568,6 +599,7 @@ class SevenZipReader(BaseArchiveReader):
             stream_config=self._stream_config,
             collector=self._diagnostics_collector,
             max_members=self._config.listing_limits.max_members,
+            max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
         )
 
     def _report_trailing_data(self) -> None:

@@ -32,7 +32,6 @@ __all__ = [
     "KeyDerivationBudget",
     "StreamConfig",
     "check_decoder_memory",
-    "exceeds_decoder_memory",
     "probe_lzma_dictionary",
     "stream_config_from_archivey",
 ]
@@ -150,17 +149,6 @@ def probe_lzma_dictionary(declared: int, read_bound: int | None) -> int:
     return min(declared, max(read_bound + _LZMA_FILTER_LOOKAHEAD, _LZMA_DICT_MIN))
 
 
-def exceeds_decoder_memory(declared: int, limits: DecoderLimits) -> bool:
-    """Whether an archive-declared allocation is over ``max_decoder_memory``.
-
-    The one statement of the boundary: :func:`check_decoder_memory` raises on it, and
-    a caller that has to decide without raising yet (the ``.lzma`` codec) branches on
-    it, so the two cannot drift apart.
-    """
-    cap = limits.max_decoder_memory
-    return cap is not None and declared > cap
-
-
 def check_decoder_memory(
     declared: int,
     *,
@@ -196,7 +184,8 @@ def check_decoder_memory(
     Lives here rather than in ``codecs/`` so the xz and lzip decoders, which the
     codec modules import, can call it without an import cycle.
     """
-    if not exceeds_decoder_memory(declared, limits):
+    cap = limits.max_decoder_memory
+    if cap is None or declared <= cap:
         return
     if counted_from is None:
         detail, numbers = f"{what} declares {declared} bytes", "this number"
@@ -204,7 +193,7 @@ def check_decoder_memory(
         detail = f"{what} is {declared} bytes, counted from {counted_from}"
         numbers = "these numbers"
     raise ResourceLimitError(
-        f"Decoder limit reached: max_decoder_memory={limits.max_decoder_memory} "
+        f"Decoder limit reached: max_decoder_memory={cap} "
         f"({detail}). The archive chose {numbers}; "
         "raise DecoderLimits.max_decoder_memory if the archive is trusted."
     )

@@ -175,3 +175,11 @@ front end that moves or renames what extraction wrote and wants the names a dire
 extraction would have chosen.
 
 ::: archivey.paths.numbered_name
+
+It also holds two functions that turn patterns into a `members=` argument, for
+selecting by pattern where `members=` itself matches names exactly. They read the same
+pattern differently: `match_glob` keeps `*` inside one folder, as archivey's CLI does,
+and `match_tar_glob` follows `tar`, where `*` also matches `/`.
+
+::: archivey.paths.match_glob
+::: archivey.paths.match_tar_glob

@@ -162,7 +162,8 @@ def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
     assert caught.value.format_unconfirmed is True
     message = str(caught.value)
     assert "unconfirmed" in message
-    # Nothing was decoded: the refusal comes before any decoder is built.
+    # Nothing was decoded: liblzma refuses the header before it allocates the
+    # dictionary.
     assert "stopped by a limit" in message
     assert "Decode failed" not in message
     assert "Partial output" not in message
