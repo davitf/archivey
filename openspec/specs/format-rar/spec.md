@@ -195,14 +195,19 @@ parser-constant ceiling. `stream_members()` / `streaming=True` are not an
 escape hatch.
 
 RAR has no header-size analogue for member count (the walk is sequential), so
-`UNLIMITED` can walk until memory is exhausted. The parse bound is a member
-count, not a byte budget. Spine `ListingLimits.max_metadata_bytes`
-(`archive-reading`) still apply when members are registered into a
-materialized list (`members()`), the same as every other format. The one
-exception is RAR 1.5/2.x compressed old-style comments, which expand after
-the parse: the reader SHALL sum their declared unpacked sizes (member and
-archive comments) at `open_archive`, before decoding any, and raise
-`ResourceLimitError` naming `max_metadata_bytes` when the sum exceeds it.
+`UNLIMITED` can walk until memory is exhausted. The header walk SHALL also weigh
+each member it keeps against `listing_limits.max_metadata_bytes` as it appends
+it: the stored name (as `name` and as `raw_name`), a RAR5 redirection target, and
+the member's comment (a stored one by its length; a compressed RAR 1.5/2.x one by
+its declared unpacked size), by the weights of `archive-reading`. The running total
+is kept per member list, the way `max_members` is: per volume, and again for the
+merged list of a volume set, where a split member's later parts merge into its
+first and are not weighed again. Crossing the cap SHALL raise `ResourceLimitError`
+naming `max_metadata_bytes` at parse (`open_archive`). RAR 1.5/2.x compressed
+old-style comments expand after the parse: before decoding any, the reader SHALL
+add the archive comment to the members' total at `open_archive` and raise
+`ResourceLimitError` naming `max_metadata_bytes` when the sum exceeds it. Spine
+`ListingLimits` still apply when members are registered into a materialized list.
 
 #### Scenario: RAR parser bound matrix
 
@@ -212,6 +217,8 @@ archive comments) at `open_archive`, before decoding any, and raise
 | `listing_limits.max_members is None` (`UNLIMITED`) | No member-count bound at parse; a large honest archive opens |
 | Default limits, typical archive | Open and listing succeed |
 | Compressed RAR 1.5/2.x comments whose declared unpacked sizes sum past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, before any comment is decoded, including `stream_members()` / `streaming=True` |
+| RAR4 or RAR5 archive under `max_members` whose stored names weigh more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
+| Volume set whose members are split across volumes, `max_metadata_bytes` at exactly what registration weighs | Opens and lists: a split member's name is weighed once |
 
 ### Requirement: Expose RAR file-version history members
 

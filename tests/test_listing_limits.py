@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import struct
+import subprocess
 import tarfile
 import tracemalloc
 import zipfile
@@ -23,7 +24,9 @@ from archivey.internal.listing_limits import (
     member_metadata_bytes,
 )
 from archivey.types import ArchiveMember, MemberType
+from tests.conftest import requires_binary
 from tests.memory_util import traced_peak
+from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
 
 
 def _zip_with_members(names: list[str], *, comment: bytes | None = None) -> bytes:
@@ -595,3 +598,147 @@ def test_member_that_crosses_the_cap_still_resolves_its_link(
     link = yielded[-1]
     assert link.link_target == "f0"
     assert link.link_target_member is yielded[0]
+
+
+# --- 7z and RAR weigh their stored names at parse ----------------------------------
+
+
+_RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
+_LONG_NAMES = [f"{'n' * 200}_{i}.txt" for i in range(3)]
+
+
+def _write_long_named_sources(src: Path, *, size: int = 1) -> None:
+    src.mkdir(parents=True, exist_ok=True)
+    for index, name in enumerate(_LONG_NAMES):
+        (src / name).write_bytes(bytes([65 + index]) * size)
+
+
+def _build_7z(tmp_path: Path, *flags: str) -> Path:
+    src = tmp_path / "src"
+    _write_long_named_sources(src)
+    archive = tmp_path / "long.7z"
+    subprocess.run(
+        ["7z", "a", "-bd", "-bso0", *flags, str(archive), *_LONG_NAMES],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    return archive
+
+
+def _build_rar(tmp_path: Path, *flags: str, size: int = 1) -> list[Path]:
+    src = tmp_path / "src"
+    _write_long_named_sources(src, size=size)
+    archive = tmp_path / "long.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", *flags, str(archive), *_LONG_NAMES],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    return sorted(tmp_path.glob("long*.rar"))
+
+
+def _registered_metadata_bytes(path: Path, password: str | None) -> int:
+    """What registration charges for the whole listing, with no limit applied."""
+    cfg = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
+    with open_archive(path, config=cfg, password=password) as reader:
+        members = reader.members()
+        comment = reader.info.comment
+    total = sum(member_metadata_bytes(member) for member in members)
+    return total + (len(comment) if comment else 0)
+
+
+def _assert_metadata_budget_holds_at_open(
+    path: Path, names: list[str] = _LONG_NAMES, password: str | None = None
+) -> None:
+    """Far under the names' weight, ``open_archive`` itself refuses (the parse weighs
+    them); at exactly the registration total, the whole listing succeeds."""
+    budget = _registered_metadata_bytes(path, password)
+
+    def limits(max_metadata_bytes: int) -> ArchiveyConfig:
+        # 3 members against a limit of 10: only the byte budget can refuse.
+        return ArchiveyConfig(
+            listing_limits=ListingLimits(
+                max_members=10, max_metadata_bytes=max_metadata_bytes
+            )
+        )
+
+    # Each name alone weighs more than 200 bytes.
+    with pytest.raises(ResourceLimitError, match=r"max_metadata_bytes=300 \("):
+        open_archive(path, config=limits(300), password=password)
+    with open_archive(path, config=limits(budget), password=password) as reader:
+        assert sorted(m.name for m in reader.members()) == sorted(names)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        with open_archive(path, config=limits(budget - 1), password=password) as reader:
+            reader.members()
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    "flags",
+    [("-mhc=off",), ("-mhc=on",), ("-mhe=on", "-pkey")],
+    ids=["plain-header", "encoded-header", "encrypted-header"],
+)
+def test_7z_open_weighs_names_against_max_metadata_bytes(
+    tmp_path: Path, flags: tuple[str, ...]
+) -> None:
+    path = _build_7z(tmp_path, *flags)
+    _assert_metadata_budget_holds_at_open(
+        path, password="key" if "-pkey" in flags else None
+    )
+
+
+@requires_binary("rar")
+def test_rar5_open_weighs_names_against_max_metadata_bytes(tmp_path: Path) -> None:
+    (path,) = _build_rar(tmp_path)
+    _assert_metadata_budget_holds_at_open(path)
+
+
+def _rar4_with_long_names(source: Path, dest: Path) -> list[str]:
+    """``source`` with every FILE header renamed to a long name; returns the names
+    the listing shows (a directory with its ``/``).
+
+    ``rar`` 7 cannot write RAR 1.5-4, so the RAR4 cases rename a committed fixture.
+    The first FILE header of each volume gets the same name, which keeps a split
+    member whole.
+    """
+    blocks = _rar3_parse(source.read_bytes())
+    names: list[str] = []
+    for block in blocks:
+        if block["type"] != 0x74:
+            continue
+        is_dir = struct.unpack_from("<H", block["header"], 3)[0] & 0xE0 == 0xE0
+        name = f"{'n' * 200}_{len(names)}"
+        _rar3_rename(block, name.encode())
+        names.append(name + "/" if is_dir else name)
+    dest.write_bytes(_rar3_build(blocks))
+    return names
+
+
+def test_rar4_open_weighs_names_against_max_metadata_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "long.rar"
+    names = _rar4_with_long_names(_RAR_FIXTURES / "basic_nonsolid__rar4.rar", path)
+    _assert_metadata_budget_holds_at_open(path, names=names)
+
+
+@requires_binary("rar")
+def test_rar5_volume_set_weighs_names_across_volumes(tmp_path: Path) -> None:
+    """Each member spans volumes, so every volume repeats a long name. The set is
+    weighed as one listing: a split member's name counts once, as registration
+    counts it, and the budget covers the names of every volume together."""
+    paths = _build_rar(tmp_path, "-m0", "-v20k", size=30_000)
+    assert len(paths) > 3
+    _assert_metadata_budget_holds_at_open(paths[0])
+
+
+def test_rar4_volume_set_counts_a_split_name_once(tmp_path: Path) -> None:
+    """One member split over two volumes: both FILE headers carry its long name, and
+    the exact registration total still opens, so the merge weighs it once."""
+    (name,) = _rar4_with_long_names(
+        _RAR_FIXTURES / "tinyvol_rnn.rar", tmp_path / "long.rar"
+    )
+    assert _rar4_with_long_names(
+        _RAR_FIXTURES / "tinyvol_rnn.r00", tmp_path / "long.r00"
+    ) == [name]
+    _assert_metadata_budget_holds_at_open(tmp_path / "long.rar", names=[name])

@@ -237,9 +237,10 @@ class ListingLimits:
     yield every member, but stop keeping the listing once a cap is crossed, so their
     memory stays bounded by it. ``extract_all`` enforces them in both access modes.
     ZIP, 7z, RAR and ISO apply ``max_members`` at parse (ZIP at open, or as it reads
-    the directory when the end record understates the count), RAR weighs its comments against
-    ``max_metadata_bytes`` (the declared sizes of compressed RAR 1.5/2.x comments
-    before decoding them), and ISO the directory records, path tables and UDF
+    the directory when the end record understates the count), 7z and RAR weigh the
+    names and comments their headers hold against ``max_metadata_bytes`` (RAR's
+    compressed RAR 1.5/2.x comments by their declared sizes, before decoding them),
+    and ISO the directory records, path tables and UDF
     descriptors ``pycdlib`` parses, so ``open_archive`` raises and none is an escape
     hatch.
     ISO also counts each path-table entry against ``max_members`` (a table of more than

@@ -211,12 +211,13 @@ def test_hardlink_whose_source_was_not_selected_is_written_before_the_raise(
 def test_a_listing_limit_inside_the_prefix_still_writes_nothing(
     tmp_path: Path, data: bytes
 ) -> None:
-    # The limits are still enforced on the listing before anything is written. (RAR
-    # checks max_members at open, so the one checked here is the metadata budget.)
+    # The limits are still enforced on the listing before anything is written. RAR
+    # weighs both of them as its header walk runs, so the names of the members
+    # before the cut already cross the metadata budget at open.
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=40))
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(data), config=config) as reader:
-        with pytest.raises(ResourceLimitError):
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=40"):
+        with open_archive(io.BytesIO(data), config=config) as reader:
             reader.extract_all(dest)
     assert _files_on_disk(dest) == {}
 

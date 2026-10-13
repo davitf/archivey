@@ -69,6 +69,7 @@ from archivey.internal.backends.rar_copy_sources import FileCopySources
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
     _RAR3_M0,
+    _RAR5_XREDIR_REPARSE_POINTS,
     RAR5_ID,
     RAR5_UNPLACED_BYTES,
     RAR_ID,
@@ -80,8 +81,11 @@ from archivey.internal.backends.rar_parser import (
     _check_rar5_password,
     _decode_comment_text,
     _Rar3Comment,
+    _rar5_redirect_target,
+    comment_metadata_bytes,
     convert_blake2sp_to_mac,
     convert_crc_to_mac,
+    header_metadata_bytes,
     mark_missing_next_volume,
     parse_rar_archive,
     parse_rar_volumes,
@@ -174,7 +178,6 @@ from archivey.internal.volumes import (
     rar_volume_name,
     rar_volume_number,
 )
-from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -470,35 +473,7 @@ _RAR_BIRTH_TIME_HOSTS = frozenset({0, 1, _RAR_HOST_OS_WIN32, 4, 5})
 _RAR3_AES_EXTRACT_VERSION = 29
 _RAR_METHOD_MAX = 0x35  # RAR M5
 _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
-_RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
-# The two RAR5 redirect types that are Windows reparse points. RAR is the one format
-# that records the kind in a header field rather than in the member's data, which is
-# why it can flag both while listing and never has to read anything.
-_RAR5_XREDIR_REPARSE_POINTS = frozenset(
-    {_RAR5_XREDIR_WINDOWS_SYMLINK, _RAR5_XREDIR_WINDOWS_JUNCTION}
-)
-
-
-def _rar5_redirect_target(file_redir: tuple[int, int, str]) -> str:
-    """The ``link_target`` of a RAR5 redirect record.
-
-    A Windows symlink or junction stores a Windows path, so it is normalized the way a
-    ZIP or 7z reparse buffer is (``\\??\\C:\\x`` gives ``C:/x``, ``..\\up`` gives
-    ``../up``). Every ``\\`` becomes ``/``, as unrar's ``DosSlashToUnix`` does on
-    POSIX. Dropping the ``\\??\\`` prefix is archivey's own step, and extraction then
-    refuses a drive or UNC result. Measured on unrar 7.00 on Linux
-    (``dev-docs/formats/rar.md``): it refuses the prefixed spellings too, by a
-    different route, and it creates a stored, unprefixed ``C:\\abs\\y`` as the
-    relative link ``C:/abs/y``, which archivey refuses. It also refuses ``..\\up\\x``,
-    which archivey refuses only when the target leaves the destination. A Unix
-    symlink, a hard link and a file copy keep the stored string: in those a backslash
-    can be part of a name.
-    """
-    redir_type, _flags, target = file_redir
-    if redir_type in _RAR5_XREDIR_REPARSE_POINTS:
-        return normalize_windows_link_target(target)
-    return target
 
 
 # Read step for the confirmation pass over a cut-short member's stored bytes
@@ -1332,7 +1307,7 @@ class RarReader(BaseArchiveReader):
                     "unar",
                 ),
             )
-        self._check_comment_budget()
+        self._check_header_metadata_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
@@ -1719,6 +1694,7 @@ class RarReader(BaseArchiveReader):
 
     def _parse_archive(self) -> tuple[RarArchive, str | None]:
         max_members = self._config.listing_limits.max_members
+        max_metadata_bytes = self._config.listing_limits.max_metadata_bytes
 
         def parse(password: bytes | None) -> RarArchive:
             if len(self._volume_paths) > 1:
@@ -1733,6 +1709,7 @@ class RarReader(BaseArchiveReader):
                         handles,
                         password=password,
                         max_members=max_members,
+                        max_metadata_bytes=max_metadata_bytes,
                         kdf_cache=self._kdf_cache,
                         name_encoding=self._encoding,
                         volume_numbers=self._volume_numbers,
@@ -1758,6 +1735,7 @@ class RarReader(BaseArchiveReader):
                         views,
                         password=password,
                         max_members=max_members,
+                        max_metadata_bytes=max_metadata_bytes,
                         kdf_cache=self._kdf_cache,
                         name_encoding=self._encoding,
                     )
@@ -1776,6 +1754,7 @@ class RarReader(BaseArchiveReader):
                             handle,
                             password=password,
                             max_members=max_members,
+                            max_metadata_bytes=max_metadata_bytes,
                             kdf_cache=self._kdf_cache,
                             name_encoding=self._encoding,
                         )
@@ -1790,6 +1769,7 @@ class RarReader(BaseArchiveReader):
                             [handle],
                             password=password,
                             max_members=max_members,
+                            max_metadata_bytes=max_metadata_bytes,
                             kdf_cache=self._kdf_cache,
                             name_encoding=self._encoding,
                             volume_numbers=self._volume_numbers,
@@ -1803,6 +1783,7 @@ class RarReader(BaseArchiveReader):
                     view,
                     password=password,
                     max_members=max_members,
+                    max_metadata_bytes=max_metadata_bytes,
                     kdf_cache=self._kdf_cache,
                     name_encoding=self._encoding,
                 )
@@ -2562,8 +2543,13 @@ class RarReader(BaseArchiveReader):
             logger=logger,
         )
 
-    def _check_comment_budget(self) -> None:
-        """Refuse comments whose sizes, together, exceed the metadata budget.
+    def _check_header_metadata_budget(self) -> None:
+        """Refuse names and comments whose weight, together, exceeds the metadata budget.
+
+        The header walk has already held each member's names, link target and comment
+        to ``max_metadata_bytes`` as it listed them (``rar_parser._append_member``);
+        this adds the archive comment to that total, by the same weights
+        (``rar_parser.header_metadata_bytes``), before any comment is decoded.
 
         Each compressed comment expands to up to 64 KiB, and ``max_members`` alone
         lets one archive carry a million of them. The header declares every
@@ -2581,22 +2567,14 @@ class RarReader(BaseArchiveReader):
         undecodable comment is dropped, is the maintainer's ruling (#353, finding F12):
         ``max_metadata_bytes`` means retained metadata on every format, and an over-budget
         listing raises on all of them.
-
-        Comments the parser already decoded (stored ones) are weighed in the same
-        total. The parser read them in pieces bounded by the file, so what they hold
-        is data the archive really carries; this is where their size is judged.
         """
-        comments = [self._archive.comment]
-        comments.extend(info.comment for info in self._archive.members)
-        total = sum(
-            comment.unpacked_size if isinstance(comment, _Rar3Comment) else len(comment)
-            for comment in comments
-            if comment is not None
+        total = comment_metadata_bytes(self._archive.comment) + sum(
+            header_metadata_bytes(info) for info in self._archive.members
         )
         check_metadata_budget(
             self._config.listing_limits,
             total,
-            detail=f"RAR comments hold or declare {total} bytes",
+            detail=f"RAR names and comments hold or declare {total} bytes",
         )
 
     def _resolve_rar3_comment(self, comment: str | _Rar3Comment | None) -> str | None:

@@ -30,6 +30,15 @@ def _retained_bytes(value: object) -> int:
     return 0
 
 
+def text_bytes(value: str | bytes | None) -> int:
+    """Retained weight of one stored text field, by the rule :class:`ListingLimitTracker`
+    uses for member fields: ``bytes`` by length, ``str`` per :func:`_str_retained_bytes`.
+
+    For a parser that weighs what it keeps before members are registered (7z, RAR).
+    """
+    return _retained_bytes(value)
+
+
 def _extra_bytes(extra: Mapping[str, object]) -> int:
     """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts).
 
@@ -158,7 +167,11 @@ def check_metadata_budget(limits: ListingLimits, nbytes: int, *, detail: str) ->
     ``None`` disables the check. ``detail`` names what was weighed; it goes in the
     parentheses after the limit, so every refusal of this limit reads the same way.
     """
-    max_meta = limits.max_metadata_bytes
+    check_metadata_bytes(limits.max_metadata_bytes, nbytes, detail=detail)
+
+
+def check_metadata_bytes(max_meta: int | None, nbytes: int, *, detail: str) -> None:
+    """:func:`check_metadata_budget` for a parser that holds only the one field."""
     if max_meta is not None and nbytes > max_meta:
         raise ResourceLimitError(
             f"Listing limit reached: max_metadata_bytes={max_meta} ({detail})"

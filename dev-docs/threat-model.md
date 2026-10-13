@@ -312,7 +312,8 @@ archive declares.
   materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
   `stream_members()` and `for member in reader` are unguarded: they yield every
-  member, except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing. Their memory
+  member, except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing
+  (7z and RAR weigh their header names against `max_metadata_bytes` there too). Their memory
   is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
   reader, and TAR in both modes) counts members as usual and stops keeping them once
   the totals cross a cap, in `base_reader.py` `_discard_listing`. The TAR walker keeps
