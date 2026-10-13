@@ -577,6 +577,16 @@ class TarReader(BaseArchiveReader):
             return self._owned_stream
         return stream
 
+    @property
+    def _plain_source_size(self) -> int | None:
+        """The file size a plain tar's walk and member views clamp reads to.
+
+        A plain file's length is a fact, so a member read is clamped to the bytes the
+        file holds and issued once. A compressed stream's length is not: ``None``.
+        """
+        assert self._source is not None
+        return None if self._compressed else self._source.size
+
     def _new_walker(self) -> TarWalker:
         """A walker from the start of the archive.
 
@@ -588,10 +598,7 @@ class TarReader(BaseArchiveReader):
         buffer's read-ahead into a member's data never makes a member read seek
         the decoder back.
         """
-        # A plain file's length is a fact, so a member read is clamped to the bytes
-        # the file holds and issued once. A compressed stream's length is not.
-        assert self._source is not None
-        end = None if self._compressed else self._source.size
+        end = self._plain_source_size
         if self._streaming:
             return TarWalker(self._stream, seekable=False, end=end)
         # Plain file: a read larger than the buffer rewinds the prefetched tail and
@@ -1405,19 +1412,17 @@ class TarReader(BaseArchiveReader):
         else:
             # A view of its own: a read seeks the shared stream under the handle lock
             # when the handle is elsewhere, so members and the walk read independently.
-            assert self._source is not None
             # The view clamps its length to the source size when it has one, so a
-            # read stops at the end of the file instead of running into EOF. For a
-            # plain tar that is the fact the walk already uses (_new_walker), passed
-            # rather than probed on every open; it is None for a source with no cheap
-            # size, as the probe would find. A codec stream keeps the probe: its size
+            # read past the end of the file is not issued; _MemberDataView reports a
+            # cut member either way. A plain tar passes its known size rather than
+            # probing it on every open. A codec stream keeps the probe: its size
             # comes from the decompressor (try_get_size), not from the source.
             view = SharedView(
                 self._stream,
                 entry.data_offset,
                 entry.stored_size,
                 lock=self._io_guard(),
-                source_size=None if self._compressed else self._source.size,
+                source_size=self._plain_source_size,
                 probe_source_size=self._compressed,
             )
             stream = _MemberDataView(view, entry.data_offset, entry.stored_size)
