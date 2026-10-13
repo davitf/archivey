@@ -941,9 +941,10 @@ member whose absent target the header already states. Where a reader can tell fr
 metadata alone that the archive records no target — a reparse point a writer stored no
 data for is the case that exists — it SHALL settle that while typing the member, not in
 a lookup that reads data. Otherwise the two paragraphs above disagree in a streaming
-pass whose lookup runs late (at EOF, or only when extraction reads the link): the member the first one names would take the second
-one's per-member failure, and the library default would abort the archive on exactly
-the entry this outcome was added for.
+pass whose lookup runs late (at EOF, or only when extraction reads the link): the
+member the first one names would take the second one's per-member failure, and the
+library default would abort the archive on exactly the entry this outcome was added
+for.
 
 That is also the bound on the read modes. `LINK_TARGET_UNAVAILABLE` holds in a
 streaming pass exactly for the members a reader settles from metadata; where the
