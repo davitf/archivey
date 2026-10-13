@@ -78,7 +78,7 @@ def _has_windows_root(target: str) -> bool:
     return _has_drive_letter(target)
 
 
-def _is_rooted(name: str) -> bool:
+def is_rooted(name: str) -> bool:
     """Whether ``name`` starts at a filesystem root: a leading ``/`` or ``\\`` (POSIX
     root, UNC share) or a drive letter followed by a separator (``C:/``, ``C:\\``).
 
@@ -95,13 +95,13 @@ def strip_absolute_root(name: str) -> str:
     """``name`` with its root removed: every leading ``/`` and ``\\`` and a drive letter
     followed by a separator, repeatedly, so ``C:\\x``, ``//host/share/x`` and ``/C:/x``
     all lose their whole root. A name that is nothing but a root becomes ``"."``. A name
-    that is not rooted (see :func:`_is_rooted`), ``C:x`` included, is returned as is.
+    that is not rooted (see :func:`is_rooted`), ``C:x`` included, is returned as is.
 
     ``C:/`` is dropped on every OS, as bsdtar does, so a member extracts to the same
     place wherever it is extracted. GNU tar keeps it as a literal directory on POSIX.
     """
     stripped = name
-    while _is_rooted(stripped):
+    while is_rooted(stripped):
         if stripped[:1] in ("/", "\\"):
             stripped = stripped.lstrip("/\\")
         else:  # a drive letter and its separator; the next pass strips the separator
@@ -122,12 +122,12 @@ def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
     (``tar -P`` stores ``/a`` and a hardlink naming ``/a``), and the target string
     never becomes a path. A caller filter therefore sees the target as stored.
 
-    Only a rooted name is re-rooted (:func:`_is_rooted`); a drive-relative ``C:x`` is
+    Only a rooted name is re-rooted (:func:`is_rooted`); a drive-relative ``C:x`` is
     left for :func:`check_universal` to refuse.
 
     Returns ``member`` itself when there is nothing to change.
     """
-    if not _is_rooted(member.name):
+    if not is_rooted(member.name):
         return member
     return member.replace(name=strip_absolute_root(member.name))
 
@@ -547,11 +547,11 @@ def _sanitize_portable_name(name: str) -> str:
     The escaping is therefore reversible within a rewritten name, not across names: a
     stored ``%FF`` is returned verbatim and a raw ``0xFF`` byte is also written ``%FF``.
     The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can:
-    after this rewrite it differs from the written name in the escaped bytes. A set
-    ``presented_name`` alone is not enough, since an absolute-name re-root sets it too,
-    and then it differs from the written name only by the root it lost. The collision
-    map sees both spellings as one key, so the second is resolved by the
-    ``OverwritePolicy`` rather than silently overwriting the first.
+    after this rewrite it differs from the written name in the escaped bytes, and
+    ``ExtractionResult.rewrites`` holds ``NameRewrite.PORTABLE_NAME``. A set
+    ``presented_name`` alone is not enough, since an absolute-name re-root sets it
+    too. The collision map sees both spellings as one key, so the second is resolved
+    by the ``OverwritePolicy`` rather than silently overwriting the first.
     """
     if not any(_needs_escape(c) for c in name):
         return name

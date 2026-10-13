@@ -878,15 +878,12 @@ def test_rewind_policy_escalates_on_every_qualifying_seek(tmp_path: Path) -> Non
     from archivey import ArchiveyConfig, DiagnosticRaisedError
     from archivey.diagnostics import (
         DiagnosticCode,
-        DiagnosticDisposition,
         DiagnosticPolicy,
     )
 
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
-            overrides={
-                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: DiagnosticDisposition.RAISE
-            }
+            raise_on={DiagnosticCode.STREAM_REWIND_REDECOMPRESSES}
         )
     )
     path = _single_block_xz(tmp_path)
@@ -976,7 +973,7 @@ def test_trailing_data_is_reported(tail: bytes, tail_id: str, tmp_path: Path) ->
 
     The check used to look only for the second null trailer block, so 4 KiB of arbitrary
     appended bytes passed silently. It then ran only under ``strict_archive_eof``, which
-    left ``DiagnosticPolicy.strict()`` promising to raise on a code nothing emitted. Now
+    left ``DiagnosticPolicy.STRICT`` promising to raise on a code nothing emitted. Now
     the scan always runs, bounded, and the code follows the policy like any other.
 
     The concatenated case is deliberate: two tars really are two archives and the reader
@@ -998,7 +995,7 @@ def test_trailing_data_is_reported(tail: bytes, tail_id: str, tmp_path: Path) ->
         with open_archive(
             path,
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
         ) as reader:
             reader.members()
 
@@ -1072,7 +1069,7 @@ def test_zero_padding_after_the_trailer_still_passes(tmp_path: Path) -> None:
     """
     path = tmp_path / "padded.tar"
     path.write_bytes(_one_member_tar() + b"\x00" * 4096)
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
         assert [m.name for m in reader.members()] == ["a.txt"]
         assert dict(reader.diagnostics.counts) == {}

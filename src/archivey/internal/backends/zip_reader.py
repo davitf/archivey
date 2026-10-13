@@ -66,6 +66,7 @@ from archivey.cost import (
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
+    DigestContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -89,6 +90,19 @@ from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
     validate_zip_local_header,
+)
+from archivey.internal.backends.zip_parser import (
+    ARCHIVE_EXTRA_DATA_SIGNATURE as _ZIP_ARCHIVE_EXTRA_DATA_SIG,
+)
+from archivey.internal.backends.zip_parser import CENTRAL_HEADER_SIZE as _CD_HEADER_SIZE
+from archivey.internal.backends.zip_parser import EOCD_SIGNATURE as _EOCD_SIG
+from archivey.internal.backends.zip_parser import EOCD_SIZE as _EOCD_SIZE
+from archivey.internal.backends.zip_parser import MAX_DATA_OFFSET as _MAX_DATA_OFFSET
+from archivey.internal.backends.zip_parser import (
+    ZIP64_EOCD_SIGNATURE as _ZIP64_END_RECORD_SIG,
+)
+from archivey.internal.backends.zip_parser import (
+    disk_field_is_split as _disk_field_is_split,
 )
 from archivey.internal.backends.zipcrypto import (
     ZIPCRYPTO_HEADER_LEN,
@@ -137,18 +151,19 @@ from archivey.internal.streams.streamtools import (
     SlicingStream,
     read_exact,
 )
-from archivey.internal.streams.verify import VerifyingStream
+from archivey.internal.streams.verify import VerifyingStream, ask_digest_intact
 from archivey.internal.timestamps import (
     TimestampIssue,
     filetime_to_datetime,
     unix32_to_datetime,
 )
-from archivey.internal.unix_mode import is_special_file_mode
+from archivey.internal.unix_mode import special_file_type
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_ALTERNATE_RAW_NAME,
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -195,19 +210,9 @@ _ZIP_EXTRA_STRONG_ENCRYPTION = 0x0017
 # Info-ZIP Unicode Path extra field: the name as UTF-8, tied to the header's name bytes
 # by their CRC-32 (`_unicode_path_name`).
 _ZIP_EXTRA_UNICODE_PATH = 0x7075
-# Archive extra data record: written in front of a central directory that PKWARE
-# Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
-_ZIP_ARCHIVE_EXTRA_DATA_SIG = b"PK\x06\x08"
-# The classic and the ZIP64 end-of-central-directory record signatures.
-_EOCD_SIG = b"PK\x05\x06"
-_ZIP64_END_RECORD_SIG = b"PK\x06\x06"
 _STRONG_ENCRYPTION_MSG = (
     "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are)"
 )
-
-# Classic EOCD ``this_disk`` / ``cd_start_disk`` use 0xFFFF to mean "see ZIP64 EOCD",
-# not disk 65535. A naive ``!= 0`` check would refuse legitimate ZIP64 archives.
-_ZIP64_DISK_SENTINEL = 0xFFFF
 
 # ZIP compression-method id -> our codec algorithm. Unknown ids map to UNKNOWN rather than
 # raising, matching the open-ended CompressionAlgorithm contract.
@@ -239,10 +244,30 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
 }
 
-# Local name/extra lengths are uint16; 65535 is the format maximum, so a separate
-# cap cannot fire (S1-F2). Absurd *offsets* are this bound, same discipline as
-# the native parsers.
-_MAX_DATA_OFFSET = 1 << 40
+# Compressed size of an *empty* body per method, as ``zipfile`` writes one for a
+# directory ``ZipInfo`` given no data (the Java ``jar`` tool deflates every directory's
+# empty body: 2 bytes). ``tests/test_zip.py`` checks the table against ``zipfile``.
+# The sizes are those of a known, unencrypted method: an encrypted entry's body also
+# carries the cipher's framing (12 bytes for ZipCrypto, salt plus verifier plus auth
+# code for WinZip AES, under method 99), and DEFLATE64, zstd and PPMd have no 0-byte
+# empty frame, so a directory entry in either shape errs toward being reported. No
+# writer measured (zip, 7-Zip, zipfile) encrypts or compresses a directory's body.
+_ZIP_EMPTY_BODY_SIZES: dict[int, int] = {
+    zipfile.ZIP_STORED: 0,
+    zipfile.ZIP_DEFLATED: 2,
+    zipfile.ZIP_BZIP2: 14,
+    zipfile.ZIP_LZMA: 19,
+}
+
+
+def _zip_directory_stores_data(info: zipfile.ZipInfo) -> bool:
+    """True when a directory entry's body holds something: a declared size, or a
+    compressed body larger than an empty one of its method takes (a declared size of
+    0 over a real body is the same hidden payload one header field away). A method
+    the table does not know reports any body at all."""
+    if info.file_size > 0:
+        return True
+    return info.compress_size > _ZIP_EMPTY_BODY_SIZES.get(info.compress_type, 0)
 
 
 # The end-of-central-directory record as stdlib parsed it: the classic record, or the
@@ -270,8 +295,6 @@ _ECD_COMMENT: int = _zipfile_private("_ECD_COMMENT")
 _ECD_LOCATION: int = _zipfile_private("_ECD_LOCATION")
 _ECD_DISK_NUMBER: int = _zipfile_private("_ECD_DISK_NUMBER")
 _ECD_DISK_START: int = _zipfile_private("_ECD_DISK_START")
-_EOCD_SIZE = 22
-_CD_HEADER_SIZE = 46
 
 # ZIP create-system values whose entries use "\" as a path separator (DOS/Windows family).
 # For these, a stored backslash is a separator; for Unix/other entries it is a literal
@@ -508,6 +531,10 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
             return super().seek(offset, whence)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
+
+    def _digest_intact(self) -> bool | None:
+        # The password watch above asks after a seek whether the CRC can still run.
+        return ask_digest_intact(self._inner)
 
     def _reraise(self, exc: Exception) -> NoReturn:
         if _is_candidate_integrity_failure(
@@ -1161,15 +1188,19 @@ class ZipReader(BaseArchiveReader):
         )
         is_reparse_point = reparse_fallback is not None
 
+        special = special_file_type(full_mode) if is_unix else None
         if is_reparse_point:
             member_type = MemberType.SYMLINK
         elif stored_as_directory:
             member_type = MemberType.DIRECTORY
         elif is_unix and stat.S_ISLNK(full_mode):
             member_type = MemberType.SYMLINK
-        elif is_unix and is_special_file_mode(full_mode):
-            # A device, FIFO or socket. unzip writes these as empty regular files, but
-            # every format types them OTHER, so extraction refuses them everywhere.
+        elif special is not None and info.file_size == 0:
+            # A device, FIFO or socket with no data. unzip writes these as empty regular
+            # files, but every format types them OTHER, so extraction refuses them
+            # everywhere. With data the entry is a FILE: ``zip -FI`` stores a named
+            # pipe's content under the pipe's FIFO mode, and every extractor writes the
+            # bytes (DR-25). ``extra["special_file_type"]`` keeps the stored type.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
@@ -1201,14 +1232,32 @@ class ZipReader(BaseArchiveReader):
         created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
-        # without decompressing (VISION "hashes without decompression"). Only for FILE and
-        # SYMLINK members, which have data: a directory's stored CRC is a meaningless 0.
-        # AE-2 stores CRC as 0 and relies on the HMAC — do not surface a fake crc32.
+        # without decompressing (VISION "hashes without decompression"). Only for
+        # members with data: FILE and SYMLINK, and a directory whose header declares
+        # some (``open()`` delivers it, so the read is digest-checked like a file's).
+        # A directory's CRC field is 0 by convention, so a zero there over declared
+        # data is no digest, not a failing one: the member gets no crc32. Whether that
+        # leaves the read unchecked depends on the entry's other checks: a WinZip AES
+        # member (method 99, AE-1 and AE-2 alike) carries an HMAC over its bytes, so
+        # only an entry whose CRC was its only check reports ``DIGEST_UNVERIFIABLE``
+        # below (design principle 1: say so instead of implying the bytes were checked;
+        # DR-4: CorruptionError is for damage). AE-2 stores CRC 0 by design and relies
+        # on the HMAC — never surface a fake crc32 for it.
         hashes: dict[HashAlgorithm, bytes] = {}
-        if member_type in (MemberType.FILE, MemberType.SYMLINK):
-            if aes_info is None or not aes_info.is_ae2:
+        is_ae2 = aes_info is not None and aes_info.is_ae2
+        directory_data = member_type is MemberType.DIRECTORY and info.file_size > 0
+        directory_zero_crc = directory_data and info.CRC == 0
+        directory_without_anchor = directory_zero_crc and aes_info is None
+        if member_type in (MemberType.FILE, MemberType.SYMLINK) or (
+            directory_data and not directory_zero_crc
+        ):
+            if not is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
+        if special is not None:
+            # Whatever the type decided above, the key records what the mode said, so
+            # a reparse point that settles or re-types to FILE keeps it (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if decoded_name.alternate_raw_name is not None:
             extra[EXTRA_ALTERNATE_RAW_NAME] = decoded_name.alternate_raw_name
         if is_reparse_point:
@@ -1291,6 +1340,38 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(info):
+            # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
+            # the directory and drop the bytes silently. Say so; read() delivers them.
+            self._emit_directory_data_ignored(member, index)
+            if directory_without_anchor:
+                self._diagnostics_collector.emit(
+                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                    message=(
+                        f"Directory {quoted(member.name)} declares {info.file_size} "
+                        "bytes of data but its CRC-32 field is 0, a directory's "
+                        "conventional value; the bytes open() delivers are not "
+                        "checked against any digest."
+                    ),
+                    context=DigestContext(
+                        archive_name=self._archive_name,
+                        member_name=member.name,
+                        member_id=index,
+                        algorithm="crc32",
+                        reason="no_integrity_anchor",
+                    ),
+                    member=member,
+                    attach_to_member=True,
+                    logger=logger,
+                )
+        if special is not None and member.type is MemberType.FILE:
+            # The gate is kept in the shape the 7z reader needs, where a reparse point
+            # with a special mode can settle or re-type to FILE. In ZIP the two
+            # attribute families cannot coexist: the mode is read only from a Unix
+            # creator and the reparse bit only from a DOS/Windows one, so a member
+            # with `special` set is never a reparse point and `member.type` is
+            # `member_type` here.
+            self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))
@@ -1369,8 +1450,8 @@ class ZipReader(BaseArchiveReader):
                 raise _closed_archive_error()
             saved = fp.tell()
             try:
-                # A ZIP64 extra can declare any uint64; past ssize_t, ``seek`` raises a
-                # raw OverflowError. Refuse an absurd offset before seeking to it.
+                # A ZIP64 extra can declare any uint64: refuse one past the policy
+                # bound (``MAX_DATA_OFFSET`` in zip_parser) before seeking to it.
                 if not 0 <= info.header_offset <= _MAX_DATA_OFFSET:
                     raise zipfile.BadZipFile(
                         f"Absurd local-header offset: {info.header_offset}"
@@ -1570,8 +1651,9 @@ class ZipReader(BaseArchiveReader):
         size = member.size
         # The member's compressed size is the codec's input exactly, so a byte after
         # the codec's end of stream is CorruptionError (DR-3; 7-Zip: "There are some
-        # data after the end of the payload data", an error in ZIP). LZMA refuses it
-        # on its own, in 7z too (``LzmaDataAfterEndError``).
+        # data after the end of the payload data", an error in ZIP). That covers a
+        # declared size short of an LZMA or PPMd stream too: the rest of the stream is
+        # input left after the size (``DataAfterEndError``).
         config = replace(
             self._stream_config,
             expected_decompressed_size=size,
@@ -1603,11 +1685,12 @@ class ZipReader(BaseArchiveReader):
                 # usually has an end mark, but max_length still matches py7zr practice).
                 if size is not None and size >= 0:
                     params = replace(params, unpack_size=size)
-            elif method == 12:  # ZIP bzip2
-                # A member is one bzip2 stream: the standard-library decoder ends it at
-                # its end-of-stream marker, as 7-Zip, Info-ZIP and stdlib zipfile read
-                # it. rapidgzip reads on into a further stream; the declared size and
-                # CRC then decide (dev-docs/formats/zip.md §2.3).
+            elif method in (12, 93):  # ZIP bzip2, Zstd
+                # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
+                # read it, and one Zstd frame: a further stream or frame after its end
+                # is input the member does not use, refused like any other
+                # (``refuse_input_after_end``), with the accelerator on or off
+                # (dev-docs/formats/zip.md §2.3).
                 params = replace(params, single_stream=True)
             return open_codec_stream(
                 codec,
@@ -2465,10 +2548,7 @@ def _end_record_findings(
 
         declared = endrec[_ECD_ENTRIES_TOTAL]
         read = len(infos)
-        # A classic record counts in 16 bits. Old 7-Zip versions stored the low 16 bits
-        # of a larger count there without writing ZIP64; current 7-Zip (ZipIn.cpp)
-        # accepts that with a "16-bit overflow for number of files in headers" note
-        # rather than a Headers Error, so the comparison here is modulo 65536 too.
+        # Modulo 65536 for a classic record: why is in zip_parser's walk.
         if declared != (read if is_zip64 else read & 0xFFFF):
             record = "ZIP64 end of central directory" if is_zip64 else "end record"
             findings.append(
@@ -2710,10 +2790,6 @@ def _sequential_accelerator(mode: AcceleratorMode) -> AcceleratorMode:
     cost grows with the square of the member size.
     """
     return AcceleratorMode.OFF if mode is AcceleratorMode.AUTO else mode
-
-
-def _disk_field_is_split(value: int) -> bool:
-    return value != 0 and value != _ZIP64_DISK_SENTINEL
 
 
 def _looks_like_multivolume(exc: zipfile.BadZipFile) -> bool:

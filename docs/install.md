@@ -64,7 +64,9 @@ if availability.support is not FormatSupport.FULL:
   Only ZIP and 7z can be `PARTIAL`.
 - **`NONE`** — the format cannot be opened. `open_archive()` raises
   `PackageNotInstalledError` naming the package: ISO without `pycdlib`, `.lz4` without
-  `lz4`, `.tar.zst` without a zstd backend.
+  `lz4`, `.tar.zst` without a zstd backend. The exception is a source that cannot seek,
+  such as a pipe, for a format that needs seek (ISO): it raises
+  `StreamNotSeekableError` first, because the package would not make a pipe readable.
 
 `missing` names each absent package with the `pip install` line that adds it, and is
 empty when support is `FULL`. Two requirements are not counted: `cryptography`, which

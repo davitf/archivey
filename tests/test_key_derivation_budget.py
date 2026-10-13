@@ -36,7 +36,7 @@ def _config(rounds: int | None) -> ArchiveyConfig:
 
 
 def test_default_and_unlimited() -> None:
-    assert DecoderLimits().max_key_derivation_rounds == 2**27
+    assert DecoderLimits().max_key_derivation_rounds == 2**25
     assert DecoderLimits.UNLIMITED.max_key_derivation_rounds is None
 
 

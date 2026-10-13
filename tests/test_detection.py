@@ -1230,11 +1230,21 @@ def test_stub_volume_fallback_keeps_the_stub_pass_cost(tmp_path: Path) -> None:
     assert receipt is not None
     assert receipt.scanned_bytes == BALANCED_BUDGET.max_scan_bytes
     assert receipt.unique_bytes_read > BALANCED_BUDGET.max_scan_bytes
-    # Two passes, said as data, and each within its budget: the sum passes the
-    # two-budget check and would fail a single-pass one.
+    # Two passes, said as data, and each within its budget. The receipt is the stub
+    # pass's work plus the volume pass's, not the stub pass's alone. That the oracle
+    # needs both budgets is pinned on hand-built receipts, in
+    # ``test_within_budget_judges_each_pass_against_its_own_budget``: the volume pass
+    # here reads less than the SFX validator allowance, so a one-pass check passes too.
     assert receipt.passes == 2
     assert within_budget(receipt, BALANCED_BUDGET)
-    assert not within_budget(replace(receipt, passes=1), BALANCED_BUDGET)
+    # The same stub alone, named so the extension answers after its scan misses.
+    (tmp_path / "alone").mkdir()
+    lone = tmp_path / "alone" / "lone.7z"
+    lone.write_bytes(stub.read_bytes())
+    stub_only = detect_format(lone).cost_receipt
+    assert stub_only is not None
+    assert stub_only.passes == 1
+    assert receipt.unique_bytes_read > stub_only.unique_bytes_read
     # A prefix budget below the near-magic span makes each pass record the same
     # ``near_magic`` skip; the receipt keeps it once.
     short_prefix = replace(BALANCED_BUDGET, max_prefix_bytes=64)
@@ -1621,7 +1631,7 @@ def test_empty_listing_rescan_detects_under_the_config_budget(
 
 
 def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> None:
-    """Under ``strict()`` the rescan's own findings neither reach the caller nor raise
+    """Under ``STRICT`` the rescan's own findings neither reach the caller nor raise
     inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
     empty archive and nothing else, because detection does identify it as ZIP."""
     from archivey import open_archive
@@ -1634,7 +1644,7 @@ def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> Non
     path.write_bytes(buf.getvalue())
     seen: list[Diagnostic] = []
     config = ArchiveyConfig(
-        diagnostic_policy=DiagnosticPolicy.strict(), on_diagnostic=seen.append
+        diagnostic_policy=DiagnosticPolicy.STRICT, on_diagnostic=seen.append
     )
     with open_archive(path, format=ArchiveFormat.ZIP, config=config) as reader:
         assert list(reader) == []

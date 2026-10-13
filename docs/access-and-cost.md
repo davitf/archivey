@@ -21,7 +21,8 @@ rather than here — they go stale faster than this page is revised.
 | --- | --- |
 | Large-member ZIP/TAR/gzip **read** (decompression-dominated) | ≤ **1.3×** stdlib peer |
 | ZIP/TAR **extract** (safety floor) | ≤ ~**2×** stdlib peer |
-| ZIP/TAR **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` / `tarfile` |
+| ZIP **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` |
+| TAR **open+list** (native parser) | ≤ **2–3×** `tarfile` |
 | 7z/RAR **open+list** (native parsers) | ≈parity (~**1.25×**) vs `py7zr` / `rarfile` |
 
 These are the targets, not a claim about your machine. Measured ratios are
@@ -112,19 +113,24 @@ does it varies:
 
 Encrypted members seek like any other when `seekable_members=True`; the cost is the
 codec's. ZipCrypto restarts decryption from the member's start on a backward seek.
-WinZip AES and encrypted 7z restart at the target's cipher block. A seek that moves
-the position gives up a CRC check until a seek back to 0, but not WinZip AES's HMAC:
-the HMAC covers the ciphertext, so the read that reaches the member's end first reads,
-without decrypting, whatever ciphertext your seeks skipped, and then checks it.
+WinZip AES and encrypted 7z restart at the target's cipher block. A seek back keeps a
+CRC check, and so does a forward seek in a compressed member. That seek itself is
+free: the next read decodes and hashes the bytes it skipped, so that read pays for the
+gap, and a seek you undo or a stream you close before reading costs nothing. A forward
+seek that jumps (a stored member, or a seek by an index or the accelerator) gives the
+CRC up once you read past it, until a seek back to 0. The check covers the first pass
+over each byte: bytes read again after a seek back are not checked again. None of this
+touches WinZip AES's HMAC: the HMAC covers the ciphertext, so the read that reaches
+the member's end first reads, without decrypting, whatever ciphertext your seeks
+skipped, and then checks it.
 
 A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
 seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
 or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
 relative seek before its start reaches the OS and raises `OSError`. A seek past the end
-of a TAR member returns the member size rather than the position you asked for, where
-other formats return the target; reads from there return `b""` either way. An offset or
-`whence` that is not an integer (`seek(1.5)`, `seek(None)`) raises `TypeError`, as on
-`io.BytesIO`, and leaves the position where it was. A `read` size that is neither an
+of a member returns the position you asked for, and reads from there return `b""`. An
+offset or `whence` that is not an integer (`seek(1.5)`, `seek(None)`) raises `TypeError`,
+as on `io.BytesIO`, and leaves the position where it was. A `read` size that is neither an
 integer nor `None` (`read(1.5)`) raises `TypeError` the same way, and an integer
 outside the platform's index range (`read(2**70)`, `read(-2**70)`) raises
 `OverflowError`, both before anything is read.
@@ -146,7 +152,8 @@ quadratic seek loops, note that it fires on **every** qualifying seek, not only 
 first — the report still records one entry.
 
 The flag changes what member streams can *do*, and nothing else. It does not change what
-`members()` reports: the xz index and lzip trailer are read from any seekable source, so
+`members()` reports: whether the xz index and lzip trailer are read depends on the
+source's shape (any seekable source except another archive's member stream), so
 `member.size` and `member.hashes` are the same with and without it.
 
 Under `ArchiveyConfig.use_rapidgzip=AUTO` (the default), rapidgzip is selected only when
@@ -154,7 +161,10 @@ seekability is declared **and** the known compressed input is at least
 `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (16 MiB). rapidgzip runs in a child process that
 takes about 45 ms to start and open, and it saves about 3.4 ms per MB of compressed input
 over the stdlib, so it is only faster from about 13 MB. Smaller members stay on stdlib
-`zlib`/`gzip`. Set
+`zlib`/`gzip`. For a DEFLATE member of a ZIP or 7z archive the saving is in seeks and in
+the first output, not in a whole read: at the end of the member, `zlib` decodes it again
+from the start to check that nothing follows its stream (see below), so a read to the
+end costs that decode on top of rapidgzip's. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
 `ON` needs a source that can seek: on a pipe, or on a member stream of an outer archive
 opened without `seekable_members=True`, it raises `StreamNotSeekableError`. For a zlib
@@ -182,12 +192,12 @@ child process too, and `AUTO` selects it from `INDEXED_BZIP2_AUTO_MIN_COMPRESSED
 (1 MiB) of compressed input: the standard library decodes bzip2 slowly, so the child
 pays for its start much sooner than for gzip.
 
-An accelerator raises on the same corrupt input as the stdlib decoder, with one kind of
-exception: crafted stream boundaries that the data's own checksums cannot see. Inside a
-ZIP member, a second compressed stream or bytes after the first stream's end end the
-member on the stdlib path, while the accelerator reads on; the member's declared size and
-CRC then decide. In a multi-member `.gz`, rapidgzip does not check the length field
-(ISIZE) of a member before the last, but it does check every member's CRC.
+An accelerator raises on the same corrupt input as the stdlib decoder, with one
+exception: in a multi-member `.gz`, rapidgzip does not check the length field (ISIZE) of
+a member before the last, but it does check every member's CRC. Inside a ZIP or 7z
+member, a second compressed stream or bytes after the first stream's end raise
+`CorruptionError` with the accelerator on or off, whatever the member's declared size and
+CRC cover.
 
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 
@@ -250,8 +260,9 @@ nothing; the copy's digests are its source's (`link_target_member`).
 ## Streaming mode is one pass
 
 With `streaming=True`, the first of `__iter__` / `stream_members` / `extract_all`
-consumes the pass. A second call raises — including after an early `break`. Use
-`scan_members()` to finish/drain when you need a full list after a partial pass.
+consumes the pass. A second call raises — including after an early `break`. Call
+`members_report()` to finish the pass when you need a full list after a partial pass;
+raise its `report.error` if you need the list complete or an error.
 
 ## Passwords and confirmation cost
 

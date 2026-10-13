@@ -203,16 +203,17 @@ def test_single_file_open_counts_metadata_probe_seeks(
 ) -> None:
     """The metadata probes seek the source at open, and those seeks are counted.
 
-    For a .gz: the compressed-size probe seeks to the end (1), the header peek seeks
-    to 0 (1), and the open-time validation decode repositions the shared source for
-    the ISIZE tail read (1) and for its first data read (1).
+    For a .gz: the header peek seeks to 0 (1), and the open-time validation decode
+    repositions the shared source for the ISIZE tail read (1) and for its first data
+    read (1). The compressed-size probe makes none: a path and a ``BytesIO`` have a
+    cheap size, so it does not seek to the end.
     """
     path = tmp_path / "a.gz"
     path.write_bytes(gzip.compress(b"payload" * 100))
     source = path if shape == "path" else io.BytesIO(path.read_bytes())
     with enable_measurement(), open_archive(source) as reader:
         assert isinstance(reader, BaseArchiveReader)
-        assert reader.source_seek_count == 4
+        assert reader.source_seek_count == 3
 
 
 def _build_solid_7z(tmp_path: Path) -> tuple[Path, int]:

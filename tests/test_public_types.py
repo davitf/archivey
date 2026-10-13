@@ -24,6 +24,8 @@ from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     DiagnosticRaisedError,
+    LinkTargetNotFoundError,
+    LinkTargetNotFoundReason,
 )
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 
@@ -48,7 +50,10 @@ _EXCEPTION_CLASSES = sorted(
         value
         for name in archivey.__all__
         if _is_archivey_exception(value := getattr(archivey, name))
-    },
+    }
+    # Unexported: the usage errors a wrong argument raises (DR-15). A caller can still
+    # receive one from a worker process, so they must round-trip like the rest.
+    | {exceptions_module._UsageTypeError, exceptions_module._UsageValueError},
     key=lambda cls: cls.__name__,
 )
 
@@ -68,6 +73,8 @@ def _instance(cls: type[BaseException]) -> BaseException:
         kwargs["diagnostic"] = _diagnostic()
     else:
         kwargs["format_unconfirmed"] = True
+    if issubclass(cls, LinkTargetNotFoundError):
+        kwargs["reason"] = LinkTargetNotFoundReason.NOT_RECORDED
     return cls(message, **kwargs)
 
 

@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import stat
 import struct
 import subprocess
+import threading
 import zipfile
 import zlib
 from collections.abc import Callable
@@ -22,6 +24,8 @@ from archivey import (
     ArchiveyConfig,
     CompressionAlgorithm,
     DiagnosticCode,
+    DiagnosticPolicy,
+    ExtractionStatus,
     MemberType,
     open_archive,
 )
@@ -29,6 +33,7 @@ from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
+    DiagnosticRaisedError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -524,7 +529,7 @@ def test_zip_index_only_listing_leaves_symlink_unresolved(tmp_path: Path) -> Non
         assert link.link_target is None
         assert link.link_target_member is None
 
-        resolved = ar.scan_members()
+        resolved = ar.members()
         link_resolved = next(m for m in resolved if m.name == "link")
         assert link_resolved.link_target == "target.txt"
         assert link_resolved.link_target_member is not None
@@ -2105,14 +2110,10 @@ def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> Non
 def test_encoding_inference_is_escalatable() -> None:
     # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
     # refuses to trust the guess can escalate it to an error.
-    from archivey import DiagnosticDisposition, DiagnosticPolicy
+    from archivey import DiagnosticPolicy
     from archivey.exceptions import DiagnosticRaisedError
 
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: DiagnosticDisposition.RAISE
-        }
-    )
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED})
     cfg = ArchiveyConfig(diagnostic_policy=policy)
     with pytest.raises(DiagnosticRaisedError):
         with open_archive(
@@ -2195,26 +2196,166 @@ def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> Non
         assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize(
-    "file_type", [stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK]
-)
-def test_unix_special_file_is_other(tmp_path: Path, file_type: int) -> None:
-    """A device, FIFO or socket is OTHER, as in TAR and ISO. unzip would write an
-    empty regular file; extraction refuses the member instead."""
-    path = tmp_path / "special.zip"
+_SPECIAL_FILE_TYPES = [
+    (stat.S_IFCHR, "char_device"),
+    (stat.S_IFBLK, "block_device"),
+    (stat.S_IFIFO, "fifo"),
+    (stat.S_IFSOCK, "socket"),
+]
+
+
+def _zip_with_special_entry(path: Path, file_type: int, data: bytes) -> None:
     with zipfile.ZipFile(path, "w") as zf:
-        for name, mode in (("dev", file_type | 0o644), ("f.txt", 0o100644)):
+        for name, mode, payload in (
+            ("dev", file_type | 0o644, data),
+            ("f.txt", 0o100644, b"data"),
+        ):
             info = zipfile.ZipInfo(name)
             info.create_system = 3
             info.external_attr = mode << 16
-            zf.writestr(info, b"xyz" if name == "dev" else b"data")
+            zf.writestr(info, payload)
+
+
+@pytest.mark.parametrize(("file_type", "special"), _SPECIAL_FILE_TYPES)
+def test_unix_special_file_without_data_is_other(
+    tmp_path: Path, file_type: int, special: str
+) -> None:
+    """A device, FIFO or socket that stores no data is OTHER, as in TAR and ISO. unzip
+    would write an empty regular file; extraction refuses the member instead, and
+    ``extra["special_file_type"]`` says what the archive called it (DR-25)."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, file_type, b"")
     with open_archive(path) as ar:
         types = {m.name: m.type for m in ar.members()}
         assert types == {"dev": MemberType.OTHER, "f.txt": MemberType.FILE}
-        assert ar.get("dev").size == 3  # the stored size, not zeroed
+        dev = ar.get("dev")
+        assert dev.size == 0
+        assert dev.extra["special_file_type"] == special
+        assert "special_file_type" not in ar.get("f.txt").extra
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in ar.diagnostics.counts
         ar.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "dev").exists()
     assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+@pytest.mark.parametrize(("file_type", "special"), _SPECIAL_FILE_TYPES)
+def test_unix_special_file_with_data_is_a_file(
+    tmp_path: Path, file_type: int, special: str
+) -> None:
+    """A special-mode entry that carries data is a FILE: its bytes are the content, as
+    unzip, 7-Zip, bsdtar and zipfile all deliver them. The stored type stays visible in
+    ``extra`` and the member carries MEMBER_SPECIAL_FILE_HAS_DATA (DR-25)."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, file_type, b"xyz")
+    with open_archive(path) as ar:
+        dev = ar.get("dev")
+        assert dev.type is MemberType.FILE
+        assert dev.size == 3
+        assert dev.extra["special_file_type"] == special
+        assert ar.read(dev) == b"xyz"
+        [diag] = [
+            d
+            for d in dev.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert diag.context.to_dict() == {
+            "kind": "special_file_data",
+            "archive_name": str(path),
+            "member_name": "dev",
+            "member_id": 0,
+            "special_file_type": special,
+            "size": 3,
+        }
+        assert special.replace("_", " ") in diag.message
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "dev").read_bytes() == b"xyz"
+    assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+def test_unknown_file_type_bits_with_data_name_an_unrecognized_type(
+    tmp_path: Path,
+) -> None:
+    """File-type bits no Unix type uses (``0o070000``) are special but nameless: the
+    key says ``"unknown"`` and the message says so in words."""
+    path = tmp_path / "odd.zip"
+    _zip_with_special_entry(path, 0o070000, b"xyz")
+    with open_archive(path) as ar:
+        dev = ar.get("dev")
+        assert dev.type is MemberType.FILE
+        assert dev.extra["special_file_type"] == "unknown"
+        [diag] = [
+            d
+            for d in dev.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert "marks it as an unrecognized file type and stores 3 bytes" in (
+            diag.message
+        )
+        assert ar.read(dev) == b"xyz"
+
+
+def test_a_directory_marker_over_a_special_mode_keeps_the_key(tmp_path: Path) -> None:
+    """The trailing ``/`` is structure and wins the type (DR-25); the FIFO mode is still
+    what the archive recorded, so ``extra["special_file_type"]`` records it on the
+    DIRECTORY, and the data advisory is for FILE members only."""
+    path = tmp_path / "dir-fifo.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("d/")
+        info.create_system = 3
+        info.external_attr = (0o010755 << 16) | 0x10
+        zf.writestr(info, b"")
+    with open_archive(path) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.DIRECTORY
+        assert member.extra["special_file_type"] == "fifo"
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+
+
+def test_special_file_with_data_is_not_refused_by_strict(tmp_path: Path) -> None:
+    """MEMBER_SPECIAL_FILE_HAS_DATA is advisory: a documented writer option produces
+    the shape (``zip -FI``), so strict does not refuse it."""
+    path = tmp_path / "special.zip"
+    _zip_with_special_entry(path, stat.S_IFIFO, b"xyz")
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(path, config=config) as ar:
+        assert ar.read("dev") == b"xyz"
+
+
+@requires_binary("zip")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_info_zip_fifo_content_reads_as_a_file(tmp_path: Path) -> None:
+    """Info-ZIP's ``zip -FI`` reads a named pipe and stores its content under the pipe's
+    own FIFO mode. Every mainstream extractor writes the bytes as a regular file, and
+    libarchive carries a workaround for exactly this shape; so does archivey (DR-25)."""
+    src = tmp_path / "src"
+    src.mkdir()
+    fifo = src / "pipe1"
+    os.mkfifo(fifo)
+    archive = tmp_path / "fifo.zip"
+    # The producer thread blocks in open() until zip opens the pipe for reading.
+    feeder = threading.Thread(
+        target=fifo.write_bytes, args=(b"hello from fifo\n",), daemon=True
+    )
+    feeder.start()
+    try:
+        subprocess.run(
+            ["zip", "-q", "-FI", str(archive), "pipe1"],
+            cwd=src,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        feeder.join(timeout=30)
+    with open_archive(archive) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.FILE
+        assert member.extra["special_file_type"] == "fifo"
+        assert member.size == 16
+        assert ar.read(member) == b"hello from fifo\n"
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "pipe1").read_bytes() == b"hello from fifo\n"
 
 
 def test_device_bits_from_a_non_unix_writer_are_ignored(tmp_path: Path) -> None:
@@ -2227,3 +2368,300 @@ def test_device_bits_from_a_non_unix_writer_are_ignored(tmp_path: Path) -> None:
         zf.writestr(info, b"x")
     with open_archive(path) as ar:
         assert ar.members()[0].type is MemberType.FILE
+
+
+# --- a directory entry that declares data ---------------------------------------------
+
+
+def _zip_with_directory_data(path: Path, compress_type: int) -> None:
+    """``d/`` carrying 12 bytes (APPNOTE gives a directory none), a file under it and
+    the Java ``jar`` shape: a deflated empty directory body (compressed size 2)."""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("d/"), b"hidden data!", compress_type=compress_type)
+        z.writestr("d/f.txt", b"visible")
+        z.writestr(zipfile.ZipInfo("jar/"), b"", compress_type=zipfile.ZIP_DEFLATED)
+
+
+@pytest.mark.parametrize(
+    "compress_type",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflate"],
+)
+def test_directory_data_is_reported_and_readable_but_not_extracted(
+    tmp_path: Path, compress_type: int
+) -> None:
+    """The entry stays a directory (every official tool creates one) with its declared
+    size, ``MEMBER_DIRECTORY_DATA_IGNORED`` names the bytes extraction drops, and
+    ``read()`` still delivers them, so nothing in the archive is out of reach."""
+    path = tmp_path / "dirdata.zip"
+    _zip_with_directory_data(path, compress_type)
+    with open_archive(path) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["d/"].type is MemberType.DIRECTORY
+        assert by_name["d/"].size == 12
+        assert by_name["jar/"].type is MemberType.DIRECTORY
+        assert by_name["jar/"].size == 0
+        assert by_name["jar/"].compressed_size == 2
+        diags = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert [d.context.to_dict() if d.context else None for d in diags] == [
+            {
+                "kind": "directory_data",
+                "archive_name": str(path),
+                "member_name": "d/",
+                "member_id": 0,
+                "size": 12,
+                "compressed_size": by_name["d/"].compressed_size,
+            }
+        ]
+        assert "12 bytes" in diags[0].message
+        assert ar.read("d/") == b"hidden data!"
+        assert ar.read("d/f.txt") == b"visible"
+        with pytest.raises(ArchiveyUsageError, match="not a file"):
+            ar.read("jar/")
+        report = ar.extract_all(tmp_path / "out")
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["d/"] is ExtractionStatus.EXTRACTED
+    assert (tmp_path / "out" / "d").is_dir()
+    assert (tmp_path / "out" / "d" / "f.txt").read_bytes() == b"visible"
+    assert (tmp_path / "out" / "jar").is_dir()
+
+
+def test_corrupted_directory_data_fails_its_digest_check(tmp_path: Path) -> None:
+    """The bytes ``open()`` delivers for a directory are checked against the stored
+    CRC-32 like a file's: a body that no longer matches raises instead of reading
+    as clean data."""
+    path = tmp_path / "dirdata.zip"
+    _zip_with_directory_data(path, zipfile.ZIP_STORED)
+    data = path.read_bytes()
+    assert data.count(b"hidden data!") == 1
+    path.write_bytes(data.replace(b"hidden data!", b"XXXXXXXXXXXX"))
+    with open_archive(path) as ar:
+        member = ar.get("d/")
+        assert member.hashes == {
+            HashAlgorithm.CRC32: crc32_digest(zlib.crc32(b"hidden data!"))
+        }
+        with pytest.raises(CorruptionError, match="crc32"):
+            ar.read("d/")
+        assert ar.read("d/f.txt") == b"visible"
+
+
+@requires("cryptography")
+def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
+    """WinZip AE-2 stores CRC 0 by design and relies on the HMAC, for a directory entry
+    as for a file: no crc32 in ``hashes``, no ``DIGEST_UNVERIFIABLE`` (the bytes are
+    checked), the read returns the bytes, and a tampered HMAC is ``CorruptionError``."""
+    path = tmp_path / "ae2-dir.zip"
+    path.write_bytes(build_aes_zip([(b"d/", b"hidden data!")], password=b"secret"))
+    with open_archive(path, password="secret") as ar:
+        member = ar.get("d/")
+        assert member.type is MemberType.DIRECTORY
+        assert member.size == 12 and member.is_encrypted
+        assert member.hashes == {}
+        codes = [d.code for d in member.diagnostics]
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE not in codes
+        assert ar.read("d/") == b"hidden data!"
+    tampered = tmp_path / "ae2-dir-bad.zip"
+    tampered.write_bytes(
+        build_aes_zip([(b"d/", b"hidden data!")], password=b"secret", tamper_hmac=True)
+    )
+    with open_archive(tampered, password="secret") as ar:
+        with pytest.raises(CorruptionError, match="HMAC"):
+            ar.read("d/")
+    # AE-1 keeps the plaintext CRC, so a directory under it carries the digest.
+    ae1 = tmp_path / "ae1-dir.zip"
+    ae1.write_bytes(
+        build_aes_zip([(b"d/", b"hidden data!")], password=b"secret", vendor_version=1)
+    )
+    with open_archive(ae1, password="secret") as ar:
+        assert HashAlgorithm.CRC32 in ar.get("d/").hashes
+        assert ar.read("d/") == b"hidden data!"
+    # An AE-1 entry whose CRC field is zeroed still has its HMAC: no digest, but the
+    # bytes are checked, so nothing is reported and a tampered HMAC still raises.
+    crc = struct.pack("<I", zlib.crc32(b"hidden data!"))
+    ae1_bytes = ae1.read_bytes()
+    assert ae1_bytes.count(crc) == 2  # local header and central directory
+    zeroed = tmp_path / "ae1-dir-zero-crc.zip"
+    zeroed.write_bytes(ae1_bytes.replace(crc, b"\0\0\0\0"))
+    with open_archive(zeroed, password="secret") as ar:
+        member = ar.get("d/")
+        assert member.hashes == {}
+        codes = [d.code for d in member.diagnostics]
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE not in codes
+        assert ar.read("d/") == b"hidden data!"
+    tampered_ae1 = build_aes_zip(
+        [(b"d/", b"hidden data!")],
+        password=b"secret",
+        vendor_version=1,
+        tamper_hmac=True,
+    ).replace(crc, b"\0\0\0\0")
+    (tmp_path / "ae1-dir-tampered.zip").write_bytes(tampered_ae1)
+    with open_archive(tmp_path / "ae1-dir-tampered.zip", password="secret") as ar:
+        with pytest.raises(CorruptionError, match="HMAC"):
+            ar.read("d/")
+
+
+def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
+    """A directory entry's CRC field is 0 by convention, so a zero over declared data
+    is no digest: the member carries none, ``DIGEST_UNVERIFIABLE`` says the read is
+    unchecked, and the bytes come back instead of a ``CorruptionError``."""
+    path = tmp_path / "zerocrc.zip"
+    _zip_with_directory_data(path, zipfile.ZIP_STORED)
+    data = bytearray(path.read_bytes())
+    crc = zlib.crc32(b"hidden data!")
+    assert data[:4] == b"PK\x03\x04"
+    assert struct.unpack_from("<I", data, 14)[0] == crc
+    struct.pack_into("<I", data, 14, 0)  # local header: CRC-32
+    central = data.index(b"PK\x01\x02")
+    assert struct.unpack_from("<I", data, central + 16)[0] == crc
+    struct.pack_into("<I", data, central + 16, 0)  # central directory: CRC-32
+    path.write_bytes(bytes(data))
+    with open_archive(path) as ar:
+        member = ar.get("d/")
+        assert member.hashes == {}
+        codes = [d.code for d in member.diagnostics]
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        [diag] = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["reason"] == "no_integrity_anchor"
+        assert "CRC-32 field is 0" in diag.message
+        assert ar.read("d/") == b"hidden data!"
+        assert HashAlgorithm.CRC32 in ar.get("d/f.txt").hashes
+
+
+def test_a_special_entry_is_refused_by_type_not_by_data(tmp_path: Path) -> None:
+    """A tombstone or special entry is refused for what it is, not for lacking data, so
+    the message names the type; only the directory arm reasons about data. A special
+    mode over stored bytes is a ``FILE`` and reads (DR-25), so the refused shape is the
+    data-less one."""
+    path = tmp_path / "device.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        empty = zipfile.ZipInfo("dev/null")
+        empty.create_system = 3
+        empty.external_attr = (stat.S_IFCHR | 0o666) << 16
+        z.writestr(empty, b"")
+        full = zipfile.ZipInfo("dev/data")
+        full.create_system = 3
+        full.external_attr = (stat.S_IFCHR | 0o666) << 16
+        z.writestr(full, b"twelve bytes")
+    with open_archive(path) as ar:
+        member = ar.get("dev/null")
+        assert member.type is MemberType.OTHER
+        assert member.size == 0
+        with pytest.raises(
+            ArchiveyUsageError, match="type is 'other' \\(not a file\\)"
+        ):
+            ar.read(member)
+        full_member = ar.get("dev/data")
+        assert full_member.type is MemberType.FILE
+        assert ar.read(full_member) == b"twelve bytes"
+
+
+def _zip_with_declared_empty_directory_body(path: Path) -> None:
+    """``d/`` storing 2000 bytes with its uncompressed size field set to 0 in both the
+    local header and the central directory: a body hidden one field away from the
+    declared size."""
+    body = b"0123456789" * 200
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("d/"), body, compress_type=zipfile.ZIP_STORED)
+        z.writestr("d/f.txt", b"visible")
+    data = bytearray(path.read_bytes())
+    assert data[:4] == b"PK\x03\x04"
+    assert struct.unpack_from("<I", data, 22)[0] == len(body)
+    struct.pack_into("<I", data, 22, 0)  # local header: uncompressed size
+    central = data.index(b"PK\x01\x02")
+    assert struct.unpack_from("<I", data, central + 24)[0] == len(body)
+    struct.pack_into(
+        "<I", data, central + 24, 0
+    )  # central directory: uncompressed size
+    path.write_bytes(bytes(data))
+
+
+def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> None:
+    """A directory declaring size 0 over a 2000-byte stored body is the same hidden
+    payload as a declared one: reported, refused by strict, and ``open()`` says why
+    it has nothing to return."""
+    path = tmp_path / "hidden.zip"
+    _zip_with_declared_empty_directory_body(path)
+    with open_archive(path) as ar:
+        member = ar.get("d/")
+        assert member.type is MemberType.DIRECTORY
+        assert (member.size, member.compressed_size) == (0, 2000)
+        [diag] = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["size"] == 0
+        assert diag.context.to_dict()["compressed_size"] == 2000
+        assert "declares no data but stores a 2000-byte body" in diag.message
+        with pytest.raises(ArchiveyUsageError, match="declares no data"):
+            ar.read("d/")
+        assert ar.read("d/f.txt") == b"visible"
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        open_archive(path, config=config) as ar,
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+    ):
+        ar.members()
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+
+
+@pytest.mark.parametrize(
+    "method",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
+)
+def test_empty_directory_body_sizes_match_zipfile(tmp_path: Path, method: int) -> None:
+    """The per-method size of an empty body is what ``zipfile`` writes for a directory
+    given no data, and such a directory is not reported."""
+    from archivey.internal.backends.zip_reader import _ZIP_EMPTY_BODY_SIZES
+
+    assert set(_ZIP_EMPTY_BODY_SIZES) == {
+        zipfile.ZIP_STORED,
+        zipfile.ZIP_DEFLATED,
+        zipfile.ZIP_BZIP2,
+        zipfile.ZIP_LZMA,
+    }
+    path = tmp_path / "empty.zip"
+    try:
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(zipfile.ZipInfo("d/"), b"", compress_type=method)
+    except RuntimeError as exc:  # the compressor's module is not installed
+        pytest.skip(str(exc))
+    with zipfile.ZipFile(path) as z:
+        assert z.infolist()[0].compress_size == _ZIP_EMPTY_BODY_SIZES[method]
+    with open_archive(path) as ar:
+        assert [m.name for m in ar.members()] == ["d/"]
+        assert not ar.diagnostics.retained
+
+
+def test_directory_data_is_refused_by_strict(tmp_path: Path) -> None:
+    """The shape is a spec violation that hides bytes, so strict refuses it (DR-3),
+    while the jar shape, which declares no data, passes."""
+    path = tmp_path / "dirdata.zip"
+    _zip_with_directory_data(path, zipfile.ZIP_STORED)
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        open_archive(path, config=config) as ar,
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+    ):
+        ar.members()
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+
+    jar_only = tmp_path / "jar.zip"
+    with zipfile.ZipFile(jar_only, "w") as z:
+        z.writestr(zipfile.ZipInfo("jar/"), b"", compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("jar/f.txt", b"visible")
+    with open_archive(jar_only, config=config) as ar:
+        assert [m.name for m in ar.members()] == ["jar/", "jar/f.txt"]
+        assert not ar.diagnostics.retained

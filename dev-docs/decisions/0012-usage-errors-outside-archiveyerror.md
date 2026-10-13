@@ -53,3 +53,15 @@ A second change the same day made `TruncatedError` a `CorruptionError` subclass 
 than a sibling. Data that ends early is damaged data, the library caught the two together
 in most places, and a decoder often cannot tell them apart from the bytes. Moving it later
 would have widened every `except CorruptionError` after callers had written them.
+
+A third change, on 2026-10-10, settled which class a wrong argument raises. DR-15 said
+`TypeError` or `ValueError`; the `error-handling` spec and the code said
+`ArchiveyUsageError`; and a few entry points (`open_archive(0)`, `extract_all(0)`) still
+let a raw `TypeError` through. The ruling keeps both: every boundary check raises one of
+two private subclasses in `archivey/exceptions.py`, `_UsageTypeError`
+(`ArchiveyUsageError` and `TypeError`) for an argument of a type the call cannot use and
+`_UsageValueError` (`ArchiveyUsageError` and `ValueError`) for a usable type with a value
+the call refuses. Making `ArchiveyUsageError` itself a `TypeError` was rejected, because
+mode misuse and a closed reader raise it too and are not type errors; those keep raising
+plain `ArchiveyUsageError`. The subclasses are not public names, so no caller can depend
+on them, and both still sit outside `ArchiveyError`.

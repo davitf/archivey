@@ -48,7 +48,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
-| Source bytes to parsers | Archive structure | Pure-Python parsers for 7z and RAR headers, stdlib `zipfile` / `tarfile`, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
+| Source bytes to parsers | Archive structure | Pure-Python parsers for 7z, RAR and TAR headers, stdlib `zipfile`, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
 | Parsers to decoders | Compressed streams, declared decoder parameters | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
@@ -307,15 +307,22 @@ Each budget below is a byte, count or rounds budget. None of them bounds time; t
 archive declares.
 
 **Mechanism.**
-- `ListingLimits` (`max_members` 1,048,576, `max_metadata_bytes` 64 MiB) is enforced by
+- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
-  materialized list (`members()`, `scan_members()`, extract preparation). Crossing a cap
+  materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
-  `stream_members()` and `streaming=True` are unguarded, as the O(1) escape hatch,
-  except on 7z, RAR and ISO, which check the caps while parsing. Unguarded bounds memory,
-  not work: a forward-only TAR walk reads through every member it skips, for the bytes
-  present rather than the size a header declares (a member declaring more than the
-  archive holds raises `TruncatedError` at the first short read).
+  `stream_members()` and `for member in reader` are unguarded: they yield every
+  member, except on 7z, RAR and ISO, which check the caps while parsing. Their memory
+  is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
+  reader, and TAR in both modes) counts members as usual and stops keeping them once
+  the totals cross a cap, in `base_reader.py` `_discard_listing`. The TAR walker keeps
+  nothing behind the member list, so nothing else is held. After the discard, the
+  listing calls raise the same `ResourceLimitError` as `members()`. `extract_all()`
+  enforces the caps in both modes, because it resolves hard links against the members
+  it keeps. Unguarded bounds memory, not work: a forward-only TAR walk reads through
+  every member it skips, for the bytes present rather than the size a header declares
+  (a member declaring more than the archive holds raises `TruncatedError` at the first
+  short read).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
@@ -361,21 +368,19 @@ archive declares.
   `max_members` and refuses a table of more than `max_members + 1` entries, capping one
   table near 240 MB at the default (maintainer ruling, 2026-10-06). Real images never
   notice: every entry is a directory, and every directory but the root is a member.
-- TAR has no member table, so the caps bind the header walk: `tar_reader.py` pulls
-  headers in batches that stop one header past what either cap has left, PAX keywords
-  and values included. `tarfile` reads a PAX extended or global header, or a GNU long
-  name or link name, whole in one call, so the walk refuses such a header from its
-  declared size before that read: in random access when it declares more than is left
-  of `max_metadata_bytes`, and in any mode, streaming included, when it declares more
-  than the whole cap. The headers ahead of one member are one chain, which `tarfile`
-  holds whole until the member is built, so each draws from what the ones before it
-  left. A sparse map (24 bytes per entry) is weighed from its entry count before its
-  entries are parsed, or block by block for an old GNU map's extension blocks, against
-  the same budget (`_TarInfo._proc_gnusparse_*`, `_proc_sparse`). An over-limit tar then
-  costs about the cap plus one ordinary header. The PAX global records are held once per
-  global header, not once per member: members with none of their own share one copy
-  (`_TarFile.global_records`). Each member is still charged for them, so the cap counts
-  them as if copied.
+- TAR has no member table, so the caps bind the header walk: `tar_reader.py` registers
+  each member, PAX keywords and values included, before the walker
+  (`internal/backends/tar_parser.py` `TarWalker`) parses the next header, so the walk
+  stops at the member that crosses a cap. The walker charges each member's headers to a
+  budget before it reads them: an extended header (PAX `x` or `g`, GNU `L` or `K`) at
+  its declared size, and a sparse map at 24 bytes per entry from its entry count before
+  its entries are parsed, or block by block for an old GNU map's extension blocks. The
+  budget is what is left of `max_metadata_bytes` in a random-access listing that
+  enforces the cap, and the whole cap otherwise, streaming included. The headers ahead of
+  one member are one chain and draw on one budget. An over-limit tar then costs about
+  the cap plus one ordinary header. The PAX global records are held once per global
+  header, not once per member: members with none of their own share one read-only
+  snapshot. Each member is still charged for them, so the cap counts them as if copied.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An
@@ -429,20 +434,22 @@ it declares, is weighed against `max_metadata_bytes`, the File Entry before `pyc
 parses it. `pycdlib` keeps every tree it walked, so `max_metadata_bytes` is one sum for
 the whole image, every tree together (ruled by davi, 2026-10-10; reasons and the reopen
 condition in `dev-docs/formats/iso.md` §2.2). A budget per tree let an image carrying
-all three trees peak near 2.6 GiB at the default limits: a PVD tree and a Joliet tree
-at about 1 GiB each, plus a UDF tree, where a name weighs at least about 220 bytes and
+all three trees peak near 2.6 GiB at the limits of the time (`max_members` 1,048,576):
+a PVD tree and a Joliet tree at about 1 GiB each, plus a UDF tree, where a name weighs at least about 220 bytes and
 was measured at about 2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB.
 `max_members` stays per tree, because a Joliet tree repeats every file and one count
-would halve the cap for such an image. The ceiling is now the member cap per tree
-together with the byte sum: a record is at least 34 bytes, so 64 MiB holds about 2
-million records across the PVD and Joliet trees, which is about 1.5 GiB at 0.8 KB each
-(an estimate from the per-record figure, not measured at this scale). Any UDF bytes
+would halve the cap for such an image. At the default `max_members` of 262,144 the
+member cap per tree binds before the byte sum: two trees hold at most 524,288 records,
+about 0.42 GB at 0.8 KB each (an estimate from the per-record figure, not measured at
+this scale), while 64 MiB of minimal 34-byte records would allow about 2 million. The
+byte sum binds first only when `max_members` is raised past about a million per tree. Any UDF bytes
 come out of the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660
 record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
-`test_stream_members_unguarded_when_members_would_fail`);
+`test_stream_members_unguarded_when_members_would_fail`,
+`test_unguarded_pass_memory_is_bounded_by_listing_limits`);
 `tests/test_sevenzip_reader.py::test_num_unpack_streams_count_is_bounded`,
 `::test_num_unpack_streams_sum_across_folders_is_bounded`,
 `::test_member_scaled_counts_respect_max_members`,
@@ -464,29 +471,33 @@ record.
 **Property.** A size field in a header never sizes an allocation larger than the bytes
 the source really has.
 
-**Mechanism.** stdlib `tarfile` reads a PAX extended header or GNU long name with one
-`read(size)`, and pycdlib reads a directory extent with one `read(data_length)`; both
-sizes come straight from the archive. Measured without a bound: a 10 KB tar asked for
-6 GiB, and a 51 KB ISO asked for 4 GiB, both dying on a bare `MemoryError`. So both
-libraries read through archivey's source (`internal/source.py` `ArchiveSource`) or
-decompressor (`tar_reader.py` `_BoundedTarFileobj`), and both apply
-`streams/streamtools/binaryio.py` `read_within_reach`: where the remaining length is a
-fact (a path's `stat`, a `BytesIO` buffer, a regular file's `fstat`) the read is clamped
-to it; otherwise it is served in bounded steps, so the peak tracks the bytes that exist.
-An fsspec `size` attribute is a hint, not a fact, and is stepped. A short read then
-fails in the library and is translated to `CorruptionError`. The ISO reader passes every
-source to `open_fp` as an `ArchiveSource`, a path included, so there is always something
-of archivey's under pycdlib; `open_archive` closes the source if the reader never
-finishes constructing. Two sizes are checked before the read rather than left to the
-source, because the source bounds them only by the image: a Rock Ridge `CE` entry's area
-must end inside its logical block, as pycdlib itself requires after its read and the
-Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB image is refused
-without the read (545 MiB peak before), and so is each further link of a `CE` chain,
-which pycdlib follows from 1.21 (a 256 MiB second link peaked at 256 MiB under default
-limits before); and a path table must end inside the image ([Listing](#listing) weighs
-it against `max_metadata_bytes` too). This bounds one read; how many records and
-continuation areas `pycdlib` builds from those reads is the listing budget's
-([Listing](#listing)).
+**Mechanism.** A TAR extended header (PAX record or GNU long name) and a pycdlib
+directory extent both declare their own size, straight from the archive. Measured
+without a bound, read with one `read(size)` as stdlib `tarfile` and pycdlib read them: a
+10 KB tar asked for 6 GiB and a 51 KB ISO for 4 GiB, both dying on a bare `MemoryError`. archivey's TAR walker
+(`internal/backends/tar_parser.py` `TarWalker`) charges an extended header's declared
+size to the member's `max_metadata_bytes` budget before it reads anything
+([Listing](#listing)), then reads it with `streams/streamtools/binaryio.py`
+`read_within_reach` in 64 KiB steps. A forward-only walk skips a member's data area in
+64 KiB steps too, and stops with `TruncatedError` at the first short read. pycdlib reads
+through archivey's source (`internal/source.py` `ArchiveSource`), which applies
+`read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
+`BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is
+served in bounded steps, so the peak tracks the bytes that exist. An fsspec `size`
+attribute is a hint, not a fact, and is stepped. A short read then fails: the TAR walker
+raises `TruncatedError`, and pycdlib's error is translated to `CorruptionError`. The ISO
+reader passes every source to `open_fp` as an `ArchiveSource`, a path included, so there
+is always something of archivey's under pycdlib; `open_archive` closes the source if the
+reader never finishes constructing. Two sizes are checked before the read rather than
+left to the source, because the source bounds them only by the image: a Rock Ridge `CE`
+entry's area must end inside its logical block, as pycdlib itself requires after its
+read and the Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB
+image is refused without the read (545 MiB peak before), and so is each further link of
+a `CE` chain, which pycdlib follows from 1.21 (a 256 MiB second link peaked at 256 MiB
+under default limits before); and a path table must end inside the image
+([Listing](#listing) weighs it against `max_metadata_bytes` too). This bounds one read;
+how many records and continuation areas `pycdlib` builds from those reads is the listing
+budget's ([Listing](#listing)).
 
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
 40 MiB member arrives as one 40 MiB request.
@@ -500,6 +511,7 @@ it whole cost about twice the file: a 128 MiB sparse file grew peak RSS by 244 M
 open.
 
 **Tests.** `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`;
+`tests/test_tar_parser.py::test_extended_header_is_charged_before_it_is_read`;
 `tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
 `::test_a_path_source_refuses_the_same_image`,
 `::test_a_refused_path_source_does_not_hold_its_handle`;
@@ -573,8 +585,8 @@ however many salts or candidates it involves.
 in the archive, each capped at 2^24 per derivation. That bounds one derivation, not the
 total: a crafted RAR can use a fresh salt per member at the maximum cost and a PswCheck
 no password matches, which costs 4.4 s per member per candidate (0.013 s at the usual
-2^15). So `DecoderLimits.max_key_derivation_rounds` (default `2**27`, maintainer,
-2026-09-23) bounds summed declared rounds per open archive. `internal/config.py`
+2^15). So `DecoderLimits.max_key_derivation_rounds` (default `2**25`, maintainer,
+2026-10-07; `2**27` from 2026-09-23) bounds summed declared rounds per open archive. `internal/config.py`
 `KeyDerivationBudget.spend` charges a cache miss before the derivation runs, since the
 derivation runs in `hashlib` and cannot be interrupted. The caches
 (`internal/backends/sevenzip_aes.py` `SevenZipKeyCache`, `rar_parser.py` `RarKdfCache`)
@@ -639,7 +651,7 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Mechanism.** `internal/extraction.py` `BombTracker` enforces `ExtractionLimits`: total
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
-live ratio for sources of unknown size, and an entry cap (1,048,576). A non-seekable
+live ratio for sources of unknown size, and an entry cap (262,144). A non-seekable
 caller stream's `size` attribute counts as unknown size: nothing can check it, and an
 inflated claim used as the static denominator would also switch off the live ratio
 (`BaseArchiveReader._trusted_source_size`). The global guards
@@ -986,7 +998,7 @@ vulnerability. Most are in
 Every limit caps bytes, entries or key-derivation rounds, not time. Worst cases we know:
 a 7z BCJ2 `main` stream made only of branch candidates decodes at 1.8 MB/s in pure
 Python (26 MB/s on a real executable), and LZMA2 compresses that stream to almost
-nothing; the key-derivation budget allows about half a minute; a late-CRC 7z folder
+nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folder
 costs folder size times candidates. A "work per output byte" limit for BCJ2 was
 considered and not added: no other codec has one, and `ExtractionLimits` still bounds
 the amount, only the rate is lower. Callers who need a time bound run archivey in a

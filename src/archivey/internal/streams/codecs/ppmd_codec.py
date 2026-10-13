@@ -121,6 +121,7 @@ class PpmdCodec(StreamCodec):
             pack_size=pack_size,
             in_process_max_input=in_process_max_input,
             collector=config.collector,
+            refuse_input_after_end=config.refuse_input_after_end,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

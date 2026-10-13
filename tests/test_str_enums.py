@@ -9,8 +9,8 @@ value. An enum that does not subclass ``str`` stays a plain ``Enum``, and
 rejects it.
 
 The ``StrEnum`` classes are ``HashAlgorithm``, ``ContainerFormat``,
-``StreamFormat``, ``DiagnosticCode``, ``DiagnosticDisposition``, ``AbortOn``
-and ``ExtractionStatus``.
+``StreamFormat``, ``DiagnosticCode``, ``AbortOn``, ``ExtractionStatus``,
+``NameRewrite`` and ``LinkTargetNotFoundReason``.
 """
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ from archivey import (
     AbortOn,
     ContainerFormat,
     DiagnosticCode,
-    DiagnosticDisposition,
     ExtractionStatus,
     HashAlgorithm,
+    LinkTargetNotFoundReason,
+    NameRewrite,
     StreamFormat,
 )
 
@@ -42,9 +43,10 @@ STR_VALUE_ENUMS: tuple[type[StrEnum], ...] = (
     ContainerFormat,
     StreamFormat,
     DiagnosticCode,
-    DiagnosticDisposition,
     AbortOn,
     ExtractionStatus,
+    NameRewrite,
+    LinkTargetNotFoundReason,
 )
 
 

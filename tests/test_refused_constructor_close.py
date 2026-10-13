@@ -141,7 +141,7 @@ class _CloseFails(io.BytesIO):
             lambda inner: VerifyingStream(
                 inner,
                 {"no-such-digest": b"\x00"},  # type: ignore[dict-item]
-                collector=DiagnosticCollector(policy=DiagnosticPolicy.strict()),
+                collector=DiagnosticCollector(policy=DiagnosticPolicy.STRICT),
             ),
             id="verifying-stream",
         ),
@@ -157,7 +157,7 @@ def test_refusal_outlives_a_failing_owned_inner_close(construct: object) -> None
 
 def test_verifying_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
     inner = io.BytesIO(b"payload")
-    collector = DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
         VerifyingStream(
             inner,
@@ -182,7 +182,7 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
         opened.append(io.BytesIO(b"payload"))
         return opened[-1]
 
-    collector = DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
         ArchiveStream(
             open_fn,
@@ -236,6 +236,15 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
     ),
+    "archivey.internal.backends.tar_reader._MemberDataView": (
+        "DelegatingStream.__init__ first; close() reads nothing assigned after it"
+    ),
+    "archivey.internal.streams.streamtools.readahead.ReadAheadStream": (
+        "assigns every field close() reads before DelegatingStream.__init__"
+    ),
+    "archivey.internal.streams.streamtools.sparse.SparseStream": (
+        "DelegatingStream.__init__ first; close() reads nothing assigned after it"
+    ),
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
@@ -281,9 +290,6 @@ _CLOSE_STATE_FIRST = {
     ),
     "archivey.internal.backends.sevenzip_reader._ReadAheadStream": (
         "plain assignments only"
-    ),
-    "archivey.internal.streams.codecs.lzma_codec._LzmaEndAtSize": (
-        "DelegatingStream.__init__ first, then plain assignments"
     ),
     "archivey.internal.external.unar.UnarOutputStream": (
         "assigns every field close() reads before DelegatingStream.__init__"

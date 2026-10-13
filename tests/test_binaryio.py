@@ -293,10 +293,29 @@ def test_read_within_reach_steps_an_unknown_length() -> None:
     """
     src = _SizeRecorder(DATA)  # 36 bytes: two whole steps and a short third
     assert read_within_reach(src, 1 << 32, remaining=None, step=16) == DATA
-    # Four requests, one step each: 16, 16, a third that returns 4, then the empty
-    # read that ends the loop. The assertion is on what was asked for, which is a
-    # step every time — never the 4 294 967 296 the caller passed.
-    assert src.requested == [16, 16, 16, 16]
+    # Three requests, one step each: 16, 16, and a third that returns 4, which ends
+    # the loop. The assertion is on what was asked for, which is a step every time —
+    # never the 4 294 967 296 the caller passed.
+    assert src.requested == [16, 16, 16]
+
+
+def test_read_within_reach_takes_a_short_step_as_the_end() -> None:
+    """A short step ends the read, so a decoder's deferred error stays on the next one.
+
+    Fails against looping until an empty read: the fourth read raises, and the 36
+    bytes already joined are lost with it.
+    """
+
+    class _DeferredCut(_SizeRecorder):
+        def read(self, n: int = -1, /) -> bytes:
+            data = super().read(n)
+            if not data:
+                raise EOFError("cut")
+            return data
+
+    src = _DeferredCut(DATA)
+    assert read_within_reach(src, 1 << 32, remaining=None, step=16) == DATA
+    assert src.requested == [16, 16, 16]
 
 
 def test_read_within_reach_returns_a_full_step_without_joining() -> None:

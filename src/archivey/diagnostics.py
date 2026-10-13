@@ -17,15 +17,15 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, TypeVar
+from typing import ClassVar, Literal, TypeVar
 
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
-from archivey.internal.enum_args import coerce_enum
+from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
+from archivey.internal.enum_args import coerce_enum_collection
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
 
@@ -74,21 +74,69 @@ class DiagnosticCode(StrEnum):
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
+    MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
+    MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
 
 
-class DiagnosticDisposition(StrEnum):
-    """Per-code policy disposition for an emitted diagnostic."""
-
-    IGNORE = "ignore"
-    COLLECT = "collect"
-    RAISE = "raise"
+#: The string spellings of :class:`DiagnosticCode` a type checker accepts: each value, and
+#: its dash form. The runtime also accepts a member's name in any case.
+DiagnosticCodeStr = Literal[
+    "member_name_normalized",
+    "member-name-normalized",
+    "member_name_encoding_inferred",
+    "member-name-encoding-inferred",
+    "member_name_bidi_control",
+    "member-name-bidi-control",
+    "format_extension_conflict",
+    "format-extension-conflict",
+    "explicit_format_listed_empty",
+    "explicit-format-listed-empty",
+    "extension_format_unconfirmed",
+    "extension-format-unconfirmed",
+    "probe_format_unconfirmed",
+    "probe-format-unconfirmed",
+    "empty_archive",
+    "empty-archive",
+    "encoding_argument_unused",
+    "encoding-argument-unused",
+    "password_argument_unused",
+    "password-argument-unused",
+    "scan_directory_vanished",
+    "scan-directory-vanished",
+    "scan_entry_vanished",
+    "scan-entry-vanished",
+    "archive_eof_marker_missing",
+    "archive-eof-marker-missing",
+    "archive_trailing_data",
+    "archive-trailing-data",
+    "member_timestamp_invalid",
+    "member-timestamp-invalid",
+    "member_header_record_skipped",
+    "member-header-record-skipped",
+    "symlink_target_unavailable",
+    "symlink-target-unavailable",
+    "digest_unverifiable",
+    "digest-unverifiable",
+    "encrypted_member_unverified",
+    "encrypted-member-unverified",
+    "seek_index_degraded",
+    "seek-index-degraded",
+    "stream_rewind_redecompresses",
+    "stream-rewind-redecompresses",
+    "member_selector_unmatched",
+    "member-selector-unmatched",
+    "member_special_file_has_data",
+    "member-special-file-has-data",
+    "member_directory_data_ignored",
+    "member-directory-data-ignored",
+]
 
 
 @dataclass(frozen=True)
@@ -229,7 +277,7 @@ class ArchiveEofContext(_JsonSafeContext):
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing (``observed_kind="absent"``), short (``"short"``), or a non-null block
       where a header or the trailer belongs (``"nonzero"``). ``"nonzero"`` is always
-      escalated to ``CorruptionError``: tarfile rejected a header and the listing is
+      escalated to ``CorruptionError``: a header did not parse and the listing is
       shortened, or the file has no member and is not shown to be a TAR archive.
     - ``"second_zero_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the first TAR trailer
       block is zero and ends the members, and the second is a full non-null block.
@@ -258,11 +306,17 @@ class ArchiveEofContext(_JsonSafeContext):
       size the end record gives, and that field is cut short. ``expected_bytes`` is
       that directory size and ``observed_bytes`` where the entry would end, both
       counted from the directory's start; ``observed_kind`` is ``"nonzero"``.
-    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the TAR
-      trailer within the first MiB past it, so the file carries something the listing
-      did not account for. The trailer was complete, or its second block was damaged
-      and reported as ``"second_zero_block"`` first. ``observed_bytes`` is that byte's
-      offset past the trailer.
+    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
+      archive's end within the first MiB past it, so the file carries something the
+      listing did not account for. ``format`` names where the end was: ``"tar"`` for
+      the TAR trailer (complete, or its second block damaged and reported as
+      ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
+      header and its last packed stream, ``"rar"`` for a RAR volume's end-of-archive
+      block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
+      its MBR or GPT lists and the GPT backup header. ``observed_bytes`` is that byte's
+      offset past the end. RAR emits one per volume, and its offset counts from that
+      volume's end block, unlike member offsets, which count across the whole set; the
+      message names the volume.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
       which are neither another stream nor padding the format allows. ``format`` names
@@ -358,6 +412,25 @@ class DigestContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class DirectoryDataContext(_JsonSafeContext):
+    """A directory entry declares member data, which extraction does not write.
+
+    ``size`` is the declared uncompressed size and ``compressed_size`` the stored
+    one (``None`` where the format does not record it). The directory is still
+    created. A declared size is reachable through ``open()`` / ``read()`` where the
+    backend can decode the body (RAR delivers stored data only); a ``size`` of 0 over
+    a non-empty body has nothing ``open()`` could return.
+    """
+
+    kind: Literal["directory_data"] = "directory_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    size: int = 0
+    compressed_size: int | None = None
+
+
+@dataclass(frozen=True)
 class EncryptedVerificationContext(_JsonSafeContext):
     """An encrypted member's stream closed before its digest checked the password.
 
@@ -366,11 +439,11 @@ class EncryptedVerificationContext(_JsonSafeContext):
     ``pw_verify``), ``"confirm_budget_exhausted"`` (confirmation survived its bounded
     prefix without reaching a checksum) or ``"no_password_check"`` (the member carries
     no password check at all, as RAR3/4 data does, so nothing accepted the password
-    before decoding). ``reason`` names why the digest was not
-    reached: ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek gave up
-    a CRC; a WinZip AES HMAC survives seeks, so for an AES member it means only that a
-    failed seek left the position unknown). No password or key material is ever
-    carried.
+    before decoding). ``reason`` names why the digest was not reached:
+    ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek that jumped past
+    the bytes read so far gave up a CRC; a WinZip AES HMAC survives seeks, so for an
+    AES member it means only that a failed seek left the position unknown). No
+    password or key material is ever carried.
 
     The code answers a question a member stream cannot answer for itself yet. Retire it
     when member streams report their verification state (``dev-docs/IDEAS.md``,
@@ -434,6 +507,27 @@ class SelectorUnmatchedContext(_JsonSafeContext):
     entry_kind: Literal["name", "member"] = "name"
 
 
+@dataclass(frozen=True)
+class SpecialFileDataContext(_JsonSafeContext):
+    """A member whose stored type is a device, FIFO or socket carries data, so it is
+    listed as a ``FILE`` (design rule DR-25).
+
+    Info-ZIP's ``zip -FI`` stores a named pipe's content under the pipe's own FIFO mode,
+    and unzip, 7-Zip, bsdtar and ``zipfile`` all write such an entry as a regular file,
+    so archivey does too: the bytes are the content. ``special_file_type`` is what the
+    archive called the entry (the same value as ``extra["special_file_type"]``) and
+    ``size`` the bytes it stores. Advisory: nothing is hidden or misread, so it is not
+    in :data:`ARCHIVE_INTEGRITY_CODES`.
+    """
+
+    kind: Literal["special_file_data"] = "special_file_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    special_file_type: str = ""
+    size: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -448,10 +542,12 @@ DiagnosticContext = (
     | MemberHeaderRecordContext
     | SymlinkTargetContext
     | DigestContext
+    | DirectoryDataContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
     | SelectorUnmatchedContext
+    | SpecialFileDataContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -474,10 +570,12 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
     }
 )
 
@@ -497,12 +595,13 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The membership of :meth:`DiagnosticPolicy.strict`. Eight codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nine codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -515,7 +614,7 @@ and the reasons are part of the contract rather than an oversight:
 - ``STREAM_REWIND_REDECOMPRESSES`` — reports the caller's access pattern rather than the
   archive, and is most useful as a deliberately targeted tripwire.
 - ``ENCRYPTED_MEMBER_UNVERIFIED`` — fires only when the caller abandons a member stream
-  before EOF (extraction reads every member to EOF and never fires it). In ``strict`` it
+  before EOF (extraction reads every member to EOF and never fires it). In ``STRICT`` it
   would turn a peek at a ZipCrypto or RAR3/4 encrypted member into
   ``DiagnosticRaisedError``. Revisit when member streams report their verification
   state (``dev-docs/IDEAS.md``, "Verification state as data") and retire this code.
@@ -529,6 +628,9 @@ and the reasons are part of the contract rather than an oversight:
 - ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
   archive. A job that passes one fixed list of names to many archives would otherwise
   raise on every archive that lacks one of them.
+- ``MEMBER_SPECIAL_FILE_HAS_DATA`` — a documented writer option (Info-ZIP ``zip -FI``)
+  produces the shape, and the member's bytes are delivered and checked like any file's,
+  so nothing is hidden; ``STRICT`` would refuse an ordinary archive (DR-25).
 """
 
 
@@ -687,81 +789,84 @@ class DiagnosticSummary:
         return DiagnosticSummary(total_count=0, counts={}, retained=(), dropped_count=0)
 
 
-@dataclass(frozen=True)
+def _coerce_policy_codes(
+    value: object, *, call: str, param: str
+) -> frozenset[DiagnosticCode]:
+    """One ``DiagnosticPolicy`` code set, refusing the two shapes that iterate wrongly."""
+    if isinstance(value, Mapping):
+        # A dict iterates as its keys, so the removed overrides={code: disposition}
+        # spelling would pass and drop every disposition: under ignore= a code the
+        # caller wanted raised would be silenced.
+        raise _UsageTypeError(
+            f"{call} takes a set of DiagnosticCode for {param}, not a mapping. Put the "
+            "codes to raise on in raise_on= and the codes to ignore in ignore=."
+        )
+    if isinstance(value, DiagnosticCode):
+        # A StrEnum member is a str, so the shared helper would call it a bare string.
+        raise _UsageTypeError(
+            f"{call} takes a set of DiagnosticCode for {param}, but got the single "
+            f"code DiagnosticCode.{value.name}. Pass a set, e.g. "
+            f"{{DiagnosticCode.{value.name}}}."
+        )
+    return coerce_enum_collection(value, DiagnosticCode, call=call, param=param)
+
+
+@dataclass(frozen=True, init=False)
 class DiagnosticPolicy:
-    """Per-code disposition policy; matching is by code only."""
+    """Which diagnostic codes to ignore and which to raise; every other code is collected.
 
-    default: DiagnosticDisposition = DiagnosticDisposition.COLLECT
-    overrides: Mapping[DiagnosticCode, DiagnosticDisposition] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    Matching is by code only. Both arguments take any iterable of :class:`DiagnosticCode`
+    (or their values as strings), and the fields always hold a ``frozenset``; a code in
+    both is refused. A policy is built with set operations on the code sets, for example
+    ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.X})``.
 
-    def __post_init__(self) -> None:
-        # Converted, not only checked, as ``ArchiveyConfig`` converts its enum fields:
-        # ``resolve`` answers by lookup and the collector tests the answer with ``is``,
-        # so ``default="raise"`` or a code spelled as its name would construct fine and
-        # then never raise. After this the fields always hold members.
+    Two ready-made instances:
+
+    - ``DiagnosticPolicy.STRICT`` is ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)``:
+      RAISE on the codes about the archive's own bytes, COLLECT on everything else. It is
+      the recommended strict mode because it is version-stable in the way that matters:
+      new codes MAY be added in a minor release, and the set's membership is versioned
+      alongside the taxonomy, so each addition is a deliberate decision.
+    - ``DiagnosticPolicy.PEDANTIC`` is ``DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))``:
+      RAISE on every code, including the argument-hygiene and access-pattern ones.
+      ``frozenset(DiagnosticCode)`` is every code of the installed version, so it raises
+      on codes added after the caller wrote it.
+    """
+
+    STRICT: ClassVar[DiagnosticPolicy]
+    PEDANTIC: ClassVar[DiagnosticPolicy]
+
+    ignore: frozenset[DiagnosticCode]
+    raise_on: frozenset[DiagnosticCode]
+
+    # A hand-written __init__ (the decorator has init=False) so the parameters can
+    # describe what a caller passes while the fields describe what every reader gets
+    # back: always a frozenset of members, so set operations work on them.
+    def __init__(
+        self,
+        *,
+        ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
+        raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
+    ) -> None:
+        # Converted, not only checked: the collector and the reader answer by membership
+        # in these sets, so a code spelled as its name would be stored and never match.
         call = "DiagnosticPolicy()"
-        object.__setattr__(
-            self,
-            "default",
-            coerce_enum(
-                self.default, DiagnosticDisposition, call=call, param="default="
-            ),
-        )
-        overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
-        for key, value in _freeze_mapping(self.overrides).items():
-            code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
-            disposition = coerce_enum(
-                value, DiagnosticDisposition, call=call, param="overrides= value"
+        ignore_parsed = _coerce_policy_codes(ignore, call=call, param="ignore=")
+        raise_on_parsed = _coerce_policy_codes(raise_on, call=call, param="raise_on=")
+        both = ignore_parsed & raise_on_parsed
+        if both:
+            # Keyword arguments have no order, so neither can win: keeping either would
+            # silently drop what the other asked for.
+            names = ", ".join(sorted(code.value for code in both))
+            raise _UsageValueError(
+                f"{call} got codes in both ignore= and raise_on=: {names}."
             )
-            if overrides.setdefault(code, disposition) is not disposition:
-                # Two spellings of one code (its name and the member) that disagree:
-                # keeping either would silently drop what the other asked for.
-                raise ArchiveyUsageError(
-                    f"{call} got two dispositions for overrides= key "
-                    f"{code.value!r}: {overrides[code].value!r} and "
-                    f"{disposition.value!r}."
-                )
-        object.__setattr__(self, "overrides", MappingProxyType(overrides))
+        object.__setattr__(self, "ignore", ignore_parsed)
+        object.__setattr__(self, "raise_on", raise_on_parsed)
 
-    def __hash__(self) -> int:
-        # The generated frozen-dataclass hash would hash ``overrides``, and a
-        # ``MappingProxyType`` is unhashable, so ``hash(ArchiveyConfig())`` raised.
-        # Hash the frozen mapping's items instead; equality is unchanged.
-        return hash((self.default, frozenset(self.overrides.items())))
 
-    def resolve(self, code: DiagnosticCode) -> DiagnosticDisposition:
-        return self.overrides.get(code, self.default)
-
-    @staticmethod
-    def strict() -> DiagnosticPolicy:
-        """RAISE on :data:`ARCHIVE_INTEGRITY_CODES`, COLLECT on everything else.
-
-        The recommended strict mode. Unlike a bare ``default=RAISE`` policy it is
-        version-stable in the way that matters: new codes MAY be added in a minor
-        release, and a ``default=RAISE`` caller starts raising on events their working
-        program never produced, whereas this set's membership is versioned alongside the
-        taxonomy and each addition is a deliberate decision.
-
-        Adds no resolution axis — the value is an ordinary frozen policy with per-code
-        overrides, and equals the same policy built by hand.
-        """
-        return DiagnosticPolicy(
-            default=DiagnosticDisposition.COLLECT,
-            overrides=dict.fromkeys(
-                ARCHIVE_INTEGRITY_CODES, DiagnosticDisposition.RAISE
-            ),
-        )
-
-    @staticmethod
-    def pedantic() -> DiagnosticPolicy:
-        """RAISE on every code, including the argument-hygiene and access-pattern ones.
-
-        See the taxonomy-growth note on :meth:`strict`: this policy raises on codes added
-        after the caller wrote it, by construction.
-        """
-        return DiagnosticPolicy(default=DiagnosticDisposition.RAISE)
+DiagnosticPolicy.STRICT = DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)
+DiagnosticPolicy.PEDANTIC = DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))
 
 
 @dataclass(frozen=True)
@@ -855,15 +960,17 @@ __all__ = [
     "ArchiveEofContext",
     "Diagnostic",
     "DiagnosticCode",
+    "DiagnosticCodeStr",
     "DiagnosticContext",
-    "DiagnosticDisposition",
     "DiagnosticPolicy",
     "DiagnosticSummary",
     "DigestContext",
+    "DirectoryDataContext",
     "EmptyArchiveContext",
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",
     "MemberTimestampContext",
@@ -873,6 +980,7 @@ __all__ = [
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",
+    "SpecialFileDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",

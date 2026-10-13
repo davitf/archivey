@@ -31,7 +31,7 @@ from archivey import (
 )
 from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 from archivey.internal.base_reader import ReadBackend
-from archivey.internal.registry import BackendRegistry
+from archivey.internal.registry import BackendRegistry, get_registry
 from archivey.internal.streams import codecs as codecs_module
 from archivey.types import ContainerFormat, MagicSignature
 from tests.sample_archives import (
@@ -471,6 +471,73 @@ def test_required_source_survives_a_missing_dependency(
     availability = format_availability(ArchiveFormat.ISO)
     assert availability.support is FormatSupport.NONE
     assert availability.required_source is StreamCapability.SEEKABLE
+
+
+# Formats whose backend needs seek in either access mode, read from the classes rather
+# than listed, so a format that gains such a backend (or an optional package) is covered.
+_SEEK_ONLY_FORMATS = [
+    fmt
+    for fmt in list_known_formats()
+    if get_registry().needs_seekable_source(fmt)
+    and fmt.container is not ContainerFormat.DIRECTORY
+]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_a_piped_iso_without_pycdlib_is_refused_as_a_pipe(
+    streaming: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pipe cannot be read even with ``pycdlib``, so the pipe is what gets named.
+
+    Asking for ``pycdlib`` first sends the caller to install a package and only then
+    tells them the source could never have worked.
+    """
+    monkeypatch.setattr(
+        "archivey.internal.registry._optional", lambda name: None, raising=True
+    )
+    # Just enough of an ISO 9660 image for detection: the primary volume descriptor's
+    # "CD001" at sector 16.
+    image = bytes(0x8001) + b"CD001" + bytes(0x1000)
+    with pytest.raises(StreamNotSeekableError, match="either access mode") as ei:
+        open_archive(_NonSeekable(image), streaming=streaming)
+    assert ei.value.source_format == ArchiveFormat.ISO
+
+
+@pytest.mark.parametrize("fmt", _SEEK_ONLY_FORMATS, ids=lambda f: f.display_name)
+def test_the_read_once_refusal_does_not_depend_on_optional_packages(
+    fmt: ArchiveFormat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every seek-only format refuses a pipe the same way with no optional package."""
+    monkeypatch.setattr(
+        "archivey.internal.registry._optional", lambda name: None, raising=True
+    )
+    with pytest.raises(StreamNotSeekableError, match="either access mode"):
+        open_archive(_NonSeekable(bytes(64)), format=fmt, streaming=True)
+
+
+def test_the_streaming_hint_still_follows_the_install_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A format that reads from a pipe needs its package first; the mode comes after.
+
+    Only the capability refusal moved ahead of the availability check. For ``.tar.lz4``
+    without ``lz4`` the pipe is not the obstacle, so the install hint is the answer.
+    """
+    monkeypatch.setattr(
+        "archivey.internal.registry._optional", lambda name: None, raising=True
+    )
+    monkeypatch.setattr(
+        "archivey.internal.registry.is_codec_available", lambda codec: False
+    )
+    with pytest.raises(PackageNotInstalledError):
+        open_archive(
+            _NonSeekable(bytes(64)), format=ArchiveFormat.TAR_LZ4, streaming=False
+        )
+
+
+def test_needs_seekable_source_is_false_without_a_backend() -> None:
+    """With no backend there is nothing to refuse with; ``reader_for_format`` says so."""
+    assert BackendRegistry().needs_seekable_source(ArchiveFormat.ZIP) is False
 
 
 def test_unregistered_format_defaults_to_the_conservative_answer() -> None:

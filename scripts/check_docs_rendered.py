@@ -50,11 +50,11 @@ ROLE_MARKER = 'class="sphinx-role"'
 # reference is fine unlinked. Removing an entry is required once the target gains an
 # anchor or its last role goes away.
 UNRESOLVED_OK = {
-    # Not public API, so deliberately not on the API page: outside `archivey.__all__`
-    # (the two AUTO thresholds are importable but "advanced; not in __all__"), or
-    # reachable only through an internal module path.
-    "archivey.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
-    "archivey.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    # Not on the API page: outside `archivey.__all__` (the two AUTO thresholds live in
+    # `archivey.config` and are not re-exported at the root), or reachable only through
+    # an internal module path.
+    "archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
+    "archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
     "archivey.exceptions.raw_message_of",
     # Members the page shows in a table or not at all, so they get no heading anchor.
     "archivey.ArchiveFormat.DIRECTORY",

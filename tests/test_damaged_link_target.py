@@ -163,7 +163,7 @@ def test_damaged_link_target_fails_only_that_link_at_extraction(
 
 
 def test_damaged_link_target_under_strict_policy_refuses_the_listing() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(_damaged_zip_symlink()), config=config) as ar:
         with pytest.raises(DiagnosticRaisedError):
             ar.members()
@@ -202,7 +202,7 @@ def test_damaged_rar4_link_target_fails_only_that_link_at_extraction(
 
 
 def test_damaged_rar4_link_target_under_strict_policy_refuses_the_listing() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(_damaged_rar4_symlink()), config=config) as ar:
         with pytest.raises(DiagnosticRaisedError):
             ar.members()

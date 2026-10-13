@@ -1,6 +1,6 @@
 # archive-origin-reporting — say where the archive actually started
 
-**Status:** Ready to implement once `prefixed-archive-detection` lands (it defines the enum this reuses). Blocks nothing. Additive to the public data model. Effort: small–medium.
+**Status:** Retired 2026-10-10, not implemented: the `PrefixKind` enum it reused was struck. See the note at the top of `proposal.md` for what is still open.
 
 **Why it matters:** When an archive sits behind an executable stub, archivey opens it correctly and then forgets where it began. The opened archive's metadata says nothing about it, so archivey's own command-line tool detects the format a second time purely to print the offset. Worse, the two ways of opening know different amounts: pass the format explicitly and the parser searches for the payload, finds it, and discards the answer — so the caller who already knew the format ends up with less information than the one who did not. The same file, two doors, two different stories.
 

@@ -2,8 +2,8 @@
 
 ``open_archive`` and ``open_stream`` build one of these from whatever the caller passed —
 a path, a stream, or a volume list — and hand it to detection and then to the backend.
-It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdlib`` and
-``zipfile`` get it directly), and it carries every guarantee the raw source must give:
+It **is** the stream they read (third-party parsers such as ``pycdlib`` and ``zipfile``
+get it directly), and it carries every guarantee the raw source must give:
 
 - **Full-count.** ``read(n)`` returns ``n`` bytes unless the source is exhausted. A raw
   ``read(n)`` may legally return short, and header parsers — archivey's and the stdlib's —
@@ -23,7 +23,7 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
   detached rather than closed, so the caller's raw stream survives it.
 - **Bounded reads.** No ``read(n)`` asks the source for more than it can still supply:
   clamped when the remaining length is a fact, served in steps when it is not
-  (:func:`read_within_reach`). pycdlib and ``tarfile`` call ``read(n)`` with a size read
+  (:func:`read_within_reach`). pycdlib calls ``read(n)`` with a size read
   out of the archive and will never call an archivey method, so this is the ordinary
   ``read``, not a separate one. The bound runs over the full-count strategy, never over
   the raw inner: ``read_within_reach`` takes one ``read`` as final.
@@ -66,6 +66,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
+from archivey.internal.arg_checks import raise_if_text_stream
+
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
 # without a lazy import.
@@ -76,7 +78,6 @@ from archivey.internal.streams.streamtools import (
     SlicingStream,
     ensure_bufferedio,
     is_seekable,
-    raise_if_text_stream,
     read_exact,
     read_within_reach,
     source_byte_size,

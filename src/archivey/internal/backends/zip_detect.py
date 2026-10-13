@@ -45,8 +45,8 @@ def is_zip_split_segment_name(archive_name: str | None) -> bool:
     return _ZIP_SPLIT_SEGMENT_RE.search(PurePath(archive_name).name) is not None
 
 
-_LOCAL_HEADER_MAGIC = b"PK\x03\x04"
-_LOCAL_HEADER_SIZE = 30
+LOCAL_HEADER_SIGNATURE = b"PK\x03\x04"
+LOCAL_HEADER_SIZE = 30
 
 # APPNOTE 6.3.10 tops out at version 6.3 (63). 1.0 (10) is the floor any writer
 # produces; 0 is the zero-padded-stub decoy. 99 is a slack ceiling so a slightly
@@ -101,13 +101,13 @@ def validate_zip_local_header(
     :attr:`HitOutcome.NOT_THIS_FORMAT` — identity never held. This check
     does not return :attr:`HitOutcome.DAMAGED`.
 
-    When ``remaining`` is known, name/extra existence is a length compare:
-    a short ``peek_more`` can only mean the candidate view was clamped by
-    ``scan_limit``, which is not evidence against ZIP. When ``remaining`` is
-    unknown, a short peek is still ``NOT_THIS_FORMAT``.
+    When ``remaining`` is known, name/extra existence is a length compare,
+    so the check does not read up to 128 KiB of name and extra. When
+    ``remaining`` is unknown, the check peeks them, and a short peek (the
+    source ended, or the budget clamped the view) is ``NOT_THIS_FORMAT``.
     """
-    header = peek_more(_LOCAL_HEADER_SIZE)
-    if len(header) < _LOCAL_HEADER_SIZE or header[:4] != _LOCAL_HEADER_MAGIC:
+    header = peek_more(LOCAL_HEADER_SIZE)
+    if len(header) < LOCAL_HEADER_SIZE or header[:4] != LOCAL_HEADER_SIGNATURE:
         return HitOutcome.NOT_THIS_FORMAT
     (
         version_needed,
@@ -131,7 +131,7 @@ def validate_zip_local_header(
     # rejects ``PK\\x03\\x04`` plus zero-fill — the usual ELF/PE stub padding.
     if name_len == 0:
         return HitOutcome.NOT_THIS_FORMAT
-    needed = _LOCAL_HEADER_SIZE + name_len + extra_len
+    needed = LOCAL_HEADER_SIZE + name_len + extra_len
     if remaining is not None:
         if needed > remaining:
             return HitOutcome.NOT_THIS_FORMAT

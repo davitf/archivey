@@ -12,7 +12,6 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     ArchiveyError,
-    CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -41,9 +40,14 @@ from archivey.internal.streams.codecs.xz_decoder import (
     lzma_error_to_archivey,
     open_xz_head,
 )
-from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.decompressor_stream import (
+    BaseDecoder,
+    DecodeOut,
+    Decoder,
+    DecompressorStream,
+    SeekPoint,
+)
 from archivey.internal.streams.streamtools import (
-    DelegatingStream,
     ReadOnlyIOStream,
     is_seekable,
     read_exact,
@@ -506,82 +510,302 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                 owns_inner=False,
                 probe_source_size=False,
             )
-        # One stream, as 7-Zip reads it: the data ends at the end marker, and any
-        # byte of the span after it (a zero too) is "Data Error" there and
-        # CorruptionError here. ``LZMAFile`` would instead have started a second raw
-        # stream on those bytes and delivered it as content.
-        decoded: BinaryIO = FramedDecompressorStream(
-            source,
-            lambda: lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters),
-            codec_name="lzma",
-            magic=_refuse_data_after_lzma_end,
-            zero_padding=False,
-            collector=config.collector,
-        )
+        # One stream, as 7-Zip reads it: the data ends where the declared size or
+        # the end marker says, and any byte of the span after that (a zero too,
+        # with one exception for LZMA1, see _LzmaToSizeDecoder) is "Data Error"
+        # there and DataAfterEndError here. ``LZMAFile`` would instead have started
+        # a second raw stream on those bytes and delivered it as content. Raw LZMA
+        # is container-only, so the stream always refuses them (``refuse_input_after_end``).
         if params.unpack_size is None:
-            return decoded
-        # A raw LZMA1 stream written without an end-of-stream marker (7-Zip's
-        # default in 7z, ZIP method 14 with general-purpose bit 1 clear) ends where
-        # its known output size says. liblzma cannot tell that from the input, so
-        # reading on would ask for input past the end and fail as truncated; stop at
-        # the size instead, and look for an end marker there (_LzmaEndAtSize).
-        capped = SlicingStream(decoded, length=params.unpack_size, owns_inner=True)
-        return _LzmaEndAtSize(capped, decoded=decoded, size=params.unpack_size)
+            return FramedDecompressorStream(
+                source,
+                lambda: lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters),
+                codec_name="lzma",
+                magic=_no_second_lzma_stream,
+                zero_padding=False,
+                collector=config.collector,
+                refuse_input_after_end=True,
+            )
+        size = params.unpack_size
+        lzma2 = any(spec.get("id") == lzma.FILTER_LZMA2 for spec in filters)
+        return DecompressorStream(
+            source,
+            make_decoder=lambda _p, _i: _LzmaToSizeDecoder(filters, size, lzma2=lzma2),
+            collector=config.collector,
+            codec_name="lzma",
+            refuse_input_after_end=True,
+        )
 
 
-class LzmaDataAfterEndError(CorruptionError):
-    """Input in a raw LZMA coder's span after its end marker (7-Zip: "Data Error").
+def _no_second_lzma_stream(data: bytes) -> bool:
+    """A raw LZMA coder holds one stream: what follows its end starts no other."""
+    del data
+    return False
 
-    A class of its own so a probe past a coder's declared size, which discards a
-    decoder error there as not being surplus output, can still let this one through.
+
+# Input held back from liblzma until the source ends (see _LzmaToSizeDecoder): the
+# byte that may complete the output, and one zero byte 7-Zip's encoder may write after
+# it. That one byte is the whole tolerance; a stream with more input after its output
+# goes through _probe, where only an end marker may fill it.
+_LZMA_HELD_BACK = 2
+# A coder that declares no output holds at most an empty stream: five range-coder
+# bytes, or those and an end marker (10 bytes from liblzma). More than this is input
+# it does not use. The bound leaves a few bytes of slack over the measured length, so
+# that a producer that flushes a little more is not refused for it.
+_LZMA_EMPTY_STREAM_MAX = 16
+# Zeros fed after a stream's input to read its range coder's end, and the most output
+# asked of them (_LzmaToSizeDecoder._check_range_coder_end).
+_LZMA_ZEROS = b"\x00" * 16
+_LZMA_ZEROS_OUTPUT = 64
+
+# _LzmaToSizeDecoder's states: decoding; output at the declared size, looking for an
+# end marker in the input left; an end marker before that size; settled.
+_RUN, _AT_SIZE, _ENDED_SHORT, _DONE = range(4)
+
+
+class _LzmaToSizeDecoder(BaseDecoder):
+    """Raw LZMA1/LZMA2 decoded to its declared output size, with the input checked.
+
+    A raw LZMA1 stream may be written without an end marker (7-Zip's default in 7z,
+    ZIP method 14 with general-purpose bit 1 clear): it ends where its known output
+    size says, and liblzma cannot tell that from the input. So output stops at
+    ``size``, and the input must end there too, as 7-Zip checks: right after the
+    byte that completes the output, or one zero byte later (7-Zip's encoder flushes
+    its range coder one byte past where liblzma stops reading, about once in 70
+    streams, and that byte is zero), with the range coder at its end
+    (:meth:`_check_range_coder_end`); or after an end marker. Anything else is input
+    the member declares and does not use, :class:`DataAfterEndError` through the
+    stream's ``refuse_input_after_end``.
+
+    How much input liblzma used is not observable while it decodes in bulk, since
+    its ``needs_input`` is false whenever an output limit is reached. So the last
+    ``_LZMA_HELD_BACK`` bytes fed are held back until the source ends, then given to
+    it one at a time: the byte on which the output reaches ``size`` is where the
+    stream ends. A stream that reaches ``size`` before them has at least two bytes of
+    input left, which only an end marker may fill; the rest is decoded one output
+    byte at a time to find it (``_AT_SIZE``).
+
+    An end marker before ``size`` leaves the output short (``TruncatedError``), and
+    input after that marker is still refused. LZMA2 always ends with its end byte,
+    so a stream that reaches ``size`` without one is truncated too. No shipped reader
+    builds this decoder for LZMA2: 7z gives an LZMA2 chain no ``unpack_size`` (its end
+    byte ends it, and the pipeline checks the size it decoded), and ZIP has no LZMA2
+    method. The ``lzma2`` branches serve a direct
+    ``open_codec_stream(Codec.LZMA2, ..., params=CodecParams(unpack_size=...))``.
     """
 
-
-def _refuse_data_after_lzma_end(data: bytes) -> bool:
-    raise LzmaDataAfterEndError(
-        f"LZMA stream has {len(data)}+ bytes of input after its end marker"
-    )
-
-
-class _LzmaEndAtSize(DelegatingStream):
-    """A raw LZMA stream capped at its declared size, checked for an end marker there.
-
-    Output stops at ``size``. When it gets there, one more byte of output is asked
-    of the decoder, once. A stream with an end marker right after its data then
-    reaches it without output, and input in the span after the marker raises
-    :class:`LzmaDataAfterEndError`, as with no size. Anything else is a stream
-    without an end marker, which this cannot tell from data past the size: a
-    decoder error, a truncation (the usual case: the input ends with the data) or a
-    decoded byte are all dropped, as before the check. That keeps 7-Zip's
-    marker-less LZMA1 reading clean; probing it as surplus would fail valid
-    archives.
-    """
-
-    readinto_passthrough = False
-
-    def __init__(self, capped: BinaryIO, *, decoded: BinaryIO, size: int) -> None:
-        # ``capped`` is ``decoded`` sliced at ``size``; this owns it (the default),
-        # and it owns ``decoded``.
-        super().__init__(capped)
-        self._decoded = decoded
+    def __init__(self, filters: list[dict], size: int, *, lzma2: bool) -> None:
+        self._filters = filters
         self._size = size
-        self._checked = False
+        self._lzma2 = lzma2
+        self._decomp = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters)
+        self._produced = 0
+        # Input not yet given to liblzma: the bytes held back, and input kept while
+        # a zero output limit allowed no decoding.
+        self._held = b""
+        self._pending = b""
+        self._fed = False
+        # A coder that declares no output: its input, collected (_finish_empty).
+        self._empty: bytes | None = b"" if size == 0 else None
+        self._state = _AT_SIZE if size == 0 else _RUN
 
-    def read(self, n: int = -1, /) -> bytes:
-        data = self._inner.read(n)
-        if not self._checked and self._inner.tell() >= self._size:
-            self._checked = True
-            try:
-                self._decoded.read(1)
-            except LzmaDataAfterEndError:
-                raise
-            except (ArchiveyError, lzma.LZMAError, EOFError):
-                pass
-        return data
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
+        del point, inner
+        return _LzmaToSizeDecoder(self._filters, self._size, lzma2=self._lzma2)
 
-    def nearest_resume_offset(self, target: int) -> int | None:
-        # The slice starts at the decoder's 0, so the offsets are the codec's.
-        return ask_resume_offset(self._inner, target)
+    def _surplus(self) -> None:
+        """The input holds bytes after the stream's end: the stream refuses them."""
+        self._input_after_end = True
+        self._state = _DONE
+
+    def _decode(self, data: bytes, limit: int) -> bytes:
+        out = self._decomp.decompress(data, limit)
+        self._produced += len(out)
+        if self._decomp.eof:
+            # An end marker: at the size, or before it.
+            self._state = _DONE if self._produced == self._size else _ENDED_SHORT
+            if self._decomp.unused_data:
+                self._surplus()
+        elif self._produced == self._size:
+            self._state = _AT_SIZE
+        return out
+
+    def _check_range_coder_end(self, rest: bytes) -> None:
+        """Settle a stream whose output reached its size on its last input bytes.
+
+        ``rest`` is the input after the byte that completed the output: for LZMA1,
+        nothing or one zero byte. A stream without an end marker ends where its
+        range coder's code is zero, which is what 7-Zip checks there. liblzma does
+        not expose the code, so it is read from what liblzma decodes when the input
+        goes on with zeros: from a zero code every bit decodes as 0, so the output is
+        zero bytes and nothing else, while any other code decodes a one bit within a
+        few bytes (a non-zero byte, an error, or an end marker). An end marker is the
+        stream's end too, when it lies in the real input, before the zeros.
+
+        The simpler test, asking liblzma for one more byte of the real input, does
+        not work: 7-Zip's own encoded 7z headers decode one more byte there. What
+        this cannot see is a declared size that cuts off only zero bytes, measured
+        on 7-Zip 23.01's ZIP LZMA: their encoding leaves the code at zero, and the
+        bytes hidden that way are zeros.
+        """
+        try:
+            more = self._decomp.decompress(rest + _LZMA_ZEROS, _LZMA_ZEROS_OUTPUT)
+        except lzma.LZMAError:
+            self._surplus()
+            return
+        if self._decomp.eof:
+            ok = not more and len(self._decomp.unused_data) >= len(_LZMA_ZEROS)
+        elif self._lzma2:
+            self._pending_error = TruncatedError(
+                "LZMA2 stream is truncated: no end marker after its declared size"
+            )
+            self._state = _DONE
+            return
+        else:
+            ok = not more.strip(b"\x00")
+        if ok:
+            self._state = _DONE
+        else:
+            self._surplus()
+
+    def _probe(self, data: bytes) -> None:
+        """Look for an end marker in ``data``, input after the output reached size.
+
+        A decoded byte is output the coder does not declare: surplus. This has no
+        range-coder test: from a zero code liblzma decodes a zero byte, so zero bytes
+        here are surplus too. That is deliberate. 7-Zip 23.01 refuses two zero bytes
+        after a stream without an end marker (and one too, unless its encoder wrote
+        it), so the only zero byte accepted is the one ``_check_range_coder_end``
+        sees, right after the byte that completes the output.
+        """
+        if self._empty is not None:
+            self._empty += data
+            if len(self._empty) > _LZMA_EMPTY_STREAM_MAX:
+                self._surplus()
+            return
+        if not data and self._decomp.needs_input:
+            return
+        try:
+            out = self._decomp.decompress(data, 1)
+        except lzma.LZMAError:
+            self._surplus()
+            return
+        if out:
+            self._surplus()
+        elif self._decomp.eof:
+            self._state = _DONE
+            if self._decomp.unused_data:
+                self._surplus()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        self._fed = self._fed or bool(chunk)
+        if self._state == _AT_SIZE:
+            self._probe(chunk)
+            return DecodeOut(b"")
+        if self._state != _RUN:
+            if chunk:
+                self._surplus()
+            return DecodeOut(b"")
+        if chunk:
+            held = self._held + chunk
+            self._held = held[-_LZMA_HELD_BACK:]
+            data = self._pending + held[:-_LZMA_HELD_BACK]
+        else:
+            data = self._pending
+        self._pending = b""
+        limit = self._size - self._produced
+        if max_length >= 0:
+            limit = min(limit, max_length)
+        if limit == 0:
+            self._pending = data
+            return DecodeOut(b"")
+        out = self._decode(data, limit)
+        if self._state == _AT_SIZE:
+            # The size is reached before the held-back bytes: they and anything
+            # after them may only be an end marker.
+            held, self._held = self._held, b""
+            self._probe(held)
+        elif self._decomp.eof and self._held:
+            # An end marker before the held-back bytes: they are after it.
+            self._surplus()
+        return DecodeOut(out)
+
+    def flush(self) -> DecodeOut:
+        out = bytearray()
+        if self._state == _RUN:
+            if self._pending or not self._decomp.needs_input:
+                out += self._decode(self._pending, self._size - self._produced)
+                self._pending = b""
+            held, self._held = self._held, b""
+            if self._state == _AT_SIZE:
+                self._probe(held)
+            elif self._decomp.eof:
+                if held:
+                    self._surplus()
+            else:
+                out += self._feed_one_at_a_time(held)
+        if self._state == _AT_SIZE:
+            if self._empty is not None:
+                self._finish_empty()
+            elif self._lzma2:
+                self._pending_error = TruncatedError(
+                    "LZMA2 stream is truncated: no end marker after its declared size"
+                )
+                self._state = _DONE
+            else:
+                # Input after the output's end that holds no end marker.
+                self._surplus()
+        elif self._state == _ENDED_SHORT:
+            self._pending_error = TruncatedError(
+                f"LZMA stream ends after {self._produced} of its declared "
+                f"{self._size} bytes"
+            )
+            self._state = _DONE
+        elif self._state == _RUN:
+            self._pending_error = TruncatedError(
+                "File is truncated" if self._fed else "File is empty"
+            )
+            self._state = _DONE
+        return DecodeOut(bytes(out))
+
+    def _feed_one_at_a_time(self, held: bytes) -> bytes:
+        """Decode the held-back bytes singly, to see which one ends the output."""
+        out = bytearray()
+        for i in range(len(held)):
+            if self._state != _RUN:
+                break
+            out += self._decode(held[i : i + 1], self._size - self._produced)
+            if self._state == _RUN:
+                continue
+            rest = held[i + 1 :]
+            if self._state == _AT_SIZE:
+                if not self._lzma2 and rest in (b"", b"\x00"):
+                    self._check_range_coder_end(rest)
+                else:
+                    self._probe(rest)
+            elif rest:
+                self._surplus()
+        return bytes(out)
+
+    def _finish_empty(self) -> None:
+        """Settle a coder that declares no output, from its whole input."""
+        data = self._empty or b""
+        self._empty = None
+        if not data:
+            self._pending_error = TruncatedError("File is empty")
+            self._state = _DONE
+            return
+        self._check_range_coder_end(data)
+
+    @property
+    def finished(self) -> bool:
+        return self._state == _DONE and not self._input_after_end
+
+    @property
+    def needs_input(self) -> bool:
+        if self._state != _RUN:
+            return True
+        return not self._pending and self._decomp.needs_input
 
 
 class LzmaCodec(_RawLzmaCodec):

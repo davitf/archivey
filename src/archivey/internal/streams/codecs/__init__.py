@@ -71,7 +71,6 @@ from archivey.internal.streams.codecs.lzma_codec import (
     Lzma2Codec,
     LzmaAloneCodec,
     LzmaCodec,
-    LzmaDataAfterEndError,
     XzCodec,
     decode_lzma_filter_properties,
 )
@@ -118,7 +117,6 @@ __all__ = [
     "Lzma2Codec",
     "LzmaAloneCodec",
     "LzmaCodec",
-    "LzmaDataAfterEndError",
     "MetadataContext",
     "PpmdCodec",
     "ProbeChargeDecode",
