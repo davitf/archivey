@@ -79,7 +79,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 you hold ([Streaming for one pass](opening-and-listing.md#streaming-for-one-pass)).
 The fields that change in practice:
 
-| Format | During a `streaming=True` pass, until it ends | A symlink whose target is unread (`read_link_targets=False`) |
+| Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
 | ZIP | `is_current`, `link_target_member` | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
@@ -93,10 +93,12 @@ The fields that change in practice:
 they are unread symlinks. Members read `False` until a call like those, or the end of a
 pass, has resolved the listing's links. A `streaming=True` pass yields every member
 before that, in every format, including the two whose fields do not change in
-practice. A random-access pass, or a `members_report_if_available()` peek, may or may
-not come before it depending on how the format is listed, so read the flag rather than
-assume. A pass past `ListingLimits` stops stamping members from that point: a member
-yielded after it reads `True` with `is_current` as yielded.
+practice. A `members_report_if_available()` peek resolves no links, so its members
+read `False` until a later call or pass does. A random-access pass with no listing call
+before it may or may not yield before that point, depending on how the format is
+listed, so read the flag rather than assume. A pass past `ListingLimits` stops stamping
+members from that point: a member yielded after it reads `True` with `is_current` as
+yielded.
 
 ## ZIP
 

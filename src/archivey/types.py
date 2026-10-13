@@ -1002,10 +1002,11 @@ class ArchiveMember:
           ``stream_members()`` pass or of iterating the reader. Until then a later
           member with the same name can still make this one ``is_current=False``, and
           links get ``link_target_member``. A ``streaming=True`` pass yields every
-          member before that point, in every format. A random-access pass yields
-          from a complete listing in some formats and walks as it goes in others, so
-          read the flag rather than assume either; a
-          ``members_report_if_available()`` peek can read ``False`` too. A pass past
+          member before that point, in every format. A
+          ``members_report_if_available()`` peek resolves no links, so its members
+          read ``False`` until a later call or pass does. A random-access pass with no
+          listing call first yields from a complete listing in some formats and walks
+          as it goes in others, so read the flag rather than assume. A pass past
           ``ListingLimits`` stops keeping members: it stamps ``is_current`` over the
           ones it kept, and stamps nothing from that point on, so a member yielded
           later reads ``True`` with ``is_current`` as yielded and cannot supersede an

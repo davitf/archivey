@@ -305,3 +305,21 @@ def test_a_random_access_zip_pass_yields_settled_members(tmp_path: Path) -> None
             True,
             True,
         ]
+
+
+def test_a_tar_pass_after_a_listing_yields_settled_members(tmp_path: Path) -> None:
+    path = tmp_path / "dup.tar"
+    path.write_bytes(_tar(_DUPLICATES))
+    with open_archive(path) as reader:
+        assert [m.member_state_final for m, _ in reader.stream_members()] == [
+            False,
+            False,
+            False,
+        ]
+    with open_archive(path) as reader:
+        reader.members()
+        assert [m.member_state_final for m, _ in reader.stream_members()] == [
+            True,
+            True,
+            True,
+        ]
