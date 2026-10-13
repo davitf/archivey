@@ -390,6 +390,41 @@ class BombTracker:
         self._entry_count -= 1
         self._refunded_bytes += member_bytes
 
+    def check_recorded_size(self) -> None:
+        """Refuse the current member before its data is read, when its recorded size
+        is over the per-member ratio.
+
+        Called once the member is about to be decoded, after every check that could
+        still skip it, so a member that would not be decoded is never refused here.
+        A member's output never passes its recorded size: the member stream refuses
+        a byte past it (``CorruptionError``). So a member whose recorded size is over
+        the per-member ratio is one ``count()`` would refuse after decoding past the
+        activation threshold, and it is refused now instead, with the same skippable
+        error. The one difference is a member whose data stops short of its recorded
+        size: ``count()`` might never refuse it, and the read would fail as damaged
+        instead. Both fail that member alone.
+
+        The archive-wide ratios are left to ``count()``. Refusing early on the archive's
+        recorded sizes would stop the whole run on a size nothing has verified, losing
+        the intact members after a damaged one; and ``count()`` already stops at the
+        chunk that crosses the archive-wide limit, so an early check would save little.
+        ``count()`` still runs on every chunk.
+        """
+        member = self._member
+        if self._max_ratio is None or member is None:
+            return
+        size = member.size
+        cs = member.compressed_size
+        if size is None or not cs or cs <= 0:
+            return
+        if size > max(self._ratio_floor, self._max_ratio * cs):
+            raise ResourceLimitError(
+                f"Decompression ratio {size / cs:.0f}:1 exceeds limit "
+                f"max_ratio={self._max_ratio:.0f}:1 (from recorded sizes: "
+                f"{size} bytes from {cs} compressed)",
+                member_name=member.name,
+            )
+
     def count(self, chunk_bytes: int) -> None:
         """Count a chunk that is about to be written; raise instead if it may not be."""
         self._check_cumulative_bytes(chunk_bytes)
@@ -3231,6 +3266,10 @@ class ExtractionCoordinator:
         ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
         final mode. STRICT and STANDARD give a mode-less member their own default instead
         (see ``_effective_mode``), so this arm is TRUSTED's alone."""
+        # Every check that could still skip the member has passed, so a member whose
+        # recorded size is already over the ratio is refused before any temp file
+        # exists.
+        self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
             tmp = self._temp_sibling(dest_path.parent)
             fd = _open_new_file(tmp, 0o666)
