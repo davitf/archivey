@@ -83,8 +83,8 @@ from archivey.internal.measurement import (
     measurement_enabled,
 )
 from archivey.internal.naming import (
-    emit_link_target_bidi_control,
-    emit_member_name_bidi_control,
+    emit_link_target_controls,
+    emit_member_name_controls,
     link_target_name_keys,
     resolve_link_target_name,
 )
@@ -1735,7 +1735,7 @@ class BaseArchiveReader(ArchiveReader):
         member._member_id = idx
         member._archive_id = self._archive_id
         if idx >= self._walk_presented:
-            emit_member_name_bidi_control(
+            emit_member_name_controls(
                 self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
@@ -1743,7 +1743,7 @@ class BaseArchiveReader(ArchiveReader):
             # A target the header carries is known now. A target stored as member data
             # is checked when it is read (`_resolve_link_target`), so each member is
             # checked once either way.
-            emit_link_target_bidi_control(
+            emit_link_target_controls(
                 self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
@@ -1801,7 +1801,7 @@ class BaseArchiveReader(ArchiveReader):
             # member again and reports it again.
             member.link_target = None
             self._emit_empty_link_target(member)
-        emit_link_target_bidi_control(
+        emit_link_target_controls(
             self._diagnostics_collector,
             member=member,
             archive_name=self._archive_name,
