@@ -12,7 +12,6 @@ import csv
 import importlib.util
 import json
 import logging
-import lzma
 import os
 import subprocess
 import sys
@@ -22,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import archivey
+from tests.streams_util import make_lzip_member
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "scan_archives.py"
@@ -120,17 +120,15 @@ def test_detection_diagnostics_survive_a_failed_open(tmp_path: Path) -> None:
 
 
 def test_detection_probes_do_not_count_as_decoder_memory(tmp_path: Path) -> None:
-    # Detection opens the LZMA Alone codec on every file it cannot place by magic, and
-    # the codec checks bytes 1-4 as a dictionary size. A git loose object (bare zlib)
-    # read that way declared 3.4 GB, and a scan of a home directory flagged every
-    # git object ``over:max_decoder_memory``. The probes patch library internals for
-    # the life of the process, so the script runs in its own interpreter.
+    # Detection opens the LZMA Alone codec on every file it cannot place by magic. When
+    # that codec checked bytes 1-4 as a dictionary size itself, a git loose object
+    # (bare zlib) read that way declared 3.4 GB, and a scan of a home directory flagged
+    # every git object ``over:max_decoder_memory``. The probes patch library internals
+    # for the life of the process, so the script runs in its own interpreter.
     tree = tmp_path / "in"
     tree.mkdir()
     (tree / "object").write_bytes(zlib.compress(b"blob 12\x00hello world\n" * 50))
-    (tree / "real.lzma").write_bytes(
-        lzma.compress(b"a" * 100_000, format=lzma.FORMAT_ALONE)
-    )
+    (tree / "real.lz").write_bytes(make_lzip_member(b"a" * 100_000, 20))
     out = tmp_path / "scan.csv"
     subprocess.run(
         [sys.executable, str(SCRIPT), str(tree), "-o", str(out)],
@@ -142,8 +140,9 @@ def test_detection_probes_do_not_count_as_decoder_memory(tmp_path: Path) -> None
     assert rows["object"]["format"] == "raw_stream.zz"
     assert rows["object"]["decoder_memory"] == ""
     assert "max_decoder_memory" not in rows["object"]["flags"]
-    # A real Alone stream's dictionary is still measured: the default preset's 8 MiB.
-    assert rows["real.lzma"]["decoder_memory"] == str(8 * 1024 * 1024)
+    # A real lzip member's dictionary is still measured: the 1 MiB its header declares.
+    # (xz, .lzma and zstd hand the cap to their library and are not measured.)
+    assert rows["real.lz"]["decoder_memory"] == str(1024 * 1024)
 
 
 def _quiet_main(monkeypatch: pytest.MonkeyPatch) -> None:

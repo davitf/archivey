@@ -1,0 +1,652 @@
+"""The forward walk over ZIP local headers (``zip_local_walk``), checked against stdlib.
+
+Archives come from stdlib ``zipfile`` written to a seekable buffer (sizes in every local
+header) and to a pipe-like stream it cannot seek (bit 3 and a data descriptor on every
+member, STORED ones included), and are read back through a stream that cannot seek.
+"""
+
+from __future__ import annotations
+
+import io
+import random
+import struct
+import zipfile
+import zlib
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import pytest
+
+from archivey.exceptions import (
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
+from archivey.internal.backends import zip_local_walk
+from archivey.internal.backends.zip_local_walk import (
+    DATA_DESCRIPTOR_SIGNATURE,
+    DataDescriptor,
+    LocalEntry,
+    LocalHeaderWalk,
+    MemberData,
+    match_descriptor,
+)
+from archivey.internal.sfx import SFX_MAX
+
+
+class _Unseekable(io.RawIOBase):
+    """A pipe: written or read forward only."""
+
+    def __init__(self, data: bytes = b"") -> None:
+        self._data = bytearray(data)
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def readinto(self, b: bytearray | memoryview) -> int:  # type: ignore[override]
+        n = min(len(b), len(self._data) - self._pos)
+        b[:n] = self._data[self._pos : self._pos + n]
+        self._pos += n
+        return n
+
+    def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+        self._data += b
+        return len(b)
+
+    def tell(self) -> int:
+        # zipfile asks where it is when it writes to a stream that cannot seek.
+        return len(self._data)
+
+    def getvalue(self) -> bytes:
+        return bytes(self._data)
+
+
+_RANDOM = random.Random(770)
+_DATA = {
+    "stored.txt": (b"stored " * 50, zipfile.ZIP_STORED),
+    "deflated.txt": (b"deflate me " * 500, zipfile.ZIP_DEFLATED),
+    "empty.txt": (b"", zipfile.ZIP_DEFLATED),
+    "big-stored.bin": (_RANDOM.randbytes(300_000), zipfile.ZIP_STORED),
+    "big-deflated.bin": (
+        _RANDOM.randbytes(200_000) + b"z" * 100_000,
+        zipfile.ZIP_DEFLATED,
+    ),
+    "dir/": (b"", zipfile.ZIP_STORED),
+}
+
+
+def _write(*, pipe: bool, force_zip64: bool = False) -> bytes:
+    out: io.BytesIO | _Unseekable = _Unseekable() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        for name, (data, method) in _DATA.items():
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 2, 3, 4, 6))
+            info.compress_type = method
+            with zf.open(info, "w", force_zip64=force_zip64) as member:
+                member.write(data)
+    return out.getvalue()
+
+
+@dataclass
+class _Read:
+    name: bytes
+    offset: int
+    data: bytes
+    descriptor: DataDescriptor | None
+
+
+def _decode(
+    walk: LocalHeaderWalk, entry: LocalEntry
+) -> tuple[bytes, DataDescriptor | None]:
+    """Read one member the way a reader would: whole, or through its codec."""
+    data = walk.member_data(entry)
+    method = entry.header.method
+    if method == zipfile.ZIP_STORED or not entry.deferred:
+        raw = data.read()
+        out = raw if method == zipfile.ZIP_STORED else zlib.decompress(raw, -15)
+        return out, data.settle()
+    decomp = zlib.decompressobj(-15)
+    out = bytearray()
+    while not decomp.eof:
+        chunk = data.read(65536)
+        if not chunk:
+            raise AssertionError("stream ended before the codec's end")
+        out += decomp.decompress(chunk)
+    used = data.consumed - len(decomp.unused_data)
+    descriptor = data.settle(used, crc=zlib.crc32(out), file_size=len(out))
+    return bytes(out), descriptor
+
+
+def _walk(
+    raw: bytes, *, offset: int = 0, find_start: bool = True
+) -> tuple[list[_Read], LocalHeaderWalk]:
+    walk = LocalHeaderWalk(_Unseekable(raw), offset=offset, find_start=find_start)
+    read: list[_Read] = []
+    while (entry := walk.next_entry()) is not None:
+        data, descriptor = _decode(walk, entry)
+        read.append(_Read(entry.header.name, entry.offset, data, descriptor))
+    entries = list(walk.directory())
+    assert [e.name for e in entries] == [r.name for r in read]
+    assert walk.end is not None
+    assert [e.header_offset + walk.end.base for e in entries] == [
+        r.offset for r in read
+    ]
+    return read, walk
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sizes", "pipe"])
+@pytest.mark.parametrize("force_zip64", [False, True], ids=["classic", "zip64"])
+def test_walk_reads_what_zipfile_wrote(pipe: bool, force_zip64: bool) -> None:
+    raw = _write(pipe=pipe, force_zip64=force_zip64)
+    read, walk = _walk(raw)
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        assert [r.name.decode() for r in read] == zf.namelist()
+        for r in read:
+            assert r.data == zf.read(r.name.decode())
+            info = zf.getinfo(r.name.decode())
+            if pipe and not r.name.endswith(b"/"):
+                # zipfile writes a data descriptor after every member it streams.
+                assert r.descriptor is not None
+                assert r.descriptor.crc == info.CRC
+                assert r.descriptor.compressed_size == info.compress_size
+                assert r.descriptor.file_size == info.file_size
+    assert walk.end is not None
+    assert walk.end.base == 0
+    assert walk.end.entries_declared == len(_DATA)
+
+
+def test_pipe_written_stored_members_defer_their_sizes() -> None:
+    """The case the STORED scan exists for: zipfile, writing to a pipe, sets bit 3 on
+    STORED members too (measured)."""
+    raw = _write(pipe=True)
+    walk = LocalHeaderWalk(_Unseekable(raw))
+    entry = walk.next_entry()
+    assert entry is not None
+    assert entry.header.name == b"stored.txt"
+    assert entry.deferred
+    assert entry.header.compressed_size == 0
+
+
+def test_the_stored_scan_ignores_a_descriptor_signature_inside_the_data() -> None:
+    payload = b"a" * 100 + DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 40 + b"tail"
+    out = _Unseekable()
+    with zipfile.ZipFile(out, "w") as zf:
+        with zf.open("x", "w") as member:
+            member.write(payload)
+        with zf.open("y", "w") as member:
+            member.write(b"after")
+    read, _walk_ = _walk(out.getvalue())
+    assert [r.data for r in read] == [payload, b"after"]
+
+
+def test_the_stored_scan_stops_at_a_planted_descriptor_for_a_prefix() -> None:
+    """The shape the central entry check exists for: the member carries, in its own
+    data, a valid descriptor for a prefix of itself followed by a header signature,
+    so the forward walk ends it early. The reader catches it against the directory."""
+    prefix = b"prefix bytes"
+    planted = (
+        DATA_DESCRIPTOR_SIGNATURE
+        + struct.pack("<LLL", zlib.crc32(prefix), len(prefix), len(prefix))
+        + b"PK\x01\x02"
+    )
+    out = _Unseekable()
+    with zipfile.ZipFile(out, "w") as zf:
+        with zf.open("x", "w") as member:
+            member.write(prefix + planted + b"rest")
+    walk = LocalHeaderWalk(_Unseekable(out.getvalue()))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    assert data.read() == prefix
+    descriptor = data.settle()
+    assert descriptor is not None
+    assert descriptor.compressed_size == len(prefix)
+
+
+def test_an_empty_archive_starts_with_the_end_record() -> None:
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+    read, walk = _walk(buf.getvalue())
+    assert read == []
+    assert walk.end is not None
+    assert walk.end.entries_declared == 0
+    assert walk.end.trailing is None  # a forward walk counts none
+
+
+def test_a_stub_before_the_archive_is_found_and_becomes_the_base() -> None:
+    raw = _write(pipe=False)
+    stub = b"MZ" + b"\x90" * 5000 + b"PK\x03\x04 decoy" + b"\x00" * 100
+    read, walk = _walk(stub + raw)
+    assert walk.first_offset == len(stub)
+    assert walk.end is not None
+    # zipfile wrote offsets from its own start: the stub is the base.
+    assert walk.end.base == len(stub)
+    assert len(read) == len(_DATA)
+
+
+def test_rejected_stub_candidates_are_not_capped() -> None:
+    # Detection and the seekable read cap no ZIP decoys; neither does the walk.
+    raw = _write(pipe=False)
+    stub = b"MZ" + (b"PK\x03\x04" + b"\x00" * 26) * 300
+    read, walk = _walk(stub + raw)
+    assert walk.first_offset == len(stub)
+    assert len(read) == len(_DATA)
+
+
+def test_a_stream_that_starts_at_the_directory_lists_it() -> None:
+    raw = _write(pipe=False)
+    eocd = raw.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<L", raw, eocd + 16)
+    walk = LocalHeaderWalk(_Unseekable(raw[cd_offset:]))
+    assert walk.next_entry() is None
+    assert [e.name for e in walk.directory()] == [n.encode() for n in _DATA]
+
+
+def test_strong_encryption_at_the_start_is_named() -> None:
+    walk = LocalHeaderWalk(_Unseekable(b"PK\x06\x08" + b"\x00" * 100))
+    with pytest.raises(UnsupportedFeatureError, match="Strong Encryption"):
+        walk.next_entry()
+
+
+@pytest.mark.parametrize("before_limit", [4, 20, 100])
+def test_a_long_header_across_the_scan_window_end_is_found(before_limit: int) -> None:
+    # The candidate starts inside the window; its 65 535-byte name runs past it.
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("n" * 0xFFFF, b"data")
+    stub = b"\x00" * (SFX_MAX - before_limit)
+    read, walk = _walk(stub + out.getvalue())
+    assert walk.first_offset == len(stub)
+    assert [r.data for r in read] == [b"data"]
+
+
+def test_messages_before_any_member_name_no_member() -> None:
+    walk = LocalHeaderWalk(_Unseekable(b"PK"), find_start=False)
+    with pytest.raises(TruncatedError, match="before the first local header"):
+        walk.next_entry()
+    walk = LocalHeaderWalk(_Unseekable(b"junk" * 100), find_start=False)
+    with pytest.raises(CorruptionError, match="before the first local header"):
+        walk.next_entry()
+
+
+def test_no_local_header_in_the_scan_window_is_corruption() -> None:
+    walk = LocalHeaderWalk(_Unseekable(b"\x00" * 1000))
+    with pytest.raises(CorruptionError, match="no ZIP local header"):
+        walk.next_entry()
+
+
+def test_bytes_before_the_directory_are_read_past_and_recorded() -> None:
+    """An APK signing block sits between the last member and the directory, and the
+    end record's directory offset counts it."""
+    raw = bytearray(_write(pipe=False))
+    eocd = raw.rindex(b"PK\x05\x06")
+    cd_size, cd_offset = struct.unpack_from("<LL", raw, eocd + 12)
+    block = b"APK Sig Block 42 " * 10
+    raw[cd_offset:cd_offset] = block
+    struct.pack_into("<L", raw, eocd + len(block) + 16, cd_offset + len(block))
+    read, walk = _walk(bytes(raw))
+    assert walk.gap == (cd_offset, len(block))
+    assert walk.end is not None
+    assert walk.end.base == 0
+    assert len(read) == len(_DATA)
+
+
+def _with_gap(raw: bytes, block: bytes) -> bytes:
+    """``raw`` with ``block`` before its directory, the end record adjusted."""
+    out = bytearray(raw)
+    eocd = out.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<L", out, eocd + 16)
+    out[cd_offset:cd_offset] = block
+    struct.pack_into("<L", out, eocd + len(block) + 16, cd_offset + len(block))
+    return bytes(out)
+
+
+def test_a_gap_after_a_deferred_last_member_is_not_read_past() -> None:
+    # A descriptor must be followed by a ZIP signature: that is what stops a planted
+    # descriptor inside STORED data. So bytes after the last member's descriptor make
+    # the scan take the real descriptor for data. Gaps are read past only after a
+    # member whose header states its size.
+    walk = LocalHeaderWalk(_Unseekable(_with_gap(_write(pipe=True), b"APK " * 10)))
+    with pytest.raises(UnsupportedFeatureError, match="no signature"):
+        while (entry := walk.next_entry()) is not None:
+            _decode(walk, entry)
+
+
+def test_a_gap_holding_a_directory_signature_is_not_read_past() -> None:
+    # The skip stops at the first directory or end-record signature it finds.
+    walk = LocalHeaderWalk(
+        _Unseekable(_with_gap(_write(pipe=False), b"APK PK\x01\x02 block " * 4))
+    )
+    while (entry := walk.next_entry()) is not None:
+        _decode(walk, entry)
+    with pytest.raises(CorruptionError):
+        list(walk.directory())
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sizes", "pipe"])
+def test_a_stream_cut_before_the_directory_is_truncation(pipe: bool) -> None:
+    raw = _write(pipe=pipe)
+    cut = raw[: raw.index(b"PK\x01\x02")]
+    walk = LocalHeaderWalk(_Unseekable(cut))
+    names = []
+    with pytest.raises(TruncatedError, match="before the central directory"):
+        while (entry := walk.next_entry()) is not None:
+            _decode(walk, entry)
+            names.append(entry.header.name)
+    assert len(names) == len(_DATA)
+
+
+def test_a_stream_cut_inside_sized_data_is_truncation() -> None:
+    raw = _write(pipe=False)
+    walk = LocalHeaderWalk(_Unseekable(raw[: raw.index(b"stored ") + 10]))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    with pytest.raises(TruncatedError, match="inside member #0"):
+        data.read()
+
+
+def test_a_stream_cut_inside_scanned_stored_data_is_truncation() -> None:
+    raw = _write(pipe=True)
+    walk = LocalHeaderWalk(_Unseekable(raw[: raw.index(b"stored ") + 10]))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    with pytest.raises(TruncatedError, match="before its data descriptor"):
+        data.read()
+
+
+def test_a_stored_descriptor_without_its_signature_is_unsupported() -> None:
+    """The scan finds a descriptor by its signature; a writer that left it out makes a
+    whole archive a forward read cannot split."""
+    raw = bytearray(_write(pipe=True))
+    first = raw.index(DATA_DESCRIPTOR_SIGNATURE)
+    del raw[first : first + 4]
+    # Every offset after it moved back by four bytes.
+    eocd = raw.rindex(b"PK\x05\x06")
+    cd_offset = struct.unpack_from("<L", raw, eocd + 16)[0] - 4
+    struct.pack_into("<L", raw, eocd + 16, cd_offset)
+    walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
+    entry = walk.next_entry()
+    assert entry is not None
+    with pytest.raises(UnsupportedFeatureError, match="no signature"):
+        walk.member_data(entry).read()
+
+
+def test_junk_after_a_member_with_no_directory_is_corruption() -> None:
+    raw = _write(pipe=False)
+    first_end = raw.index(b"PK\x03\x04", 1)
+    walk = LocalHeaderWalk(_Unseekable(raw[:first_end] + b"junk" * 10))
+    entry = walk.next_entry()
+    assert entry is not None
+    _decode(walk, entry)
+    with pytest.raises(CorruptionError, match="not a ZIP header"):
+        walk.next_entry()
+
+
+def test_settle_skips_data_the_caller_did_not_read() -> None:
+    raw = _write(pipe=False)
+    walk = LocalHeaderWalk(_Unseekable(raw))
+    names = []
+    while (entry := walk.next_entry()) is not None:
+        names.append(entry.header.name.decode())
+        walk.member_data(entry).settle()
+    assert names == list(_DATA)
+    assert len(list(walk.directory())) == len(_DATA)
+
+
+def test_a_codec_member_needs_the_bytes_its_codec_used() -> None:
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=True)))
+    stored = walk.next_entry()
+    assert stored is not None
+    with pytest.raises(ValueError, match="settle the previous"):
+        walk.next_entry()
+    walk.member_data(stored).settle()
+    entry = walk.next_entry()
+    assert entry is not None
+    assert entry.header.name == b"deflated.txt"
+    data = walk.member_data(entry)
+    with pytest.raises(ValueError, match="needs `used`"):
+        data.settle()
+
+
+def test_a_given_offset_places_entries_and_the_base() -> None:
+    # The caller skipped a 5000-byte stub itself and says where the stream starts.
+    raw = _write(pipe=True)
+    read, walk = _walk(raw, offset=5000, find_start=False)
+    assert walk.first_offset == read[0].offset == 5000
+    assert walk.end is not None
+    assert walk.end.base == 5000
+    assert walk.cd_start == 5000 + raw.index(b"PK\x01\x02")
+
+
+def _deflated_member(walk: LocalHeaderWalk) -> MemberData:
+    stored = walk.next_entry()
+    assert stored is not None
+    walk.member_data(stored).settle()
+    entry = walk.next_entry()
+    assert entry is not None
+    assert entry.header.name == b"deflated.txt"
+    return walk.member_data(entry)
+
+
+def test_settle_refuses_more_used_than_was_read() -> None:
+    data = _deflated_member(LocalHeaderWalk(_Unseekable(_write(pipe=True))))
+    data.read(10)
+    with pytest.raises(ValueError, match="after only 10 bytes"):
+        data.settle(100)
+
+
+def test_settle_refuses_an_overread_past_what_was_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(zip_local_walk, "_CODEC_RETAIN", 64)
+    data = _deflated_member(LocalHeaderWalk(_Unseekable(_write(pipe=True))))
+    decomp = zlib.decompressobj(-15)
+    while not decomp.eof:
+        decomp.decompress(data.read(16))
+    used = data.consumed - len(decomp.unused_data)
+    data.read(200)  # well past the codec's end, beyond the 64 kept
+    with pytest.raises(ValueError, match="more than the .* kept to put back"):
+        data.settle(used)
+
+
+@pytest.mark.parametrize(
+    "read_all",
+    [
+        lambda d: d.read(),
+        lambda d: d.readall(),
+        lambda d: io.BufferedReader(d).read(),
+    ],
+    ids=["read", "readall", "buffered"],
+)
+def test_a_codec_member_refuses_an_unsized_read(read_all: Callable) -> None:
+    data = _deflated_member(LocalHeaderWalk(_Unseekable(_write(pipe=True))))
+    with pytest.raises(ValueError, match="no known end"):
+        read_all(data)
+    assert data.consumed == 0
+
+
+def test_settle_checks_used_where_the_walk_knows_the_end() -> None:
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=False)))
+    entry = walk.next_entry()
+    assert entry is not None
+    with pytest.raises(ValueError, match="whose data is"):
+        walk.member_data(entry).settle(entry.header.compressed_size + 1)
+    # A codec may stop short of the stated size: padding after its end is fine.
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=False)))
+    entry = walk.next_entry()
+    assert entry is not None
+    assert walk.member_data(entry).settle(entry.header.compressed_size - 1) is None
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=True)))
+    entry = walk.next_entry()
+    assert entry is not None and entry.deferred
+    data = walk.member_data(entry)
+    stored = data.read()
+    assert data.settle(len(stored)) is not None
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "zip64"),
+    [
+        (DATA_DESCRIPTOR_SIGNATURE + struct.pack("<LLL", 7, 10, 20), False),
+        (struct.pack("<LLL", 7, 10, 20), False),
+        (DATA_DESCRIPTOR_SIGNATURE + struct.pack("<LQQ", 7, 10, 20), True),
+        # Java's ZipOutputStream: 8-byte sizes for a big member, no ZIP64 extra.
+        (DATA_DESCRIPTOR_SIGNATURE + struct.pack("<LQQ", 7, 10, 20), False),
+    ],
+    ids=["signed", "unsigned", "zip64", "zip64-without-extra"],
+)
+def test_match_descriptor_shapes(descriptor: bytes, zip64: bool) -> None:
+    buffer = descriptor + b"PK\x03\x04"
+    found = match_descriptor(
+        buffer, 0, compressed_size=10, crc=7, file_size=20, zip64=zip64, at_end=False
+    )
+    assert found is not None
+    assert (found.crc, found.compressed_size, found.file_size) == (7, 10, 20)
+    assert found.length == len(descriptor)
+
+
+def test_a_4_byte_descriptor_past_4_gib_gives_back_both_full_sizes() -> None:
+    # A member past 4 GiB whose descriptor has 4-byte sizes matches modulo 2**32;
+    # neither size may come back truncated.
+    csize, usize = 2**32 + 10, 2**32 + 20
+    buffer = (
+        DATA_DESCRIPTOR_SIGNATURE
+        + struct.pack("<LLL", 7, csize & 0xFFFFFFFF, usize & 0xFFFFFFFF)
+        + b"PK\x03\x04"
+    )
+    found = match_descriptor(
+        buffer,
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=False,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.compressed_size, found.file_size) == (csize, usize)
+
+
+def test_match_descriptor_needs_a_signature_after_it() -> None:
+    buffer = DATA_DESCRIPTOR_SIGNATURE + struct.pack("<LLL", 7, 10, 20) + b"junk"
+    assert (
+        match_descriptor(
+            buffer,
+            0,
+            compressed_size=10,
+            crc=7,
+            file_size=20,
+            zip64=False,
+            at_end=False,
+        )
+        is None
+    )
+    at_end = buffer[:-4]
+    assert (
+        match_descriptor(
+            at_end, 0, compressed_size=10, crc=7, file_size=20, zip64=False, at_end=True
+        )
+        is not None
+    )
+
+
+def test_zip64_end_records_are_read_from_the_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with monkeypatch.context() as m:
+        m.setattr(zipfile, "ZIP_FILECOUNT_LIMIT", 0)
+        raw = _write(pipe=True)
+    assert b"PK\x06\x06" in raw
+    _read, walk = _walk(raw)
+    assert walk.end is not None
+    assert walk.end.zip64
+    assert walk.end.entries_declared == len(_DATA)
+
+
+def test_a_digital_signature_record_before_the_end_records_is_read_past() -> None:
+    raw = bytearray(_write(pipe=False))
+    eocd = raw.rindex(b"PK\x05\x06")
+    raw[eocd:eocd] = b"PK\x05\x05" + struct.pack("<H", 5) + b"sig!!"
+    _read, walk = _walk(bytes(raw))
+    assert walk.end is not None
+    assert walk.end.entries_declared == len(_DATA)
+
+
+def test_an_encrypted_directory_is_unsupported() -> None:
+    raw = bytearray(_write(pipe=False))
+    raw[raw.index(b"PK\x01\x02") : raw.index(b"PK\x01\x02") + 4] = b"PK\x06\x08"
+    walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
+    with pytest.raises(UnsupportedFeatureError, match="Strong Encryption"):
+        while (entry := walk.next_entry()) is not None:
+            walk.member_data(entry).settle()
+
+
+def test_an_encrypted_stored_scan_matches_size_and_signature_only() -> None:
+    """Under encryption the descriptor's CRC covers the plaintext, which the scan never
+    sees: the size and the signature after the descriptor are what it matches."""
+    raw = bytearray(_write(pipe=True))
+    first = raw.index(DATA_DESCRIPTOR_SIGNATURE)
+    struct.pack_into("<L", raw, first + 4, 0xDEADBEEF)  # a CRC the bytes do not have
+    walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry, encrypted=True)
+    assert data.read() == _DATA["stored.txt"][0]
+    descriptor = data.settle()
+    assert descriptor is not None
+    assert descriptor.crc == 0xDEADBEEF
+    second = walk.next_entry()
+    assert second is not None
+    assert second.header.name == b"deflated.txt"
+
+
+@pytest.mark.parametrize("piece", [65536, 16])
+def test_planted_descriptor_signatures_cost_one_pass(
+    monkeypatch: pytest.MonkeyPatch, piece: int
+) -> None:
+    """A STORED member full of planted descriptors is scanned in linear time.
+
+    Each 12-byte block is a descriptor signature, a wrong CRC and the block's own
+    offset as its compressed size, so every candidate passes the size test and
+    reaches the CRC. Fails if the CRC is recomputed from the start of the buffer
+    for each candidate (quadratic bytes into ``zlib.crc32``). The 16-byte reads
+    also fail if a read re-runs the CRC over bytes an earlier read already
+    judged.
+    """
+    payload = b"".join(
+        DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 4 + struct.pack("<L", offset)
+        for offset in range(0, 1_200_000, 12)
+    )
+    out = _Unseekable()
+    with zipfile.ZipFile(out, "w") as zf:
+        with zf.open("x", "w") as member:
+            member.write(payload)
+    fed = 0
+
+    class _CountingZlib:
+        @staticmethod
+        def crc32(data: bytes, value: int = 0) -> int:
+            nonlocal fed
+            fed += len(data)
+            return zlib.crc32(data, value)
+
+    monkeypatch.setattr(zip_local_walk, "zlib", _CountingZlib)
+    walk = LocalHeaderWalk(_Unseekable(out.getvalue()))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    got = bytearray()
+    while chunk := data.read(piece):
+        got += chunk
+    assert bytes(got) == payload
+    assert data.settle() is not None
+    # Once while scanning, once over the bytes handed out.
+    assert fed <= 2 * len(payload)

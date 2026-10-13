@@ -277,6 +277,37 @@ end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 or a `Z
 | Image cut inside the header, the pointer table, or a block | `TruncatedError`; the member before it reads |
 | zisofs2 member, under `ZF` or `Z2`, or a `ZF` entry too short to parse | Lists with `UNKNOWN`; read raises `UnsupportedFeatureError`; the member beside it reads |
 
+### Requirement: Report an image cut short as TruncatedError
+
+An image is cut short when the file ends before the end the image declares: the end of
+its primary volume descriptor's volume space (volume space size times logical block
+size), or, when the volume descriptor set itself runs past the end of the file, the end
+of the descriptor that is cut. An open that fails because a read of the image's
+structures reached the end of such a file SHALL raise `TruncatedError`. This covers the
+volume descriptors, the path tables, the ISO 9660 and Joliet directory records with
+their Rock Ridge System Use areas, and the UDF anchor pycdlib reads in the volume's last
+block. A path table that runs past the end of the file but stays inside the volume space
+SHALL raise `TruncatedError` too.
+
+An open SHALL raise `CorruptionError`, not `TruncatedError`, when the failing read
+stopped inside the file (the bytes are present and do not parse), when the file holds
+the whole volume space (a structure that points past the end is a wrong pointer), and
+when a read started past the end of the volume space. A file the cut reaches still
+raises `TruncatedError` when its read reaches the cut, and a file wholly before the cut
+reads normally.
+
+#### Scenario: cut and damaged images
+
+| Case | Expected |
+| --- | --- |
+| Image cut inside a volume descriptor, or at the start of the set terminator | `TruncatedError` at open |
+| Image cut inside a path table, a directory record, its System Use area, or the padding after the last record of a directory | `TruncatedError` at open |
+| UDF image cut inside its volume recognition sequence, its last anchor, or file data | `TruncatedError` at open |
+| Image cut inside file data, no UDF | Opens; reading a file the cut reaches raises `TruncatedError` |
+| Full-length image: a descriptor field, a directory's padding, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
+| Cut image that keeps its path tables, root directory extent damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
+| Full-length UDF image whose volume space size is damaged upwards | `TruncatedError`: the file holds less than the image declares |
+
 ### Requirement: Report bytes after the end of an ISO image
 
 An ISO image SHALL be taken to end at the furthest of: the end of its volume space (the

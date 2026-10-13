@@ -123,6 +123,12 @@ class CodecParams:
       not set it: there concatenated frames count together against the unpack size.
       Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
       end marker, refusing any input after it.
+    - ``input_runs_on`` — the source does not end where the coder's data does: a ZIP
+      member read from a stream that cannot seek, its sizes in a data descriptor after
+      its data, is followed by the rest of the archive. A codec must then not wait for
+      the source's end before decoding. Only PPMd8 reads it (it otherwise holds its
+      input until the whole pack is in); the other codecs ZIP uses decode as input
+      arrives, and a ``refuse_input_after_end`` stream stops at their end.
     """
 
     filters: list[dict] | None = None
@@ -133,6 +139,7 @@ class CodecParams:
     unpack_size: int | None = None
     pack_size: int | None = None
     single_stream: bool = False
+    input_runs_on: bool = False
 
 
 _DEFAULT_PARAMS = CodecParams()

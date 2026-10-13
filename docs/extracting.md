@@ -191,13 +191,23 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   for each; its context's `field` is `"name"` or `"link_target"`. A target stored as the
   member's data (ZIP, 7z, RAR4) is reported when it is read.
 
-    Unlike the rules above, this one **is** lifted by `TRUSTED`, which extracts the
-    member under its stored name. The distinction is that nothing here is unsafe to
-    *write* — the file lands inside your destination under exactly its stored bytes; what
-    is misleading is the name you read back later. `TRUSTED` means "faithful bytes", and
-    faithful round-tripping (mirroring an archive, converting between formats) needs a
-    route that the default correctly refuses. A caller filter that renames the member
-    also works at any policy, since the check runs on the final name.
+    Unlike the rules above, the override and isolate rejection **is** lifted by
+    `TRUSTED`, which extracts the member under its stored name. The distinction is that
+    nothing here is unsafe to *write* — the file lands inside your destination under
+    exactly its stored bytes; what is misleading is the name you read back later.
+    `TRUSTED` means "faithful bytes", and faithful round-tripping (mirroring an archive,
+    converting between formats) needs a route that the default correctly refuses. A
+    caller filter that renames the member also works at any policy, since the check
+    runs on the final name.
+
+    Other invisible format characters are never rejected by any extraction filter,
+    because writing them is safe; they are reported the same way, in a name or a link
+    target. A zero-width space, word joiner or BOM (`invoice<U+200B>.pdf` looks like
+    `invoice.pdf`) gets `MEMBER_NAME_ZERO_WIDTH_CHARACTER`. That code is in
+    `ARCHIVE_INTEGRITY_CODES`, so the `DiagnosticPolicy.STRICT` diagnostic policy
+    refuses the archive over it; the default policy lists and extracts both files. The
+    rest, such as the zero-width joiner in ordinary emoji, get the advisory
+    `MEMBER_NAME_INVISIBLE_CHARACTER`.
 - **Decompression bombs at extraction:** cumulative output cap, per-member ratio,
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.
@@ -405,6 +415,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (default 1000, checked once 5 MiB has been written; for the whole archive read from
   a source of unknown size, such as a pipe, once 256 MiB has been written), and entry
   count (default 262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+  Archivey never writes more of a member than the size the archive records for it, so
+  where the archive records both a member's size and its compressed size, a member
+  over the per-member ratio is refused before any of it is written.
 - **Listing materialization** — member count (default 262,144) and retained metadata
   bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction,

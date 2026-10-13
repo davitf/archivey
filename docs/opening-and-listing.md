@@ -453,6 +453,16 @@ Names match exactly, and a directory's name ends in `/`. Select the directory `d
 `docs/`. `members=["docs/"]` selects the directory entry only, not the files inside it.
 `reader.get()` and `reader.open()` also need the exact stored name.
 
+To select by pattern, `archivey.paths` has two functions; pick the one whose rules you
+want. `match_glob` uses glob rules: `members=match_glob("docs/**")` selects `docs/` and
+everything under it, because `*` stays inside one folder and `**` matches any depth.
+Pass `with_contents=True` to have a matching folder bring its contents, as the CLI does.
+`match_tar_glob` uses `tar`'s rules, where `*` also matches `/` and `docs` selects the
+folder and everything in it. So `"*.md"` selects top-level `.md` files with
+`match_glob`, and `.md` files at any depth with `match_tar_glob`. Import them with
+`from archivey.paths import match_glob, match_tar_glob` (see the
+[front-end helpers](api.md#front-end-helpers)).
+
 A name that matches nothing is not an error, but it is not silent either. Each such entry
 gets a `MEMBER_SELECTOR_UNMATCHED` diagnostic once every member has been offered to the
 selector (see [Errors and diagnostics](errors-and-diagnostics.md)). With

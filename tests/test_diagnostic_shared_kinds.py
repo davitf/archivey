@@ -1,6 +1,6 @@
 """``validate_code_context`` on codes that share a context kind.
 
-Four context kinds each serve more than one code, told apart by one context field
+Five context kinds each serve more than one code, told apart by one context field
 (``diagnostics`` §"Complete initial warning taxonomy": "typed context distinguishes
 variants"). The kind match alone accepts a mismatched pairing, so every such code
 must also check its field.
@@ -18,6 +18,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DiagnosticContext,
+    MemberNameControlsContext,
     ScanRaceContext,
     UnconfirmedFormatContext,
     UnusedArgumentContext,
@@ -25,6 +26,18 @@ from archivey.diagnostics import (
 )
 
 _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
+    (
+        DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        MemberNameControlsContext(category="bidi"),
+    ),
+    (
+        DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
+        MemberNameControlsContext(category="zero_width"),
+    ),
+    (
+        DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
+        MemberNameControlsContext(category="invisible"),
+    ),
     (DiagnosticCode.SCAN_DIRECTORY_VANISHED, ScanRaceContext(entry_kind="directory")),
     (DiagnosticCode.SCAN_ENTRY_VANISHED, ScanRaceContext(entry_kind="entry")),
     (
@@ -105,9 +118,10 @@ def test_sibling_context_is_rejected(
     assert getattr(context, field_name) not in allowed
 
 
-def test_mismatches_cover_all_four_shared_kinds() -> None:
+def test_mismatches_cover_all_five_shared_kinds() -> None:
     kinds = {context.kind for _, context in _MISMATCHED}
     assert kinds == {
+        "member_name_controls",
         "scan_race",
         "unused_argument",
         "unconfirmed_format",

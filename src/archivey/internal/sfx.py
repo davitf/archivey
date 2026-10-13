@@ -1,19 +1,21 @@
 """Self-extracting (SFX) stubs: the shared scan bound, the forward scan, and the cue.
 
 A self-extracting archive is an executable stub with a real archive appended, so the
-archive magic sits at some offset ``N > 0`` rather than at byte zero. Three places have
+archive magic sits at some offset ``N > 0`` rather than at byte zero. Four places have
 to agree on how far forward to look for it:
 
 * :func:`archivey.internal.detection.detect_format` — the SFX scan that turns an
   executable-shaped prefix into ``(format, payload_offset)``;
 * ``rar_parser._find_sfx_header`` — the RAR parser's own scan, which is what makes
   forced ``format=RAR`` work on an SFX file;
-* ``sevenzip_parser.find_signature_offset`` — the 7z equivalent.
+* ``sevenzip_parser.find_signature_offset`` — the 7z equivalent;
+* ``zip_local_walk.LocalHeaderWalk`` — the forward ZIP walk's scan for its first local
+  header, for a ZIP read from a stream it cannot seek.
 
-They share :data:`SFX_MAX` rather than each carrying a bound of its own: three separate
+They share :data:`SFX_MAX` rather than each carrying a bound of its own: separate
 limits drift, and a stub the RAR parser accepts but the detector does not would be a
 file that opens under ``format=RAR`` and fails under auto-detect. Raising the bound is
-one edit here for all three.
+one edit here for all four.
 
 Two scan entry points, because the callers differ in what they may do to the source.
 A parser owns its handle and reads forward (:func:`scan_for_magic`); the detector must
@@ -58,9 +60,11 @@ SFX_MAX = 2 * 1024 * 1024
 # detection budget. Each parser scans for one format, so the detector counts each
 # format's rejections apart (:class:`HitSelector`) and caps only the formats whose
 # parser scans (``ReadBackend.SFX_PARSER_SCANS``: RAR and 7z). Decoys of one format
-# do not spend another's allowance, and a ZIP is never capped, because its reader
-# finds the end of central directory from the tail and runs no scan to stop. So a
-# file of decoys means the same thing to detection as to a forced ``format=``. 256 is
+# do not spend another's allowance, and a ZIP is never capped: its seekable reader
+# finds the end of central directory from the tail and runs no scan, and the forward
+# walk's scan (``zip_local_walk``) is bounded by the window alone, its validator
+# reading only the header and computing no CRC. So a file of decoys means the same
+# thing to detection as to a forced ``format=``. 256 is
 # a starting value; raise it here if a real archive needs more.
 MAX_VALIDATED_CANDIDATES = 256
 

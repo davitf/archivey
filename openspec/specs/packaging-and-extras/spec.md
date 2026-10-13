@@ -367,3 +367,52 @@ two cannot drift. Names in its `__all__` SHALL carry the same compatibility prom
 | `numbered_name("photo.jpg", 1, is_dir=False)` | `"photo (1).jpg"` |
 | `numbered_name("photos.2024", 2, is_dir=True)` | `"photos.2024 (2)"` |
 | Two members named `photo.jpg` under `OverwritePolicy.RENAME` | The second is written as `numbered_name("photo.jpg", 1, is_dir=False)` |
+
+### Requirement: archivey.paths.match_glob selects members by glob pattern
+
+`archivey.paths` SHALL also provide `match_glob(*patterns: str, with_contents: bool =
+False)`, returning a predicate
+for `members=` (and for any caller filtering names). `members=`, `get()` and `open()`
+keep matching stored names exactly; `match_glob` is the opt-in for patterns. A member
+is selected when any pattern matches its whole name, case-sensitively:
+
+- `*` matches any run of characters other than `/`; `?` one character other than `/`;
+  `[...]` / `[!...]` one character from, or not from, the set, never `/`. An unclosed
+  `[` is a literal. `\` is a literal character on every platform.
+- `**` as a whole component matches zero or more components, so `a/**` also matches
+  `a`; `**` inside a component is `*`.
+- A directory is matched by its name without the trailing `/`. A pattern ending in `/`
+  matches only directories (`ArchiveMember.is_dir`, or a `str` ending in `/`).
+- No pattern, a pattern with an empty component (`""`, `/`, `a//b`; a leading `/` is
+  allowed and matches an absolute member name), or a malformed `[...]` set raises
+  `ArchiveyUsageError` (also a `ValueError`). A pattern that matches nothing records no
+  diagnostic.
+- With `with_contents=True`, a member is also selected when a folder it is in (any
+  `/`-ended prefix of its name, without the `/`) matches as a directory. The CLI's
+  member patterns are `match_glob(pattern, with_contents=True)`.
+
+`archivey.paths` SHALL also provide `match_tar_glob(*patterns: str)`, the `tar` rules
+side by side with `match_glob`: each pattern is matched with `fnmatch.fnmatchcase`
+against the whole name (so `*` also matches `/`), as written and as `base/` and
+`base/*` where `base` is the pattern without trailing `/`, so a folder's name selects
+the folder and everything under it. No pattern, or a pattern with an empty component
+(the same rule as `match_glob`), raises `ArchiveyUsageError`.
+
+#### Scenario: match_glob patterns
+
+| Pattern | Selects | Does not select |
+| --- | --- | --- |
+| `*.md` | `README.md` | `docs/index.md` |
+| `**/*.md` | `README.md`, `docs/api/guide.md` | `notes.txt` |
+| `docs/**` | `docs/`, `docs/index.md`, `docs/api/guide.md` | `docsx/a.md` |
+| `docs/*` | `docs/index.md`, `docs/api/` | `docs/api/guide.md` |
+| `*/` | `docs/` | `README.md`, `docs/api/` |
+| `docs`, `with_contents=True` | `docs/`, `docs/api/guide.md` | `docs.txt` |
+| `match_tar_glob("*.md")` | `README.md`, `docs/api/guide.md` | `notes.txt` |
+| `match_tar_glob("docs")` | `docs/`, `docs/api/guide.md` | `docs.txt` |
+| `a[*]b` | `a*b` | `axb` |
+| `match_glob()` / `match_glob("")` / `match_glob("[z-a]")` | Raises `ArchiveyUsageError` | |
+| `match_glob("a//b")` / `match_glob("//a")` | Raises `ArchiveyUsageError` | |
+| `/etc/**` | `/etc/`, `/etc/passwd` | `etc/passwd` |
+| `a[!-a]b` | `a0b` | `a-b`, `a/b` |
+| `.` member (`is_dir`) with `*/` | Selected | |

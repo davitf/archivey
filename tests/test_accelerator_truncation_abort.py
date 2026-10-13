@@ -41,6 +41,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
+from archivey.internal.streams.child_process import outside_death
 from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
@@ -662,6 +663,17 @@ def test_a_child_killed_from_outside_ends_the_stream(
         with pytest.raises(expected) as second:
             stream.read(1)
         assert str(second.value) == str(first.value)
+
+
+@pytest.mark.parametrize("returncode", [-9, -15, 1])
+def test_an_outside_death_message_is_escaped_once(returncode: int) -> None:
+    """``outside_death`` gives the unescaped message, so the exception the caller
+    builds from it escapes a backslash or a control character once, not twice."""
+    what = "ended C:\\path\x1b"
+    cls, message = outside_death(returncode, what)
+    exc = cls(message)
+    assert exc.raw_message.startswith(what)
+    assert str(exc).startswith("ended C:\\\\path\\x1b")
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl and /proc")
