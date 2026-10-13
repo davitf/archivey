@@ -58,11 +58,12 @@ BIDI_REORDERING_CONTROLS = frozenset(
 #
 # TWO CODES AGAIN, split the way the bidi sets are. These three have no use inside a
 # filename: zero-width space U+200B, word joiner U+2060 and BOM / zero-width no-break
-# space U+FEFF. They get MEMBER_NAME_ZERO_WIDTH_CHARACTER, which STRICT refuses. Every
-# other Cf character gets the advisory MEMBER_NAME_INVISIBLE_CHARACTER: ZWJ U+200D and
-# ZWNJ U+200C are part of emoji sequences and of Persian and Indic spelling, the tag
+# space U+FEFF. They get MEMBER_NAME_ZERO_WIDTH_CHARACTER, which is in
+# ARCHIVE_INTEGRITY_CODES, so the STRICT *diagnostic policy* raises on it. Every other
+# Cf character gets the advisory MEMBER_NAME_INVISIBLE_CHARACTER: ZWJ U+200D and ZWNJ
+# U+200C are part of emoji sequences and of Persian and Indic spelling, the tag
 # characters U+E0020-E007F spell subdivision flags, and a soft hyphen U+00AD is a
-# hyphenation hint. Neither set is refused during extraction: writing them is safe
+# hyphenation hint. No extraction filter refuses either set: writing them is safe
 # (DR-17), only the name read back later can mislead.
 ZERO_WIDTH_CHARACTERS = frozenset("\u200b\u2060\ufeff")
 

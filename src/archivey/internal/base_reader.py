@@ -512,8 +512,10 @@ class BaseArchiveReader(ArchiveReader):
         # (see ``_pull_replayable``): a walk started over after a failure replays those
         # positions onto the same objects, with their diagnostics already emitted and
         # attached. A streaming walk keeps neither.
-        # ``_walk_presented`` counts the positions whose presentation checks have run,
-        # and ``_walk_position`` the members the walk has produced.
+        # ``_walk_presented`` counts the positions whose presentation checks have run;
+        # ``_presenting`` logs the emits of a position whose checks raised part way, so
+        # the retry replays them (see ``_register_member``). ``_walk_position``
+        # counts the members the walk has produced.
         # ``_listing_discarded`` is set when an unguarded pass (``stream_members()``)
         # crosses ``ListingLimits``: from then on the walk keeps nothing, so memory
         # stays bounded by the caps (see ``_discard_listing``).
@@ -529,6 +531,7 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_built: list[ArchiveMember] = []
         self._walk_emits: dict[int, EmitLog] = {}
         self._walk_presented: int = 0
+        self._presenting: tuple[int, EmitLog] | None = None
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
@@ -1729,25 +1732,34 @@ class BaseArchiveReader(ArchiveReader):
         objects (``_pull_member``); their presentation checks, counted by position in
         ``_walk_presented``, are not repeated, so a deceptive name is reported once
         whichever backend built it. A check whose emit raised is not counted as run, so
-        a strict policy refuses again on the retry. The listing tracker was reset with
+        a strict policy refuses again on the retry; the emits before it are replayed
+        from ``_presenting`` rather than counted twice. The listing tracker was reset with
         the discarded walk, so the member is counted again.
         """
         member._member_id = idx
         member._archive_id = self._archive_id
         if idx >= self._walk_presented:
-            emit_member_name_controls(
-                self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
-            )
-            # A target the header carries is known now. A target stored as member data
-            # is checked when it is read (`_resolve_link_target`), so each member is
-            # checked once either way.
-            emit_link_target_controls(
-                self._diagnostics_collector,
-                member=member,
-                archive_name=self._archive_name,
-            )
+            # One member can make several presentation emits (a name and a target, up
+            # to three codes each). If a later one raises, the earlier ones already
+            # count, so the retry replays this position's log rather than emitting them
+            # again; the emit that raised raises again from the log.
+            if self._presenting is None or self._presenting[0] != idx:
+                self._presenting = (idx, EmitLog())
+            with self._diagnostics_collector.replaying(self._presenting[1]):
+                emit_member_name_controls(
+                    self._diagnostics_collector,
+                    member=member,
+                    archive_name=self._archive_name,
+                )
+                # A target the header carries is known now. A target stored as member
+                # data is checked when it is read (`_resolve_link_target`), so each
+                # member is checked once either way.
+                emit_link_target_controls(
+                    self._diagnostics_collector,
+                    member=member,
+                    archive_name=self._archive_name,
+                )
+            self._presenting = None
             self._walk_presented = idx + 1
         if member.type is MemberType.SYMLINK and member.link_target == "":
             # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the

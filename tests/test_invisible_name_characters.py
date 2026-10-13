@@ -5,11 +5,12 @@ and extract side by side. Two codes report the format characters (Unicode catego
 that ``MEMBER_NAME_BIDI_CONTROL`` does not:
 
 - ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` for U+200B, U+2060 and U+FEFF, which have no use
-  in a filename. ``STRICT`` raises on it.
-- ``MEMBER_NAME_INVISIBLE_CHARACTER`` for every other Cf character. ``STRICT`` does not
-  raise on it, because a zero-width joiner is part of ordinary emoji sequences.
+  in a filename. The ``DiagnosticPolicy.STRICT`` diagnostic policy raises on it.
+- ``MEMBER_NAME_INVISIBLE_CHARACTER`` for every other Cf character.
+  ``DiagnosticPolicy.STRICT`` does not raise on it, because a zero-width joiner is part
+  of ordinary emoji sequences.
 
-Extraction refuses neither.
+No extraction filter refuses either.
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ def test_strict_refuses_a_zero_width_character(tmp_path: Path) -> None:
 
 def test_strict_does_not_refuse_an_invisible_character(tmp_path: Path) -> None:
     # Woman technologist: woman, ZWJ, laptop.
-    archive = _archive(tmp_path, "zip", ["\U0001f469\u200d\U0001f4bb.txt"])
+    archive = _archive(tmp_path, "zip", ["👩\u200d💻.txt"])
     with archivey.open_archive(archive, config=_policy(DiagnosticPolicy.STRICT)) as r:
         report = r.extract_all(tmp_path / "out")
         assert len(report.results) == 1
@@ -144,11 +145,11 @@ def test_each_format_character_is_named_under_its_code(
 @pytest.mark.parametrize(
     "name",
     [
-        "caf\u00e9.txt",  # printable non-ASCII
+        "café.txt",  # printable non-ASCII
         "a\u00a0b.txt",  # no-break space: category Zs, shown as a space
-        "\u2764\ufe0f.txt",  # variation selector: category Mn, not Cf
+        "❤\ufe0f.txt",  # variation selector: category Mn, not Cf
         "evil\u202egnp.exe",  # bidi override: MEMBER_NAME_BIDI_CONTROL only
-        "\u200f\u05d3\u05d5\u05d7.pdf",  # bidi mark: MEMBER_NAME_BIDI_CONTROL only
+        "\u200fדוח.pdf",  # bidi mark: MEMBER_NAME_BIDI_CONTROL only
     ],
 )
 def test_other_characters_are_not_reported_as_invisible(
@@ -220,3 +221,25 @@ def test_link_target_zero_width_character_is_reported_once(
     assert context.field == "link_target"
     assert context.member_name == "link"
     assert context.controls == "U+200B"
+
+
+def test_a_refused_name_retried_reports_its_other_codes_once(tmp_path: Path) -> None:
+    """A walk started over after the second of a name's emits raised.
+
+    The first emit (bidi, a warning here) already counted; the retry must replay it,
+    not count it again, while the refusal still raises.
+    """
+    archive = _archive(tmp_path, "zip", ["a\u200fb\u200bc.txt"])
+    policy = DiagnosticPolicy(raise_on=frozenset({"member_name_zero_width_character"}))
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(
+        diagnostic_policy=policy, on_diagnostic=lambda d: seen.append(d.code)
+    )
+    with archivey.open_archive(archive, config=config) as reader:
+        for _ in range(2):
+            with pytest.raises(DiagnosticRaisedError) as excinfo:
+                reader.members()
+            assert excinfo.value.diagnostic.code is _ZERO_WIDTH
+        assert reader.diagnostics.counts[_BIDI] == 1
+        assert reader.diagnostics.counts[_ZERO_WIDTH] == 1
+    assert seen == [_BIDI, _ZERO_WIDTH]
