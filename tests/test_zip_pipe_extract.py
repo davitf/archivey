@@ -334,6 +334,27 @@ def test_a_member_the_list_leaves_out_in_the_end_keeps_the_callers_file(
     assert sorted(tree) == ["x", "x/y"]
 
 
+def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
+    tmp_path: Path,
+) -> None:
+    """Windows refuses to replace it from a file; a pipe must not move it aside."""
+    for where in ("file", "pipe"):
+        _seed(tmp_path / where, {"docs/r.txt": b"MINE"})
+        os.chmod(tmp_path / where / "docs/r.txt", stat.S_IREAD)
+    try:
+        results, tree = _both(
+            _dos_docs(),
+            tmp_path,
+            members=["docs/r.txt"],
+            overwrite="replace",
+            on_error="continue",
+        )
+    finally:
+        for where in ("file", "pipe"):
+            os.chmod(tmp_path / where / "docs/r.txt", stat.S_IREAD | stat.S_IWRITE)
+    assert sorted(tree) == ["docs", "docs/r.txt"]
+
+
 @pytest.mark.parametrize("overwrite", ["replace", "skip"])
 def test_a_member_the_list_takes_in_the_end_replaces_the_callers_file(
     overwrite: str, tmp_path: Path
@@ -364,6 +385,35 @@ def test_a_predicate_that_drops_the_member_in_the_end_keeps_the_callers_file(
     assert [name for name, _, _ in results] == ["a.txt"]
     assert tree["link"][0] == b"MINE"
     assert sorted(tree) == ["a.txt", "link"]
+
+
+@needs_symlinks
+def test_folders_the_selection_keeps_stay_when_a_link_inside_is_dropped(
+    tmp_path: Path,
+) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(_entry("a/", mode=0o40755), b"")
+        zf.writestr(_entry("a/b/", mode=0o40755), b"")
+        zf.writestr(_entry("a/b/link", mode=0o120777), b"../../x")
+        zf.writestr(_entry("x", mode=0o100644), b"X")
+    results, tree = _both(
+        buf.getvalue(),
+        tmp_path,
+        members=lambda member: member.type is not MemberType.SYMLINK,
+    )
+    assert [name for name, _, _ in results] == ["a/", "a/b/", "x"]
+    assert sorted(tree) == ["a", "a/b", "x"]
+
+
+@posix_modes
+def test_a_folder_the_list_keeps_stays_when_a_member_inside_is_dropped(
+    tmp_path: Path,
+) -> None:
+    data = _zip([(_entry("d/", mode=0o40755), b""), (_entry("d\\x"), b"1")])
+    results, tree = _both(data, tmp_path, members=["d/", "d/x"])
+    assert [name for name, _, _ in results] == ["d/"]
+    assert sorted(tree) == ["d"]
 
 
 @needs_symlinks

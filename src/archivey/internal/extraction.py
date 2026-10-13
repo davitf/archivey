@@ -851,8 +851,8 @@ class _RunState:
     # central directory comes last; ``_REVISES_YIELDED_MEMBERS``): result index -> the
     # member as the pass handled it and the member written for it (``None`` when
     # nothing was), so the end of the pass settles what changed
-    # (``_settle_revised_members``). ``None`` for a member the selection left out
-    # during the pass: nothing was handled or reported for it yet (``_hold_place``).
+    # (``_settle_revised_members``). ``None`` for a member the selection or the
+    # filter left out during the pass (``_hold_place``).
     revisable: dict[int, tuple[ArchiveMember, ArchiveMember | None] | None] = field(
         default_factory=dict
     )
@@ -860,6 +860,9 @@ class _RunState:
     # excluded the member once it was changed, so random access records nothing for
     # it. Dropped from the report when the run returns it.
     dropped: set[int] = field(default_factory=set)
+    # Held places of members the selection left out, which the pass did not count
+    # toward ``members_done``; the end of the pass counts the ones it writes.
+    untallied: set[int] = field(default_factory=set)
     # Entries that were at a destination before the run, moved aside so a member
     # the pass wrote there before the walk settled it could be taken back
     # (``_set_aside``): the destination -> where the entry is now.
@@ -1487,7 +1490,11 @@ class ExtractionCoordinator:
 
             if member_started and recorded_index is not None:
                 state.counted[recorded_index] = tracker.member_bytes
-            if before is not None and recorded_index is not None:
+            if (
+                before is not None
+                and recorded_index is not None
+                and recorded_index not in state.dropped
+            ):
                 landed = results[recorded_index].status is ExtractionStatus.EXTRACTED
                 state.revisable[recorded_index] = (
                     before,
@@ -1692,7 +1699,7 @@ class ExtractionCoordinator:
             member = state.results[index].member
             if handled is None:
                 self._redo_revised_member(index)
-                if index not in state.dropped:
+                if index in state.untallied and index not in state.dropped:
                     members_done += 1
                     self._report_progress(
                         member, members_done, state.counted.get(index, 0)
@@ -1720,8 +1727,9 @@ class ExtractionCoordinator:
             if self._current.parked:
                 self._drop_parked_copies(state.results[index].member.name, None)
         parent = path.parent if path is not None else None
+        # Only the folders made as its parents: one a member of the run wrote stays.
         while parent is not None and parent != state.dest:
-            if parent not in state.created_dirs:
+            if parent not in state.created_dirs or parent in state.written_paths:
                 break
             try:
                 os.rmdir(long_path(parent))
@@ -1749,16 +1757,17 @@ class ExtractionCoordinator:
     ) -> int:
         """Record a result for ``member`` that the report leaves out unless the end
         of the pass gives it an outcome (``_settle_revised_members``), and return its
-        index. With ``selected_later``, for a member the selection left out, it is
-        also marked for that settling here, with nothing kept of it but the result
-        (the end of the pass reads the member the reader holds); otherwise the caller
-        marks it."""
+        index. Nothing is kept of it but the result: the end of the pass reads the
+        member the reader holds. ``selected_later`` marks a member the selection
+        left out, which the pass did not count as handled (``untallied``)."""
+        state = self._state
         index = self._append_result(
             ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
         )
-        self._state.dropped.add(index)
+        state.dropped.add(index)
+        state.revisable[index] = None
         if selected_later:
-            self._state.revisable[index] = None
+            state.untallied.add(index)
         return index
 
     def _hold_place_at(self, index: int) -> None:
@@ -1779,8 +1788,7 @@ class ExtractionCoordinator:
         streaming pass writes it before, so the entry it replaces is kept until the
         end of the run (``_restore_set_aside``)."""
         aside = self._temp_sibling(path.parent)
-        with self._readonly_cleared(path):
-            os.rename(long_path(path), long_path(aside))
+        os.rename(long_path(path), long_path(aside))
         self._state.set_aside[path] = aside
 
     def _restore_set_aside(self) -> None:
@@ -1799,8 +1807,7 @@ class ExtractionCoordinator:
                     if os.path.isdir(on_disk) and not os.path.islink(on_disk):
                         os.rmdir(on_disk)
                     else:
-                        with self._readonly_cleared(aside):
-                            os.unlink(on_disk)
+                        os.unlink(on_disk)
                 elif os.path.lexists(long_path(path)):
                     logger.warning(
                         "Could not put back %r, moved aside while the archive's "
@@ -3889,10 +3896,13 @@ class ExtractionCoordinator:
         parked = dest_path in self._current.parked
         # A member the walk can still change keeps the caller's entry it replaces
         # (``_set_aside``): the end of the pass may not select it.
+        # On Windows a read-only entry of the caller's is not moved: replacing it
+        # fails, as it does from a file (``_readonly_cleared``).
         aside = (
             not parked
             and self._current.provisional
             and self._is_callers_entry(dest_path, st)
+            and not (_WINDOWS and not st.st_mode & stat.S_IWRITE)
         )
         if not parked:
             # A real directory recreated as a directory is fine under any policy.

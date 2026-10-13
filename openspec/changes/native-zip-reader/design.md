@@ -377,12 +377,20 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   `members=` predicate is called twice for every member, and the filter twice for
   one it left out; both read `member_state_final` as `False` on the first call, so
   either can tell the two apart. A member first handled at the end of the pass is
-  reported to `on_progress` then.
+  reported to `on_progress` then. A member the pass writes is reported when it is
+  written, so progress moves while the stream is read; one the end of the pass then
+  leaves out was reported all the same, and from a pipe `members_done` can count a
+  member the report does not hold. Holding every tick until the directory is read
+  would leave a pipe extraction with no member progress at all until its end.
 - What the pass writes before the end of it decides must be undone without loss. An
   entry the caller had at a destination the pass replaces (`overwrite="replace"`) is
   moved aside and put back at the end of the run unless the member still lands
-  there. The bomb limits are the exception: what the pass writes is on disk while
-  the pass runs, so it is counted then and given back when it is taken back. A
+  there (on Windows a read-only entry is not moved, so the member fails as it does
+  from a file). Two effects outlive the take-back. `abort_on` fires before a write
+  begins, which for such a member is before the end decides, so a run can stop for
+  a member that would not have been selected; deferring it would mean writing the
+  member it exists to stop. And the bomb limits: what the pass writes is on disk
+  while the pass runs, so it is counted then and given back when it is taken back. A
   member the selection takes only provisionally (a Unix `x\y` that a list naming
   `x/y` may take) can therefore stop a run under `max_entries` or
   `max_extracted_bytes` that the same bytes from a file complete. Not counting it
