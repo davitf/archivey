@@ -59,6 +59,8 @@ class DiagnosticCode(StrEnum):
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
     MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
     MEMBER_NAME_BIDI_CONTROL = "member_name_bidi_control"
+    MEMBER_NAME_ZERO_WIDTH_CHARACTER = "member_name_zero_width_character"
+    MEMBER_NAME_INVISIBLE_CHARACTER = "member_name_invisible_character"
     FORMAT_EXTENSION_CONFLICT = "format_extension_conflict"
     EXPLICIT_FORMAT_LISTED_EMPTY = "explicit_format_listed_empty"
     EXTENSION_FORMAT_UNCONFIRMED = "extension_format_unconfirmed"
@@ -94,6 +96,10 @@ DiagnosticCodeStr = Literal[
     "member-name-encoding-inferred",
     "member_name_bidi_control",
     "member-name-bidi-control",
+    "member_name_zero_width_character",
+    "member-name-zero-width-character",
+    "member_name_invisible_character",
+    "member-name-invisible-character",
     "format_extension_conflict",
     "format-extension-conflict",
     "explicit_format_listed_empty",
@@ -175,12 +181,26 @@ class NameEncodingContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class MemberNameControlsContext(_JsonSafeContext):
-    """Member name or link target carries Unicode bidi formatting controls.
+    """Member name or link target carries Unicode format characters a reader cannot see.
+
+    ``category`` says which set they come from, and so which code reports them:
+
+    - ``"bidi"`` (``MEMBER_NAME_BIDI_CONTROL``): bidi formatting controls. A caller can
+      tell an *override* (U+202A–202E, U+2066–2069 — the `…gnp.exe` disguise) from a
+      *directional mark* (U+061C, U+200E, U+200F, which occur in legitimate Arabic and
+      Hebrew filenames) from ``controls``.
+    - ``"zero_width"`` (``MEMBER_NAME_ZERO_WIDTH_CHARACTER``): zero-width space U+200B,
+      word joiner U+2060 and BOM U+FEFF. They have no use inside a filename and make
+      two names that display the same compare different (``invoice.pdf`` beside
+      ``invoice<U+200B>.pdf``).
+    - ``"invisible"`` (``MEMBER_NAME_INVISIBLE_CHARACTER``): every other character of
+      Unicode category Cf, for example zero-width joiner U+200D, non-joiner U+200C,
+      soft hyphen U+00AD and the tag characters. These are legitimate in some names:
+      ZWJ joins emoji sequences, ZWNJ is part of Persian and Indic spelling, and tag
+      characters spell subdivision flags.
 
     ``controls`` is the comma-joined ``U+XXXX`` spellings in the order they occur, so a
-    caller can tell an *override* (U+202A–202E, U+2066–2069 — the `…gnp.exe` disguise)
-    from a *directional mark* (U+061C, U+200E, U+200F, which occur in legitimate Arabic
-    and Hebrew filenames) without re-scanning the text.
+    caller can decide without re-scanning the text.
 
     ``field`` says which text carries them: ``"name"``, the member's name, or
     ``"link_target"``, the target a link member stores. ``member_name`` and
@@ -194,6 +214,7 @@ class MemberNameControlsContext(_JsonSafeContext):
     raw_name_base64: str | None = None
     controls: str = ""
     field: Literal["name", "link_target"] = "name"
+    category: Literal["bidi", "zero_width", "invisible"] = "bidi"
 
 
 @dataclass(frozen=True)
@@ -560,6 +581,8 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_NAME_NORMALIZED: "name_normalization",
         DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: "name_encoding",
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL: "member_name_controls",
+        DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER: "member_name_controls",
+        DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER: "member_name_controls",
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT: "format_conflict",
         DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: "unconfirmed_format",
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: "unconfirmed_format",
@@ -590,6 +613,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_NAME_NORMALIZED,
         DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
         DiagnosticCode.SCAN_DIRECTORY_VANISHED,
@@ -606,7 +630,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nine codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Ten codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -636,6 +660,11 @@ and the reasons are part of the contract rather than an oversight:
 - ``MEMBER_SPECIAL_FILE_HAS_DATA`` — a documented writer option (Info-ZIP ``zip -FI``)
   produces the shape, and the member's bytes are delivered and checked like any file's,
   so nothing is hidden; ``STRICT`` would refuse an ordinary archive (DR-25).
+- ``MEMBER_NAME_INVISIBLE_CHARACTER`` — zero-width joiners are part of ordinary emoji
+  sequences, non-joiners of Persian and Indic spelling, and tag characters of
+  subdivision flags. ``STRICT`` would refuse an archive of legitimately named files.
+  Its sibling ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` is **in** the set: U+200B, U+2060
+  and U+FEFF have no use inside a filename.
 """
 
 
@@ -649,6 +678,18 @@ and the reasons are part of the contract rather than an oversight:
 _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]] = (
     MappingProxyType(
         {
+            DiagnosticCode.MEMBER_NAME_BIDI_CONTROL: (
+                "category",
+                frozenset({"bidi"}),
+            ),
+            DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER: (
+                "category",
+                frozenset({"zero_width"}),
+            ),
+            DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER: (
+                "category",
+                frozenset({"invisible"}),
+            ),
             DiagnosticCode.SCAN_DIRECTORY_VANISHED: (
                 "entry_kind",
                 frozenset({"directory"}),
@@ -699,9 +740,9 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
     """Reject unregistered or mismatched code→context pairings.
 
     Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. Codes that
-    share a kind (``scan_race``, ``unused_argument``, ``unconfirmed_format``,
-    ``archive_eof``) are told apart by one context field, and every one of them is
-    checked against the value its code requires.
+    share a kind (``member_name_controls``, ``scan_race``, ``unused_argument``,
+    ``unconfirmed_format``, ``archive_eof``) are told apart by one context field, and
+    every one of them is checked against the value its code requires.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
