@@ -49,11 +49,13 @@ recognizes them only by their extension (`.zz`, `.br` or `.lzma`), and a file wi
 config, which makes `open_archive` try decoding the start of the file. `open_stream` always tries.
 
 ??? note "Why doesn't `open_archive` try decoding?"
-    For these formats, decoding the start of the file and seeing whether it works is the only test,
-    and some files that aren't compressed at all pass it, such as encrypted or media files.
-    `open_archive` is often handed files of any kind, and would then open one of them as a
-    compressed file and return garbage or a confusing error. `open_stream` is called on files you
-    already say are compressed, so the test is worth it there.
+    These formats are rarely saved as files of their own. They usually come inside something else,
+    such as an HTTP response compressed with Brotli or zlib, and that's what `open_stream` is for.
+    `open_archive` is mostly handed files, of any kind. For these formats, decoding the start and
+    seeing whether it works is the only test, and some files that aren't compressed at all pass it,
+    such as encrypted or media files. `open_archive` would then open one of them as a compressed
+    file and return garbage or a confusing error. On the streams `open_stream` gets, the test is
+    worth that risk.
 
 ## Passwords
 
