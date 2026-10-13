@@ -2,12 +2,13 @@
 
 ## 0. Before coding
 
-- [ ] 0.1 The three ZIP fix PRs from the October code sweep have merged (trailing bytes
+- [x] 0.1 The three ZIP fix PRs from the October code sweep have merged (trailing bytes
       after a codec's end, malformed Unicode Path field, comment decoding). Rebase on
-      main; their tests are acceptance tests from here on.
+      main; their tests are acceptance tests from here on. (The Unicode Path one, PR 715,
+      closed unmerged; stage 2 carries its tests and docs.)
 - [x] 0.2 Questions A, B and C in `design.md` are answered (davi, 2026-10-10) and
       recorded in `dev-docs/formats/zip.md` §6 and `dev-docs/design-rules.md` DR-8.
-- [ ] 0.3 `openspec validate --strict native-zip-reader`.
+- [x] 0.3 `openspec validate --strict native-zip-reader`.
 - [x] 0.4 Question D is answered (davi, 2026-10-10: a per-member field, working name
       `member_state_final`, settled in the stage 3 PR).
 
