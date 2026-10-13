@@ -74,8 +74,7 @@ about. RAR member *data* additionally needs the RARLAB `unrar` binary, or `unar`
 no extra can supply. RAR5 BLAKE2sp verification needs no package at all — it is implemented natively on
 stdlib `hashlib`.
 
-**Stdlib** (always): [`zipfile`](https://docs.python.org/3/library/zipfile.html),
-[`gzip`](https://docs.python.org/3/library/gzip.html),
+**Stdlib** (always): [`gzip`](https://docs.python.org/3/library/gzip.html),
 [`bz2`](https://docs.python.org/3/library/bz2.html),
 [`lzma`](https://docs.python.org/3/library/lzma.html),
 [`zlib`](https://docs.python.org/3/library/zlib.html), and on 3.14+
