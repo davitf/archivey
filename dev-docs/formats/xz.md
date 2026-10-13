@@ -197,20 +197,19 @@ padding only where they run to the end of the file; a stream after them is trail
 **Dictionary caps.** Each format's declared dictionary is compared with
 `DecoderLimits.max_decoder_memory` before a decoder is built:
 
-- **xz**: each block header declares its own, and liblzma reads it, so the decompressor is
-  built with `memlimit` set to the cap plus a 128 KiB allowance for liblzma's own
-  overhead. liblzma checks it after reading a block header and before allocating. The
-  allowance is small because it is also slack: a cap set within 128 KiB below a size an xz
-  header can declare admits that size on xz.
+- **xz** and **LZMA Alone**: liblzma reads the declared dictionary (each xz block header
+  declares its own, each `.lzma` stream header one), so the decompressor is built with
+  `memlimit` set to the cap plus a 128 KiB allowance for liblzma's own overhead
+  (`new_capped_decompressor`). liblzma checks it after reading a header and before
+  allocating. The allowance is small because it is also slack: a cap set within 128 KiB
+  below a size the header declares admits that size. The refusal comes from the first
+  `decompress`, so on read, not at open. For `.lzma` that timing matters: a probe-only
+  claim's read errors are stamped `format_unconfirmed`, and that stamp is attached after
+  open, so a file whose header bytes read as a 2.5 GiB dictionary would otherwise tell the
+  caller to raise the cap for a file that is not LZMA at all. A second stream of a
+  concatenated `.lzma` is refused the same way, when its decoder starts.
 - **lzip**: the exponent in the member header, before the decoder is built. The format's
   own ceiling, 512 MiB, is below the default cap.
-- **LZMA Alone**: `LZMAFile` takes no `memlimit`, so the header is peeked first
-  (`_peek_alone_header`, replaying it on a non-seekable source). An over-cap stream opens
-  as `_RefusedAloneStream`, which refuses on the first read, not at open. The refusal has
-  to come on read because a probe-only claim's read errors are stamped
-  `format_unconfirmed`, and that stamp is attached after open: a file whose header
-  bytes read as a 2.5 GiB dictionary would otherwise tell the caller to raise the cap for
-  a file that is not LZMA at all.
 
 **Errors by cause.** CPython raises every liblzma failure as `LZMAError` and tells them
 apart only by text, the same on 3.10 to 3.14. `lzma_error_to_archivey` maps "Invalid or
@@ -379,6 +378,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - Code: `internal/streams/codecs/xz_decoder.py` (`XzDecoder`, `_XzState`, `_XzBlockResume`,
   `_read_xz_index_backwards`, `lzma_error_to_archivey`) · `internal/streams/codecs/lzip_decoder.py`
   (`LzipDecoder`, `peek_index_summary`) · `internal/streams/codecs/lzma_codec.py` (`XzCodec`,
-  `LzipCodec`, `LzmaAloneCodec`, `_alone_header_plausible`, `_RefusedAloneStream`)
+  `LzipCodec`, `LzmaAloneCodec`, `_alone_header_plausible`, `_new_alone_decompressor`)
 - Handbook: [`single-file.md`](single-file.md) · [`7z.md`](7z.md) (raw LZMA and LZMA2
   coders) · [`tar.md`](tar.md)

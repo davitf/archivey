@@ -475,9 +475,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # nothing above it asks it for a resume offset.
         password_confirm.UnverifiedPasswordReadWatch,
         detection._BoundedPeekReader,
-        # Stands in for a refused .lzma decoder: every read raises, so it produces no
-        # bytes and has no seek-point table to forward to.
-        codecs.lzma_codec._RefusedAloneStream,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
         # A member's stored bytes, read forward from the walk's stream (for .tar.gz,

@@ -64,7 +64,8 @@ duration of the scan, and ``metadata_bytes`` reads the reader's private listing 
 Any of them can stop working when those internals change; the script then prints which
 on its ``warning: probes not installed`` line rather than leaving a column silently
 empty. ``decoder_memory`` is the largest allocation an archive *declared* that archivey
-checks itself; xz and zstd hand the limit to liblzma / libzstd and are not counted.
+checks itself; xz, LZMA Alone and zstd hand the limit to liblzma / libzstd and are not
+counted.
 """
 
 from __future__ import annotations
@@ -117,8 +118,7 @@ class _Probe:
     kdf_rounds: int = 0
     spool_bytes: int = 0
     # Nesting depth of format detection in progress. Its content probes open codecs
-    # on every unplaced file, so the LZMA Alone probe reads bytes 1-4 of a git
-    # object or an OLE file as a dictionary size; those are not allocations.
+    # on every unplaced file, and a size such a probe checks is not an allocation.
     detecting: int = 0
     # Archivey's own WARNING log records for the archive being scanned.
     warnings: list[str] = field(default_factory=list)
@@ -155,11 +155,7 @@ def _install_probes() -> list[str]:
         def exceeds(declared: int, limits: DecoderLimits) -> bool:
             if not PROBE.detecting and declared > PROBE.decoder_memory_peak:
                 PROBE.decoder_memory_peak = declared
-                # The LZMA Alone codec branches on this directly, without going
-                # through ``check_decoder_memory``, so it has no ``what``.
-                PROBE.decoder_memory_what = (
-                    PROBE.pending_what or "LZMA Alone dictionary size"
-                )
+                PROBE.decoder_memory_what = PROBE.pending_what
             return original_exceeds(declared, limits)
 
         original_check = internal_config.check_decoder_memory

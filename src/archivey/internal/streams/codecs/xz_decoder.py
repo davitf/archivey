@@ -555,38 +555,43 @@ def _read_xz_index_backwards(
 
 
 # liblzma's ``memlimit`` counts a decoder's whole working set: the dictionary the
-# block header declares plus the decoder's own overhead, measured on liblzma 5.4.5 at
+# header declares plus the decoder's own overhead, measured on liblzma 5.4.5 at
 # 65 592 bytes for a lone LZMA2 filter and 67 992 for the longest chain xz allows
-# (four filters). The allowance, about twice that, keeps a dictionary exactly at
-# ``max_decoder_memory`` readable, as it is on the raw LZMA and .lzma paths, which
-# compare the declared dictionary itself. It is kept small because it is also slack:
-# a cap set 128 KiB or less below one of the sizes an xz header can declare (2^n or
-# 3 * 2^(n-1)) admits that size on xz alone.
+# (four filters), and at 65 408 for an LZMA Alone decoder. The allowance, about
+# twice that, keeps a dictionary exactly at ``max_decoder_memory`` readable, as it is
+# on the raw LZMA and lzip paths, which compare the declared dictionary itself. It is
+# kept small because it is also slack: a cap set 128 KiB or less below a size an xz or
+# .lzma header declares admits that size there.
 _LIBLZMA_OVERHEAD_ALLOWANCE = 128 * 1024
 _LIBLZMA_MEMLIMIT_MAX = 2**64 - 1
 
 
-def _new_decompressor(limits: DecoderLimits) -> lzma.LZMADecompressor:
-    """An xz decompressor that refuses a block whose filters need more than the cap.
+def new_capped_decompressor(
+    limits: DecoderLimits, format: int = lzma.FORMAT_XZ
+) -> lzma.LZMADecompressor:
+    """A liblzma decompressor that refuses a dictionary over ``max_decoder_memory``.
 
-    xz is the one LZMA path archivey does not read the dictionary size off itself:
-    each block header declares its own, and ``_XzState`` hands liblzma whole streams
-    without walking their blocks. liblzma compares ``memlimit`` against the block's
-    filter chain after decoding the block header and before allocating anything for
-    it, which is the same guarantee :func:`~archivey.internal.config.check_decoder_memory`
-    gives the other paths.
+    xz and LZMA Alone (``format``) let liblzma read the dictionary size: an xz block
+    header declares its own, and ``_XzState`` hands liblzma whole streams without
+    walking their blocks; a ``.lzma`` header declares one per stream. liblzma
+    compares ``memlimit`` against the declared dictionary after decoding the header
+    and before allocating anything for it, which is the same guarantee
+    :func:`~archivey.internal.config.check_decoder_memory` gives the other paths. The
+    refusal comes from ``decompress``, so on read, not on open.
     """
     cap = limits.max_decoder_memory
     # liblzma's memlimit is a uint64. A cap whose allowance-padded value does not fit
     # refuses nothing liblzma could be asked for, so it is left off, as for no cap.
     if cap is None or cap + _LIBLZMA_OVERHEAD_ALLOWANCE > _LIBLZMA_MEMLIMIT_MAX:
-        return lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+        return lzma.LZMADecompressor(format=format)
     return lzma.LZMADecompressor(
-        format=lzma.FORMAT_XZ, memlimit=cap + _LIBLZMA_OVERHEAD_ALLOWANCE
+        format=format, memlimit=cap + _LIBLZMA_OVERHEAD_ALLOWANCE
     )
 
 
-def lzma_error_to_archivey(exc: lzma.LZMAError, context: str) -> ArchiveyError:
+def lzma_error_to_archivey(
+    exc: lzma.LZMAError, context: str, limits: DecoderLimits | None = None
+) -> ArchiveyError:
     """Map a liblzma error to archivey's by its cause.
 
     CPython raises every liblzma failure as the one ``LZMAError`` type and tells them
@@ -595,11 +600,16 @@ def lzma_error_to_archivey(exc: lzma.LZMAError, context: str) -> ArchiveyError:
     cannot decode (a block header with a valid CRC naming an unknown filter gets
     here). liblzma gives the same message for corrupt filter properties, but the
     callers that decode properties themselves (the ZIP and 7z readers) classify that
-    as corruption before it can arrive here. An unsupported check names an integrity check it does not implement, and a
-    memlimit error is a configured cap refusing a declared dictionary. None of those
-    is damage. Anything else (corrupt data, a header that is not LZMA, an unrecognized
-    code) stays :class:`CorruptionError`. ``LZMA_MEM_ERROR`` never gets here: CPython
-    raises it as ``MemoryError``.
+    as corruption before it can arrive here. An unsupported check names an integrity
+    check it does not implement, and a memlimit error is a configured cap refusing a
+    declared dictionary. None of those is damage. Anything else (corrupt data, a
+    header that is not LZMA, an unrecognized code) stays :class:`CorruptionError`.
+    ``LZMA_MEM_ERROR`` never gets here: CPython raises it as ``MemoryError``.
+
+    ``limits`` are the limits the decompressor was built with
+    (:func:`new_capped_decompressor`). Only a decompressor built with a ``memlimit``
+    raises "Memory usage limit exceeded", and that memlimit is ``max_decoder_memory``
+    plus the overhead allowance, so the message names the cap when ``limits`` has one.
     """
     text = str(exc)
     if text.startswith(
@@ -607,6 +617,14 @@ def lzma_error_to_archivey(exc: lzma.LZMAError, context: str) -> ArchiveyError:
     ):
         return UnsupportedFeatureError(f"{context}: {exc} (liblzma cannot decode this)")
     if text.startswith("Memory usage limit"):
+        cap = limits.max_decoder_memory if limits is not None else None
+        if cap is not None:
+            return ResourceLimitError(
+                f"Decoder limit reached: max_decoder_memory={cap} (the stream's "
+                f"declared dictionary needs more than that; liblzma refused it before "
+                f"allocating). The archive chose this number; raise "
+                f"DecoderLimits.max_decoder_memory if the archive is trusted."
+            )
         return ResourceLimitError(
             f"{context}: {exc}. The archive declared a dictionary larger than the "
             f"decoder memory cap; raise DecoderLimits.max_decoder_memory if the "
@@ -641,26 +659,6 @@ def _report_unverifiable_check(
         ),
         logger=logger,
     )
-
-
-def _lzma_failure(
-    exc: lzma.LZMAError, context: str, limits: DecoderLimits
-) -> ArchiveyError:
-    """:func:`lzma_error_to_archivey`, naming the cap when a memlimit refused a block.
-
-    Only a decompressor built with a ``memlimit`` can raise "Memory usage limit
-    exceeded", and here that memlimit is always ``max_decoder_memory`` plus the
-    overhead allowance.
-    """
-    cap = limits.max_decoder_memory
-    if cap is not None and str(exc).startswith("Memory usage limit"):
-        return ResourceLimitError(
-            f"Decoder limit reached: max_decoder_memory={cap} (an xz block's "
-            f"declared dictionary needs more than that; liblzma refused it before "
-            f"allocating). The archive chose this number; raise "
-            f"DecoderLimits.max_decoder_memory if the archive is trusted."
-        )
-    return lzma_error_to_archivey(exc, context)
 
 
 class _XzState:
@@ -752,7 +750,9 @@ class _XzState:
                 # A corrupt tail is what truncation looks like here, so it stays a
                 # truncation. A memlimit or options refusal is not damage and is not
                 # swallowed.
-                failure = _lzma_failure(e, "XZ decompression error", self._limits)
+                failure = lzma_error_to_archivey(
+                    e, "XZ decompression error", self._limits
+                )
                 if not isinstance(failure, CorruptionError):
                     raise failure from e
         self.truncated = True
@@ -803,11 +803,11 @@ class _XzState:
                     break
                 del self._buf[:_STREAM_HEADER_SIZE]
                 try:
-                    self._dec = _new_decompressor(self._limits)
+                    self._dec = new_capped_decompressor(self._limits)
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(header, remaining)
                 except lzma.LZMAError as e:
-                    raise _lzma_failure(
+                    raise lzma_error_to_archivey(
                         e, "XZ stream header error", self._limits
                     ) from e
                 # liblzma accepted the header, so its CRC holds and byte 6 is zero.
@@ -827,7 +827,7 @@ class _XzState:
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(chunk, remaining)
                 except lzma.LZMAError as e:
-                    raise _lzma_failure(
+                    raise lzma_error_to_archivey(
                         e, "XZ decompression error", self._limits
                     ) from e
                 self._bytes_fed += len(chunk)
@@ -885,7 +885,7 @@ class _XzBlockResume:
         self._finished = False
         self.truncated = False
         inner.seek(start.compressed_start)
-        self._dec = _new_decompressor(limits)
+        self._dec = new_capped_decompressor(limits)
         stream_flags = bytes([0x00, start.check])
         header_crc = zlib.crc32(stream_flags) & 0xFFFFFFFF
         synthetic_header = (
@@ -910,7 +910,9 @@ class _XzBlockResume:
         try:
             plain = self._dec.decompress(chunk, max_length)
         except lzma.LZMAError as e:
-            raise _lzma_failure(e, "XZ block decompression error", self._limits) from e
+            raise lzma_error_to_archivey(
+                e, "XZ block decompression error", self._limits
+            ) from e
         self._to_output -= len(plain)
         if self._to_output < 0:
             raise CorruptionError(
@@ -1213,7 +1215,7 @@ def XzDecompressorStream(
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
     ``decoder_limits`` caps the dictionary each block header declares (see
-    :func:`_new_decompressor`); it defaults to the public default, not to no cap.
+    :func:`new_capped_decompressor`); it defaults to the public default, not to no cap.
 
     ``stream_cell`` late-binds the constructed stream so ``XzDecoder.recreate`` can
     read ``_index_built`` — the same coupling the old
