@@ -122,10 +122,12 @@ safe to show.
 
 ## Members with the same name
 
-An archive can hold several members with the same name: a TAR that had files appended, or a RAR or
-ISO that keeps old versions. All of them are listed. The last one has `member.is_current` set to
-`True`, and the earlier ones `False`. Reading or opening by name gets the last one, the way
-extracting would leave it on disk. `extract_all` skips the earlier ones and reports them as
+An archive can hold several members with the same name. Some tools update an archive by adding the
+new version of a file at its end and leaving the old one in place, as `tar --append` does, and RAR
+and ISO can keep old versions on purpose. All of them are listed. The last one is the current
+version: its `member.is_current` is `True`, and the earlier ones have `False`. `get`, `open` and
+`read` with a name use the current version, since that's the file the archive's own tool would give
+you. `extract_all` writes only the current version and reports the others as
 `ExtractionStatus.SUPERSEDED`.
 
 A name passed in `members=`, to `extract_all` or `stream_members`, matches every member with that
