@@ -111,7 +111,8 @@ def match_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
         marks a directory.
 
     Raises:
-        ArchiveyUsageError: No pattern was given, a pattern is empty or only ``/``, or a
+        ArchiveyUsageError: No pattern was given, a pattern has an empty component
+            (``""``, ``"/"``, ``"a//b"``; a leading ``/`` is allowed), or a
             ``[...]`` set is malformed, such as the reversed range ``[z-a]``. It is also a
             ``ValueError``.
     """
@@ -126,15 +127,20 @@ class _MemberGlob:
     def __init__(self, patterns: tuple[str, ...]) -> None:
         if not patterns:
             raise _UsageValueError("match_glob() needs at least one pattern")
-        if not all(p.strip("/") for p in patterns):
-            raise _UsageValueError(
-                "match_glob() got an empty pattern; a pattern must name something "
-                "other than '/'"
-            )
+        for pattern in patterns:
+            # Member names never hold an empty component ("a//b" is stored as "a/b"),
+            # so one in a pattern could match nothing. A leading "/" is not one: an
+            # absolute member name keeps it, and "/etc/**" selects "/etc/passwd".
+            body = pattern.removesuffix("/")
+            if not body.strip("/") or "" in body.split("/")[1:]:
+                raise _UsageValueError(
+                    f"match_glob() got {pattern!r}, which has an empty component; "
+                    "a pattern must name something between its '/' separators"
+                )
         self.patterns = patterns
         # Patterns ending in "/" select directories only, so they get their own regex.
         any_kind = [p for p in patterns if not p.endswith("/")]
-        dirs_only = [p.rstrip("/") for p in patterns if p.endswith("/")]
+        dirs_only = [p.removesuffix("/") for p in patterns if p.endswith("/")]
         try:
             self._any = _compile_globs(any_kind)
             self._dirs_only = _compile_globs(dirs_only)
@@ -230,11 +236,29 @@ def _component_to_regex(component: str) -> str:
             negate = body.startswith("!")
             if negate:
                 body = body[1:]
-            # Escape what is special inside a regex class; keep "-" for ranges.
-            body = re.sub(r"([\\\[\]^&~|])", r"\\\1", body)
+            body = _set_body_to_regex(body)
             # The lookahead refuses "/"; putting "/" inside the set would join it to the
             # caller's characters ("[!-a]" would become the range "/-a").
             out.append(f"(?!/)[{'^' if negate else ''}{body}]")
         else:
             out.append(re.escape(c))
+    return "".join(out)
+
+
+def _set_body_to_regex(body: str) -> str:
+    """Escape a ``[...]`` body for a regex class, keeping only the ``-`` of each range.
+
+    Every other character is escaped, so ``re`` never sees a ``--`` it could read as set
+    difference (it warns about that) or a ``&&``, ``~~`` or ``||``. A reversed range such
+    as ``z-a`` still reaches ``re`` and raises ``re.error``.
+    """
+    out: list[str] = []
+    k = 0
+    while k < len(body):
+        if k + 2 < len(body) and body[k + 1] == "-":
+            out.append(f"{re.escape(body[k])}-{re.escape(body[k + 2])}")
+            k += 3
+        else:
+            out.append(re.escape(body[k]))
+            k += 1
     return "".join(out)

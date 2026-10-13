@@ -382,7 +382,8 @@ is selected when any pattern matches its whole name, case-sensitively:
   `a`; `**` inside a component is `*`.
 - A directory is matched by its name without the trailing `/`. A pattern ending in `/`
   matches only directories (`ArchiveMember.is_dir`, or a `str` ending in `/`).
-- No pattern, an empty or `/`-only pattern, or a malformed `[...]` set raises
+- No pattern, a pattern with an empty component (`""`, `/`, `a//b`; a leading `/` is
+  allowed and matches an absolute member name), or a malformed `[...]` set raises
   `ArchiveyUsageError` (also a `ValueError`). A pattern that matches nothing records no
   diagnostic.
 - The CLI's own patterns (`*` crosses `/`, tar-style) stay separate and are not built on

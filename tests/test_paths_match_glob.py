@@ -95,6 +95,30 @@ def test_negated_set_keeps_its_own_characters() -> None:
     assert match_glob("a[!--0]b")("a1b")
 
 
+@pytest.mark.filterwarnings("error::FutureWarning")
+@pytest.mark.parametrize(
+    ("pattern", "selected", "refused"),
+    [
+        ("a[*--]", ["a-", "a*", "a+"], ["a.", "a/"]),
+        ("a[--^]", ["a-", "a0", "a^"], ["a/", "a_"]),
+        ("a[!a&&b]", ["ac"], ["a&", "aa", "ab"]),
+        ("a[~~|]", ["a~", "a|"], ["a/"]),
+    ],
+)
+def test_set_operators_are_literal(
+    pattern: str, selected: list[str], refused: list[str]
+) -> None:
+    # "--", "&&", "~~" and "||" are set operations to re (it warns); in a glob set they
+    # are ordinary characters, or a range ending in "-".
+    predicate = match_glob(pattern)
+    assert [name for name in selected + refused if predicate(name)] == selected
+
+
+def test_leading_slash_matches_an_absolute_name() -> None:
+    assert match_glob("/etc/**")("/etc/passwd")
+    assert not match_glob("/etc/**")("etc/passwd")
+
+
 def test_repeated_double_star_is_one() -> None:
     predicate = match_glob("docs/**/**/*.md")
     assert [name for name in NAMES if predicate(name)] == [
@@ -104,7 +128,19 @@ def test_repeated_double_star_is_one() -> None:
 
 
 @pytest.mark.parametrize(
-    "patterns", [(), ("",), ("*.md", ""), ("/",), ("//",), ("[z-a]",)]
+    "patterns",
+    [
+        (),
+        ("",),
+        ("*.md", ""),
+        ("/",),
+        ("//",),
+        ("a//b",),
+        ("//a",),
+        ("a//",),
+        ("[z-a]",),
+        ("a[^--]",),
+    ],
 )
 def test_bad_patterns_are_a_usage_error(patterns: tuple[str, ...]) -> None:
     with pytest.raises(ArchiveyUsageError, match="match_glob") as caught:
