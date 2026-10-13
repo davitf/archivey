@@ -165,7 +165,7 @@
 - [ ] 6.3 Format-zip spec, handbook §3 and §5, `docs/formats.md`; close the `IDEAS.md`
       item.
 
-## 7. Shrink and Implode (PR 7)
+## 7. Shrink and Implode (deferred until after 0.2.0, maintainer 2026-10-13)
 
 - [ ] 7.1 Pure-Python decoders for methods 1 and 6, registered with the codec layer.
 - [ ] 7.2 Fixtures from a real writer (Info-ZIP `zip` 1.x / PKZIP 1.x output or the

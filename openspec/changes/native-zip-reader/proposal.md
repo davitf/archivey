@@ -43,7 +43,8 @@ directory is the simplest of the three.
   outcome no longer depends on the Python version.
 - Later stages add what the native parser makes cheap: reading two of the three kinds
   of central and local header disagreement (ruled 2026-10-10), ZIPs over 4 GiB written
-  without ZIP64, and methods 1 (Shrink) and 6 (Implode).
+  without ZIP64. Methods 1 (Shrink) and 6 (Implode) wait until after 0.2.0 (the
+  maintainer, 2026-10-13): no current writer makes them, so fixtures are the cost.
 - ADR 0006 (stdlib `zipfile` for the ZIP core) is superseded by a new ADR.
 
 ## Impact
