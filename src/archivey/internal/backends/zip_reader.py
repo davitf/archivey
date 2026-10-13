@@ -1175,8 +1175,9 @@ class ZipReader(BaseArchiveReader):
     def _set_bounds(self, offsets: array[int], *, count: int | None) -> None:
         """Record the offsets a listing walk read, and what it says of the count.
 
-        ``count`` is ``None`` for a walk that ended in damage: the count is then known
-        to be unknowable.
+        ``count`` is ``None`` for a walk that ended in damage or at ``max_members``: the
+        count is then known to be unknowable. The index pass's early stop sets the same
+        state directly (``_index_pass``).
         """
         with self._index_lock:
             if self._bounds is None:
