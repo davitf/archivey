@@ -21,7 +21,7 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 | Exception | Raised when |
 |---|---|
 | `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, but that's a guess, so catch `CorruptionError` for both |
-| `EncryptionError` | A password is needed and none was given, or none of the ones given works |
+| `EncryptionError` | A password is needed and none was given, or none of the ones given works. A damaged member encrypted with the old ZIP encryption raises it too, since archivey can't tell damage from a wrong password there |
 | `FormatDetectionError` | The file isn't in a format archivey recognizes |
 | `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method. A damaged header can raise it too, when the damaged field is one nothing checks, such as a ZIP entry's compression method. Either way, you can't use the file |
 | `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
@@ -29,6 +29,10 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 
 The [reference](api.md#archivey.ArchiveyError) lists the rest, such as `ReadError`, the parent of
 the first two.
+
+Archivey's exceptions can be pickled, so they come back intact from a process pool. An option given
+a value it doesn't know, such as `policy="strictt"`, raises `ArchiveyUsageError` naming the accepted
+values.
 
 If reading fails and the format was only a guess, the exception has `format_unconfirmed=True`. That
 happens when nothing in the file confirmed its format, so archivey went by the file name, or when
@@ -95,6 +99,18 @@ exception.
 A damaged member doesn't always raise before its end. Depending on the compression method, damaged
 data can decode to wrong bytes with no error, and only the checksum at the end catches it. A member
 stored without compression never notices damage on its own.
+
+A cut-off member can also end early without an error. `stream.read(member.size)` then returns fewer
+bytes than the member should hold, and the next read raises `TruncatedError`. So code that reads a
+member in one call and then stops should check the length it got, or call `read()` once more.
+
+No option makes archivey check a member before handing you its bytes. If you must never use
+unchecked data, read the whole member into memory or a temporary file first, and use it only once
+the read has finished without an error.
+
+An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
+old ZIP encryption, is in the same position. If you close its stream before the end, archivey logs
+`ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wrong password.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that

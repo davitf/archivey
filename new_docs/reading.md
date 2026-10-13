@@ -32,7 +32,9 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 `read` and `members()` raise, so an out-of-order read fails right away instead of quietly
 costing time. If you plan to read an archive in one pass, setting it catches that mistake,
 even on an ordinary file. You get one pass, through `stream_members` or `extract_all`, and it
-is used up even if you leave the loop early.
+is used up even if you leave the loop early. Inside a `stream_members` loop, `open`, `read` and
+`members()` raise even without `streaming=True`, since the pass is still using the archive. Streams
+from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
 compressed files can come from one. ZIP, 7z, RAR and ISO archives need a file or another source
@@ -44,11 +46,15 @@ that can seek.
     for RAR copying what it reads to a temporary file for `unrar` as it goes. It doesn't yet.
     Reading ZIP from a pipe is planned, and RAR may follow.
 
+If you have a ZIP, 7z, RAR or ISO archive in a pipe, copying it to a file or to an `io.BytesIO`
+first lets archivey read it.
+
 ## Seeking inside a member
 
 Some code needs to seek inside a member: a library that reads a ZIP stored inside the archive, a
 Parquet reader, an image decoder. By default a member stream only moves forward, and `seek` raises.
-With `seekable_members=True`, streams from `open` can seek. Moving backwards in compressed data can
+With `seekable_members=True`, streams from `open` can seek, and an archive stored inside another one
+opens from such a stream like from a file. Moving backwards in compressed data can
 mean decompressing the member again from its start. If you install the `seekable` extra, archivey
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it

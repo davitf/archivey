@@ -5,10 +5,13 @@
 `open_archive` takes a path, a binary file object or a folder. A folder opens like an archive of the
 files inside it. For a 7z or RAR archive split into several volumes, the path of any one of them is
 enough, and archivey finds the others. If it can't find them by name, such as volumes you hold as
-open file objects, you can pass a list of them, in order.
+open file objects, you can pass a list of them, in order. A ZIP split by 7-Zip into `.zip.001`,
+`.zip.002` and so on opens the same way. If a volume is missing, opening raises `TruncatedError`
+naming it, rather than reading a shorter archive.
 
 A file object is read from its current position to its end, so an archive that starts partway
-through a larger file opens as is. Bytes after the archive don't stop it opening. They're recorded
+through a larger file opens as is. Bytes after the archive don't stop it opening, except after a ZIP,
+where more than 64 KiB of them hides the ZIP's index and it fails as damaged. They're recorded
 as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` turns into an exception. A file
 object that can't seek, such as a pipe or an HTTP response, needs `streaming=True` and works only
 for some formats, which [Reading once](reading.md#reading-once) lists.
@@ -22,7 +25,28 @@ for some formats, which [Reading once](reading.md#reading-once) lists.
 Archivey identifies the format from the file's contents, so a ZIP named `backup.bin` still
 opens as a ZIP. It falls back to the file name only when the contents don't settle it. To skip
 detection, pass `format=`, such as `format="zip"` or `format=archivey.ArchiveFormat.TAR_GZ`. If
-the file isn't in the specified format, it fails like a damaged one.
+the file isn't in the specified format, it fails like a damaged one. `archivey.detect_format(path)`
+tells you the format without opening the archive.
+
+## Single compressed files
+
+A file that's compressed but not an archive, such as `notes.txt.gz`, opens as an archive of one
+member, named after the file without its extension (`notes.txt`). If you only want its contents,
+`open_stream` returns them as a file object:
+
+```python
+with archivey.open_stream("notes.txt.gz") as stream:
+    text = stream.read()
+```
+
+On a `.tar.gz` it removes only the compression, so you get the TAR's bytes. It refuses ZIP, 7z, RAR,
+ISO and plain TAR files, which aren't compressed streams. It takes `seekable=`, which works like
+`seekable_members` in [Seeking inside a member](reading.md#seeking-inside-a-member).
+
+zlib, Brotli and `.lzma` files start with nothing that identifies them, so `open_archive` recognizes
+them only by their extension (`.zz`, `.br`, `.lzma`). For one without it, pass `format=`, or set
+`always_probe_content=True` in the config to make archivey try to decode it. `open_stream` always
+tries.
 
 ## Passwords
 
@@ -80,6 +104,18 @@ diagnostics.
 escaped byte, like `'caf\udce9.txt'`, can't be encoded as UTF-8, so printing or logging it can raise
 `UnicodeEncodeError`. `archivey.terminal.escape_control_chars(member.name)` gives a version that's
 safe to show.
+
+## Members with the same name
+
+An archive can hold several members with the same name: a TAR that had files appended, or a RAR or
+ISO that keeps old versions. All of them are listed. The last one has `member.is_current` set to
+`True`, and the earlier ones `False`. Reading or opening by name gets the last one, the way
+extracting would leave it on disk. `extract_all` skips the earlier ones and reports them as
+`ExtractionStatus.SUPERSEDED`.
+
+A name passed in `members=`, to `extract_all` or `stream_members`, matches every member with that
+name, so `stream_members(members=["a.txt"])` gives you each version. To pick one, pass the
+`ArchiveMember` from the listing.
 
 ## Configuration
 
