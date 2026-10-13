@@ -59,7 +59,6 @@ from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     DiagnosticContext,
-    DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticSummary,
     DigestContext,  # noqa: F401
@@ -192,7 +191,6 @@ __all__ = [
     "Diagnostic",
     "DiagnosticCode",
     "DiagnosticContext",
-    "DiagnosticDisposition",
     "DiagnosticPolicy",
     "DiagnosticSummary",
     "ARCHIVE_INTEGRITY_CODES",

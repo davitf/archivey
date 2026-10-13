@@ -20,7 +20,6 @@ from archivey import (
     ArchiveyConfig,
     Diagnostic,
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticRaisedError,
     ExtractionStatus,
@@ -91,13 +90,13 @@ def _make_member(name: str = "a/b") -> ArchiveMember:
 @pytest.mark.parametrize(
     "disposition,expect_retained,expect_log,expect_callback,expect_raise",
     [
-        (DiagnosticDisposition.IGNORE, False, False, False, False),
-        (DiagnosticDisposition.COLLECT, True, True, True, False),
-        (DiagnosticDisposition.RAISE, True, True, True, True),
+        ("ignore", False, False, False, False),
+        ("collect", True, True, True, False),
+        ("raise", True, True, True, True),
     ],
 )
 def test_policy_matrix_cells(
-    disposition: DiagnosticDisposition,
+    disposition: str,
     expect_retained: bool,
     expect_log: bool,
     expect_callback: bool,
@@ -107,13 +106,9 @@ def test_policy_matrix_cells(
     seen: list[Diagnostic] = []
     collector = DiagnosticCollector(
         policy={
-            DiagnosticDisposition.IGNORE: DiagnosticPolicy(
-                ignore={DiagnosticCode.MEMBER_NAME_NORMALIZED}
-            ),
-            DiagnosticDisposition.COLLECT: DiagnosticPolicy(),
-            DiagnosticDisposition.RAISE: DiagnosticPolicy(
-                raise_on={DiagnosticCode.MEMBER_NAME_NORMALIZED}
-            ),
+            "ignore": DiagnosticPolicy(ignore={DiagnosticCode.MEMBER_NAME_NORMALIZED}),
+            "collect": DiagnosticPolicy(),
+            "raise": DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_NORMALIZED}),
         }[disposition],
         on_diagnostic=seen.append,
     )
@@ -746,10 +741,6 @@ def test_empty_summary_helper() -> None:
     assert empty.dropped_count == 0
 
 
-def test_public_disposition_values() -> None:
-    assert DiagnosticDisposition.COLLECT.value == "collect"
-
-
 # ---------------------------------------------------------------------------
 # The review batch: unused arguments, empty listings, unconfirmed formats
 # ---------------------------------------------------------------------------
@@ -836,14 +827,10 @@ def test_strict_preset_equals_hand_built_policy() -> None:
     assert hash(DiagnosticPolicy.STRICT) == hash(
         DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)
     )
-    for code in DiagnosticCode:
-        expected = (
-            DiagnosticDisposition.RAISE
-            if code in ARCHIVE_INTEGRITY_CODES
-            else DiagnosticDisposition.COLLECT
-        )
-        assert DiagnosticPolicy.STRICT.resolve(code) is expected
-        assert DiagnosticPolicy.PEDANTIC.resolve(code) is DiagnosticDisposition.RAISE
+    assert DiagnosticPolicy.STRICT.raise_on == ARCHIVE_INTEGRITY_CODES
+    assert DiagnosticPolicy.STRICT.ignore == frozenset()
+    assert DiagnosticPolicy.PEDANTIC.raise_on == frozenset(DiagnosticCode)
+    assert DiagnosticPolicy.PEDANTIC.ignore == frozenset()
 
 
 def test_policy_fields_are_frozensets_of_codes() -> None:
@@ -860,10 +847,8 @@ def test_policy_fields_are_frozensets_of_codes() -> None:
         }
     )
     assert isinstance(policy.ignore, frozenset)
-    assert policy.resolve(DiagnosticCode.PASSWORD_ARGUMENT_UNUSED) is (
-        DiagnosticDisposition.IGNORE
-    )
-    assert policy.resolve(DiagnosticCode.EMPTY_ARCHIVE) is DiagnosticDisposition.COLLECT
+    assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED in policy.ignore
+    assert DiagnosticCode.EMPTY_ARCHIVE not in policy.ignore | policy.raise_on
 
 
 def test_policy_refuses_a_code_in_both_sets() -> None:
@@ -885,7 +870,7 @@ def test_policy_refuses_a_bare_string(field: str) -> None:
 def test_policy_refuses_a_mapping(field: str) -> None:
     """The removed ``overrides={code: disposition}`` shape iterates as its keys, so
     under ``ignore=`` it would silence a code the caller asked to raise on."""
-    overrides = {DiagnosticCode.ARCHIVE_TRAILING_DATA: DiagnosticDisposition.RAISE}
+    overrides = {DiagnosticCode.ARCHIVE_TRAILING_DATA: "raise"}
     with pytest.raises(ArchiveyUsageError, match="not a mapping"):
         DiagnosticPolicy(**{field: overrides})  # type: ignore[arg-type]
 

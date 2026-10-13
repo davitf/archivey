@@ -24,7 +24,6 @@ from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     DiagnosticContext,
-    DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticSummary,
     OnDiagnostic,
@@ -340,7 +339,8 @@ class DiagnosticCollector:
         ``escalate_as`` only when the disposition is already ``RAISE``.
         """
         validate_code_context(code, context)
-        disposition = self._policy.resolve(code)
+        ignored = code in self._policy.ignore
+        raising = code in self._policy.raise_on
         log = logger if logger is not None else self._logger
         thread_id = threading.get_ident()
 
@@ -392,7 +392,7 @@ class DiagnosticCollector:
 
             retained_aggregate = False
             attached = False
-            if disposition is not DiagnosticDisposition.IGNORE:
+            if not ignored:
                 if self._slots_used < self._max_retained:
                     self._retained.append(
                         _RetainedEntry(sequence=sequence, diagnostic=diagnostic)
@@ -417,8 +417,8 @@ class DiagnosticCollector:
                     emit_log.details.append(_EmitDetail(diagnostic, attached))
                 replay.cursor = logged_at + 1
 
-            should_deliver = disposition is not DiagnosticDisposition.IGNORE
-            should_raise_diagnostic = disposition is DiagnosticDisposition.RAISE
+            should_deliver = not ignored
+            should_raise_diagnostic = raising
             if should_deliver:
                 self._emitting_threads.add(thread_id)
 
@@ -482,7 +482,7 @@ class DiagnosticCollector:
         the first one.
         """
         validate_code_context(code, context)
-        if self._policy.resolve(code) is not DiagnosticDisposition.RAISE:
+        if code not in self._policy.raise_on:
             return
         raised = DiagnosticRaisedError(
             message,

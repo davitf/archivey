@@ -5,14 +5,20 @@
 The system SHALL provide a frozen `DiagnosticPolicy` with two keyword-only code sets,
 `ignore` and `raise_on`. A code in `raise_on` resolves to `RAISE`, a code in `ignore` to
 `IGNORE`, and every other code to `COLLECT`. The only dispositions SHALL be `IGNORE`,
-`COLLECT`, and `RAISE` (no logger matching).
+`COLLECT`, and `RAISE` (no logger matching). The dispositions are the contract's
+vocabulary, not a public type: a caller reads a policy through its two sets, and the
+policy SHALL NOT expose a resolve method or a disposition enum.
 
 ```python
-DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | str] | None = None,
-                 raise_on: Iterable[DiagnosticCode | str] | None = None)
+DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
+                 raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None)
 policy.ignore: frozenset[DiagnosticCode]
 policy.raise_on: frozenset[DiagnosticCode]
 ```
+
+`DiagnosticCodeStr` SHALL be a `Literal` of every code's value and its dash form, as the
+other enum arguments' aliases are, so a type checker rejects a misspelled code. The test
+suite SHALL fail when a code is added without its spellings.
 
 Each argument SHALL accept any iterable of codes, a code's name or value as a string
 included, and the field SHALL hold a `frozenset` of members, so a caller builds a policy

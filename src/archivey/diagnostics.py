@@ -83,12 +83,54 @@ class DiagnosticCode(StrEnum):
     # the placement clause in ``openspec/specs/diagnostics``.
 
 
-class DiagnosticDisposition(StrEnum):
-    """Per-code policy disposition for an emitted diagnostic."""
-
-    IGNORE = "ignore"
-    COLLECT = "collect"
-    RAISE = "raise"
+#: The string spellings of :class:`DiagnosticCode` a type checker accepts: each value, and
+#: its dash form. The runtime also accepts a member's name in any case.
+DiagnosticCodeStr = Literal[
+    "member_name_normalized",
+    "member-name-normalized",
+    "member_name_encoding_inferred",
+    "member-name-encoding-inferred",
+    "member_name_bidi_control",
+    "member-name-bidi-control",
+    "format_extension_conflict",
+    "format-extension-conflict",
+    "explicit_format_listed_empty",
+    "explicit-format-listed-empty",
+    "extension_format_unconfirmed",
+    "extension-format-unconfirmed",
+    "probe_format_unconfirmed",
+    "probe-format-unconfirmed",
+    "empty_archive",
+    "empty-archive",
+    "encoding_argument_unused",
+    "encoding-argument-unused",
+    "password_argument_unused",
+    "password-argument-unused",
+    "scan_directory_vanished",
+    "scan-directory-vanished",
+    "scan_entry_vanished",
+    "scan-entry-vanished",
+    "archive_eof_marker_missing",
+    "archive-eof-marker-missing",
+    "archive_trailing_data",
+    "archive-trailing-data",
+    "member_timestamp_invalid",
+    "member-timestamp-invalid",
+    "member_header_record_skipped",
+    "member-header-record-skipped",
+    "symlink_target_unavailable",
+    "symlink-target-unavailable",
+    "digest_unverifiable",
+    "digest-unverifiable",
+    "encrypted_member_unverified",
+    "encrypted-member-unverified",
+    "seek_index_degraded",
+    "seek-index-degraded",
+    "stream_rewind_redecompresses",
+    "stream-rewind-redecompresses",
+    "member_selector_unmatched",
+    "member-selector-unmatched",
+]
 
 
 @dataclass(frozen=True)
@@ -743,8 +785,8 @@ class DiagnosticPolicy:
     def __init__(
         self,
         *,
-        ignore: Iterable[DiagnosticCode | str] | None = None,
-        raise_on: Iterable[DiagnosticCode | str] | None = None,
+        ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
+        raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None,
     ) -> None:
         # Converted, not only checked: ``resolve`` answers by membership, so a code
         # spelled as its name would construct fine and then never match.
@@ -763,15 +805,6 @@ class DiagnosticPolicy:
             )
         object.__setattr__(self, "ignore", codes["ignore="])
         object.__setattr__(self, "raise_on", codes["raise_on="])
-
-    def resolve(self, code: DiagnosticCode) -> DiagnosticDisposition:
-        # The constructor refuses a code in both sets, so this order is not a
-        # precedence rule.
-        if code in self.raise_on:
-            return DiagnosticDisposition.RAISE
-        if code in self.ignore:
-            return DiagnosticDisposition.IGNORE
-        return DiagnosticDisposition.COLLECT
 
 
 DiagnosticPolicy.STRICT = DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)
@@ -869,8 +902,8 @@ __all__ = [
     "ArchiveEofContext",
     "Diagnostic",
     "DiagnosticCode",
+    "DiagnosticCodeStr",
     "DiagnosticContext",
-    "DiagnosticDisposition",
     "DiagnosticPolicy",
     "DiagnosticSummary",
     "DigestContext",

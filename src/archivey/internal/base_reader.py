@@ -31,7 +31,6 @@ from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticSummary,
     EmptyArchiveContext,
     EncryptedVerificationContext,
@@ -1142,10 +1141,7 @@ class BaseArchiveReader(ArchiveReader):
         # ResourceLimitError. escalate_as keeps that type when RAISE fires; under
         # COLLECT we leave it unset so the already-stamped ``exc`` is re-raised by the
         # caller.
-        raising = (
-            self._diagnostics_collector.policy.resolve(code)
-            is DiagnosticDisposition.RAISE
-        )
+        raising = code in self._diagnostics_collector.policy.raise_on
 
         # Set before emitting: under RAISE the emit does not return, and a flag set
         # afterwards would never be reached — every retried read would record the

@@ -42,6 +42,7 @@ from archivey.cli.errors import CliError
 from archivey.cli.main import build_parser
 from archivey.config import AcceleratorMode, ArchiveyConfig, RarDecompressor
 from archivey.detection_cost import DetectionBudgetPreset
+from archivey.diagnostics import DiagnosticCode, DiagnosticCodeStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
     coerce_enum,
@@ -346,6 +347,7 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (OverwritePolicy, OverwritePolicyStr),
     (OnError, OnErrorStr),
     (AbortOn, AbortOnStr),
+    (DiagnosticCode, DiagnosticCodeStr),
 )
 
 
@@ -374,13 +376,6 @@ ALIASES_NOT_WANTED = {
         "reason as AcceleratorMode: __post_init__ converts a preset member or its name, "
         "so the field always holds a budget, and every consumer reads it as one. Its "
         "only other consumer, detect_format(budget=), was removed."
-    ),
-    "DiagnosticCode": (
-        "DiagnosticPolicy's ignore and raise_on fields stay annotated "
-        "frozenset[DiagnosticCode], for the same reason as AcceleratorMode: __init__ "
-        "converts each spelling, so the fields always hold members. Its parameters take "
-        "Iterable[DiagnosticCode | str] instead; a Literal of every code would be long "
-        "and grow with the taxonomy."
     ),
     "StreamFormat": (
         "ArchiveFormat's stream field; see ContainerFormat. format= arguments take "

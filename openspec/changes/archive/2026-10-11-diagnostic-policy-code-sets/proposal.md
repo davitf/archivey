@@ -21,9 +21,12 @@ over `policy.overrides`.
   `raise_on=ARCHIVE_INTEGRITY_CODES` and `raise_on=frozenset(DiagnosticCode)`. A custom
   policy is built from the same sets:
   `DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.ARCHIVE_TRAILING_DATA})`.
-- Removed before 0.2.0: `overrides=`, `default=`, `strict()`, `pedantic()`.
-  `DiagnosticDisposition` stays: `resolve()` returns it and the delivery matrix is
-  written in it.
+- `DiagnosticCodeStr`, a `Literal` of every code's value and dash form, types the string
+  spellings, as the other enum arguments' aliases do.
+- Removed before 0.2.0: `overrides=`, `default=`, `strict()`, `pedantic()`, and also
+  `DiagnosticPolicy.resolve()` and `DiagnosticDisposition`: a caller reads a policy
+  through its two sets, and the library tests membership directly. The three
+  dispositions stay as the contract's vocabulary.
 
 Alternatives not taken:
 
