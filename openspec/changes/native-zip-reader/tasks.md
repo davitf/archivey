@@ -69,8 +69,22 @@
 
 3a is the forward walk alone (3.1, 3.2's parser half, 3.3d); 3b the reader over a
 non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 the parts of 3.3e
-and 3.3f that need no ZIP pipe reader (3.3e1, 3.3f1), 3b3 the rest (3.2a, 3.3 to 3.3d,
-3.3e2, 3.3f2, 3.3g, 3.3h, 3.4, 3.5, 3.5a); 3c the seekable cases (3.0, 3.0a, 3.0b).
+and 3.3f that need no ZIP pipe reader (3.3e1, 3.3f1), 3b3 the rest; 3c the seekable
+cases (3.0, 3.0a, 3.0b).
+
+3b3 is five PRs. `open_archive` keeps refusing a pipe for ZIP until the last one, so
+each lands with nothing half-done reachable:
+
+- 3b3a, the pipe reader (`zip_forward_reader.py`): members from local headers, data
+  checked against the header or descriptor as it is read, members updated in place
+  from the directory at the end of the pass; 3.3h, 3.3e2's reader half, 3.3f2's
+  listing half.
+- 3b3b, extraction's end of the pass: 3.3, 3.3a, 3.3f2, and the local entries no
+  directory entry points to (3.3i).
+- 3b3c, the failures found at the end of the pass: 3.3b, 3.3c, 3.3g.
+- 3b3d, encrypted members from a pipe: 3.2a, and password candidates (3.2b).
+- 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
+  (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
 
 - [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
@@ -95,6 +109,10 @@ and 3.3f that need no ZIP pipe reader (3.3e1, 3.3f1), 3b3 the rest (3.2a, 3.3 to
       CRC, and PPMd8 with `CodecParams.input_runs_on`; tests for DEFLATE, Deflate64,
       bzip2, LZMA with EOS, PPMd and Zstandard, signed and unsigned, in
       `test_zip_walk_codec_end.py`.
+- [ ] 3.2b Encrypted members from a pipe (3b3a refuses them when read): one password,
+      and several candidates, whose bounded confirm reads a prefix the pass keeps
+      (`archive-reading`'s "Confirm candidates" requirement); a bit-3 STORED member
+      under ZipCrypto or AES ends by the scan without a key, so a skip needs none.
 - [ ] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
       codec's input, so the AES stage authenticates the ciphertext as it goes, holding
       back the bytes past the codec's end until `settle` says where the data ended
@@ -120,26 +138,32 @@ and 3.3f that need no ZIP pipe reader (3.3e1, 3.3f1), 3b3 the rest (3.2a, 3.3 to
       whose target is stored as data until it is read (ZIP, 7z, RAR 4), with a test
       for each; `archive-data-model`, `docs/opening-and-listing.md`, `docs/formats.md`
       and the TAR, 7z, RAR and ZIP handbook pages.
-- [ ] 3.3e2 Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
+- [x] 3.3e2 Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
       caller sees in a forward pass"; `member_state_final` false for a pipe ZIP member
-      until the directory has been read (test), and the ZIP row of the
-      `docs/formats.md` table gains the directory's fields. Once a pipe ZIP no longer
-      refuses `max_members`, `ListingLimits` discard becomes reachable for a
-      data-stored link: a symlink yielded after the discard still needs
-      `_link_target_unread` set, and `close()` must settle a kept-prefix symlink the
-      caller holds although `_listed` is empty (tests for both).
+      until the directory has been read (test). 3b3a: the pipe reader still charges
+      `max_members` as it walks, so a `ListingLimits` discard comes only from another
+      limit, and it ends the updates: members after a discard, and the kept prefix,
+      are never updated from the directory, so neither needs `_link_target_unread`
+      (each is a `FILE` or `DIRECTORY` from its local header, and stays one).
+- [ ] 3.3e3 The ZIP row of the `docs/formats.md` table gains the directory's fields
+      (3b3e, with the gate).
 - [x] 3.3f1 A reparse-flagged member whose data is not a reparse buffer is typed when
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
       (a seekable ZIP needs no read-ahead: the pass reads the target, then opens the
       member); tests in both modes, red first.
-- [ ] 3.3f2 From a pipe such a member stays a file (test).
+- [ ] 3.3f2 From a pipe such a member stays a file (test). 3b3a: the listing half,
+      `test_a_reparse_member_whose_data_is_no_link_stays_a_file`; extraction is 3b3b.
 - [ ] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
       the pass" states them, under `OnError.CONTINUE` and `STOP`, for 3.3b, 3.3c and a
       directory entry with no local entry. Each test checks every affected result and
       what is at the path afterwards (the reversed pair: `M1` `FAILED`, `M2`
       `SUPERSEDED`, the path empty); `stream_members()` raises for 3.3b and the missing
       entry, not for 3.3c.
-- [ ] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
+- [ ] 3.3i A local entry no directory entry points to: dropped from the listing and,
+      when extracting, from disk, and reported (diagnostic code pending the
+      maintainer's pick, 2026-10-13). Until 3b3b it stays listed as its local header
+      made it.
+- [x] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).
 - [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,

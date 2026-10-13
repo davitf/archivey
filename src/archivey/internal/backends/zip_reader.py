@@ -4,7 +4,9 @@ Layout this code assumes::
 
     [ local file header + payload ]*   # PK\\x03\\x04 … name | extra | [data]
     [ central directory ]              # walked lazily as members are listed (INDEXED)
-    [ EOCD (+ optional ZIP64) ]        # at EOF → seekable source required
+    [ EOCD (+ optional ZIP64) ]        # at EOF: this reader seeks to it
+
+A source that cannot seek is read front to back by ``zip_forward_reader`` instead.
 
 Who does what:
 
@@ -909,26 +911,35 @@ class ZipReader(BaseArchiveReader):
         # than acted on. The source states it, so no wrapper between the boundary and
         # here can hide it.
         self._volume_count: int = source.volume_count
+        self._refuse_lone_split_segment()
+        self._open_index(source, start_offset)
 
-        if not source.seekable():
-            raise StreamNotSeekableError(
-                "ZIP archives cannot be read from a non-seekable source: the central "
-                "directory lives at the end of the file.",
-                archive_name=archive_name,
-            )
-
+    def _refuse_lone_split_segment(self) -> None:
+        """Refuse a split-set segment read alone."""
         # A split-set segment read alone. A joined set arrives here still carrying
         # part one's name, so the name alone does not decide it: what is refused is a
         # segment that was *not* rejoined. Numbered ``.zip.NNN`` incompleteness is
         # ``TruncatedError`` in ``open_archive``; this backstop is Info-ZIP's spanned
         # ``.zNN`` (and any ``.zip.NNN`` that skipped that refuse).
-        if self._volume_count == 1 and is_zip_split_segment_name(archive_name):
+        if self._volume_count == 1 and is_zip_split_segment_name(self._archive_name):
             raise UnsupportedFeatureError(
                 ZIP_MULTI_VOLUME_MSG,
-                archive_name=archive_name,
+                archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
 
+    def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
+        """Find the end record and get ready to walk the central directory.
+
+        :class:`~archivey.internal.backends.zip_forward_reader.ZipForwardReader`
+        replaces this for a source that cannot seek.
+        """
+        if not source.seekable():
+            raise StreamNotSeekableError(
+                "ZIP archives cannot be read from a non-seekable source: the central "
+                "directory lives at the end of the file.",
+                archive_name=self._archive_name,
+            )
         # The counter and the slice over the source close nothing of the caller's;
         # the base closes the source itself after ``_close_archive``.
         handle = self._track_source_seeks(source)
@@ -2808,8 +2819,10 @@ class ZipReadBackend(ReadBackend):
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )
     SFX_HIT_VALIDATOR = staticmethod(validate_zip_local_header)
-    # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
-    # so even a forward-only pass needs a seekable source.
+    # SUPPORTS_STREAMING_NON_SEEKABLE stays False until a pipe ZIP is read whole:
+    # `ZipForwardReader` lists and reads one, and extraction's end of the pass, the
+    # failures found there and encrypted members are still to come (the
+    # native-zip-reader change, stage 3b3).
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
     USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 
@@ -2829,7 +2842,16 @@ class ZipReadBackend(ReadBackend):
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return ZipReader(
+        reader_cls = ZipReader
+        if not source.seekable():
+            # Only streaming=True gets here with such a source (open_archive refuses
+            # random access on one). Imported here: that module builds on this one.
+            from archivey.internal.backends.zip_forward_reader import (
+                ZipForwardReader,
+            )
+
+            reader_cls = ZipForwardReader
+        return reader_cls(
             source,
             streaming,
             passwords,
