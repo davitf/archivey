@@ -75,7 +75,7 @@ name that is not in the archive raises `KeyError`, like a mapping.
 construct them, for the same reason: a limit is a promise about an operation that has not
 started yet, so the constructor is the last place a message can still name what you wrote.
 That also covers the values that would quietly switch a guard off — `None` on
-`ratio_activation_threshold`, which is not optional, and a NaN or an infinity on
+`ratio_activation_threshold` or `live_ratio_activation_threshold`, which are not optional, and a NaN or an infinity on
 `max_ratio`, neither of which any ratio ever exceeds. Pass `None` on a field that allows
 it to disable that guard on purpose.
 

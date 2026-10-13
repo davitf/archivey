@@ -1243,8 +1243,19 @@ the counting reader exactly when the static denominator is absent.
 
 The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
 `archive_output` as in the static archive-wide requirement (decoded output plus
-link-count-limit copies), checked after it crosses `ratio_activation_threshold`
-using the same `max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
+link-count-limit copies), checked after it crosses both `ratio_activation_threshold`
+and `live_ratio_activation_threshold` (default 256 MiB), using the same `max_ratio`.
+The second, larger floor exists because the live denominator is only what has been
+read so far: an honest archive whose data starts with a long blank run (a disk image,
+a preallocated file) reads far above `max_ratio` until the data after that run
+arrives, while the same archive from a file passes the static check. A blank start
+shorter than the live floor therefore gives the same outcome from a pipe as from a
+file; a longer one can still be refused from a pipe, and a bomb from a pipe can write
+up to the live floor before this guard stops it. Once a pipe has been read to
+its end, `compressed_bytes_consumed` is the whole compressed size and the live ratio
+equals the static one; on a seekable source, codec-layer re-reads can only make the
+live denominator larger. `max_extracted_bytes` stays the absolute bound. It is a
+cumulative global guard: if it trips, extraction halts even
 under `OnError.CONTINUE` with `ResourceLimitError`. The live path complements
 static checks and is not used when member compressed sizes or a cheap outer
 source size provide a denominator; whichever available guard trips first wins.
@@ -1255,7 +1266,9 @@ weakening the guard, but never causing a false positive.
 
 | Case | Expected |
 | --- | --- |
-| Highly compressible `.tar.gz` from non-seekable pipe has no static denominator | Live ratio raises `ResourceLimitError` after threshold before absolute byte cap |
+| Highly compressible `.tar.gz` from non-seekable pipe has no static denominator | Live ratio raises `ResourceLimitError` after both floors, before absolute byte cap |
+| `.tar.gz` from a pipe whose member is 64 MiB of zeros then 8 MiB of data, default limits | Extracts, as it does from a file; the blank start is under `live_ratio_activation_threshold` |
+| Same shape with a blank start longer than `live_ratio_activation_threshold` | Live ratio may raise `ResourceLimitError` from a pipe though the file passes; the documented trade-off |
 | Live ratio exceeded under `OnError.CONTINUE` | `ResourceLimitError` propagates and extraction halts |
 | Plain uncompressed `.tar` from a pipe | No counter is installed, so no live ratio applies; byte limit still applies |
 | `.tar.gz` has cheap `compressed_source_size` | Static archive-wide ratio is used; live path is not engaged/double-counted |

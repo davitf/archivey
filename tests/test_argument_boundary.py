@@ -430,8 +430,8 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
         ]
 
-    # ``ratio_activation_threshold`` is the one limit field that is not ``| None``, so
-    # None belongs in its bad set: it disables nothing, it breaks the comparison.
+    # The two activation thresholds are the limit fields that are not ``| None``, so
+    # None belongs in their bad set: it disables nothing, it breaks the comparison.
     for bad in ("x", -1, True, 1.5, None):
         rows.append(
             _case(
@@ -439,6 +439,14 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "ratio_activation_threshold",
                 bad,
                 lambda b=bad: ExtractionLimits(ratio_activation_threshold=b),
+            )
+        )
+        rows.append(
+            _case(
+                "ExtractionLimits",
+                "live_ratio_activation_threshold",
+                bad,
+                lambda b=bad: ExtractionLimits(live_ratio_activation_threshold=b),
             )
         )
 

@@ -402,8 +402,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 `ArchiveyConfig`) cap:
 
 - **Extraction bombs** — total extracted bytes (default 2 GiB), compression ratio
-  (default 1000, checked once 5 MiB has been written), and entry count (default
-  262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+  (default 1000, checked once 5 MiB has been written; for the whole archive read from
+  a source of unknown size, such as a pipe, once 256 MiB has been written), and entry
+  count (default 262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count (default 262,144) and retained metadata
   bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction,
