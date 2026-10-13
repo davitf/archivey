@@ -43,10 +43,17 @@ On a `.tar.gz` it removes only the compression, so you get the TAR's bytes. It r
 ISO and plain TAR files, which aren't compressed streams. It takes `seekable=`, which works like
 `seekable_members` in [Seeking inside a member](reading.md#seeking-inside-a-member).
 
-zlib, Brotli and `.lzma` files start with nothing that identifies them, so `open_archive` recognizes
-them only by their extension (`.zz`, `.br`, `.lzma`). For one without it, pass `format=`, or set
-`always_probe_content=True` in the config to make archivey try to decode it. `open_stream` always
-tries.
+zlib, Brotli and `.lzma` files start with nothing that identifies them. By default `open_archive`
+recognizes them only by their extension (`.zz`, `.br` or `.lzma`), and a file without one raises
+`FormatDetectionError`. To open one anyway, pass `format=`, or set `always_probe_content=True` in the
+config, which makes `open_archive` try decoding the start of the file. `open_stream` always tries.
+
+??? note "Why doesn't `open_archive` try decoding?"
+    For these formats, decoding the start of the file and seeing whether it works is the only test,
+    and some files that aren't compressed at all pass it, such as encrypted or media files.
+    `open_archive` is often handed files of any kind, and would then open one of them as a
+    compressed file and return garbage or a confusing error. `open_stream` is called on files you
+    already say are compressed, so the test is worth it there.
 
 ## Passwords
 
