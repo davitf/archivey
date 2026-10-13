@@ -227,10 +227,19 @@ def test_tar_glob_lets_star_cross_folders(
     assert [name for name in NAMES if predicate(name)] == expected
 
 
-@pytest.mark.parametrize("patterns", [(), ("",), ("docs", "")])
+@pytest.mark.parametrize(
+    "patterns",
+    [(), ("",), ("docs", ""), ("/",), ("a//b",), ("//a",), ("docs//",)],
+)
 def test_tar_glob_refuses_no_or_empty_pattern(patterns: tuple[str, ...]) -> None:
     with pytest.raises(ArchiveyUsageError, match="match_tar_glob"):
         match_tar_glob(*patterns)
+
+
+def test_tar_glob_leading_slash_matches_an_absolute_name() -> None:
+    predicate = match_tar_glob("/etc")
+    assert predicate("/etc/passwd")
+    assert not predicate("etc/passwd")
 
 
 def test_paths_exports_match_glob_without_re_export() -> None:
@@ -292,3 +301,34 @@ def test_directory_members_match_by_type(tmp_path: Path) -> None:
         "docs",
         "docs/api",
     ]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("docs", ["docs", "docs/api", "docs/api/guide.md", "docs/index.md"]),
+        (
+            "*",
+            [
+                ".",
+                "README.md",
+                "docs",
+                "docs/api",
+                "docs/api/guide.md",
+                "docs/index.md",
+                "notes.txt",
+            ],
+        ),
+        ("*/", ["docs", "docs/api", "docs/api/guide.md", "docs/index.md"]),
+        (".", ["."]),
+    ],
+)
+def test_tar_glob_on_archive_members(
+    tmp_path: Path, pattern: str, expected: list[str]
+) -> None:
+    archive_path = _tar(tmp_path / "site.tar")
+    with open_archive(archive_path) as archive:
+        members = archive.members()
+    predicate = match_tar_glob(pattern)
+    selected = sorted(m.name.rstrip("/") for m in members if predicate(m))
+    assert selected == expected

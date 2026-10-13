@@ -264,7 +264,10 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive> docs` with members `docs/`, `docs/a.txt`, `docs.txt` | Extracts `docs/` and `docs/a.txt`, not `docs.txt`; no warning |
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
-| `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
+| `archivey extract <archive> '**/*.py' --exclude '**/*_test.py'` | Includes `**/*.py` minus `**/*_test.py`; exclude wins over include |
+| `archivey list <archive> '*.md'` with members `README.md`, `docs/a.md` | Lists `README.md` only: `*` does not cross `/` |
+| `archivey list <archive> '**/*.md'` with members `README.md`, `docs/a.md` | Lists both: `**` matches any depth |
+| `archivey list <archive> 'a//b'` or `archivey list <archive> '[z-a]'` | stderr `archivey: invalid member pattern: …` with the reason; exit `2` |
 | `archivey test <archive> 'a*' --exclude 'a*'` or `archivey extract <archive> --exclude '*'` | stderr `warning: no members selected: …`; exit `1`; `extract` creates no directory |
 | `archivey test <archive.tar.gz> a.txt` | The archive is decompressed once; no backward-seek warning |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |

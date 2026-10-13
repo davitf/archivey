@@ -163,7 +163,8 @@ def match_tar_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]:
         ``str``, and returns whether it is selected.
 
     Raises:
-        ArchiveyUsageError: No pattern was given, or a pattern is empty. It is also a
+        ArchiveyUsageError: No pattern was given, or a pattern has an empty component
+            (``""``, ``"/"``, ``"a//b"``; a leading ``/`` is allowed). It is also a
             ``ValueError``.
     """
     return _TarGlob(patterns)
@@ -177,16 +178,23 @@ class _TarGlob:
     def __init__(self, patterns: tuple[str, ...]) -> None:
         if not patterns:
             raise _UsageValueError("match_tar_glob() needs at least one pattern")
-        if not all(patterns):
-            raise _UsageValueError("match_tar_glob() got an empty pattern")
+        for pattern in patterns:
+            # The same rule as match_glob: member names never hold an empty component,
+            # so a pattern with one ("", "/", "a//b", "docs//") could match nothing.
+            body = pattern.removesuffix("/")
+            if not body.strip("/") or "" in body.split("/")[1:]:
+                raise _UsageValueError(
+                    f"match_tar_glob(): {pattern!r} has an empty component; a pattern "
+                    "must name something between its '/' separators"
+                )
         self.patterns = patterns
         forms: list[str] = []
         for pattern in patterns:
             base = pattern.rstrip("/")
             # The pattern as written; and, for a folder named without or with its "/",
             # the folder entry and everything under it. "*" matching "/" is what makes
-            # "base/*" reach every depth. "/" alone has no base and stays as written.
-            forms.extend((pattern, base + "/", base + "/*") if base else (pattern,))
+            # "base/*" reach every depth.
+            forms.extend((pattern, base + "/", base + "/*"))
         # dict.fromkeys: "docs/" as written is already its own "base + /" form.
         self._forms = tuple(dict.fromkeys(forms))
 

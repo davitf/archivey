@@ -395,8 +395,8 @@ is selected when any pattern matches its whole name, case-sensitively:
 side by side with `match_glob`: each pattern is matched with `fnmatch.fnmatchcase`
 against the whole name (so `*` also matches `/`), as written and as `base/` and
 `base/*` where `base` is the pattern without trailing `/`, so a folder's name selects
-the folder and everything under it. No pattern or an empty pattern raises
-`ArchiveyUsageError`.
+the folder and everything under it. No pattern, or a pattern with an empty component
+(the same rule as `match_glob`), raises `ArchiveyUsageError`.
 
 #### Scenario: match_glob patterns
 
