@@ -1386,6 +1386,10 @@ def _raw_tar_header(
     return bytes(header)
 
 
+_OLD_STYLE_TYPEFLAGS = [tarfile.AREGTYPE, tarfile.REGTYPE]
+"""The two regular-file typeflags whose ``d/`` entry GNU tar reads as a directory."""
+
+
 def _tar_slash_entry_with_data(
     typeflag: bytes,
     *,
@@ -1393,16 +1397,18 @@ def _tar_slash_entry_with_data(
     wrapper: str | None = None,
     final_name: str = "d/",
     size_field: bytes | None = None,
+    data: bytes = b"hello directory",
+    tail: bytes | None = None,
 ) -> bytes:
-    """A ustar entry with the given typeflag and 15 bytes of data, then a regular file
-    ``after.txt``. GNU tar 1.35 and 7-Zip list ``d/`` as a directory and skip its data
-    when the typeflag is NUL (old-style ``AREGTYPE``) or ``0``; they report an error
-    when it is ``5`` (``DIRTYPE``), which carries no data.
+    """A ustar entry with the given typeflag and ``data`` (15 bytes by default), then a
+    regular file ``after.txt`` and a good trailer, or ``tail`` in their place. GNU tar
+    1.35 and 7-Zip list ``d/`` as a directory and skip its data when the typeflag is
+    NUL (old-style ``AREGTYPE``) or ``0``; they report an error when it is ``5``
+    (``DIRTYPE``), which carries no data.
 
     ``wrapper`` puts a PAX ``path`` record (``"pax"``) or a GNU long name (``"gnu"``)
     holding ``final_name`` before the header, whose own name field is ``own_name``.
     """
-    data = b"hello directory"
     prefix = b""
     if wrapper == "pax":
         record = f"path={final_name}\n".encode()
@@ -1418,16 +1424,25 @@ def _tar_slash_entry_with_data(
             "././@LongLink", tarfile.GNUTYPE_LONGNAME, len(long_name)
         )
         prefix += long_name.ljust(512, b"\0")
-    after = tarfile.TarInfo("after.txt")
-    after.size = 6
+    if tail is None:
+        after = tarfile.TarInfo("after.txt")
+        after.size = 6
+        tail = (
+            after.tobuf(format=tarfile.USTAR_FORMAT)
+            + b"after\n".ljust(512, b"\0")
+            + b"\0" * 1024
+        )
     return (
         prefix
         + _raw_tar_header(own_name, typeflag, len(data), size_field=size_field)
-        + data.ljust(512, b"\0")
-        + after.tobuf(format=tarfile.USTAR_FORMAT)
-        + b"after\n".ljust(512, b"\0")
-        + b"\0" * 1024
+        + (data.ljust(512, b"\0") if data else b"")
+        + tail
     )
+
+
+_DAMAGED_TRAILER = b"\0" * 512 + b"j" * 512
+"""A zero block, then a block that is neither a header nor zero: the end-of-archive
+marker with its second block damaged, which GNU tar lists past with a warning."""
 
 
 def _stream_all(data: bytes, streaming: bool) -> list[tuple[str, MemberType, Any]]:
@@ -1443,10 +1458,14 @@ def _stream_all(data: bytes, streaming: bool) -> list[tuple[str, MemberType, Any
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_old_style_directory_with_data_is_skipped(streaming: bool) -> None:
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_with_data_is_skipped(
+    typeflag: bytes, streaming: bool
+) -> None:
     # stdlib tarfile turns an AREGTYPE header whose name ends in "/" into a directory
-    # and then reads its data blocks as the next header. GNU tar skips the data.
-    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    # and then reads its data blocks as the next header, and lists a REGTYPE one as
+    # the file "d/". GNU tar and 7-Zip list a directory for both and skip the data.
+    data = _tar_slash_entry_with_data(typeflag)
     assert _stream_all(data, streaming) == [
         ("d/", MemberType.DIRECTORY, None),
         ("after.txt", MemberType.FILE, b"after\n"),
@@ -1454,16 +1473,108 @@ def test_old_style_directory_with_data_is_skipped(streaming: bool) -> None:
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) -> None:
+    # The directory keeps the size its header declares and
+    # MEMBER_DIRECTORY_DATA_IGNORED names the bytes extraction drops, on both walks.
+    data = _tar_slash_entry_with_data(typeflag)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        directory, stream = next(iter(ar.stream_members()))
+        assert stream is None
+        assert directory.type is MemberType.DIRECTORY
+        assert directory.size == 15
+        assert directory.extra["tar.type"] == typeflag
+        diags = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert [d.context.to_dict() if d.context else None for d in diags] == [
+            {
+                "kind": "directory_data",
+                "archive_name": None,
+                "member_name": "d/",
+                "member_id": 0,
+                "size": 15,
+                "compressed_size": None,
+            }
+        ]
+        assert "15 bytes" in diags[0].message
+
+
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_data_is_readable(typeflag: bytes) -> None:
+    # read() delivers the bytes, so the data an archive hides behind a directory name
+    # is never out of reach. Random access only: a streaming walk hands a directory
+    # no stream, whatever its size.
+    data = _tar_slash_entry_with_data(typeflag)
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        directory, after = ar.members()
+        assert ar.read(directory) == b"hello directory"
+        assert ar.read(after) == b"after\n"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_data_is_refused_by_strict_policy(
+    typeflag: bytes, streaming: bool
+) -> None:
+    data = _tar_slash_entry_with_data(typeflag)
+    with pytest.raises(DiagnosticRaisedError) as excinfo:
+        with open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+        ) as ar:
+            list(ar.stream_members())
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_slash_name_without_data_is_a_plain_directory(
+    typeflag: bytes, streaming: bool
+) -> None:
+    # The common producer shape: an old-style "d/" header with size 0 (v7-era tars
+    # wrote directories so). It is a directory with no size and nothing to report.
+    data = _tar_slash_entry_with_data(typeflag, data=b"")
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        directory = next(m for m, _ in ar.stream_members())
+        assert directory.size is None
+        assert directory.extra["tar.type"] == typeflag
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
+    # Random access only: open() takes a member by name, which a streaming walk has
+    # no index for.
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        with pytest.raises(ArchiveyUsageError, match="declares no data"):
+            ar.open(ar.members()[0])
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("wrapper", ["pax", "gnu"])
 @pytest.mark.parametrize("own_name", ["d", "d/"])
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
 def test_old_style_directory_name_from_extended_header(
-    wrapper: str, own_name: str, streaming: bool
+    typeflag: bytes, wrapper: str, own_name: str, streaming: bool
 ) -> None:
     # GNU tar and 7-Zip decide on the final name, after a PAX path or a GNU long name,
     # whatever the header's own name field holds. stdlib tarfile decides on the own
     # name field, and only on Pythons without the 2025 fixes.
     data = _tar_slash_entry_with_data(
-        tarfile.AREGTYPE, own_name=own_name, wrapper=wrapper, final_name="d/"
+        typeflag, own_name=own_name, wrapper=wrapper, final_name="d/"
     )
     assert _stream_all(data, streaming) == [
         ("d/", MemberType.DIRECTORY, None),
@@ -1473,12 +1584,13 @@ def test_old_style_directory_name_from_extended_header(
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("wrapper", ["pax", "gnu"])
-def test_aregtype_slash_name_overridden_without_slash_is_a_file(
-    wrapper: str, streaming: bool
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_slash_name_overridden_without_slash_is_a_file(
+    typeflag: bytes, wrapper: str, streaming: bool
 ) -> None:
     # The own name field says "d/", the final name says "d": GNU tar lists a file.
     data = _tar_slash_entry_with_data(
-        tarfile.AREGTYPE, own_name="d/", wrapper=wrapper, final_name="d"
+        typeflag, own_name="d/", wrapper=wrapper, final_name="d"
     )
     assert _stream_all(data, streaming) == [
         ("d", MemberType.FILE, b"hello directory"),
@@ -1486,20 +1598,24 @@ def test_aregtype_slash_name_overridden_without_slash_is_a_file(
     ]
 
 
-def test_old_style_directory_keeps_stored_typeflag() -> None:
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_keeps_stored_typeflag(typeflag: bytes) -> None:
     # extra["tar.type"] is the typeflag byte as stored, which tells an old-style
     # directory apart from a DIRTYPE one.
-    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    data = _tar_slash_entry_with_data(typeflag)
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         member = ar.members()[0]
     assert member.type == MemberType.DIRECTORY
-    assert member.extra["tar.type"] == tarfile.AREGTYPE
+    assert member.extra["tar.type"] == typeflag
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_old_style_directory_data_cut_off_is_truncation(streaming: bool) -> None:
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_data_cut_off_is_truncation(
+    typeflag: bytes, streaming: bool
+) -> None:
     # The archive ends inside the data area the directory header declares.
-    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)[:512]
+    data = _tar_slash_entry_with_data(typeflag)[:512]
     with pytest.raises(TruncatedError):
         _stream_all(data, streaming)
 
@@ -1568,21 +1684,268 @@ def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> Non
             ar.members()
 
 
-def test_old_style_directory_with_data_extracts(tmp_path: Path) -> None:
-    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_with_data_extracts(
+    tmp_path: Path, typeflag: bytes
+) -> None:
+    # The directory is created and its bytes are not written, as GNU tar and 7-Zip do.
+    data = _tar_slash_entry_with_data(typeflag)
     open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
     assert (tmp_path / "d").is_dir()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["after.txt", "d"]
     assert (tmp_path / "after.txt").read_bytes() == b"after\n"
 
 
-def test_dirtype_with_data_stays_corruption() -> None:
-    # A DIRTYPE header has no data area, so the caller gets CorruptionError: in random
-    # access the listing yields no members, and after.txt is not reached. GNU tar 1.35
-    # reports an error ("Skipping to next header") and keeps listing; 7-Zip stops.
-    data = _tar_slash_entry_with_data(tarfile.DIRTYPE)
-    with raises_corruption_not_truncation():
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_bytes_payload_is_corruption(streaming: bool) -> None:
+    # A DIRTYPE header has no data area, so the walker reads the declared blocks as the
+    # next header; a non-zero payload does not parse. The error names the directory,
+    # whose declared size is why a header sits where none parses. GNU tar 1.35 reports
+    # "Skipping to next header", dropping after.txt; 7-Zip stops.
+    data = _tar_slash_entry_with_data(tarfile.DIRTYPE, data=b"hello directory")
+    with raises_corruption_not_truncation(match="directory that declares"):
+        _stream_all(data, streaming)
+
+
+_ZERO_SPANS = [b"\0" * 512, b"\0" * 1024, b"\0" * 1536, b"\0" * 512 + b"x" * 512]
+"""Declared DIRTYPE payloads that begin with a zero block: the walker reads them as the
+end-of-archive marker (a lone block, a complete marker, or a marker with junk)."""
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "payload",
+    _ZERO_SPANS,
+    ids=["zero_block", "two_zero_blocks", "three_zero_blocks", "zero_then_bytes"],
+)
+def test_dirtype_zero_span_is_reported(payload: bytes, streaming: bool) -> None:
+    # A DIRTYPE header has no data area, so the walker reads a zero payload as the
+    # end-of-archive marker and after.txt behind it is not listed. Nothing in the file
+    # tells that from a header whose blocks were never written before a trailer and
+    # appended data, so the directory is listed with no size and reported with
+    # MEMBER_DIRECTORY_DATA_IGNORED, the weight a directory's declared data has in
+    # every format; the marker checks report the trailer as after a file. GNU tar 1.35
+    # lists d/ with "A lone zero block" for one block and with no word for more.
+    data = _tar_slash_entry_with_data(tarfile.DIRTYPE, data=payload)
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        member = ar.members()[0]
+        assert member.size is None
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        # Attached to the member, as the old-style directory's report is.
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        diags = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert [d.context.to_dict() if d.context else None for d in diags] == [
+            {
+                "kind": "directory_data",
+                "archive_name": None,
+                "member_name": "d/",
+                "member_id": 0,
+                "size": len(payload),
+                "compressed_size": None,
+            }
+        ]
+        with pytest.raises(ArchiveyUsageError, match="declares no data"):
+            ar.open("d/")
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_zero_span_is_refused_by_strict_policy(streaming: bool) -> None:
+    data = _tar_slash_entry_with_data(tarfile.DIRTYPE, data=b"\0" * 1024)
+    with pytest.raises(DiagnosticRaisedError) as excinfo:
+        with open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+        ) as ar:
+            list(ar.stream_members())
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_size_before_concatenated_archive_is_reported(
+    streaming: bool,
+) -> None:
+    # A DIRTYPE header whose size field is set, no blocks, a good trailer, then a
+    # second archive starting exactly where the declared span would end: the same
+    # bytes as a two-block zero payload hiding second.txt. GNU tar lists d/ and exits
+    # 0; archivey lists d/ with the directory-data report and the trailing-data
+    # report, as it lists a file before a concatenated archive with the latter alone.
+    second = tarfile.TarInfo("second.txt")
+    second.size = 7
+    tail = (
+        b"\0" * 1024
+        + second.tobuf(format=tarfile.USTAR_FORMAT)
+        + b"second\n".ljust(512, b"\0")
+        + b"\0" * 1024
+    )
+    data = _tar_slash_entry_with_data(
+        tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 1024, tail=tail
+    )
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert [m.name for m in ar.members()] == ["d/"]
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
+        assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in ar.diagnostics.counts
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_size_and_no_blocks_lists_whole(streaming: bool) -> None:
+    # A DIRTYPE header whose size field is not zero but whose data blocks are not
+    # there (a writer carried st_size into the header): the next header follows at
+    # once, so GNU tar, bsdtar and 7-Zip list every member, and so does archivey, with
+    # no size on the directory and nothing to report.
+    data = _tar_slash_entry_with_data(
+        tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 4096
+    )
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.members()[0].size is None
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
+        assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in ar.diagnostics.counts
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_size_before_damaged_trailer_is_the_trailer_warning(
+    streaming: bool,
+) -> None:
+    # A DIRTYPE header whose size field is set, with no blocks behind it, as the last
+    # member before a damaged trailer: the bytes are the same as a zero payload with
+    # junk after it, so the directory's declared size is reported and the trailer gets
+    # the damaged-marker warning a file in its place gets; nothing raises. GNU tar
+    # lists d/ and warns of a lone zero block; 7-Zip lists it with a warning.
+    data = _tar_slash_entry_with_data(
+        tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 4096, tail=_DAMAGED_TRAILER
+    )
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.members()[0].size is None
+        assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
+        # The walk ended on the zero block right after the directory, so its declared
+        # size is reported too: these bytes are also a one-block zero span then junk.
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+
+
+def _global_pax_chain() -> bytes:
+    """A PAX global header (``g``) and its one record block: 1024 bytes that the walker
+    reads as part of the next member's header chain, so a walk gets past them."""
+    record = b"20 comment=archivey\n"
+    assert len(record) == 20
+    return _raw_tar_header("pax_global", tarfile.XGLTYPE, len(record)) + record.ljust(
+        512, b"\0"
+    )
+
+
+def _gnu_long_name_chain() -> bytes:
+    """A GNU long-name header (``L``) and its name block: 1024 bytes that must be
+    followed by a member header."""
+    long_name = b"after.txt\0"
+    return _raw_tar_header(
+        "././@LongLink", tarfile.GNUTYPE_LONGNAME, len(long_name)
+    ) + long_name.ljust(512, b"\0")
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_size_spanned_by_global_header_lists_whole(
+    streaming: bool,
+) -> None:
+    # A DIRTYPE header whose size field declares exactly the bytes a PAX global header
+    # and its record occupy, then the trailer: the walk read past the whole declared
+    # span before it stopped, so nothing can hide behind the directory and nothing is
+    # reported. GNU tar 1.35 lists d/ and exits 0 with no warning.
+    data = _tar_slash_entry_with_data(
+        tarfile.DIRTYPE,
+        data=b"",
+        size_field=b"%011o\0" % 1024,
+        tail=_global_pax_chain() + b"\0" * 1024,
+    )
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.members()[0].size is None
+        assert dict(ar.diagnostics.counts) == {}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_zero_block_inside_span_after_header_chain_is_reported(
+    streaming: bool,
+) -> None:
+    # The same chain, but the directory declares more than it spans and a zero block
+    # follows it inside the declared span: the blocks past the chain may still be
+    # hiding members, so the directory is reported, on the member as well as on the
+    # reader.
+    data = _tar_slash_entry_with_data(
+        tarfile.DIRTYPE,
+        data=b"",
+        size_field=b"%011o\0" % 4096,
+        tail=_gnu_long_name_chain() + b"\0" * 1024,
+    )
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        member = ar.members()[0]
+        assert member.size is None
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_size_then_header_chain_then_junk_is_generic_corruption(
+    streaming: bool,
+) -> None:
+    # A header did parse where the directory's data would begin (the long-name chain),
+    # and the junk is past it, so the refusal is the ordinary rejected-header one and
+    # does not claim the block where the data would begin failed to parse. GNU tar
+    # exits 2 here too.
+    data = _tar_slash_entry_with_data(
+        tarfile.DIRTYPE,
+        data=b"",
+        size_field=b"%011o\0" % 1024,
+        tail=_gnu_long_name_chain() + b"j" * 512,
+    )
+    with raises_corruption_not_truncation(match="does not parse") as excinfo:
+        _stream_all(data, streaming)
+    assert "directory that declares" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS, ids=["AREGTYPE", "REGTYPE"])
+def test_old_style_directory_with_data_before_lone_zero_block_lists(
+    typeflag: bytes, streaming: bool
+) -> None:
+    # An old-style directory that declares data as the last member before a lone zero
+    # block with a member behind it. Its header is a regular file's, so the walker skipped
+    # its block and the listing reported it; the end check must not take the header
+    # behind the zero block for one hidden by a DIRTYPE span, which would name the
+    # directory. The listing stands, with the directory's data reported and the lone
+    # zero block the damaged-marker warning and trailing-data report a file in its
+    # place gets (GNU tar: "A lone zero block").
+    after = tarfile.TarInfo("after.txt")
+    after.size = 6
+    tail = (
+        b"\0" * 512
+        + after.tobuf(format=tarfile.USTAR_FORMAT)
+        + b"after\n".ljust(512, b"\0")
+        + b"\0" * 1024
+    )
+    data = _tar_slash_entry_with_data(typeflag, tail=tail)
+    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.members()[0].size == 15
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
