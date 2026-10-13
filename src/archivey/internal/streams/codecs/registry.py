@@ -207,6 +207,8 @@ def open_codec_stream(
     ``collector`` goes to the returned stream and, through ``config.collector``, to the
     codec's own decompressor, which is where a degraded seek index is reported. A
     ``config`` that already carries a collector keeps it when ``collector`` is omitted.
+    A stored stream source is the exception: its codec emits nothing, so ``collector``
+    reaches only the returned stream and ``config`` is passed on unchanged.
 
     ``repeat_verdict=False`` makes the stream raise each error as the decoder raises
     it, and not repeat the first one after a seek (``ArchiveStream._fail``). It is for
@@ -214,9 +216,8 @@ def open_codec_stream(
     is not already there. Some reads still seek, and one seek is enough to mark the
     stream rewound.
     """
-    if collector is not None:
-        config = replace(config, collector=collector)
-    if not isinstance(source, (str, os.PathLike)):
+    is_stream = not isinstance(source, (str, os.PathLike))
+    if is_stream:
         # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
         # SlicingStream view), because codec backends address the source with absolute
         # offsets — the seekable XZ/lzip index, stdlib gzip's rewind — and would
@@ -226,20 +227,12 @@ def open_codec_stream(
         # readers hand in views that start at 0. It stays for a direct caller that does
         # not.
         source = fix_stream_start_position(source)
-        if config.seekable and not is_seekable(source):
-            # Seek demand on a source that cannot seek cannot be met, and it would make
-            # accelerator AUTO pick a decoder that fails at open when it asks the
-            # source for ``tell``. A compressed TAR opened ``streaming=True`` with
-            # ``seekable_members=True`` over a forward-only stream arrives here so.
-            config = replace(config, seekable=False)
-    # Fill the AUTO size gate when the caller did not already supply a known length
-    # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
-    if config.compressed_input_size is None:
-        size = source_byte_size(source)
-        if size is not None:
-            config = replace(config, compressed_input_size=size)
-    # Fill before resolve_codec so the translator and rewind_warning agree with open.
-    config = _BY_CODEC[codec].prepare_config(source, config)
+    # A stored stream decodes nothing, so the config work below would build values
+    # nothing reads: ``StoredCodec`` opens its source as is, and its translator and
+    # rewind warning ignore the config. ZIP opens one per member, so it is skipped
+    # (the collector still reaches the stream below). A path source still runs it.
+    if not (is_stream and codec is Codec.STORED):
+        config = _decoder_config(codec, source, config, collector)
     backend = resolve_codec(codec, config)
     # Default True: internal/format callers may need to seek the codec stream even when
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
@@ -252,7 +245,40 @@ def open_codec_stream(
         lazy=False,
         seekable=stream_seekable,
         rewind_warning=backend.rewind_warning if stream_seekable else None,
-        collector=config.collector,
+        collector=collector if collector is not None else config.collector,
         on_close=on_close,
         repeat_verdict=repeat_verdict,
     )
+
+
+def _decoder_config(
+    codec: Codec,
+    source: CodecSource,
+    config: StreamConfig,
+    collector: DiagnosticCollector | None,
+) -> StreamConfig:
+    """``config`` as :func:`open_codec_stream`'s decoder sees it.
+
+    Carries ``collector``, drops seek demand that a stream source cannot meet, fills the
+    known input size, then lets the codec adjust it.
+    """
+    if collector is not None:
+        config = replace(config, collector=collector)
+    if (
+        not isinstance(source, (str, os.PathLike))
+        and config.seekable
+        and not is_seekable(source)
+    ):
+        # Seek demand on a source that cannot seek cannot be met, and it would make
+        # accelerator AUTO pick a decoder that fails at open when it asks the
+        # source for ``tell``. A compressed TAR opened ``streaming=True`` with
+        # ``seekable_members=True`` over a forward-only stream arrives here so.
+        config = replace(config, seekable=False)
+    # Fill the AUTO size gate when the caller did not already supply a known length
+    # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
+    if config.compressed_input_size is None:
+        size = source_byte_size(source)
+        if size is not None:
+            config = replace(config, compressed_input_size=size)
+    # Fill before resolve_codec so the translator and rewind_warning agree with open.
+    return _BY_CODEC[codec].prepare_config(source, config)
