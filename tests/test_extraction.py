@@ -1600,7 +1600,9 @@ def _bomb_7z(tmp_path: Path) -> tuple[Path, str, str]:
 
 def _bomb_rar(tmp_path: Path) -> tuple[Path, str, str]:
     # Committed, so the leg runs wherever unrar is installed (no rar writer needed).
-    # prefix.bin records 1 MiB from 91 bytes.
+    # prefix.bin records 1 MiB from 91 bytes. unrar reads tail.txt.
+    if shutil.which("unrar") is None:
+        pytest.skip("unrar not installed")
     return _RAR_FIXTURES / "seek_respawn_solid__.rar", "prefix.bin", "tail.txt"
 
 
