@@ -623,26 +623,44 @@ def _alone_config(cap: int) -> Any:
     )
 
 
+def _refused(codec: Codec, written: bytes, cap: int) -> bool:
+    """Whether ``codec`` refuses ``written`` under ``cap``; a read must succeed otherwise."""
+    with open_codec_stream(codec, io.BytesIO(written), config=_alone_config(cap)) as s:
+        try:
+            assert s.read() == _LZMA_MEMBER
+        except ResourceLimitError as exc:
+            assert f"max_decoder_memory={cap}" in str(exc)
+            return True
+    return False
+
+
 @pytest.mark.parametrize(
-    ("over", "refused"),
+    ("cap_delta", "code"),
     [
-        (0, False),  # exactly the cap
-        (64 * 1024, False),  # inside the overhead allowance, as on xz
-        (1024 * 1024, True),  # past it
+        pytest.param(0, 20, id="exactly-the-cap"),
+        pytest.param(-1, 20, id="one-byte-over-the-cap"),
+        pytest.param(0, 21, id="next-xz-size"),
     ],
 )
-def test_lzma_alone_boundary_matches_xz(over: int, refused: bool) -> None:
-    """``.lzma`` goes through liblzma's ``memlimit`` too, with xz's overhead allowance."""
-    cap = 4 * 2**20
-    written = _alone_stream(_LZMA_MEMBER, cap + over)
-    with open_codec_stream(
-        Codec.LZMA_ALONE, io.BytesIO(written), config=_alone_config(cap)
-    ) as stream:
-        if not refused:
-            assert stream.read() == _LZMA_MEMBER
-            return
-        with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={cap}"):
-            stream.read()
+def test_lzma_alone_boundary_matches_xz(cap_delta: int, code: int) -> None:
+    """``.lzma`` and xz refuse the same declared dictionary under the same cap.
+
+    Both go through liblzma's ``memlimit`` with the same overhead allowance. What
+    liblzma counts on top of the dictionary differs by liblzma build, so the test
+    compares the two formats on this build rather than assuming a number. The sizes
+    are ones an xz header can declare: 4 MiB (code 20) and 6 MiB (code 21). A
+    dictionary one byte over the cap is inside the allowance on both formats.
+    """
+    dict_size = _lzma2_dict_size(code)
+    cap = 4 * 2**20 + cap_delta
+    xz = _declare_xz_dictionary(
+        lzma.compress(_LZMA_MEMBER, format=lzma.FORMAT_XZ), code
+    )
+    alone = _alone_stream(_LZMA_MEMBER, dict_size)
+    xz_refused = _refused(Codec.XZ, xz, cap)
+    assert _refused(Codec.LZMA_ALONE, alone, cap) == xz_refused
+    # The cases sit well inside or well outside the allowance on any liblzma build.
+    assert xz_refused == (dict_size > 4 * 2**20)
 
 
 def test_lzma_alone_refuses_on_read_not_on_open() -> None:

@@ -557,8 +557,9 @@ def _read_xz_index_backwards(
 # liblzma's ``memlimit`` counts a decoder's whole working set: the dictionary the
 # header declares plus the decoder's own overhead, measured on liblzma 5.4.5 at
 # 65 592 bytes for a lone LZMA2 filter and 67 992 for the longest chain xz allows
-# (four filters), and at 65 408 for an LZMA Alone decoder. The allowance, about
-# twice that, keeps a dictionary exactly at ``max_decoder_memory`` readable, as it is
+# (four filters), and at 65 408 for an LZMA Alone decoder; other liblzma builds count
+# a little more (an Alone decoder's dictionary 64 KiB over the cap is refused on the
+# macOS and Windows CI runners). The allowance, about twice that, keeps a dictionary exactly at ``max_decoder_memory`` readable, as it is
 # on the raw LZMA and lzip paths, which compare the declared dictionary itself. It is
 # kept small because it is also slack: a cap set 128 KiB or less below a size an xz or
 # .lzma header declares admits that size there.
