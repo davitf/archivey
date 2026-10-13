@@ -1706,8 +1706,18 @@ class BaseArchiveReader(ArchiveReader):
         return nullcontext()
 
     def _account_archive_comment(self, *, enforce: bool) -> None:
-        comment = self._get_archive_info().comment
-        self._listing_tracker.account_archive_comment(comment, enforce=enforce)
+        self._listing_tracker.account_archive_comment(
+            self._archive_comment(), enforce=enforce
+        )
+
+    def _archive_comment(self) -> str | None:
+        """The archive comment, weighed before the member walk starts.
+
+        ``ArchiveInfo``'s by default. A backend whose ``ArchiveInfo`` can cost a pass
+        over its index (ZIP's ``member_count``) answers directly, so starting the walk
+        does not walk the index first.
+        """
+        return self._get_archive_info().comment
 
     def _register_member(
         self,
@@ -2587,6 +2597,10 @@ class BaseArchiveReader(ArchiveReader):
     @property
     def cost(self) -> CostReceipt:
         self._state.require_open("cost")
+        return self._cost_receipt()
+
+    def _cost_receipt(self) -> CostReceipt:
+        """``ArchiveInfo.cost``; overridden as :meth:`_archive_comment` is."""
         return self._get_archive_info().cost
 
     @property
