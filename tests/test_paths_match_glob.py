@@ -99,10 +99,10 @@ def test_negated_set_keeps_its_own_characters() -> None:
 @pytest.mark.parametrize(
     ("pattern", "selected", "refused"),
     [
-        ("a[*--]", ["a-", "a*", "a+"], ["a.", "a/"]),
-        ("a[--^]", ["a-", "a0", "a^"], ["a/", "a_"]),
+        ("a[*--]", ["a-", "a*", "a+"], ["a.", "a/b"]),
+        ("a[--^]b", ["a-b", "a0b", "a^b"], ["a/b", "a_b"]),
         ("a[!a&&b]", ["ac"], ["a&", "aa", "ab"]),
-        ("a[~~|]", ["a~", "a|"], ["a/"]),
+        ("a[~~|]", ["a~", "a|"], ["a&", "a/b"]),
     ],
 )
 def test_set_operators_are_literal(

@@ -412,5 +412,7 @@ the folder and everything under it. No pattern or an empty pattern raises
 | `match_tar_glob("docs")` | `docs/`, `docs/api/guide.md` | `docs.txt` |
 | `a[*]b` | `a*b` | `axb` |
 | `match_glob()` / `match_glob("")` / `match_glob("[z-a]")` | Raises `ArchiveyUsageError` | |
+| `match_glob("a//b")` / `match_glob("//a")` | Raises `ArchiveyUsageError` | |
+| `/etc/**` | `/etc/`, `/etc/passwd` | `etc/passwd` |
 | `a[!-a]b` | `a0b` | `a-b`, `a/b` |
 | `.` member (`is_dir`) with `*/` | Selected | |

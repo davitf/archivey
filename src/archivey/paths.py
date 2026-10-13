@@ -127,8 +127,8 @@ def match_glob(
 
     Raises:
         ArchiveyUsageError: No pattern was given, a pattern has an empty component
-            (``""``, ``"/"``, ``"a//b"``; a leading ``/`` is allowed), or a
-            ``[...]`` set is malformed, such as the reversed range ``[z-a]``. It is also a
+            (``""``, ``"/"``, ``"a//b"``; a leading ``/`` is allowed), or a ``[...]``
+            set is malformed, such as the reversed range ``[z-a]``. It is also a
             ``ValueError``.
     """
     return _MemberGlob(patterns, with_contents=with_contents)
