@@ -1,10 +1,11 @@
-"""Random-access calls inside a ``stream_members()`` loop on a ``CONCURRENT`` reader.
+"""Random-access calls and other passes beside a ``stream_members()`` pass.
 
-Once the member list is published, ``open()``, ``read()``, ``get()``, ``members()`` and
-iteration are admitted while a ``stream_members()`` pass is running, from the pass's
-own thread (the loop body) and from other threads. Before the list is complete, and on
-a reader opened without ``concurrent_members=True``, they still raise
-``ArchiveyUsageError``. The bookkeeping itself is unit-tested at the bottom.
+On a ``CONCURRENT`` reader a pass lists the archive before its first yield, so
+``open()``, ``read()``, ``get()``, ``members()``, iteration and further
+``stream_members()`` passes work beside it on every format, from the loop body and
+from other threads. On a reader opened without ``concurrent_members=True`` they still
+raise ``ArchiveyUsageError``, as ``extract_all()`` beside a pass does everywhere. The
+bookkeeping itself is unit-tested at the bottom.
 """
 
 from __future__ import annotations
@@ -84,8 +85,7 @@ def _fixture(name: str) -> Callable[[Path], Path]:
     return lambda _tmp: _FIXTURES / name
 
 
-# Every format whose random-access pass lists the archive before it yields: the member
-# list is published by the time the loop body runs, so no members() call is needed.
+# Formats whose random-access pass always lists the archive before it yields.
 LISTED_UP_FRONT = [
     pytest.param(_zip, id="zip"),
     pytest.param(_directory, id="dir"),
@@ -97,7 +97,7 @@ LISTED_UP_FRONT = [
     ),
 ]
 
-# Formats whose pass lists as it goes: the list is published when a pass ends.
+# Formats whose pass lists as it goes, unless the reader is CONCURRENT.
 LISTED_BY_THE_PASS = [
     pytest.param(_tar, id="tar"),
     pytest.param(_tgz, id="tar.gz"),
@@ -205,34 +205,21 @@ def test_random_reads_interleaved_with_the_pass_stream(
     assert got == expected
 
 
-@pytest.mark.parametrize("make", LISTED_UP_FRONT)
-def test_formats_listed_up_front_need_no_members_call(
+@pytest.mark.parametrize("make", ALL_FORMATS)
+def test_first_pass_needs_no_members_call(
     tmp_path: Path, make: Callable[[Path], Path]
 ) -> None:
+    """A CONCURRENT pass lists before its first yield on every format.
+
+    TAR, 7z and solid RAR would otherwise list as the pass goes, and the calls in the
+    loop would raise only on a first pass over them.
+    """
     path = make(tmp_path)
     expected = _expected(path)
     with open_archive(path, concurrent_members=True) as reader:
         for _member, _stream in reader.stream_members():
             _random_calls(reader, expected)
-
-
-@pytest.mark.parametrize("make", LISTED_BY_THE_PASS)
-def test_refused_until_the_listing_is_complete(
-    tmp_path: Path, make: Callable[[Path], Path]
-) -> None:
-    """A first pass that lists as it goes admits no random calls; a later one does."""
-    path = make(tmp_path)
-    expected = _expected(path)
-    name = next(iter(expected))
-    with open_archive(path, concurrent_members=True) as reader:
-        for _member, _stream in reader.stream_members():
-            with pytest.raises(ArchiveyUsageError, match="already active"):
-                reader.read(name)
-            with pytest.raises(ArchiveyUsageError, match="already active"):
-                _in_thread(lambda: reader.get(name))
-        # The pass that reached the end published the list.
-        for _member, _stream in reader.stream_members():
-            _random_calls(reader, expected)
+            assert next(reader.stream_members(), None) is not None
 
 
 @pytest.mark.parametrize("make", ALL_FORMATS)
@@ -284,19 +271,6 @@ def test_passes_side_by_side(tmp_path: Path, make: Callable[[Path], Path]) -> No
         assert next(other, None) is None
     assert first == expected
     assert second == expected
-
-
-@pytest.mark.parametrize("make", LISTED_BY_THE_PASS)
-def test_second_pass_refused_until_the_listing_is_complete(
-    tmp_path: Path, make: Callable[[Path], Path]
-) -> None:
-    path = make(tmp_path)
-    with open_archive(path, concurrent_members=True) as reader:
-        it = reader.stream_members()
-        next(it)
-        with pytest.raises(ArchiveyUsageError, match="already active"):
-            next(reader.stream_members())
-        it.close()
 
 
 def test_extraction_still_refused_inside_the_loop(tmp_path: Path) -> None:

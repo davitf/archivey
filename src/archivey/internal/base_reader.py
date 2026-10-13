@@ -3088,6 +3088,12 @@ class BaseArchiveReader(ArchiveReader):
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
+            elif self._state.concurrent and token.kind == "root":
+                # List before the first yield, as ZIP and ISO always do, so the calls
+                # a CONCURRENT reader admits beside a pass (random access, another
+                # pass) work from the first member on every format instead of
+                # depending on whether the format lists as its pass goes.
+                self._materialize_members(enforce_listing_limits=False)
             source = self._iter_with_data(copies)
             self._state.set_pass_closer(token, _closer_of(source))
             for m, stream in source:

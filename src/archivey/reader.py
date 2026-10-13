@@ -202,14 +202,14 @@ class ForwardArchiveReader(ABC):
         you need to seek, nested archives included, use :meth:`~ArchiveReader.open` under
         ``seekable_members=True``.
 
-        The pass owns the reader while it runs: :meth:`~ArchiveReader.open`,
-        :meth:`~ArchiveReader.read`, :meth:`~ArchiveReader.get`,
-        :meth:`~ArchiveReader.members` and iteration raise ``ArchiveyUsageError``
-        inside the loop. On a reader opened with ``concurrent_members=True`` they work,
-        from the loop body or from another thread, once the member list is complete:
-        ZIP, ISO, non-solid RAR and directories list before the first yield; TAR, 7z
-        and solid RAR after a ``members()`` call or a pass that reached the end.
-        Another pass or :meth:`extract_all` still raises."""
+        On a default reader the pass owns the reader while it runs:
+        :meth:`~ArchiveReader.open`, :meth:`~ArchiveReader.read`,
+        :meth:`~ArchiveReader.get`, :meth:`~ArchiveReader.members`, iteration and
+        another pass raise ``ArchiveyUsageError`` inside the loop. On a reader opened
+        with ``concurrent_members=True`` they all work, from the loop body or from
+        another thread: the pass lists the archive before its first yield, on every
+        format, so the answer does not depend on the format. :meth:`extract_all` still
+        raises beside a pass."""
         ...
 
     @abstractmethod
