@@ -973,8 +973,9 @@ other causes, rather than presenting `""`.
 
 What the archive records is the condition, not whether this read produced a target.
 An unset `link_target` has two other causes, and in both the archive carries a target
-this read could not produce: **not resolved yet** — a ZIP or 7z link read in streaming
-mode carries its target in the member's data, which that mode has already passed — and
+this read could not produce: **not resolved yet** — a ZIP, 7z or RAR 4 link carries its
+target in the member's data, which a streaming pass under `read_link_targets=False`, or
+a RAR pass, has already passed when it reads the target — and
 **resolved but out of reach**, where the reader looked and the bytes were compressed,
 split across volumes or encrypted. Recording either `LINK_TARGET_UNAVAILABLE` would
 report success while dropping a member the archive describes in full, so both SHALL
@@ -986,20 +987,22 @@ member whose absent target the header already states. Where a reader can tell fr
 metadata alone that the archive records no target — a reparse point a writer stored no
 data for is the case that exists — it SHALL settle that while typing the member, not in
 a lookup that reads data. Otherwise the two paragraphs above disagree in a streaming
-pass, whose lookup runs at EOF: the member the first one names would take the second
-one's per-member failure, and the library default would abort the archive on exactly
-the entry this outcome was added for.
+pass whose lookup runs late (at EOF, or only when extraction reads the link): the
+member the first one names would take the second one's per-member failure, and the
+library default would abort the archive on exactly the entry this outcome was added
+for.
 
 That is also the bound on the read modes. `LINK_TARGET_UNAVAILABLE` holds in a
 streaming pass exactly for the members a reader settles from metadata; where the
 archive's omission is legible only in the member's *data* — a reparse buffer that names
 nothing, bytes that are not a link buffer at all, a RAR3/4 link carrying none — a
-streaming pass does not learn it until EOF, by which time the member has already been
-written or not. Those SHALL take the per-member failure that an unresolved target
+streaming pass that reads targets late (a RAR pass, or any pass under
+`read_link_targets=False`) does not learn it until the member has already been written
+or not. Those SHALL take the per-member failure that an unresolved target
 takes, and the library default aborts the archive there. Settling them in a streaming
 pass would mean holding a reparse point's data until the member is written, which is a
-different guarantee and is not required here. One pass does learn it at the member: a 7z
-pass under `read_link_targets=True` reads a reparse-flagged member's data as it reaches
+different guarantee and is not required here. ZIP and 7z passes do learn it at the
+member: under `read_link_targets=True` each reads a reparse-flagged member's data as it reaches
 it, so a member whose bytes are not a link buffer is a file by the time extraction sees
 it, and is written as one. A directory-shaped entry is the exception: it stays a link
 with no target (`archive-reading`, "Link targets stored as member data are read only

@@ -642,8 +642,8 @@ non-seekable sources only.
 
 **D. How a caller sees that a forward pass fills some fields only at the end.**
 Answered (davi, 2026-10-10): a per-member field saying the member's state will not
-change again, working name `member_state_final` (davi chose an explicit name over
-`is_final`, which reads like `is_current` and `is_dir`; the stage 3 PR settles it).
+change again, named `member_state_final` (davi chose an explicit name over
+`is_final`, which reads like `is_current` and `is_dir`, and kept it on 2026-10-13).
 The cost receipt was rejected: it describes what listing and reading cost, not whether
 a member's fields are settled. The field is not ZIP-specific. It is false wherever
 archivey can still update a member in place: a ZIP member yielded in a forward pass
