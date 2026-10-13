@@ -447,6 +447,11 @@ def test_settle_checks_used_where_the_walk_knows_the_end() -> None:
     assert entry is not None
     with pytest.raises(ValueError, match="whose data is"):
         walk.member_data(entry).settle(entry.header.compressed_size + 1)
+    # A codec may stop short of the stated size: padding after its end is fine.
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=False)))
+    entry = walk.next_entry()
+    assert entry is not None
+    assert walk.member_data(entry).settle(entry.header.compressed_size - 1) is None
     walk = LocalHeaderWalk(_Unseekable(_write(pipe=True)))
     entry = walk.next_entry()
     assert entry is not None and entry.deferred
@@ -571,15 +576,18 @@ def test_an_encrypted_stored_scan_matches_size_and_signature_only() -> None:
     assert second.header.name == b"deflated.txt"
 
 
+@pytest.mark.parametrize("piece", [65536, 16])
 def test_planted_descriptor_signatures_cost_one_pass(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, piece: int
 ) -> None:
     """A STORED member full of planted descriptors is scanned in linear time.
 
     Each 12-byte block is a descriptor signature, a wrong CRC and the block's own
     offset as its compressed size, so every candidate passes the size test and
     reaches the CRC. Fails if the CRC is recomputed from the start of the buffer
-    for each candidate (quadratic bytes into ``zlib.crc32``).
+    for each candidate (quadratic bytes into ``zlib.crc32``). The 16-byte reads
+    also fail if a read re-runs the CRC over bytes an earlier read already
+    judged.
     """
     payload = b"".join(
         DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 4 + struct.pack("<L", offset)
@@ -599,7 +607,14 @@ def test_planted_descriptor_signatures_cost_one_pass(
             return zlib.crc32(data, value)
 
     monkeypatch.setattr(zip_local_walk, "zlib", _CountingZlib)
-    read, _walk_ = _walk(out.getvalue())
-    assert read[0].data == payload
+    walk = LocalHeaderWalk(_Unseekable(out.getvalue()))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    got = bytearray()
+    while chunk := data.read(piece):
+        got += chunk
+    assert bytes(got) == payload
+    assert data.settle() is not None
     # Once while scanning, once over the bytes handed out.
     assert fed <= 2 * len(payload)

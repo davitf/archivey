@@ -41,7 +41,7 @@ import struct
 import zlib
 from collections import deque
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import BinaryIO, NoReturn
 
 from archivey.exceptions import (
@@ -202,39 +202,13 @@ class DataDescriptor:
     """The CRC and sizes written after a bit-3 member's data."""
 
     crc: int
+    #: The full compressed size: a 4-byte shape matched it modulo 2**32.
     compressed_size: int
+    #: The full uncompressed size when the caller supplied it to match against;
+    #: otherwise as stored, so modulo 2**32 for a 4-byte shape.
     file_size: int
     #: The bytes it occupies, the signature included when it has one.
     length: int
-
-
-def _local_sizes(extra: bytes, compressed_size: int, file_size: int) -> tuple[int, int]:
-    """The two sizes after a local ZIP64 extra field replaces the deferred ones.
-
-    In a local header the field holds both sizes, uncompressed first, whichever is
-    deferred (APPNOTE 4.5.3). A field shorter than that holds the deferred ones in the
-    central directory's order. A deferred size no field holds stays all ones.
-    """
-    if compressed_size != _U32_MAX and file_size != _U32_MAX:
-        return compressed_size, file_size
-    for field in iter_extra_fields(extra):
-        if field.tag != _ZIP64_EXTRA_TAG:
-            continue
-        data = field.data
-        if len(data) >= 16:
-            if file_size == _U32_MAX:
-                file_size = int.from_bytes(data[:8], "little")
-            if compressed_size == _U32_MAX:
-                compressed_size = int.from_bytes(data[8:16], "little")
-        else:
-            cursor = 0
-            if file_size == _U32_MAX and len(data) >= 8:
-                file_size = int.from_bytes(data[:8], "little")
-                cursor = 8
-            if compressed_size == _U32_MAX and len(data) >= cursor + 8:
-                compressed_size = int.from_bytes(data[cursor : cursor + 8], "little")
-        break
-    return compressed_size, file_size
 
 
 def _has_zip64_extra(extra: bytes) -> bool:
@@ -289,7 +263,8 @@ def match_descriptor(
             following = bytes(buffer[end : end + 4])
             if following not in _AFTER_MEMBER and not (at_end and not following):
                 continue
-            # A 4-byte shape matched modulo 2**32: give back the full sizes it matched.
+            # A 4-byte shape matched modulo 2**32: give back the full sizes the caller
+            # supplied. An uncompressed size it did not supply stays as stored.
             return DataDescriptor(
                 crc=got_crc,
                 compressed_size=compressed_size if width == 4 else got_csize,
@@ -342,7 +317,8 @@ class MemberData(ReadOnlyIOStream):
 
         ``used`` is how many compressed bytes the codec consumed. A member whose end
         only its codec knows (:class:`_CodecData`) needs it; on the others, whose end
-        the walk knows, it is optional and checked against that end. ``crc`` and
+        the walk knows, it is optional and checked against that end: a sized member
+        refuses one past its stated size, a scanned one any other than its length. ``crc`` and
         ``file_size``, when the caller has computed them, pick the descriptor among
         the shapes that fit, so only a codec member reads them: a sized member has no
         descriptor and a scanned one matched its own. A descriptor that disagrees
@@ -402,7 +378,13 @@ class _SizedData(MemberData):
                     f"ZIP stream ends inside member #{self.entry.index}'s data "
                     f"({self.consumed} of {self._size} bytes)"
                 )
-        self._check_used(used)
+        # The codec may stop short of the stated size (padding after its end), but
+        # never past it.
+        if used is not None and used > self._size:
+            raise ValueError(
+                f"settle(used={used}) on member #{self.entry.index}, whose data "
+                f"is {self._size} bytes"
+            )
         return None
 
 
@@ -706,8 +688,12 @@ class LocalHeaderWalk:
     def _scan_for_local_header(self) -> bool:
         """Move to the first local header the detector's validator accepts.
 
-        Candidates start within the first :data:`SFX_MAX` bytes; one near the end is
-        judged on its whole header, so up to :data:`VALIDATOR_PEEK_MAX` more are read.
+        A candidate counts only when its signature lies wholly inside the first
+        :data:`SFX_MAX` bytes, as ``sfx.scan_for_magic`` requires; one near the end
+        is judged on its whole header, so up to :data:`VALIDATOR_PEEK_MAX` more are
+        read. This is not ``scan_for_magic`` itself because the walk needs every
+        byte it read back, to put the ones after the header found in front of the
+        stream, and ``scan_for_magic`` does not hand them back.
         Every byte read is kept, so the ones after the header found can be put back.
         Rejected candidates are not capped, as for
         the seekable ZIP read (``sfx.MAX_VALIDATED_CANDIDATES`` covers RAR and 7z):
@@ -716,7 +702,7 @@ class LocalHeaderWalk:
         window = bytearray()
         searched = 0
         while True:
-            pos = window.find(LOCAL_HEADER_SIGNATURE, searched, SFX_MAX + 3)
+            pos = window.find(LOCAL_HEADER_SIGNATURE, searched, SFX_MAX)
             if pos >= 0:
 
                 def peek_more(n: int, _pos: int = pos) -> bytes:
@@ -752,18 +738,16 @@ class LocalHeaderWalk:
         variable = self.source.read(variable_len)
         if len(variable) != variable_len:
             raise TruncatedError(f"ZIP stream ends inside local header #{self._index}")
-        header = local_header_from(fixed, variable, self.source.offset)
-        compressed_size, file_size = _local_sizes(
-            header.extra, header.compressed_size, header.file_size
+        header = local_header_from(
+            fixed, variable, self.source.offset, zip64_sizes=True
         )
-        header = replace(header, compressed_size=compressed_size, file_size=file_size)
         entry = LocalEntry(
             index=self._index,
             offset=offset,
             header=header,
             zip64=_has_zip64_extra(header.extra),
         )
-        if not entry.deferred and compressed_size == _U32_MAX:
+        if not entry.deferred and header.compressed_size == _U32_MAX:
             raise CorruptionError(
                 f"ZIP local header #{self._index} defers its compressed size to a "
                 "ZIP64 extra field that does not hold it"

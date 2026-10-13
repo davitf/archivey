@@ -58,9 +58,11 @@ SFX_MAX = 2 * 1024 * 1024
 # detection budget. Each parser scans for one format, so the detector counts each
 # format's rejections apart (:class:`HitSelector`) and caps only the formats whose
 # parser scans (``ReadBackend.SFX_PARSER_SCANS``: RAR and 7z). Decoys of one format
-# do not spend another's allowance, and a ZIP is never capped, because its reader
-# finds the end of central directory from the tail and runs no scan to stop. So a
-# file of decoys means the same thing to detection as to a forced ``format=``. 256 is
+# do not spend another's allowance, and a ZIP is never capped: its seekable reader
+# finds the end of central directory from the tail and runs no scan, and the forward
+# walk's scan (``zip_local_walk``) is bounded by the window alone, its validator
+# reading only the header and computing no CRC. So a file of decoys means the same
+# thing to detection as to a forced ``format=``. 256 is
 # a starting value; raise it here if a real archive needs more.
 MAX_VALIDATED_CANDIDATES = 256
 

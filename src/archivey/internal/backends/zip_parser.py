@@ -695,11 +695,14 @@ def local_header_variable_length(fixed: bytes) -> int:
     return name_len + extra_len
 
 
-def local_header_from(fixed: bytes, variable: bytes, data_start: int) -> LocalHeader:
+def local_header_from(
+    fixed: bytes, variable: bytes, data_start: int, *, zip64_sizes: bool = False
+) -> LocalHeader:
     """The :class:`LocalHeader` for the fixed 30 bytes and the name and extra field.
 
-    Both walks read the bytes their own way and call this; the sizes are the stored
-    32-bit fields, whatever a ZIP64 extra field says.
+    Both walks read the bytes their own way and call this. The sizes are the stored
+    32-bit fields unless ``zip64_sizes``, which applies a ZIP64 extra field's sizes
+    (:func:`_local_sizes`): the forward walk has no central entry to take them from.
     """
     (
         _sig,
@@ -715,6 +718,9 @@ def local_header_from(fixed: bytes, variable: bytes, data_start: int) -> LocalHe
         name_len,
         _extra_len,
     ) = _LOCAL_HEADER.unpack(fixed)
+    extra = variable[name_len:]
+    if zip64_sizes:
+        compressed_size, file_size = _local_sizes(extra, compressed_size, file_size)
     return LocalHeader(
         version_needed=(needed_system << 8) | needed_version,
         flags=flags,
@@ -725,6 +731,35 @@ def local_header_from(fixed: bytes, variable: bytes, data_start: int) -> LocalHe
         compressed_size=compressed_size,
         file_size=file_size,
         name=variable[:name_len],
-        extra=variable[name_len:],
+        extra=extra,
         data_start=data_start,
     )
+
+
+def _local_sizes(extra: bytes, compressed_size: int, file_size: int) -> tuple[int, int]:
+    """The two sizes after a local ZIP64 extra field replaces the deferred ones.
+
+    In a local header the field holds both sizes, uncompressed first, whichever is
+    deferred (APPNOTE 4.5.3). A field shorter than that holds the deferred ones in the
+    central directory's order. A deferred size no field holds stays all ones.
+    """
+    if compressed_size != _U32_MAX and file_size != _U32_MAX:
+        return compressed_size, file_size
+    for field in iter_extra_fields(extra):
+        if field.tag != _ZIP64_EXTRA_TAG:
+            continue
+        data = field.data
+        if len(data) >= 16:
+            if file_size == _U32_MAX:
+                file_size = int.from_bytes(data[:8], "little")
+            if compressed_size == _U32_MAX:
+                compressed_size = int.from_bytes(data[8:16], "little")
+        else:
+            cursor = 0
+            if file_size == _U32_MAX and len(data) >= 8:
+                file_size = int.from_bytes(data[:8], "little")
+                cursor = 8
+            if compressed_size == _U32_MAX and len(data) >= cursor + 8:
+                compressed_size = int.from_bytes(data[cursor : cursor + 8], "little")
+        break
+    return compressed_size, file_size
