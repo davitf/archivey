@@ -24,14 +24,24 @@ with archivey.open_archive("download.zip") as archive:
 
 Names must match exactly, and a directory's name ends in `/`. `members=["docs/"]` extracts only the
 directory entry, not what's in it, and `members=["docs"]` extracts nothing. A name that matches
-nothing is noted as the diagnostic `MEMBER_SELECTOR_UNMATCHED`, which logs a warning. To extract a
-folder with its contents, pass a function, as below.
+nothing is noted as the diagnostic `MEMBER_SELECTOR_UNMATCHED`, which logs a warning.
 
 `members` also takes a function, which gets each member and returns whether to extract it:
 
 ```python
 with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=lambda member: member.name.endswith(".txt"))
+```
+
+`archivey.paths.match_glob` builds such a function from wildcard patterns. `*` matches within one
+folder level, and `**` matches any number of levels, so `"docs/**"` selects a folder with
+everything in it:
+
+```python
+from archivey.paths import match_glob
+
+with archivey.open_archive("download.zip") as archive:
+    archive.extract_all("out/", members=match_glob("docs/**", "*.md"))
 ```
 
 Another argument, `filter`, sees each member before it's checked and written. It can change the
