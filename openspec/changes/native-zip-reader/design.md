@@ -384,21 +384,21 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   would leave a pipe extraction with no member progress at all until its end.
 - What the pass writes before the end of it decides must be undone without loss. An
   entry the caller had at a destination the pass replaces (`overwrite="replace"`) is
-  moved aside and put back at the end of the run unless the member still lands
-  there (on Windows a read-only entry is not moved, so the member fails as it does
-  from a file). A run that stops before the end of the pass (`abort_on`,
-  `on_error="stop"`, a limit) never learns which members it keeps, so a write over
-  a caller's entry is taken back and the entry returns; the members it wrote
-  elsewhere stay, as a stopped run's do. One that stops while the end of the pass
-  settles keeps what it settled. Two effects outlive the take-back. `abort_on`
-  fires before a write begins, which for such a member is before the end decides,
-  so a run can stop for a member that would not have been selected; deferring it
-  would mean writing the member it exists to stop. And the bomb limits: what the pass writes is on disk
-  while the pass runs, so it is counted then and given back when it is taken back. A
-  member the selection takes only provisionally (a Unix `x\y` that a list naming
-  `x/y` may take) can therefore stop a run under `max_entries` or
-  `max_extracted_bytes` that the same bytes from a file complete. Not counting it
-  would let an archive write unbounded data the run then deletes.
+  moved aside and put back at the end of the run unless the member still lands there
+  (on Windows a read-only entry is not moved, so the member fails as it does from a
+  file). A run that stops before the end of the pass (`abort_on`, `on_error="stop"`, a
+  limit) never learns which members it keeps, so a write over a caller's entry is
+  taken back and the entry returns; the members it wrote elsewhere stay, as a stopped
+  run's do. One that stops while the end of the pass settles keeps what it settled.
+  Two effects outlive the take-back. `abort_on` fires before a write begins, which for
+  such a member is before the end decides, so a run can stop for a member that would
+  not have been selected; deferring it would mean writing the member it exists to
+  stop. And the bomb limits: what the pass writes is on disk while the pass runs, so
+  it is counted then and given back when it is taken back. A member the selection
+  takes only provisionally (a Unix `x\y` that a list naming `x/y` may take) can
+  therefore stop a run under `max_entries` or `max_extracted_bytes` that the same
+  bytes from a file complete. Not counting it would let an archive write unbounded
+  data the run then deletes.
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
   member) is removed from disk and reported: data outside any member is a warning
