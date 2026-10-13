@@ -107,7 +107,7 @@ def _forward_only_matches(path: Path) -> None:
             b.stored_size,
         )
         assert (
-            forward.open_data(b).read()
+            forward.open_data(b.span()).read()
             == data[a.data_offset : a.data_offset + a.stored_size]
         )
     assert forward.next_entry() == seekable.end
