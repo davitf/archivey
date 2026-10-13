@@ -205,8 +205,10 @@ each lands with nothing half-done reachable:
       selection made again at the end of the pass (`design.md`, "The selection is
       made again") in `docs/extracting.md` (member selection, and beside the other
       "a filter can see such a member twice" cases), the `MemberSelector`
-      requirement in `archive-reading`, and the bomb-limit divergence in
-      `new_docs/security.md`.
+      requirement in `archive-reading`; the bomb-limit and `abort_on` divergences in
+      `docs/extracting.md` (beside the limits table), `new_docs/security.md` and
+      `docs/errors-and-diagnostics.md`; and the `members_done` divergence wherever
+      `on_progress` is described (`new_docs/extracting.md`).
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):

@@ -1699,7 +1699,8 @@ class ExtractionCoordinator:
             member = state.results[index].member
             if handled is None:
                 self._redo_revised_member(index)
-                if index in state.untallied and index not in state.dropped:
+                # A member the filter then drops counts too, as it does in the pass.
+                if index in state.untallied:
                     members_done += 1
                     self._report_progress(
                         member, members_done, state.counted.get(index, 0)
@@ -1728,6 +1729,8 @@ class ExtractionCoordinator:
                 self._drop_parked_copies(state.results[index].member.name, None)
         parent = path.parent if path is not None else None
         # Only the folders made as its parents: one a member of the run wrote stays.
+        # One whose own member the selection also drops is removed when its turn
+        # comes, which is after everything inside it.
         while parent is not None and parent != state.dest:
             if parent not in state.created_dirs or parent in state.written_paths:
                 break

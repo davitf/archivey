@@ -445,6 +445,24 @@ def test_a_member_selected_in_the_end_reports_progress(tmp_path: Path) -> None:
     assert ticks["pipe"] == ticks["file"] == [("link", 1)]
 
 
+@needs_symlinks
+def test_a_member_the_filter_drops_in_the_end_reports_progress(tmp_path: Path) -> None:
+    ticks: dict[str, list[tuple[str, int]]] = {}
+    for where, piped in (("file", False), ("pipe", True)):
+        seen = ticks[where] = []
+        _extract(
+            _link_zip("a.txt"),
+            tmp_path / where,
+            piped=piped,
+            members=lambda member: member.type is MemberType.SYMLINK,
+            filter=lambda m: None if m.type is MemberType.SYMLINK else m,
+            on_progress=lambda p, seen=seen: seen.append(
+                (p.member.name, p.members_done)
+            ),
+        )
+    assert ticks["pipe"] == ticks["file"] == [("link", 1)]
+
+
 @posix_modes
 def test_the_filter_is_told_when_the_member_can_still_change(tmp_path: Path) -> None:
     """``member_state_final`` on what the filter gets, as on what a predicate gets."""
