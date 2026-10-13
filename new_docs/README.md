@@ -6,8 +6,6 @@ A rewrite of the user docs, grown one agreed paragraph at a time. Not published 
 Some sentences describe behaviour that another PR brings, so they aren't true of `main` until it
 merges. Check each before the switch, and empty this list:
 
-- `reading.md`, "Reading once": `open`, `read` and `members()` work inside a `stream_members` loop
-  under `concurrent_members=True` (PR 786).
 - `security.md`, the listing limits on `stream_members()` (PR 773).
 
 Pages linked from these but not written yet: `install.md` and `api.md`. No check looks at

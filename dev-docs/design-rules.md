@@ -411,7 +411,7 @@ that is right on one format and wrong on another breaks callers silently.
 - Under `concurrent_members=True`, `open`, `read`, `get` and `members()` work during a
   `stream_members` pass, on every format and from any thread, because they share one lazy
   walk of the archive with the pass; `extract_all` beside a pass keeps raising (2026-10-13;
-  applied by PR 786, open as of this entry).
+  applied by PR 786).
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
