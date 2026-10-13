@@ -26,8 +26,10 @@ Where a member's data ends (``openspec/changes/native-zip-reader/design.md``):
   it the same way). Under encryption the CRC covers the plaintext, so only the size
   and the signature after the descriptor are matched.
 - Bit 3 and any other method: the codec's own end. The walk cannot see it, so the
-  caller decodes and tells :meth:`MemberData.settle` how many compressed bytes the
-  codec used; the bytes its layers read past that are put back in front of the stream.
+  caller decodes until the codec stream ends and hands :meth:`MemberData.settle` the
+  decoded data's CRC; the walk finds the descriptor among the bytes it kept, and puts
+  what follows it back in front of the stream. A caller whose codec counts the bytes
+  it used (DEFLATE) may pass that count instead.
 
 Like ``zip_parser``, this module decodes no name, runs no codec and emits no
 diagnostic. Damage raises ``CorruptionError``, a stream that ends early
@@ -289,7 +291,8 @@ class MemberData(ReadOnlyIOStream):
         self._walk = walk
         self._source = walk.source
         self.entry = entry
-        #: Bytes handed out so far.
+        #: Bytes handed out so far. For a codec member that is past its data: what
+        #: its compressed size is, the descriptor ``settle`` returns says.
         self.consumed = 0
         self._settled = False
 
@@ -315,15 +318,17 @@ class MemberData(ReadOnlyIOStream):
     ) -> DataDescriptor | None:
         """Finish the member: skip its unread data, read its data descriptor.
 
-        ``used`` is how many compressed bytes the codec consumed. A member whose end
-        only its codec knows (:class:`_CodecData`) needs it; on the others, whose end
-        the walk knows, it is optional and checked against that end: a sized member
-        refuses one past its stated size, a scanned one any other than its length. ``crc`` and
-        ``file_size``, when the caller has computed them, pick the descriptor among
-        the shapes that fit, so only a codec member reads them: a sized member has no
-        descriptor and a scanned one matched its own. A descriptor that disagrees
-        with them is the caller's to judge. Returns ``None`` for a member with no
-        descriptor.
+        ``used`` is how many compressed bytes the codec consumed. On a member whose
+        end the walk knows it is optional and checked against that end: a sized
+        member refuses one past its stated size, a scanned one any other than its
+        length. A member whose end only its codec knows (:class:`_CodecData`) needs
+        ``used`` or ``crc``: with ``used`` its descriptor is read right there, and
+        with ``crc`` alone it is searched for after the codec's end (see
+        :meth:`_CodecData._find_descriptor`). ``crc`` and ``file_size``, when the
+        caller has computed them, pick the descriptor among the shapes that fit, so
+        only a codec member reads them: a sized member has no descriptor and a
+        scanned one matched its own. A descriptor that disagrees with them is the
+        caller's to judge. Returns ``None`` for a member with no descriptor.
         """
         if self._settled:
             raise ValueError("settle() called twice")
@@ -427,7 +432,11 @@ class _CodecData(MemberData):
         self, used: int | None, *, crc: int | None, file_size: int | None
     ) -> DataDescriptor | None:
         if used is None:
-            raise ValueError("settle() needs `used` for a member its codec ends")
+            if crc is None:
+                raise ValueError(
+                    "settle() needs `used` or `crc` for a member its codec ends"
+                )
+            return self._find_descriptor(crc, file_size)
         excess = self.consumed - used
         if excess < 0:
             raise ValueError(
@@ -446,6 +455,80 @@ class _CodecData(MemberData):
         return self._walk._read_descriptor(
             self.entry, compressed_size=used, crc=crc, file_size=file_size
         )
+
+    def _find_descriptor(self, crc: int, file_size: int | None) -> DataDescriptor:
+        """Find the descriptor among the bytes kept, and put back what follows it.
+
+        A codec stream stops after its end without saying how far past it it read:
+        its decoder takes input in chunks, and some (Deflate64, PPMd) cannot say how
+        much of the last one they used. The descriptor holds the CRC of the decoded
+        data, so it is found where that CRC is, with a compressed size equal to its
+        own position and a ZIP signature after it. A signed descriptor whose CRC
+        differs (the data is damaged) is found by its signature and size, and the
+        caller judges the CRC; an unsigned one cannot be told from the data then.
+
+        The descriptor dates the data's end from its own position, so bytes between
+        the codec's end and the descriptor count into its compressed size: the check
+        a sized member gets, that nothing follows the codec's end (DR-3), is not
+        available here, and such a member reads from a pipe where it fails from a
+        file. A crafted shape only, so DR-5a lets the two reads differ. As with the
+        stored scan, a planted descriptor for a prefix ends the member early, and the
+        walk reads on from inside its data; comparing the descriptor with the central
+        entry at the end of the pass (task 3.3b) is what will catch it.
+        """
+        base = self.consumed - self._kept_len
+        ahead = self._source.read(_DESCRIPTOR_LOOKAHEAD)
+        at_end = len(ahead) < _DESCRIPTOR_LOOKAHEAD
+        buffer = b"".join([*self._kept, ahead])
+        self._kept.clear()
+        self._kept_len = 0
+        zip64 = self.entry.zip64
+
+        def match(pos: int, *, by_crc: bool) -> DataDescriptor | None:
+            if pos < 0:
+                return None
+            return match_descriptor(
+                buffer,
+                pos,
+                compressed_size=base + pos,
+                crc=crc if by_crc else None,
+                file_size=file_size if by_crc else None,
+                zip64=zip64,
+                at_end=at_end,
+                signed_only=not by_crc,
+            )
+
+        found: tuple[int, DataDescriptor] | None = None
+        needle = crc.to_bytes(4, "little")
+        at = buffer.find(needle)
+        while found is None and at >= 0:
+            for pos in (at - len(DATA_DESCRIPTOR_SIGNATURE), at):
+                if descriptor := match(pos, by_crc=True):
+                    found = (pos, descriptor)
+                    break
+            at = buffer.find(needle, at + 1)
+        at = buffer.find(DATA_DESCRIPTOR_SIGNATURE)
+        while found is None and at >= 0:
+            if descriptor := match(at, by_crc=False):
+                found = (at, descriptor)
+            at = buffer.find(DATA_DESCRIPTOR_SIGNATURE, at + 1)
+        if found is None:
+            self._source.unread(ahead)
+            index = self.entry.index
+            # Read to the end of the stream with no end record in sight: the archive
+            # was cut, whatever else went wrong.
+            if at_end and EOCD_SIGNATURE not in buffer:
+                raise TruncatedError(
+                    f"ZIP stream ends before member #{index}'s data descriptor"
+                )
+            raise CorruptionError(
+                f"no data descriptor after member #{index}'s data: none in the "
+                f"last {len(buffer)} bytes read matches its size and decoded CRC "
+                f"{crc:08x}"
+            )
+        pos, descriptor = found
+        self._source.unread(buffer[pos + descriptor.length :])
+        return descriptor
 
 
 class _ScannedData(MemberData):

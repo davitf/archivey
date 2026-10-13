@@ -366,7 +366,11 @@ class DecoderLimits:
     when the reader is.
 
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
-    one. Where an archive declares the size, exceeding a guard raises
+    one, with one exception: ``None`` on ``max_ppmd_in_process_input`` refuses
+    a ZIP PPMd member whose sizes follow its data, read from a stream that cannot
+    seek, since such a member decodes only in a child process.
+
+    Where an archive declares the size, exceeding a guard raises
     :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
     which is the only place it can be raised in this process: the process has no
     recourse once the request is in the allocator's hands. The rapidgzip child is
@@ -508,6 +512,11 @@ class DecoderLimits:
             member, so it always runs in-process. ``None`` decodes every member
             in-process and never starts a child process, at a memory cost that
             grows with the member.
+
+            A ZIP member read from a stream that cannot seek, its sizes stored
+            after its data, has no size to hold it to: it is fed to pyppmd in
+            pieces, always in a child process, whatever its size. With ``None``
+            such a member raises :class:`~archivey.exceptions.ResourceLimitError`.
     """
 
     max_decoder_memory: int | None = 2 * 2**30

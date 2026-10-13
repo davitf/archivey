@@ -106,7 +106,10 @@ class PpmdCodec(StreamCodec):
                 in_process_max_input=in_process_max_input,
                 collector=config.collector,
                 refuse_input_after_end=config.refuse_input_after_end,
+                input_runs_on=params.input_runs_on,
             )
+        if params.input_runs_on:
+            raise ValueError("input_runs_on needs PPMd8: PPMd7 has no end mark")
         order, mem_size = parse_ppmd_var_h_properties(params.properties)
         check_decoder_memory(
             mem_size, limits=config.decoder_limits, what="7z PPMd var.H memory size"
