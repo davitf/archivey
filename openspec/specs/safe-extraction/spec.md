@@ -783,6 +783,44 @@ under `OnError.CONTINUE`; global guards remain always-stop.
 | `compressed_size is None` or `0` | Per-member ratio skipped; cumulative/global guards still apply |
 | `ExtractionLimits(max_ratio=100)` | Members over 100:1 trip this guard |
 
+### Requirement: Recorded sizes decide the ratio before decoding
+
+A member stream never yields more than the member's recorded `size` (a byte past it
+is `CorruptionError`), so a recorded size bounds the member's output. When a FILE
+member is about to be decoded (`BombTracker.check_recorded_size()`, called at the
+start of every FILE write, after the selector, the filter, the policy checks and the
+overwrite policy have accepted it), the system SHALL apply the per-member ratio and
+the static archive-wide ratio to the output the member would produce if all of its
+recorded `size` were written:
+
+- per-member: refuse when `size` exceeds both `ratio_activation_threshold` and
+  `max_ratio * compressed_size` (only when `compressed_size` is known and greater
+  than zero);
+- archive-wide: refuse when the output so far (as counted for the archive-wide ratio)
+  plus `size` exceeds both `ratio_activation_threshold` and
+  `max_ratio * compressed_source_size` (only when `compressed_source_size` is known).
+
+Each refuses exactly when the measured check in `count()` would refuse during that
+member, and with the same error kind: the per-member refusal is member-scoped, the
+archive-wide one always-stop. When both would trip, the one the measured check reaches
+first (at the smaller output) is raised; a tie goes to the per-member one, which
+`count()` checks first. A refused member has no temp file and adds no bytes to any
+counter. Members without a recorded `size`, and the live archive-wide ratio, are left
+to the measured checks, which still run on every chunk. The check runs on a dry run
+as on a real one. When the orphan pass writes an excluded hard-link source's content
+at a link's path, the source's own sizes are the ones checked, as `count()` uses them.
+
+#### Scenario: recorded-size ratio matrix
+
+| Case | Expected |
+| --- | --- |
+| ZIP, 7z or RAR member whose recorded size is over the ratio after the threshold | `ResourceLimitError` before any byte of it is decoded or written; under `OnError.CONTINUE` the member is `FAILED` and the rest are extracted |
+| Member under the threshold or at the ratio | Not refused; the measured checks run as before |
+| Member excluded by `members=`, dropped by the filter, or `NOT_OVERWRITTEN` under `OverwritePolicy.SKIP` | Not decoded, so not refused |
+| `.tar.gz` from a path whose members' recorded sizes take the output past the archive-wide ratio | The members before it are written; the member that would cross it is refused before it is decoded (always-stop) |
+| Hard link selected without its source (orphan pass) | The source's recorded sizes decide, before its content is written at the link's path |
+| `dry_run=True` | Same refusals as a real run |
+
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
 The system SHALL apply `ExtractionLimits` bomb guards only during

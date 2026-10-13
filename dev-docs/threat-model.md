@@ -654,7 +654,9 @@ the pass, and declined rather than refused when the cap has no room.
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
-(262,144). A non-seekable
+(262,144). Where a member records its size, `check_recorded_size()` applies both
+static ratios to that size before the member is decoded, since a member stream never
+yields past its recorded size; the measured checks still run on every chunk. A non-seekable
 caller stream's `size` attribute counts as unknown size: nothing can check it, and an
 inflated claim used as the static denominator would also switch off the live ratio
 (`BaseArchiveReader._trusted_source_size`). The global guards

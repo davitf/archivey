@@ -534,6 +534,79 @@ def test_ratio_skipped_when_denominators_unknown() -> None:
     t.count(10_000)  # no ratio applies; cumulative under limit
 
 
+def test_recorded_size_refuses_a_member_before_its_data() -> None:
+    # The member's recorded size already decides the per-member ratio, so the member
+    # is refused before count() sees a byte, with the same skippable error.
+    t = BombTracker(max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=10)
+    t.start_member(_member("f").replace(size=21, compressed_size=10))
+    with pytest.raises(ResourceLimitError, match="from recorded sizes") as ei:
+        t.check_recorded_size()
+    assert not isinstance(ei.value, _AlwaysStopResourceLimitError)
+    assert t.total_bytes == 0
+
+
+@pytest.mark.parametrize(
+    ("size", "compressed_size"),
+    [
+        (20, 10),  # exactly at the ratio: count() would not trip either
+        (10, 1),  # 10:1, but not past the 10-byte floor
+        (None, 1),  # no recorded size: left to count()
+        (10**6, None),  # no compressed size: per-member ratio does not apply
+        (10**6, 0),
+    ],
+)
+def test_recorded_size_passes_what_count_would_pass(
+    size: int | None, compressed_size: int | None
+) -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=10)
+    t.start_member(_member("f").replace(size=size, compressed_size=compressed_size))
+    t.check_recorded_size()
+    if size is not None:
+        t.count(size)  # and the measured check agrees
+
+
+def test_recorded_size_refuses_the_archive_wide_ratio_before_the_member() -> None:
+    source = SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=None)
+    t = BombTracker(
+        max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=10, source=source
+    )
+    t.start_member(_member("a").replace(size=15))
+    t.check_recorded_size()  # 15 bytes from 10 is under 2:1
+    t.count(15)
+    t.start_member(_member("b").replace(size=6))
+    with pytest.raises(
+        _AlwaysStopResourceLimitError, match=r"Archive-wide .*from recorded sizes"
+    ):
+        t.check_recorded_size()  # 21 bytes from 10 is over 2:1
+    assert t.total_bytes == 15
+
+
+def test_recorded_size_raises_the_ratio_count_would_reach_first() -> None:
+    # Both ratios trip within this member. count() checks both on every chunk, so the
+    # one whose limit the output passes first is the one it raises.
+    source = SimpleNamespace(compressed_source_size=100, compressed_bytes_consumed=None)
+
+    def tracker() -> BombTracker:
+        return BombTracker(
+            max_bytes=10**12,
+            max_ratio=2.0,
+            ratio_activation_threshold=10,
+            source=source,
+        )
+
+    # Archive-wide limit 200 bytes, per-member limit 300 bytes: archive-wide first.
+    t = tracker()
+    t.start_member(_member("f").replace(size=1000, compressed_size=150))
+    with pytest.raises(_AlwaysStopResourceLimitError, match="Archive-wide"):
+        t.check_recorded_size()
+    # Per-member limit 20 bytes: per-member first, and skippable.
+    t = tracker()
+    t.start_member(_member("f").replace(size=1000, compressed_size=10))
+    with pytest.raises(ResourceLimitError) as ei:
+        t.check_recorded_size()
+    assert not isinstance(ei.value, _AlwaysStopResourceLimitError)
+
+
 def test_max_entries_guard() -> None:
     t = BombTracker(max_bytes=10**12, max_ratio=1e9, max_entries=2)
     t.start_member(_member("a"))
@@ -1499,6 +1572,119 @@ def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
             dest,
             limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
         )
+
+
+def _zero_zip(tmp_path: Path) -> Path:
+    """A ZIP whose ``bomb.bin`` (8 MiB of zeros) is far over 10:1, next to a small file."""
+    src = tmp_path / "bomb.zip"
+    _write_zip(src, {"small.txt": b"hello", "bomb.bin": b"\x00" * (8 * 2**20)})
+    return src
+
+
+_TIGHT_RATIO = ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024)
+
+
+def test_zip_bomb_member_is_refused_before_any_byte_is_written(tmp_path: Path) -> None:
+    # Its recorded size decides the verdict, so nothing of it is decoded or written;
+    # under on_error="continue" it fails alone and the other member is extracted.
+    dest = tmp_path / "out"
+    written: list[int] = []
+    report = open_and_extract(
+        _zero_zip(tmp_path),
+        dest,
+        limits=_TIGHT_RATIO,
+        on_error=OnError.CONTINUE,
+        on_progress=lambda p: written.append(p.bytes_written),
+    )
+    by_name = {r.member.name: r for r in report.results}
+    bomb = by_name["bomb.bin"]
+    assert bomb.status is ExtractionStatus.FAILED
+    assert isinstance(bomb.error, ResourceLimitError)
+    assert "from recorded sizes" in str(bomb.error)
+    assert by_name["small.txt"].status is ExtractionStatus.EXTRACTED
+    assert max(written) == len(b"hello")
+    assert not (dest / "bomb.bin").exists()
+
+
+def test_recorded_size_check_runs_on_a_dry_run(tmp_path: Path) -> None:
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError, match="from recorded sizes"):
+        open_and_extract(_zero_zip(tmp_path), dest, limits=_TIGHT_RATIO, dry_run=True)
+    assert not dest.exists()
+
+
+def test_recorded_size_check_skips_members_the_run_does_not_decode(
+    tmp_path: Path,
+) -> None:
+    # A member left out by members=, dropped by the filter, or skipped over an existing
+    # file is never decoded, so neither check refuses it.
+    src = _zero_zip(tmp_path)
+    report = open_and_extract(
+        src, tmp_path / "a", limits=_TIGHT_RATIO, members=["small.txt"]
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED]
+    report = open_and_extract(
+        src,
+        tmp_path / "b",
+        limits=_TIGHT_RATIO,
+        filter=lambda m: None if m.name == "bomb.bin" else m,
+    )
+    assert [r.member.name for r in report.results] == ["small.txt"]
+    dest = tmp_path / "c"
+    dest.mkdir()
+    (dest / "bomb.bin").write_bytes(b"kept")
+    report = open_and_extract(
+        src, dest, limits=_TIGHT_RATIO, overwrite=OverwritePolicy.SKIP
+    )
+    assert {r.member.name: r.status for r in report.results} == {
+        "small.txt": ExtractionStatus.EXTRACTED,
+        "bomb.bin": ExtractionStatus.NOT_OVERWRITTEN,
+    }
+    assert (dest / "bomb.bin").read_bytes() == b"kept"
+
+
+def test_targz_archive_wide_ratio_refuses_the_member_that_would_cross_it(
+    tmp_path: Path,
+) -> None:
+    # TAR records no compressed size per member, so only the archive-wide ratio
+    # applies. Its members' recorded sizes say which member takes the output past it:
+    # the members before it are written, and that one is refused before it is decoded.
+    src = tmp_path / "bomb.tar.gz"
+    zeros = b"\x00" * (2 * 2**20)
+    src.write_bytes(
+        _tar_bytes([("file", "a.bin", zeros), ("file", "b.bin", zeros)], mode="w:gz")
+    )
+    limit = 3 * 2**20 / src.stat().st_size  # a.bin passes, a.bin + b.bin does not
+    dest = tmp_path / "out"
+    with pytest.raises(
+        _AlwaysStopResourceLimitError, match=r"Archive-wide .*from recorded sizes"
+    ):
+        open_and_extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_ratio=limit, ratio_activation_threshold=1024),
+            on_error=OnError.CONTINUE,
+        )
+    assert (dest / "a.bin").read_bytes() == zeros
+    assert not (dest / "b.bin").exists()
+
+
+def test_orphan_hardlink_source_is_refused_from_its_recorded_size(
+    tmp_path: Path,
+) -> None:
+    # Extracting only a hardlink writes its excluded source's content at the link's
+    # path. That content is the source's, so the source's recorded size decides.
+    src = tmp_path / "links.tar.gz"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "A.bin", b"\x00" * (2 * 2**20)), ("hard", "L.bin", "A.bin")],
+            mode="w:gz",
+        )
+    )
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError, match="from recorded sizes"):
+        open_and_extract(src, dest, limits=_TIGHT_RATIO, members=["L.bin"])
+    assert not (dest / "L.bin").exists()
 
 
 def test_entry_count_bomb(tmp_path: Path) -> None:

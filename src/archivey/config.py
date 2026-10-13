@@ -192,6 +192,11 @@ class ExtractionLimits:
     :attr:`live_ratio_activation_threshold`. The archive-wide check also
     counts the copies written when a file runs out of hard-link slots (1024 names on
     NTFS), since the archive's declared link count drives them.
+
+    A member's output never passes the size the archive records for it. Where that
+    size is recorded, a member that would fail either check is refused before any of
+    it is written; the archive-wide check does this only when the archive's own size
+    is known.
     """
 
     ratio_activation_threshold: int = 5 * 2**20
