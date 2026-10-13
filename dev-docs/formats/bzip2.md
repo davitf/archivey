@@ -238,7 +238,7 @@ accelerator `OFF` and `ON`.
 | `bzip2` | Reads |
 | `pbzip2`, `lbzip2` | Reads, as a run of streams |
 | Two `bzip2` files concatenated, nothing between them | Reads both payloads, with the accelerator off and on |
-| Two `bzip2` files with zero bytes between them (crafted: no known writer emits this) | Reads the first payload, then `ARCHIVE_TRAILING_DATA` at the second stream's first byte, with the accelerator off, `AUTO` and on; `DiagnosticPolicy.strict()` raises. The other readers, measured on a stream, 4 zero bytes, a stream: `bzip2`/`bzcat` 1.0.8 and `pbzip2` write the first payload and warn "trailing garbage after EOF ignored"; 7-Zip writes it and reports "There are some data after the end of the payload data"; `lbzip2`, `bsdcat` (libarchive), `unar` and Python's `bz2.decompress` write it and stop silently; rapidgzip's `IndexedBzip2File` writes it and warns "Trailing garbage after EOF ignored!" |
+| Two `bzip2` files with zero bytes between them (crafted: no known writer emits this) | Reads the first payload, then `ARCHIVE_TRAILING_DATA` at the second stream's first byte, with the accelerator off, `AUTO` and on; `DiagnosticPolicy.STRICT` raises. The other readers, measured on a stream, 4 zero bytes, a stream: `bzip2`/`bzcat` 1.0.8 and `pbzip2` write the first payload and warn "trailing garbage after EOF ignored"; 7-Zip writes it and reports "There are some data after the end of the payload data"; `lbzip2`, `bsdcat` (libarchive), `unar` and Python's `bz2.decompress` write it and stop silently; rapidgzip's `IndexedBzip2File` writes it and warns "Trailing garbage after EOF ignored!" |
 | A stream and empty streams (`bzip2 -c /dev/null`) concatenated, the empty ones before, between or after | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` accepts it |
 | The same, with zero bytes after the last stream | Reads, with no diagnostic, with the accelerator off and on |
 | Zero bytes, then an empty stream | The data ends at the zeros: `ARCHIVE_TRAILING_DATA` at the empty stream, with the accelerator off and on. `bzip2 -t` warns "trailing garbage after EOF ignored" and exits 0: it stops at the first zero byte |
@@ -277,7 +277,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A cut or damaged stream right after the data costs a second decode of the file with the accelerator | **archivey** | The accelerator stops before it, and the standard library takes over at the end from the start of the file (§2.3) |
 | A stream after zero bytes is not read: the first stream's payload, then `ARCHIVE_TRAILING_DATA` | **archivey** | Zeros are padding only at the end of the file (§6), as `bzip2` and 7-Zip read it |
 | Reading a large level-1 `.bz2` with the accelerator spends 5 to 10% of the time checking for skipped streams | **archivey** | The check copies the decoder's whole index per batch of blocks (§2.3) |
-| Trailing junk after the last stream is a warning | **archivey** | The rule every codec shares ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
+| Trailing junk after the last stream is a warning | **archivey** | The rule every codec shares ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
 
 ## 6. Decisions
 

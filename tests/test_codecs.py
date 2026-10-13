@@ -1715,8 +1715,8 @@ def test_verify_exact_available_read_then_close_is_quiet() -> None:
     stream.close()  # quiet — never asked past available
 
 
-def test_verify_seek_forfeits_checksum_keeps_length() -> None:
-    """A jump past the frontier disables CRC but still raises TruncatedError when short.
+def test_verify_seek_pauses_checksum_keeps_length() -> None:
+    """A jump past the frontier pauses the CRC but still raises TruncatedError when short.
 
     ``BytesIO`` has no ``nearest_resume_offset``, so the seek is a jump, not a decode.
     """
@@ -1743,10 +1743,10 @@ def test_verify_rewind_to_start_rearms_checksum(first_seek: int) -> None:
     )
     assert stream.read(10) == CONTENT[:10]
     stream.seek(first_seek)
-    stream.read(1)  # skips the gap: the CRC is lost
-    assert not stream._verifier.digests_enabled
+    stream.read(1)  # skips the gap: the CRC is paused
+    assert stream._digest_intact() is False
     stream.seek(0)
-    assert stream._verifier.digests_enabled
+    assert stream._digest_intact() is True
     with pytest.raises(CorruptionError):
         stream.read(-1)
     stream.close()
@@ -1779,6 +1779,18 @@ class _JumpingBytesIO(io.BytesIO):
 
     def nearest_resume_offset(self, target: int) -> int:
         return target
+
+
+class _SparseRestartBytesIO(io.BytesIO):
+    """A ``BytesIO`` with restart points at 0 and at ``point`` only, like a seek index
+    with one far entry: a far seek jumps, a near one decodes from the start."""
+
+    def __init__(self, data: bytes, point: int) -> None:
+        super().__init__(data)
+        self._point = point
+
+    def nearest_resume_offset(self, target: int) -> int:
+        return self._point if target >= self._point else 0
 
 
 _BAD_CRC = {HashAlgorithm.CRC32: _crc32(CONTENT + b"x")}
@@ -1828,8 +1840,8 @@ def test_verify_forward_seek_that_decodes_keeps_checksum(size: int | None) -> No
     stream.close()
 
 
-def test_verify_forward_seek_that_jumps_forfeits_checksum() -> None:
-    """A seek the inner can jump skips bytes the hashers never see: the CRC is lost
+def test_verify_forward_seek_that_jumps_pauses_checksum() -> None:
+    """A seek the inner can jump skips bytes the hashers never see: the CRC is paused
     once a read starts past the frontier, and a seek back before reading keeps it."""
     stream = VerifyingStream(
         _JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=len(CONTENT)
@@ -1841,6 +1853,99 @@ def test_verify_forward_seek_that_jumps_forfeits_checksum() -> None:
     assert stream._digest_intact() is True
     stream.seek(500)
     assert stream.read(-1) == CONTENT[500:]  # mismatch not checked
+    assert stream._digest_intact() is False
+    stream.close()
+
+
+@pytest.mark.parametrize("size", [len(CONTENT), None])
+def test_verify_seek_back_after_a_jump_completes_the_checksum(
+    size: int | None,
+) -> None:
+    """A read that skipped bytes pauses the CRC at the hashing frontier; a seek back
+    to it, then a read on to the end, hashes the rest and checks the CRC."""
+    stream = VerifyingStream(_JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=size)
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(500)
+    assert stream.read() == CONTENT[500:]  # length checked, CRC not yet
+    assert stream._digest_intact() is False
+    stream.seek(10)
+    assert stream._digest_intact() is True
+    with pytest.raises(CorruptionError):
+        stream.read()
+    stream.close()
+
+    stream = VerifyingStream(_JumpingBytesIO(CONTENT), _GOOD_CRC, expected_size=size)
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(500)
+    assert stream.read(1) == CONTENT[500:501]
+    stream.seek(4)  # behind the frontier: the re-read bytes are not hashed twice
+    assert stream.read() == CONTENT[4:]
+    assert stream._digest_intact() is True
+    stream.close()
+
+
+@pytest.mark.parametrize("crc", ["good", "bad"])
+def test_verify_paused_checksum_completes_through_a_deferred_read_through(
+    crc: str,
+) -> None:
+    """After a jump concluded the length with the CRC paused, a seek back to the
+    frontier then a near forward seek defers the gap to the next read, which hashes
+    it and lets the read to the end check the CRC."""
+    far = len(CONTENT) * 3 // 4
+    near = len(CONTENT) // 2
+    expected = _GOOD_CRC if crc == "good" else _BAD_CRC
+    stream = VerifyingStream(
+        _SparseRestartBytesIO(CONTENT, far), expected, expected_size=len(CONTENT)
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(far)  # jumps
+    assert stream.read() == CONTENT[far:]  # length concluded, CRC paused
+    assert stream._digest_intact() is False
+    stream.seek(10)
+    assert stream._digest_intact() is True
+    assert stream.seek(near) == near
+    assert stream._verifier._read_through_due is not None  # deferred, not jumped
+    assert stream.tell() == near
+    if crc == "bad":
+        with pytest.raises(CorruptionError):
+            stream.read()
+    else:
+        assert stream.read() == CONTENT[near:]
+        assert stream._verifier._digest_checked
+    stream.close()
+
+
+def test_verify_seek_back_after_a_jump_withholds_the_reaching_chunk() -> None:
+    """The bounded read that completes a paused hash gives the digest verdict and
+    withholds its bytes on a mismatch, as a first reaching read does."""
+    stream = VerifyingStream(
+        _JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=len(CONTENT)
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(len(CONTENT) - 5)
+    assert stream.read(5) == CONTENT[-5:]
+    stream.seek(10)
+    assert stream.read(100) == CONTENT[10:110]
+    with pytest.raises(CorruptionError):
+        stream.read(len(CONTENT))
+    stream.close()
+
+
+def test_verify_seek_to_declared_size_after_a_jump_does_not_claim_the_checksum() -> (
+    None
+):
+    """Once a read skipped bytes, the conclusion's gap read starts past the hashing
+    frontier and cannot complete the hash, so a seek to the declared size does not
+    claim the digest is intact, and the CRC is not checked there."""
+    stream = VerifyingStream(
+        _JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=len(CONTENT)
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(20)
+    assert stream.read(30) == CONTENT[20:50]
+    stream.seek(len(CONTENT))
+    assert stream._digest_intact() is False
+    assert stream.read(1) == b""
     assert stream._digest_intact() is False
     stream.close()
 

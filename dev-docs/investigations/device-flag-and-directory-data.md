@@ -39,7 +39,7 @@ I would not put it in the strict refusal set, because a real producer writes thi
 `DIRECTORY` (every official tool, and PR #683's "type follows the name"); `size` keeps the
 declared byte count (7-Zip and unzip list it too); a per-member diagnostic, say
 `MEMBER_DIRECTORY_DATA_IGNORED`, fires in ZIP, TAR and RAR, is a warning by default and is
-refused under `DiagnosticPolicy.strict()` (the ZIP spec forbids the shape, APPNOTE 4.3.8);
+refused under `DiagnosticPolicy.STRICT` (the ZIP spec forbids the shape, APPNOTE 4.3.8);
 and the bytes stay reachable: `open()`/`read()` stop refusing by *type* and refuse only a
 member that has *no data* (an anti item, a data-less `OTHER`, a directory with size 0 or
 `None`). Extraction keeps creating the directory. This puts the case at the top of DR-1's
@@ -285,7 +285,7 @@ hand-built archives, so this is acceptable (DR-5a within DR-1).
 `MEMBER_DIRECTORY_DATA_IGNORED` (the name PR 731 uses), context: member name, declared size,
 compressed size, format. Emitted at listing time (the sizes are in the header), once per
 member, in ZIP, TAR (`0`/NUL `d/` after the retype, and PR #706's NUL case) and RAR. Default
-`collect`; in `DiagnosticPolicy.strict()`'s raise set. `extract_all` keeps status
+`collect`; in `DiagnosticPolicy.STRICT`'s raise set. `extract_all` keeps status
 `EXTRACTED` for the directory; the diagnostic is the record. The handbook rows for ZIP,
 TAR and RAR and `docs/errors-and-diagnostics.md` get one row each.
 

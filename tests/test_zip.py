@@ -2036,14 +2036,10 @@ def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> Non
 def test_encoding_inference_is_escalatable() -> None:
     # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
     # refuses to trust the guess can escalate it to an error.
-    from archivey import DiagnosticDisposition, DiagnosticPolicy
+    from archivey import DiagnosticPolicy
     from archivey.exceptions import DiagnosticRaisedError
 
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: DiagnosticDisposition.RAISE
-        }
-    )
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED})
     cfg = ArchiveyConfig(diagnostic_policy=policy)
     with pytest.raises(DiagnosticRaisedError):
         with open_archive(
@@ -2255,7 +2251,7 @@ def test_special_file_with_data_is_not_refused_by_strict(tmp_path: Path) -> None
     the shape (``zip -FI``), so strict does not refuse it."""
     path = tmp_path / "special.zip"
     _zip_with_special_entry(path, stat.S_IFIFO, b"xyz")
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(path, config=config) as ar:
         assert ar.read("dev") == b"xyz"
 
@@ -2546,7 +2542,7 @@ def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> Non
         with pytest.raises(ArchiveyUsageError, match="declares no data"):
             ar.read("d/")
         assert ar.read("d/f.txt") == b"visible"
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with (
         open_archive(path, config=config) as ar,
         pytest.raises(DiagnosticRaisedError) as excinfo,
@@ -2588,7 +2584,7 @@ def test_directory_data_is_refused_by_strict(tmp_path: Path) -> None:
     while the jar shape, which declares no data, passes."""
     path = tmp_path / "dirdata.zip"
     _zip_with_directory_data(path, zipfile.ZIP_STORED)
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with (
         open_archive(path, config=config) as ar,
         pytest.raises(DiagnosticRaisedError) as excinfo,

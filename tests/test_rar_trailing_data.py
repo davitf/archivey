@@ -1,7 +1,7 @@
 """Bytes after a RAR end-of-archive block are ``ARCHIVE_TRAILING_DATA`` (DR-3).
 
 A non-zero byte after the end block of any volume is a warning by default and refused
-under ``DiagnosticPolicy.strict()``; zero padding is silent. ``unrar`` says nothing
+under ``DiagnosticPolicy.STRICT``; zero padding is silent. ``unrar`` says nothing
 about such bytes; 7-Zip 23.01 warns "There are data after the end of archive", for
 zeros too. The listing is native, so none of these tests needs ``unrar``.
 """
@@ -96,7 +96,7 @@ def test_junk_past_the_scan_bound_goes_unseen() -> None:
 
 
 def test_strict_policy_refuses_trailing_data() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     data = _data("basic_nonsolid__.rar") + b"JUNK"
     with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(io.BytesIO(data), config=config) as reader:
@@ -105,7 +105,7 @@ def test_strict_policy_refuses_trailing_data() -> None:
 
 
 def test_strict_policy_accepts_zero_padding() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     data = _data("basic_nonsolid__.rar") + b"\x00" * 512
     with open_archive(io.BytesIO(data), config=config) as reader:
         assert reader.members()

@@ -2,7 +2,7 @@
 
 A 7z archive ends at its next header or its last packed stream, whichever is later. A
 non-zero byte after that is a warning by default and refused under
-``DiagnosticPolicy.strict()``; zero padding is silent. 7-Zip 23.01 warns "There are data
+``DiagnosticPolicy.STRICT``; zero padding is silent. 7-Zip 23.01 warns "There are data
 after the end of archive" for any tail, zeros included.
 """
 
@@ -139,7 +139,7 @@ def test_two_archives_concatenated_list_the_first_and_report_the_second() -> Non
 
 
 def test_strict_policy_refuses_trailing_data() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(io.BytesIO(_stored_7z() + b"JUNK"), config=config) as reader:
             reader.members()
@@ -149,7 +149,7 @@ def test_strict_policy_refuses_trailing_data() -> None:
 
 
 def test_strict_policy_accepts_zero_padding() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     data = _stored_7z() + b"\x00" * 512
     with open_archive(io.BytesIO(data), config=config) as reader:
         assert [m.name for m in reader.members()] == ["f.txt"]
@@ -184,7 +184,7 @@ def _empty_trailing(data: bytes, config: ArchiveyConfig | None = None) -> list[i
 def test_empty_archive_ends_at_its_signature_header() -> None:
     assert _empty_trailing(_empty_7z()) == []
     assert _empty_trailing(_empty_7z() + b"JUNK") == [0]
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     assert _empty_trailing(_empty_7z() + b"\x00" * 512, strict) == []
 
 

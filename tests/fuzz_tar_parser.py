@@ -210,7 +210,7 @@ def _walk(data: bytes, *, seekable: bool) -> None:
         if entry.sparse is not None:
             validate_sparse_map(entry.sparse, entry.size, entry.stored_size, "m")
         if not seekable:
-            walker.open_data(entry).read()
+            walker.open_data(entry.span()).read()
 
 
 def test_tar_walker_fuzz_harness() -> None:

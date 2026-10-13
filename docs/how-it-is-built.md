@@ -24,11 +24,14 @@ memory a decoder may use, what a damaged archive should do. Some examples of tho
 rulings:
 
 - A bad optional record in a RAR header is dropped with a diagnostic.
-  `DiagnosticPolicy.strict()` refuses the archive instead, and a bad encryption record is always fatal.
+  `DiagnosticPolicy.STRICT` refuses the archive instead, and a bad encryption record is
+  always fatal.
 - Decoder memory is capped at 2 GiB by default, and you can change the cap through
   `DecoderLimits`.
-- The integrity guarantee covers a member read from start to end. A read that seeks is
-  best effort, because a seek trusts the format's own index.
+- The integrity guarantee covers a member read from start to end with no skipped bytes, so
+  most seeks keep it. A seek that jumps over bytes without decoding them gives up the
+  checksum, since those bytes were never hashed, and a seek through an `.xz` or `.lz` file's
+  index also trusts that index.
 
 The maintainer reads code as well, especially to check the architecture and the tricky
 parts. Decisions are recorded in the repository as

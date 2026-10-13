@@ -4,7 +4,7 @@ Every stream codec but ``.Z`` (which has no end marker) reads its data in full a
 reports what follows as one ``ARCHIVE_TRAILING_DATA``, with ``expected_marker=
 "end_of_stream"`` and the compressed offset of the first non-zero byte after the end.
 Zeros there are padding, for every codec but xz only where they run to the end of the
-file. ``DiagnosticPolicy.strict()`` makes the report an error. xz and lzip keep their
+file. ``DiagnosticPolicy.STRICT`` makes the report an error. xz and lzip keep their
 size and index through the appended bytes.
 """
 
@@ -129,7 +129,7 @@ def test_data_reads_and_the_bytes_after_it_are_reported(
 def test_strict_makes_the_report_an_error(tmp_path: Path, suffix: str) -> None:
     _name, compress, _marks = _CODECS[suffix]
     path = _write(tmp_path, suffix, compress(_PAYLOAD) + _JUNK)
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as info:
         with open_archive(path, config=strict) as reader:
             reader.read(reader.members()[0])
@@ -665,7 +665,7 @@ def test_empty_bzip2_streams_are_part_of_the_data(
     content = _tar_of(payload) if kind == ".tar.bz2" else payload
     path = _write(tmp_path, kind, _BZ2_LAYOUTS[layout](content))
     config = ArchiveyConfig(
-        use_indexed_bzip2=mode, diagnostic_policy=DiagnosticPolicy.strict()
+        use_indexed_bzip2=mode, diagnostic_policy=DiagnosticPolicy.STRICT
     )
     assert _read_single_member(path, config, access) == payload
 
@@ -880,7 +880,7 @@ def test_strict_refuses_a_stream_after_nul_padding(
     path = _write(
         tmp_path, suffix, compress(_PAYLOAD) + b"\x00" * 4 + compress(_PAYLOAD)
     )
-    config = _accelerator_config(mode, DiagnosticPolicy.strict())
+    config = _accelerator_config(mode, DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as info:
         with open_archive(path, config=config, seekable_members=True) as reader:
             reader.read(reader.members()[0])
@@ -908,7 +908,7 @@ def test_nul_padding_at_the_end_and_direct_concatenation_stay_silent(
     between them."""
     path = _write(tmp_path, suffix, compress(_PAYLOAD) + tail(compress))
     expected = _PAYLOAD + (b"second" if tail(compress).strip(b"\x00") else b"")
-    config = _accelerator_config(mode, DiagnosticPolicy.strict())
+    config = _accelerator_config(mode, DiagnosticPolicy.STRICT)
     with open_archive(path, config=config, seekable_members=True) as reader:
         assert reader.read(reader.members()[0]) == expected
 

@@ -347,7 +347,7 @@ def test_malformed_unicode_path_field_is_dropped_with_a_diagnostic(
 
 def test_malformed_unicode_path_field_refuses_under_strict() -> None:
     blob, _ = _unicode_path_zip(extra=_short_unicode_path_field(2))
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as raised:
         with archivey.open_archive(io.BytesIO(blob), config=strict) as ar:
             ar.members()

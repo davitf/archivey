@@ -214,7 +214,7 @@ def test_lzma2_late_crc_full_read_after_a_refused_seek_is_not_reported(
     tmp_path: Path,
 ) -> None:
     # A caught seek(-1) moves nothing, so the full read after it still reaches the
-    # CRC; reporting it would raise under pedantic() on a well-formed archive.
+    # CRC; reporting it would raise under PEDANTIC on a well-formed archive.
     big = _payload(_BIG, 3)
     archive = _build(tmp_path, "lzma2", {"big.bin": big}, method="LZMA2", solid=True)
     with open_archive(archive, password=_PASSWORD, seekable_members=True) as reader:

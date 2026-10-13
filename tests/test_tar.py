@@ -33,7 +33,6 @@ from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
@@ -554,9 +553,7 @@ def test_compressed_source_size_generalized(plain_tar: Path) -> None:
 # to RAISE and gets DiagnosticRaisedError.
 _RAISE_ON_MISSING_EOF = ArchiveyConfig(
     diagnostic_policy=DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
-        }
+        raise_on={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING}
     )
 )
 
@@ -725,9 +722,9 @@ def test_minimal_eof_trailer_streaming_silent(
 
 
 def test_minimal_eof_trailer_strict_does_not_raise() -> None:
-    # DiagnosticPolicy.strict() must accept the minimal valid trailer on both access
+    # DiagnosticPolicy.STRICT must accept the minimal valid trailer on both access
     # modes: it raises on both EOF codes, and neither is emitted here.
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     data = _tar_minimal_eof()
     with open_archive(
         io.BytesIO(data),
@@ -1063,16 +1060,11 @@ def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
     # escalate_as=CorruptionError takes precedence over IGNORE (spec matrix).
     from archivey.diagnostics import (
         DiagnosticCode,
-        DiagnosticDisposition,
         DiagnosticPolicy,
     )
 
     data = _tar_corrupt_final_header()
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
-        }
-    )
+    policy = DiagnosticPolicy(ignore={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
     with raises_corruption_not_truncation():
         with open_archive(
             io.BytesIO(data),
@@ -1221,7 +1213,7 @@ def test_damaged_second_eof_block_then_junk_reports_trailing_data() -> None:
 def test_damaged_second_eof_block_refused_under_strict(streaming: bool) -> None:
     data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(
         source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
     ) as ar:
@@ -1529,7 +1521,7 @@ def test_old_style_directory_data_is_refused_by_strict_policy(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
-            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
         ) as ar:
             list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
@@ -1763,7 +1755,7 @@ def test_dirtype_zero_span_is_refused_by_strict_policy(streaming: bool) -> None:
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
-            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
         ) as ar:
             list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
@@ -2442,7 +2434,6 @@ def test_error_mid_streaming_pass_poisons_members_report() -> None:
     the two-member prefix as the complete resolved list."""
     from archivey.diagnostics import (
         DiagnosticCode,
-        DiagnosticDisposition,
         DiagnosticPolicy,
     )
     from archivey.exceptions import DiagnosticRaisedError
@@ -2460,9 +2451,7 @@ def test_error_mid_streaming_pass_poisons_members_report() -> None:
 
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
-            overrides={
-                DiagnosticCode.MEMBER_TIMESTAMP_INVALID: DiagnosticDisposition.RAISE
-            }
+            raise_on={DiagnosticCode.MEMBER_TIMESTAMP_INVALID}
         )
     )
     with open_archive(
@@ -3047,7 +3036,10 @@ def test_a_whole_read_of_a_cut_member_raises_with_nothing_in_every_mode(
 
 def test_a_member_keeps_no_parsed_pax_records() -> None:
     """The member's PAX records live on as ``extra["tar.pax_headers"]``; the parsed
-    copy the entry carried is dropped once the member is built."""
+    entry that carried them is dropped once the member is built, and the member keeps
+    only its data span."""
+    from archivey.internal.backends.tar_parser import TarSpan
+
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
         info = tarfile.TarInfo("a")
@@ -3056,7 +3048,7 @@ def test_a_member_keeps_no_parsed_pax_records() -> None:
     with open_archive(io.BytesIO(buf.getvalue())) as ar:
         (member,) = ar.members()
         assert member.extra["tar.pax_headers"]["comment"] == "c" * 100
-        assert not member._raw.pax
+        assert type(member._raw) is TarSpan
 
 
 def test_global_pax_path_wins_over_a_gnu_long_name() -> None:
@@ -3278,7 +3270,7 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
     import gzip
     import lzma
 
-    from archivey.diagnostics import DiagnosticDisposition, DiagnosticPolicy
+    from archivey.diagnostics import DiagnosticPolicy
 
     payload = bytes(range(256)) * (8 * 1024)
     raw = io.BytesIO()
@@ -3296,9 +3288,7 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
     archive.write_bytes(compress(raw.getvalue()))
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
-            overrides={
-                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: DiagnosticDisposition.RAISE
-            }
+            raise_on={DiagnosticCode.STREAM_REWIND_REDECOMPRESSES}
         )
     )
     report = open_and_extract(archive, tmp_path / "out", config=config)
@@ -3441,15 +3431,17 @@ def test_gnu_dumpdir_entry_is_a_directory(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
-def test_a_pass_holds_one_entry_per_member(streaming: bool) -> None:
-    """A pass over many members keeps one parsed entry per member, on the member list.
+def test_a_pass_keeps_no_parsed_entries(streaming: bool) -> None:
+    """A pass over many members keeps no parsed entry or header block behind it.
 
     tarfile kept its own list of every header beside the reader's member list, so a
-    listing held each header twice. Nothing in the walk may keep entries behind it.
+    listing held each header twice. Each member now keeps only its data span (a
+    ``TarSpan``), held by the member alone; the entry and its header block go once the
+    member is built.
     """
     import gc
 
-    from archivey.internal.backends.tar_parser import HeaderBlock, TarEntry
+    from archivey.internal.backends.tar_parser import HeaderBlock, TarEntry, TarSpan
 
     count = 2_000
     buf = io.BytesIO()
@@ -3463,22 +3455,19 @@ def test_a_pass_holds_one_entry_per_member(streaming: bool) -> None:
         return name.startswith(b"held-once-")
 
     with open_archive(io.BytesIO(buf.getvalue()), streaming=streaming) as reader:
-        names = [m.name for m, _ in reader.stream_members()]
+        members = [m for m, _ in reader.stream_members()]
         gc.collect()
-        entries = [
-            o for o in gc.get_objects() if isinstance(o, TarEntry) and ours(o.name)
-        ]
+        entries = sum(
+            isinstance(o, TarEntry) and ours(o.name) for o in gc.get_objects()
+        )
         headers = sum(
             isinstance(o, HeaderBlock) and ours(o.name) for o in gc.get_objects()
         )
-        # Each entry is held by its member alone, not by a list of the walk's.
-        holders = [
-            type(r).__name__ for r in gc.get_referrers(entries[-1]) if r is not entries
-        ]
-        entry_count = len(entries)
-        del entries
-    assert len(names) == count
-    assert (entry_count, headers) == (count, count)
+        span = members[-1]._raw
+        assert type(span) is TarSpan
+        holders = [type(r).__name__ for r in gc.get_referrers(span)]
+    assert len(members) == count
+    assert (entries, headers) == (0, 0)
     assert holders == ["ArchiveMember"]
 
 

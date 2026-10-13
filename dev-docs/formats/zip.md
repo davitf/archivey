@@ -69,7 +69,7 @@ reported as trailing data.
 comment ends. A non-zero byte after that is `ARCHIVE_TRAILING_DATA`
 (`expected_marker="zeros_to_eof"`, `format="zip"`, `observed_bytes` counted from the
 comment's end), found at open by the scan TAR, 7z, RAR and ISO share
-(`internal/trailing_scan.py`); zero padding is silent and `strict()` refuses (DR-3).
+(`internal/trailing_scan.py`); zero padding is silent and `STRICT` refuses (DR-3).
 Bytes inside the declared comment are the comment, whatever they look like. A tail
 longer than the search window hides the end record, so the file is not opened at all;
 the local-header walk of stage 3 of the `native-zip-reader` change reads it.
@@ -421,7 +421,7 @@ bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that with a "16-bit
 overflow" note), an archive comment length past the end of the file, and an entry whose
 name, extra field or comment runs past the directory, which is cut at the directory's
 end. Info-ZIP unzip warns or errors on each and 7-Zip says "Headers Error", after
-testing every member, so the default policy lists and reads; `strict()` refuses. The
+testing every member, so the default policy lists and reads; `STRICT` refuses. The
 end record is the last signature in the tail, so a decoy end-record signature inside
 the archive comment passes the checks: the archive lists as empty (`EMPTY_ARCHIVE`), as
 with Info-ZIP unzip, where 7-Zip searches further back and lists the real members.

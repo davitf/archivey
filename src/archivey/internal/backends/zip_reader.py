@@ -993,7 +993,7 @@ class ZipReader(BaseArchiveReader):
 
         ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
         TAR trailer or a 7z archive's end: a warning by default, refused under
-        ``DiagnosticPolicy.strict()`` (DR-3). Zero padding is silent, and the scan
+        ``DiagnosticPolicy.STRICT`` (DR-3). Zero padding is silent, and the scan
         stops at ``MAX_TRAILING_SCAN`` bytes past the comment. 7-Zip warns on the same
         input; Info-ZIP ``unzip`` says nothing.
         """
@@ -2472,8 +2472,9 @@ class ZipReader(BaseArchiveReader):
 
         For a password that a check weaker than the member's digest accepted: a wrong
         ZipCrypto password that passes the check byte decrypts to readable garbage,
-        and only the CRC at EOF notices. A seek forfeits the check except under WinZip
-        AES: its HMAC survives seeks, so only a read reaching the end counts.
+        and only the CRC at EOF notices. A read that skips bytes after a seek pauses the
+        check except under WinZip AES: its HMAC survives seeks, so only a read reaching
+        the end counts.
         """
         return self._watch_unverified_read(
             stream,

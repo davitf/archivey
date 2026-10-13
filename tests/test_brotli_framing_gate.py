@@ -307,7 +307,7 @@ def test_pedantic_keeps_typed_error_on_probe_unconfirmed() -> None:
 
     blob = _chain_surviving_guess_residual()
     cfg = ArchiveyConfig(
-        always_probe_content=True, diagnostic_policy=DiagnosticPolicy.pedantic()
+        always_probe_content=True, diagnostic_policy=DiagnosticPolicy.PEDANTIC
     )
     with open_archive(io.BytesIO(blob), config=cfg) as reader:
         member = next(iter(reader))
@@ -342,7 +342,7 @@ def test_probe_unconfirmed_dedup_holds_under_a_raising_policy() -> None:
 
     blob = _chain_surviving_guess_residual()
     cfg = ArchiveyConfig(
-        always_probe_content=True, diagnostic_policy=DiagnosticPolicy.pedantic()
+        always_probe_content=True, diagnostic_policy=DiagnosticPolicy.PEDANTIC
     )
     with open_archive(io.BytesIO(blob), config=cfg) as reader:
         stream = reader.open(next(iter(reader)))

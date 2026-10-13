@@ -1036,8 +1036,8 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
         ValueError,
     ),
     (
-        "DiagnosticPolicy(overrides=0)",
-        lambda a, t: DiagnosticPolicy(overrides=0),
+        "DiagnosticPolicy(ignore=0)",
+        lambda a, t: DiagnosticPolicy(ignore=0),  # type: ignore[arg-type]
         TypeError,
     ),
     ("extract_all(0)", lambda a, t: _extract_all(a, 0, None), TypeError),
@@ -1075,11 +1075,19 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
         lambda a, t: _extract_all(a, _BytesPath(), None),
         TypeError,
     ),
-    # The field has a real default; ``None`` is a wrong type, not a way to ask for one.
+    # A mapping iterates as its keys, so the removed ``{code: disposition}`` shape
+    # would drop every disposition; it is refused as the wrong type.
     (
-        "DiagnosticPolicy(overrides=None)",
-        lambda a, t: DiagnosticPolicy(overrides=None),
+        "DiagnosticPolicy(ignore={code: 'raise'})",
+        lambda a, t: DiagnosticPolicy(ignore={"archive_trailing_data": "raise"}),  # type: ignore[arg-type]
         TypeError,
+    ),
+    (
+        "DiagnosticPolicy(ignore=x, raise_on=x)",
+        lambda a, t: DiagnosticPolicy(
+            ignore=["archive_trailing_data"], raise_on=["archive_trailing_data"]
+        ),
+        ValueError,
     ),
     # Refusals made after looking at what an argument names are value errors too: the
     # argument is a usable type and the call refuses its value (DR-15).

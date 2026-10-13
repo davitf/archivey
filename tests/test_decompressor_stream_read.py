@@ -140,7 +140,7 @@ class _TrailingAtFillDecoder(_ScalingDecoder):
 
 
 def _strict_collector() -> DiagnosticCollector:
-    return DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    return DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
 
 
 def test_a_raise_held_while_decoding_a_full_chunk_propagates_and_keeps_the_bytes() -> (
@@ -179,7 +179,7 @@ def test_a_raise_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
     not stay bound there as a second copy of the bytes."""
     payload = os.urandom(200_000)
     blob = gzip.compress(payload) + b"appended signature\n"
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with archivey.open_stream(io.BytesIO(blob), config=config) as stream:
         with pytest.raises(DiagnosticRaisedError) as caught:
             # One request larger than the payload: the decode comes back short.

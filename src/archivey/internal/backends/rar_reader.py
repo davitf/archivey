@@ -2502,7 +2502,7 @@ class RarReader(BaseArchiveReader):
 
         ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
         TAR trailer or a 7z next header: a warning by default, refused under
-        ``DiagnosticPolicy.strict()`` (DR-3), once per volume. Zero padding is silent,
+        ``DiagnosticPolicy.STRICT`` (DR-3), once per volume. Zero padding is silent,
         since ``rar`` pads volumes with zeros. ``unrar`` says nothing about these
         bytes; 7-Zip warns "There are data after the end of archive" for any tail,
         zeros included. ``observed_bytes`` counts from the end of that volume's end

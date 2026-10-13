@@ -14,7 +14,6 @@ from archivey.config import ArchiveyConfig
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
     DiagnosticCode,
-    DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticSummary,
     SelectorUnmatchedContext,
@@ -235,9 +234,7 @@ def test_extract_all_with_a_free_list_refuses_before_writing(tmp_path: Path) -> 
     """ZIP lists for free, so a RAISE disposition refuses with nothing on disk."""
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
-            overrides={
-                DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: DiagnosticDisposition.RAISE
-            }
+            raise_on={DiagnosticCode.MEMBER_SELECTOR_UNMATCHED}
         )
     )
     data = _zip([("a.txt", b"a")])
@@ -292,9 +289,9 @@ def test_stream_members_reads_a_one_shot_iterable_once() -> None:
 
 
 def test_strict_policy_does_not_raise_on_an_unmatched_entry(tmp_path: Path) -> None:
-    """Argument hygiene, not archive integrity: out of ``strict()``."""
+    """Argument hygiene, not archive integrity: out of ``STRICT``."""
     assert DiagnosticCode.MEMBER_SELECTOR_UNMATCHED not in ARCHIVE_INTEGRITY_CODES
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(_zip([("a.txt", b"a")])), config=config) as ar:
         report = ar.extract_all(tmp_path, members=["typo.txt"])
     assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
@@ -302,9 +299,7 @@ def test_strict_policy_does_not_raise_on_an_unmatched_entry(tmp_path: Path) -> N
 
 _RAISE_UNMATCHED = ArchiveyConfig(
     diagnostic_policy=DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: DiagnosticDisposition.RAISE
-        }
+        raise_on={DiagnosticCode.MEMBER_SELECTOR_UNMATCHED}
     )
 )
 

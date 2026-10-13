@@ -315,7 +315,7 @@ last member so the listing completes, each of:
   directory, so the field is cut at the directory's end
   (`expected_marker="central_directory"`, `observed_kind="nonzero"`).
 
-None of them SHALL raise under the default policy; `strict()` refuses the archive.
+None of them SHALL raise under the default policy; `STRICT` refuses the archive.
 Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
 every member.
 
@@ -336,7 +336,7 @@ while 7-Zip searches further back and lists the real members.
 | Consistent classic or ZIP64 end record | No diagnostic |
 | 65537 entries, classic record only, count 1 (65537 modulo 65536) | All 65537 members listed; no diagnostic |
 | Archive comment holding an end-record signature followed by 30 zero bytes | No members listed; one `EMPTY_ARCHIVE` and no `ARCHIVE_EOF_MARKER_MISSING` |
-| Any of the above under `strict()` | `DiagnosticRaisedError` from the listing |
+| Any of the above under `STRICT` | `DiagnosticRaisedError` from the listing |
 
 ### Requirement: List a damaged ZIP central directory up to the damage
 
@@ -378,7 +378,7 @@ plus the comment length that record declares. At open, a non-zero byte after tha
 SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="zip"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
 offset of that byte past the end. It is a warning by default and raises under
-`DiagnosticPolicy.strict()` (DR-3). Zero bytes after the end SHALL be silent. Bytes
+`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes
 inside the declared comment are the comment, whatever they hold. The end record is
 searched for in the last 65 558 bytes of the file, so a tail longer than that hides it
 and the archive is not opened; a stub before the archive moves nothing. 7-Zip 23.01
@@ -389,10 +389,10 @@ warns on any tail; Info-ZIP `unzip` says nothing.
 | Archive | Expected |
 | --- | --- |
 | Ends at its end record, with or without a comment | No diagnostic |
-| 4096 zero bytes after the end record | No diagnostic; `strict()` opens it |
+| 4096 zero bytes after the end record | No diagnostic; `STRICT` opens it |
 | 0, 100 or 60 000 zero bytes then `JUNK` after the end record or its comment | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0, 100 or 60 000; members list and read |
 | A 1000-byte stub before the archive, 7 zero bytes and `JUNK` after it | `observed_bytes` 7 |
-| `JUNK` after the end record under `strict()` | `DiagnosticRaisedError` |
+| `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 
@@ -421,15 +421,15 @@ passes the byte check before accepting it, following `archive-reading` weak-chec
 confirmation and bounded-storage rules. With one distinct static candidate
 (duplicates included), the reader SHALL keep the normal lazy stream path, with no
 confirmation read. Because only the verification byte vouched for that password, a
-candidate failure (defined below) on the caller's `read`, `readinto` or forward
-`seek` SHALL raise `EncryptionError` explaining that the password may be wrong or
-the member may be corrupt, not `CorruptionError`; for an `LZMA` or `PPMd` member, whose
-codec header is read when the member opens, the open raises it. It SHALL NOT be marked
-as a wrong-password verdict: nothing in the archive tells a colliding wrong password
-from a damaged member. A STORED member's forward seek jumps, so a read after it loses
-the CRC until a seek to 0 (`compressed-streams`, ADR 0014) and that seek does not raise;
-closing that stream emits `ENCRYPTED_MEMBER_UNVERIFIED`. A compressed member's forward
-seek keeps the CRC, as `compressed-streams` describes.
+candidate failure (defined below) on the caller's `read`, `readinto` or forward `seek`
+SHALL raise `EncryptionError` explaining that the password may be wrong or the member
+may be corrupt, not `CorruptionError`; for an `LZMA` or `PPMd` member, whose codec
+header is read when the member opens, the open raises it. It SHALL NOT be marked as a
+wrong-password verdict: nothing in the archive tells a colliding wrong password from a
+damaged member. A STORED member's forward seek jumps, so a read after it pauses the CRC
+until a seek back to the frontier (`compressed-streams`, ADR 0014) and that seek does
+not raise; closing that stream emits `ENCRYPTED_MEMBER_UNVERIFIED`. A compressed
+member's forward seek keeps the CRC, as `compressed-streams` describes.
 
 ZIP's two per-open checks are the `archive-reading` ladder's **cheap key check** rung:
 ZipCrypto's one header verification byte (2⁻⁸) and WinZip AES's two-byte `pw_verify`
@@ -587,7 +587,7 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 | The same, `encoding="latin-1"` | The same: the field outranks `encoding=` |
 | The field's CRC does not match the stored bytes, or its version is not 1 | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
 | The field in the local header only | Field ignored |
-| The field is 0 to 4 bytes long, whatever its first byte, or the CRC matches and the name is empty, not valid UTF-8, or cut short by the end of the extra field | The archive opens on every Python version; field dropped: the name decoded as above, no `alternate_raw_name`, `MEMBER_HEADER_RECORD_SKIPPED` attached to that member only, no Python warning; `DiagnosticPolicy.strict()` refuses |
+| The field is 0 to 4 bytes long, whatever its first byte, or the CRC matches and the name is empty, not valid UTF-8, or cut short by the end of the extra field | The archive opens on every Python version; field dropped: the name decoded as above, no `alternate_raw_name`, `MEMBER_HEADER_RECORD_SKIPPED` attached to that member only, no Python warning; `DiagnosticPolicy.STRICT` refuses |
 | The same malformed field on a name with the UTF-8 flag set | Field not consulted: no diagnostic |
 
 ### Requirement: Decode ZIP comments as unflagged names are decoded

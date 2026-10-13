@@ -40,7 +40,7 @@ A directory listed from an old-style regular-file header named ``d/`` keeps its 
 delivers the bytes, extraction creates the directory (DR-3).
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
-fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
+fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
 """
 
 from __future__ import annotations
@@ -51,7 +51,6 @@ from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import datetime
-from types import MappingProxyType
 from typing import BinaryIO, Literal, cast
 
 from archivey.config import ArchiveyConfig
@@ -83,6 +82,7 @@ from archivey.internal.backends.tar_parser import (
     TarEnd,
     TarEndKind,
     TarEntry,
+    TarSpan,
     TarWalker,
     validate_sparse_map,
 )
@@ -202,7 +202,6 @@ _WALK_BUFFER = 8 * 1024
 # list is skipped.
 _DIRECTORY_TYPES = frozenset((b"5", b"D"))
 
-_NO_PAX: Mapping[bytes, PaxValue] = MappingProxyType({})
 _SYMLINK_TYPE = b"2"
 _HARDLINK_TYPE = b"1"
 # Character and block devices and FIFOs, which carry device numbers.
@@ -227,8 +226,8 @@ def _member_type(entry: TarEntry) -> MemberType:
     return MemberType.OTHER
 
 
-def _directory_declaring_blocks(member: ArchiveMember | None) -> TarEntry | None:
-    """``member``'s entry when it is a ``DIRTYPE`` header with a non-zero size, else None.
+def _directory_declaring_blocks(member: ArchiveMember | None) -> TarSpan | None:
+    """``member``'s span when it is a ``DIRTYPE`` header with a non-zero size, else None.
 
     Such a header announces blocks it has no data area for (``NO_DATA_TYPES``), so the
     walker read the next header right behind it; where the walk stopped decides what
@@ -237,18 +236,18 @@ def _directory_declaring_blocks(member: ArchiveMember | None) -> TarEntry | None
     """
     if member is None:
         return None
-    entry = member._raw
-    assert isinstance(entry, TarEntry), "TAR member is missing its entry"
-    if entry.typeflag != b"5" or not entry.size:
+    span = member._raw
+    assert isinstance(span, TarSpan), "TAR member is missing its span"
+    if span.typeflag != b"5" or not span.size:
         return None
-    return entry
+    return span
 
 
-def _declared_span_end(entry: TarEntry) -> int:
-    """The offset right after the blocks ``entry``'s size field declares, were they
+def _declared_span_end(span: TarSpan) -> int:
+    """The offset right after the blocks ``span``'s size field declares, were they
     there: a ``NO_DATA`` typeflag's ``data_offset`` is the block after its header and
     its ``stored_size`` is 0, so the span is measured from the declared ``size``."""
-    return entry.data_offset + (entry.size + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
+    return span.data_offset + (span.size + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
 
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
@@ -678,15 +677,15 @@ class TarReader(BaseArchiveReader):
         """Register as the base does, then weigh a sparse member's retained map.
 
         The map can hold millions of entries from a few kilobytes of compressed
-        archive, and it stays on the member's entry for the life of the listing.
+        archive, and it stays on the member's span for the life of the listing.
         """
         super()._register_member(
             idx, member, enforce_listing_limits=enforce_listing_limits
         )
-        entry = member._raw
-        if isinstance(entry, TarEntry) and entry.sparse is not None:
+        span = member._raw
+        if isinstance(span, TarSpan) and span.sparse is not None:
             self._listing_tracker.account_retained_bytes(
-                len(entry.sparse) * SPARSE_ENTRY_BYTES, enforce=enforce_listing_limits
+                len(span.sparse) * SPARSE_ENTRY_BYTES, enforce=enforce_listing_limits
             )
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -841,7 +840,7 @@ class TarReader(BaseArchiveReader):
         end-of-archive marker itself is damaged: every member before it is listed and
         whole, as GNU tar and 7-Zip list them with a warning, so it is
         ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary policy
-        (``DiagnosticPolicy.strict()`` refuses it), and the scan past the trailer runs
+        (``DiagnosticPolicy.STRICT`` refuses it), and the scan past the trailer runs
         from the block after it. A zero block and then a non-null one with no member
         before them is ``CorruptionError``.
         """
@@ -889,7 +888,7 @@ class TarReader(BaseArchiveReader):
         )
 
     def _report_directory_span(
-        self, member: ArchiveMember, directory: TarEntry, *, member_id: int
+        self, member: ArchiveMember, directory: TarSpan, *, member_id: int
     ) -> None:
         """Report ``MEMBER_DIRECTORY_DATA_IGNORED`` for a ``DIRTYPE`` header with a
         size when the walk ended on a zero block inside the span that size declares.
@@ -903,7 +902,7 @@ class TarReader(BaseArchiveReader):
         the report says what the header declares and what the walk saw, and the
         directory is listed with no ``size``: the declared bytes cannot be told from
         the trailer, so ``open()`` has nothing to deliver. The code is in
-        ``ARCHIVE_INTEGRITY_CODES``, so ``DiagnosticPolicy.strict()`` refuses the
+        ``ARCHIVE_INTEGRITY_CODES``, so ``DiagnosticPolicy.STRICT`` refuses the
         archive, the weight DR-3 gives a directory's declared data in every format.
         The marker checks that follow report the trailer as they would after a file.
         The finding is attached to the member, as the old-style directory's is, which
@@ -933,7 +932,7 @@ class TarReader(BaseArchiveReader):
         )
 
     def _refuse_directory_blocks(
-        self, member: ArchiveMember, directory: TarEntry
+        self, member: ArchiveMember, directory: TarSpan
     ) -> None:
         """Raise ``CorruptionError`` naming a ``DIRTYPE`` header with a size when the
         block where its data would begin is neither a member header nor a zero block.
@@ -1311,7 +1310,9 @@ class TarReader(BaseArchiveReader):
             gid=entry.gid,
             compression=compression,
             extra=extra,
-            _raw=entry,  # carry the entry so _open_member needs no name/id lookup table
+            # The span alone, so _open_member needs no name/id lookup table and the
+            # parsed entry (header, names, PAX records) is not kept per member.
+            _raw=entry.span(),
         )
         # Skip defaulted None/False fields on the listing hot path (perf review L2).
         if entry.pax:
@@ -1377,10 +1378,6 @@ class TarReader(BaseArchiveReader):
             # GNU tar and 7-Zip create the directory and skip the bytes without a word.
             # Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
-        if entry.has_own_pax:
-            # The records live on, decoded, in extra["tar.pax_headers"]; the parsed
-            # copy is not kept twice. A shared global mapping costs nothing per member.
-            entry.pax = _NO_PAX
         return member
 
     def _owner_name(self, header: bytes, pax: PaxValue | None) -> str:
@@ -1398,17 +1395,17 @@ class TarReader(BaseArchiveReader):
 
         A bad sparse map raises here. ``in_walk`` reads through the walk's own stream,
         as a streaming walk does. The pass closes the stream before the walk moves on."""
-        entry = member._raw
-        assert isinstance(entry, TarEntry), "TAR member is missing its entry"
-        if entry.sparse is not None:
+        span = member._raw
+        assert isinstance(span, TarSpan), "TAR member is missing its span"
+        if span.sparse is not None:
             sparse_error = validate_sparse_map(
-                entry.sparse, entry.size, entry.stored_size, quoted(member.name)
+                span.sparse, span.size, span.stored_size, quoted(member.name)
             )
             if sparse_error is not None:
                 raise sparse_error
         stream: BinaryIO
         if self._streaming or in_walk:
-            stream = self._walker.open_data(entry)
+            stream = self._walker.open_data(span)
         else:
             # A view of its own: a read seeks the shared stream under the handle lock
             # when the handle is elsewhere, so members and the walk read independently.
@@ -1419,22 +1416,22 @@ class TarReader(BaseArchiveReader):
             # comes from the decompressor (try_get_size), not from the source.
             view = SharedView(
                 self._stream,
-                entry.data_offset,
-                entry.stored_size,
+                span.data_offset,
+                span.stored_size,
                 lock=self._io_guard(),
                 source_size=self._plain_source_size,
                 probe_source_size=self._compressed,
             )
-            stream = _MemberDataView(view, entry.data_offset, entry.stored_size)
+            stream = _MemberDataView(view, span.data_offset, span.stored_size)
             if self._compressed:
                 # The codec stream has no buffer of its own here (_open_byte_stream),
                 # so a read smaller than this would cost a decoder seek and read. The
                 # buffer sits above the view and reads it at most once per read, so a
                 # cut member's recoverable prefix comes before its TruncatedError.
                 stream = ReadAheadStream(stream, _WALK_BUFFER)
-        if entry.sparse is not None:
+        if span.sparse is not None:
             stream = SparseStream(
-                stream, entry.sparse.offsets, entry.sparse.lengths, entry.size
+                stream, span.sparse.offsets, span.sparse.lengths, span.size
             )
         if self._streaming:
             assert self._handle_lock is not None
@@ -1451,11 +1448,11 @@ class TarReader(BaseArchiveReader):
 
         A random-access pass does not come through here: it opens the raw body
         (see :meth:`_member_body`) and wraps it once."""
-        entry = member._raw
-        assert isinstance(entry, TarEntry), "TAR member is missing its entry"
-        if defer_sparse_error and entry.sparse is not None:
+        span = member._raw
+        assert isinstance(span, TarSpan), "TAR member is missing its span"
+        if defer_sparse_error and span.sparse is not None:
             sparse_error = validate_sparse_map(
-                entry.sparse, entry.size, entry.stored_size, quoted(member.name)
+                span.sparse, span.size, span.stored_size, quoted(member.name)
             )
             if sparse_error is not None:
 

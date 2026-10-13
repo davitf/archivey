@@ -199,7 +199,7 @@ def test_junk_inside_a_declared_comment_is_the_comment() -> None:
 
 
 def test_strict_policy_refuses_trailing_data() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(io.BytesIO(_zip() + b"JUNK"), config=config) as reader:
             reader.members()
@@ -207,7 +207,7 @@ def test_strict_policy_refuses_trailing_data() -> None:
 
 
 def test_strict_policy_accepts_zero_padding() -> None:
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with open_archive(io.BytesIO(_zip() + b"\x00" * 512), config=config) as reader:
         assert [m.name for m in reader.members()] == list(_NAMES)
 
