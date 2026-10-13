@@ -168,7 +168,7 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
     except RuntimeError as exc:
         raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from exc
     try:
-        os.stat(long_path(resolved))
+        Path(long_path(resolved)).stat()
     except OSError as exc:
         if exc.errno == errno.ELOOP or (
             getattr(exc, "winerror", None) == _ERROR_CANT_RESOLVE_FILENAME
