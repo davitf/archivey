@@ -269,6 +269,11 @@ pass.
 | `is_sparse` | True for the old GNU `S` typeflag and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
 | `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for device members |
 
+In a streaming pass every member reads `member_state_final=False` until the walk ends:
+the pass has not seen the rest of the archive, so a later copy of the name can still
+make the member `is_current=False`, and `link_target_member` is set then. A TAR link
+target is in the header, so nothing else is late.
+
 Names keep their bytes until `_to_member` decodes them, once, knowing where each came
 from. A ustar or GNU field (name, link target, `uname`, `gname`) declares no encoding, so
 it is read as UTF-8 when its bytes are valid UTF-8, as every format reads an undeclared

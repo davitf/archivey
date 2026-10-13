@@ -872,6 +872,19 @@ class ArchiveMember:
     ``link_target is None`` alone cannot say whether the target is missing or merely
     not looked for yet, so without this the lookup repeats on every access — re-reading
     the member's data and re-emitting its diagnostic. Not part of the public contract."""
+    _listing_pending: bool = field(default=False, repr=False, compare=False)
+    """Set while the walk that listed this member can still update it in place.
+
+    A forward pass hands each member to the caller before it has seen the rest of the
+    archive, so a later member can still change it (``is_current`` is stamped when the
+    walk ends). Cleared when the walk ends, or stops keeping members. Read it through
+    the public :attr:`member_state_final`. Not part of the public contract."""
+    _link_target_unread: bool = field(default=False, repr=False, compare=False)
+    """Set while this symlink's target is stored as member data nobody has read yet.
+
+    Reading it can set ``link_target`` and, for a Windows reparse point whose data is
+    not a link buffer, change ``type``. Cleared once the backend has looked, found or
+    not. Read it through :attr:`member_state_final`. Not part of the public contract."""
     _link_target_absent: bool = field(default=False, repr=False, compare=False)
     """Set when the archive itself records no target for this link.
 
@@ -975,6 +988,30 @@ class ArchiveMember:
         what the archive said about it.
         """
         return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
+
+    @property
+    def member_state_final(self) -> bool:
+        """No field of this member will change from here on.
+
+        ``False`` while archivey can still update the member in place, which happens in
+        two cases:
+
+        - A member yielded by a forward pass (``streaming=True``: ``stream_members()``
+          or iterating the reader), until the pass ends. A later member with the same
+          name can still make this one ``is_current=False``, and link targets are
+          resolved to members when the pass ends.
+        - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink)
+          that nothing has read yet, which is the case under
+          ``ArchiveyConfig.read_link_targets=False``. Reading it sets
+          :attr:`link_target`, and a Windows reparse point whose data is not a link
+          buffer becomes a ``FILE``. :meth:`~archivey.ArchiveReader.open` and
+          ``extract_all`` read it when they reach the link.
+
+        Everywhere else it is ``True``: a random-access listing is complete before any
+        member is returned. Attached ``diagnostics`` are not fields and can still
+        grow. Which fields change in practice is listed per format in the user docs.
+        """
+        return not (self._listing_pending or self._link_target_unread)
 
     @property
     def link_target_unrecorded(self) -> bool:

@@ -338,6 +338,12 @@ in `archivey.internal.windows_reparse`, and in `BaseArchiveReader` the capped re
 (`_link_target_from_data`), the settle of a reparse point stored with no data
 (`_settle_empty_reparse_point`) and the report when encryption blocks the read. Each
 backend supplies only which members are reparse points and what type one reverts to.
+A pass (`stream_members()`) under `read_link_targets` reads each symlink's data when it
+reaches the member, before yielding it, so a reparse point whose data is not a link
+buffer is yielded as a file with its content; a streaming pass used to decide only when
+it ended, after yielding the member as a link with no stream. Under
+`read_link_targets=False` such a link reads `member_state_final=False` until its data
+is read.
 
 Two things follow, both measured against archives built on a Windows runner
 (`tests/fixtures/external/README.md` §`junction/`, and `tests/test_windows_reparse.py`):

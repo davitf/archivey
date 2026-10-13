@@ -1458,10 +1458,11 @@ that point SHALL carry its final value.
 Completing the member walk SHALL NOT by itself finalize a streaming pass. The pass
 finalizes when its own consumer passes the last member. A peek that drains the walk
 followed by an abandoned pass SHALL run no link finalization: it resolves no links and
-publishes no complete report. On backends that read link targets only at finalization
-(ZIP, ISO), such a pass reads no link data. A 7z pass reads a link member's data as it
-passes that member, so an abandoned 7z pass may already have read link data for the
-members it passed.
+publishes no complete report. A ZIP or 7z pass under `read_link_targets` reads a
+symlink's data as it passes that member, so that a reparse point whose data is not a
+link buffer is yielded as a file with its content; an abandoned pass may already have
+read link data for the members it passed. ISO targets are in the headers, so an ISO
+pass reads no link data.
 
 #### Scenario: pass finalization matrix
 

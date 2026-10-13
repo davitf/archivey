@@ -234,6 +234,12 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
             seen.add(member.name)
 
 
+def _settle_listing(members: list[ArchiveMember]) -> None:
+    """The walk will not update ``members`` again (``member_state_final``)."""
+    for member in members:
+        member._listing_pending = False
+
+
 @dataclass(frozen=True)
 class _Materialized:
     """The published member listing: the report, frozen when the walk is published.
@@ -783,7 +789,20 @@ class BaseArchiveReader(ArchiveReader):
             report = self._materialize_members(enforce_listing_limits=False).report
             members = iter(report.members)
 
+        read_targets = self._config.read_link_targets
+
         def _open(member: ArchiveMember) -> ArchiveStream | None:
+            if read_targets and member.type is MemberType.SYMLINK:
+                # A streaming pass resolves links when it ends, after the caller has
+                # had the member. A reparse point whose data is not a link buffer is a
+                # file, and the caller needs its stream now, so read the target here,
+                # as the 7z pass does. A random-access listing has read it already.
+                try:
+                    self._read_link_target_on_request(member)
+                except CorruptionError:
+                    # The pass's link finalization reads it again and reports it, once,
+                    # as it reports any damaged target.
+                    pass
             if member.is_file:
                 return self._lazy_member_stream(member)
             return None
@@ -1490,6 +1509,7 @@ class BaseArchiveReader(ArchiveReader):
         if error is not None:
             self._stamp_error_context(error)
         _apply_last_entry_wins_is_current(self._listed)
+        _settle_listing(self._listed)
 
     def _abandon_walk(self, exc: BaseException) -> None:
         """A pull failed without terminal damage: discard the walk, or poison it."""
@@ -1502,6 +1522,8 @@ class BaseArchiveReader(ArchiveReader):
             # without handing the caller a second object for the same member. A
             # discarded listing has no prefix left to replay either.
             self._walk_failure = exc
+            # Nothing stamps the prefix now, so it will not change.
+            _settle_listing(self._listed)
             return
         # Random access hands out no member before the walk ends, so nobody holds the
         # prefix. A later call starts over, and ``_iter_members`` yields the same order;
@@ -1541,6 +1563,7 @@ class BaseArchiveReader(ArchiveReader):
         A backend that keeps its own record of the walk extends this to drop it too.
         """
         _apply_last_entry_wins_is_current(self._listed)
+        _settle_listing(self._listed)
         self._listing_discarded = True
         self._listed = []
         self._listed_by_name = {}
@@ -1757,7 +1780,29 @@ class BaseArchiveReader(ArchiveReader):
             self._emit_empty_link_target(member)
             member.link_target = None
             member._link_target_resolved = True
+        if not self._listing_discarded:
+            # A member the walk keeps is stamped when the walk ends; one it does not keep
+            # never is, so nothing will change it.
+            member._listing_pending = True
+        if (
+            member.type is MemberType.SYMLINK
+            and member.link_target is None
+            and not member._link_target_resolved
+            and self._link_targets_in_data
+        ):
+            member._link_target_unread = True
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
+
+    @property
+    def _link_targets_in_data(self) -> bool:
+        """Whether this backend can store a symlink's target as member data.
+
+        A backend that does overrides ``_ensure_link_target`` to read it. Elsewhere the
+        target is set while the member is typed, so nothing is left to read.
+        """
+        return (
+            type(self)._ensure_link_target is not BaseArchiveReader._ensure_link_target
+        )
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:
         """Report a symlink whose stored target is the empty string.
@@ -1793,7 +1838,13 @@ class BaseArchiveReader(ArchiveReader):
         """
         if member.link_target is not None or member._link_target_resolved:
             return
-        self._ensure_link_target(member)
+        try:
+            self._ensure_link_target(member)
+        except CorruptionError:
+            # Damaged target data stays damaged: a later read raises the same fault
+            # and sets nothing, so the member will not change.
+            member._link_target_unread = False
+            raise
         if member.type is MemberType.SYMLINK and member.link_target == "":
             # A target stored as member data (ZIP, 7z) of zero bytes. Cleared
             # before the emit, the reverse of `_register_member`: if a strict policy
@@ -1814,6 +1865,7 @@ class BaseArchiveReader(ArchiveReader):
         # A backend that catches EncryptionError returns normally, so the repeated-read
         # case this memo exists for is still covered.
         member._link_target_resolved = True
+        member._link_target_unread = False
 
     def _read_link_target_on_request(self, member: ArchiveMember) -> None:
         """Read ``member``'s target because the caller asked for this link.

@@ -73,6 +73,23 @@ other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too
 writer that marks itself Unix while storing a birth time (libarchive on Windows) gets
 `ctime`, not `created`, rather than a risk of `st_ctime` in `created`.
 
+## Fields that change after a member is returned
+
+`ArchiveMember.member_state_final` is `False` while archivey can still update a member
+you hold ([Streaming for one pass](opening-and-listing.md#streaming-for-one-pass)).
+The fields that change in practice:
+
+| Format | During a `streaming=True` pass, until it ends | A symlink whose target is unread (`read_link_targets=False`) |
+| --- | --- | --- |
+| ZIP | `is_current`, `link_target_member` | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| TAR | `is_current`, `link_target_member` | none: the header carries the target |
+| 7z | `is_current`, `link_target_member` | as ZIP |
+| RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
+| ISO | `is_current`, `link_target_member` | none: Rock Ridge carries the target |
+
+A random-access listing is complete before it returns, so its members read `True`
+unless they are unread symlinks.
+
 ## ZIP
 
 - Archivey's own parser reads the **central directory** as members are listed; member

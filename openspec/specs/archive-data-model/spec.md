@@ -296,6 +296,8 @@ class ArchiveMember:
     def is_junction(self) -> bool: ...
     @property
     def is_reparse_point(self) -> bool: ...
+    @property
+    def member_state_final(self) -> bool: ...
 
     def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
     def replace(self, **kwargs: object) -> "ArchiveMember": ...
@@ -356,6 +358,37 @@ point-in-time snapshots.
 | Content superseded by later same-name / anti (7z) | Earlier member `is_current` false |
 | RAR `-ver` history row `path;n` | `is_current` false; live `path` remains true |
 | Two rows with one name, both marked not current by the backend (plain ISO `FOO.;1` twice) | Both stay `is_current` false |
+
+### Requirement: ArchiveMember says whether its fields can still change
+
+`ArchiveMember.member_state_final` SHALL be `False` while the library can still update
+the member in place, and `True` from the point it cannot. It SHALL be `False`, in every
+format, in two cases:
+
+- A member a forward pass (`streaming=True`) has handed out, until the member walk ends
+  or the pass stops keeping members because it went past `ListingLimits`. A later
+  member with the same name can still make it `is_current=False`, and links are
+  resolved to members when the pass ends.
+- A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink) until the
+  library has read that data, whatever the read found. Reading it sets `link_target`,
+  and a reparse point whose data is not a link buffer becomes a `FILE`.
+
+It SHALL be `True` everywhere else: a random-access listing is complete before any
+member is returned. A walk that fails and cannot be resumed settles the members it
+handed out. Attached `diagnostics` are not covered and MAY still grow. The documented
+meaning is "no field of this member will change"; each format's user documentation
+names the fields that change in practice.
+
+#### Scenario: member_state_final matrix
+
+| Case | Expected |
+| --- | --- |
+| Streaming pass over a TAR holding `a.txt` twice, from a file or a pipe | Each member reads `False` when yielded; all read `True` after the pass, and the first `a.txt` reads `is_current=False` |
+| `members()` or random-access `stream_members()` | Every member reads `True` |
+| Streaming pass over the `ListingLimits` | Members kept before the limit read `True` from the point the pass stops keeping them; later ones read `True` when yielded |
+| TAR symlink, either `read_link_targets` | `True`: the header carries the target |
+| ZIP symlink under `read_link_targets=False` | `False` until `open()` or `extract_all()` reads its target, then `True` |
+| ZIP symlink under the default | `True` once listed |
 
 ### Requirement: Member diagnostics attach under the shared budget
 

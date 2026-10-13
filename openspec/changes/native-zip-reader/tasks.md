@@ -68,9 +68,9 @@
 ## 3. Streaming (PRs 3a, 3b, 3c)
 
 3a is the forward walk alone (3.1, 3.2's parser half, 3.3d); 3b the reader over a
-non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 3.3e and 3.3f,
-3b3 the rest (3.2a, 3.3 to 3.3d, 3.3g, 3.3h, 3.4, 3.5, 3.5a); 3c the seekable cases
-(3.0, 3.0a, 3.0b).
+non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 the parts of 3.3e
+and 3.3f that need no ZIP pipe reader (3.3e1, 3.3f1), 3b3 the rest (3.2a, 3.3 to 3.3d,
+3.3e2, 3.3f2, 3.3g, 3.3h, 3.4, 3.5, 3.5a); 3c the seekable cases (3.0, 3.0a, 3.0b).
 
 - [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
@@ -115,15 +115,20 @@ non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 3.3e and 3.3f,
 - [x] 3.3d A stream that starts neither with a local header nor an end record: scan
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
-- [ ] 3.3e Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
-      caller sees in a forward pass"; `ArchiveMember.member_state_final` (question D)
-      in every format: false for a pipe ZIP member until the directory, for any member
-      of a forward-only pass (TAR too) until the pass ends, and for a data-stored link
-      target until it is read (a test for each).
-- [ ] 3.3f A reparse-flagged member whose data is not a reparse buffer is typed when
+- [x] 3.3e1 `ArchiveMember.member_state_final` (question D) in every format: false
+      for any member of a forward pass (TAR too) until the walk ends, and for a symlink
+      whose target is stored as data until it is read (ZIP, 7z, RAR 4), with a test
+      for each; `archive-data-model`, `docs/opening-and-listing.md`, `docs/formats.md`
+      and the TAR, 7z, RAR and ZIP handbook pages.
+- [ ] 3.3e2 Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
+      caller sees in a forward pass"; `member_state_final` false for a pipe ZIP member
+      until the directory has been read (test), and the ZIP row of the
+      `docs/formats.md` table gains the directory's fields.
+- [x] 3.3f1 A reparse-flagged member whose data is not a reparse buffer is typed when
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
-      (read-ahead stream); from a pipe it stays a file (tests in both modes, red
-      first).
+      (a seekable ZIP needs no read-ahead: the pass reads the target, then opens the
+      member); tests in both modes, red first.
+- [ ] 3.3f2 From a pipe such a member stays a file (test).
 - [ ] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
       the pass" states them, under `OnError.CONTINUE` and `STOP`, for 3.3b, 3.3c and a
       directory entry with no local entry. Each test checks every affected result and
