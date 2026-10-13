@@ -12,13 +12,13 @@ import shutil
 import struct
 import subprocess
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
-from archivey.internal.backends import zip_parser, zip_reader
+from archivey.internal.backends import zip_parser
 from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
@@ -130,71 +130,6 @@ def test_entries_match_zipfile_over_the_corpus(
     assert _assert_matches_zipfile(data), "zipfile refused a well-formed corpus archive"
 
 
-def _findings_today(data: bytes) -> list[zip_reader._EndRecordFinding]:
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    return zip_reader._end_record_findings(
-        io.BytesIO(data),
-        start_dir=zf.start_dir,
-        infos=zf.infolist(),
-        archive_name=None,
-    )
-
-
-def _as_today(
-    finding: object, end: EndRecord
-) -> tuple[str, str, int, int, int | None, str]:
-    """A walk finding in the shape of the reader's: context fields, index, and the
-    message text that carries the finding's own values."""
-    if isinstance(finding, EntryCountMismatch):
-        return (
-            "end_of_central_directory",
-            "nonzero",
-            0,
-            end.eocd_offset,
-            None,
-            f"declares {finding.declared} entries, but the central directory holds "
-            f"{finding.read}",
-        )
-    if isinstance(finding, CommentCutShort):
-        return (
-            "end_of_central_directory",
-            "short",
-            22 + finding.declared,
-            22 + finding.available,
-            None,
-            f"declared as {finding.declared} bytes",
-        )
-    assert isinstance(finding, EntryOverrun)
-    return (
-        "central_directory",
-        "nonzero",
-        finding.cd_size,
-        finding.entry_end,
-        finding.index,
-        f"{finding.field} that runs {finding.entry_end - finding.cd_size} bytes",
-    )
-
-
-def _assert_findings_match_today(data: bytes) -> int:
-    today = _findings_today(data)
-    end, _entries, walk = _parse(data)
-    mine = [_as_today(f, end) for f in walk.findings]
-    assert len(mine) == len(today)
-    for (marker, kind, expected, observed, index, text), old in zip(
-        mine, today, strict=True
-    ):
-        ctx = old.context
-        assert (marker, kind, expected, observed, index) == (
-            ctx.expected_marker,
-            ctx.observed_kind,
-            ctx.expected_bytes,
-            ctx.observed_bytes,
-            old.entry_index,
-        )
-        assert text in old.message
-    return len(mine)
-
-
 def _with_count_and_comment_lies() -> bytes:
     data = bytearray(_zip({"a.txt": b"1", "b.txt": b"2"}))
     eocd = data.rindex(b"PK\x05\x06")
@@ -212,26 +147,26 @@ def _with_overrun(field_offset: int) -> bytes:
     return bytes(data)
 
 
-@pytest.mark.parametrize(
-    "data",
-    [
-        pytest.param(_with_count_and_comment_lies, id="count-and-comment"),
-        pytest.param(lambda: _with_overrun(32), id="comment-overrun"),
-        pytest.param(lambda: _with_overrun(30), id="extra-overrun"),
-        pytest.param(lambda: _with_overrun(28), id="name-overrun"),
-    ],
-)
-def test_end_record_findings_match_the_reader(data: Callable[[], bytes]) -> None:
-    """Each walk finding is the reader's ``_end_record_findings`` finding: same kind,
-    same context values, same entry, same numbers in the message."""
-    assert _assert_findings_match_today(data()) > 0
+def test_walk_findings_carry_the_values_the_reader_reports() -> None:
+    """The reader's end-record diagnostics are built from these values
+    (``tests/test_zip_end_record.py`` checks the diagnostics themselves)."""
+    _end, _entries, walk = _parse(_with_count_and_comment_lies())
+    assert walk.findings == [
+        EntryCountMismatch(declared=5, read=2, zip64=False),
+        CommentCutShort(declared=40, available=0),
+    ]
+    for offset, field in ((28, "name"), (30, "extra field"), (32, "comment")):
+        end, _entries, walk = _parse(_with_overrun(offset))
+        assert walk.findings == [
+            EntryOverrun(0, field, entry_end=end.cd_size + 30, cd_size=end.cd_size)
+        ], field
 
 
 def test_no_findings_on_well_formed_fixtures() -> None:
-    """The no-false-positive direction: neither side reports anything on a valid ZIP."""
+    """The no-false-positive direction: nothing is reported on a valid ZIP."""
     for label, data in _fixture_zips():
         if _stdlib_infos(data) is not None:
-            assert _assert_findings_match_today(data) == 0, label
+            assert _parse(data)[2].findings == [], label
 
 
 def _zip(members: dict[str, bytes], *, comment: bytes = b"", **kwargs: object) -> bytes:

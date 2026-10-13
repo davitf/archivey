@@ -1620,7 +1620,12 @@ class ZipReader(BaseArchiveReader):
         from the central directory's, and a payload that runs into the next local
         header or the directory: the overlap guard.
         """
-        header = read_local_header(self._read_at, loc.header_offset)
+        try:
+            header = read_local_header(self._read_at, loc.header_offset)
+        except TruncatedError as exc:
+            # The directory after every local header is in the file, so a local header
+            # the file cuts short sits at a wrong offset: damage, not a cut archive.
+            raise CorruptionError(raw_message_of(exc)) from exc
         if header.name != loc.name:
             raise CorruptionError(
                 f"File name in directory {loc.name!r} and header {header.name!r} "
