@@ -31,6 +31,10 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
         MemberNameControlsContext(category="bidi"),
     ),
     (
+        DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
+        MemberNameControlsContext(category="zero_width"),
+    ),
+    (
         DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
         MemberNameControlsContext(category="invisible"),
     ),

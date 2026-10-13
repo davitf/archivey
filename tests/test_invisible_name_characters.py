@@ -1,9 +1,15 @@
-"""``MEMBER_NAME_INVISIBLE_CHARACTER``: Unicode format characters a reader cannot see.
+"""Unicode format characters a reader cannot see, in member names and link targets.
 
 A zero-width space makes ``invoice.pdf`` and ``invoice<U+200B>.pdf`` display the same
-and extract side by side. The code reports every character of Unicode category Cf that
-``MEMBER_NAME_BIDI_CONTROL`` does not, in a name or a link target. ``STRICT`` does not
-raise on it, because a zero-width joiner is part of ordinary emoji sequences.
+and extract side by side. Two codes report the format characters (Unicode category Cf)
+that ``MEMBER_NAME_BIDI_CONTROL`` does not:
+
+- ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` for U+200B, U+2060 and U+FEFF, which have no use
+  in a filename. ``STRICT`` raises on it.
+- ``MEMBER_NAME_INVISIBLE_CHARACTER`` for every other Cf character. ``STRICT`` does not
+  raise on it, because a zero-width joiner is part of ordinary emoji sequences.
+
+Extraction refuses neither.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import DiagnosticRaisedError
 
+_ZERO_WIDTH = DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER
 _INVISIBLE = DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER
 _BIDI = DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
 
@@ -50,6 +57,10 @@ def _contexts(member: archivey.ArchiveMember, code: DiagnosticCode) -> list[obje
     return [d.context for d in member.diagnostics if d.code is code]
 
 
+def _policy(policy: DiagnosticPolicy) -> ArchiveyConfig:
+    return ArchiveyConfig(diagnostic_policy=policy)
+
+
 @pytest.mark.parametrize("kind", ["zip", "tar"])
 def test_zero_width_space_is_reported_and_both_files_extract(
     tmp_path: Path, kind: str
@@ -58,12 +69,13 @@ def test_zero_width_space_is_reported_and_both_files_extract(
     dest = tmp_path / "out"
     with archivey.open_archive(archive) as reader:
         plain, hidden = reader.members()
-        assert _contexts(plain, _INVISIBLE) == []
-        (context,) = _contexts(hidden, _INVISIBLE)
+        assert plain.diagnostics == ()
+        (context,) = _contexts(hidden, _ZERO_WIDTH)
+        assert _contexts(hidden, _INVISIBLE) == []
         reader.extract_all(dest)
-        assert reader.diagnostics.counts[_INVISIBLE] == 1
+        assert reader.diagnostics.counts[_ZERO_WIDTH] == 1
     assert isinstance(context, MemberNameControlsContext)
-    assert context.category == "invisible"
+    assert context.category == "zero_width"
     assert context.field == "name"
     assert context.controls == "U+200B"
     assert context.member_name == "invoice\u200b.pdf"
@@ -71,67 +83,72 @@ def test_zero_width_space_is_reported_and_both_files_extract(
     assert (dest / "invoice\u200b.pdf").read_bytes() == b"1"
 
 
-def test_strict_does_not_refuse_an_invisible_character(tmp_path: Path) -> None:
+def test_strict_refuses_a_zero_width_character(tmp_path: Path) -> None:
     archive = _archive(tmp_path, "zip", ["invoice.pdf", "invoice\u200b.pdf"])
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with archivey.open_archive(archive, config=config) as reader:
-        report = reader.extract_all(tmp_path / "out")
-        assert len(report.results) == 2
-        assert reader.diagnostics.counts[_INVISIBLE] == 1
+    with archivey.open_archive(archive, config=_policy(DiagnosticPolicy.STRICT)) as r:
+        with pytest.raises(DiagnosticRaisedError) as excinfo:
+            r.members()
+    assert excinfo.value.diagnostic.code is _ZERO_WIDTH
+
+
+def test_strict_does_not_refuse_an_invisible_character(tmp_path: Path) -> None:
+    # Woman technologist: woman, ZWJ, laptop.
+    archive = _archive(tmp_path, "zip", ["\U0001f469\u200d\U0001f4bb.txt"])
+    with archivey.open_archive(archive, config=_policy(DiagnosticPolicy.STRICT)) as r:
+        report = r.extract_all(tmp_path / "out")
+        assert len(report.results) == 1
+        assert r.diagnostics.counts[_INVISIBLE] == 1
 
 
 def test_pedantic_refuses_an_invisible_character(tmp_path: Path) -> None:
-    archive = _archive(tmp_path, "zip", ["invoice\u200b.pdf"])
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC)
-    with archivey.open_archive(archive, config=config) as reader:
+    archive = _archive(tmp_path, "zip", ["a\u200db.txt"])
+    with archivey.open_archive(archive, config=_policy(DiagnosticPolicy.PEDANTIC)) as r:
         with pytest.raises(DiagnosticRaisedError) as excinfo:
-            reader.members()
+            r.members()
     assert excinfo.value.diagnostic.code is _INVISIBLE
 
 
 def test_raise_on_refuses_an_invisible_character(tmp_path: Path) -> None:
-    archive = _archive(tmp_path, "zip", ["invoice\u200b.pdf"])
-    config = ArchiveyConfig(
-        diagnostic_policy=DiagnosticPolicy(
-            raise_on=frozenset({"member_name_invisible_character"})
-        )
-    )
-    with archivey.open_archive(archive, config=config) as reader:
+    archive = _archive(tmp_path, "zip", ["a\u200db.txt"])
+    policy = DiagnosticPolicy(raise_on=frozenset({"member_name_invisible_character"}))
+    with archivey.open_archive(archive, config=_policy(policy)) as reader:
         with pytest.raises(DiagnosticRaisedError) as excinfo:
             reader.members()
     assert excinfo.value.diagnostic.code is _INVISIBLE
 
 
 @pytest.mark.parametrize(
-    ("char", "spelling"),
+    ("char", "code", "spelling"),
     [
-        ("\u00ad", "U+00AD"),  # soft hyphen
-        ("\u200c", "U+200C"),  # zero-width non-joiner
-        ("\u200d", "U+200D"),  # zero-width joiner
-        ("\u2060", "U+2060"),  # word joiner
-        ("\ufeff", "U+FEFF"),  # byte order mark
-        ("\U000e0067", "U+E0067"),  # tag character, as in subdivision flag emoji
+        ("\u200b", _ZERO_WIDTH, "U+200B"),  # zero-width space
+        ("\u2060", _ZERO_WIDTH, "U+2060"),  # word joiner
+        ("\ufeff", _ZERO_WIDTH, "U+FEFF"),  # byte order mark
+        ("\u00ad", _INVISIBLE, "U+00AD"),  # soft hyphen
+        ("\u200c", _INVISIBLE, "U+200C"),  # zero-width non-joiner
+        ("\u200d", _INVISIBLE, "U+200D"),  # zero-width joiner
+        ("\U000e0067", _INVISIBLE, "U+E0067"),  # tag character, as in flag emoji
     ],
 )
-def test_each_invisible_format_character_is_named(
-    tmp_path: Path, char: str, spelling: str
+def test_each_format_character_is_named_under_its_code(
+    tmp_path: Path, char: str, code: DiagnosticCode, spelling: str
 ) -> None:
     archive = _archive(tmp_path, "zip", [f"a{char}b.txt"])
     with archivey.open_archive(archive) as reader:
         (member,) = reader.members()
-        (context,) = _contexts(member, _INVISIBLE)
-    assert isinstance(context, MemberNameControlsContext)
-    assert context.controls == spelling
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.code is code
+    assert isinstance(diagnostic.context, MemberNameControlsContext)
+    assert diagnostic.context.controls == spelling
 
 
 @pytest.mark.parametrize(
     "name",
     [
-        "café.txt",  # printable non-ASCII
+        "caf\u00e9.txt",  # printable non-ASCII
         "a\u00a0b.txt",  # no-break space: category Zs, shown as a space
-        "❤️.txt",  # variation selector: category Mn, not Cf
+        "\u2764\ufe0f.txt",  # variation selector: category Mn, not Cf
         "evil\u202egnp.exe",  # bidi override: MEMBER_NAME_BIDI_CONTROL only
-        "\u200fדוח.pdf",  # bidi mark: MEMBER_NAME_BIDI_CONTROL only
+        "\u200f\u05d3\u05d5\u05d7.pdf",  # bidi mark: MEMBER_NAME_BIDI_CONTROL only
     ],
 )
 def test_other_characters_are_not_reported_as_invisible(
@@ -139,23 +156,26 @@ def test_other_characters_are_not_reported_as_invisible(
 ) -> None:
     archive = _archive(tmp_path, "zip", [name])
     with archivey.open_archive(archive) as reader:
-        (member,) = reader.members()
-        assert _contexts(member, _INVISIBLE) == []
-        assert _INVISIBLE not in reader.diagnostics.counts
+        reader.members()
+        counts = reader.diagnostics.counts
+        assert _INVISIBLE not in counts
+        assert _ZERO_WIDTH not in counts
 
 
-def test_bidi_and_invisible_characters_are_reported_under_one_code_each(
-    tmp_path: Path,
-) -> None:
-    archive = _archive(tmp_path, "zip", ["a\u202eb\u200dc\u200bd.txt"])
+def test_each_character_is_reported_under_one_code(tmp_path: Path) -> None:
+    archive = _archive(tmp_path, "zip", ["a\u202eb\u200dc\u200bd\u00ade.txt"])
     with archivey.open_archive(archive) as reader:
         (member,) = reader.members()
-        (bidi,) = _contexts(member, _BIDI)
-        (invisible,) = _contexts(member, _INVISIBLE)
-    assert isinstance(bidi, MemberNameControlsContext)
-    assert isinstance(invisible, MemberNameControlsContext)
-    assert (bidi.category, bidi.controls) == ("bidi", "U+202E")
-    assert (invisible.category, invisible.controls) == ("invisible", "U+200D,U+200B")
+        found = {
+            d.code: (d.context.category, d.context.controls)
+            for d in member.diagnostics
+            if isinstance(d.context, MemberNameControlsContext)
+        }
+    assert found == {
+        _BIDI: ("bidi", "U+202E"),
+        _ZERO_WIDTH: ("zero_width", "U+200B"),
+        _INVISIBLE: ("invisible", "U+200D,U+00AD"),
+    }
 
 
 _TARGET = "invoice\u200b.pdf"
@@ -183,7 +203,7 @@ def _link_archive(tmp_path: Path, kind: str) -> Path:
 # tar: the target is in the header. zip: the target is the member's data.
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("kind", ["tar", "zip"])
-def test_link_target_invisible_character_is_reported_once(
+def test_link_target_zero_width_character_is_reported_once(
     tmp_path: Path, kind: str, streaming: bool
 ) -> None:
     archive = _link_archive(tmp_path, kind)
@@ -194,8 +214,8 @@ def test_link_target_invisible_character_is_reported_once(
         (result,) = report.results
         link = result.member
         assert link.link_target == _TARGET
-        (context,) = _contexts(link, _INVISIBLE)
-        assert reader.diagnostics.counts[_INVISIBLE] == 1
+        (context,) = _contexts(link, _ZERO_WIDTH)
+        assert reader.diagnostics.counts[_ZERO_WIDTH] == 1
     assert isinstance(context, MemberNameControlsContext)
     assert context.field == "link_target"
     assert context.member_name == "link"

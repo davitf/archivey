@@ -275,8 +275,9 @@ bytes. The outcome is the same on every platform. ADR
   only the name read back later (ADR
   [0017](decisions/0017-bidi-override-rejection-is-policy-keyed.md)). Listing always
   presents the stored name with `MEMBER_NAME_BIDI_CONTROL`. Other invisible format
-  characters (Unicode Cf: zero-width space, joiners, BOM, soft hyphen) get
-  `MEMBER_NAME_INVISIBLE_CHARACTER` and are never rejected.
+  characters (Unicode Cf) are never rejected: U+200B, U+2060 and U+FEFF get
+  `MEMBER_NAME_ZERO_WIDTH_CHARACTER` (raised under the `STRICT` diagnostic policy), the
+  rest (joiners, soft hyphen, tags) get `MEMBER_NAME_INVISIBLE_CHARACTER`.
 
 `TRUSTED` keys collisions on the exact path and writes faithful bytes; the local OS
 decides.

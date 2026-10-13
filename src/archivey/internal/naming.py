@@ -53,6 +53,21 @@ BIDI_REORDERING_CONTROLS = frozenset(
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 )
 
+# The other Unicode format characters (category Cf) display as nothing, so a name that
+# holds one looks like a name that does not: "invoice\u200b.pdf" beside "invoice.pdf".
+#
+# TWO CODES AGAIN, split the way the bidi sets are. These three have no use inside a
+# filename: zero-width space U+200B, word joiner U+2060 and BOM / zero-width no-break
+# space U+FEFF. They get MEMBER_NAME_ZERO_WIDTH_CHARACTER, which STRICT refuses. Every
+# other Cf character gets the advisory MEMBER_NAME_INVISIBLE_CHARACTER: ZWJ U+200D and
+# ZWNJ U+200C are part of emoji sequences and of Persian and Indic spelling, the tag
+# characters U+E0020-E007F spell subdivision flags, and a soft hyphen U+00AD is a
+# hyphenation hint. Neither set is refused during extraction: writing them is safe
+# (DR-17), only the name read back later can mislead.
+ZERO_WIDTH_CHARACTERS = frozenset("\u200b\u2060\ufeff")
+
+_Category = Literal["bidi", "zero_width", "invisible"]
+
 
 def _emit_name_controls(
     collector: DiagnosticCollector,
@@ -62,53 +77,65 @@ def _emit_name_controls(
     field: Literal["name", "link_target"],
     archive_name: str | None,
 ) -> None:
-    """Emit ``MEMBER_NAME_BIDI_CONTROL`` and ``MEMBER_NAME_INVISIBLE_CHARACTER`` for
-    ``text``, the member's name or its link target as ``field`` says.
+    """Emit ``MEMBER_NAME_BIDI_CONTROL``, ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` and
+    ``MEMBER_NAME_INVISIBLE_CHARACTER`` for ``text``, the member's name or its link
+    target as ``field`` says.
 
-    Bidi controls are Unicode category Cf too; they go to their own code only, so the
-    invisible set is every other Cf character. Each code is emitted at most once, naming
-    every character of its set in order. ASCII text contains neither set, so it skips
-    the per-character scan (listing hot path; perf review H3 / Q1).
+    Bidi controls and the zero-width characters are Unicode category Cf too; each goes
+    to its own code only, so the invisible set is every other Cf character. Each code is
+    emitted at most once, naming every character of its set in order. ASCII text
+    contains none of them, so it skips the per-character scan (listing hot path; perf
+    review H3 / Q1).
     """
     if text.isascii():
         return
-    # One set for the invisible characters, unlike the bidi pair above: nothing in it is
-    # refused, because writing any of them is safe (DR-17). A caller who wants to stop a
-    # zero-width space but not an emoji joiner reads ``controls`` from the context.
     bidi: list[str] = []
+    zero_width: list[str] = []
     invisible: list[str] = []
     for char in text:
         if char in BIDI_CONTROLS:
             bidi.append(char)
+        elif char in ZERO_WIDTH_CHARACTERS:
+            zero_width.append(char)
         elif unicodedata.category(char) == "Cf":
             invisible.append(char)
-    if not bidi and not invisible:
+    if not bidi and not zero_width and not invisible:
         return
     where = (
         "Member name" if field == "name" else f"Link target of {quoted(member.name)}"
     )
-    if bidi:
-        _emit_controls(
-            collector,
-            code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
-            message=f"{where} contains a bidirectional control character: {quoted(text)}",
-            member=member,
-            found=bidi,
-            field=field,
-            category="bidi",
-            archive_name=archive_name,
-        )
-    if invisible:
-        _emit_controls(
-            collector,
-            code=DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
-            message=f"{where} contains an invisible format character: {quoted(text)}",
-            member=member,
-            found=invisible,
-            field=field,
-            category="invisible",
-            archive_name=archive_name,
-        )
+    found_sets: tuple[tuple[DiagnosticCode, _Category, list[str], str], ...] = (
+        (
+            DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+            "bidi",
+            bidi,
+            "a bidirectional control character",
+        ),
+        (
+            DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
+            "zero_width",
+            zero_width,
+            "a zero-width character",
+        ),
+        (
+            DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
+            "invisible",
+            invisible,
+            "an invisible format character",
+        ),
+    )
+    for code, category, found, what in found_sets:
+        if found:
+            _emit_controls(
+                collector,
+                code=code,
+                message=f"{where} contains {what}: {quoted(text)}",
+                member=member,
+                found=found,
+                field=field,
+                category=category,
+                archive_name=archive_name,
+            )
 
 
 def _emit_controls(
@@ -119,7 +146,7 @@ def _emit_controls(
     member: ArchiveMember,
     found: list[str],
     field: Literal["name", "link_target"],
-    category: Literal["bidi", "invisible"],
+    category: _Category,
     archive_name: str | None,
 ) -> None:
     collector.emit(
@@ -147,7 +174,9 @@ def emit_member_name_controls(
     archive_name: str | None = None,
 ) -> None:
     """Emit ``MEMBER_NAME_BIDI_CONTROL`` when a presented name carries a bidi control,
-    and ``MEMBER_NAME_INVISIBLE_CHARACTER`` when it carries another Cf character.
+    ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` when it carries one of
+    ``ZERO_WIDTH_CHARACTERS``, and ``MEMBER_NAME_INVISIBLE_CHARACTER`` when it carries
+    another Cf character.
 
     Called by ``BaseArchiveReader`` while assigning member identity, not by individual
     decoders, so directory and inferred single-file names receive the same diagnostics
@@ -156,9 +185,9 @@ def emit_member_name_controls(
     The context records *which* characters were found rather than just that there were
     some: overrides and isolates reorder surrounding text and are what the ``…gnp.exe``
     disguise needs, while the three directional marks occur in legitimate Arabic and
-    Hebrew filenames; a zero-width space only makes two names look the same, while a
-    zero-width joiner is part of ordinary emoji. A caller (or a policy) may want to
-    treat them differently.
+    Hebrew filenames; a zero-width space has no use in a name, while a zero-width
+    joiner is part of ordinary emoji. A caller (or a policy) may want to treat them
+    differently.
     """
     _emit_name_controls(
         collector,
