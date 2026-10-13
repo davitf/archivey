@@ -23,6 +23,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import errno
+import io
 import os
 import posixpath
 import shutil
@@ -92,6 +93,9 @@ _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 # extraction destination are archivey's and are safe to delete. Documented in
 # docs/safe-extraction.md; keep the value and that doc in sync.
 _TMP_PREFIX = ".archivey-tmp-"
+
+# The fields ``_apply_metadata`` puts on disk.
+_APPLIED_METADATA = ("uid", "gid", "mode", "modified")
 
 # Prefix of the private scratch directory a dry run extracts into (see
 # ``ExtractionCoordinator.run``). Removed when the run ends, like the temp files above.
@@ -788,6 +792,18 @@ class _RunState:
     # copy is then copied from that file if it still matches.
     streaming_now: int | None = None
     declined: set[int] = field(default_factory=set)
+    # A pass whose members can change once its walk ends (a ZIP from a pipe, whose
+    # central directory comes last; ``_REVISES_YIELDED_MEMBERS``): result index -> the
+    # member as the pass handled it and the member written for it (``None`` when
+    # nothing was), so the end of the pass settles what changed
+    # (``_settle_revised_members``).
+    revisable: dict[int, tuple[ArchiveMember, ArchiveMember | None]] = field(
+        default_factory=dict
+    )
+    # Results the end of the pass took back with no outcome of their own: the filter
+    # excluded the member once it was changed, so random access records nothing for
+    # it. Dropped from the report when the run returns it.
+    dropped: set[int] = field(default_factory=set)
     written_files: dict[tuple[int, Path], tuple[int, int, int, int]] = field(
         default_factory=dict
     )
@@ -1241,7 +1257,8 @@ class ExtractionCoordinator:
             unmatched_pending.report_unmatched(
                 reader._diagnostics_collector, reader._archive_name
             )
-        return self._state.results
+        dropped = self._state.dropped
+        return [r for i, r in enumerate(self._state.results) if i not in dropped]
 
     def _run_pass(
         self,
@@ -1275,6 +1292,7 @@ class ExtractionCoordinator:
         # it at once, which closes the open member stream (a held traceback would
         # otherwise keep it, and an unrar child, alive).
         listing_damage: list[CorruptionError] = []
+        revises = reader._REVISES_YIELDED_MEMBERS
         for original, stream in _until_listing_damage(
             reader, reader._stream_members(stream_selector, copies), listing_damage
         ):
@@ -1284,6 +1302,13 @@ class ExtractionCoordinator:
             rewrites: frozenset[NameRewrite] = frozenset()
             current = self._current = _MemberState()
             link_error: ArchiveyError | None = None
+            # What the member was when handled, if the walk can still change it.
+            before = (
+                original.replace()
+                if revises and not original.member_state_final
+                else None
+            )
+            transformed: ArchiveMember | None = None
             try:
                 self._park_earlier_copies(
                     original.name, current_by_name.get(original.name)
@@ -1371,6 +1396,12 @@ class ExtractionCoordinator:
 
             if member_started and recorded_index is not None:
                 state.counted[recorded_index] = tracker.member_bytes
+            if before is not None and recorded_index is not None:
+                landed = results[recorded_index].status is ExtractionStatus.EXTRACTED
+                state.revisable[recorded_index] = (
+                    before,
+                    transformed if landed else None,
+                )
 
             # A portable rewrite is recorded on whatever result this member ended up with,
             # including a BLOCKED/FAILED one: the rewrite happened before the outcome.
@@ -1392,6 +1423,9 @@ class ExtractionCoordinator:
             )
             if selected_total is not None and members_done >= selected_total:
                 break
+
+        if state.revisable:
+            self._settle_revised_members()
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1440,6 +1474,28 @@ class ExtractionCoordinator:
         is dropped with the result it would fill. An error recorded on the earlier
         result is dropped with it: random access never tried that copy.
         """
+        self._take_back_written(index)
+        prior = self._state.results[index]
+        self._set_result(
+            index,
+            ExtractionResult(
+                prior.member,
+                None,
+                ExtractionStatus.SUPERSEDED,
+                None,
+                presented_name=prior.presented_name,
+                rewrites=prior.rewrites,
+            ),
+        )
+
+    def _take_back_written(self, index: int) -> None:
+        """Undo what result ``index`` put on disk and counted, for a member a streaming
+        pass wrote and must now handle otherwise (``_supersede_written_copy``,
+        ``_redo_revised_member``); the caller records its new result.
+
+        A file is parked in ``_current``, a directory removed when empty, and the
+        claim, hardlink-source entries and bomb-limit counts are released.
+        """
         state = self._state
         prior = state.results[index]
         path = prior.path
@@ -1468,17 +1524,6 @@ class ExtractionCoordinator:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
-        self._set_result(
-            index,
-            ExtractionResult(
-                prior.member,
-                None,
-                ExtractionStatus.SUPERSEDED,
-                None,
-                presented_name=prior.presented_name,
-                rewrites=prior.rewrites,
-            ),
-        )
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -1524,6 +1569,165 @@ class ExtractionCoordinator:
                 state.unremoved.setdefault(name, {})[path] = index
             else:
                 state.written_paths.discard(path)
+
+    def _settle_revised_members(self) -> None:
+        """Bring what the pass wrote in line with the members as the walk left them
+        (``_REVISES_YIELDED_MEMBERS``): a ZIP from a pipe learns each member's mode,
+        host and full type only from the central directory, after the last member.
+
+        A member whose type or name changed is handled again from the start
+        (``_redo_revised_member``). One whose metadata alone changed gets it applied
+        to what was written (``_reapply_revised_metadata``). Nothing else is touched.
+        """
+        state = self._state
+        revisable, state.revisable = state.revisable, {}
+        for index, (before, written) in revisable.items():
+            member = state.results[index].member
+            if member.type is not before.type or member.name != before.name:
+                self._redo_revised_member(index)
+            elif written is not None:
+                self._reapply_revised_metadata(index, before, written)
+
+    def _reapply_revised_metadata(
+        self, index: int, before: ArchiveMember, written: ArchiveMember
+    ) -> None:
+        """Apply to result ``index``'s entry the metadata its member gained after it
+        was written (a mode, owner or time the central directory holds).
+
+        The policy transform runs on the member as it is now, and each field it
+        changes replaces the written one, unless the caller's filter had set that
+        field itself: what the filter returned wins, as it does when nothing changed.
+        A directory's metadata is still waiting for the end of the run, so its entry
+        there is replaced instead.
+        """
+        state = self._state
+        result = state.results[index]
+        path = result.path
+        if (
+            result.status is not ExtractionStatus.EXTRACTED
+            or path is None
+            or path not in state.written_paths
+        ):
+            return
+        transform = POLICY_TRANSFORMS[self._policy]
+        was = transform(before)
+        now = transform(result.member)
+        changes = {
+            name: getattr(now, name)
+            for name in _APPLIED_METADATA
+            if getattr(written, name) == getattr(was, name)
+            and getattr(now, name) != getattr(was, name)
+        }
+        if not changes:
+            return
+        revised = written.replace(**changes)
+        if revised.type is MemberType.DIRECTORY:
+            pending = state.pending_dirs.get(self._physical_key(path), {})
+            if self._physical_path(path) in pending:
+                self._defer_directory_metadata(path, revised)
+        elif not os.path.islink(long_path(path)):
+            self._apply_metadata(path, revised)
+
+    def _redo_revised_member(self, index: int) -> None:
+        """Handle result ``index``'s member again, now that the walk has changed its
+        type or name, as random access would have handled it from the start.
+
+        The filter and the policy checks run again on the changed member
+        (``safe-extraction``), and whatever the pass wrote for it is taken back first,
+        so a refusal leaves nothing at its path. A file whose name changed is written
+        again from the bytes already on disk; a link's target comes from its data,
+        which the reader kept. A member that now needs bytes the stream has passed,
+        and that were not written, fails, unless it has none (an empty file). Results other than ``EXTRACTED`` and
+        ``BLOCKED`` stand: nothing was written for them that the change could alter.
+        """
+        state = self._state
+        result = state.results[index]
+        member = result.member
+        if result.status not in (
+            ExtractionStatus.EXTRACTED,
+            ExtractionStatus.BLOCKED,
+        ):
+            return
+        current = self._current = _MemberState()
+        written = result.status is ExtractionStatus.EXTRACTED
+        old_path = result.path if written else None
+        held: BinaryIO | None = None
+        member_started = False
+        presented_name: str | None = None
+        rewrites: frozenset[NameRewrite] = frozenset()
+        link_error: ArchiveyError | None = None
+        try:
+            if written:
+                self._take_back_written(index)
+            transformed, presented_name, rewrites = self._transform(member)
+            if transformed is None:
+                # Not tallied, then dropped from the report.
+                self._set_result(
+                    index,
+                    ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None),
+                )
+                state.dropped.add(index)
+            else:
+                if transformed.type is MemberType.FILE:
+                    if old_path is not None and old_path in current.parked:
+                        held = open(long_path(old_path), "rb")  # noqa: SIM115
+                    elif member.size == 0:
+                        held = io.BytesIO()
+                    else:
+                        raise CorruptionError(
+                            f"The data of {quoted(member.name)} was passed before "
+                            "the archive's directory changed the member, and was "
+                            "not written",
+                            member_name=member.name,
+                        )
+                if not member.is_anti:
+                    state.tracker.start_member(member)
+                    member_started = True
+                self._set_result(
+                    index, ExtractionResult(member, None, ExtractionStatus.FAILED, None)
+                )
+                self._set_result(
+                    index, self._write_member(member, transformed, held, index)
+                )
+        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
+            raise
+        except (ArchiveyError, OSError) as exc:
+            spelled_from = current.spelled_from
+            if isinstance(exc, ArchiveyError) and spelled_from is not None:
+                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
+            error, status = self._classify(exc, member.name)
+            self._set_result(
+                index,
+                ExtractionResult(
+                    member,
+                    None,
+                    status,
+                    error,
+                    requested_path=current.requested_path,
+                    collided_with=current.collided_with,
+                ),
+            )
+            self._stop_or_log(
+                exc, error, status, kind=member.type.value, name=member.name
+            )
+        finally:
+            self._close(held)
+            if current.parked:
+                self._drop_parked_copies(member.name, index)
+            link_error = self._recheck_links()
+        if link_error is not None:
+            raise link_error
+        if member_started:
+            state.counted[index] = state.tracker.member_bytes
+        if presented_name is not None:
+            self._set_result(
+                index,
+                replace(
+                    state.results[index],
+                    presented_name=presented_name,
+                    rewrites=rewrites,
+                ),
+            )
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a parked superseded copy."""

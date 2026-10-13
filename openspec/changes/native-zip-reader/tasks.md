@@ -79,9 +79,11 @@ each lands with nothing half-done reachable:
   checked against the header or descriptor as it is read, members updated in place
   from the directory at the end of the pass; 3.3h, 3.3e2's reader half, 3.3f2's
   listing half.
-- 3b3b, extraction's end of the pass: 3.3, 3.3a, 3.3f2, and the local entries no
-  directory entry points to (3.3i).
-- 3b3c, the failures found at the end of the pass: 3.3b, 3.3c, 3.3g.
+- 3b3b, extraction's end of the pass: 3.3's modes, symlinks, `OTHER` removal and
+  names, 3.3a, 3.3f2.
+- 3b3c, the failures found at the end of the pass: 3.3b, 3.3c, 3.3g, and the local
+  entries no directory entry points to (3.3i), which waits on the maintainer's pick of
+  a diagnostic code.
 - 3b3d, encrypted members from a pipe: 3.2a, and password candidates (3.2b).
 - 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
   (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
@@ -119,8 +121,15 @@ each lands with nothing half-done reachable:
       (test: an AE-1 and an AE-2 deflated member from a pipe, and a wrong code).
 - [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
-      and reported; a missing one is handled per 3.3g.
-- [ ] 3.3a A retyped member goes through the filter and the policy checks again before
+      and reported; a missing one is handled per 3.3g. 3b3b: extraction keeps what it
+      wrote each member of a pass that can still change as
+      (`_REVISES_YIELDED_MEMBERS`), and at the end of the pass handles a member whose
+      type or name changed again from the start (taking back what was written; a file
+      that moved is written again from its bytes on disk) and applies metadata the
+      directory added, unless the filter set that field
+      (`ExtractionCoordinator._settle_revised_members`, `test_zip_pipe_extract.py`,
+      which also extracts the corpus both ways). Left: 3.3i and 3.3g (3b3c).
+- [x] 3.3a A retyped member goes through the filter and the policy checks again before
       its link is made; refused, its file is removed (test: a pipe ZIP whose directory
       types `payload` as a symlink to `../../etc/passwd` is refused from a pipe and from
       a file).
@@ -151,8 +160,9 @@ each lands with nothing half-done reachable:
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
       (a seekable ZIP needs no read-ahead: the pass reads the target, then opens the
       member); tests in both modes, red first.
-- [ ] 3.3f2 From a pipe such a member stays a file (test). 3b3a: the listing half,
-      `test_a_reparse_member_whose_data_is_no_link_stays_a_file`; extraction is 3b3b.
+- [x] 3.3f2 From a pipe such a member stays a file (test). 3b3a: the listing half,
+      `test_a_reparse_member_whose_data_is_no_link_stays_a_file`; extraction (3b3b), the
+      test of the same name in `test_zip_pipe_extract.py`.
 - [ ] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
       the pass" states them, under `OnError.CONTINUE` and `STOP`, for 3.3b, 3.3c and a
       directory entry with no local entry. Each test checks every affected result and

@@ -335,15 +335,22 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 - `stream_members()` yields each member with what its local header gives (name, flags,
   method, sizes, times from the local extra fields). `mode`, `create_system` and
   `comment` are `None` until the directory has been read, not guessed. The type cannot
-  be `None`: it is `FILE` or `DIRECTORY` from the name until then. Then the members
-  already yielded are updated in place (`ArchiveMember` is mutable, ADR 0007), before
-  the pass ends. Each such member has `member_state_final` false until then (question
-  D), so a caller sees the gap on the member before reading anything (DR-8).
+  be `None`: it is `FILE` or `DIRECTORY` from the name until then. A name ending in
+  `\` is a `DIRECTORY` until then, because a DOS or Windows writer marks its folders
+  that way, and a folder written as a file would stop every member inside it from being
+  written. A Unix host makes it a file: an empty one is written at the end of the pass,
+  and one with data fails there, its bytes passed (only a crafted archive has one).
+  Then the members already yielded are updated in place (`ArchiveMember` is mutable,
+  ADR 0007), before the pass ends. Each such member has `member_state_final` false
+  until then (question D), so a caller sees the gap on the member before reading
+  anything (DR-8).
 - Extraction writes each member as it arrives, then at the end of the pass applies
   modes, turns a member the directory types as a symlink into a link (its target is the
   data just written, at most the link-target cap), and removes what it wrote for a
-  member the directory types `OTHER`. It only touches what it created (DR-18). This is
-  the same end-of-pass step that already resolves links in a streaming pass.
+  member the directory types `OTHER`. A member the directory renames (a DOS host makes
+  `\` a separator) is written again under its name, from the bytes already on disk.
+  It only touches what it created (DR-18). This is the same end-of-pass step that
+  already resolves links in a streaming pass.
 - A member whose type the directory changes goes through the caller's `filter` and the
   extraction policy's checks **again**, on the updated member (name, type, link
   target), before the link is made, exactly as `extract_all` already calls the filter
