@@ -109,6 +109,23 @@ def test_rapidgzip_macos_deflate_corruption_messages_are_translated(
     assert is_corruption_not_truncation(ZlibCodec()._translate_accelerator(exc))
 
 
+@pytest.mark.parametrize(
+    "message", ["std::exception", "std::exception: x", "Unknown exception"]
+)
+def test_rapidgzip_catch_all_translates_the_same_for_deflate_and_bzip2(
+    message: str,
+) -> None:
+    # rapidgzip's C++ catch-all can carry detail after "std::exception". The DEFLATE
+    # family and bzip2 translators share the arm, so both map it to CorruptionError.
+    # The RuntimeError is not marked as reported by the child, so only the catch-all
+    # arm can map it.
+    from archivey.internal.streams.codecs import Bzip2Codec, GzipCodec
+
+    exc = RuntimeError(message)
+    assert is_corruption_not_truncation(GzipCodec()._translate_accelerator(exc))
+    assert is_corruption_not_truncation(Bzip2Codec()._translate_accelerator(exc))
+
+
 def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:
     pytest.importorskip("rapidgzip")
     full = gzip.compress(b"the quick brown fox " * 5000)

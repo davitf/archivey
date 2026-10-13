@@ -18,18 +18,18 @@ The child runs ``ppmd_worker.py`` as a script, which imports nothing from ``arch
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 from typing import IO
 
-from archivey.exceptions import ArchiveyUsageError, ReadError, ResourceLimitError
+from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.streams.child_process import (
     describe_exit,
     is_crash,
-    is_system_kill,
+    outside_death,
     python_argv,
     reap,
     spawn,
+    unavailable_reason,
 )
 from archivey.internal.streams.codecs.ppmd_worker import (
     OPEN,
@@ -117,16 +117,9 @@ def _start_error(reason: str) -> PpmdChildStartError:
 
 
 def child_decoding_available() -> bool:
-    """Whether a Python child process can be started to run the worker script.
-
-    A frozen application (PyInstaller and the like) has no Python interpreter at
-    ``sys.executable``, an embedded interpreter may not know its own path
-    (``sys.executable`` is ``None`` or empty), and a zip-imported archivey has no
-    worker file on disk.
-    """
-    return (
-        not getattr(sys, "frozen", False) and bool(sys.executable) and _WORKER.is_file()
-    )
+    """Whether a Python child process can be started to run the worker script (see
+    :func:`~archivey.internal.streams.child_process.unavailable_reason`)."""
+    return unavailable_reason(_WORKER, "PPMd") is None
 
 
 def _read_exact(stream: IO[bytes], size: int) -> bytes:
@@ -274,16 +267,7 @@ class PpmdChildDecoder:
                 # A crash, left for ``PpmdCodec.translate`` to call corruption.
                 raise
             # Not a crash on the data: something outside the decoder ended the child.
-            if is_system_kill(exc.returncode):
-                raise ResourceLimitError(
-                    f"{exc}. SIGKILL comes from outside the decoder, most often the "
-                    "system's out-of-memory killer, so the archive may be valid; "
-                    "decode it with more memory available."
-                ) from exc
-            raise ReadError(
-                f"{exc}. The decoder did not crash: something outside it ended the "
-                "process, so the archive may be valid; try reading it again."
-            ) from exc
+            raise outside_death(exc.returncode, str(exc)) from exc
 
     def close(self) -> None:
         """End the child and wait for it. Idempotent; never raises."""

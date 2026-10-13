@@ -19,6 +19,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
+from archivey.exceptions import ArchiveyError, ReadError, ResourceLimitError
+
 # Seconds a child has to exit after it is told to end (its pipes closed, or a signal
 # sent) before it is killed.
 REAP_TIMEOUT = 5
@@ -39,6 +41,32 @@ def python_argv(script: Path, fail: StartFailure) -> list[str]:
     # shadow a standard-library module the worker imports (as ``streams/codecs/`` once
     # shadowed the stdlib ``codecs`` when the workers sat beside it).
     return [sys.executable, "-P", str(script)]
+
+
+def unavailable_reason(worker: Path, decoder: str) -> str | None:
+    """Why no Python child process can run the ``worker`` script, or ``None`` when one
+    can. ``decoder`` names the decoder in the reason, such as ``"rapidgzip"``.
+
+    A frozen application (PyInstaller and the like) has no Python interpreter at
+    ``sys.executable``, an embedded interpreter may not know its own path
+    (``sys.executable`` is ``None`` or empty), and a zip-imported archivey has no
+    worker file on disk.
+    """
+    if getattr(sys, "frozen", False):
+        return (
+            "this is a frozen application, with no Python interpreter to run the "
+            f"{decoder} decoder process"
+        )
+    if not sys.executable:
+        return (
+            f"sys.executable is not set, so the {decoder} decoder process cannot start"
+        )
+    if not worker.is_file():
+        return (
+            f"the {decoder} worker script {worker.name} is not a file on disk "
+            "(archivey imported from a zip archive?), so the decoder process cannot start"
+        )
+    return None
 
 
 def spawn(
@@ -139,6 +167,26 @@ def is_crash(returncode: int | None) -> bool:
 def is_system_kill(returncode: int | None) -> bool:
     """Whether the child was ended by SIGKILL, most often the out-of-memory killer."""
     return SIGKILL is not None and returncode == -SIGKILL
+
+
+def outside_death(returncode: int | None, what: str) -> ArchiveyError:
+    """The error for a decoder child that ended without crashing (see :func:`is_crash`).
+
+    ``what`` says which process ended and how, such as ``describe_exit``'s text. The
+    end came from outside the decoder, so it is no verdict on the data:
+    ``ResourceLimitError`` for SIGKILL (most often the out-of-memory killer), and
+    ``ReadError`` for any other end.
+    """
+    if is_system_kill(returncode):
+        return ResourceLimitError(
+            f"{what}. SIGKILL comes from outside the decoder, most often the "
+            "system's out-of-memory killer, so the data may be valid; read it "
+            "again with more memory available."
+        )
+    return ReadError(
+        f"{what}. The decoder did not crash: something outside it ended the "
+        "process, so the data may be valid; try reading it again."
+    )
 
 
 def describe_exit(returncode: int | None) -> str:

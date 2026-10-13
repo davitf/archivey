@@ -336,6 +336,37 @@ def _translate_child_or_stdlib(
     return _translate_rapidgzip(exc, label) or stdlib(exc)
 
 
+def _translate_rapidgzip_shared(
+    exc: Exception, stream: str, engine: str
+) -> ArchiveyError | None:
+    """The arms that the DEFLATE-family and bzip2 translators of rapidgzip share.
+
+    ``stream`` names the stream in a corruption message, such as ``"gzip stream
+    (rapidgzip)"``; ``engine`` names the decoder in a not-seekable message. Each
+    translator calls this after its own message-specific arms.
+    """
+    text = str(exc)
+    if isinstance(exc, ValueError) and "has no valid fileno" in text:
+        return StreamNotSeekableError(f"{engine} does not support non-seekable streams")
+    if isinstance(exc, io.UnsupportedOperation) and ("seek" in text or "tell" in text):
+        return StreamNotSeekableError(f"{engine} does not support non-seekable streams")
+    if isinstance(exc, RuntimeError) and (
+        "std::exception" in text or text == "Unknown exception"
+    ):
+        # Opaque catch-alls rapidgzip raises when a C++ fault has no typed Python
+        # mapping. On Windows a near-end truncation surfaces as a bare
+        # RuntimeError("Unknown exception") (the "Unexpected end of file …" detail only
+        # reaches stderr), so it is translated rather than leaked as a RuntimeError.
+        # Known cross-platform wrinkle: because that detail is lost, a truncation caught here
+        # becomes CorruptionError, whereas the same truncated input on Linux keeps its detail
+        # and maps to TruncatedError in the DEFLATE translator (or is caught by the ISIZE
+        # backstop). Recovering the distinction would need the dropped stderr detail, so
+        # callers must treat gzip truncation as either error type (the
+        # accelerator-corruption tests accept both).
+        return CorruptionError(f"Error reading {stream}: {exc!r}")
+    return None
+
+
 def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
     """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate)."""
     text = str(exc)
@@ -367,24 +398,11 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         "End of file encountered" in text or "Unexpected end of file" in text
     ):
         return TruncatedError(f"{label} stream is truncated (rapidgzip): {exc!r}")
-    if isinstance(exc, ValueError) and "has no valid fileno" in text:
-        return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
-    if isinstance(exc, io.UnsupportedOperation) and ("seek" in text or "tell" in text):
-        return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
-    if isinstance(exc, RuntimeError) and (
-        "std::exception" in text or text == "Unknown exception"
-    ):
-        # Opaque catch-alls rapidgzip raises when a C++ fault has no typed Python
-        # mapping. On Windows a near-end truncation surfaces as a bare
-        # RuntimeError("Unknown exception") (the "Unexpected end of file …" detail only
-        # reaches stderr), so the deflate-family path must translate it like its
-        # indexed_bzip2 sibling rather than leak an untranslated RuntimeError.
-        # Known cross-platform wrinkle: because that detail is lost, a truncation caught here
-        # becomes CorruptionError, whereas the same truncated input on Linux keeps its detail
-        # and maps to TruncatedError above (or is caught by the ISIZE backstop). Recovering the
-        # distinction would need the dropped stderr detail, so callers must treat gzip
-        # truncation as either error type (the accelerator-corruption tests accept both).
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    shared = _translate_rapidgzip_shared(
+        exc, f"{label} stream (rapidgzip)", "rapidgzip"
+    )
+    if shared is not None:
+        return shared
     if isinstance(exc, RuntimeError) and reported_by_child(exc):
         # Any other RuntimeError rapidgzip raised: it has no typed error for a fault in
         # its data, and such messages ("Next block offset index is out of sync!", from
