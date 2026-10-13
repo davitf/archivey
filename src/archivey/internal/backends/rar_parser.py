@@ -57,6 +57,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.config import KeyDerivationBudget
+from archivey.internal.listing_limits import metadata_limit_error, text_bytes
 from archivey.internal.password import wrong_password_error
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
@@ -67,6 +68,7 @@ from archivey.internal.timestamps import (
     unix32_to_datetime,
 )
 from archivey.internal.trailing_scan import first_nonzero_offset
+from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
 
 
@@ -100,8 +102,7 @@ _RAR5_MAX_HEADER = 2 * 1024 * 1024
 # redir, owner). Each skipped record is one retained tuple plus one diagnostic,
 # and ``max_members`` cannot see that — it is one member. After this many the
 # extra area is junk and the walk stops. Structural, not a ListingLimits
-# field: listing limits stay out of this parser, and a caller cannot usefully
-# raise a "more skipped extras" budget.
+# field: a caller cannot usefully raise a "more skipped extras" budget.
 _MAX_SKIPPED_HEADER_RECORDS = 16
 # The ``record`` of the ``skipped_header_records`` entry for bytes between a RAR5
 # header's fixed fields and its declared extra area. They are not a record, so the
@@ -122,6 +123,7 @@ _MAX_SEEK = (1 << 63) - 1
 _COMMENT_READ_CHUNK = 1 << 20
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+_DEFAULT_MAX_METADATA_BYTES = ListingLimits().max_metadata_bytes
 
 # RAR3 block types
 _RAR3_MARK = 0x72
@@ -522,7 +524,7 @@ class RarArchive:
     is_solid: bool
     has_header_encryption: bool
     comment: str | _Rar3Comment | None
-    members: list[RarMemberInfo]
+    members: _MemberList
     sfx_offset: int
     is_volume: bool
     needs_next_volume: bool = False
@@ -624,6 +626,7 @@ def parse_rar_archive(
     password: str | bytes | None = None,
     use_qo: bool = True,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
+    max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     kdf_cache: RarKdfCache | None = None,
     name_encoding: str | None = None,
 ) -> RarArchive:
@@ -653,6 +656,7 @@ def parse_rar_archive(
         volume_index=0,
         use_qo=use_qo,
         max_members=max_members,
+        max_metadata_bytes=max_metadata_bytes,
         name_encoding=name_encoding,
     )
 
@@ -663,6 +667,7 @@ def parse_rar_volumes(
     password: str | bytes | None = None,
     use_qo: bool = True,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
+    max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     kdf_cache: RarKdfCache | None = None,
     name_encoding: str | None = None,
     volume_numbers: Sequence[int] | None = None,
@@ -725,6 +730,7 @@ def parse_rar_volumes(
             volume_index=number - 1,
             use_qo=use_qo,
             max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
             name_encoding=name_encoding,
             password_proven=password_proven,
         )
@@ -782,9 +788,19 @@ def parse_rar_volumes(
                 if gap and position == 0:
                     # Its earlier parts are in the missing volume: listed on its
                     # own, never folded into the member before the gap.
-                    _append_member(merged.members, member, max_members=max_members)
+                    _append_member(
+                        merged.members,
+                        member,
+                        max_members=max_members,
+                        max_metadata_bytes=max_metadata_bytes,
+                    )
                 else:
-                    _emit_file_member(merged.members, member, max_members=max_members)
+                    _emit_file_member(
+                        merged.members,
+                        member,
+                        max_members=max_members,
+                        max_metadata_bytes=max_metadata_bytes,
+                    )
 
         # Size of this volume for absolute offset adjustment.
         pos = volume.tell()
@@ -861,11 +877,83 @@ def _append_damaged_service_header(
     return True
 
 
+# The two RAR5 redirect types that are Windows reparse points. RAR is the one format
+# that records the kind in a header field rather than in the member's data, which is
+# why it can flag both while listing and never has to read anything.
+_RAR5_XREDIR_REPARSE_POINTS = frozenset(
+    {_RAR5_XREDIR_WINDOWS_SYMLINK, _RAR5_XREDIR_WINDOWS_JUNCTION}
+)
+
+
+def _rar5_redirect_target(file_redir: tuple[int, int, str]) -> str:
+    """The ``link_target`` of a RAR5 redirect record.
+
+    A Windows symlink or junction stores a Windows path, so it is normalized the way a
+    ZIP or 7z reparse buffer is (``\\??\\C:\\x`` gives ``C:/x``, ``..\\up`` gives
+    ``../up``). Every ``\\`` becomes ``/``, as unrar's ``DosSlashToUnix`` does on
+    POSIX. Dropping the ``\\??\\`` prefix is archivey's own step, and extraction then
+    refuses a drive or UNC result. Measured on unrar 7.00 on Linux
+    (``dev-docs/formats/rar.md``): it refuses the prefixed spellings too, by a
+    different route, and it creates a stored, unprefixed ``C:\\abs\\y`` as the
+    relative link ``C:/abs/y``, which archivey refuses. It also refuses ``..\\up\\x``,
+    which archivey refuses only when the target leaves the destination. A Unix
+    symlink, a hard link and a file copy keep the stored string: in those a backslash
+    can be part of a name.
+    """
+    redir_type, _flags, target = file_redir
+    if redir_type in _RAR5_XREDIR_REPARSE_POINTS:
+        return normalize_windows_link_target(target)
+    return target
+
+
+class _MemberList(list[RarMemberInfo]):
+    """A member list that keeps the running metadata weight of what it holds.
+
+    Every walk, the QO run and the cross-volume merge build one, and
+    :func:`_append_member` adds to its weight, so each list is held to
+    ``max_metadata_bytes`` the way its length is held to ``max_members``.
+    """
+
+    __slots__ = ("metadata_bytes",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.metadata_bytes = 0
+
+
+def comment_metadata_bytes(comment: str | _Rar3Comment | None) -> int:
+    """A comment's weight before it is decoded: a compressed RAR 1.5-2.x comment
+    counts its declared size, a real bound on the decode (``decompress_rar3_blob``
+    discards output of any other length)."""
+    if isinstance(comment, _Rar3Comment):
+        return comment.unpacked_size
+    return text_bytes(comment)
+
+
+def header_metadata_bytes(member: RarMemberInfo) -> int:
+    """What the header gave ``member`` that the listing keeps, by the weights
+    registration uses (``listing_limits``), applied to the stored values.
+
+    The name counts twice, as ``name`` and ``raw_name`` do. It is the stored name:
+    registration weighs the normalized one, which can be shorter (``a/./b`` lists as
+    ``a/b``), so a name normalization shortens weighs a little more here. A RAR5 name
+    has no stored bytes of its own, and its length stands for its UTF-8 bytes, which
+    are at least that many. The comment counts per :func:`comment_metadata_bytes`.
+    """
+    filename = member.filename
+    raw = member.orig_filename
+    total = text_bytes(filename) + (len(raw) if raw is not None else len(filename))
+    if member.file_redir is not None:
+        total += text_bytes(_rar5_redirect_target(member.file_redir))
+    return total + comment_metadata_bytes(member.comment)
+
+
 def _append_member(
-    members: list[RarMemberInfo],
+    members: _MemberList,
     member: RarMemberInfo,
     *,
     max_members: int | None,
+    max_metadata_bytes: int | None,
 ) -> None:
     # ``None`` is ListingLimits.UNLIMITED: no count bound. RAR walks sequentially
     # and has no header-size analogue, so UNLIMITED can allocate until OOM.
@@ -876,7 +964,35 @@ def _append_member(
             f"Listing limit reached: max_members={max_members} "
             f"(registered {len(members) + 1} members)"
         )
+    # The names a header walk keeps are held to the metadata budget here, as they
+    # arrive, not only when the members are registered after the whole walk: a
+    # volume's headers have no size bound of their own (RAR5 caps one header at
+    # 2 MiB, RAR 1.5-4 a name at 64 KiB), so ``max_members`` long names would
+    # otherwise all be in memory first. A split member's later parts merge into
+    # the first and are not weighed again. Under ``None`` nothing reads the total.
+    if max_metadata_bytes is not None:
+        _charge_metadata(
+            members,
+            header_metadata_bytes(member),
+            max_metadata_bytes,
+            count=len(members) + 1,
+        )
     members.append(member)
+
+
+def _charge_metadata(
+    members: _MemberList, nbytes: int, max_metadata_bytes: int, *, count: int
+) -> None:
+    """Add ``nbytes`` to ``members``' running weight, refusing past the budget.
+
+    The message is built only on refusal: this runs once per member of the walk.
+    """
+    total = members.metadata_bytes + nbytes
+    if total > max_metadata_bytes:
+        raise metadata_limit_error(
+            max_metadata_bytes, f"RAR headers of {count} members hold {total} bytes"
+        )
+    members.metadata_bytes = total
 
 
 def _parse_rar_volume(
@@ -887,6 +1003,7 @@ def _parse_rar_volume(
     volume_index: int,
     use_qo: bool = True,
     max_members: int | None,
+    max_metadata_bytes: int | None,
     name_encoding: str | None = None,
     password_proven: bool = False,
 ) -> RarArchive:
@@ -914,6 +1031,7 @@ def _parse_rar_volume(
                 volume_index=volume_index,
                 use_qo=use_qo,
                 max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
             )
         else:
             archive = _parse_rar3(
@@ -923,6 +1041,7 @@ def _parse_rar_volume(
                 sfx_offset=sfx_offset,
                 volume_index=volume_index,
                 max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
                 name_encoding=name_encoding,
                 password_proven=password_proven,
             )
@@ -1004,9 +1123,9 @@ def _read_stored_comment(stream: BinaryIO, n: int, what: str) -> bytes:
 
     A declared size past the end of the file raises ``CorruptionError`` there,
     having held no more than the file, where one read of ``n`` would first ask for
-    all of it. What the comment then weighs is the reader's to judge against
-    ``max_metadata_bytes`` (``RarReader._check_comment_budget``), since listing
-    limits stay out of this parser.
+    all of it. What the comment then weighs is judged against ``max_metadata_bytes``
+    with its member's names (:func:`_append_member`), or, for the archive comment,
+    by ``RarReader._check_header_metadata_budget``.
     """
     parts: list[bytes] = []
     left = n
@@ -2046,6 +2165,7 @@ def _parse_rar3(
     sfx_offset: int,
     volume_index: int = 0,
     max_members: int | None,
+    max_metadata_bytes: int | None,
     name_encoding: str | None = None,
     password_proven: bool = False,
 ) -> RarArchive:
@@ -2056,7 +2176,7 @@ def _parse_rar3(
     old_volume_naming = False
     has_header_encryption = False
     comment: str | _Rar3Comment | None = None
-    members: list[RarMemberInfo] = []
+    members = _MemberList()
     needs_next_volume = False
     truncated: str | None = None
     damaged: str | None = None
@@ -2270,7 +2390,12 @@ def _parse_rar3(
                     member.comment = _parse_rar3_old_comment_subblocks(
                         hdata, crc_pos, encoding=name_encoding
                     )
-                if _emit_file_member(members, member, max_members=max_members):
+                if _emit_file_member(
+                    members,
+                    member,
+                    max_members=max_members,
+                    max_metadata_bytes=max_metadata_bytes,
+                ):
                     needs_next_volume = True
             elif (
                 block_type == _RAR3_SUB
@@ -2296,7 +2421,16 @@ def _parse_rar3(
                 else:
                     cmt = _decode_comment_text(raw, encoding=name_encoding)
                 if member.file_solid and members:
+                    # The member was weighed when it was appended, before this
+                    # comment arrived, so the comment is weighed here.
                     members[-1].comment = cmt
+                    if max_metadata_bytes is not None:
+                        _charge_metadata(
+                            members,
+                            text_bytes(cmt),
+                            max_metadata_bytes,
+                            count=len(members),
+                        )
                 else:
                     comment = cmt
 
@@ -2675,9 +2809,10 @@ def _parse_rar5_qo_payload(
     volume_index: int,
     *,
     max_members: int | None,
+    max_metadata_bytes: int | None,
 ) -> list[RarMemberInfo] | None:
     """Parse QO cache structures into FILE members, or None if unusable."""
-    members: list[RarMemberInfo] = []
+    members = _MemberList()
     pos = 0
     n = len(payload)
     # Trailing zeros: AES/size overprovisioning. Stop before them; do not try
@@ -2747,7 +2882,12 @@ def _parse_rar5_qo_payload(
             )
         except CorruptionError:
             return None
-        _append_member(members, member, max_members=max_members)
+        _append_member(
+            members,
+            member,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+        )
     if not members:
         return None
     return members
@@ -2772,6 +2912,7 @@ def _try_list_via_rar5_qo(
     volume_index: int,
     min_file_offset: int,
     max_members: int | None,
+    max_metadata_bytes: int | None,
 ) -> tuple[list[RarMemberInfo], int] | None:
     """Seek to QO and parse FILE copies.
 
@@ -2831,7 +2972,11 @@ def _try_list_via_rar5_qo(
         source.seek(data_offset)
         payload = _require_exact(source, member.file_size, "RAR5 QO")
         qo_members = _parse_rar5_qo_payload(
-            payload, header_offset, volume_index, max_members=max_members
+            payload,
+            header_offset,
+            volume_index,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
         )
         if qo_members is None:
             return None
@@ -2847,10 +2992,11 @@ def _try_list_via_rar5_qo(
 
 
 def _emit_file_member(
-    members: list[RarMemberInfo],
+    members: _MemberList,
     member: RarMemberInfo,
     *,
     max_members: int | None,
+    max_metadata_bytes: int | None,
 ) -> bool:
     """Merge a ``split_before`` FILE into the previous member, else append it.
 
@@ -2862,7 +3008,12 @@ def _emit_file_member(
     if member.split_before and members:
         _merge_split_member(members[-1], member)
     else:
-        _append_member(members, member, max_members=max_members)
+        _append_member(
+            members,
+            member,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+        )
     return member.split_after
 
 
@@ -2874,9 +3025,10 @@ def _emit_and_skip_qo_run(
     source: BinaryIO,
     *,
     qo_by_off: dict[int, RarMemberInfo],
-    members: list[RarMemberInfo],
+    members: _MemberList,
     seen_file_offsets: set[int],
     max_members: int | None,
+    max_metadata_bytes: int | None,
 ) -> bool | None:
     """If ``tell()`` is a QO FILE, emit the consecutive cached run and seek past it.
 
@@ -2900,7 +3052,12 @@ def _emit_and_skip_qo_run(
         pos = nxt
     needs_next = False
     for member in run:
-        if _emit_file_member(members, member, max_members=max_members):
+        if _emit_file_member(
+            members,
+            member,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+        ):
             needs_next = True
     seen_file_offsets.update(m.header_offset for m in run)
     _seek_to(source, pos)
@@ -2916,13 +3073,14 @@ def _parse_rar5(
     volume_index: int = 0,
     use_qo: bool = True,
     max_members: int | None,
+    max_metadata_bytes: int | None,
 ) -> RarArchive:
     _require_exact(source, len(RAR5_ID), "RAR5 signature")
 
     is_solid = False
     is_volume = False
     comment: str | None = None
-    members: list[RarMemberInfo] = []
+    members = _MemberList()
     hdr_enc: _Rar5HdrEnc | None = None
     # Whether a check value positively confirmed the header password; see
     # _header_failure and _check_rar5_password.
@@ -2964,6 +3122,7 @@ def _parse_rar5(
             members=members,
             seen_file_offsets=seen_file_offsets,
             max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
         )
         if skipped is not None:
             if skipped:
@@ -3051,6 +3210,7 @@ def _parse_rar5(
                         volume_index=volume_index,
                         min_file_offset=resume_pos,
                         max_members=max_members,
+                        max_metadata_bytes=max_metadata_bytes,
                     )
                     if listed is not None:
                         qo_members, _qo_end = listed
@@ -3118,7 +3278,12 @@ def _parse_rar5(
                 # QO copies are emitted in `_emit_and_skip_qo_run` before this
                 # read; this branch is holes, FILE after QO, and the no-QO walk.
                 if member.header_offset not in seen_file_offsets:
-                    if _emit_file_member(members, member, max_members=max_members):
+                    if _emit_file_member(
+                        members,
+                        member,
+                        max_members=max_members,
+                        max_metadata_bytes=max_metadata_bytes,
+                    ):
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE:

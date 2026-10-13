@@ -175,6 +175,14 @@ bound only. A folder, unpack-stream, or file count over
 `CorruptionError` remains. Parser bounds MUST NOT be implemented by reusing
 `ExtractionLimits.max_entries`.
 
+Once the header has parsed (a plain header, or the header an encoded or encrypted
+header decodes to), the names it holds (each as `name` and as `raw_name`, two
+bytes per character for the stored UTF-16) and the archive comment SHALL be weighed
+against `listing_limits.max_metadata_bytes`, by the weights of `archive-reading`;
+over it SHALL raise `ResourceLimitError` naming `max_metadata_bytes` at
+`open_archive`. The header's own size bound (64 MiB, stored or decoded) is a fixed
+parser limit, separate from this budget.
+
 #### Scenario: 7z header bound matrix
 
 | Case | Expected |
@@ -185,6 +193,8 @@ bound only. A folder, unpack-stream, or file count over
 | Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
 | Folder, unpack-stream, or file count over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` |
 | `listing_limits.max_members is None` (`UNLIMITED`) | Header-size bound only; a large honest archive opens |
+| Plain, encoded or encrypted header, under `max_members`, whose names weigh more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, including `stream_members()` |
+| The same archive with `max_metadata_bytes` at exactly what registration weighs | Opens and lists |
 
 #### Scenario: in-header read stays within the buffer
 

@@ -208,17 +208,17 @@ def test_hardlink_whose_source_was_not_selected_is_written_before_the_raise(
         ),
     ],
 )
-def test_a_listing_limit_inside_the_prefix_still_writes_nothing(
-    tmp_path: Path, data: bytes
-) -> None:
-    # The limits are still enforced on the listing before anything is written. (RAR
-    # checks max_members at open, so the one checked here is the metadata budget.)
+def test_a_rar_listing_limit_on_a_cut_archive_refuses_at_open(data: bytes) -> None:
+    # RAR weighs both listing limits as its header walk runs, so the names of the
+    # members before the cut cross the metadata budget inside ``open_archive``, with
+    # the walk's own wording; there is no reader to extract from. A limit crossed
+    # inside the listed prefix during extraction cannot be built for RAR any more.
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=40))
-    dest = tmp_path / "out"
-    with open_archive(io.BytesIO(data), config=config) as reader:
-        with pytest.raises(ResourceLimitError):
-            reader.extract_all(dest)
-    assert _files_on_disk(dest) == {}
+    with pytest.raises(
+        ResourceLimitError,
+        match=r"max_metadata_bytes=40 \(RAR headers of \d+ members hold \d+ bytes\)",
+    ):
+        open_archive(io.BytesIO(data), config=config)
 
 
 @pytest.mark.parametrize("raise_unmatched", [False, True], ids=["default", "raise"])
