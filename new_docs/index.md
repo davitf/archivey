@@ -70,7 +70,9 @@ with archivey.open_archive("backup.tar.gz") as archive:
 with a stream of its contents. It reads each member once, so it is never slower than reading
 them by name, and on some archives it is much faster. Directories and links come with `None` in
 place of a stream, and each stream works only until the loop moves on. `open` and `read` follow a
-link and give you the contents of the file it points to, and on a directory they raise.
+link to another member of the archive and give you that member's contents. They never follow it
+outside the archive: a link whose target isn't a member, such as one pointing to `/etc/passwd` or to
+a file the archive doesn't hold, raises `LinkTargetNotFoundError`. On a directory they raise too.
 
 ## Extract
 
