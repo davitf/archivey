@@ -264,23 +264,15 @@ def test_zip_lzma_lc_lp_over_four_is_unsupported() -> None:
     )
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
-        with pytest.raises(UnsupportedFeatureError, match=r"lc=8, lp=0"):
+        with pytest.raises(UnsupportedFeatureError, match=r"lc=8, lp=0") as caught:
             ar.read(member)
-
-
-def test_zip_lzma_out_of_range_properties_stay_corrupt() -> None:
-    # 225 and above is not an lc/lp/pb byte at all.
-    props = bytes([225]) + (1 << 16).to_bytes(4, "little")
-    data = _build_minimal_zip(b"bad.txt", _zip_lzma_body(props), _PAYLOAD, method=14)
-    with open_archive(io.BytesIO(data)) as ar:
-        (member,) = ar.members()
-        with pytest.raises(CorruptionError):
-            ar.read(member)
+    assert caught.value.member_name == "lc8.txt"
 
 
 @pytest.mark.parametrize(
     "props",
     [
+        # 225 and above is not an lc/lp/pb byte at all.
         pytest.param(bytes([225]) + (1 << 16).to_bytes(4, "little"), id="byte-225"),
         pytest.param(b"\x5d\x00\x00", id="three-bytes"),
     ],
@@ -340,8 +332,9 @@ def test_zip_ppmd_restore_method_2_is_unsupported() -> None:
     data = _build_minimal_zip(b"p.txt", body, _PAYLOAD, method=98)
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
-        with pytest.raises(UnsupportedFeatureError, match="restore method 2"):
+        with pytest.raises(UnsupportedFeatureError, match="restore method 2") as caught:
             ar.read(member)
+    assert caught.value.member_name == "p.txt"
 
 
 @pytest.mark.parametrize("restore", [3, 15])
@@ -351,8 +344,11 @@ def test_zip_ppmd_restore_method_above_2_is_corrupt(restore: int) -> None:
     data = _build_minimal_zip(b"p.txt", body, _PAYLOAD, method=98)
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
-        with pytest.raises(CorruptionError, match=f"restore method {restore}"):
+        with pytest.raises(
+            CorruptionError, match=f"restore method {restore}"
+        ) as caught:
             ar.read(member)
+    assert caught.value.member_name == "p.txt"
 
 
 # DR-3: bytes inside a member's compressed size after the codec's end of stream are

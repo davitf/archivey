@@ -1852,37 +1852,15 @@ class ZipReader(BaseArchiveReader):
                 use_indexed_bzip2=_sequential_accelerator(config.use_indexed_bzip2),
             )
         try:
-            params = CodecParams()
-            if method == 14:  # ZIP LZMA
-                try:
-                    params = self._zip_lzma_params(body, keyed=keyed_settings)
-                except CorruptionError as exc:
-                    # A malformed or cut-short LZMA header, typed where it is read:
-                    # stamped with the member, as a raw liblzma error would be.
-                    self._reraise_member_error(exc, member.name)
-                # Without the EOS-marker flag the stream has no end marker (APPNOTE
-                # 4.4.4): the declared size is where it ends, so the decoder stops
-                # there. With the flag set it stays unbounded, and an over-long or
-                # short stream is caught by the size check on the member stream.
-                if (
-                    not loc.flags & _ZIP_MASK_LZMA_EOS_MARKER
-                    and size is not None
-                    and size >= 0
-                ):
-                    params = replace(params, unpack_size=size)
-            elif method == 98:  # ZIP PPMd8
-                params = self._zip_ppmd_params(body, keyed=keyed_settings)
-                # Bound PPMd decode to the member size when known (defensive; PPMd8
-                # usually has an end mark, but max_length still matches py7zr practice).
-                if size is not None and size >= 0:
-                    params = replace(params, unpack_size=size)
-            elif method in (12, 93):  # ZIP bzip2, Zstd
-                # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
-                # read it, and one Zstd frame: a further stream or frame after its end
-                # is input the member does not use, refused like any other
-                # (``refuse_input_after_end``), with the accelerator on or off
-                # (dev-docs/formats/zip.md §2.3).
-                params = replace(params, single_stream=True)
+            try:
+                params = self._member_codec_params(
+                    loc, body, method=method, size=size, keyed=keyed_settings
+                )
+            except ArchiveyError as exc:
+                # A codec header refused where it is read (malformed, cut short, or
+                # a setting archivey cannot decode): stamped with the member, as a
+                # raw decoder error from the same member would be.
+                self._reraise_member_error(exc, member.name)
             return open_codec_stream(
                 codec,
                 body,
@@ -1896,6 +1874,48 @@ class ZipReader(BaseArchiveReader):
             if isinstance(exc, _ZIP_MEMBER_READ_ERRORS):
                 self._reraise_member_error(exc, member.name)
             raise
+
+    def _member_codec_params(
+        self,
+        loc: _ZipLocator,
+        body: BinaryIO,
+        *,
+        method: int,
+        size: int | None,
+        keyed: bool,
+    ) -> CodecParams:
+        """Read the member's codec header, if its method has one, into :class:`CodecParams`.
+
+        ``keyed`` as in :meth:`_zip_lzma_params`.
+        """
+        if method == 14:  # ZIP LZMA
+            params = self._zip_lzma_params(body, keyed=keyed)
+            # Without the EOS-marker flag the stream has no end marker (APPNOTE
+            # 4.4.4): the declared size is where it ends, so the decoder stops
+            # there. With the flag set it stays unbounded, and an over-long or
+            # short stream is caught by the size check on the member stream.
+            if (
+                not loc.flags & _ZIP_MASK_LZMA_EOS_MARKER
+                and size is not None
+                and size >= 0
+            ):
+                params = replace(params, unpack_size=size)
+            return params
+        if method == 98:  # ZIP PPMd8
+            params = self._zip_ppmd_params(body, keyed=keyed)
+            # Bound PPMd decode to the member size when known (defensive; PPMd8
+            # usually has an end mark, but max_length still matches py7zr practice).
+            if size is not None and size >= 0:
+                params = replace(params, unpack_size=size)
+            return params
+        if method in (12, 93):  # ZIP bzip2, Zstd
+            # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
+            # read it, and one Zstd frame: a further stream or frame after its end
+            # is input the member does not use, refused like any other
+            # (``refuse_input_after_end``), with the accelerator on or off
+            # (dev-docs/formats/zip.md §2.3).
+            return CodecParams(single_stream=True)
+        return CodecParams()
 
     def _verified_member_stream(
         self, decoded: BinaryIO, member: ArchiveMember

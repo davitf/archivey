@@ -48,6 +48,24 @@ def test_split_lzma_props_covers_the_format_range() -> None:
     assert (plausible, decodable) == (225, 75)
 
 
+def test_liblzma_decodes_predicate_matches_liblzma() -> None:
+    """Detection branches on ``_alone_props_liblzma_decodes``; pin it against
+    liblzma itself over every properties byte, not against the formula it is
+    derived from."""
+    liblzma_decode = getattr(lzma, "_decode_filter_properties")  # noqa: B009
+    mismatches = []
+    for props_byte in range(256):
+        props = bytes([props_byte]) + (1 << 16).to_bytes(4, "little")
+        try:
+            liblzma_decode(lzma.FILTER_LZMA1, props)
+            decodes = True
+        except lzma.LZMAError:
+            decodes = False
+        if lzma_codec._alone_props_liblzma_decodes(props_byte) is not decodes:
+            mismatches.append(props_byte)
+    assert mismatches == []
+
+
 class _FailingDecompressor:
     """Stands in for the member's ``LZMADecompressor`` with a given liblzma error."""
 

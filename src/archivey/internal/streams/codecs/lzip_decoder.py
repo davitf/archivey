@@ -375,6 +375,11 @@ class _LzipState:
             except lzma.LZMAError as e:
                 # A corrupt tail is what truncation looks like here, so it stays a
                 # truncation, as on xz. Any other cause is not damage and is raised.
+                # A real member cannot produce one: the properties byte is fixed
+                # (``_PROPS_BYTE``), the decompressor has no memlimit, and
+                # FORMAT_ALONE has no integrity check, so the options, memory and
+                # check causes of ``lzma_error_to_archivey`` are out of reach. The
+                # arm is kept so a future liblzma cause is not hidden as truncation.
                 failure = lzma_error_to_archivey(e, "Error reading Lzip archive")
                 if not isinstance(failure, CorruptionError):
                     raise failure from e
@@ -430,6 +435,7 @@ class _LzipState:
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(chunk, remaining)
                 except lzma.LZMAError as e:
+                    # Only damage reaches here for a real member (see ``flush``).
                     raise lzma_error_to_archivey(e, "Error reading Lzip archive") from e
                 self._member_comp_size += len(chunk)
                 if plain:
@@ -487,6 +493,7 @@ class _LzipState:
             self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
             self._dec.decompress(lzma_alone_header)
         except lzma.LZMAError as e:
+            # Only damage reaches here for a real member (see ``flush``).
             raise lzma_error_to_archivey(e, "Error reading lzip header") from e
         self._crc = 0
         self._member_size = 0

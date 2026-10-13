@@ -217,7 +217,10 @@ apart only by text, the same on 3.10 to 3.14. `lzma_error_to_archivey` maps "Inv
 unsupported options" and "Unsupported integrity check" to `UnsupportedFeatureError`,
 "Memory usage limit" to `ResourceLimitError`, and everything else to `CorruptionError`. A
 valid block naming a filter this liblzma lacks is therefore unsupported, not damaged; in a
-`.tar.xz` it ends the listing there. Canary tests pin the liblzma wording.
+`.tar.xz` it ends the listing there. Canary tests pin the liblzma wording. lzip maps its
+liblzma errors through the same function, but a real lzip member reaches only the
+corruption arm: its properties byte is fixed, its decoder has no memory limit, and
+`FORMAT_ALONE` has no integrity check.
 
 **A check liblzma cannot compute is a warning, not an error.** liblzma decodes a stream
 whose header names such a check ID without verifying it, and reports that only through
