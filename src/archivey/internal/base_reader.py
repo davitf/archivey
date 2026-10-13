@@ -86,6 +86,7 @@ from archivey.internal.naming import (
     emit_link_target_controls,
     emit_member_name_controls,
     link_target_name_keys,
+    name_controls_possible,
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
@@ -1733,33 +1734,15 @@ class BaseArchiveReader(ArchiveReader):
         ``_walk_presented``, are not repeated, so a deceptive name is reported once
         whichever backend built it. A check whose emit raised is not counted as run, so
         a strict policy refuses again on the retry; the emits before it are replayed
-        from ``_presenting`` rather than counted twice. The listing tracker was reset with
-        the discarded walk, so the member is counted again.
+        from ``_presenting`` rather than counted twice (``_present_member``). The
+        listing tracker was reset with the discarded walk, so the member is counted
+        again.
         """
         member._member_id = idx
         member._archive_id = self._archive_id
         if idx >= self._walk_presented:
-            # One member can make several presentation emits (a name and a target, up
-            # to three codes each). If a later one raises, the earlier ones already
-            # count, so the retry replays this position's log rather than emitting them
-            # again; the emit that raised raises again from the log.
-            if self._presenting is None or self._presenting[0] != idx:
-                self._presenting = (idx, EmitLog())
-            with self._diagnostics_collector.replaying(self._presenting[1]):
-                emit_member_name_controls(
-                    self._diagnostics_collector,
-                    member=member,
-                    archive_name=self._archive_name,
-                )
-                # A target the header carries is known now. A target stored as member
-                # data is checked when it is read (`_resolve_link_target`), so each
-                # member is checked once either way.
-                emit_link_target_controls(
-                    self._diagnostics_collector,
-                    member=member,
-                    archive_name=self._archive_name,
-                )
-            self._presenting = None
+            if name_controls_possible(member):
+                self._present_member(idx, member)
             self._walk_presented = idx + 1
         if member.type is MemberType.SYMLINK and member.link_target == "":
             # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
@@ -1770,6 +1753,38 @@ class BaseArchiveReader(ArchiveReader):
             member.link_target = None
             member._link_target_resolved = True
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
+
+    def _present_member(self, idx: int, member: ArchiveMember) -> None:
+        """Run the name and link-target checks for the member at ``idx``.
+
+        One member can make several of these emits (a name and a target, up to three
+        codes each). If a later one raises, the earlier ones already count, so a walk
+        started over replays this position's log rather than emitting them again, and
+        the emit that raised raises again from the log. A streaming walk, or one whose
+        listing was discarded, is never started over, so it keeps no log.
+        """
+        collector = self._diagnostics_collector
+        if self._streaming or self._listing_discarded:
+            emit_member_name_controls(
+                collector, member=member, archive_name=self._archive_name
+            )
+            emit_link_target_controls(
+                collector, member=member, archive_name=self._archive_name
+            )
+            return
+        if self._presenting is None or self._presenting[0] != idx:
+            self._presenting = (idx, EmitLog())
+        with collector.replaying(self._presenting[1]):
+            emit_member_name_controls(
+                collector, member=member, archive_name=self._archive_name
+            )
+            # A target the header carries is known now. A target stored as member
+            # data is checked when it is read (`_resolve_link_target`), so each
+            # member is checked once either way.
+            emit_link_target_controls(
+                collector, member=member, archive_name=self._archive_name
+            )
+        self._presenting = None
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:
         """Report a symlink whose stored target is the empty string.

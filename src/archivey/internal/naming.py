@@ -168,6 +168,17 @@ def _emit_controls(
     )
 
 
+def name_controls_possible(member: ArchiveMember) -> bool:
+    """Whether :func:`emit_member_name_controls` or :func:`emit_link_target_controls`
+    could emit anything for ``member``: its name or its known target is not ASCII.
+
+    The emitters skip ASCII text themselves; this lets a caller skip setup it would only
+    need for an emit (listing hot path).
+    """
+    target = member.link_target
+    return not member.name.isascii() or (target is not None and not target.isascii())
+
+
 def emit_member_name_controls(
     collector: DiagnosticCollector,
     *,
