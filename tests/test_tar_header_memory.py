@@ -108,13 +108,15 @@ def test_a_chain_under_the_budget_still_lists(streaming: bool) -> None:
     assert _names(data, 2**20, streaming=streaming) == ["m"]
 
 
-def test_the_budget_is_per_member_not_per_archive() -> None:
-    """A streaming walk checks each member against the whole cap: the chain of one
-    member does not use up the next member's share. Three members, because the first
-    one's headers are parsed as the archive opens, under a budget of their own."""
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
+def test_the_budget_is_what_the_listing_has_not_retained(streaming: bool) -> None:
+    """Every walk enforces the running total, so a member's headers get only what the
+    members before it left of the cap. Three members, because the first one's headers
+    are parsed as the archive opens."""
     member = _chain(tarfile.XHDTYPE, links=2, size=300_000)
     data = member * 3 + _TRAILER
-    assert _names(data, 2**20, streaming=True) == ["m", "m", "m"]
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        _names(data, 2**20, streaming=streaming)
 
 
 # ---------------------------------------------------------------------------

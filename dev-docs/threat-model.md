@@ -373,8 +373,8 @@ archive declares.
   budget before it reads them: an extended header (PAX `x` or `g`, GNU `L` or `K`) at
   its declared size, and a sparse map at 24 bytes per entry from its entry count before
   its entries are parsed, or block by block for an old GNU map's extension blocks. The
-  budget is what is left of `max_metadata_bytes` in a random-access listing that
-  enforces the cap, and the whole cap otherwise, streaming included. The headers ahead of
+  budget is what is left of `max_metadata_bytes`, in every walk, streaming included.
+  The headers ahead of
   one member are one chain and draw on one budget. An over-limit tar then costs about
   the cap plus one ordinary header. The PAX global records are held once per global
   header, not once per member: members with none of their own share one read-only

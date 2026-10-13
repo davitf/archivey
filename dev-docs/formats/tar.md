@@ -232,9 +232,8 @@ that is not a number or a PAX sparse map that does not parse.
 **The walk stops at the listing caps.** Listing pulls one header per call and registers
 the member, counting it against `ListingLimits`, before the next header is parsed, so a
 header bomb stops at the member that crosses `max_members` or `max_metadata_bytes`. The
-walker takes a budget for each member's headers: what is left of `max_metadata_bytes`
-while the listing enforces it, and the whole cap otherwise (`stream_members()` on a
-random-access reader, and every streaming walk). An extended header is charged its
+walker takes a budget for each member's headers: what is left of `max_metadata_bytes`,
+in every walk, streaming included. An extended header is charged its
 declared size before it is read, and the headers of one member's chain draw from one
 budget, so four 300 KB PAX headers under a 1 MiB cap raise `ResourceLimitError` before
 the fourth is read. A sparse map is charged 24 bytes per entry from its entry count

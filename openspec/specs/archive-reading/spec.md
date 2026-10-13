@@ -574,9 +574,8 @@ SHALL raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 A TAR extended header (PAX `x` / `g`, GNU long name or link name) is read whole by the
 parser before any member is registered, so its declared size SHALL be weighed first: one
-that declares more than is left of `max_metadata_bytes` in an enforcing listing, or more
-than the whole cap in any walk (`stream_members()` and `streaming=True` included), SHALL
-raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data. The
+that declares more than is left of `max_metadata_bytes`, in any walk
+(`stream_members()` and `streaming=True` included), SHALL raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data. The
 headers ahead of one member form a chain the parser holds whole until the member is
 built, so each header of the chain, and the member's sparse map, SHALL be weighed
 against what the headers before it in the chain left, not against the member's whole

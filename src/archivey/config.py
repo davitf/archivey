@@ -238,7 +238,7 @@ class ListingLimits:
     refused for the UDF tree. ISO counts members per tree but weighs bytes as one sum
     for the whole image, every tree together.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than the whole ``max_metadata_bytes``, before reading it.
+    more than is left of ``max_metadata_bytes``, before reading it.
     """
 
     max_members: int | None = 262_144
