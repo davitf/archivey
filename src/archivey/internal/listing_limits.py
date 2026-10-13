@@ -171,8 +171,15 @@ def check_metadata_budget(limits: ListingLimits, nbytes: int, *, detail: str) ->
 
 
 def check_metadata_bytes(max_meta: int | None, nbytes: int, *, detail: str) -> None:
-    """:func:`check_metadata_budget` for a parser that holds only the one field."""
+    """Same check, for a caller that holds the ``max_metadata_bytes`` value rather
+    than a ``ListingLimits``."""
     if max_meta is not None and nbytes > max_meta:
-        raise ResourceLimitError(
-            f"Listing limit reached: max_metadata_bytes={max_meta} ({detail})"
-        )
+        raise metadata_limit_error(max_meta, detail)
+
+
+def metadata_limit_error(max_meta: int, detail: str) -> ResourceLimitError:
+    """The refusal of ``max_metadata_bytes``, for a caller on a hot path that compares
+    itself and builds ``detail`` only once the limit is crossed."""
+    return ResourceLimitError(
+        f"Listing limit reached: max_metadata_bytes={max_meta} ({detail})"
+    )

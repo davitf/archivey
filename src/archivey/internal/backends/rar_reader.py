@@ -2546,10 +2546,15 @@ class RarReader(BaseArchiveReader):
     def _check_header_metadata_budget(self) -> None:
         """Refuse names and comments whose weight, together, exceeds the metadata budget.
 
-        The header walk has already held each member's names, link target and comment
-        to ``max_metadata_bytes`` as it listed them (``rar_parser._append_member``);
-        this adds the archive comment to that total, by the same weights
-        (``rar_parser.header_metadata_bytes``), before any comment is decoded.
+        The header walk has already held each member list to ``max_metadata_bytes``
+        as it was built (``rar_parser._append_member``), which bounds the memory of
+        the walk. This check is the total for the archive as it will be listed: it
+        weighs every member of the final list again (``header_metadata_bytes``) and
+        adds the archive comment, before any comment is decoded. It recomputes rather
+        than reading the walk's running total because that total is kept per list and
+        a comment can reach a member after it was weighed: a RAR 1.5-4 ``CMT`` service
+        header attaches its comment to the member before it (``_parse_rar3``), and a
+        split member's parts merge after each volume weighed its own list.
 
         Each compressed comment expands to up to 64 KiB, and ``max_members`` alone
         lets one archive carry a million of them. The header declares every

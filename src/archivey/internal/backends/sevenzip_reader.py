@@ -323,10 +323,13 @@ def _check_header_metadata(header: PlainHeader, max_metadata_bytes: int | None) 
     Checked once the header has parsed, plain or decoded, so a refused archive fails
     at open, as ``max_members`` does, instead of when its members are registered. A
     wrong-password decode never reaches here: the candidate loop has already judged
-    it. Each name is weighed as registration weighs it, as ``name`` and as
-    ``raw_name`` (two bytes per UTF-16 unit, at least two per character). The header
-    has its own bound, ``MAX_NEXT_HEADER_SIZE`` (64 MiB, stored or decoded); that is a
-    fixed parser limit, not this budget, so it does not follow the caller's setting.
+    it. Each stored name is weighed by registration's weights, as ``name`` and as
+    ``raw_name`` (two bytes per character, which under-weighs a character outside
+    the BMP: it is two UTF-16 units). Registration weighs the normalized name, which
+    can be shorter (``a/./b`` lists as ``a/b``), so such a name weighs a little more
+    here. The header has its own bound, ``MAX_NEXT_HEADER_SIZE`` (64 MiB, stored or
+    decoded); that is a fixed parser limit, not this budget, so it does not follow
+    the caller's setting.
     """
     if max_metadata_bytes is None:
         return

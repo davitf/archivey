@@ -1648,6 +1648,39 @@ def test_rar3_service_comment_maps_to_member_comment() -> None:
         assert member.comment == comment.decode()
 
 
+def test_rar3_service_comment_is_weighed_by_the_walk_as_it_attaches() -> None:
+    """A ``CMT`` comment reaches its member after the member was weighed, so the walk
+    weighs it as it attaches: ``item.txt`` (8 + 8 bytes) and its 14-byte comment
+    make 30, refused at 29 by the walk itself and listed at 30."""
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    comment = b"member comment"
+    file_hdr = _rar3_file_block(b"item.txt", flags=0, pack_lo=0, unp_lo=0)
+    service_hdr = _rar3_file_block(
+        b"CMT",
+        flags=_RAR3_FILE_SOLID,
+        pack_lo=len(comment),
+        unp_lo=len(comment),
+        block_type=0x7A,
+    )
+    blob = RAR_ID + main_hdr + file_hdr + service_hdr + comment + end_hdr
+
+    def limits(max_metadata_bytes: int) -> ArchiveyConfig:
+        return ArchiveyConfig(
+            listing_limits=ListingLimits(max_metadata_bytes=max_metadata_bytes)
+        )
+
+    with pytest.raises(
+        ResourceLimitError, match=r"=29 \(RAR headers of 1 members hold 30 bytes\)"
+    ):
+        open_archive(io.BytesIO(blob), config=limits(29))
+    with open_archive(io.BytesIO(blob), config=limits(30)) as archive:
+        member = archive.get("item.txt")
+        assert member is not None
+        assert member.comment == comment.decode()
+
+
 # unrar reads a RAR 2.9-4 ``CMT`` as UTF-16LE only when bit 0 of the SERVICE
 # header's attribute field (``SUBHEAD_FLAGS_CMT_UNICODE``) is set, and as 8-bit
 # text cut at the first NUL otherwise (``Archive::ReadCommentData``). Checked with

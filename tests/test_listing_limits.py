@@ -24,7 +24,7 @@ from archivey.internal.listing_limits import (
     member_metadata_bytes,
 )
 from archivey.types import ArchiveMember, MemberType
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires_binary
 from tests.memory_util import traced_peak
 from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
 
@@ -649,11 +649,21 @@ def _registered_metadata_bytes(path: Path, password: str | None) -> int:
     return total + (len(comment) if comment else 0)
 
 
+_7Z_PARSE_DETAIL = r"7z header names and comment hold \d+ bytes"
+# Only the RAR header walk words its refusal this way; the reader's check after the
+# walk says "RAR names and comments hold or declare", so this pins the walk.
+_RAR_PARSE_DETAIL = r"RAR headers of \d+ members hold \d+ bytes"
+
+
 def _assert_metadata_budget_holds_at_open(
-    path: Path, names: list[str] = _LONG_NAMES, password: str | None = None
+    path: Path,
+    parse_detail: str,
+    names: list[str] = _LONG_NAMES,
+    password: str | None = None,
 ) -> None:
-    """Far under the names' weight, ``open_archive`` itself refuses (the parse weighs
-    them); at exactly the registration total, the whole listing succeeds."""
+    """Far under the names' weight, the parse itself refuses at ``open_archive``
+    (``parse_detail`` is its wording); at exactly the registration total, the whole
+    listing succeeds."""
     budget = _registered_metadata_bytes(path, password)
 
     def limits(max_metadata_bytes: int) -> ArchiveyConfig:
@@ -665,7 +675,9 @@ def _assert_metadata_budget_holds_at_open(
         )
 
     # Each name alone weighs more than 200 bytes.
-    with pytest.raises(ResourceLimitError, match=r"max_metadata_bytes=300 \("):
+    with pytest.raises(
+        ResourceLimitError, match=rf"max_metadata_bytes=300 \({parse_detail}\)"
+    ):
         open_archive(path, config=limits(300), password=password)
     with open_archive(path, config=limits(budget), password=password) as reader:
         assert sorted(m.name for m in reader.members()) == sorted(names)
@@ -677,27 +689,22 @@ def _assert_metadata_budget_holds_at_open(
 @requires_binary("7z")
 @pytest.mark.parametrize(
     "flags",
-    [
-        pytest.param(("-mhc=off",), id="plain-header"),
-        pytest.param(("-mhc=on",), id="encoded-header"),
-        pytest.param(
-            ("-mhe=on", "-pkey"), id="encrypted-header", marks=requires("cryptography")
-        ),
-    ],
+    [("-mhc=off",), ("-mhc=on",), ("-mhe=on", "-pkey")],
+    ids=["plain-header", "encoded-header", "encrypted-header"],
 )
 def test_7z_open_weighs_names_against_max_metadata_bytes(
     tmp_path: Path, flags: tuple[str, ...]
 ) -> None:
     path = _build_7z(tmp_path, *flags)
     _assert_metadata_budget_holds_at_open(
-        path, password="key" if "-pkey" in flags else None
+        path, _7Z_PARSE_DETAIL, password="key" if "-pkey" in flags else None
     )
 
 
 @requires_binary("rar")
 def test_rar5_open_weighs_names_against_max_metadata_bytes(tmp_path: Path) -> None:
     (path,) = _build_rar(tmp_path)
-    _assert_metadata_budget_holds_at_open(path)
+    _assert_metadata_budget_holds_at_open(path, _RAR_PARSE_DETAIL)
 
 
 def _rar4_with_long_names(source: Path, dest: Path) -> list[str]:
@@ -724,7 +731,7 @@ def _rar4_with_long_names(source: Path, dest: Path) -> list[str]:
 def test_rar4_open_weighs_names_against_max_metadata_bytes(tmp_path: Path) -> None:
     path = tmp_path / "long.rar"
     names = _rar4_with_long_names(_RAR_FIXTURES / "basic_nonsolid__rar4.rar", path)
-    _assert_metadata_budget_holds_at_open(path, names=names)
+    _assert_metadata_budget_holds_at_open(path, _RAR_PARSE_DETAIL, names=names)
 
 
 @requires_binary("rar")
@@ -734,7 +741,7 @@ def test_rar5_volume_set_weighs_names_across_volumes(tmp_path: Path) -> None:
     counts it, and the budget covers the names of every volume together."""
     paths = _build_rar(tmp_path, "-m0", "-v20k", size=30_000)
     assert len(paths) > 3
-    _assert_metadata_budget_holds_at_open(paths[0])
+    _assert_metadata_budget_holds_at_open(paths[0], _RAR_PARSE_DETAIL)
 
 
 def test_rar4_volume_set_counts_a_split_name_once(tmp_path: Path) -> None:
@@ -746,4 +753,6 @@ def test_rar4_volume_set_counts_a_split_name_once(tmp_path: Path) -> None:
     assert _rar4_with_long_names(
         _RAR_FIXTURES / "tinyvol_rnn.r00", tmp_path / "long.r00"
     ) == [name]
-    _assert_metadata_budget_holds_at_open(tmp_path / "long.rar", names=[name])
+    _assert_metadata_budget_holds_at_open(
+        tmp_path / "long.rar", _RAR_PARSE_DETAIL, names=[name]
+    )

@@ -57,7 +57,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.config import KeyDerivationBudget
-from archivey.internal.listing_limits import check_metadata_bytes, text_bytes
+from archivey.internal.listing_limits import metadata_limit_error, text_bytes
 from archivey.internal.password import wrong_password_error
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
@@ -524,7 +524,7 @@ class RarArchive:
     is_solid: bool
     has_header_encryption: bool
     comment: str | _Rar3Comment | None
-    members: list[RarMemberInfo]
+    members: _MemberList
     sfx_offset: int
     is_volume: bool
     needs_next_volume: bool = False
@@ -931,12 +931,14 @@ def comment_metadata_bytes(comment: str | _Rar3Comment | None) -> int:
 
 
 def header_metadata_bytes(member: RarMemberInfo) -> int:
-    """What the header gave ``member`` that the listing keeps, weighed as registration
-    weighs the ``ArchiveMember`` built from it (``listing_limits``).
+    """What the header gave ``member`` that the listing keeps, by the weights
+    registration uses (``listing_limits``), applied to the stored values.
 
-    The name counts twice, as ``name`` and ``raw_name`` do; a RAR5 name has no stored
-    bytes of its own, and its length stands for its UTF-8 bytes, which are at least
-    that many. The comment counts per :func:`comment_metadata_bytes`.
+    The name counts twice, as ``name`` and ``raw_name`` do. It is the stored name:
+    registration weighs the normalized one, which can be shorter (``a/./b`` lists as
+    ``a/b``), so a name normalization shortens weighs a little more here. A RAR5 name
+    has no stored bytes of its own, and its length stands for its UTF-8 bytes, which
+    are at least that many. The comment counts per :func:`comment_metadata_bytes`.
     """
     filename = member.filename
     raw = member.orig_filename
@@ -947,7 +949,7 @@ def header_metadata_bytes(member: RarMemberInfo) -> int:
 
 
 def _append_member(
-    members: list[RarMemberInfo],
+    members: _MemberList,
     member: RarMemberInfo,
     *,
     max_members: int | None,
@@ -967,16 +969,30 @@ def _append_member(
     # volume's headers have no size bound of their own (RAR5 caps one header at
     # 2 MiB, RAR 1.5-4 a name at 64 KiB), so ``max_members`` long names would
     # otherwise all be in memory first. A split member's later parts merge into
-    # the first and are not weighed again.
-    assert isinstance(members, _MemberList)
-    total = members.metadata_bytes + header_metadata_bytes(member)
-    check_metadata_bytes(
-        max_metadata_bytes,
-        total,
-        detail=f"RAR headers of {len(members) + 1} members hold {total} bytes",
-    )
-    members.metadata_bytes = total
+    # the first and are not weighed again. Under ``None`` nothing reads the total.
+    if max_metadata_bytes is not None:
+        _charge_metadata(
+            members,
+            header_metadata_bytes(member),
+            max_metadata_bytes,
+            count=len(members) + 1,
+        )
     members.append(member)
+
+
+def _charge_metadata(
+    members: _MemberList, nbytes: int, max_metadata_bytes: int, *, count: int
+) -> None:
+    """Add ``nbytes`` to ``members``' running weight, refusing past the budget.
+
+    The message is built only on refusal: this runs once per member of the walk.
+    """
+    total = members.metadata_bytes + nbytes
+    if total > max_metadata_bytes:
+        raise metadata_limit_error(
+            max_metadata_bytes, f"RAR headers of {count} members hold {total} bytes"
+        )
+    members.metadata_bytes = total
 
 
 def _parse_rar_volume(
@@ -2405,7 +2421,16 @@ def _parse_rar3(
                 else:
                     cmt = _decode_comment_text(raw, encoding=name_encoding)
                 if member.file_solid and members:
+                    # The member was weighed when it was appended, before this
+                    # comment arrived, so the comment is weighed here.
                     members[-1].comment = cmt
+                    if max_metadata_bytes is not None:
+                        _charge_metadata(
+                            members,
+                            text_bytes(cmt),
+                            max_metadata_bytes,
+                            count=len(members),
+                        )
                 else:
                     comment = cmt
 
@@ -2967,7 +2992,7 @@ def _try_list_via_rar5_qo(
 
 
 def _emit_file_member(
-    members: list[RarMemberInfo],
+    members: _MemberList,
     member: RarMemberInfo,
     *,
     max_members: int | None,
@@ -3000,7 +3025,7 @@ def _emit_and_skip_qo_run(
     source: BinaryIO,
     *,
     qo_by_off: dict[int, RarMemberInfo],
-    members: list[RarMemberInfo],
+    members: _MemberList,
     seen_file_offsets: set[int],
     max_members: int | None,
     max_metadata_bytes: int | None,
