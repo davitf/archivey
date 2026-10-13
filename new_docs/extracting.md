@@ -41,7 +41,7 @@ everything in it:
 from archivey.paths import match_glob
 
 with archivey.open_archive("download.zip") as archive:
-    archive.extract_all("out/", members=match_glob("docs/**", "*.md"))
+    archive.extract_all("out/", members=match_glob("docs/**"))
 ```
 
 Another argument, `filter`, sees each member before it's checked and written. It can change the
