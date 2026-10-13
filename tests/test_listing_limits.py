@@ -24,7 +24,7 @@ from archivey.internal.listing_limits import (
     member_metadata_bytes,
 )
 from archivey.types import ArchiveMember, MemberType
-from tests.conftest import requires_binary
+from tests.conftest import requires, requires_binary
 from tests.memory_util import traced_peak
 from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
 
@@ -677,8 +677,13 @@ def _assert_metadata_budget_holds_at_open(
 @requires_binary("7z")
 @pytest.mark.parametrize(
     "flags",
-    [("-mhc=off",), ("-mhc=on",), ("-mhe=on", "-pkey")],
-    ids=["plain-header", "encoded-header", "encrypted-header"],
+    [
+        pytest.param(("-mhc=off",), id="plain-header"),
+        pytest.param(("-mhc=on",), id="encoded-header"),
+        pytest.param(
+            ("-mhe=on", "-pkey"), id="encrypted-header", marks=requires("cryptography")
+        ),
+    ],
 )
 def test_7z_open_weighs_names_against_max_metadata_bytes(
     tmp_path: Path, flags: tuple[str, ...]
