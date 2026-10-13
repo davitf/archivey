@@ -330,8 +330,14 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   recovers the offsets; the forward walk has no end record to recover them from until
   the end.
 - Bytes between the last member and the directory (an APK signing block, for one) are
-  read past to the directory signature. The end record, read last, confirms where the
-  directory started; the seekable read skips the same bytes without reading them.
+  read past to the first directory or end-record signature. The end record, read last,
+  confirms where the directory started; the seekable read skips the same bytes without
+  reading them. Two cases a forward read cannot take, where the seekable read can: a gap
+  holding `PK\x01\x02` or `PK\x05\x06` (the skip stops there, and the bytes after it
+  are no directory), and a gap after a last member with bit 3 set (a descriptor counts
+  only when a ZIP signature follows it, which is what stops a planted one inside STORED
+  data). Recognising an APK signing block by its own size fields would cover both;
+  it is not done.
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
   Writers put both in the same order; when they differ, member ids follow the

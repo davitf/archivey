@@ -297,6 +297,38 @@ def test_bytes_before_the_directory_are_read_past_and_recorded() -> None:
     assert len(read) == len(_DATA)
 
 
+def _with_gap(raw: bytes, block: bytes) -> bytes:
+    """``raw`` with ``block`` before its directory, the end record adjusted."""
+    out = bytearray(raw)
+    eocd = out.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<L", out, eocd + 16)
+    out[cd_offset:cd_offset] = block
+    struct.pack_into("<L", out, eocd + len(block) + 16, cd_offset + len(block))
+    return bytes(out)
+
+
+def test_a_gap_after_a_deferred_last_member_is_not_read_past() -> None:
+    # A descriptor must be followed by a ZIP signature: that is what stops a planted
+    # descriptor inside STORED data. So bytes after the last member's descriptor make
+    # the scan take the real descriptor for data. Gaps are read past only after a
+    # member whose header states its size.
+    walk = LocalHeaderWalk(_Unseekable(_with_gap(_write(pipe=True), b"APK " * 10)))
+    with pytest.raises(UnsupportedFeatureError, match="no signature"):
+        while (entry := walk.next_entry()) is not None:
+            _decode(walk, entry)
+
+
+def test_a_gap_holding_a_directory_signature_is_not_read_past() -> None:
+    # The skip stops at the first directory or end-record signature it finds.
+    walk = LocalHeaderWalk(
+        _Unseekable(_with_gap(_write(pipe=False), b"APK PK\x01\x02 block " * 4))
+    )
+    while (entry := walk.next_entry()) is not None:
+        _decode(walk, entry)
+    with pytest.raises(CorruptionError):
+        list(walk.directory())
+
+
 @pytest.mark.parametrize("pipe", [False, True], ids=["sizes", "pipe"])
 def test_a_stream_cut_before_the_directory_is_truncation(pipe: bool) -> None:
     raw = _write(pipe=pipe)

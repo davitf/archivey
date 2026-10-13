@@ -827,8 +827,11 @@ class LocalHeaderWalk:
     def _skip_to_directory(self) -> None:
         """Read past bytes that are no header, up to the central directory.
 
-        An APK signing block sits there. The end record later confirms where the
-        directory starts; until then the bytes are only recorded in :attr:`gap`.
+        An APK signing block sits there. The skip stops at the first directory or
+        end-record signature, so a gap holding one is not read past; and a gap after a
+        last member with bit 3 never gets here, because its descriptor needs a ZIP
+        signature after it. The end record later confirms where the directory starts;
+        until then the bytes are only recorded in :attr:`gap`.
         """
         start = self.source.offset
         window = bytearray()

@@ -1,19 +1,21 @@
 """Self-extracting (SFX) stubs: the shared scan bound, the forward scan, and the cue.
 
 A self-extracting archive is an executable stub with a real archive appended, so the
-archive magic sits at some offset ``N > 0`` rather than at byte zero. Three places have
+archive magic sits at some offset ``N > 0`` rather than at byte zero. Four places have
 to agree on how far forward to look for it:
 
 * :func:`archivey.internal.detection.detect_format` — the SFX scan that turns an
   executable-shaped prefix into ``(format, payload_offset)``;
 * ``rar_parser._find_sfx_header`` — the RAR parser's own scan, which is what makes
   forced ``format=RAR`` work on an SFX file;
-* ``sevenzip_parser.find_signature_offset`` — the 7z equivalent.
+* ``sevenzip_parser.find_signature_offset`` — the 7z equivalent;
+* ``zip_local_walk.LocalHeaderWalk`` — the forward ZIP walk's scan for its first local
+  header, for a ZIP read from a stream it cannot seek.
 
-They share :data:`SFX_MAX` rather than each carrying a bound of its own: three separate
+They share :data:`SFX_MAX` rather than each carrying a bound of its own: separate
 limits drift, and a stub the RAR parser accepts but the detector does not would be a
 file that opens under ``format=RAR`` and fails under auto-detect. Raising the bound is
-one edit here for all three.
+one edit here for all four.
 
 Two scan entry points, because the callers differ in what they may do to the source.
 A parser owns its handle and reads forward (:func:`scan_for_magic`); the detector must
