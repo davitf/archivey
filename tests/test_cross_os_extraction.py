@@ -14,6 +14,8 @@ import io
 import os
 import stat
 import tarfile
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -31,7 +33,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     ResourceLimitError,
 )
-from archivey.internal import extraction
+from archivey.internal import extraction, long_paths
 from archivey.internal.filters import apply_name_policy
 from archivey.types import ArchiveMember, MemberType
 from tests.extract_util import lock_directories_at_once, open_and_extract
@@ -893,3 +895,434 @@ def test_other_link_errors_still_fail(
     )
     assert report.results[1].status is ExtractionStatus.FAILED
     assert not (tmp_path / "out" / "h").exists()
+
+
+# --- Paths past MAX_PATH ------------------------------------------------------------
+
+
+def test_long_windows_path_gets_the_extended_prefix() -> None:
+    deep = "C:\\" + "\\".join(["d" * 50] * 6) + "\\file.txt"
+    assert long_paths.extended(deep) == "\\\\?\\" + deep
+    # Win32 would normalize these; the extended form must name the same file.
+    assert long_paths.extended(deep.replace("\\", "/")) == "\\\\?\\" + deep
+    unc = "\\\\server\\share\\" + "\\".join(["d" * 50] * 6)
+    assert long_paths.extended(unc) == "\\\\?\\UNC\\" + unc[2:]
+    # Short paths, and paths already in a device namespace, are left as given.
+    assert long_paths.extended("C:\\short\\f") == "C:\\short\\f"
+    assert long_paths.extended("\\\\?\\" + deep) == "\\\\?\\" + deep
+    assert long_paths.extended("\\\\.\\" + deep[3:]) == "\\\\.\\" + deep[3:]
+
+
+def test_extended_prefix_is_stripped_for_display() -> None:
+    assert long_paths.plain("\\\\?\\C:\\a\\b") == "C:\\a\\b"
+    assert long_paths.plain("\\\\?\\UNC\\server\\share\\a") == "\\\\server\\share\\a"
+    assert long_paths.plain("C:\\a") == "C:\\a"
+    assert long_paths.plain("/tmp/a") == "/tmp/a"
+
+
+def test_long_path_is_a_no_op_off_windows() -> None:
+    path = Path("/" + "d" * 400)
+    if os.name != "nt":
+        assert long_paths.long_path(path) is path
+
+
+def _fake_long_paths(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Take the Windows long-path route on POSIX, for every path.
+
+    ``/.`` before an absolute POSIX path names the same file, so the run still works,
+    and any path that shows the prefix leaked out of the filesystem calls. Returns the
+    paths the helper extended.
+    """
+    seen: list[str] = []
+
+    def fake(path: str) -> str:
+        if path.startswith("/./"):
+            return path
+        seen.append(path)
+        return "/." + os.path.abspath(path)
+
+    monkeypatch.setattr(long_paths, "_ENABLED", True)
+    monkeypatch.setattr(long_paths, "_PREFIXES", (("/./", "/"),))
+    monkeypatch.setattr(long_paths, "extended", fake)
+    return seen
+
+
+@_POSIX_SYMLINKS
+@pytest.mark.parametrize("streaming", [False, True])
+def test_filesystem_calls_take_the_long_path_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    """Every write goes through the long-path helper, and no result shows its form."""
+    seen = _fake_long_paths(monkeypatch)
+    calls: list[str] = []
+    for name in ("replace", "makedirs", "symlink", "link", "unlink", "rmdir"):
+        real = getattr(os, name)
+
+        def spy(
+            *args: object, _real: object = real, _name: str = name, **kwargs: object
+        ) -> object:
+            # The path under dest: a symlink's first argument is its target, and
+            # os.replace and os.link move or link onto their second.
+            where = args[0] if _name in ("makedirs", "unlink", "rmdir") else args[1]
+            calls.append(f"{_name} {os.fspath(where)}")  # type: ignore[arg-type]
+            return _real(*args, **kwargs)  # type: ignore[operator]
+
+        monkeypatch.setattr(os, name, spy)
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(
+            _tar(
+                [
+                    ("dir", "d", None),
+                    ("file", "d/f", b"1"),
+                    ("ro", "d/ro", b"2"),
+                    ("sym", "d/l", "f"),
+                    ("hard", "d/h", "d/f"),
+                    ("file", "D/F", b"3"),
+                    ("dir", "e/sub", None),
+                ]
+            )
+        ),
+        dest,
+        streaming=streaming,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert seen
+    statuses = [r.status for r in report.results]
+    assert statuses.count(ExtractionStatus.EXTRACTED) == 6, report.results
+    assert (dest / "d" / "f").read_bytes() == b"3"
+    assert os.readlink(dest / "d" / "l") == "f"
+    assert calls
+    for call in calls:
+        assert call.split(" ", 1)[1].startswith("/./"), call
+    for result in report.results:
+        for path in (result.path, result.requested_path, result.collided_with):
+            assert path is None or not str(path).startswith("/./")
+
+
+def test_long_path_errors_name_the_plain_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OS error raised on the long form names the path as the caller gave it."""
+    _fake_long_paths(monkeypatch)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "taken").write_bytes(b"caller's")
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", "taken/f", b"x")])),
+        dest,
+        on_error=OnError.CONTINUE,
+    )
+    result = report.results[0]
+    assert result.status is ExtractionStatus.FAILED
+    error = result.error
+    assert isinstance(error, OSError)
+    assert error.filename is not None
+    assert not str(error.filename).startswith("/./")
+
+
+def test_too_long_path_without_long_path_support_is_typed() -> None:
+    """Win32 reports a path past MAX_PATH as missing (winerror 3); it is a name error."""
+    exc = _win_error(3, errno.ENOENT)
+    exc.filename = "C:\\" + "d" * 300
+    typed = extraction._typed_os_error(exc, "m")
+    assert isinstance(typed, ExtractionError)
+    assert "too long" in typed.message
+    # A short path that is really missing stays what it is, and so does a long path
+    # in the extended form, which MAX_PATH does not limit.
+    short = _win_error(3, errno.ENOENT)
+    short.filename = "C:\\short"
+    assert extraction._typed_os_error(short, "m") is short
+    extended = _win_error(3, errno.ENOENT)
+    extended.filename = "\\\\?\\C:\\" + "d" * 300
+    assert extraction._typed_os_error(extended, "m") is extended
+
+
+@pytest.mark.skipif(os.name != "nt", reason="MAX_PATH is a Win32 limit")
+def test_path_past_max_path_is_written_on_windows(tmp_path: Path) -> None:
+    dest = tmp_path / "out"
+    deep = "/".join(["d" * 60] * 5) + "/file.txt"
+    assert len(str(dest / deep)) > 300
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", deep, b"x"), ("sym", deep + ".lnk", "file.txt")])),
+        dest,
+        on_error=OnError.CONTINUE,
+    )
+    result = report.results[0]
+    assert result.status is ExtractionStatus.EXTRACTED, result.error
+    assert result.path is not None
+    assert not str(result.path).startswith("\\\\?\\")
+    assert result.path == dest / deep
+    with open("\\\\?\\" + str(result.path), "rb") as f:
+        assert f.read() == b"x"
+    link = report.results[1]
+    assert link.path is None or not str(link.path).startswith("\\\\?\\")
+
+
+# --- A symlink to a directory gets the directory flag on Windows ---------------------
+
+
+def _record_symlinks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, bool]]:
+    """Take the Windows symlink route on POSIX; record each ``os.symlink`` call as
+    (target, link name, target_is_directory)."""
+    monkeypatch.setattr(extraction, "_DIRECTORY_LINKS", True)
+    calls: list[tuple[str, str, bool]] = []
+    real = os.symlink
+
+    def spy(src: str, dst: str, target_is_directory: bool = False) -> None:
+        calls.append((os.fspath(src), os.path.basename(dst), target_is_directory))
+        real(src, dst)
+
+    monkeypatch.setattr(os, "symlink", spy)
+    return calls
+
+
+def _zip(specs: list[tuple[str, str, bytes | str | None]]) -> bytes:
+    """A ZIP from ``(kind, name, payload)`` as for ``_tar``: ``file``, ``dir`` or
+    ``sym``. A ZIP has a central directory, so the run has its listing up front."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for kind, name, payload in specs:
+            if kind == "dir":
+                info = zipfile.ZipInfo(name + "/")
+                info.external_attr = (stat.S_IFDIR | 0o755) << 16
+                zf.writestr(info, b"")
+                continue
+            info = zipfile.ZipInfo(name)
+            if kind == "sym":
+                assert isinstance(payload, str)
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                zf.writestr(info, payload.encode())
+            else:
+                assert isinstance(payload, bytes)
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                zf.writestr(info, payload)
+    return buf.getvalue()
+
+
+_LINK_BEFORE_DIR: list[tuple[str, str, bytes | str | None]] = [
+    ("sym", "l", "d"),
+    ("dir", "d", None),
+    ("file", "d/f", b"x"),
+]
+
+
+@_POSIX_SYMLINKS
+def test_symlink_to_a_directory_member_listed_later_is_a_directory_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The archive's listing shows ``d`` is a directory before it is written."""
+    calls = _record_symlinks(monkeypatch)
+    dest = tmp_path / "out"
+    report = open_and_extract(io.BytesIO(_zip(_LINK_BEFORE_DIR)), dest)
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    assert calls == [("d", "l", True)]
+
+
+@_POSIX_SYMLINKS
+def test_symlink_to_an_implied_directory_is_a_directory_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``x/f`` shows ``x`` is a directory even without a member for it."""
+    calls = _record_symlinks(monkeypatch)
+    open_and_extract(
+        io.BytesIO(_zip([("sym", "a/l", "../x"), ("file", "x/f", b"1")])),
+        tmp_path / "out",
+    )
+    assert calls == [("../x", "l", True)]
+
+
+@_POSIX_SYMLINKS
+def test_symlink_whose_target_turns_out_a_directory_is_recreated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A streaming pass has no listing: the link is fixed once the run is done."""
+    calls = _record_symlinks(monkeypatch)
+    dest = tmp_path / "out"
+    report = open_and_extract(io.BytesIO(_tar(_LINK_BEFORE_DIR)), dest, streaming=True)
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    assert calls[0] == ("d", "l", False)
+    assert len(calls) == 2
+    assert calls[1][0] == "d" and calls[1][2] is True
+    assert os.readlink(dest / "l") == "d"
+    assert sorted(os.listdir(dest)) == ["d", "l"]
+    assert report.results[0].path == dest / "l"
+
+
+@_POSIX_SYMLINKS
+def test_symlink_to_an_existing_directory_is_a_directory_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _record_symlinks(monkeypatch)
+    open_and_extract(
+        io.BytesIO(_tar([("dir", "sub/d", None), ("sym", "sub/l", "../sub/d")])),
+        tmp_path / "out",
+        streaming=True,
+    )
+    assert calls == [("../sub/d", "l", True)]
+
+
+@_POSIX_SYMLINKS
+@pytest.mark.parametrize("streaming", [False, True])
+def test_file_and_dangling_symlinks_stay_file_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    calls = _record_symlinks(monkeypatch)
+    open_and_extract(
+        io.BytesIO(
+            _tar([("sym", "a", "f"), ("file", "f", b"x"), ("sym", "b", "missing")])
+        ),
+        tmp_path / "out",
+        streaming=streaming,
+    )
+    assert calls == [("f", "a", False), ("missing", "b", False)]
+
+
+@_POSIX_SYMLINKS
+def test_posix_symlinks_take_no_directory_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[object, ...]] = []
+    real = os.symlink
+
+    def spy(*args: object, **kwargs: object) -> None:
+        calls.append((*args, *kwargs.items()))
+        real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "symlink", spy)
+    open_and_extract(io.BytesIO(_tar(_LINK_BEFORE_DIR)), tmp_path / "out")
+    assert len(calls) == 1
+    assert calls[0][0] == "d"
+    assert len(calls[0]) == 2
+
+
+def _can_symlink(tmp_path: Path) -> bool:
+    probe = tmp_path / "probe"
+    try:
+        probe.symlink_to("x")
+    except OSError:
+        return False
+    probe.unlink()
+    return True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows symlink kinds")
+@pytest.mark.parametrize(
+    "build,streaming", [(_zip, False), (_tar, False), (_tar, True)]
+)
+def test_symlink_to_a_later_directory_is_traversable_on_windows(
+    tmp_path: Path,
+    build: Callable[[list[tuple[str, str, bytes | str | None]]], bytes],
+    streaming: bool,
+) -> None:
+    """With a listing (ZIP) the link is made a directory link at once; without one
+    (TAR) it is remade as one when the run ends."""
+    if not _can_symlink(tmp_path):
+        pytest.skip("this process may not create symlinks")
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(build(_LINK_BEFORE_DIR)), dest, streaming=streaming
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    assert (dest / "l").is_dir()
+    assert (dest / "l" / "f").read_bytes() == b"x"
+
+
+# --- An 8.3 short name aliases a file this run wrote ---------------------------------
+
+
+def _alias_after_first(
+    dest: Path, first: str, alias: str
+) -> Callable[[ArchiveMember], ArchiveMember]:
+    """A filter that makes ``alias`` a second name of ``first`` just before ``alias``
+    is written, as an 8.3 short name is on a volume that has them."""
+
+    def make_alias(member: ArchiveMember) -> ArchiveMember:
+        if member.name == alias:
+            os.link(dest / first, dest / alias)
+        return member
+
+    return make_alias
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.ERROR,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_short_name_alias_collides_with_the_member_it_names(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """``LONGFI~1.TXT`` after ``longfilename.txt`` is a collision, not a file that was
+    already there: the second name reaches the file this run just wrote."""
+    dest = tmp_path / "out"
+    first = dest / "longfilename.txt"
+    report = open_and_extract(
+        io.BytesIO(
+            _tar([("file", "longfilename.txt", b"1"), ("file", "LONGFI~1.TXT", b"2")])
+        ),
+        dest,
+        filter=_alias_after_first(dest, "longfilename.txt", "LONGFI~1.TXT"),
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+    one, two = report.results
+    assert two.collided_with == first
+    if overwrite is OverwritePolicy.REPLACE:
+        assert one.status is ExtractionStatus.OVERWRITTEN
+        assert two.status is ExtractionStatus.EXTRACTED
+        assert two.path == first
+        assert first.read_bytes() == b"2"
+    elif overwrite is OverwritePolicy.RENAME:
+        assert one.status is ExtractionStatus.EXTRACTED
+        assert two.status is ExtractionStatus.EXTRACTED
+        assert two.path is not None and two.path.read_bytes() == b"2"
+        assert first.read_bytes() == b"1"
+    else:
+        assert one.status is ExtractionStatus.EXTRACTED
+        assert first.read_bytes() == b"1"
+        assert two.status in (
+            ExtractionStatus.FAILED,
+            ExtractionStatus.NOT_OVERWRITTEN,
+        )
+
+
+def test_hard_link_the_caller_already_had_is_not_a_collision(tmp_path: Path) -> None:
+    """A second name of a file this run did not write stays a pre-existing file."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "mine").write_bytes(b"caller's")
+    os.link(dest / "mine", dest / "alias")
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", "other", b"1"), ("file", "alias", b"2")])),
+        dest,
+        on_error=OnError.CONTINUE,
+    )
+    assert report.results[1].status is ExtractionStatus.FAILED
+    assert report.results[1].collided_with is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="8.3 short names are a Windows feature")
+def test_short_name_alias_on_windows(tmp_path: Path) -> None:
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    (probe / "longfilename.txt").write_bytes(b"")
+    if not (probe / "LONGFI~1.TXT").exists():
+        pytest.skip("this volume does not make 8.3 short names")
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(
+            _tar([("file", "longfilename.txt", b"1"), ("file", "LONGFI~1.TXT", b"2")])
+        ),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    one, two = report.results
+    assert one.status is ExtractionStatus.OVERWRITTEN
+    assert two.status is ExtractionStatus.EXTRACTED
+    assert two.collided_with == dest / "longfilename.txt"
+    assert (dest / "longfilename.txt").read_bytes() == b"2"

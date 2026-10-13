@@ -262,6 +262,18 @@ refuses to create a symlink with `winerror` 1314 (`ERROR_PRIVILEGE_NOT_HELD`) wh
 process lacks the privilege; that SHALL be a typed `ExtractionError` as well, with its own
 message naming the missing privilege.
 
+**Paths past `MAX_PATH`.** Win32 refuses a path of 260 characters or more unless the
+machine enables long paths, and reports it as a missing path. On Windows, extraction SHALL
+pass each path under the destination that is that long to the filesystem in the extended
+form (`\\?\C:\...`, `\\?\UNC\server\share\...`), so a deep member is written as it is
+on POSIX. The extended form SHALL NOT appear in results, errors, diagnostics or CLI
+output: they name the path as the caller would write it. The path-safety checks SHALL
+resolve a long path through the extended form and compare the result without the
+prefix, so a symlink deep in the tree is followed as for a short path. A path that a
+call still takes without the prefix and that fails as missing (`winerror` 3) while being
+at least `MAX_PATH` long SHALL be typed as too long, like `winerror` 206; a component
+longer than the filesystem allows stays the typed error above.
+
 `EINVAL` is deliberately not auto-translated: it is a broad errno that can arise from
 unrelated syscalls during extraction. The Windows codes are matched on `winerror`, not
 on the errno CPython maps them to (`EINVAL`, `ENOENT`).
@@ -1230,6 +1242,9 @@ data as Python `tarfile` may do on symlink-unsupported platforms.
 | SYMLINK target member is excluded by selector/filter and resolved target stays in `dest` | Symlink is created and may dangle; target data is not copied |
 | SYMLINK target appears later or outside the archive but stays in `dest` | Symlink is created as stored; no target materialization |
 | `os.symlink` unsupported raises `OSError`/`NotImplementedError` | `STOP` raises; `CONTINUE` records `FAILED`; no copy fallback |
+| On Windows, a SYMLINK whose target is a directory when the link is created, or that the archive's listing shows is a directory (a directory member, or a name other members are inside) | Created as a directory link (`target_is_directory=True`) |
+| On Windows, a SYMLINK whose target is not known when the link is created (a later member with no listing up front, as in a TAR or a streaming pass) | Created as a file link; at the end of the run, a link still in place whose target is then a directory is remade as a directory link, and a directory link whose target is not a directory is remade as a file link |
+| On POSIX | One kind of link; no flag and no end-of-run pass |
 
 ### Requirement: Live archive-wide decompression ratio for unknown-size streams
 
@@ -1272,7 +1287,12 @@ rules compose with — and never bypass — the non-bypassable path-safety const
 a `casefold(NFC(path))` key per written destination and treat a second member resolving to
 the same key as an existing destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
-directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. The key
+directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. A
+member whose destination holds an entry that no member of this run claimed by key, but that
+is the same file (`st_dev`, `st_ino`) as a file this run claimed, collides with that member
+as a case variant does: on Windows this is an 8.3 short name (`LONGFI~1.TXT` after
+`longfilename.txt`) on a volume that makes them. This does not apply under `TRUSTED`, and
+not on a filesystem that reports inode 0. The key
 and the location are fixed when the earlier member is written, and a collision SHALL be
 resolved at that location, so repointing `s` later does not move it. Such a collision
 SHALL apply `OverwritePolicy` deliberately and record the outcome on both members'
@@ -1362,6 +1382,7 @@ rewritten name then collides and is renamed).
 | Case | `STRICT` / `STANDARD` | `TRUSTED` |
 | --- | --- | --- |
 | `README` and `readme` in one archive | Second is a collision event on all platforms; `OverwritePolicy` applied; `requested_path` recorded | Local OS behavior (both extract on a case-sensitive FS) |
+| `longfilename.txt`, then `LONGFI~1.TXT`, on a Windows volume with 8.3 names | Second is a collision event with the first (same file identity); under `REPLACE` the first is revised to `OVERWRITTEN` | Local OS behavior (the second meets a file already there) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
 | Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful | Written if the OS allows |

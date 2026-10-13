@@ -269,6 +269,22 @@ bytes. The outcome is the same on every platform. ADR
   link-count limit is written as a copy (`_link_refused_here`), counted toward
   `max_extracted_bytes` and the archive-wide `max_ratio` (see
   [Extraction bombs](#extraction-bombs)).
+- On Windows every filesystem call under the destination takes a path of 200 characters
+  or more in the extended `\\?\` form (`internal/long_paths.py`), so a path past
+  `MAX_PATH` is written without `LongPathsEnabled`. The prefix is stripped from what
+  comes back (`os.path.realpath`, `OSError` file names), so results, errors and the
+  path-safety comparisons use the plain path. `resolve_or_raise_on_loop` resolves a
+  long path through the extended form, so a symlink deep in the tree is followed by the
+  checks as it is by the write; without that the checks would fall back to a lexical
+  path there while the write followed the link.
+- On Windows a symlink is created as a directory link when its target is a directory or
+  the archive's listing shows one (`_link_to_directory`); a link whose kind turns out
+  wrong is remade at the end of the run (`_settle_link_kinds`), only when it is still
+  the link this run made. The target and its escape check do not change.
+- A member whose destination holds an entry with no claim of its own, but which is the
+  same file (`st_dev`, `st_ino`) as one this run claimed, collides with that claim
+  (`_alias_claim`): an 8.3 short name on Windows. Under `TRUSTED` it stays a file
+  already there.
 - Bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069) in a name or link
   target are rejected under `STRICT` and `STANDARD` (`_reject_bidi_override`); directional
   marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,
@@ -293,7 +309,8 @@ percent spelling; it can be added without breaking anything.
 `test_unrepresentable_name_oserror_is_translated`, and the `test_bidi_*` tests.
 `tests/test_cross_os_extraction.py` covers the separator rewrite, the Win32 character
 escapes, the further device names, the typed Windows errors, symlink targets on Windows,
-read-only entries and the link-count copy; the re-check after a rewrite is
+read-only entries, the link-count copy, long paths, directory symlinks and 8.3 short
+names; the re-check after a rewrite is
 `::test_rewritten_name_is_checked_where_it_is_written`.
 
 ### Resource use is bounded
