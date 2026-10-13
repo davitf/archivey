@@ -414,38 +414,38 @@ The 1 048 576 default stays (davitf, 2026-10-01), for these reasons:
   and an honest header of similar names compresses well too, so it would refuse real
   archives.
 
-Revisit this if a stricter safety-first configuration mode lands (it could carry a
-lower default), if member records become lazy (removing most of the fixed cost), or if
-callers are found to open untrusted 7z with default limits. ZIP reads its central directory as members are listed (ADR
-[0020](decisions/0020-native-zip-reader.md)) and keeps a small locator per member, so
-nothing is built at open; an end record declaring more entries than `max_members` is
-refused at open, and the walk charges `max_members` in every mode, so an end record
-that understates the count is refused when the walk passes the limit. `max_metadata_bytes` counts
-retained metadata, not a transient decode buffer discarded before any member exists.
-ISO's counts are a superset of the listing's: the extra records of a multi-extent file
-and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are records as
-stored, System Use areas included, not only the text kept. An image right at a cap can
-therefore be refused at open. Below the caps `pycdlib` still builds the whole tree, so
-memory at open stays linear in the records the budget allows: about 0.8 KB per plain
-record measured, so roughly 1 GiB per tree at the default `max_members`. The UDF tree
-`pycdlib` also walks is counted as one more tree, though archivey lists no UDF
-namespace: each File Identifier but the parent entry is a member, and each File
-Identifier and each File Entry, with the extended attributes and allocation descriptors
-it declares, is weighed against `max_metadata_bytes`, the File Entry before `pycdlib`
-parses it. `pycdlib` keeps every tree it walked, so `max_metadata_bytes` is one sum for
-the whole image, every tree together (ruled by davi, 2026-10-10; reasons and the reopen
-condition in `dev-docs/formats/iso.md` §2.2). A budget per tree let an image carrying
-all three trees peak near 2.6 GiB at the limits of the time (`max_members` 1,048,576):
-a PVD tree and a Joliet tree at about 1 GiB each, plus a UDF tree, where a name weighs at least about 220 bytes and
-was measured at about 2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB.
-`max_members` stays per tree, because a Joliet tree repeats every file and one count
-would halve the cap for such an image. At the default `max_members` of 262,144 the
-member cap per tree binds before the byte sum: two trees hold at most 524,288 records,
-about 0.42 GB at 0.8 KB each (an estimate from the per-record figure, not measured at
-this scale), while 64 MiB of minimal 34-byte records would allow about 2 million. The
-byte sum binds first only when `max_members` is raised past about a million per tree. Any UDF bytes
-come out of the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660
-record.
+Revisit this if a stricter safety-first configuration mode lands (it could carry a lower
+default), if member records become lazy (removing most of the fixed cost), or if callers
+are found to open untrusted 7z with default limits. ZIP reads its central directory as
+members are listed (ADR [0020](decisions/0020-native-zip-reader.md)) and keeps a small
+locator per member, so nothing is built at open; an end record declaring more entries
+than `max_members` is refused at open, and the walk charges `max_members` in every mode,
+so an end record that understates the count is refused when the walk passes the limit.
+`max_metadata_bytes` counts retained metadata, not a transient decode buffer discarded
+before any member exists. ISO's counts are a superset of the listing's: the extra
+records of a multi-extent file and the Rock Ridge `rr_moved` scaffolding count as
+members, and the bytes are records as stored, System Use areas included, not only the
+text kept. An image right at a cap can therefore be refused at open. Below the caps
+`pycdlib` still builds the whole tree, so memory at open stays linear in the records the
+budget allows: about 0.8 KB per plain record measured, so roughly 1 GiB per tree at the
+default `max_members`. The UDF tree `pycdlib` also walks is counted as one more tree,
+though archivey lists no UDF namespace: each File Identifier but the parent entry is a
+member, and each File Identifier and each File Entry, with the extended attributes and
+allocation descriptors it declares, is weighed against `max_metadata_bytes`, the File
+Entry before `pycdlib` parses it. `pycdlib` keeps every tree it walked, so
+`max_metadata_bytes` is one sum for the whole image, every tree together (ruled by davi,
+2026-10-10; reasons and the reopen condition in `dev-docs/formats/iso.md` §2.2). A
+budget per tree let an image carrying all three trees peak near 2.6 GiB at the limits of
+the time (`max_members` 1,048,576): a PVD tree and a Joliet tree at about 1 GiB each,
+plus a UDF tree, where a name weighs at least about 220 bytes and was measured at about
+2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB. `max_members` stays
+per tree, because a Joliet tree repeats every file and one count would halve the cap for
+such an image. At the default `max_members` of 262,144 the member cap per tree binds
+before the byte sum: two trees hold at most 524,288 records, about 0.42 GB at 0.8 KB
+each (an estimate from the per-record figure, not measured at this scale), while 64 MiB
+of minimal 34-byte records would allow about 2 million. The byte sum binds first only
+when `max_members` is raised past about a million per tree. Any UDF bytes come out of
+the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660 record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,

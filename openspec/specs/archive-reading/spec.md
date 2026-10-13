@@ -492,10 +492,11 @@ Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
 limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
 at parse/open for nonsensical or hostile headers and are complementary, not a
 substitute. ZIP, 7z, RAR and ISO apply `listing_limits.max_members` at parse
-(`format-zip`, `format-7z`, `format-rar`, `format-iso`); `None` disables that bound. Other formats that
-build an internal member table during `open_archive()` MAY still allocate up
-to their own parser ceilings before spine `ListingLimits` are evaluated on
-materialization (`members()` / extract-prep). Being indexed is not the same as applying `max_members` at parse.
+(`format-zip`, `format-7z`, `format-rar`, `format-iso`); `None` disables that
+bound. Other formats that build an internal member table during `open_archive()`
+MAY still allocate up to their own parser ceilings before spine `ListingLimits`
+are evaluated on materialization (`members()` / extract-prep). Being indexed is
+not the same as applying `max_members` at parse.
 
 **Unguarded by design:** `stream_members()` and `for member in reader` MUST NOT
 enforce `ListingLimits`: they yield every member, however many there are. Their

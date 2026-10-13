@@ -68,15 +68,17 @@ method id to the codec's default backend.
 Member reads SHALL verify `member.hashes["crc32"]` through the shared
 `VerifyingStream` when a CRC is surfaced. A corrupt member body SHALL raise
 `CorruptionError` (or `TruncatedError` when the payload is cut short) via the
-shared translation. Traditional ZipCrypto and WinZip AES (method 99) members SHALL
-decrypt natively (see below) and then feed the codec layer. A ZipCrypto member SHALL seek under `seekable_members=True`:
-a backward seek restarts decryption from the member's start, a forward seek decrypts
-what it skips, and `AUTO` accelerators stay off over the decrypt stage. A WinZip AES
-member SHALL seek too: CTR restarts at the target's block (counter `1 + offset // 16`).
-A seek SHALL NOT give up the HMAC, whether the caller or an accelerator made it: the
-HMAC covers the ciphertext, so the read that returns the member's last byte SHALL
-complete it by reading, without decrypting, the ciphertext the seeks skipped, and raise
-`CorruptionError` on a mismatch. A read that stops short of the end gives no verdict.
+shared translation. Traditional ZipCrypto and WinZip AES (method 99) members
+SHALL decrypt natively (see below) and then feed the codec layer. A ZipCrypto
+member SHALL seek under `seekable_members=True`: a backward seek restarts
+decryption from the member's start, a forward seek decrypts what it skips, and
+`AUTO` accelerators stay off over the decrypt stage. A WinZip AES member SHALL
+seek too: CTR restarts at the target's block (counter `1 + offset // 16`). A
+seek SHALL NOT give up the HMAC, whether the caller or an accelerator made it:
+the HMAC covers the ciphertext, so the read that returns the member's last byte
+SHALL complete it by reading, without decrypting, the ciphertext the seeks
+skipped, and raise `CorruptionError` on a mismatch. A read that stops short of
+the end gives no verdict.
 
 Codec settings 7-Zip writes or names but this reader cannot decode SHALL raise
 `UnsupportedFeatureError`, not `CorruptionError`. An LZMA (method 14) member whose
@@ -297,8 +299,9 @@ raises `TruncatedError`; every other split/spanned signal raises
 ### Requirement: Check the ZIP end record against the central directory
 
 The central directory is walked entry by entry until the walk has consumed the
-directory size the end record gives. The ZIP reader SHALL report, as `ARCHIVE_EOF_MARKER_MISSING` with `format="zip"`, emitted after the
-listing's last member so the listing completes, each of:
+directory size the end record gives. The ZIP reader SHALL report, as
+`ARCHIVE_EOF_MARKER_MISSING` with `format="zip"`, emitted after the listing's
+last member so the listing completes, each of:
 
 - the entry count the end record declares (the ZIP64 record's when there is one)
   differs from the number of entries the central directory holds

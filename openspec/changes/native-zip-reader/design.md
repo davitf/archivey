@@ -544,15 +544,15 @@ One PR each, in order; every PR goes through the review label.
    too) stays out until a real archive from a current Mac settles it. The diagnostic may
    need a new code, which goes to the maintainer. Format-zip spec, handbook §3 and §5,
    `docs/formats.md`, and the `IDEAS.md` item, which this stage closes.
-7. **Methods 1 (Shrink) and 6 (Implode). Deferred until after 0.2.0** (the
-   maintainer, 2026-10-13): the decoders are small, but no current writer produces
-   these methods, so fixtures mean old archives or a test-only encoder, and the
-   algorithm names are new public values. Until then such a member lists and its open
-   raises `UnsupportedFeatureError`. The plan when it is picked up: two small
-   pure-Python decoders under `internal/streams/codecs/`, registered with the codec
-   layer like the others (DR-20: no native code). Only DOS-era archives use them, so speed does not matter. They need
-   `CompressionAlgorithm` members, which are public names and go to the maintainer.
-   Format-zip spec, `docs/formats.md`, handbook §2.3.
+7. **Methods 1 (Shrink) and 6 (Implode). Deferred until after 0.2.0** (the maintainer,
+   2026-10-13): the decoders are small, but no current writer produces these methods, so
+   fixtures mean old archives or a test-only encoder, and the algorithm names are new
+   public values. Until then such a member lists and its open raises
+   `UnsupportedFeatureError`. The plan when it is picked up: two small pure-Python
+   decoders under `internal/streams/codecs/`, registered with the codec layer like the
+   others (DR-20: no native code). Only DOS-era archives use them, so speed does not
+   matter. They need `CompressionAlgorithm` members, which are public names and go to
+   the maintainer. Format-zip spec, `docs/formats.md`, handbook §2.3.
 
 Stage 6 is independent of 3 to 5 and can run beside them; stage 7 is deferred.
 
