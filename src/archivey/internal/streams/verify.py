@@ -162,7 +162,8 @@ def _probe_past_declared(inner: BinaryIO) -> bytes:
     would read no source byte (``test_archive_closed_before_the_overrun_probe``). Every
     declared byte has been delivered, so the over-run verdict is what is given up. On a
     read the digests, checked after this probe, still judge the content, unless a
-    read skipped bytes past the frontier and forfeited them; then nothing does.
+    read skipped bytes past the hashing frontier and paused them; then a seek back to
+    the frontier and a read on to the end is what judges it.
     """
     try:
         return inner.read(1)
@@ -256,9 +257,10 @@ class MemberVerifier:
     def _rearm(self) -> None:
         """Put every check back to its state before the first read.
 
-        Runs on a seek to position 0 (``note_seek``): the hashers start again and the
-        frontier, verified, abandoned and forfeited state is cleared, so a read from
-        the start to the end after a rewind is verified as a first one is.
+        Runs on a seek to position 0 (``note_seek``): the hashers start again, both
+        frontiers go back to 0, and the concluded, digest-checked and abandoned state
+        is cleared, so a read from the start to the end after a rewind is verified as
+        a first one is.
         """
         for key, factory in self._hasher_factories.items():
             self._hashers[key] = factory()
@@ -324,6 +326,9 @@ class MemberVerifier:
         if end is not None and self._hashed_to >= end:
             # Every byte is hashed; only the verdict is left.
             return True
+        # At the declared size before concluding: the conclusion's gap read starts at
+        # the read frontier, so it reaches the hashers only while the hashing frontier
+        # still sits there, i.e. no read has skipped bytes yet (``_hash_span``).
         return (
             not self._concluded
             and self._expected_size is not None
@@ -746,7 +751,7 @@ class MemberVerifier:
         """Update the position after a successful (or raised but moved) inner seek.
 
         A seek to position 0 re-arms every check (``_rearm``): the hashers start
-        again and the furthest-read and verified state is cleared, so a read from 0
+        again and the frontiers, concluded and digest-checked state are cleared, so a read from 0
         to the end is verified as a first read is, digests included. Any other seek
         only moves the position: the hashers cover ``[0, frontier)``, a read from at
         or behind the frontier hashes only what lies past it, and a read that starts

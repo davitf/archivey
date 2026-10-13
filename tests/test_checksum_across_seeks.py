@@ -90,11 +90,12 @@ def test_stored_member_checksum_survives_a_backward_seek(tmp_path: Path) -> None
         _read_after(bad, _MOVES["backward"])
 
 
-def test_stored_member_forward_seek_jumps_and_loses_the_checksum(
+def test_stored_member_forward_seek_jumps_and_pauses_the_checksum(
     tmp_path: Path,
 ) -> None:
     # A stored member seeks straight to the target; reading on from there skips bytes
-    # nothing decoded, so the CRC cannot be checked. The digest is reported lost.
+    # nothing decoded, so the CRC cannot be checked from there. The digest is reported
+    # not intact until a seek back to the frontier.
     bad = _zip_with_crc(tmp_path, zipfile.ZIP_STORED, bad_crc=True)
     with open_archive(bad, seekable_members=True) as reader:
         with reader.open("m.txt") as stream:

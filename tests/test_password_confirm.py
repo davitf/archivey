@@ -525,7 +525,7 @@ def test_watch_readinto_counts_as_a_read() -> None:
     assert calls.count == 1
 
 
-def test_a_seek_forfeits_the_digest_when_the_inner_drops_it() -> None:
+def test_a_skip_pauses_the_digest_when_the_inner_drops_it() -> None:
     # A fused verifier stops hashing on a read that skips bytes past its frontier, so
     # reading on to the end after a skip does not reach the digest.
     watch, calls = _watch(b"0123456789")

@@ -1715,8 +1715,8 @@ def test_verify_exact_available_read_then_close_is_quiet() -> None:
     stream.close()  # quiet — never asked past available
 
 
-def test_verify_seek_forfeits_checksum_keeps_length() -> None:
-    """A jump past the frontier disables CRC but still raises TruncatedError when short.
+def test_verify_seek_pauses_checksum_keeps_length() -> None:
+    """A jump past the frontier pauses the CRC but still raises TruncatedError when short.
 
     ``BytesIO`` has no ``nearest_resume_offset``, so the seek is a jump, not a decode.
     """
@@ -1828,8 +1828,8 @@ def test_verify_forward_seek_that_decodes_keeps_checksum(size: int | None) -> No
     stream.close()
 
 
-def test_verify_forward_seek_that_jumps_forfeits_checksum() -> None:
-    """A seek the inner can jump skips bytes the hashers never see: the CRC is lost
+def test_verify_forward_seek_that_jumps_pauses_checksum() -> None:
+    """A seek the inner can jump skips bytes the hashers never see: the CRC is paused
     once a read starts past the frontier, and a seek back before reading keeps it."""
     stream = VerifyingStream(
         _JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=len(CONTENT)
@@ -1885,6 +1885,25 @@ def test_verify_seek_back_after_a_jump_withholds_the_reaching_chunk() -> None:
     assert stream.read(100) == CONTENT[10:110]
     with pytest.raises(CorruptionError):
         stream.read(len(CONTENT))
+    stream.close()
+
+
+def test_verify_seek_to_declared_size_after_a_jump_does_not_claim_the_checksum() -> (
+    None
+):
+    """Once a read skipped bytes, the conclusion's gap read starts past the hashing
+    frontier and cannot complete the hash, so a seek to the declared size does not
+    claim the digest is intact, and the CRC is not checked there."""
+    stream = VerifyingStream(
+        _JumpingBytesIO(CONTENT), _BAD_CRC, expected_size=len(CONTENT)
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(20)
+    assert stream.read(30) == CONTENT[20:50]
+    stream.seek(len(CONTENT))
+    assert stream._digest_intact() is False
+    assert stream.read(1) == b""
+    assert stream._digest_intact() is False
     stream.close()
 
 
