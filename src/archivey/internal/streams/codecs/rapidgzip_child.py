@@ -623,11 +623,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             )
         else:
             # Not a crash on the data: something outside the decoder ended the child.
-            outside = outside_death(
+            cls, message = outside_death(
                 returncode,
                 f"the rapidgzip decoder process for this {label} stream ended ({how})",
             )
-            cls, message = type(outside), str(outside)
         self._death = (cls, message)
         self._crashed = caused_by_source is None and (
             is_crash(returncode) or returncode == MEMORY_LIMIT_EXIT

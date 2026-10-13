@@ -110,15 +110,22 @@ def test_rapidgzip_macos_deflate_corruption_messages_are_translated(
 
 
 @pytest.mark.parametrize(
-    "message", ["std::exception", "std::exception: x", "Unknown exception"]
+    "message",
+    [
+        "std::exception",
+        "std::exception: x",
+        "Unknown exception",
+        "Unknown exception: x",
+    ],
 )
 def test_rapidgzip_catch_all_translates_the_same_for_deflate_and_bzip2(
     message: str,
 ) -> None:
-    # rapidgzip's C++ catch-all can carry detail after "std::exception". The DEFLATE
+    # rapidgzip's C++ catch-all can carry detail after its fixed text. The DEFLATE
     # family and bzip2 translators share the arm, so both map it to CorruptionError.
-    # The RuntimeError is not marked as reported by the child, so only the catch-all
-    # arm can map it.
+    # The test builds an unmarked RuntimeError by hand because the child cannot produce
+    # one: a RuntimeError it reports is marked, and the reported_by_child arm gives it
+    # the same verdict. Unmarked, only the catch-all arm can map it.
     from archivey.internal.streams.codecs import Bzip2Codec, GzipCodec
 
     exc = RuntimeError(message)

@@ -116,10 +116,11 @@ def _start_error(reason: str) -> PpmdChildStartError:
     return PpmdChildStartError(f"cannot start the PPMd decoder process: {reason}")
 
 
-def child_decoding_available() -> bool:
-    """Whether a Python child process can be started to run the worker script (see
-    :func:`~archivey.internal.streams.child_process.unavailable_reason`)."""
-    return unavailable_reason(_WORKER, "PPMd") is None
+def ppmd_child_unavailable_reason() -> str | None:
+    """Why no Python child process can be started to run the worker script, or ``None``
+    when one can (see :func:`~archivey.internal.streams.child_process.unavailable_reason`).
+    """
+    return unavailable_reason(_WORKER, "PPMd")
 
 
 def _read_exact(stream: IO[bytes], size: int) -> bytes:
@@ -267,7 +268,8 @@ class PpmdChildDecoder:
                 # A crash, left for ``PpmdCodec.translate`` to call corruption.
                 raise
             # Not a crash on the data: something outside the decoder ended the child.
-            raise outside_death(exc.returncode, str(exc)) from exc
+            cls, message = outside_death(exc.returncode, str(exc))
+            raise cls(message) from exc
 
     def close(self) -> None:
         """End the child and wait for it. Idempotent; never raises."""

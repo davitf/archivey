@@ -169,23 +169,33 @@ def is_system_kill(returncode: int | None) -> bool:
     return SIGKILL is not None and returncode == -SIGKILL
 
 
-def outside_death(returncode: int | None, what: str) -> ArchiveyError:
-    """The error for a decoder child that ended without crashing (see :func:`is_crash`).
+def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError], str]:
+    """The error class and unescaped message for a decoder child that ended without
+    crashing (see :func:`is_crash`). The caller builds the exception, so its message is
+    escaped once, there.
 
     ``what`` says which process ended and how, such as ``describe_exit``'s text. The
     end came from outside the decoder, so it is no verdict on the data:
     ``ResourceLimitError`` for SIGKILL (most often the out-of-memory killer), and
     ``ReadError`` for any other end.
+
+    ``signal_exit_error`` in ``archivey.internal.external.cli`` classifies the end of
+    ``unrar`` and ``unar`` the same way for SIGKILL, with "program" wording. It differs
+    on crash signals: there a crash is no verdict either, because ``unar`` crashes on
+    valid archives, while a decoder child's crash here is left to the caller to call
+    corruption. A change to the SIGKILL classification belongs in both places.
     """
     if is_system_kill(returncode):
-        return ResourceLimitError(
+        return (
+            ResourceLimitError,
             f"{what}. SIGKILL comes from outside the decoder, most often the "
             "system's out-of-memory killer, so the data may be valid; read it "
-            "again with more memory available."
+            "again with more memory available.",
         )
-    return ReadError(
+    return (
+        ReadError,
         f"{what}. The decoder did not crash: something outside it ended the "
-        "process, so the data may be valid; try reading it again."
+        "process, so the data may be valid; try reading it again.",
     )
 
 

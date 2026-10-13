@@ -351,12 +351,17 @@ def _translate_rapidgzip_shared(
     if isinstance(exc, io.UnsupportedOperation) and ("seek" in text or "tell" in text):
         return StreamNotSeekableError(f"{engine} does not support non-seekable streams")
     if isinstance(exc, RuntimeError) and (
-        "std::exception" in text or text == "Unknown exception"
+        "std::exception" in text or "Unknown exception" in text
     ):
         # Opaque catch-alls rapidgzip raises when a C++ fault has no typed Python
-        # mapping. On Windows a near-end truncation surfaces as a bare
-        # RuntimeError("Unknown exception") (the "Unexpected end of file …" detail only
-        # reaches stderr), so it is translated rather than leaked as a RuntimeError.
+        # mapping. Both texts are matched as substrings, because the catch-all can carry
+        # detail after its fixed text. On Windows a near-end truncation surfaces as a
+        # bare RuntimeError("Unknown exception") (the "Unexpected end of file …" detail
+        # only reaches stderr).
+        # This arm is a backstop for an unmarked RuntimeError. The decoder runs in a
+        # child process, and a RuntimeError the child reports is marked
+        # (reported_by_child), so without this arm it lands on each translator's
+        # reported_by_child arm, which gives the same CorruptionError and message.
         # Known cross-platform wrinkle: because that detail is lost, a truncation caught here
         # becomes CorruptionError, whereas the same truncated input on Linux keeps its detail
         # and maps to TruncatedError in the DEFLATE translator (or is caught by the ISIZE
