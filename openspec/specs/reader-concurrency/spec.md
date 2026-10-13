@@ -226,37 +226,38 @@ few and do not depend on the archive: another reader-wide operation that is not 
 `stream_members()` pass (`extract_all()`), and every overlap on a reader opened
 without `concurrent_members=True`.
 
-**Listing first.** The admitted calls answer from the published member list, and a
-pass that lists as it goes cannot share its walk with them. So a root
-`stream_members()` pass on a `CONCURRENT` random-access reader SHALL publish the
-member list before its first yield, as ZIP, ISO, non-solid RAR, directory and
-single-file passes always do. On TAR, 7z and solid RAR this costs one walk of the
-headers before the data (on a compressed TAR a second decode of the stream), plus
-reading data-stored link targets, on the first pass only. On a compressed TAR the
-rewind from the end of the listing to the first member's data emits
-`STREAM_REWIND_REDECOMPRESSES`, as `members()` followed by `read()` already does, so
-under `DiagnosticPolicy.PEDANTIC` that first pass raises `DiagnosticRaisedError`. A child pass that
-`extract_all()` drives keeps its own listing. This listing enforces `ListingLimits`,
-as ZIP, 7z, RAR and ISO already do at open: an archive over a limit raises
-`ResourceLimitError` before the first member. An unguarded pass that lists as it goes
-bounds its memory by discarding the listing past the caps; a listing kept for others
-to share cannot do that, so it refuses instead.
+**One shared walk.** Every pass and listing call reads the reader's one member walk,
+each at its own position: a member already walked is served from the list, and the
+next one is read from the archive, under the walk lock, when the first caller reaches
+it. So a pass that lists as it goes (TAR, and the link finalization 7z and solid RAR
+do at the end of a pass) shares its walk with the calls beside it, and a pass nobody
+walks ahead of costs what it costs on a default reader. A call that needs more of the
+list than the pass has reached (`members()`, or `get()` of a name not yet walked)
+walks ahead and pays that cost then: on a compressed TAR, the pass's later reads seek
+the decoder back and emit `STREAM_REWIND_REDECOMPRESSES`, as `members()` followed by
+`read()` does on a default reader. A TAR pass reads the member the walk is at through
+the walk; when another caller moves the walk on, that stream SHALL continue from a
+view of its own, with the same bytes. Link targets are resolved once: by the pass at
+its end, or by a `members()` call beside it, whichever comes first, through the
+materialization election. `ListingLimits` keep the rule every pass has: the pass is
+unguarded and stops keeping the listing past the caps. A `members()` call beside it
+raises `ResourceLimitError` one member past the cap without discarding the walk the
+pass is on; after the pass has discarded the listing, a second pass behind it raises
+the same error.
 
 **Independence.** Each admitted call or pass opens its own streams, as concurrent
 random opens do; it SHALL NOT move another pass's position or read through another
 pass's decoder (a 7z pass offers its folder decoder for a link's bytes only to the
 thread that ran the pass step). Streams from different passes and random opens read
 correct bytes when interleaved. On a compressed TAR they share the one decoder under
-the handle lock, so interleaving costs re-decoding, not correctness. Sharing one
-underlying pass among several iterators is not provided: each pass decodes on its
-own.
+the handle lock, so interleaving costs re-decoding, not correctness. The walk is
+shared; member data is not: each pass decodes the data it reads on its own.
 
 **Ownership.** The state machine keeps one root pass and the `stream_members()`
 passes beside it; when the root ends, one of those takes its place, so an
-`extract_all()` stays refused until the last pass ends. Admitting the overlap rests on
-listing first: no admitted call or pass can meet a pass that is still walking the
-archive or finalizing its links (which reads member data on 7z and RAR). A call that
-arrives on another thread while the pass is listing waits in the materialization
+`extract_all()` stays refused until the last pass ends. A call that arrives on another
+thread while a pass is reading the next member's headers waits for the walk lock, and
+one that arrives while another call publishes the list waits in the materialization
 election, as concurrent first-touch callers do, rather than raising.
 
 **Close.** `close()` with suspended passes and in-flight workers waits for the
@@ -269,8 +270,10 @@ suspended pass is wound down, each once; several wind-down failures surface as o
 
 | Case | Expected |
 | --- | --- |
-| `CONCURRENT` TAR over `ListingLimits` | `stream_members()` → `ResourceLimitError` before the first member; memory bounded by the caps |
-| Another thread calls `read()` while a `CONCURRENT` pass is still listing | Waits for the listing, then reads; no `ArchiveyUsageError` |
+| `CONCURRENT` TAR over `ListingLimits`, `members()` in the loop | `members()` → `ResourceLimitError`; the pass yields every member; memory bounded by the caps |
+| Another thread calls `read()` while a `CONCURRENT` pass is reading a header | Waits for the walk, then reads; no `ArchiveyUsageError` |
+| `members()` while a TAR pass stream is half read | The stream's remaining bytes are correct |
+| `CONCURRENT` pass over a `.tar.gz` with no other caller | Reads the archive once; no `STREAM_REWIND_REDECOMPRESSES` |
 | `CONCURRENT`, any format, loop body calls `open()`/`read()`/`get()`/`members()`/iteration, first pass, no prior `members()` | Correct answers and bytes; pass unaffected |
 | Same from another thread while the pass is suspended or reading | Same |
 | Random stream held open, read interleaved with the pass's streams | Both correct |

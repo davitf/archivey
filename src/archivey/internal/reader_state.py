@@ -243,15 +243,13 @@ class ReaderState:
     def _pass_admits_overlap_locked(self, pass_name: str) -> bool:
         """Whether a ``stream_members()`` pass may overlap workers and other such passes.
 
-        Only on a ``CONCURRENT`` reader, whose root ``stream_members()`` pass lists the
-        archive through the materialization election before its first yield
-        (``BaseArchiveReader._iter_stream_members``). So the pass never walks the
-        archive while a worker or another pass runs: a worker or pass that arrives
-        while the list is being built waits in the election, as concurrent first-touch
-        callers do, and every one of them then answers from the published list and
-        reads through streams of its own. A pass that lists as it goes (a
-        random-access TAR, a 7z or solid RAR that finalizes its links at the end)
-        would not allow this, which is why only the ``CONCURRENT`` pass lists first.
+        Only on a ``CONCURRENT`` reader. The overlapping calls and passes share the
+        reader's one member walk, each at its own position, under the walk lock
+        (``BaseArchiveReader._walk_lock``); link finalization goes through the
+        materialization election, so whichever of a pass's end or a ``members()``
+        call comes first publishes the list once. A TAR pass stream that reads
+        through the walk moves to a view of its own before the walk moves on for
+        another caller. So none of them can corrupt another's walk or stream.
         Other reader-wide passes (``extract_all()``, a default reader's listing)
         never overlap anything.
         """

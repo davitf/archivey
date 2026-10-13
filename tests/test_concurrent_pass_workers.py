@@ -1,9 +1,9 @@
 """Random-access calls and other passes beside a ``stream_members()`` pass.
 
-On a ``CONCURRENT`` reader a pass lists the archive before its first yield, so
-``open()``, ``read()``, ``get()``, ``members()``, iteration and further
-``stream_members()`` passes work beside it on every format, from the loop body and
-from other threads. On a reader opened without ``concurrent_members=True`` they still
+On a ``CONCURRENT`` reader every pass and listing call shares the reader's one member
+walk, each at its own position, so ``open()``, ``read()``, ``get()``, ``members()``,
+iteration and further ``stream_members()`` passes work beside a pass on every format,
+from the loop body and from other threads. On a reader opened without ``concurrent_members=True`` they still
 raise ``ArchiveyUsageError``, as ``extract_all()`` beside a pass does everywhere. The
 bookkeeping itself is unit-tested at the bottom.
 """
@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, ArchiveyUsageError, open_archive
+from archivey.diagnostics import DiagnosticCode
 from archivey.internal.reader_state import LifecycleState, ReaderState
 from archivey.reader import ArchiveReader
 from archivey.types import MemberStreams
@@ -105,7 +106,7 @@ LISTED_UP_FRONT = [
     ),
 ]
 
-# Formats whose pass lists as it goes, unless the reader is CONCURRENT.
+# Formats whose pass lists as it goes.
 LISTED_BY_THE_PASS = [
     pytest.param(_tar, id="tar"),
     pytest.param(_tgz, id="tar.gz"),
@@ -217,10 +218,10 @@ def test_random_reads_interleaved_with_the_pass_stream(
 def test_first_pass_needs_no_members_call(
     tmp_path: Path, make: Callable[[Path], Path]
 ) -> None:
-    """A CONCURRENT pass lists before its first yield on every format.
+    """The calls work on a first pass too, before anything has listed the archive.
 
-    TAR, 7z and solid RAR would otherwise list as the pass goes, and the calls in the
-    loop would raise only on a first pass over them.
+    TAR, 7z and solid RAR list as the pass goes; a call that needs more of the list
+    than the pass has reached walks ahead of it.
     """
     path = make(tmp_path)
     expected = _expected(path)
@@ -492,7 +493,7 @@ def test_ending_the_first_pass_hands_the_reader_to_the_one_beside_it() -> None:
 def test_call_during_the_pass_listing_waits_for_it(
     tmp_path: Path, make: Callable[[Path], Path]
 ) -> None:
-    """A read on another thread while the pass is still listing waits, not raises."""
+    """A read on another thread while the pass is pulling a member waits for it."""
     path = make(tmp_path)
     expected = _expected(path)
     reader = open_archive(path, concurrent_members=True)
@@ -516,12 +517,9 @@ def test_call_during_the_pass_listing_waits_for_it(
     got: list[object] = []
     reader_thread = threading.Thread(target=lambda: got.append(reader.read("c.txt")))
     reader_thread.start()
-    cv = reader._state._materialization_cv
-    for _ in range(1000):
-        if cv._waiters:  # type: ignore[attr-defined]
-            break
-        threading.Event().wait(0.005)
-    assert cv._waiters  # type: ignore[attr-defined]
+    reader_thread.join(0.2)
+    assert reader_thread.is_alive()
+    assert not got
     release.set()
     pass_thread.join(10)
     reader_thread.join(10)
@@ -529,3 +527,88 @@ def test_call_during_the_pass_listing_waits_for_it(
     assert first
     passes.close()
     reader.close()
+
+
+def _big_tar(tmp_path: Path, mode: str, suffix: str) -> tuple[Path, dict[str, bytes]]:
+    """Members larger than the walk's read-ahead, so a pass stream is mid-member."""
+    files = {
+        f"m{i}.bin": bytes((i * 7 + j) % 251 for j in range(300_000)) for i in range(4)
+    }
+    path = tmp_path / f"big{suffix}"
+    with tarfile.open(path, mode) as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return path, files
+
+
+_TAR_MODES = [
+    pytest.param("w", ".tar", id="tar"),
+    pytest.param("w:gz", ".tar.gz", id="tar.gz"),
+]
+
+
+@pytest.mark.parametrize(("mode", "suffix"), _TAR_MODES)
+@pytest.mark.parametrize("same_thread", [True, False], ids=["loop-body", "thread"])
+def test_listing_ahead_of_a_tar_pass_keeps_its_open_stream(
+    tmp_path: Path, mode: str, suffix: str, same_thread: bool
+) -> None:
+    """``members()`` walks past the member a pass is half way through reading.
+
+    The pass's stream reads through the walk until then, and from a view of its own
+    after, so its bytes are the member's either way.
+    """
+    path, files = _big_tar(tmp_path, mode, suffix)
+    passed: dict[str, bytes] = {}
+    with open_archive(path, concurrent_members=True) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            head = stream.read(1000)
+            if member.name == "m1.bin":
+                names = (
+                    [m.name for m in reader.members()]
+                    if same_thread
+                    else [m.name for m in _in_thread(reader.members)]  # type: ignore[attr-defined]
+                )
+                assert names == list(files)
+            passed[member.name] = head + stream.read()
+    assert passed == files
+
+
+class _CountingSource(io.BytesIO):
+    """An in-memory archive that counts the bytes read from it."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.bytes_read = 0
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        data = super().read(size)
+        self.bytes_read += len(data)
+        return data
+
+    def readinto(self, buffer, /) -> int:  # type: ignore[no-untyped-def, override]
+        n = super().readinto(buffer)
+        self.bytes_read += n
+        return n
+
+
+@pytest.mark.parametrize(("mode", "suffix"), _TAR_MODES)
+def test_tar_pass_alone_reads_the_archive_once(
+    tmp_path: Path, mode: str, suffix: str
+) -> None:
+    """A CONCURRENT pass nobody walks ahead of reads the archive once, as a default
+    reader's pass does: its streams read through the walk."""
+    path, files = _big_tar(tmp_path, mode, suffix)
+    size = path.stat().st_size
+    for concurrent in (False, True):
+        source = _CountingSource(path.read_bytes())
+        with open_archive(source, concurrent_members=concurrent) as reader:
+            got = {m.name: s.read() for m, s in reader.stream_members() if s}
+            rewinds = reader.diagnostics.counts.get(
+                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES, 0
+            )
+        assert got == files
+        assert source.bytes_read <= size + 64 * 1024, (concurrent, source.bytes_read)
+        assert rewinds == 0

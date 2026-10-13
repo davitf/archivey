@@ -315,10 +315,9 @@ archive declares.
   member, except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing. Their memory
   is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
   reader, and TAR in both modes) counts members as usual and stops keeping them once
-  the totals cross a cap, in `base_reader.py` `_discard_listing`. A `stream_members()`
-  pass on a `CONCURRENT` reader is the exception: it lists before its first member so
-  that random access and other passes can run beside it, and that listing enforces the
-  caps, raising `ResourceLimitError` like `members()`. The TAR walker keeps
+  the totals cross a cap, in `base_reader.py` `_discard_listing`. On a `CONCURRENT`
+  reader a `members()` call beside such a pass raises `ResourceLimitError` one member
+  past the cap without discarding the walk the pass is on (`_drain_walk`). The TAR walker keeps
   nothing behind the member list, so nothing else is held. After the discard, the
   listing calls raise the same `ResourceLimitError` as `members()`. `extract_all()`
   enforces the caps in both modes, because it resolves hard links against the members
@@ -990,8 +989,10 @@ materialization, concurrent `open()` and independent use of different member str
 data-race-free without the GIL. Otherwise a second overlapping open raises
 `ArchiveyUsageError`, so accidental sharing fails fast. On a `CONCURRENT` reader,
 random-access calls and further `stream_members()` passes also run beside a
-`stream_members()` pass: the pass lists the archive through the materialization
-election before its first member, so none of them meets a walk in progress. Extraction
+`stream_members()` pass: they share the reader's one member walk, each at its own
+position, and every pull, cursor step and link finalization holds the walk lock
+(`base_reader.py` `_walk_lock`). A TAR pass stream reading through the walk moves to a
+view of its own before the walk moves on for another caller (`_WalkHandoffStream`). Extraction
 and close stay single-owner, as does everything on a reader without `CONCURRENT`. Stream leases defer backend teardown
 until the last stream closes, because an accelerator must close before it is finalized
 ([`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)

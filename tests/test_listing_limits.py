@@ -597,12 +597,14 @@ def test_member_that_crosses_the_cap_still_resolves_its_link(
     assert link.link_target_member is yielded[0]
 
 
-def test_concurrent_pass_refuses_an_archive_past_the_caps(tmp_path: Path) -> None:
-    """A CONCURRENT pass lists before its first member, under the caps.
+def test_concurrent_pass_past_the_caps_goes_on_while_listing_calls_refuse(
+    tmp_path: Path,
+) -> None:
+    """A CONCURRENT pass is unguarded, as any pass is: past the caps it keeps
+    yielding and discards its listing, and ``members()`` beside it refuses.
 
-    The listing is kept for random access and other passes beside the pass, so it
-    cannot be discarded as an unguarded pass's is: past the caps it refuses, as ZIP's
-    parse does at open, and keeps no more than the caps.
+    The refusal does not discard the walk the pass is on, and the pass keeps no more
+    than the caps.
     """
     count = 4_000
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", count)
@@ -611,8 +613,13 @@ def test_concurrent_pass_refuses_an_archive_past_the_caps(tmp_path: Path) -> Non
 
     def run_pass() -> None:
         with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
-            with pytest.raises(ResourceLimitError, match="max_members"):
-                next(reader.stream_members())
+            seen = 0
+            for _member, _stream in reader.stream_members():
+                seen += 1
+                if seen == 10:
+                    with pytest.raises(ResourceLimitError, match="max_members"):
+                        reader.members()
+            assert seen == count
             with pytest.raises(ResourceLimitError, match="max_members"):
                 reader.members()
             retained.append(tracemalloc.get_traced_memory()[0])

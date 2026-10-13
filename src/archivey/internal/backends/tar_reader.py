@@ -113,6 +113,7 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
     ReadAheadStream,
+    ReadOnlyIOStream,
     SharedView,
     SparseStream,
     check_read_size,
@@ -396,6 +397,58 @@ class _MemberDataView(DelegatingStream):
         return ask_resume_offset(self._inner, target)
 
 
+class _WalkHandoffStream(ReadOnlyIOStream):
+    """A pass's member data, read through the walk until the walk moves on.
+
+    The walk's next pull calls :meth:`detach` under the walk lock. From then on the
+    stream reads a view of its own from where it stopped (on a compressed tar, a
+    decoder seek back), so the walk can move on for another caller while the pass is
+    still reading this member. A stream detached after its last read builds no view.
+    """
+
+    def __init__(self, reader: TarReader, span: TarSpan, data: BinaryIO) -> None:
+        self._data = data
+        self._view: BinaryIO | None = None
+        self._reader = reader
+        self._span = span
+        self._detached_at: int | None = None
+        self._pos = 0
+        super().__init__()
+
+    def tell(self) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._pos
+
+    def detach(self) -> None:
+        """Stop reading through the walk. Called under the walk lock."""
+        if self._detached_at is None and not self.closed:
+            self._detached_at = self._pos
+
+    def read(self, n: int = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("read from a closed TAR member stream")
+        data: bytes | None = None
+        if self._detached_at is None:
+            with self._reader._walk_lock:
+                if self._detached_at is None:
+                    data = self._data.read(n)
+        if data is None:
+            if self._view is None:
+                self._view = self._reader._independent_data(
+                    self._span, self._detached_at or 0
+                )
+            data = self._view.read(n)
+        self._pos += len(data)
+        return data
+
+    def close(self) -> None:
+        if self._view is not None:
+            self._view.close()
+        self._data.close()
+        super().close()
+
+
 class TarReader(BaseArchiveReader):
     """Reads a TAR archive (plain or compressed) with :class:`TarWalker`.
 
@@ -442,6 +495,9 @@ class TarReader(BaseArchiveReader):
         # _pull_member). True until a pull says otherwise: the first header is parsed
         # at open, where only the whole cap can bind anyway.
         self._listing_enforced = True
+        # The one pass stream reading member data through the walk, if any; the walk
+        # detaches it before its next pull (see _pull_member).
+        self._walk_stream: _WalkHandoffStream | None = None
         # Streaming only: the buffer in front of the codec stream or the source, built
         # by this reader, so closed by it. Random access keeps each walk's view
         # (``_walker_view``) and each compressed member's view instead, so a reader
@@ -663,9 +719,21 @@ class TarReader(BaseArchiveReader):
 
     def _pull_member(self, *, enforce: bool) -> ArchiveMember | None:
         """Pull as the base does, noting whether it enforces the listing limits, which
-        sets the budget for the next member's headers (:meth:`_header_budget`)."""
-        self._listing_enforced = enforce
-        return super()._pull_member(enforce=enforce)
+        sets the budget for the next member's headers (:meth:`_header_budget`).
+
+        A pass may still be reading the member the walk is at through the walk. That
+        stream moves to a view of its own first (:class:`_WalkHandoffStream`), so a
+        pull for another caller, such as ``members()`` from another thread under
+        ``CONCURRENT``, does not cut it off. The pass's own next pull hands over a
+        stream it is about to close, which costs nothing.
+        """
+        with self._walk_lock:
+            live = self._walk_stream
+            if live is not None:
+                self._walk_stream = None
+                live.detach()
+            self._listing_enforced = enforce
+            return super()._pull_member(enforce=enforce)
 
     def _register_member(
         self,
@@ -1404,31 +1472,13 @@ class TarReader(BaseArchiveReader):
             if sparse_error is not None:
                 raise sparse_error
         stream: BinaryIO
-        if self._streaming or in_walk:
+        if self._streaming:
             stream = self._walker.open_data(span)
+        elif in_walk:
+            with self._walk_lock:
+                stream = self._walk_data(span)
         else:
-            # A view of its own: a read seeks the shared stream under the handle lock
-            # when the handle is elsewhere, so members and the walk read independently.
-            # The view clamps its length to the source size when it has one, so a
-            # read past the end of the file is not issued; _MemberDataView reports a
-            # cut member either way. A plain tar passes its known size rather than
-            # probing it on every open. A codec stream keeps the probe: its size
-            # comes from the decompressor (try_get_size), not from the source.
-            view = SharedView(
-                self._stream,
-                span.data_offset,
-                span.stored_size,
-                lock=self._io_guard(),
-                source_size=self._plain_source_size,
-                probe_source_size=self._compressed,
-            )
-            stream = _MemberDataView(view, span.data_offset, span.stored_size)
-            if self._compressed:
-                # The codec stream has no buffer of its own here (_open_byte_stream),
-                # so a read smaller than this would cost a decoder seek and read. The
-                # buffer sits above the view and reads it at most once per read, so a
-                # cut member's recoverable prefix comes before its TruncatedError.
-                stream = ReadAheadStream(stream, _WALK_BUFFER)
+            stream = self._independent_data(span)
         if span.sparse is not None:
             stream = SparseStream(
                 stream, span.sparse.offsets, span.sparse.lengths, span.size
@@ -1436,6 +1486,53 @@ class TarReader(BaseArchiveReader):
         if self._streaming:
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
+        return stream
+
+    def _independent_data(self, span: TarSpan, start: int = 0) -> BinaryIO:
+        """``span``'s data area from ``start``, read independently of the walk.
+
+        A view of its own: a read seeks the shared stream under the handle lock when
+        the handle is elsewhere, so members and the walk read independently. The view
+        clamps its length to the source size when it has one, so a read past the end
+        of the file is not issued; _MemberDataView reports a cut member either way. A
+        plain tar passes its known size rather than probing it on every open. A codec
+        stream keeps the probe: its size comes from the decompressor (try_get_size),
+        not from the source.
+        """
+        view = SharedView(
+            self._stream,
+            span.data_offset,
+            span.stored_size,
+            lock=self._io_guard(),
+            source_size=self._plain_source_size,
+            probe_source_size=self._compressed,
+        )
+        if start:
+            view.seek(start)
+        stream: BinaryIO = _MemberDataView(view, span.data_offset, span.stored_size)
+        if self._compressed:
+            # The codec stream has no buffer of its own here (_open_byte_stream), so
+            # a read smaller than this would cost a decoder seek and read. The buffer
+            # sits above the view and reads it at most once per read, so a cut
+            # member's recoverable prefix comes before its TruncatedError.
+            stream = ReadAheadStream(stream, _WALK_BUFFER)
+        return stream
+
+    def _walk_data(self, span: TarSpan) -> BinaryIO:
+        """``span``'s data for a pass, through the walk when the walk is at it.
+
+        Called under the walk lock. Reading through the walk is what lets a pass
+        over a compressed tar decode it once. Only one stream reads through the walk
+        at a time, and only while the walk is at the start of this member's data;
+        any other open (a second pass behind the first, or one in step with it) gets
+        a view of its own.
+        """
+        data = self._walker.open_data(span)
+        live = self._walk_stream
+        if not data.in_place() or (live is not None and not live.closed):
+            return self._independent_data(span)
+        stream = _WalkHandoffStream(self, span, data)
+        self._walk_stream = stream
         return stream
 
     def _open_member_stream(
