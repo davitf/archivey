@@ -57,11 +57,14 @@ differential-test oracle, and `src/` never imports it.
   (`tests/test_tar_parser_differential.py`), against archives GNU tar writes for the
   shapes `tarfile` cannot write (those cases skip where GNU tar is not installed), and by
   the fuzz target `tests/fuzz_tar_parser.py`.
-- The backend got bigger. Just before the switch (#754) `tar_reader.py` was 2 249 lines.
-  At the switch `tar_reader.py`, `tar_parser.py` and `sparse.py` were 1 371, 1 253 and 171
-  lines, 2 795 in all: about 550 lines (24 %) more. The proposal had estimated about
-  2 220. What went is the workaround layer: the private-API hooks, the copied stdlib
-  functions and their source hash tests, and the message-text matching.
+- The backend grew only modestly while it took over all the parsing `tarfile` did. Just
+  before the switch (#754) `tar_reader.py` was 2 249 lines, with `tarfile` doing the
+  parsing. At the switch `tar_reader.py`, `tar_parser.py` and `sparse.py` were 1 371,
+  1 253 and 171 lines: 2 795 in all, about 550 lines (24 %) more, with every header,
+  PAX record and sparse map parsed in archivey. The reader alone lost 878 lines. That is
+  the workaround layer: the private-API hooks, the copied stdlib functions and their
+  source hash tests, and the message-text matching. The proposal had estimated about
+  2 220 lines.
 - The listing no longer depends on the Python patch release.
 - A rejected header, or a cut inside a header or member data, raises `CorruptionError` or
   `TruncatedError` where the walk stopped, in both access modes, instead of ending the
