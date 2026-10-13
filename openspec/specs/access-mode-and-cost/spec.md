@@ -326,9 +326,11 @@ requirement only states how the capabilities compose with `streaming`.
 | `streaming=False` | `concurrent_members` and/or `seekable_members` MAY be declared; concurrent-open semantics are `reader-concurrency`. Without `concurrent_members`, one live member stream (`archive-reading`). |
 | `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`concurrent_members=True` incompatible** → `ArchiveyUsageError` at open. `seekable_members=True` alone MAY be declared. |
 
-Random-access `stream_members()` remains exclusive even when random `open()` is
-otherwise available (simultaneous streams use materialize + random `open()` under
-`concurrent_members=True` — see `reader-concurrency`). Detected pass/open/close overlap →
+Random-access `stream_members()` is exclusive on a default reader. Under
+`concurrent_members=True`, random `open()`, the other random-access calls and further
+`stream_members()` passes run beside it on every format; `extract_all()` still does
+not (see `reader-concurrency`, "Random-access calls beside a `stream_members()`
+pass"). Detected pass/open/close overlap →
 later op `ArchiveyUsageError`; active pass stays usable. The exception is `close()`
 while the pass is suspended at a yield: the reader closes and resuming the pass raises
 `ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see `archive-reading`). Ops
@@ -345,7 +347,7 @@ described the same composition in terms of a `member_streams` flag enum.
 | RA + `concurrent_members=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
 | Active pass + conflicting pass/open, or close while the pass executes | Later → `ArchiveyUsageError`; original pass usable |
 | Pass suspended at a yield + `close()` | Reader closed; resuming the pass → `ArchiveyUsageError` |
-| RA `stream_members` active + `open()` | `ArchiveyUsageError` |
+| RA `stream_members` active + `open()` or another `stream_members` | `ArchiveyUsageError`, unless `concurrent_members=True` |
 | `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
 
 ### Requirement: Concurrent-stream cost is informational
