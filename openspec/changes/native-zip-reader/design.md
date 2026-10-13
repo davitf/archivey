@@ -32,7 +32,7 @@ class EndRecord:
     base: int                 # added to every stored offset (stub before the archive)
     comment: bytes            # cut at end of file
     comment_declared: int     # the stored length, for the "comment cut short" finding
-    trailing: int             # bytes after the record and its declared comment (seekable only)
+    trailing: int | None      # bytes after the record and its declared comment; None from a forward walk
 
 ReadAt = Callable[[int, int], bytes]   # read_at(offset, n); the caller owns handle and lock
 

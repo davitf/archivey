@@ -1004,7 +1004,9 @@ class ZipReader(BaseArchiveReader):
         input; Info-ZIP ``unzip`` says nothing.
         """
         end = self._end
-        if not end.trailing:
+        # Only the seekable read gets here; a forward walk counts no trailing bytes.
+        assert end.trailing is not None
+        if end.trailing == 0:
             return
         tail = SharedView(
             cast("BinaryIO", self._fp),

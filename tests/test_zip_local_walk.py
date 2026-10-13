@@ -12,6 +12,7 @@ import random
 import struct
 import zipfile
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -21,13 +22,16 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.zip_local_walk import (
     DATA_DESCRIPTOR_SIGNATURE,
     DataDescriptor,
     LocalEntry,
     LocalHeaderWalk,
+    MemberData,
     match_descriptor,
 )
+from archivey.internal.sfx import SFX_MAX
 
 
 class _Unseekable(io.RawIOBase):
@@ -119,8 +123,10 @@ def _decode(
     return bytes(out), descriptor
 
 
-def _walk(raw: bytes) -> tuple[list[_Read], LocalHeaderWalk]:
-    walk = LocalHeaderWalk(_Unseekable(raw))
+def _walk(
+    raw: bytes, *, offset: int = 0, find_start: bool = True
+) -> tuple[list[_Read], LocalHeaderWalk]:
+    walk = LocalHeaderWalk(_Unseekable(raw), offset=offset, find_start=find_start)
     read: list[_Read] = []
     while (entry := walk.next_entry()) is not None:
         data, descriptor = _decode(walk, entry)
@@ -210,6 +216,7 @@ def test_an_empty_archive_starts_with_the_end_record() -> None:
     assert read == []
     assert walk.end is not None
     assert walk.end.entries_declared == 0
+    assert walk.end.trailing is None  # a forward walk counts none
 
 
 def test_a_stub_before_the_archive_is_found_and_becomes_the_base() -> None:
@@ -221,6 +228,51 @@ def test_a_stub_before_the_archive_is_found_and_becomes_the_base() -> None:
     # zipfile wrote offsets from its own start: the stub is the base.
     assert walk.end.base == len(stub)
     assert len(read) == len(_DATA)
+
+
+def test_rejected_stub_candidates_are_not_capped() -> None:
+    # Detection and the seekable read cap no ZIP decoys; neither does the walk.
+    raw = _write(pipe=False)
+    stub = b"MZ" + (b"PK\x03\x04" + b"\x00" * 26) * 300
+    read, walk = _walk(stub + raw)
+    assert walk.first_offset == len(stub)
+    assert len(read) == len(_DATA)
+
+
+def test_a_stream_that_starts_at_the_directory_lists_it() -> None:
+    raw = _write(pipe=False)
+    eocd = raw.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<L", raw, eocd + 16)
+    walk = LocalHeaderWalk(_Unseekable(raw[cd_offset:]))
+    assert walk.next_entry() is None
+    assert [e.name for e in walk.directory()] == [n.encode() for n in _DATA]
+
+
+def test_strong_encryption_at_the_start_is_named() -> None:
+    walk = LocalHeaderWalk(_Unseekable(b"PK\x06\x08" + b"\x00" * 100))
+    with pytest.raises(UnsupportedFeatureError, match="Strong Encryption"):
+        walk.next_entry()
+
+
+@pytest.mark.parametrize("before_limit", [4, 20, 100])
+def test_a_long_header_across_the_scan_window_end_is_found(before_limit: int) -> None:
+    # The candidate starts inside the window; its 65 535-byte name runs past it.
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("n" * 0xFFFF, b"data")
+    stub = b"\x00" * (SFX_MAX - before_limit)
+    read, walk = _walk(stub + out.getvalue())
+    assert walk.first_offset == len(stub)
+    assert [r.data for r in read] == [b"data"]
+
+
+def test_messages_before_any_member_name_no_member() -> None:
+    walk = LocalHeaderWalk(_Unseekable(b"PK"), find_start=False)
+    with pytest.raises(TruncatedError, match="before the first local header"):
+        walk.next_entry()
+    walk = LocalHeaderWalk(_Unseekable(b"junk" * 100), find_start=False)
+    with pytest.raises(CorruptionError, match="before the first local header"):
+        walk.next_entry()
 
 
 def test_no_local_header_in_the_scan_window_is_corruption() -> None:
@@ -332,6 +384,77 @@ def test_a_codec_member_needs_the_bytes_its_codec_used() -> None:
         data.settle()
 
 
+def test_a_given_offset_places_entries_and_the_base() -> None:
+    # The caller skipped a 5000-byte stub itself and says where the stream starts.
+    raw = _write(pipe=True)
+    read, walk = _walk(raw, offset=5000, find_start=False)
+    assert walk.first_offset == read[0].offset == 5000
+    assert walk.end is not None
+    assert walk.end.base == 5000
+    assert walk.cd_start == 5000 + raw.index(b"PK\x01\x02")
+
+
+def _deflated_member(walk: LocalHeaderWalk) -> MemberData:
+    stored = walk.next_entry()
+    assert stored is not None
+    walk.member_data(stored).settle()
+    entry = walk.next_entry()
+    assert entry is not None
+    assert entry.header.name == b"deflated.txt"
+    return walk.member_data(entry)
+
+
+def test_settle_refuses_more_used_than_was_read() -> None:
+    data = _deflated_member(LocalHeaderWalk(_Unseekable(_write(pipe=True))))
+    data.read(10)
+    with pytest.raises(ValueError, match="after only 10 bytes"):
+        data.settle(100)
+
+
+def test_settle_refuses_an_overread_past_what_was_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(zip_local_walk, "_CODEC_RETAIN", 64)
+    data = _deflated_member(LocalHeaderWalk(_Unseekable(_write(pipe=True))))
+    decomp = zlib.decompressobj(-15)
+    while not decomp.eof:
+        decomp.decompress(data.read(16))
+    used = data.consumed - len(decomp.unused_data)
+    data.read(200)  # well past the codec's end, beyond the 64 kept
+    with pytest.raises(ValueError, match="more than the .* kept to put back"):
+        data.settle(used)
+
+
+@pytest.mark.parametrize(
+    "read_all",
+    [
+        lambda d: d.read(),
+        lambda d: d.readall(),
+        lambda d: io.BufferedReader(d).read(),
+    ],
+    ids=["read", "readall", "buffered"],
+)
+def test_a_codec_member_refuses_an_unsized_read(read_all: Callable) -> None:
+    data = _deflated_member(LocalHeaderWalk(_Unseekable(_write(pipe=True))))
+    with pytest.raises(ValueError, match="no known end"):
+        read_all(data)
+    assert data.consumed == 0
+
+
+def test_settle_checks_used_where_the_walk_knows_the_end() -> None:
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=False)))
+    entry = walk.next_entry()
+    assert entry is not None
+    with pytest.raises(ValueError, match="whose data is"):
+        walk.member_data(entry).settle(entry.header.compressed_size + 1)
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=True)))
+    entry = walk.next_entry()
+    assert entry is not None and entry.deferred
+    data = walk.member_data(entry)
+    stored = data.read()
+    assert data.settle(len(stored)) is not None
+
+
 @pytest.mark.parametrize(
     ("descriptor", "zip64"),
     [
@@ -351,6 +474,28 @@ def test_match_descriptor_shapes(descriptor: bytes, zip64: bool) -> None:
     assert found is not None
     assert (found.crc, found.compressed_size, found.file_size) == (7, 10, 20)
     assert found.length == len(descriptor)
+
+
+def test_a_4_byte_descriptor_past_4_gib_gives_back_both_full_sizes() -> None:
+    # A member past 4 GiB whose descriptor has 4-byte sizes matches modulo 2**32;
+    # neither size may come back truncated.
+    csize, usize = 2**32 + 10, 2**32 + 20
+    buffer = (
+        DATA_DESCRIPTOR_SIGNATURE
+        + struct.pack("<LLL", 7, csize & 0xFFFFFFFF, usize & 0xFFFFFFFF)
+        + b"PK\x03\x04"
+    )
+    found = match_descriptor(
+        buffer,
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=False,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.compressed_size, found.file_size) == (csize, usize)
 
 
 def test_match_descriptor_needs_a_signature_after_it() -> None:
@@ -426,13 +571,35 @@ def test_an_encrypted_stored_scan_matches_size_and_signature_only() -> None:
     assert second.header.name == b"deflated.txt"
 
 
-def test_planted_descriptor_signatures_cost_one_pass() -> None:
-    """A STORED member full of descriptor signatures is scanned in linear time: each
-    candidate is rejected on its size before any CRC."""
-    payload = DATA_DESCRIPTOR_SIGNATURE * 500_000
+def test_planted_descriptor_signatures_cost_one_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A STORED member full of planted descriptors is scanned in linear time.
+
+    Each 12-byte block is a descriptor signature, a wrong CRC and the block's own
+    offset as its compressed size, so every candidate passes the size test and
+    reaches the CRC. Fails if the CRC is recomputed from the start of the buffer
+    for each candidate (quadratic bytes into ``zlib.crc32``).
+    """
+    payload = b"".join(
+        DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 4 + struct.pack("<L", offset)
+        for offset in range(0, 1_200_000, 12)
+    )
     out = _Unseekable()
     with zipfile.ZipFile(out, "w") as zf:
         with zf.open("x", "w") as member:
             member.write(payload)
+    fed = 0
+
+    class _CountingZlib:
+        @staticmethod
+        def crc32(data: bytes, value: int = 0) -> int:
+            nonlocal fed
+            fed += len(data)
+            return zlib.crc32(data, value)
+
+    monkeypatch.setattr(zip_local_walk, "zlib", _CountingZlib)
     read, _walk_ = _walk(out.getvalue())
     assert read[0].data == payload
+    # Once while scanning, once over the bytes handed out.
+    assert fed <= 2 * len(payload)

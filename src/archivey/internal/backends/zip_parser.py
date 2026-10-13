@@ -121,8 +121,9 @@ class EndRecord:
     comment_declared: int
     #: Bytes after the record and its declared comment, up to the end of the file. The
     #: reader reports them; the parser only counts them. Junk longer than the search
-    #: window hides the record itself, as it does for stdlib.
-    trailing: int
+    #: window hides the record itself, as it does for stdlib. ``None`` when nothing
+    #: counted them: a forward walk has no file size and reads what follows instead.
+    trailing: int | None
 
     @property
     def cd_start(self) -> int:
@@ -678,6 +679,28 @@ def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader:
         if fixed and not LOCAL_HEADER_SIGNATURE.startswith(fixed[:4]):
             raise CorruptionError("Bad magic number for file header")
         raise TruncatedError("Truncated local file header")
+    variable_len = local_header_variable_length(fixed)
+    variable = read_at(header_offset + LOCAL_HEADER_SIZE, variable_len)
+    if len(variable) != variable_len:
+        raise TruncatedError("Truncated local file header")
+    data_start = header_offset + LOCAL_HEADER_SIZE + variable_len
+    if data_start > MAX_DATA_OFFSET:
+        raise CorruptionError(f"Absurd local-header data offset: {data_start}")
+    return local_header_from(fixed, variable, data_start)
+
+
+def local_header_variable_length(fixed: bytes) -> int:
+    """How many name and extra-field bytes follow the fixed local header ``fixed``."""
+    name_len, extra_len = struct.unpack_from("<HH", fixed, LOCAL_HEADER_SIZE - 4)
+    return name_len + extra_len
+
+
+def local_header_from(fixed: bytes, variable: bytes, data_start: int) -> LocalHeader:
+    """The :class:`LocalHeader` for the fixed 30 bytes and the name and extra field.
+
+    Both walks read the bytes their own way and call this; the sizes are the stored
+    32-bit fields, whatever a ZIP64 extra field says.
+    """
     (
         _sig,
         needed_version,
@@ -690,14 +713,8 @@ def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader:
         compressed_size,
         file_size,
         name_len,
-        extra_len,
+        _extra_len,
     ) = _LOCAL_HEADER.unpack(fixed)
-    variable = read_at(header_offset + LOCAL_HEADER_SIZE, name_len + extra_len)
-    if len(variable) != name_len + extra_len:
-        raise TruncatedError("Truncated local file header")
-    data_start = header_offset + LOCAL_HEADER_SIZE + name_len + extra_len
-    if data_start > MAX_DATA_OFFSET:
-        raise CorruptionError(f"Absurd local-header data offset: {data_start}")
     return LocalHeader(
         version_needed=(needed_system << 8) | needed_version,
         flags=flags,

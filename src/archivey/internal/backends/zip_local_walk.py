@@ -41,7 +41,7 @@ import struct
 import zlib
 from collections import deque
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import BinaryIO, NoReturn
 
 from archivey.exceptions import (
@@ -58,7 +58,6 @@ from archivey.internal.backends.zip_detect import (
 )
 from archivey.internal.backends.zip_parser import (
     _EOCD,
-    _LOCAL_HEADER,
     _ZIP64_EOCD,
     _ZIP64_LOCATOR,
     ARCHIVE_EXTRA_DATA_SIGNATURE,
@@ -76,8 +75,10 @@ from archivey.internal.backends.zip_parser import (
     _central_entry,
     _unpack_central,
     disk_field_is_split,
+    local_header_from,
+    local_header_variable_length,
 )
-from archivey.internal.sfx import MAX_VALIDATED_CANDIDATES, SFX_MAX, HitOutcome
+from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import read_exact
 
@@ -104,6 +105,12 @@ _AFTER_MEMBER = frozenset(
         ARCHIVE_EXTRA_DATA_SIGNATURE,
     }
 )
+# Where next_entry stops: the directory or an end record follows the members.
+_MEMBERS_OVER = frozenset(
+    {CENTRAL_HEADER_SIGNATURE, ZIP64_EOCD_SIGNATURE, EOCD_SIGNATURE}
+)
+# What may open a stream without a stub in front: the same set as after a member.
+_OPENS_STREAM = _AFTER_MEMBER
 # The longest data descriptor, plus the signature after it: signature, CRC, two 8-byte
 # sizes, next signature.
 _DESCRIPTOR_LOOKAHEAD = 4 + 4 + 8 + 8 + 4
@@ -282,10 +289,13 @@ def match_descriptor(
             following = bytes(buffer[end : end + 4])
             if following not in _AFTER_MEMBER and not (at_end and not following):
                 continue
+            # A 4-byte shape matched modulo 2**32: give back the full sizes it matched.
             return DataDescriptor(
                 crc=got_crc,
                 compressed_size=compressed_size if width == 4 else got_csize,
-                file_size=got_usize,
+                file_size=file_size
+                if width == 4 and file_size is not None
+                else got_usize,
                 length=end - pos,
             )
     return None
@@ -330,11 +340,14 @@ class MemberData(ReadOnlyIOStream):
     ) -> DataDescriptor | None:
         """Finish the member: skip its unread data, read its data descriptor.
 
-        ``used`` is required for a member whose end only its codec knows
-        (:class:`_CodecData`): how many compressed bytes the codec consumed. ``crc``
-        and ``file_size``, when the caller has computed them, pick the descriptor
-        among the shapes that fit; a descriptor that disagrees with them is the
-        caller's to judge. Returns ``None`` for a member with no descriptor.
+        ``used`` is how many compressed bytes the codec consumed. A member whose end
+        only its codec knows (:class:`_CodecData`) needs it; on the others, whose end
+        the walk knows, it is optional and checked against that end. ``crc`` and
+        ``file_size``, when the caller has computed them, pick the descriptor among
+        the shapes that fit, so only a codec member reads them: a sized member has no
+        descriptor and a scanned one matched its own. A descriptor that disagrees
+        with them is the caller's to judge. Returns ``None`` for a member with no
+        descriptor.
         """
         if self._settled:
             raise ValueError("settle() called twice")
@@ -347,6 +360,14 @@ class MemberData(ReadOnlyIOStream):
         self, used: int | None, *, crc: int | None, file_size: int | None
     ) -> DataDescriptor | None:
         raise NotImplementedError
+
+    def _check_used(self, used: int | None) -> None:
+        """Refuse a ``used`` that is not where the walk found the data's end."""
+        if used is not None and used != self.consumed:
+            raise ValueError(
+                f"settle(used={used}) on member #{self.entry.index}, whose data "
+                f"is {self.consumed} bytes"
+            )
 
 
 class _SizedData(MemberData):
@@ -381,6 +402,7 @@ class _SizedData(MemberData):
                     f"ZIP stream ends inside member #{self.entry.index}'s data "
                     f"({self.consumed} of {self._size} bytes)"
                 )
+        self._check_used(used)
         return None
 
 
@@ -388,13 +410,26 @@ class _CodecData(MemberData):
     """Bit-3 data whose end only the codec finds.
 
     Hands out the stream as it comes, keeping the last :data:`_CODEC_RETAIN` bytes
-    so the ones the caller's layers read past the codec's end can be put back.
+    so the ones the caller's layers read past the codec's end can be put back. Only
+    that many can be: an unsized read would run to the end of the archive, so it is
+    refused, and the caller reads in pieces.
     """
 
     def __init__(self, walk: LocalHeaderWalk, entry: LocalEntry) -> None:
         super().__init__(walk, entry)
         self._kept: deque[bytes] = deque()
         self._kept_len = 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        if n < 0:
+            raise ValueError(
+                "a codec member's data has no known end, and only the last "
+                f"{_CODEC_RETAIN} bytes read can be put back; read it in pieces"
+            )
+        return super().read(n)
+
+    def readall(self) -> bytes:
+        return self.read(-1)
 
     def _read_some(self, size: int) -> bytes:
         data = self._source.read(size)
@@ -569,6 +604,7 @@ class _ScannedData(MemberData):
         rest = self._buf[descriptor.length :]
         self._source.unread(rest)
         self._buf.clear()
+        self._check_used(used)
         return descriptor
 
 
@@ -577,8 +613,8 @@ class LocalHeaderWalk:
 
     ``stream`` is only read. ``offset`` is its position in the archive file, so the
     entry offsets compare with the directory's. ``find_start`` scans for the first
-    local header when the stream starts with neither one nor an end record (a
-    self-extractor stub nobody skipped), within :data:`~archivey.internal.sfx.SFX_MAX`
+    local header when the stream starts with no ZIP record :meth:`next_entry`
+    handles (a self-extractor stub nobody skipped), within :data:`~archivey.internal.sfx.SFX_MAX`
     bytes, with the detector's local-header validator.
     """
 
@@ -601,7 +637,7 @@ class LocalHeaderWalk:
         #: Stream offset of the first central header, once the directory is reached.
         self.cd_start: int | None = None
         #: The end record, once :meth:`directory` has read it. Its ``base`` and
-        #: ``eocd_offset`` are stream positions; ``trailing`` is 0 (unknown).
+        #: ``eocd_offset`` are stream positions; ``trailing`` is ``None`` (not counted).
         self.end: EndRecord | None = None
         #: Central entries :meth:`directory` read.
         self.entries_read = 0
@@ -627,7 +663,7 @@ class LocalHeaderWalk:
                 self.first_offset = entry.offset
             self._unsettled = entry
             return entry
-        if sig in (CENTRAL_HEADER_SIGNATURE, ZIP64_EOCD_SIGNATURE, EOCD_SIGNATURE):
+        if sig in _MEMBERS_OVER:
             return None
         if sig == ARCHIVE_EXTRA_DATA_SIGNATURE:
             raise UnsupportedFeatureError(
@@ -642,15 +678,24 @@ class LocalHeaderWalk:
             )
         if len(sig) < 4:
             raise TruncatedError(
-                f"ZIP stream ends {len(sig)} bytes after member #{self._index - 1}, "
-                "before the central directory"
+                f"ZIP stream ends {len(sig)} bytes {self._where()}, before the "
+                "central directory"
             )
         self._skip_to_directory()
         return None
 
+    def _where(self) -> str:
+        """Where the walk is, for a message: after which member, if any."""
+        if self._index == 0:
+            return "before the first local header"
+        return f"after member #{self._index - 1}"
+
     def _start(self) -> None:
+        # Anything next_entry knows how to handle opens the stream: a local header, the
+        # directory or end records of an archive whose members are gone, or the Strong
+        # Encryption record it names. Only other bytes are a stub to scan past.
         sig = self.source.peek(4)
-        if sig in (LOCAL_HEADER_SIGNATURE, EOCD_SIGNATURE) or not self._find_start:
+        if sig in _OPENS_STREAM or not self._find_start:
             return
         if not self._scan_for_local_header():
             raise CorruptionError(
@@ -661,19 +706,24 @@ class LocalHeaderWalk:
     def _scan_for_local_header(self) -> bool:
         """Move to the first local header the detector's validator accepts.
 
-        Reads at most :data:`SFX_MAX` bytes and keeps them all, so the ones after
-        the header found can be put back; at most
-        :data:`~archivey.internal.sfx.MAX_VALIDATED_CANDIDATES` candidates are tried.
+        Candidates start within the first :data:`SFX_MAX` bytes; one near the end is
+        judged on its whole header, so up to :data:`VALIDATOR_PEEK_MAX` more are read.
+        Every byte read is kept, so the ones after the header found can be put back.
+        Rejected candidates are not capped, as for
+        the seekable ZIP read (``sfx.MAX_VALIDATED_CANDIDATES`` covers RAR and 7z):
+        the window bounds the work, and the validator reads only the header.
         """
         window = bytearray()
         searched = 0
-        rejected = 0
         while True:
-            pos = window.find(LOCAL_HEADER_SIGNATURE, searched)
+            pos = window.find(LOCAL_HEADER_SIGNATURE, searched, SFX_MAX + 3)
             if pos >= 0:
 
                 def peek_more(n: int, _pos: int = pos) -> bytes:
-                    while len(window) < _pos + n and len(window) < SFX_MAX + 4:
+                    while (
+                        len(window) < _pos + n
+                        and len(window) < SFX_MAX + VALIDATOR_PEEK_MAX
+                    ):
                         more = self.source.read(_READ_CHUNK)
                         if not more:
                             break
@@ -683,9 +733,6 @@ class LocalHeaderWalk:
                 if validate_zip_local_header(peek_more, None) is HitOutcome.VALID:
                     self.source.unread(window[pos:])
                     return True
-                rejected += 1
-                if rejected >= MAX_VALIDATED_CANDIDATES:
-                    return False
                 searched = pos + 1
                 continue
             searched = max(len(window) - len(LOCAL_HEADER_SIGNATURE) + 1, 0)
@@ -701,43 +748,20 @@ class LocalHeaderWalk:
         fixed = self.source.read(LOCAL_HEADER_SIZE)
         if len(fixed) != LOCAL_HEADER_SIZE:
             raise TruncatedError(f"ZIP stream ends inside local header #{self._index}")
-        (
-            _sig,
-            needed_version,
-            needed_system,
-            flags,
-            method,
-            dos_time,
-            dos_date,
-            crc,
-            compressed_size,
-            file_size,
-            name_len,
-            extra_len,
-        ) = _LOCAL_HEADER.unpack(fixed)
-        variable = self.source.read(name_len + extra_len)
-        if len(variable) != name_len + extra_len:
+        variable_len = local_header_variable_length(fixed)
+        variable = self.source.read(variable_len)
+        if len(variable) != variable_len:
             raise TruncatedError(f"ZIP stream ends inside local header #{self._index}")
-        extra = variable[name_len:]
-        compressed_size, file_size = _local_sizes(extra, compressed_size, file_size)
-        header = LocalHeader(
-            version_needed=(needed_system << 8) | needed_version,
-            flags=flags,
-            method=method,
-            dos_time=dos_time,
-            dos_date=dos_date,
-            crc=crc,
-            compressed_size=compressed_size,
-            file_size=file_size,
-            name=variable[:name_len],
-            extra=extra,
-            data_start=self.source.offset,
+        header = local_header_from(fixed, variable, self.source.offset)
+        compressed_size, file_size = _local_sizes(
+            header.extra, header.compressed_size, header.file_size
         )
+        header = replace(header, compressed_size=compressed_size, file_size=file_size)
         entry = LocalEntry(
             index=self._index,
             offset=offset,
             header=header,
-            zip64=_has_zip64_extra(extra),
+            zip64=_has_zip64_extra(header.extra),
         )
         if not entry.deferred and compressed_size == _U32_MAX:
             raise CorruptionError(
@@ -842,9 +866,8 @@ class LocalHeaderWalk:
             more = self.source.read(_READ_CHUNK)
             if not more:
                 raise CorruptionError(
-                    f"bytes at stream offset {start} after member "
-                    f"#{self._index - 1} are not a ZIP header, and no central "
-                    "directory follows them"
+                    f"bytes at stream offset {start} {self._where()} are not a ZIP "
+                    "header, and no central directory follows them"
                 )
             window = keep + more
 
@@ -937,7 +960,7 @@ class LocalHeaderWalk:
             base=self.cd_start - cd_offset,
             comment=comment,
             comment_declared=comment_declared,
-            trailing=0,
+            trailing=None,
         )
 
     def _read_zip64_records(self) -> tuple[int, int, int, int, int]:
