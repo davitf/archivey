@@ -1251,9 +1251,10 @@ a preallocated file) reads far above `max_ratio` until the data after that run
 arrives, while the same archive from a file passes the static check. A blank start
 shorter than the live floor therefore gives the same outcome from a pipe as from a
 file; a longer one can still be refused from a pipe, and a bomb from a pipe can write
-up to the live floor before this guard stops it. Once the source has been read to
+up to the live floor before this guard stops it. Once a pipe has been read to
 its end, `compressed_bytes_consumed` is the whole compressed size and the live ratio
-equals the static one. `max_extracted_bytes` stays the absolute bound. It is a
+equals the static one; on a seekable source, codec-layer re-reads can only make the
+live denominator larger. `max_extracted_bytes` stays the absolute bound. It is a
 cumulative global guard: if it trips, extraction halts even
 under `OnError.CONTINUE` with `ResourceLimitError`. The live path complements
 static checks and is not used when member compressed sizes or a cheap outer

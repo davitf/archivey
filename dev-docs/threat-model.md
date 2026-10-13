@@ -674,12 +674,18 @@ many links to one member trips the ratio when the archive has a denominator. A p
 read from a non-seekable stream has none (no trusted size, and the live counter is
 installed only for a compressed container), so there only `max_extracted_bytes` applies. A cross-device copy counts toward
 `max_extracted_bytes` only: it depends on the destination, not the archive.
+From a source of unknown size the archive-wide ratio waits for
+`live_ratio_activation_threshold` (256 MiB), so a bomb read from a pipe writes about that
+much before the ratio refuses it, where it wrote about 5 MiB before that floor existed.
+`max_extracted_bytes` still bounds the total, and a caller can lower the floor.
 
 **Tests.** `tests/test_extraction.py::test_per_member_ratio`,
 `::test_archive_wide_ratio`, `::test_archive_wide_ratio_live_denominator`,
 `::test_zip_bomb_per_member_ratio`, `::test_streaming_targz_bomb_caught_by_live_ratio`,
 `::test_streaming_live_ratio_halts_under_continue`,
 `::test_pipe_size_claim_does_not_switch_off_live_ratio`,
+`::test_live_ratio_waits_for_its_own_floor`,
+`::test_live_ratio_default_floor`, `::test_piped_blank_start_passes_like_a_file`,
 `::test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator`,
 `::test_forged_member_declaration_is_refused_only_after_the_decode`,
 `::test_link_limit_copies_count_toward_the_archive_wide_ratio`;

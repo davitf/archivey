@@ -483,11 +483,12 @@ class BombTracker:
                         f"max_ratio={self._max_ratio:.0f}:1{detail}"
                     )
             elif self._source is not None and output > self._live_ratio_floor:
-                # The live denominator only grows, so a blank run at the start of the
-                # source reads far above the ratio it will end at once the data after it
-                # arrives. Waiting for the larger live floor lets such a start pass as it
-                # does when the whole size is known; once the source is read to its end,
-                # ``consumed`` is that whole size and this check matches the static one.
+                # The live denominator is what has been read so far, so a blank run at
+                # the start of the source reads far above the ratio it will end at once
+                # the data after it arrives. Waiting for the live floor lets such a start
+                # pass as it does when the whole size is known; once a pipe is read to
+                # its end, ``consumed`` is that whole size and this check matches the
+                # static one (codec-layer re-reads elsewhere only make it larger).
                 consumed = self._source.compressed_bytes_consumed
                 if consumed and consumed > 0 and output / consumed > self._max_ratio:
                     raise _AlwaysStopResourceLimitError(

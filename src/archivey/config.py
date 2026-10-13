@@ -187,8 +187,21 @@ class ExtractionLimits:
 
     Small members compress extremely well without being bombs, so the ratio is only
     judged once a member (or the archive, for the archive-wide check) has produced this
-    much. It cannot be ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio
-    guard off.
+    much. The archive-wide check on a source of unknown size, such as a pipe, waits for
+    :attr:`live_ratio_activation_threshold` as well. It cannot be ``None``; set
+    :attr:`max_ratio` to ``None`` to turn the ratio guard off.
+    """
+
+    max_entries: int | None = 262_144
+    """Most entries one extraction may create: files, directories and links.
+
+    Crossing it stops the whole extraction, even under ``on_error="continue"``.
+
+    It also bounds, separately, how many times one extraction rechecks a symlink
+    because a later member changed a path the link resolves through. Only a hostile
+    archive comes near it, and crossing it stops the extraction the same way. ``None``
+    removes both bounds, so a hostile archive can then make the rechecks take time
+    quadratic in its size.
     """
 
     live_ratio_activation_threshold: int = 256 * 2**20
@@ -202,24 +215,12 @@ class ExtractionLimits:
     the check divides by the whole file. So from such a source the archive-wide check
     waits for this much output, and a blank start shorter than this passes as it does
     from a file. Past it, the check still divides by the bytes read so far, so a longer
-    blank start can still be refused; once the source has been read to its end, the
-    two checks agree. A bomb read this way can write this much
-    before the check stops it; :attr:`max_extracted_bytes` still bounds the total.
+    blank start can still be refused; once a pipe has been read to its end, the two
+    checks agree. A bomb read this way can write this much before the check stops it;
+    :attr:`max_extracted_bytes` still bounds the total.
     Lower it to stop such a bomb sooner; raise it for piped archives with longer blank
     starts. A value below :attr:`ratio_activation_threshold` has no effect. It cannot be
     ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio guard off.
-    """
-
-    max_entries: int | None = 262_144
-    """Most entries one extraction may create: files, directories and links.
-
-    Crossing it stops the whole extraction, even under ``on_error="continue"``.
-
-    It also bounds, separately, how many times one extraction rechecks a symlink
-    because a later member changed a path the link resolves through. Only a hostile
-    archive comes near it, and crossing it stops the extraction the same way. ``None``
-    removes both bounds, so a hostile archive can then make the rechecks take time
-    quadratic in its size.
     """
 
     UNLIMITED: ClassVar[ExtractionLimits]

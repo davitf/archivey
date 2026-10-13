@@ -491,6 +491,43 @@ def test_live_ratio_waits_for_its_own_floor() -> None:
         t.count(30)  # 140:60 is over 2:1
 
 
+def test_live_ratio_default_floor() -> None:
+    # The default live floor sits between the ordinary floor and the byte cap, so the
+    # live ratio is reachable under default limits and judges a pipe before the cap.
+    d = ExtractionLimits()
+    assert (
+        d.ratio_activation_threshold
+        <= d.live_ratio_activation_threshold
+        < d.max_extracted_bytes
+    )
+    floor = d.live_ratio_activation_threshold
+    for output, trips in [(floor, False), (floor + 1, True)]:
+        t = BombTracker(
+            d.max_extracted_bytes,
+            d.max_ratio,
+            d.ratio_activation_threshold,
+            d.max_entries,
+            source=SimpleNamespace(
+                compressed_source_size=None, compressed_bytes_consumed=1024
+            ),
+            live_ratio_activation_threshold=floor,
+        )
+        t.start_member(_member("f"))
+        if trips:
+            with pytest.raises(_AlwaysStopResourceLimitError, match="Live"):
+                t.count(output)
+        else:
+            t.count(output)
+
+
+def test_extraction_limits_positional_order_is_stable() -> None:
+    # The live floor was added after ``max_entries``, so a caller passing the first
+    # four fields positionally still sets ``max_entries``.
+    limits = ExtractionLimits(2 * 2**30, 1000.0, 5 * 2**20, 1000)
+    assert limits.max_entries == 1000
+    assert limits.live_ratio_activation_threshold == 256 * 2**20
+
+
 def test_ratio_skipped_when_denominators_unknown() -> None:
     t = BombTracker(max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=1)
     t.start_member(_member("f"))  # compressed_size None, no source size
@@ -2511,7 +2548,9 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
     limits = ExtractionLimits(
         max_ratio=100.0,
         ratio_activation_threshold=1024,
-        live_ratio_activation_threshold=32 * 2**20,  # more than the blank start
+        # Over the blank start, under the whole output: the pipe leg crosses the live
+        # floor once the data has arrived, and passes on the true ratio.
+        live_ratio_activation_threshold=16 * 2**20 + 512 * 1024,
     )
     for name, src in [
         ("file", io.BytesIO(raw)),
