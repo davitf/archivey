@@ -12,7 +12,7 @@ from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
     PpmdChildDecoder,
     PpmdChildStartError,
-    child_decoding_available,
+    ppmd_child_unavailable_reason,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -422,8 +422,9 @@ class PpmdDecoder(BaseDecoder):
             "(pyppmd can crash the process on corrupt input past this size). Raise "
             "DecoderLimits.max_ppmd_in_process_input to decode it in-process."
         )
-        if not child_decoding_available():
-            self._refuse(reason)
+        unavailable = ppmd_child_unavailable_reason()
+        if unavailable is not None:
+            self._refuse(f"{reason} ({unavailable})")
         try:
             return self._release_held(in_child=True)
         except PpmdChildStartError as exc:
