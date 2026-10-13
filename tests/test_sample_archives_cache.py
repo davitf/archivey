@@ -10,6 +10,15 @@ import pytest
 from tests.sample_archives import publish_cached
 
 
+def test_a_build_is_moved_onto_the_cache_path(tmp_path: Path) -> None:
+    final = tmp_path / "entry.zip"
+    tmp = tmp_path / ".building-x"
+    tmp.write_bytes(b"ours")
+    publish_cached(tmp, final)
+    assert final.read_bytes() == b"ours"
+    assert not tmp.exists()
+
+
 def _refuse_replace(src: object, dst: object) -> None:
     raise PermissionError(13, "Access is denied")  # what Windows says for an open dst
 

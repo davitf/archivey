@@ -914,8 +914,10 @@ def publish_cached(tmp: Path, final: Path) -> None:
     """Move a freshly built ``tmp`` onto ``final`` in the shared test cache.
 
     Parallel workers can build the same entry at once. On Windows ``os.replace`` onto a
-    file another worker has open fails with ``PermissionError``; the file there is
-    already the finished build (same content key), so the loser keeps it.
+    file another worker has open fails with ``PermissionError``, which is why this
+    exists. The refusal is tolerated on every platform: ``final`` is keyed by content and
+    only ever appears through this atomic replace, so any file already there is a
+    finished build of the same bytes, and the loser keeps it.
     """
     try:
         os.replace(tmp, final)
@@ -962,7 +964,8 @@ def corpus_archive_path(entry: CorpusEntry, key: str, tmp_path: Path) -> Path:
         tmp.unlink()  # builders create the file themselves
         build_archive(entry, key, tmp)
         publish_cached(tmp, final)
-    except BaseException:
-        shutil.rmtree(cache_dir, ignore_errors=True)
-        raise
+    finally:
+        # Only ``tmp`` is this worker's: ``cache_dir`` is shared, and another worker may
+        # already be reading ``final`` from it.
+        tmp.unlink(missing_ok=True)
     return final
