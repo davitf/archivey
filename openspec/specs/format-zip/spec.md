@@ -2,8 +2,9 @@
 
 ## Purpose
 
-ZIP archives are read through the unified `ArchiveReader` API using stdlib
-`zipfile` for the central directory and archivey's shared codec layer for
+ZIP archives are read through the unified `ArchiveReader` API using archivey's
+own parser for the end record, central directory and local headers
+(`internal/backends/zip_parser.py`) and archivey's shared codec layer for
 member data. ZIP listing is indexed, member access is direct, and read sources
 must be seekable. Read-only: writing is not shipped for any format.
 
@@ -25,8 +26,8 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 
 | Property | Value |
 | --- | --- |
-| Backend dependency | `zipfile` (stdlib) for central-directory parsing; shared codec layer for member data |
-| Listing cost | `ListingCost.INDEXED` — central directory read at open |
+| Backend dependency | None: archivey's parser for the structure (no `zipfile` import); shared codec layer for member data |
+| Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed |
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE` |
 | Read source | Seekable only; no implicit buffering/spooling |
@@ -62,22 +63,22 @@ The ZIP backend SHALL decode unencrypted member data through the shared
 decoders. It SHALL locate a member's raw compressed bytes via a bounded
 local-file-header parse (fixed header + local name/extra lengths, with an
 absurd data-offset cap) and a slice over the source, then dispatch by ZIP
-method id to the codec's default backend. Central-directory parsing and
-listing MAY continue to use stdlib `zipfile`.
+method id to the codec's default backend.
 
 Member reads SHALL verify `member.hashes["crc32"]` through the shared
 `VerifyingStream` when a CRC is surfaced. A corrupt member body SHALL raise
 `CorruptionError` (or `TruncatedError` when the payload is cut short) via the
-shared translation. Traditional ZipCrypto and WinZip AES (method 99) members SHALL
-decrypt natively (see below) and then feed the codec layer; stdlib `zipfile`
-decodes no member data. A ZipCrypto member SHALL seek under `seekable_members=True`:
-a backward seek restarts decryption from the member's start, a forward seek decrypts
-what it skips, and `AUTO` accelerators stay off over the decrypt stage. A WinZip AES
-member SHALL seek too: CTR restarts at the target's block (counter `1 + offset // 16`).
-A seek SHALL NOT give up the HMAC, whether the caller or an accelerator made it: the
-HMAC covers the ciphertext, so the read that returns the member's last byte SHALL
-complete it by reading, without decrypting, the ciphertext the seeks skipped, and raise
-`CorruptionError` on a mismatch. A read that stops short of the end gives no verdict.
+shared translation. Traditional ZipCrypto and WinZip AES (method 99) members
+SHALL decrypt natively (see below) and then feed the codec layer. A ZipCrypto
+member SHALL seek under `seekable_members=True`: a backward seek restarts
+decryption from the member's start, a forward seek decrypts what it skips, and
+`AUTO` accelerators stay off over the decrypt stage. A WinZip AES member SHALL
+seek too: CTR restarts at the target's block (counter `1 + offset // 16`). A
+seek SHALL NOT give up the HMAC, whether the caller or an accelerator made it:
+the HMAC covers the ciphertext, so the read that returns the member's last byte
+SHALL complete it by reading, without decrypting, the ciphertext the seeks
+skipped, and raise `CorruptionError` on a mismatch. A read that stops short of
+the end gives no verdict.
 
 Codec settings 7-Zip writes or names but this reader cannot decode SHALL raise
 `UnsupportedFeatureError`, not `CorruptionError`. An LZMA (method 14) member whose
@@ -174,20 +175,19 @@ encrypted member (general-purpose bit 0) that also sets bit 6 or carries an extr
 field `0x0017` SHALL list with `is_encrypted=True`, and opening it SHALL raise
 `UnsupportedFeatureError` naming Strong Encryption, whatever passwords were given.
 Listing a symlink of this kind SHALL leave `link_target` unset and emit
-`SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When stdlib
-cannot read the central directory and an archive extra data record
-(`PK\x06\x08`) sits where stdlib reads the directory (the position of the end
-record that follows the directory, minus the directory size that record gives; for
-a ZIP64 archive both come from the ZIP64 end record, on every Python patch level),
-opening the archive SHALL
-raise `UnsupportedFeatureError` naming Strong Encryption rather than
+`SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When an archive
+extra data record (`PK\x06\x08`) sits where the central directory starts (the position
+of the end record that follows the directory, minus the directory size that record
+gives; for a ZIP64 archive both come from the ZIP64 end record), opening the archive
+SHALL raise `UnsupportedFeatureError` naming Strong Encryption rather than
 `CorruptionError`.
 
 #### Scenario: Damaged central directory without the record
 
-- **WHEN** stdlib cannot read the central directory and no archive extra data
-  record sits where it reads it
-- **THEN** opening raises `CorruptionError`, not `UnsupportedFeatureError`
+- **WHEN** the central directory cannot be read and no archive extra data record sits
+  where it starts
+- **THEN** listing raises `CorruptionError`, not `UnsupportedFeatureError`, after the
+  entries before the damage
 
 ### Requirement: Reject non-seekable ZIP read sources
 
@@ -278,14 +278,14 @@ A named part that is not on disk itself SHALL raise `FileNotFoundError`, like
 any other missing path.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
-rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:
+rejoin-first message rather than mis-read data or raise `CorruptionError`:
 Info-ZIP `.zNN` segment names, non-zero EOCD disk fields (the ZIP64 end record's
 when there is one; a classic `0xFFFF` is the ZIP64 sentinel, not a disk number), and
 ZIP64 locator `disks > 1`. Info-ZIP
 `zip -s` writes a genuinely spanned
-set addressed by `(disk, offset-within-disk)`, which stdlib `zipfile` cannot
-resolve; a linear join lists correctly and then reads only whichever members
-happen to sit on the last disk. It stays deferred to a native ZIP reader.
+set addressed by `(disk, offset-within-disk)`; a linear join lists correctly and then
+reads only whichever members happen to sit on the last disk. Reading such a set is not
+planned.
 
 #### Scenario: multi-volume ZIP join and refusal
 
@@ -293,17 +293,17 @@ happen to sit on the last disk. It stays deferred to a native ZIP reader.
 part — lists and
 reads its members, including data spanning a part boundary. An incomplete such set
 raises `TruncatedError`; every other split/spanned signal raises
-`UnsupportedFeatureError`. Neither surfaces `CorruptionError`,
-`FormatDetectionError`, or a raw stdlib `BadZipFile`.
+`UnsupportedFeatureError`. Neither surfaces `CorruptionError` or
+`FormatDetectionError`.
 
 ### Requirement: Check the ZIP end record against the central directory
 
-stdlib `zipfile` reads central-directory entries until it has consumed the directory
-size the end record gives, and ignores everything else the record says. The ZIP reader
-SHALL report, as `ARCHIVE_EOF_MARKER_MISSING` with `format="zip"`, emitted after the
-listing's last member so the listing completes, each of:
+The central directory is walked entry by entry until the walk has consumed the
+directory size the end record gives. The ZIP reader SHALL report, as
+`ARCHIVE_EOF_MARKER_MISSING` with `format="zip"`, emitted after the listing's
+last member so the listing completes, each of:
 
-- the entry count the end record declares (the ZIP64 record's when stdlib used it)
+- the entry count the end record declares (the ZIP64 record's when there is one)
   differs from the number of entries the central directory holds
   (`expected_marker="end_of_central_directory"`, `observed_kind="nonzero"`). A classic
   record counts in 16 bits and old 7-Zip versions stored a larger count's low 16 bits
@@ -312,15 +312,15 @@ listing's last member so the listing completes, each of:
 - the archive comment length runs past the end of the file
   (`expected_marker="end_of_central_directory"`, `observed_kind="short"`);
 - a central-directory entry's name, extra field or comment length runs past the
-  directory, so stdlib cuts that field at the directory's end
+  directory, so the field is cut at the directory's end
   (`expected_marker="central_directory"`, `observed_kind="nonzero"`).
 
 None of them SHALL raise under the default policy; `STRICT` refuses the archive.
 Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
 every member.
 
-The checks compare the end record stdlib selected, the last end-record signature in
-the file's tail. An end-record signature inside the archive comment is therefore
+The checks compare the end record the reader selected, the last end-record signature
+in the file's tail. An end-record signature inside the archive comment is therefore
 compared with the empty directory it describes and agrees with it: the archive lists as
 empty (`EMPTY_ARCHIVE`) with no end-record diagnostic, as Info-ZIP unzip also lists it,
 while 7-Zip searches further back and lists the real members.
@@ -337,6 +337,89 @@ while 7-Zip searches further back and lists the real members.
 | 65537 entries, classic record only, count 1 (65537 modulo 65536) | All 65537 members listed; no diagnostic |
 | Archive comment holding an end-record signature followed by 30 zero bytes | No members listed; one `EMPTY_ARCHIVE` and no `ARCHIVE_EOF_MARKER_MISSING` |
 | Any of the above under `STRICT` | `DiagnosticRaisedError` from the listing |
+
+### Requirement: List a damaged ZIP central directory up to the damage
+
+The central directory SHALL be walked as members are listed, so a damaged entry costs
+the entries from it on, not the archive (DR-2). An entry whose signature is wrong, or
+whose 46-byte fixed header the directory cuts short, SHALL make the listing raise
+`CorruptionError` after the members before it: `members()` raises,
+`members_report()` returns those members with the error, iteration yields them and then
+raises, and `extract_all()` writes them and then raises. A listed member before the
+damage SHALL read. `ArchiveInfo.member_count` SHALL be `None` when the walk did not
+complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise `CorruptionError`
+the same way, at its entry. A name, extra field or comment that runs past the
+directory's end can only be the last entry's; it is the end-record mismatch above, not
+damage. A local-header offset past the file's end SHALL raise `CorruptionError` when
+that member opens, never `TruncatedError` (the directory follows every local header, so
+the offset is wrong, not the file cut) and never an untyped error for an offset too
+large to seek to.
+
+#### Scenario: damaged directory
+
+| Archive | Expected |
+| --- | --- |
+| Third central header's signature overwritten | `a.txt`, `b.txt` listed, then `CorruptionError` naming a bad magic number; both read |
+| A 10-byte header fragment after the second entry, inside the declared directory size | The same, `CorruptionError` naming a truncated central directory |
+| Either, through `for member in reader` or `extract_all()` | Two members yielded or written, then `CorruptionError` |
+| Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
+
+### Requirement: Read ZIP members whatever version they say they need
+
+"Version needed to extract" SHALL NOT refuse a member or the archive: what a member
+needs is named by its method and flags, which are checked when it opens (DR-4). 7-Zip
+23.01 reads a stored member marked 8.4.
+
+#### Scenario: version needed above 6.3
+
+| Archive | Expected |
+| --- | --- |
+| Stored member, both headers marking version 8.4 | Listed and read |
+| The same with method 77 | Listed; reading it raises `UnsupportedFeatureError` naming method 77 |
+
+### Requirement: Report bytes after the end of a ZIP archive
+
+A ZIP archive SHALL be taken to end at the end of its end-of-central-directory record
+plus the comment length that record declares. At open, a non-zero byte after that end
+SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="zip"`,
+`expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
+offset of that byte past the end. It is a warning by default and raises under
+`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes
+inside the declared comment are the comment, whatever they hold. The end record is
+searched for in the last 65 558 bytes of the file, so a tail longer than that hides it
+and the archive is not opened; a stub before the archive moves nothing. 7-Zip 23.01
+warns on any tail; Info-ZIP `unzip` says nothing.
+
+#### Scenario: ZIP trailing bytes
+
+| Archive | Expected |
+| --- | --- |
+| Ends at its end record, with or without a comment | No diagnostic |
+| 4096 zero bytes after the end record | No diagnostic; `STRICT` opens it |
+| 0, 100 or 60 000 zero bytes then `JUNK` after the end record or its comment | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0, 100 or 60 000; members list and read |
+| A 1000-byte stub before the archive, 7 zero bytes and `JUNK` after it | `observed_bytes` 7 |
+| `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
+
+### Requirement: Apply max_members while reading a ZIP directory
+
+`ListingLimits.max_members` SHALL be charged as the central directory is walked, in
+every access mode and by every walk (the listing, and the index pass a member open or
+`member_count` runs when it comes first), so `stream_members()` and iteration are not
+an escape hatch. An end record that declares more entries than `max_members`, in a
+directory at least 46 bytes per declared entry long, SHALL be refused at
+`open_archive` with `ResourceLimitError`. A declared count the directory cannot hold is
+a wrong field (reported as a count mismatch, see above), and the walk charges the
+entries really there: past `max_members` it SHALL raise `ResourceLimitError`. The
+members listed before the limit SHALL read, also when they are opened before the
+listing reaches it.
+
+#### Scenario: ZIP member limit
+
+| Archive, `max_members=2` | Expected |
+| --- | --- |
+| Three entries, end record declares 3 | `ResourceLimitError` at open |
+| Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
+| The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 
@@ -467,12 +550,18 @@ sniff and an explicit `encoding=` for an unflagged name: when the field is versi
 CRC-32 equals the CRC-32 of the stored name bytes, and its name is non-empty valid UTF-8,
 the member name SHALL be that UTF-8 name, `raw_name` SHALL be its UTF-8 bytes, and
 `extra["alternate_raw_name"]` SHALL hold the stored header bytes. No inference diagnostic
-is emitted, since the field declares the encoding. A field that fails any of those tests
-SHALL be ignored, and the name decoded as above, with one exception owed to stdlib: on
-Python 3.12 and later, `zipfile` refuses the archive while reading the central directory
-when a field with a matching CRC holds invalid UTF-8, and the open fails with
-`CorruptionError`. A field in the local header only SHALL be ignored. `name` is always
-`raw_name` decoded and normalized.
+is emitted, since the field declares the encoding. A field whose CRC does not match or
+whose version is not 1 SHALL be ignored, and the name decoded as above. A malformed field
+SHALL be dropped, the name decoded as above, and `MEMBER_HEADER_RECORD_SKIPPED` emitted on
+the member with `record="unicode_path"` and `record_id=0x7075`: a field shorter than its
+version byte and CRC (5 bytes), whatever its first byte, since neither its version nor
+its CRC can be read; or a version-1 field with a matching CRC whose name is
+empty or not valid UTF-8. A version-1 field whose CRC matches but whose declared name runs
+past the end of the extra field is malformed too. The outcome SHALL be the same on every
+supported Python version: the archive SHALL open, and no Python `warnings` warning SHALL
+be raised for the field. A
+field in the local header only SHALL be ignored, and so SHALL the field of a name whose
+UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 
 #### Scenario: UTF-8 bytes without the flag
 
@@ -493,15 +582,22 @@ when a field with a matching CRC holds invalid UTF-8, and the open fails with
 - **WHEN** bit 11 is set
 - **THEN** the name is decoded as UTF-8, with no sniff and no override diagnostic
 
+#### Scenario: A flagged name that is not UTF-8
+
+- **WHEN** bit 11 is set and the stored name is not valid UTF-8
+- **THEN** the listing raises `CorruptionError` at that entry, after the members before
+  it
+
 #### Scenario: Unicode Path extra field
 
 | Case | Expected |
 | --- | --- |
 | Unflagged cp866 name `Привет.txt`, central `0x7075` version 1 with a matching CRC | `name == "Привет.txt"`; `raw_name` is its UTF-8 bytes; `extra["alternate_raw_name"]` is the cp866 bytes; no diagnostic |
 | The same, `encoding="latin-1"` | The same: the field outranks `encoding=` |
-| The field's CRC does not match the stored bytes, or its version is not 1, or its name is empty | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
+| The field's CRC does not match the stored bytes, or its version is not 1 | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
 | The field in the local header only | Field ignored |
-| The CRC matches, the name is not valid UTF-8 | Field ignored on Python 3.11; `CorruptionError` at open on 3.12+ (stdlib) |
+| The field is 0 to 4 bytes long, whatever its first byte, or the CRC matches and the name is empty, not valid UTF-8, or cut short by the end of the extra field | The archive opens on every Python version; field dropped: the name decoded as above, no `alternate_raw_name`, `MEMBER_HEADER_RECORD_SKIPPED` attached to that member only, no Python warning; `DiagnosticPolicy.STRICT` refuses |
+| The same malformed field on a name with the UTF-8 flag set | Field not consulted: no diagnostic |
 
 ### Requirement: Decode ZIP comments as unflagged names are decoded
 

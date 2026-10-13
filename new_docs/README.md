@@ -10,8 +10,5 @@ When this tree replaces `docs/`, two pointers outside it move too: `SECURITY.md`
 limits at `docs/extracting.md`, and `dev-docs/threat-model.md` names `docs/extracting.md` as its
 public half. Both now live in `security.md` and `extracting.md` here.
 
-`security.md` describes both accelerators running in a separate process. Today only the DEFLATE one
-does, and the bzip2 one runs in-process until a change that is tracked internally lands.
-
 The collapsible "Why?" notes (`??? note`) need the `admonition` and `pymdownx.details`
 extensions in `mkdocs.yml` when this tree replaces `docs/`.

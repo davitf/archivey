@@ -254,7 +254,7 @@ def test_root_exposes_nothing_public_outside_all() -> None:
 
 
 def test_niche_names_live_only_in_their_submodule() -> None:
-    """The diagnostic context payloads and the rapidgzip size gate are not root names.
+    """The diagnostic context payloads and the accelerator size gates are not root names.
 
     They were importable from ``archivey`` before 0.2.0; they now come only from
     ``archivey.diagnostics`` and ``archivey.config``.
@@ -281,7 +281,11 @@ def test_niche_names_live_only_in_their_submodule() -> None:
     # The 19 payload classes the module defines; update the count when one is added
     # or removed, so the loop below cannot pass on a shrunken list.
     assert len(contexts) == 19, contexts
-    for name in [*contexts, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE"]:
+    gates = [
+        "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
+        "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    ]
+    for name in [*contexts, *gates]:
         assert not hasattr(archivey, name), name
     assert archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE > 0
 

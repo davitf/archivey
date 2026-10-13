@@ -30,9 +30,9 @@ shape.
 | **Error combination** | `Exception` (or `BaseException` when an interrupt must not skip the mandatory step) | the first error, or an `ExceptionGroup`; never nothing | `ArchiveStream.close`, `_maybe_teardown`, `ProcessOutputStream.close` |
 | **Primary error wins** | `Exception` | the error already in flight; the cleanup failure is attached as a note or dropped | `BaseArchiveReader.open`, `note_raised_seek` |
 | **Translator handoff** | `Exception` | a translated `ArchiveyError` `from` the original, or the original unchanged | `ArchiveStream._fail`, `_TranslatedErrorBoundary` |
-| **Teardown hygiene** | `Exception` | nothing | finalizers, `_AcceleratorStream._close_inner`, `PpmdDecoder._quiesce_worker` |
-| **C-boundary trap** | `BaseException` | nothing now; the parked exception later | `_TrappingSource` |
-| **Diagnostic probe** | `Exception`, narrowed | a fallback value | `nearest_resume_offset` |
+| **Teardown hygiene** | `Exception` | nothing | finalizers, `PpmdDecoder._quiesce_worker` |
+| **C-boundary trap** | `Exception` | nothing now; the parked exception later | `RapidgzipChildStream._answer_source` |
+| **Diagnostic probe** | `Exception`, narrowed | a fallback value | `nearest_resume_offset`, `_probe_past_declared` |
 
 ### Cleanup and re-raise
 
@@ -75,18 +75,13 @@ propagates.
 ### C-boundary trap
 
 rapidgzip's decoders call back into a caller-owned Python stream from C++, and a Python
-exception unwinding through those frames aborts the process. Two places guard it:
-
-- The in-process bzip2 decoder: `_TrappingSource` catches `BaseException` in every
-  callback, parks it, and returns an EOF-shaped value; `_AcceleratorStream` re-raises it
-  after each read / readinto / seek, in preference to the accelerator's own `Exception`
-  (never in place of an interrupt, which propagates while the fault stays parked), and
-  `_open_accelerator` re-raises one parked during the open. Any new in-process accelerator
-  that reads a caller-owned stream opens through `_open_accelerator`.
-- gzip / zlib / deflate run rapidgzip in a child process. The worker's source object never
-  raises (a failed read is an end of input). `RapidgzipChildStream` serves its reads from
-  the caller's stream in this process, parks an `Exception` from it and raises it when the
-  call ends; an interrupt propagates at once, and the child, left mid-exchange, is killed.
+exception unwinding through those frames aborts the process. Every codec rapidgzip decodes
+(gzip, zlib, deflate and bzip2) runs it in a child process. The worker's source object
+never raises (a failed read is an end of input). `RapidgzipChildStream` serves its reads
+from the caller's stream in this process, parks an `Exception` from it and raises it when
+the call ends; an interrupt propagates at once, and the child, left mid-exchange, is
+killed. archivey runs no rapidgzip decoder in its own process; a new in-process
+accelerator that reads a caller-owned stream would need the same guard.
 
 ### Diagnostic probe
 

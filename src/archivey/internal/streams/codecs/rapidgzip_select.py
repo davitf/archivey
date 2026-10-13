@@ -1,6 +1,5 @@
 """rapidgzip for the DEFLATE family and bzip2: whether to use it, opening it in a child
-process for the DEFLATE family (bzip2 runs in process, see ``rapidgzip_inprocess``),
-translating its errors, and the wrappers that keep the standard library's seek and length
+process, translating its errors, and the wrappers that keep the standard library's seek and length
 contract around it.
 """
 
@@ -57,24 +56,30 @@ _RAPIDGZIP_REQUIREMENT = MissingComponent(
 )
 
 
-_child_fallback_warned = False
+# The settings whose AUTO fallback has been logged (_warn_child_fallback).
+_child_fallback_warned: set[str] = set()
 _child_fallback_lock = threading.Lock()
+# What each accelerator setting covers, for the fallback warning.
+_CHILD_FALLBACK_STREAMS = {
+    "use_rapidgzip": "gzip, zlib and deflate streams are",
+    "use_indexed_bzip2": "bzip2 streams are",
+}
 
 
-def _warn_child_fallback(why: str) -> None:
-    """Log, once per process, that ``AUTO`` reads with the stdlib because no rapidgzip
-    child can start. It is a fact about the environment, not about any one archive, so
-    one warning says it; ``ON`` raises instead and does not come here."""
-    global _child_fallback_warned
+def _warn_child_fallback(why: str, setting: str = "use_rapidgzip") -> None:
+    """Log, once per process and setting, that ``AUTO`` reads with the stdlib because no
+    rapidgzip child can start. It is a fact about the environment, not about any one
+    archive, so one warning says it; ``ON`` raises instead and does not come here."""
     with _child_fallback_lock:
-        if _child_fallback_warned:
+        if setting in _child_fallback_warned:
             return
-        _child_fallback_warned = True
+        _child_fallback_warned.add(setting)
     logs.streams.warning(
-        "%s; gzip, zlib and deflate streams are read with the standard library decoder "
-        "instead of rapidgzip. Set use_rapidgzip=AcceleratorMode.OFF to silence this "
-        "warning.",
+        "%s; %s read with the standard library decoder instead of rapidgzip. Set "
+        "%s=AcceleratorMode.OFF to silence this warning.",
         why,
+        _CHILD_FALLBACK_STREAMS[setting],
+        setting,
     )
 
 
@@ -269,13 +274,16 @@ def _refuse_forward_only_accelerator(
 
 def _open_rapidgzip(
     source: CodecSource, label: str, config: StreamConfig
-) -> BinaryIO | None:
-    """Open a DEFLATE-family ``source`` through rapidgzip, in a child process.
+) -> RapidgzipChildStream | None:
+    """Open ``source`` through rapidgzip, in a child process; ``label`` is the codec
+    (``gzip``, ``zlib``, ``deflate`` or ``bzip2``).
 
     rapidgzip 0.16 aborts the process on a gzip, zlib or raw DEFLATE stream that ends
-    early, so it never decodes one in this process: see ``rapidgzip_child``. A path
-    source is opened by the child; a stream source is read for the child here, so the
-    caller's own exception from it still reaches the caller.
+    early, so it never decodes one in this process: see ``rapidgzip_child``. Its bzip2
+    decoder runs in a child too, as a precaution: no abort has been seen in it, but it
+    comes from the same library. A path source is opened by the child; a stream source is
+    read for the child here, so the caller's own exception from it still reaches the
+    caller.
 
     Where no child can be started (the spawn or its temporary file refused: a process
     cap, no writable temporary directory, too many open files, a child that cannot
@@ -289,9 +297,11 @@ def _open_rapidgzip(
     take that much. A child over the cap is stopped, and the standard library reads
     the rest of the stream (``_StdlibOnAcceleratorError``).
     """
+    bzip2 = label == "bzip2"
+    field_name = "use_indexed_bzip2" if bzip2 else "use_rapidgzip"
     reason = (
         f"the rapidgzip accelerator runs in a child process, and none can be started "
-        f"here to decode this {label} stream. Set use_rapidgzip=AcceleratorMode.OFF to "
+        f"here to decode this {label} stream. Set {field_name}=AcceleratorMode.OFF to "
         "decode it with the standard library"
     )
     unavailable = rapidgzip_child_unavailable_reason()
@@ -301,12 +311,13 @@ def _open_rapidgzip(
         return RapidgzipChildStream(
             source,
             label=label,
+            bzip2=bzip2,
             max_memory=config.decoder_limits.max_decoder_memory,
         )
     except RapidgzipChildStartError as exc:
-        if config.use_rapidgzip is not AcceleratorMode.AUTO:
+        if getattr(config, field_name) is not AcceleratorMode.AUTO:
             raise ResourceLimitError(f"{reason} ({exc}).") from exc
-        _warn_child_fallback(str(exc))
+        _warn_child_fallback(str(exc), field_name)
         return None
 
 

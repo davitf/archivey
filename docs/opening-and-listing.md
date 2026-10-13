@@ -101,7 +101,8 @@ Its other limitations:
   stays bounded and a link yielded after that point has no `link_target_member`.
   `members_report()` and `extract_all()` enforce the limits as `members()` does, so
   after such a pass `members_report()` raises `ResourceLimitError`. 7z, RAR and ISO
-  check `max_members` when the archive is opened. See [Limits](extracting.md#limits).
+  check `max_members` when the archive is opened, and ZIP does too, or as it reads the
+  directory when the end record understates the count. See [Limits](extracting.md#limits).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).

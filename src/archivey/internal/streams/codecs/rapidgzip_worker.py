@@ -3,9 +3,12 @@
 rapidgzip 0.16 aborts the whole process (``std::terminate``) when it decodes a gzip,
 zlib or raw DEFLATE stream that ends early; see ``dev-docs/known-issues.md``. So
 archivey runs it in a child process that runs this file, and an abort costs the
-member and not the caller.
+member and not the caller. Its bzip2 decoder (``IndexedBzip2File``) runs here too, as
+a precaution: it has not been seen to abort, but it comes from the same library.
 
-This file is run as a script (``python -P rapidgzip_worker.py``) and imports nothing
+This file is run as a script (``python -P rapidgzip_worker.py [bzip2]``): with the
+``bzip2`` argument it opens the source with ``rapidgzip.IndexedBzip2File``, and
+otherwise with ``rapidgzip.open``. It imports nothing
 from ``archivey``: importing any ``archivey`` module imports the whole package, which
 costs start-up time on every member. It depends on the standard library and
 ``rapidgzip`` only.
@@ -28,7 +31,9 @@ Parent to child:
   largest point after 0 at or before the offset, then of the smallest point after it,
   each -1 when there is none; every point is the start of a DEFLATE block),
   ``TELL_COMPRESSED`` (the reply's argument is rapidgzip's ``tell_compressed()``, in
-  bits).
+  bits), ``OFFSETS`` (argument 0: ``available_block_offsets()``, 1: ``block_offsets()``;
+  the reply's payload is the index as ``OFFSET_PAIR`` records, compressed bit offset
+  then decompressed offset, in the decoder's order).
 - ``SRC_DATA`` (payload: bytes read), ``SRC_VALUE`` (argument: a position),
   ``SRC_FAIL``: the answers to the child's ``SRC_*`` requests. ``SRC_FAIL`` means the
   parent's source raised; the parent keeps that exception and raises it to its caller.
@@ -69,8 +74,12 @@ FRAME = struct.Struct("<BqI")
 # The range of FRAME's integer argument, its signed 64-bit ``q``.
 ARG_MIN, ARG_MAX = -(1 << 63), (1 << 63) - 1
 
-OPEN, READ, SEEK, RESUME, POINTS, TELL_COMPRESSED = 1, 2, 3, 4, 5, 6
+OPEN, READ, SEEK, RESUME, POINTS, TELL_COMPRESSED, OFFSETS = 1, 2, 3, 4, 5, 6, 7
 POINTS_REPLY = struct.Struct("<qqqq")
+OFFSET_PAIR = struct.Struct("<qq")
+OFFSETS_AVAILABLE, OFFSETS_COMPLETE = 0, 1
+# The command-line argument that selects the bzip2 decoder.
+BZIP2_ARG = "bzip2"
 SRC_DATA, SRC_VALUE, SRC_FAIL = 10, 11, 12
 OK, ERR = 1, 2
 SRC_READ, SRC_SEEK, SRC_TELL = 10, 11, 12
@@ -199,9 +208,21 @@ class _ParentSource(io.RawIOBase):
 
 
 def _error_payload(exc: BaseException) -> bytes:
+    name = type(exc).__name__
+    message = str(exc)
+    if isinstance(exc, UnicodeDecodeError) and isinstance(exc.object, bytes):
+        # rapidgzip quotes an input byte in some messages ("... magic string 'BZh' ...
+        # with \xf2 ..."). When that byte is not UTF-8, the message fails to decode on
+        # its way to Python, and this error holds the message's bytes. The message is
+        # rapidgzip's error, so it is reported as one, readable.
+        name, message = "RuntimeError", exc.object.decode("utf-8", "replace")
     errno = getattr(exc, "errno", None)
-    text = f"{type(exc).__name__}\n{'' if errno is None else errno}\n{exc}"
+    text = f"{name}\n{'' if errno is None else errno}\n{message}"
     return text.encode("utf-8", "replace")
+
+
+def _offsets_payload(offsets: Any) -> bytes:
+    return b"".join(OFFSET_PAIR.pack(bit, decoded) for bit, decoded in offsets.items())
 
 
 def _points_around(stream: Any, offset: int) -> tuple[int, bytes]:
@@ -246,6 +267,13 @@ def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
                 ok = channel.send(OK, *_points_around(stream, arg))
             elif tag == TELL_COMPRESSED:
                 ok = channel.send(OK, stream.tell_compressed())
+            elif tag == OFFSETS:
+                offsets = (
+                    stream.block_offsets()
+                    if arg == OFFSETS_COMPLETE
+                    else stream.available_block_offsets()
+                )
+                ok = channel.send(OK, len(offsets), _offsets_payload(offsets))
             else:
                 ok = channel.send(ERR, 0, _error_payload(ValueError(f"bad tag {tag}")))
         except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
@@ -457,10 +485,16 @@ def main() -> None:
         # AUTO open in the parent decodes the caller's source with the stdlib. That
         # needs the source where the caller left it, so nothing may read it before the
         # import succeeds (``_ParentSource`` reads only when rapidgzip asks).
+        if sys.argv[1:] == [BZIP2_ARG]:
+            opener = getattr(rapidgzip, "IndexedBzip2File", None)
+            if opener is None:
+                raise ImportError("this rapidgzip has no IndexedBzip2File")
+        else:
+            opener = rapidgzip.open
         source: object = (
             os.fsdecode(payload) if kind == OPEN_PATH else _ParentSource(channel)
         )
-        stream = rapidgzip.open(source, parallelization=0)
+        stream = opener(source, parallelization=0)
     except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
         channel.send(ERR, 0, _error_payload(exc))
         return

@@ -287,7 +287,7 @@ class ResourceLimitError(ArchiveyError):
     """A configured listing, extraction, decoder or spool resource limit was exceeded.
 
     Covers :class:`~archivey.config.ListingLimits` materialization caps,
-    parse-time ``max_members`` on 7z, RAR and ISO,
+    parse-time ``max_members`` on ZIP, 7z, RAR and ISO,
     :class:`~archivey.config.ExtractionLimits` bomb guards,
     :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
     and key-derivation work, and :class:`~archivey.config.SpoolLimits`, the cap on
@@ -429,7 +429,7 @@ def raw_message_of(exc: BaseException) -> str:
 
     Needed only where the caught type is broad enough to include one of ours — a
     ``except Exception`` around a call that may raise an ``ArchiveyError``. A handler
-    catching only third-party types (``lzma.LZMAError``, ``zipfile.BadZipFile``) can
+    catching only third-party types (``lzma.LZMAError``, ``zlib.error``) can
     interpolate the exception directly.
     """
     if isinstance(exc, (ArchiveyError, ArchiveyUsageError)):

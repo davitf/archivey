@@ -82,9 +82,9 @@ recommended = [
 # >=0.16.0 is the floor known to expose IndexedBzip2File. See ADR 0008 and
 # dev-docs/investigations/rapidgzip-upstream-report.md §7.
 #
-# Kept OUT of [recommended] on purpose: it is a heavy native build that can fail to compile,
-# importing it re-enables the GIL on free-threaded builds, and it carries the accelerator
-# close-before-finalize hazard in dev-docs/investigations/rapidgzip-upstream-report.md §6.
+# Kept OUT of [recommended] on purpose: it is a heavy native build that can fail to compile.
+# archivey imports it only in its decoder process, so the caller's process (and its GIL on a
+# free-threaded build) is unaffected.
 seekable = [
     "rapidgzip>=0.16.0",
 ]

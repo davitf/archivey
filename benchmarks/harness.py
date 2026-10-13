@@ -706,7 +706,10 @@ def run_cases(
                 bdec,
                 seeks,
                 unpacked_bytes=unpacked,
-                notes="rapidgzip accelerator ON for in-ZIP deflate ([seekable])",
+                notes=(
+                    "rapidgzip accelerator ON for in-ZIP deflate ([seekable]); count "
+                    "depends on the rapidgzip version, so the gate checks only ON > OFF"
+                ),
             )
         )
     else:

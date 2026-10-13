@@ -607,7 +607,7 @@ def test_zip_underlying_close_is_a_usage_error() -> None:
     """
     with open_archive(io.BytesIO(_zip_bytes())) as reader:
         member = next(m for m in reader.members() if m.type is _FILE)
-        reader._archive.close()  # type: ignore[attr-defined]  # deliberate: simulate the fault
+        reader._fp.close()  # type: ignore[attr-defined]  # deliberate: simulate the fault
         with pytest.raises(ArchiveyUsageError):
             reader.open(member)
 
@@ -620,8 +620,8 @@ def test_zip_corrupt_member_offset_is_still_corruption(tmp_path: Path) -> None:
     """
 
     data = bytearray(_zip_bytes())
-    # The central directory's local-header offset field, clobbered so zipfile seeks to a
-    # nonsense position when the member is opened.
+    # The central directory's local-header offset field, clobbered so the member's open
+    # reads its local header from a nonsense position past the end of the file.
     cd_start = data.rindex(b"PK\x01\x02")
     data[cd_start + 42 : cd_start + 46] = (0xFFFFFFF0).to_bytes(4, "little")
 

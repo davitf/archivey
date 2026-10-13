@@ -13,6 +13,7 @@ limit of 8 MiB.
 
 from __future__ import annotations
 
+import bz2
 import functools
 import io
 import subprocess
@@ -98,6 +99,26 @@ def test_a_child_over_its_memory_limit_is_stopped() -> None:
         # Every later call raises the same error.
         with pytest.raises(ResourceLimitError):
             child.read(1)
+
+
+@functools.cache
+def _bzip2_zeros() -> bytes:
+    """``_OUTPUT_SIZE`` zero bytes, compressed with bzip2."""
+    compressor = bz2.BZ2Compressor(9)
+    block = bytes(1 << 20)
+    parts = [compressor.compress(block) for _ in range(_OUTPUT_SIZE >> 20)]
+    return b"".join([*parts, compressor.flush()])
+
+
+def test_a_bzip2_child_names_its_own_setting() -> None:
+    """The bzip2 decoder is turned off by ``use_indexed_bzip2``, so that is the setting
+    the error suggests; ``use_rapidgzip`` would change nothing for this stream."""
+    with RapidgzipChildStream(
+        io.BytesIO(_bzip2_zeros()), label="bzip2", bzip2=True, max_memory=_SMALL_LIMIT
+    ) as child:
+        error = _read_until_stopped(child)
+        assert "use_indexed_bzip2=AcceleratorMode.OFF" in str(error)
+        assert "use_rapidgzip" not in str(error)
 
 
 # A parent whose peak resident memory is far above what the child decodes to. Run in

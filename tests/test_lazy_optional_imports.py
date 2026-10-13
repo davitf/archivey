@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey.exceptions import PackageNotInstalledError
+from archivey.exceptions import ResourceLimitError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 
@@ -111,12 +111,22 @@ def test_lazy_optional_treats_a_failed_import_as_absent(
     assert "failed to import" in messages[0] and "libstdc++" in messages[0]
 
 
-def test_bzip2_auto_falls_back_when_rapidgzip_fails_to_import(
-    broken_package: str, monkeypatch: pytest.MonkeyPatch
+def test_bzip2_auto_falls_back_when_the_child_cannot_import_rapidgzip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        codecs.deps, "rapidgzip", codecs.deps.LazyOptional(broken_package)
+    """rapidgzip's bzip2 decoder runs in a child process, so a rapidgzip that fails to
+    import fails there, as a start failure: ``AUTO`` reads with the standard library and
+    ``ON`` raises ``ResourceLimitError``. This process never imports it."""
+    stub = tmp_path / "stub" / "rapidgzip"
+    stub.mkdir(parents=True)
+    (stub / "__init__.py").write_text(
+        "raise ImportError('libstdc++.so.6: cannot open shared object file')\n"
     )
+    monkeypatch.setenv("PYTHONPATH", str(stub.parent))
+    monkeypatch.setattr(
+        codecs.deps, "rapidgzip", codecs.deps.LazyOptional("rapidgzip", present=True)
+    )
+    monkeypatch.setattr(codecs.rapidgzip_select, "_child_fallback_warned", set())
     data = b"hello bzip2 " * 1000
     auto = StreamConfig(seekable=True)
     assert auto.use_indexed_bzip2 is AcceleratorMode.AUTO
@@ -124,10 +134,9 @@ def test_bzip2_auto_falls_back_when_rapidgzip_fails_to_import(
         codecs.Codec.BZIP2, io.BytesIO(bz2.compress(data)), config=auto
     ) as stream:
         assert stream.read() == data
-    assert not codecs.bzip2_codec._bzip2_uses_accelerator(auto)
 
     on = StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON)
-    with pytest.raises(PackageNotInstalledError):
+    with pytest.raises(ResourceLimitError, match="cannot import rapidgzip"):
         codecs.open_codec_stream(
             codecs.Codec.BZIP2, io.BytesIO(bz2.compress(data)), config=on
         )

@@ -74,21 +74,22 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
 - **Accelerators are on by default for seekable streams.** If you open an archive with
-  `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data, and
-  DEFLATE data of 16 MiB or more compressed, through rapidgzip. DEFLATE is the compression in gzip
-  files and in most ZIP members. rapidgzip marks places in the stream it can restart from as it
-  reads, so a seek jumps to the nearest one instead of decompressing from the start. Both run in a
-  separate process. To avoid them, pass
+  `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data of 1 MiB
+  or more compressed, and DEFLATE data of 16 MiB or more, through rapidgzip. DEFLATE is the
+  compression in gzip files and in most ZIP members. rapidgzip marks places in the stream it can
+  restart from as it reads, so a seek jumps to the nearest one instead of decompressing from the
+  start. Both run in a separate process. To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
 
     ??? note "Why a separate process, and why only from 16 MiB?"
-        rapidgzip can crash on some damaged DEFLATE data, and in a separate process a crash ends
-        only that read, with an error. Its bzip2 decoder hasn't been seen to crash, but it runs
-        there too as a precaution, since it's part of the same library. Archivey's fuzz tests run
-        both and compare their output with the standard decoders. Starting that process takes about
-        45 ms, and on a full read rapidgzip saves about 3.4 ms per MB of compressed data, so below
-        about 13 MB the standard DEFLATE decoder finishes first.
+        rapidgzip can crash on some damaged DEFLATE data, and in a separate process a crash doesn't
+        take your program with it: the standard library's decoder takes over and reports what it
+        finds. Its bzip2 decoder hasn't been seen to crash, but it runs there too as a precaution,
+        since it's part of the same library. Archivey's fuzz tests run both and compare their output
+        with the standard decoders. Starting that process takes about 45 ms, and on a full read
+        rapidgzip saves about 3.4 ms per MB of compressed data, so below about 13 MB the standard
+        DEFLATE decoder finishes first.
 
 - **After a seek, a crafted `.xz` or `.lz` file can return different data at a position you've
   already read.** A seek restarts at the block the file's own index names, and a crafted index can
