@@ -137,9 +137,10 @@ class ReaderState:
     reader-wide operation, no overlapping worker calls, and no shared-handle locks
     needed. ``CONCURRENT`` turns those refusals into waits: several live streams,
     a second materializer waits for the first one's snapshot, and ``close()`` drains
-    in-flight worker calls. Most methods therefore have two behaviours, chosen by
-    :attr:`concurrent`. Distinct reader-wide passes and access to one stream stay
-    single-owner (caller-synchronized) either way.
+    in-flight worker calls, and once the member list is published a ``stream_members()``
+    pass admits worker calls beside it. Most methods therefore have two behaviours,
+    chosen by :attr:`concurrent`. Distinct reader-wide passes and access to one stream
+    stay single-owner (caller-synchronized) either way.
     """
 
     def __init__(
@@ -195,6 +196,10 @@ class ReaderState:
         # The thread that currently owns the materialization election, for same-thread
         # re-entry detection (deep review N4a).
         self._materializing_thread: int | None = None
+        # Whether the reader has published its complete member list (see
+        # :meth:`set_listing_published`). Distinct from ``cache_state``: a data pass
+        # that walked the whole archive publishes the list outside the election.
+        self._listing_published = False
 
     @property
     def concurrent(self) -> bool:
@@ -232,6 +237,32 @@ class ReaderState:
         """Whether the CURRENT thread is inside a library-internal open window."""
         return self._internal_open_threads.get(threading.get_ident(), 0) > 0
 
+    def set_listing_published(self, published: bool) -> None:
+        """Record whether the reader's complete member list has been published.
+
+        Set when the list is published, by a listing call or by a data pass that
+        reached the end; cleared only when a failed materialization withdraws it.
+        Read by :meth:`_pass_admits_workers_locked`.
+        """
+        with self._lock:
+            self._listing_published = published
+
+    def _pass_admits_workers_locked(self, pass_name: str) -> bool:
+        """Whether a ``stream_members()`` pass and worker calls may overlap.
+
+        Only on a ``CONCURRENT`` reader whose member list is already published. Then a
+        worker (``open()``, ``read()``, ``get()``, ``members()``) answers from the
+        published list and opens its own stream, as concurrent opens do, so it neither
+        moves the pass nor waits for it. Before the list is complete, a worker would
+        have to list the archive while the pass walks it, so the overlap is refused.
+        Other reader-wide passes (``extract_all()``, a listing) never admit workers.
+        """
+        return (
+            self.concurrent
+            and self._listing_published
+            and pass_name == "stream_members"
+        )
+
     def acquire_pass(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
@@ -248,7 +279,7 @@ class ReaderState:
                     f"Cannot start {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
-            if self._workers:
+            if self._workers and not self._pass_admits_workers_locked(name):
                 raise ArchiveyUsageError(
                     f"Cannot start {name!r}: a concurrent open()/read() call is still "
                     "in progress."
@@ -314,15 +345,21 @@ class ReaderState:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
 
         Rejected while a reader-wide root pass is active (unless under library-internal
-        opens). Idle open streams (leases only) do not block workers. Stream I/O after
-        this token is released does not re-check the gate.
+        opens), except a ``stream_members()`` pass on a ``CONCURRENT`` reader whose
+        member list is published (:meth:`_pass_admits_workers_locked`). Idle open
+        streams (leases only) do not block workers. Stream I/O after this token is
+        released does not re-check the gate.
         """
         with self._lock:
             self._require_admissible_locked(name)
             internal = self._internal_opens_active_locked()
             if not internal:
                 self._reject_same_thread_reentry_locked(f"call {name!r}")
-            if self._root is not None and not internal:
+            if (
+                self._root is not None
+                and not internal
+                and not self._pass_admits_workers_locked(self._root.name)
+            ):
                 raise ArchiveyUsageError(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
@@ -545,20 +582,27 @@ class ReaderState:
                         "Cannot close the archive reader while an open()/read() call "
                         "is still in progress."
                     )
-                # A root pass and in-flight workers exclude each other (acquire_pass /
-                # acquire_worker), so with a suspended pass the wait below never runs
-                # and the lock is held unbroken from the check above to the take below.
-                assert self._root is None or not self._workers
                 self._closing = True
                 try:
-                    while self._workers:
-                        self._workers_cv.wait()
+                    if self._workers:
+                        while self._workers:
+                            self._workers_cv.wait()
+                        # The wait let go of the lock. On a CONCURRENT reader workers
+                        # can run beside a stream_members() pass (see
+                        # _pass_admits_workers_locked), and the pass may have resumed
+                        # meanwhile. Decide again, now that nothing can wait between
+                        # this check and the take below.
+                        if self._root is not None and not self._root.suspended:
+                            raise ArchiveyUsageError(
+                                "Cannot close the archive reader while another reader "
+                                f"operation ({self._root.name!r}) is active."
+                            )
                     # Notify last. If an interrupt lands after the transition but
                     # before the lease drop, the retry branch above finishes the drop.
                     self.lifecycle = LifecycleState.READER_CLOSED
-                    # In the same lock hold as the decision above (see the assert
-                    # before the wait), so the suspended pass cannot resume and
-                    # release itself in between. The lease keeps teardown back until
+                    # In the same lock hold as the decision above (taken again after
+                    # any wait), so the suspended pass cannot resume and release
+                    # itself in between. The lease keeps teardown back until
                     # close() has run the closer: the backend's pass cleanup must
                     # come before the source is closed.
                     root = self._root

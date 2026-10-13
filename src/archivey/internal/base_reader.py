@@ -1249,6 +1249,7 @@ class BaseArchiveReader(ArchiveReader):
             ),
         )
         self._materialized = holder
+        self._state.set_listing_published(True)
         return holder
 
     def _finalize_links(
@@ -1597,7 +1598,8 @@ class BaseArchiveReader(ArchiveReader):
         never gets here and resolves nothing. Publishing here, outside the
         materialization election that ``_ensure_walked`` handed back, is safe because
         the pass holds the root token: no ``members()`` call can overlap it, under
-        ``CONCURRENT`` as well.
+        ``CONCURRENT`` as well. (A ``CONCURRENT`` pass admits worker calls only once the
+        list is published, and then this pass publishes nothing.)
         """
         if self._streaming:
             yield from self._begin_forward_pass()
@@ -1649,6 +1651,7 @@ class BaseArchiveReader(ArchiveReader):
             # (mark_reader_closed's drain path handles BaseException the same way.) The
             # walk has already discarded itself, if it was the walk that failed.
             self._materialized = None
+            self._state.set_listing_published(False)
             self._state.fail_materialization()
             raise
 
@@ -2714,14 +2717,21 @@ class BaseArchiveReader(ArchiveReader):
             return
         # Random access: iteration just walks the already-published immutable member
         # snapshot, so it must NOT hold a reader-wide pass across consumption — that would
-        # reject the common `for m in reader: reader.open(m)` idiom as overlap. Acquire the
-        # pass only around materialization (matching members()), then yield the captured
-        # snapshot with no pass held so open()/get() inside the loop are admitted.
-        token = self._state.acquire_pass("__iter__")
-        try:
-            report = self._materialize_members().report
-        finally:
-            self._state.release_pass(token)
+        # reject the common `for m in reader: reader.open(m)` idiom as overlap. Take a
+        # token only around materialization, the one members() takes, then yield the
+        # captured snapshot with none held so open()/get() inside the loop are admitted.
+        if self._state.concurrent:
+            worker = self._state.acquire_worker("__iter__")
+            try:
+                report = self._materialize_members().report
+            finally:
+                self._state.release_worker(worker)
+        else:
+            token = self._state.acquire_pass("__iter__")
+            try:
+                report = self._materialize_members().report
+            finally:
+                self._state.release_pass(token)
         yield from report.members
         if report.error is not None:
             raise report.error

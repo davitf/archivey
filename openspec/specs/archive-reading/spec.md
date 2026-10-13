@@ -761,7 +761,10 @@ directed to `stream_members()` by `reader.cost.access_cost` and by the `open()` 
 
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another
-iteration/data pass, unrelated extraction, or reader close. An `extract_all()`
+iteration/data pass, unrelated extraction, or reader close. On a reader opened with
+`concurrent_members=True` whose member list is published, random `open()` / `read()`
+/ `get()` / `members()` and iteration MAY run beside it (`reader-concurrency`,
+"Random-access calls beside a `stream_members()` pass"). An `extract_all()`
 owner MAY invoke it as a child pass and MAY read/close the yielded child stream.
 Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and leave the
 active pass/stream valid. (Unlike random `open()`, whose independently owned
@@ -787,7 +790,7 @@ makes `close()` raise (maintainer's ruling, 2026-10-10).
 | `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened, except data-stored symlink targets when `read_link_targets=True`; original mutable members |
 | Fully read stream, then inspect member | Late-bound fields (e.g. size/CRC) visible on same object |
 | Advance after one yield | Prior stream closed/invalidated first |
-| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
+| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable. Under `concurrent_members=True` with the member list published: admitted |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
 | `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
 | `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |

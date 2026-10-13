@@ -73,7 +73,9 @@ redundant decompression.
 
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
 `stream_members`, `extract_all`) and `members_report_if_available` initialization
-remain single-owner and cannot overlap one another or the random worker seam. Under
+remain single-owner and cannot overlap one another or the random worker seam, with
+one exception: a `stream_members()` pass on a `CONCURRENT` reader whose member list
+is published (see "Random-access calls beside a `stream_members()` pass"). Under
 `CONCURRENT`, first-touch materialization through `members()` or `members_report()`
 is coordinated (wait/share) and `reader.close()` drains in-flight worker calls
 rather than rejecting them. The base reader SHALL represent ownership with an
@@ -101,8 +103,8 @@ streams remain open, and their leases preserve resources for later stream I/O.
 This is not a blanket thread-safety guarantee for every reader method.
 
 **`stream_members()` is separate.** A `stream_members()` pass owns the reader's
-one-pass data path. It MUST NOT overlap random `open()` work or any other
-forward/data pass. Advancing the iterator closes/invalidates the previously yielded
+one-pass data path. It MUST NOT overlap any other forward/data pass, nor random
+`open()` work except as the next requirement allows. Advancing the iterator closes/invalidates the previously yielded
 stream before yielding the next; this iterator-owned lifecycle does not apply to
 independent streams returned by random `open()`. The yielded stream carries a child
 scope so its I/O is permitted during the pass. Exhaustion, exceptions, explicit
@@ -156,7 +158,8 @@ release.
 | `CONCURRENT` interleaved reads, any format | Both correct; `AccessCost` describes expense only |
 | Concurrent first-touch on unmaterialized `CONCURRENT` reader | One builder; others wait; all proceed on published snapshot; no overlap `ArchiveyUsageError` |
 | Materialization fails before publish | Private state discarded; `UNMATERIALIZED`; waiters re-elect/see error; lifecycle stays `OPEN` |
-| Workers active + `__iter__`/`stream_members`/`extract_all` | Later op → `ArchiveyUsageError`; active streams OK |
+| Workers active + `extract_all`, or + `stream_members` before the member list is published | Later op → `ArchiveyUsageError`; active streams OK |
+| Workers active + `stream_members` or `__iter__` after the member list is published | Admitted (see "Random-access calls beside a `stream_members()` pass") |
 | `close()` under `CONCURRENT` with in-flight workers | Blocks until return, then closes; no raise merely for active workers; idle member streams are closed by that `close()` and their leases drop |
 | Two members in one solid block opened together | Correct independent bytes; may re-decode; no concurrency exception |
 | Same on CPython `3.13t` free-threaded job | Data-race-free; same observables as regular build |
@@ -204,18 +207,69 @@ applies, and like teardown the claim is not retried.
 | Two threads `close()` / `__exit__` | Stream shutdown once **and** teardown once; both return; dual failures → one `ExceptionGroup` |
 | Op after `close()` returned | `ArchiveyUsageError` (unchanged) |
 
+### Requirement: Random-access calls beside a `stream_members()` pass
+
+A random-access reader opened with `concurrent_members=True` SHALL admit `open()`,
+`read()`, `get()`, `members()`, `members_report()` and iteration while a
+`stream_members()` pass is active, from the pass's own thread (the loop body, while
+the generator is suspended at a yield) and from any other thread, once the reader
+has published its complete member list. The list is published by `members()` /
+`members_report()` / iteration, or by a data pass that reached the end; ZIP, ISO,
+non-solid RAR, directory and single-file readers publish it before their pass yields
+its first member, while TAR, 7z and solid RAR publish it at the end of their pass. Likewise a
+`stream_members()` pass SHALL start while worker calls are in flight once the list
+is published.
+
+Each admitted call answers from the published list and opens its own stream, as
+concurrent random opens do; it SHALL NOT move the pass's position or read through
+the pass's decoder (a 7z pass offers its folder decoder for a link's bytes only to
+the thread that ran the pass step). The pass's yielded streams and the random
+streams read correct bytes when interleaved. A pass on a compressed TAR shares the
+one decoder with random opens under the handle lock, so interleaving them costs
+re-decoding, not correctness.
+
+Before the list is published (a TAR, 7z or solid RAR pass with no prior listing), a call
+that would have to list the archive while the pass walks it keeps raising
+`ArchiveyUsageError`, as does every such call on a reader opened without
+`concurrent_members=True`. Another pass, `extract_all()`, and a second
+`stream_members()` still raise. Sharing one underlying pass among several
+`stream_members()` iterators is not provided.
+
+`close()` with a suspended pass and in-flight workers waits for the workers, then
+decides again: a pass that resumed meanwhile and is executing makes that `close()`
+raise `ArchiveyUsageError` with the reader left open; a pass still suspended is
+wound down as usual.
+
+#### Scenario: calls beside a pass
+
+| Case | Expected |
+| --- | --- |
+| `CONCURRENT`, list published, loop body calls `open()`/`read()`/`get()`/`members()`/iteration | Correct answers and bytes; pass unaffected |
+| Same from another thread while the pass is suspended or reading | Same |
+| Random stream held open, read interleaved with the pass's streams | Both correct |
+| `CONCURRENT` ZIP/ISO/non-solid RAR/directory, no prior `members()` | Admitted (listed before the first yield) |
+| `CONCURRENT` TAR/7z/solid RAR, first pass, no prior `members()` | `ArchiveyUsageError`; a later pass admits them |
+| Reader without `concurrent_members=True` | `ArchiveyUsageError`; pass usable |
+| `extract_all()` or a second `stream_members()` inside the loop | `ArchiveyUsageError` |
+| Worker in flight on another thread, list published, `stream_members()` starts | Admitted |
+| `close()` with a suspended pass and an in-flight worker | Waits for the worker; pass wound down; reader closed |
+| The pass resumes while that `close()` waits | `close()` → `ArchiveyUsageError`; reader stays open |
+| 7z pass on a link (`read_link_targets=False`), another thread `open()`s it | The other thread decodes on its own; the pass's decoder is untouched |
+
 ### Requirement: Distinct passes and shared streams remain single-owner
 
 Overlapping *distinct* reader-wide passes or concurrent access to a single
 stream object SHALL remain rejected or caller-synchronized. Coordination under
-`CONCURRENT` is bounded to materialization and draining close — it does not make
-every reader method thread-safe.
+`CONCURRENT` is bounded to materialization, draining close, and random-access calls
+beside a `stream_members()` pass once the list is published — it does not make every
+reader method thread-safe.
 
 #### Scenario: single-owner matrix
 
 | Case | Expected |
 | --- | --- |
 | Active `extract_all()` / `stream_members()` + another pass | Later → `ArchiveyUsageError` |
+| Active `stream_members()` + random calls, `CONCURRENT`, list published | Admitted (see "Random-access calls beside a `stream_members()` pass") |
 | Concurrent ops on same `ArchiveStream` | Caller's responsibility; no per-stream locking added |
 | `seekable() is False` + seek | `io.UnsupportedOperation` (no synthetic seek) |
 | `extract_all()` drives `stream_members` + hardlink recovery | Token-bearing child scopes permitted; unrelated public op rejected |

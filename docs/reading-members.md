@@ -111,7 +111,10 @@ same loop written around `open()` would hand you the target's contents. Read
 
 A `stream_members()` pass owns the reader while it runs. Calling `open()`,
 `members()` or another pass inside the loop raises `ArchiveyUsageError` rather than
-quietly disturbing the pass.
+quietly disturbing the pass. On a reader opened with `concurrent_members=True`,
+`open()`, `read()`, `get()` and `members()` work inside the loop once the member list
+is complete: ZIP, ISO and non-solid RAR list before the first member, TAR, 7z and
+solid RAR after a `members()` call. Another pass still raises.
 
 ## What a read gives you back
 

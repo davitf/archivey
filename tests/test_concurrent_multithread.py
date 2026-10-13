@@ -262,26 +262,44 @@ def test_close_closes_every_live_stream(tmp_path: Path) -> None:
 
 
 @pytest.mark.concurrent_reader
-def test_multithread_open_rejected_during_stream_members(tmp_path: Path) -> None:
-    path = _make_zip(tmp_path / "a.zip", n=4)
-    with open_archive(path, concurrent_members=True) as reader:
-        it = reader.stream_members()
-        next(it)
-        errors: list[BaseException] = []
+@pytest.mark.parametrize("compressed", [False, True])
+def test_multithread_reads_beside_stream_members(
+    tmp_path: Path, compressed: bool
+) -> None:
+    """Threads read members while the caller's thread drives a stream_members() pass.
 
-        def try_open() -> None:
+    The pass's streams and the threads' random opens interleave on the shared handle,
+    so on a tar.gz both move the one decoder back and forth under the handle lock.
+    """
+    path = _make_tar(tmp_path / "a.tar", compressed=compressed, n=4)
+    expected = _expected(4)
+    with open_archive(path, concurrent_members=True) as reader:
+        reader.members()  # a TAR listing is complete only after a full walk
+        barrier = threading.Barrier(5)
+        errors: list[BaseException] = []
+        got: list[dict[str, bytes]] = []
+
+        def read_all() -> None:
             try:
-                reader.open("f0.txt")
+                barrier.wait()
+                got.append({name: reader.read(name) for name in expected})
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        threads = [threading.Thread(target=try_open) for _ in range(4)]
+        threads = [threading.Thread(target=read_all) for _ in range(4)]
         for t in threads:
             t.start()
+        passed: dict[str, bytes] = {}
+        for member, stream in reader.stream_members():
+            if member.name == "f0.txt":
+                barrier.wait()
+            assert stream is not None
+            passed[member.name] = stream.read()
         for t in threads:
-            t.join(timeout=10)
-        assert errors and all(isinstance(e, ArchiveyUsageError) for e in errors)
-        list(it)
+            t.join(timeout=30)
+        assert not errors
+        assert passed == expected
+        assert got == [expected] * 4
 
 
 # --- Coordinated first-touch materialization + draining close ----------------------------
