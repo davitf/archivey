@@ -370,8 +370,10 @@ format, in two cases:
   members returns (`members()`, `members_report()`, `get()`, the end of a
   `stream_members()` pass or of iterating the reader). Before that a later member with
   the same name can still make it `is_current=False`, and links get
-  `link_target_member`: a member a pass yields (a random-access 7z or solid RAR pass
-  included) and a member a `members_report_if_available()` peek returns read `False`.
+  `link_target_member`. A `streaming=True` pass yields every member before that point,
+  in every format. Whether a random-access pass or a `members_report_if_available()`
+  peek does depends on whether the backend has resolved the listing before it yields;
+  the flag reports which, and no rule here fixes it per format.
   A pass that goes past `ListingLimits` stops keeping members: it stamps last-entry-wins
   over the members it kept, settles them, and stamps nothing from that point on, so a
   member yielded after it reads `True` with `is_current` as yielded.
@@ -394,7 +396,7 @@ practice.
 | --- | --- |
 | Streaming pass over a TAR holding `a.txt` twice, from a file or a pipe | Each member reads `False` when yielded; all read `True` after the pass, and the first `a.txt` reads `is_current=False` |
 | `members()`, `members_report()`, or `stream_members()` after either | Every member reads `True` |
-| Random-access 7z `stream_members()` with no listing call first | `False` when yielded, `True` after the pass |
+| Random-access `stream_members()` with no listing call first | 7z (walks as it goes): `False` when yielded, `True` after the pass. ZIP (listing resolved first): `True` when yielded |
 | Peek (`members_report_if_available()`), either access mode | `False` until a later call or pass resolves links to members, then `True` |
 | Streaming pass over the `ListingLimits` | Members kept before the limit read `True` from the point the pass stops keeping them, with `is_current` stamped over them; later ones read `True` when yielded, and none is stamped after that point |
 | Pass left early, then the reader closed | `True`: a closed reader updates nothing |

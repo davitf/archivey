@@ -290,3 +290,14 @@ def test_a_random_access_7z_pass_settles_its_members_when_it_ends() -> None:
     assert seen
     assert not any(final for _, final in seen)
     assert all(m.member_state_final for m, _ in seen)
+
+
+def test_a_random_access_zip_pass_yields_settled_members(tmp_path: Path) -> None:
+    """ZIP resolves its listing from the central directory before the pass yields."""
+    path = tmp_path / "link.zip"
+    _zip(path, [("a.txt", b"x")], symlink=("link", "a.txt"))
+    with open_archive(path) as reader:
+        assert [m.member_state_final for m, _ in reader.stream_members()] == [
+            True,
+            True,
+        ]

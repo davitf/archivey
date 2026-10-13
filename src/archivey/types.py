@@ -1001,12 +1001,15 @@ class ArchiveMember:
           returns: ``members()``, ``members_report()`` or ``get()``, or the end of a
           ``stream_members()`` pass or of iterating the reader. Until then a later
           member with the same name can still make this one ``is_current=False``, and
-          links get ``link_target_member``. So a member reads ``False`` while a pass
-          yields it (a random-access 7z or solid RAR pass too) and after a
-          ``members_report_if_available()`` peek. A pass past ``ListingLimits`` stops
-          keeping members: it stamps ``is_current`` over the ones it kept, and stamps
-          nothing from that point on, so a member yielded later reads ``True`` with
-          ``is_current`` as yielded and cannot supersede an earlier one.
+          links get ``link_target_member``. A ``streaming=True`` pass yields every
+          member before that point, in every format. A random-access pass yields
+          from a complete listing in some formats and walks as it goes in others, so
+          read the flag rather than assume either; a
+          ``members_report_if_available()`` peek can read ``False`` too. A pass past
+          ``ListingLimits`` stops keeping members: it stamps ``is_current`` over the
+          ones it kept, and stamps nothing from that point on, so a member yielded
+          later reads ``True`` with ``is_current`` as yielded and cannot supersede an
+          earlier one.
         - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink)
           that nothing has read yet, which is the case under
           ``ArchiveyConfig.read_link_targets=False``. Reading it sets
