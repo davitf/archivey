@@ -33,6 +33,7 @@ not fully recovered yet.
 | [0017](0017-bidi-override-rejection-is-policy-keyed.md) | Bidi-override rejection is policy-keyed; `TRUSTED` extracts | recorded |
 | [0018](0018-review-and-address-stay-separate-skills.md) | Review and address stay two skills; auto-watchers route through `steward` | recorded |
 | [0019](0019-no-top-level-extract.md) | No top-level `extract()`; extract through an open reader | recorded |
+| [0021](0021-native-tar-reader.md) | Native TAR reader; stdlib `tarfile` leaves the library | recorded |
 
 Related long-form material (not ADRs):
 
