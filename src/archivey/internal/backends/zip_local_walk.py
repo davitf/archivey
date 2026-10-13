@@ -291,7 +291,8 @@ class MemberData(ReadOnlyIOStream):
         self._walk = walk
         self._source = walk.source
         self.entry = entry
-        #: Bytes handed out so far.
+        #: Bytes handed out so far. For a codec member that is past its data: what
+        #: its compressed size is, the descriptor ``settle`` returns says.
         self.consumed = 0
         self._settled = False
 

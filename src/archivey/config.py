@@ -368,7 +368,9 @@ class DecoderLimits:
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
     one, with one exception: ``None`` on ``max_ppmd_in_process_input`` refuses
     a ZIP PPMd member whose sizes follow its data, read from a stream that cannot
-    seek, since such a member decodes only in a child process. Where an archive declares the size, exceeding a guard raises
+    seek, since such a member decodes only in a child process.
+
+    Where an archive declares the size, exceeding a guard raises
     :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
     which is the only place it can be raised in this process: the process has no
     recourse once the request is in the allocator's hands. The rapidgzip child is

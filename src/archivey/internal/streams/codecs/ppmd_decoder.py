@@ -231,7 +231,8 @@ class PpmdDecoder(BaseDecoder):
         # ``_quiesce_worker`` sends its bounded NUL in exactly this state.
         self._exhausted = False
         # ``DecoderLimits.max_ppmd_in_process_input``: past it, a child process, or
-        # ``ResourceLimitError`` where none can start. ``None``: always in-process.
+        # ``ResourceLimitError`` where none can start. ``None``: always in-process,
+        # except an ``input_runs_on`` member, which it refuses.
         self._in_process_max_input = in_process_max_input
         # Compressed input held back from pyppmd until the whole member is here, or
         # compressed EOF, or ``in_process_max_input`` is passed (then it goes to a
