@@ -1022,7 +1022,13 @@ class ArchiveInfo:
     """Whether decompressing one member may require decompressing earlier ones."""
 
     member_count: int | None
-    """Number of members, or ``None`` when a count would require scanning the whole archive."""
+    """Number of members, or ``None`` when a count would require scanning the whole archive.
+
+    Also ``None`` when the archive cannot supply a count: a ZIP whose central directory
+    is damaged, or holds more entries than ``ListingLimits.max_members``. Then
+    ``members()`` raises too. A ZIP's count comes from walking its central directory,
+    which reading this field runs if the listing has not.
+    """
 
     comment: str | None
     """Archive-level comment, if the format records one."""

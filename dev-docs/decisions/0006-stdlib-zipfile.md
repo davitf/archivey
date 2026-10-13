@@ -1,6 +1,6 @@
 # 0006 — Stdlib `zipfile` for the ZIP core
 
-- **Status:** accepted
+- **Status:** superseded by [0020](0020-native-zip-reader.md) (2026-10)
 - **Date:** early architecture
 - **Provenance:** `dev-docs/history/ARCHITECTURE.md` §5.1; OpenSpec `format-zip`
 

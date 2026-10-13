@@ -49,8 +49,9 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
 - **Don't `read()` a member from an untrusted archive without a size guard.**
   `read()` is unbounded. `stream_members()` and `for member in reader` are
   deliberately outside `ListingLimits` (they yield every member, and keep no
-  listing past a limit), except on 7z, RAR and ISO, which still enforce
-  `max_members` at open. Chunk untrusted payloads.
+  listing past a limit), except on ZIP, 7z, RAR and ISO, which still enforce
+  `max_members` at open (ZIP, as it reads the directory when the end record
+  understates the count). Chunk untrusted payloads.
   → [Limits](extracting.md#limits)
 - **Don't recurse into nested archives without bounding it yourself.** The bomb
   tracker checks expansion for *individual* archives and is **not nesting-aware**, so
@@ -107,6 +108,12 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   source (a pipe or socket) the listing reads up to 1 MiB past the trailer, so a
   sender that keeps the connection open after the tar ends makes the listing wait for
   more bytes or EOF. Close the sending side when the tar is done.
+- **ZIP trailing data is seen only when the end record is still found.** Bytes after a
+  ZIP's end record and its comment emit `ARCHIVE_TRAILING_DATA`; zero padding passes.
+  The end record is searched for in the last 64 KiB of the file, so a ZIP followed by
+  more than that is not opened at all today: `open_archive` raises
+  `CorruptionError`, or does not recognise the file without `format=`. Cut the tail
+  off, or open the ZIP part through a stream that ends where it does.
 - **The rapidgzip accelerator starts a child process for gzip, zlib and deflate.**
   rapidgzip aborts the process on a stream that ends early, so archivey decodes these
   codecs with it in a child Python process, one per open stream. When the child aborts,

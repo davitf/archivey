@@ -4,6 +4,7 @@ fail-fast, multi-volume rejection) and the ZIP slice of access-mode-and-cost."""
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import os
 import stat
@@ -15,7 +16,6 @@ import zlib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -127,18 +127,17 @@ def test_central_directory_lookup_no_io(simple_zip: Path) -> None:
     # reader.get("name") is served from the in-memory name map with no extra archive reads.
     with open_archive(simple_zip) as ar:
         ar.members()  # materialize
-        archive = ar._archive  # type: ignore[attr-defined]
-        calls = {"open": 0}
-        original_open = archive.open
+        calls = {"read_at": 0}
+        original_read_at = ar._read_at  # type: ignore[attr-defined]
 
-        def counting_open(*args, **kwargs):  # type: ignore[no-untyped-def]
-            calls["open"] += 1
-            return original_open(*args, **kwargs)
+        def counting_read_at(offset: int, n: int) -> bytes:
+            calls["read_at"] += 1
+            return original_read_at(offset, n)
 
-        archive.open = counting_open  # type: ignore[method-assign]
+        ar._read_at = counting_read_at  # type: ignore[attr-defined]
         member = ar.get("hello.txt")
         assert member.name == "hello.txt"
-        assert calls["open"] == 0  # lookup touched no archive data
+        assert calls["read_at"] == 0  # lookup touched no archive bytes
 
 
 # ---------------------------------------------------------------------------
@@ -1100,15 +1099,14 @@ def test_read_after_source_close_raises_typed_error() -> None:
 
 def test_truncated_zip_raises_corruption() -> None:
     # A ZIP whose central directory / EOCD has been cut off: the local-file-header magic
-    # still makes detection pick ZIP, but stdlib zipfile cannot parse it.
+    # still makes detection pick ZIP, but no end record is left to read.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("hello.txt", b"hello world" * 100)
     truncated = buf.getvalue()[: len(buf.getvalue()) // 2]
 
-    with raises_corruption_not_truncation() as excinfo:
+    with raises_corruption_not_truncation(match="Could not open ZIP archive"):
         open_archive(io.BytesIO(truncated))
-    assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
 
 
 def test_corrupt_member_data_raises_corruption_on_read() -> None:
@@ -1128,8 +1126,10 @@ def test_corrupt_member_data_raises_corruption_on_read() -> None:
 
 
 def test_non_utf8_local_header_name_is_reported_as_a_bad_name() -> None:
-    """A local header that sets the UTF-8 flag over a name that is not UTF-8 is a
-    corrupt entry name, and the error says so rather than blaming the offset."""
+    """A local header whose name bytes differ from the central directory's is a
+    corrupt entry. The names compare as bytes, so a local name that is not UTF-8
+    under the UTF-8 flag is never decoded, and the error names both spellings rather
+    than blaming the offset."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
         z.writestr("data.txt", b"A" * 200)
@@ -1140,20 +1140,17 @@ def test_non_utf8_local_header_name_is_reported_as_a_bad_name() -> None:
     with open_archive(io.BytesIO(bytes(raw))) as ar:
         assert ar.members()[0].name == "data.txt"
         with raises_corruption_not_truncation(
-            match="Corrupt ZIP entry name in local header"
-        ) as excinfo:
+            match=r"File name in directory .data\.txt. and header .+ata\.txt. differ"
+        ):
             ar.read("data.txt")
-    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
 
 
 def _overlapping_entries_zip() -> bytes:
     """A Fifield-style overlap bomb: many central-directory entries whose data spans
     overlap a single shared compressed kernel (https://www.bamsoftware.com/hacks/zipbomb/).
 
-    Member data never goes through ``zipfile.ZipFile.open``, so stdlib's own overlap guard
-    does not run. archivey computes each entry's data bound itself (``_member_data_ends``)
-    and raises ``zipfile.BadZipFile("Overlapped entries ...")`` when a member opens,
-    which the member-open translator maps to ``CorruptionError``.
+    archivey computes each entry's data bound itself (``_DataBounds``) and raises
+    ``CorruptionError("Overlapped entries ...")`` when a member opens.
     """
     import zlib
 
@@ -1222,7 +1219,7 @@ def _overlapping_entries_zip() -> bytes:
 def test_overlapping_entries_bomb_translated_to_corruption() -> None:
     # The overlap guard is an open-time check, not a read-time one, so it exercises a path
     # distinct from the CRC check above. Every overlapping member must surface as a
-    # translated CorruptionError carrying the stdlib BadZipFile as its cause.
+    # CorruptionError naming the overlap.
     data = _overlapping_entries_zip()
     with open_archive(io.BytesIO(data)) as ar:
         overlapping = [m for m in ar.members() if m.name != "f7"]  # last entry is valid
@@ -1231,29 +1228,6 @@ def test_overlapping_entries_bomb_translated_to_corruption() -> None:
             with raises_corruption_not_truncation() as excinfo:
                 ar.read(member)
             assert "Overlapped entries" in str(excinfo.value)
-            assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
-
-
-def test_overlap_guard_does_not_depend_on_stdlib_end_offsets(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Python before 3.11.8 sets no `ZipInfo._end_offset`. Simulate that: the guard must
-    # still refuse every overlapping member.
-    real = zipfile.ZipFile._RealGetContents  # type: ignore[attr-defined]
-
-    def without_end_offsets(self: zipfile.ZipFile) -> None:
-        real(self)
-        for info in self.filelist:
-            with contextlib.suppress(AttributeError):
-                del info._end_offset  # type: ignore[attr-defined]
-
-    monkeypatch.setattr(zipfile.ZipFile, "_RealGetContents", without_end_offsets)
-    with open_archive(io.BytesIO(_overlapping_entries_zip())) as ar:
-        overlapping = [m for m in ar.members() if m.name != "f7"]
-        for member in overlapping:
-            with raises_corruption_not_truncation(match="Overlapped entries"):
-                ar.read(member)
-        assert ar.read("f7") == b"\x00" * (1024 * 1024)
 
 
 def test_entries_sharing_one_local_header_read_only_once() -> None:
@@ -1407,56 +1381,9 @@ def test_encrypted_central_directory_is_unsupported(prefix: bytes) -> None:
         open_archive(io.BytesIO(prefix + _zip_with_encrypted_directory()))
 
 
-def _end_rec_data_with_location(rebased: bool) -> Any:
-    """``zipfile._EndRecData`` with one of the two ``_ECD_LOCATION`` layouts stdlib has
-    shipped for a ZIP64 archive, whatever the running Python's patch level.
-
-    CPython 3.11.14, 3.12.12, 3.13.10 and 3.14.1 rebased ``_ECD_LOCATION`` onto the
-    ZIP64 end record (``endrec[_ECD_LOCATION] = offset - extrasz`` in
-    ``_EndRecData64``). Earlier patch levels leave it on the classic record, and
-    ``_RealGetContents`` subtracts the 76 bytes of the ZIP64 record and locator itself.
-    The rebased value is written for archives with no ZIP64 extensible data, which is
-    every fixture here. It is taken from the classic record's location, which every
-    release stores as an absolute position before calling ``_EndRecData64``. The
-    ``offset`` argument is not used: pre-rebase releases pass it relative to the end
-    of the file.
-    """
-    real_end_rec_data64 = zipfile._EndRecData64  # type: ignore[attr-defined]
-
-    def end_rec_data64(fpin: Any, offset: int, endrec: list[Any]) -> list[Any]:
-        classic_location = endrec[zipfile._ECD_LOCATION]  # type: ignore[attr-defined]
-        endrec = real_end_rec_data64(fpin, offset, endrec)
-        if endrec[zipfile._ECD_SIGNATURE] == b"PK\x06\x06":  # type: ignore[attr-defined]
-            endrec[zipfile._ECD_LOCATION] = (  # type: ignore[attr-defined]
-                classic_location - 20 - 56 if rebased else classic_location
-            )
-        return endrec
-
-    def end_rec_data(fp: Any) -> Any:
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(zipfile, "_EndRecData64", end_rec_data64)
-            return zipfile._EndRecData(fp)  # type: ignore[attr-defined]
-
-    return end_rec_data
-
-
-_ZIP64_LOCATION_LAYOUTS = pytest.mark.parametrize(
-    "rebased", [True, False], ids=["rebased", "pre-rebase"]
-)
-
-
-@_ZIP64_LOCATION_LAYOUTS
-def test_encrypted_zip64_central_directory_is_unsupported(
-    rebased: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_encrypted_zip64_central_directory_is_unsupported() -> None:
     # A ZIP64 archive keeps the directory size in the ZIP64 end record; the classic
-    # record holds only 0xFFFFFFFF there. The check reads where stdlib reads, under
-    # either layout of the end record's location (only archivey's read is swapped).
-    import archivey.internal.backends.zip_reader as zip_reader
-
-    monkeypatch.setattr(
-        zip_reader, "_end_rec_data", _end_rec_data_with_location(rebased)
-    )
+    # record holds only 0xFFFFFFFF there. The check reads where the directory starts.
     raw = bytearray(_genuine_zip64_bytes())
     cd = raw.index(b"PK\x01\x02")
     cd_end = raw.index(b"PK\x06\x06")
@@ -1466,31 +1393,32 @@ def test_encrypted_zip64_central_directory_is_unsupported(
         open_archive(io.BytesIO(bytes(raw)))
 
 
-@_ZIP64_LOCATION_LAYOUTS
-def test_record_inside_a_damaged_zip64_directory_is_not_read_as_encryption(
-    rebased: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _members_raise_corruption(data: bytes) -> None:
+    """Open succeeds, and the listing raises ``CorruptionError`` at the damage.
+
+    A damaged directory lists the entries before the damage, then raises, as a cut
+    TAR does; here there is none before it.
+    """
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
+        with raises_corruption_not_truncation(match="central directory"):
+            reader.members()
+
+
+def test_record_inside_a_damaged_zip64_directory_is_not_read_as_encryption() -> None:
     # A damaged ZIP64 directory with an archive extra data record signature 76 bytes
     # in: where the directory start lands if the ZIP64 record and locator are not
-    # subtracted on the pre-rebase layout. Those bytes are directory content, so this
-    # stays corruption.
-    import archivey.internal.backends.zip_reader as zip_reader
-
-    monkeypatch.setattr(
-        zip_reader, "_end_rec_data", _end_rec_data_with_location(rebased)
-    )
+    # subtracted. Those bytes are directory content, so this stays corruption.
     raw = bytearray(_genuine_zip64_bytes(name=b"n" * 100))
     cd = raw.index(b"PK\x01\x02")
     raw[cd : cd + 4] = b"XXXX"
     raw[cd + 76 : cd + 80] = b"PK\x06\x08"
-    with raises_corruption_not_truncation():
-        open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.ZIP)
+    _members_raise_corruption(bytes(raw))
 
 
 def test_record_at_the_stale_declared_offset_is_not_read_as_encryption() -> None:
     # A damaged directory in a stub-prefixed archive, with an archive extra data record
     # signature in the stub exactly where the stale declared offset points. Only where
-    # stdlib reads decides, so this stays corruption.
+    # the directory really starts decides, so this stays corruption.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("a.txt", b"data")
@@ -1499,8 +1427,7 @@ def test_record_at_the_stale_declared_offset_is_not_read_as_encryption() -> None
     raw[cd : cd + 4] = b"XXXX"
     stub = bytearray(max(cd + 4, 64))
     stub[cd : cd + 4] = b"PK\x06\x08"
-    with raises_corruption_not_truncation():
-        open_archive(io.BytesIO(bytes(stub) + bytes(raw)), format=ArchiveFormat.ZIP)
+    _members_raise_corruption(bytes(stub) + bytes(raw))
 
 
 def test_damaged_central_directory_stays_corruption() -> None:
@@ -1510,8 +1437,7 @@ def test_damaged_central_directory_stays_corruption() -> None:
     raw = bytearray(buf.getvalue())
     cd = raw.index(b"PK\x01\x02")
     raw[cd : cd + 4] = b"XXXX"
-    with raises_corruption_not_truncation():
-        open_archive(io.BytesIO(bytes(raw)))
+    _members_raise_corruption(bytes(raw))
 
 
 def _zip_with_non_utf8_name(name_byte: bytes) -> bytes:
@@ -2180,20 +2106,28 @@ def test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime(
 # ---------------------------------------------------------------------------
 
 
-def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> None:
-    # A silent 0 fallback would make every candidate fail the ZipCrypto 1-byte check
-    # and misreport correct passwords as wrong for data-descriptor members.
-    path = tmp_path / "plain.zip"
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("a.txt", b"data")
-    with open_archive(path) as ar:
-        info = zipfile.ZipInfo("x")
-        info.flag_bits = 0x8  # data descriptor: check byte comes from _raw_time
-        assert not hasattr(info, "_raw_time")
-        with pytest.raises(RuntimeError, match="_raw_time"):
-            ar._zipcrypto_check_byte(info)  # type: ignore[attr-defined]
-        info._raw_time = 0xABCD
-        assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]
+def test_zipcrypto_check_byte_comes_from_the_dos_time_under_a_data_descriptor() -> None:
+    # Under bit 3 the CRC was not known when the header was written, so the check byte
+    # is the DOS time's high byte; otherwise the CRC's.
+    from archivey.internal.backends import zip_reader
+
+    loc = zip_reader._ZipLocator(
+        index=0,
+        header_offset=0,
+        compressed_size=12,
+        file_size=0,
+        crc=0x12345678,
+        flags=0x1,
+        method=0,
+        dos_time=0xABCD,
+        name=b"x",
+        aes=None,
+        strong_encryption=False,
+        reparse_fallback=None,
+    )
+    assert zip_reader._zipcrypto_check_byte(loc) == 0x12
+    with_descriptor = dataclasses.replace(loc, flags=0x9)
+    assert zip_reader._zipcrypto_check_byte(with_descriptor) == 0xAB
 
 
 _SPECIAL_FILE_TYPES = [

@@ -115,8 +115,10 @@ def test_adversarial_open_list_read_semantics(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     if entry.open_outcome == "corruption":
-        with raises_corruption_not_truncation() as caught:
-            open_archive(io.BytesIO(blob))
+        # The open reads only the end record; the listing raises at the entry.
+        with open_archive(io.BytesIO(blob)) as archive:
+            with raises_corruption_not_truncation() as caught:
+                archive.members()
         assert isinstance(caught.value.__cause__, UnicodeDecodeError)
         return
 

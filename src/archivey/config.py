@@ -224,7 +224,8 @@ class ListingLimits:
     ``stream_members`` and ``for member in reader`` do not enforce these caps: they
     yield every member, but stop keeping the listing once a cap is crossed, so their
     memory stays bounded by it. ``extract_all`` enforces them in both access modes.
-    7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its comments against
+    ZIP, 7z, RAR and ISO apply ``max_members`` at parse (ZIP at open, or as it reads
+    the directory when the end record understates the count), RAR weighs its comments against
     ``max_metadata_bytes`` (the declared sizes of compressed RAR 1.5/2.x comments
     before decoding them), and ISO the directory records, path tables and UDF
     descriptors ``pycdlib`` parses, so ``open_archive`` raises and none is an escape
@@ -245,7 +246,8 @@ class ListingLimits:
 
     Each listed member costs about 1.5 KiB of memory (measured by
     ``scripts/measure_limit_costs.py``), so the default allows about 384 MiB at open on
-    7z, RAR and ISO, where a tiny compressed header can declare that many members. A
+    7z, RAR and ISO, where a tiny compressed header can declare that many members (ZIP
+    checks the count too, but its directory costs about 46 bytes per entry). A
     current Linux kernel source tree has about 90 000 files, a third of the default;
     raise this for archives with more members, and lower it when opening untrusted
     archives on a server with less memory to spare.
