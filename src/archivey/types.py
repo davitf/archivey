@@ -996,13 +996,13 @@ class ArchiveMember:
         ``False`` while archivey can still update the member in place, which happens in
         two cases:
 
-        - A member of a listing whose links have not been resolved yet. That listing is
-          complete, and the member settled, when a call that resolves links returns:
-          ``members()``, ``members_report()`` or ``get()``, or the end of a
-          ``stream_members()`` pass or of iterating the reader. Until then a later member
-          with the same name can still make this one ``is_current=False``, and links
-          get ``link_target_member``. So a member reads ``False`` while a pass yields it
-          (a random-access 7z or solid RAR pass too) and after a
+        - A member of a listing whose links have not been resolved yet. That listing
+          is complete, and the member settled, when a call that resolves links
+          returns: ``members()``, ``members_report()`` or ``get()``, or the end of a
+          ``stream_members()`` pass or of iterating the reader. Until then a later
+          member with the same name can still make this one ``is_current=False``, and
+          links get ``link_target_member``. So a member reads ``False`` while a pass
+          yields it (a random-access 7z or solid RAR pass too) and after a
           ``members_report_if_available()`` peek. A pass past ``ListingLimits`` stops
           keeping members: it stamps ``is_current`` over the ones it kept, and stamps
           nothing from that point on, so a member yielded later reads ``True`` with

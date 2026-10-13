@@ -1796,16 +1796,18 @@ class BaseArchiveReader(ArchiveReader):
             member.link_target = None
             member._link_target_resolved = True
         if not self._listing_discarded:
-            # A member the walk keeps is stamped when the walk ends; one it does not keep
-            # never is, so nothing will change it.
+            # A member the walk keeps is settled when its listing resolves links; one it
+            # does not keep never is, and is in no list a settle walks, so neither flag
+            # is set. (No backend that stores targets as data reaches a discard today:
+            # each counts its members at open and refuses there.)
             member._listing_pending = True
-        if (
-            member.type is MemberType.SYMLINK
-            and member.link_target is None
-            and not member._link_target_resolved
-            and self._LINK_TARGETS_IN_DATA
-        ):
-            member._link_target_unread = True
+            if (
+                member.type is MemberType.SYMLINK
+                and member.link_target is None
+                and not member._link_target_resolved
+                and self._LINK_TARGETS_IN_DATA
+            ):
+                member._link_target_unread = True
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:
