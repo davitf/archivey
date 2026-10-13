@@ -15,6 +15,7 @@ import io
 import os
 import stat
 import struct
+import time
 import zipfile
 from pathlib import Path
 
@@ -64,9 +65,15 @@ def _zip(entries: list[tuple[zipfile.ZipInfo, bytes]]) -> bytes:
     return buf.getvalue()
 
 
-def _tree(root: Path) -> dict[str, tuple[object, ...]]:
+def _tree(
+    root: Path, *, times: bool = True, since: float | None = None
+) -> dict[str, tuple[object, ...]]:
     """Each entry under ``root``: its bytes, link target or ``dir``, and for a file or
-    directory its mode and modification time (a link gets no metadata applied)."""
+    directory its mode and modification time (a link gets no metadata applied).
+
+    A time from ``since`` on is the run's own, not the archive's (a folder no
+    member names, or one of the caller's), and two runs can straddle a second, so
+    it reads ``"now"``. ``times=False`` leaves the times out."""
     tree: dict[str, tuple[object, ...]] = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
@@ -75,7 +82,11 @@ def _tree(root: Path) -> dict[str, tuple[object, ...]]:
             continue
         st = path.stat()
         content = "dir" if path.is_dir() else path.read_bytes()
-        tree[rel] = (content, stat.S_IMODE(st.st_mode), int(st.st_mtime))
+        mtime: object = int(st.st_mtime)
+        if since is not None and st.st_mtime >= since:
+            mtime = "now"
+        entry = (content, stat.S_IMODE(st.st_mode), mtime)
+        tree[rel] = entry if times else entry[:2]
     return tree
 
 
@@ -103,13 +114,11 @@ def _both(
     """Extract ``data`` from a file and from a pipe; assert both end the same, and
     return the results and the tree. ``times=False`` leaves the times out, for a
     destination the caller seeded: a folder of theirs gets the time of the run."""
+    started = time.time() - 1
     from_file = _extract(data, tmp_path / "file", piped=False, **options)
     from_pipe = _extract(data, tmp_path / "pipe", piped=True, **options)
-    tree = _tree(tmp_path / "file")
-    piped_tree = _tree(tmp_path / "pipe")
-    if not times:
-        tree = {name: entry[:2] for name, entry in tree.items()}
-        piped_tree = {name: entry[:2] for name, entry in piped_tree.items()}
+    tree = _tree(tmp_path / "file", times=times, since=started)
+    piped_tree = _tree(tmp_path / "pipe", times=times, since=started)
     assert from_pipe == from_file
     assert piped_tree == tree
     return from_file, tree
