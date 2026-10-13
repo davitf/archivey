@@ -428,17 +428,19 @@ class _WalkHandoffStream(ReadOnlyIOStream):
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed TAR member stream")
-        data: bytes | None = None
         if self._detached_at is None:
             with self._reader._walk_lock:
                 if self._detached_at is None:
                     data = self._data.read(n)
-        if data is None:
-            if self._view is None:
-                self._view = self._reader._independent_data(
-                    self._span, self._detached_at or 0
-                )
-            data = self._view.read(n)
+                    # Under the lock: a pull on another thread detaches at this
+                    # position, so it must already count the bytes returned here.
+                    self._pos += len(data)
+                    return data
+        if self._view is None:
+            self._view = self._reader._independent_data(
+                self._span, self._detached_at or 0
+            )
+        data = self._view.read(n)
         self._pos += len(data)
         return data
 

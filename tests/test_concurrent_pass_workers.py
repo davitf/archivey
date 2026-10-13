@@ -3,9 +3,10 @@
 On a ``CONCURRENT`` reader every pass and listing call shares the reader's one member
 walk, each at its own position, so ``open()``, ``read()``, ``get()``, ``members()``,
 iteration and further ``stream_members()`` passes work beside a pass on every format,
-from the loop body and from other threads. On a reader opened without ``concurrent_members=True`` they still
-raise ``ArchiveyUsageError``, as ``extract_all()`` beside a pass does everywhere. The
-bookkeeping itself is unit-tested at the bottom.
+from the loop body and from other threads. On a reader opened without
+``concurrent_members=True`` they still raise ``ArchiveyUsageError``, as
+``extract_all()`` beside a pass does everywhere. The bookkeeping itself is unit-tested
+at the bottom.
 """
 
 from __future__ import annotations
@@ -641,3 +642,83 @@ def test_damaged_tar_pass_ends_with_the_same_error_on_both_readers(
             ends.append((read_errors, str(end.value)))
     assert ends[0] == ends[1]
     assert "member='f3'" in ends[1][1]
+
+
+class _LockWithReleaseHook:
+    """The reader's walk lock, running ``hook`` once just after a release."""
+
+    def __init__(self, lock: object) -> None:
+        self._lock = lock
+        self.hook: Callable[[], None] | None = None
+
+    def __enter__(self) -> None:
+        self._lock.__enter__()  # type: ignore[attr-defined]
+
+    def __exit__(self, *exc: object) -> None:
+        self._lock.__exit__(*exc)  # type: ignore[attr-defined]
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            hook()
+
+
+@pytest.mark.parametrize(("mode", "suffix"), _TAR_MODES)
+def test_walk_moving_on_right_after_a_read_keeps_the_stream_position(
+    tmp_path: Path, mode: str, suffix: str
+) -> None:
+    """A pull on another thread just after a read through the walk releases the lock
+    detaches the stream where that read ended, not where it began."""
+    path, files = _big_tar(tmp_path, mode, suffix)
+    with open_archive(path, concurrent_members=True) as reader:
+        lock = _LockWithReleaseHook(reader._walk_lock)  # type: ignore[attr-defined]
+        reader._walk_lock = lock  # type: ignore[attr-defined]
+        passes = reader.stream_members()
+        member, stream = next(passes)
+        assert stream is not None
+        head = stream.read(1000)
+        lock.hook = lambda: _in_thread(reader.members)
+        middle = stream.read(1000)
+        assert lock.hook is None
+        assert head + middle + stream.read() == files[member.name]
+        passes.close()  # type: ignore[attr-defined]
+
+
+def test_refused_listing_calls_beside_a_pass_keep_memory_within_the_caps(
+    tmp_path: Path,
+) -> None:
+    """``members()`` refused on every iteration pulls no further member each time,
+    so the listing stays bounded and the pass still discards it."""
+    from archivey import ListingLimits, ResourceLimitError
+    from tests.test_listing_limits import _tar_of_empty_members
+
+    tar_path = _tar_of_empty_members(tmp_path / "many.tar", 4_000)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
+    with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
+        seen = 0
+        for _member, _stream in reader.stream_members():
+            seen += 1
+            with pytest.raises(ResourceLimitError):
+                reader.members()
+            assert len(reader._listed) <= 21  # type: ignore[attr-defined]
+        assert seen == 4_000
+        assert reader._listing_discarded  # type: ignore[attr-defined]
+
+
+def test_listing_after_an_abandoned_pass_refuses_the_same_way_each_time(
+    tmp_path: Path,
+) -> None:
+    from archivey import ListingLimits, ResourceLimitError
+    from tests.test_listing_limits import _tar_of_empty_members
+
+    tar_path = _tar_of_empty_members(tmp_path / "many.tar", 100)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
+    with open_archive(tar_path, config=cfg) as reader:
+        passes = reader.stream_members()
+        next(passes)
+        next(passes)
+        passes.close()  # type: ignore[attr-defined]
+        messages = []
+        for _ in range(3):
+            with pytest.raises(ResourceLimitError) as refused:
+                reader.members()
+            messages.append(str(refused.value))
+    assert len(set(messages)) == 1, messages

@@ -1584,12 +1584,16 @@ class BaseArchiveReader(ArchiveReader):
 
         Once a pass has members of this walk (``_walk_handed_out``), an enforcing pull
         that crossed a limit would discard the walk under the pass. So the pulls do not
-        enforce, and the totals are checked after each one instead: the call raises
-        ``ResourceLimitError`` one member past the cap and the walk carries on for the
-        pass, which discards its listing when it crosses the cap itself.
+        enforce, and the totals are checked before and after each one instead: the
+        first call raises ``ResourceLimitError`` one member past the cap, a later one
+        raises before it pulls, so the listing never holds more than one member past
+        the caps. The walk carries on for the pass, which discards its listing when it
+        pulls past the cap itself.
         """
         while True:
             shared = enforce and self._walk_handed_out
+            if shared:
+                self._listing_tracker.assert_within_limits()
             if self._pull_member(enforce=enforce and not shared) is None:
                 return
             if shared:
