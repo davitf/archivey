@@ -71,6 +71,7 @@ from tests.sample_archives import (
     CorpusEntry,
     F,
     build_archive,
+    publish_cached,
     skip_unless_runnable,
 )
 
@@ -154,7 +155,7 @@ def _build(fmt: str, members: tuple) -> bytes:
             build_archive(
                 CorpusEntry(id="nested", members=members, formats=(fmt,)), fmt, tmp
             )
-            os.replace(tmp, final)
+            publish_cached(tmp, final)
         finally:
             tmp.unlink(missing_ok=True)
     return final.read_bytes()
