@@ -305,6 +305,8 @@ reads normally.
 | UDF image cut inside its volume recognition sequence, its last anchor, or file data | `TruncatedError` at open |
 | Image cut inside file data, no UDF | Opens; reading a file the cut reaches raises `TruncatedError` |
 | Full-length image: a descriptor field, a directory's padding, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
+| Cut image that keeps its path tables, root directory extent damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
+| Full-length UDF image whose volume space size is damaged upwards | `TruncatedError`: the file holds less than the image declares |
 
 ### Requirement: Report bytes after the end of an ISO image
 

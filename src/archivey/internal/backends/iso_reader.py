@@ -798,8 +798,7 @@ def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
     cdfp.seek(position)
     start = extent * block_size
     if start + ptr_size > image_length:
-        pvd = getattr(iso, "pvd")
-        volume_end = cast(int, pvd.space_size) * block_size
+        volume_end = iso.pvd.space_size * block_size
         if start + ptr_size <= volume_end:
             # Inside the volume space the image declares: the file is cut short.
             raise TruncatedError(
@@ -926,8 +925,9 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 # a little-endian 16-bit field at byte 128.
 _DESCRIPTOR_SECTOR = 2048
 _FIRST_DESCRIPTOR = 16 * _DESCRIPTOR_SECTOR
-# How many descriptors are searched for the primary one. Real images put it first, or
-# after one boot record; this bounds the reads a crafted image can cause at an error.
+# How many descriptors are searched for the primary one: at most 128 KiB read, and only
+# on an open that already failed. Real images put it first, or after one boot record; a
+# crafted image that puts it later keeps the plain ``CorruptionError`` label, cut or not.
 _MAX_DESCRIPTORS_SEARCHED = 64
 
 
@@ -1601,7 +1601,10 @@ class IsoReader(BaseArchiveReader):
                     # but not a *directory*'s: a root record declaring 4 GiB asks for 4
                     # GiB inside ``open_fp``, from a file of any size. The source turns
                     # that into a short read, which pycdlib reports as an invalid
-                    # directory record and ``_translate_exception`` makes a
+                    # directory record. When the file holds less than the image
+                    # declares, ``_cut_short`` makes that a ``TruncatedError``;
+                    # otherwise, as for a full-length image whose directory declares
+                    # too much, ``_translate_exception`` makes it a
                     # ``CorruptionError``. pycdlib never closes a file object it was
                     # handed (``_managing_fp`` is set only by ``open()``).
                     # Kept for ``_data_inode``, which reads extents pycdlib has no

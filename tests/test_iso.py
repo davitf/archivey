@@ -1807,6 +1807,43 @@ def test_every_cut_of_an_image_is_truncated_or_opens() -> None:
             raise AssertionError(f"udf={udf}: the image cut at {cut} read whole")
 
 
+def _set_extent(image: bytearray, at: int, value: int) -> None:
+    """Write a both-endian 32-bit field: little-endian at ``at``, big at ``at + 4``."""
+    struct.pack_into("<I", image, at, value)
+    struct.pack_into(">I", image, at + 4, value)
+
+
+_ROOT_EXTENT = 16 * 2048 + 156 + 2  # in the primary descriptor's root record
+_VOLUME_SPACE_SIZE = 16 * 2048 + 80
+
+
+def test_a_cut_image_whose_root_points_past_its_volume_space_is_corruption() -> None:
+    """The image is cut, and pycdlib's failing read ran into the end of the file, but
+    that read started past the volume space the image declares: the root record is a
+    wrong pointer, not a structure the cut removed. The cut keeps the path tables, so
+    the failure is pycdlib's directory read, not the path-table bound."""
+    image = bytearray(_three_file_image(udf=False))
+    (space_size,) = struct.unpack_from("<I", image, _VOLUME_SPACE_SIZE)
+    _set_extent(image, _ROOT_EXTENT, space_size + 1)
+    cut = 70_000
+    assert cut < len(image)
+    with raises_corruption_not_truncation(match="Invalid directory record"):
+        open_archive(io.BytesIO(bytes(image[:cut])), format=ArchiveFormat.ISO)
+
+
+def test_a_full_length_image_declaring_a_larger_volume_space_is_truncated() -> None:
+    """The volume space size is the one field that decides the label, so damage that
+    raises it reads as a cut: the file holds less than the image declares, and
+    pycdlib's read of the UDF anchor in the declared last block finds nothing."""
+    from archivey.exceptions import TruncatedError
+
+    image = bytearray(_three_file_image(udf=True))
+    (space_size,) = struct.unpack_from("<I", image, _VOLUME_SPACE_SIZE)
+    _set_extent(image, _VOLUME_SPACE_SIZE, space_size + 10)
+    with pytest.raises(TruncatedError, match="ends before its own structures"):
+        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
+
+
 def _damage_primary_descriptor(image: bytearray, block: int) -> None:
     image[16 * block + 6] = 2  # descriptor version, 1 in ECMA-119
 

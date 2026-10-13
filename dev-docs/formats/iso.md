@@ -26,10 +26,10 @@ anywhere in the format, so a damaged image reads damaged bytes without an error.
 *truncated* one is caught only where the data runs out: sizes list as declared, and a file
 cut by the end of the image reads what is there, then raises `TruncatedError` (§4); a cut
 that reaches the descriptors, path tables or directories fails the open with
-`TruncatedError` (§2.3). UDF is
-never read: a DVD or Blu-ray image lists through its ISO 9660 tree when it has one, and a
-UDF-only image is not detected at all (§3). And the namespace archivey picks decides which
-*files* exist, not only how they are named, because the trees are independent (§1).
+`TruncatedError` (§2.3). UDF is never read: a DVD or Blu-ray image lists through its ISO
+9660 tree when it has one, and a UDF-only image is not detected at all (§3). And the
+namespace archivey picks decides which *files* exist, not only how they are named,
+because the trees are independent (§1).
 
 ## 1. Shape
 
@@ -340,8 +340,8 @@ here, over the extents read straight from the image (`_data_inode`):
   from two facts: `pycdlib`'s last read reached the end of the file (the handle is at
   or past it), and the image declares more than the file holds (the primary
   descriptor's volume space, or the descriptor set running past the file), with that
-  read starting inside the declared end. Both true: `TruncatedError`; otherwise the
-  `CorruptionError` as before. The path-table bound (`_check_path_table`) raises before
+  read starting inside the declared end. Both true: `TruncatedError`; otherwise
+  `CorruptionError`. The path-table bound (`_check_path_table`) raises before
   `pycdlib` reads, so it applies the same test to the table's own end. A UDF image cut
   anywhere after its ISO 9660 trees fails here too, at the anchor `pycdlib` reads in the
   volume's last block, so a cut UDF image does not open even when its files survive.
@@ -528,7 +528,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `created` holds only a `TF` creation time | `created` never holds `st_ctime`; the attribute-change time goes to `ctime` | Falling back to the attribute-change time, as before PR #470 |
 | Bytes after the image's end are `ARCHIVE_TRAILING_DATA`, and the end counts the partitions the MBR or GPT lists | Ruled by davitf, 2026-10-10 ("count partitions"). DR-3 reports bytes outside an archive. A hybrid installer image appends an EFI partition and a GPT backup header after the volume space (`xorriso -append_partition`, measured); they belong to the disk image, and a warning on every distro ISO would teach callers to ignore it. A GPT counts only when both its CRCs match, so damage in transfer, or `EFI PART` alone, widens nothing; a protective MBR entry (`0xEE`, often spanning the whole medium) is skipped. An MBR has no checksum, so a crafted MBR or a crafted valid GPT can cover appended bytes, but whoever writes the image can already hide them by declaring a larger volume space. A partition or backup header reaching past the end of the file still counts: a hybrid cut inside its EFI partition would otherwise report its own partition bytes. UEFI allows GPT entry sizes of 128 times a power of two, all accepted; the array read is bounded at 512 KiB | Ending the image at the volume space, as 7-Zip does (it warns on hybrid images); no check; trusting `EFI PART` without its CRCs |
 | A clamped file lists its declared length, read back from the directory record, and fails its read at the cut | A partial download keeps every file before the cut readable, and the listing says what the file should hold; the lookup runs only for records ending exactly at the image end | `size=None` for clamped files; refusing at open when the volume space size exceeds the source, which also refuses the files that survived |
-| An open that fails because a read ran into the end of a cut image is `TruncatedError`; a cut image is one whose volume space, or descriptor set, goes past the end of the file | TAR, RAR and 7z raise `TruncatedError` for a cut header, so a caller handling a partial download sees one type across formats (error-handling spec). `pycdlib`'s exceptions do not say whether bytes were short, so the handle's position and the declared size decide; a full-length image whose pointer runs past the end stays `CorruptionError`, since its own size says nothing is missing | Matching `pycdlib`'s messages (they change between releases and `struct.error` carries none); `TruncatedError` for every read past the end of the file, which would label a wrong pointer in a whole image as a cut |
+| An open that fails because a read ran into the end of a cut image is `TruncatedError`; a cut image is one whose volume space, or descriptor set, goes past the end of the file | TAR, RAR and 7z raise `TruncatedError` for a cut header, so a caller handling a partial download sees one type across formats (error-handling spec). `pycdlib`'s exceptions do not say whether bytes were short, so the handle's position and the declared size decide; a full-length image whose pointer runs past the end stays `CorruptionError`, since its own size says nothing is missing. Finding the primary descriptor reads at most 64 descriptor sectors (128 KiB), and only after the open has failed; one placed later keeps `CorruptionError` | Matching `pycdlib`'s messages (they change between releases and `struct.error` carries none); `TruncatedError` for every read past the end of the file, which would label a wrong pointer in a whole image as a cut |
 
 ## 7. Open questions
 
@@ -572,6 +572,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Directory length bound; path sources go through the source; handles released on failure | `::test_directory_data_length_does_not_drive_the_allocation`, `::test_a_path_source_is_read_through_the_archive_source`, `::test_a_refused_path_source_does_not_hold_its_handle`, `::test_a_failure_after_open_fp_is_translated_and_releases` |
 | Corrupt input is `CorruptionError`; handle `OSError` is not | `::test_a_damaged_image_of_full_length_is_corruption_not_truncation`, `::test_filesystem_oserror_propagates_unwrapped` |
 | An image cut inside its descriptors, path tables, directories, System Use areas or UDF structures is `TruncatedError` at open | `::test_an_image_cut_inside_its_first_descriptor_is_truncated`, `::test_an_image_cut_inside_its_metadata_is_truncated`, `::test_every_cut_of_an_image_is_truncated_or_opens` |
+| A cut image whose failing read started past its volume space is `CorruptionError`; a full-length image whose volume space size is damaged upwards reads as cut | `::test_a_cut_image_whose_root_points_past_its_volume_space_is_corruption`, `::test_a_full_length_image_declaring_a_larger_volume_space_is_truncated` |
 | Listing reads nothing after open, on an image with no repeated identifier and no file ending at the image end | `::test_listing_reads_nothing_from_the_image` |
 | Concurrent reads under the lock | `tests/test_concurrent_multithread.py::test_multithread_iso_open_read`, `tests/test_locked_stream.py::test_tar_iso_concurrent_open_uses_lock` |
 | Cross-format equivalence (`basic`, `encoding`, `symlinks`, Rock Ridge and Joliet-only) | `tests/test_corpus_sweep.py` |

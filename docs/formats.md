@@ -604,8 +604,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   records declare. A file the cut reaches reads the bytes that survive and then raises
   `TruncatedError`; files before the cut read normally. A file whose declared length
   cannot be recovered lists with `size` set to `None`. A cut that reaches the volume
-  descriptors, path tables or directories, or the last block of an image with UDF, makes
-  `open_archive` raise `TruncatedError`.
+  descriptors, path tables or directories makes `open_archive` raise `TruncatedError`.
+- An image with UDF does not open once it is truncated at all, even when the files
+  before the cut survive: `open_archive` raises `TruncatedError`, because the UDF anchor
+  that `pycdlib` reads is in the image's last block.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
