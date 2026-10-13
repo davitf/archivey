@@ -1161,6 +1161,7 @@ class RarReader(BaseArchiveReader):
     """Reads RAR archives: native metadata parse + RARLAB ``unrar`` for data."""
 
     _MEMBER_LIST_UPFRONT = True
+    _LINK_TARGETS_IN_DATA = True
 
     def __init__(
         self,

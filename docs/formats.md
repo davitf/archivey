@@ -86,9 +86,14 @@ The fields that change in practice:
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
 | ISO | `is_current`, `link_target_member` | none: Rock Ridge carries the target |
+| Directory | `link_target_member` (names never repeat) | none: the target is read with the entry |
+| Single-file (`.gz`, `.xz`, …) | none in practice: one member, no links | none |
 
 A random-access listing is complete before it returns, so its members read `True`
-unless they are unread symlinks.
+unless they are unread symlinks. The flag is `False` in a streaming pass in every
+format, including the two whose fields do not change in practice, so a caller needs no
+per-format rule. A pass past `ListingLimits` stops stamping members: from that point
+they read `True` with `is_current` as yielded.
 
 ## ZIP
 

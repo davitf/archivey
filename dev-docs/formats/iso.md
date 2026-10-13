@@ -320,6 +320,10 @@ here, over the extents read straight from the image (`_data_inode`):
   fields are all equal hold the same data, so which takes which place changes no
   member's data; if a record cannot be matched at all, each record with that identifier
   lists on its own.
+- **Streaming passes.** A member reads `member_state_final=False` until the pass ends:
+  the shared rule above stamps `is_current` then, and links get `link_target_member`
+  then. A Rock Ridge link target is in the directory record, so no link waits on a
+  data read.
 - **The boot catalog.** `pycdlib` keeps it in memory and gives its record no inode. Its
   extent still holds the bytes, which is what a mounted image shows. Because it has no
   inode, `pycdlib` never clamped its length to the image either; the inode built here

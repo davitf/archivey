@@ -463,6 +463,7 @@ class SevenZipReader(BaseArchiveReader):
     """Reads 7z archives using the native parser and shared codec streams."""
 
     _MEMBER_LIST_UPFRONT = True
+    _LINK_TARGETS_IN_DATA = True
 
     def __init__(
         self,

@@ -107,7 +107,9 @@ Its other limitations:
   has seen the rest of the archive. A later member with the same name makes an earlier
   one `is_current=False`, and links are resolved to their target members when the pass
   ends, so the member objects you already hold are updated then.
-  `member.member_state_final` is `False` until then and `True` after. A ZIP, 7z or
+  `member.member_state_final` is `False` until then and `True` after. A pass past
+  `ListingLimits` stops keeping members and never stamps them, so from that point they
+  read `True` with `is_current` as yielded, and a superseded copy can read current. A ZIP, 7z or
   RAR 4 symlink whose target has not been read (`read_link_targets=False`) also reads
   `False`, in either mode, until `open()` or `extract_all()` reads it.
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported

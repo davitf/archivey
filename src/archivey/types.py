@@ -999,17 +999,23 @@ class ArchiveMember:
         - A member yielded by a forward pass (``streaming=True``: ``stream_members()``
           or iterating the reader), until the pass ends. A later member with the same
           name can still make this one ``is_current=False``, and link targets are
-          resolved to members when the pass ends.
+          resolved to members when the pass ends. A pass that goes past
+          ``ListingLimits`` stops keeping members and never stamps them, so from there
+          its members read ``True`` with ``is_current`` as yielded: a superseded copy
+          can read current.
         - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink)
           that nothing has read yet, which is the case under
           ``ArchiveyConfig.read_link_targets=False``. Reading it sets
           :attr:`link_target`, and a Windows reparse point whose data is not a link
           buffer becomes a ``FILE``. :meth:`~archivey.ArchiveReader.open` and
-          ``extract_all`` read it when they reach the link.
+          :meth:`~archivey.ForwardArchiveReader.extract_all` read it when they reach the link.
 
         Everywhere else it is ``True``: a random-access listing is complete before any
-        member is returned. Attached ``diagnostics`` are not fields and can still
-        grow. Which fields change in practice is listed per format in the user docs.
+        member is returned. Closing the reader makes it ``True`` too, since a closed
+        reader updates nothing, and so is a copy made with :meth:`replace`, which
+        archivey never updates (an unread link's copy keeps ``link_target`` ``None``).
+        Attached ``diagnostics`` are not fields and can still grow. Which fields change
+        in practice is listed per format in the user docs.
         """
         return not (self._listing_pending or self._link_target_unread)
 
@@ -1040,8 +1046,14 @@ class ArchiveMember:
         verified statically, so a misspelled field or a wrongly typed value is still
         a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
         would need a per-field ``TypedDict``, which is deliberately deferred.
+
+        The copy reads ``member_state_final`` ``True``: archivey updates only the
+        members it handed out, never a copy.
         """
-        return replace(self, **kwargs)
+        copy = replace(self, **kwargs)
+        copy._listing_pending = False
+        copy._link_target_unread = False
+        return copy
 
 
 @dataclass(frozen=True)

@@ -204,3 +204,47 @@ def test_a_rar5_link_target_is_in_the_header() -> None:
         links = [m for m in reader.members() if m.is_link]
         assert links
         assert all(m.member_state_final and m.link_target for m in links)
+
+
+def test_a_peek_leaves_members_unsettled_until_the_pass_resolves_links() -> None:
+    """A peek can end the walk; links are resolved to members only when the pass ends.
+
+    RAR 5 carries its targets in the headers, so nothing else holds the flag down.
+    """
+    path = _FIXTURES / "rar/symlinks_solid__.rar"
+    with open_archive(path, streaming=True) as reader:
+        report = reader.members_report_if_available()
+        assert report is not None
+        link = next(m for m in report.members if m.name == "symlink_to_file1.txt")
+        assert link.link_target_member is None
+        assert not link.member_state_final
+        for _member, _stream in reader.stream_members():
+            pass
+        assert link.link_target_member is not None
+        assert link.member_state_final
+
+
+def test_a_pass_left_early_is_settled_when_the_reader_closes(tmp_path: Path) -> None:
+    path = tmp_path / "dup.tar"
+    path.write_bytes(_tar(_DUPLICATES))
+    with open_archive(path, streaming=True) as reader:
+        member, _stream = next(iter(reader.stream_members()))
+        assert not member.member_state_final
+    assert member.member_state_final
+
+
+def test_a_copy_is_never_updated_so_it_is_final(tmp_path: Path) -> None:
+    """``replace()`` makes an object archivey does not hold, so nothing will change it."""
+    path = tmp_path / "link.zip"
+    _zip(path, [("a.txt", b"x")], symlink=("link", "a.txt"))
+    with open_archive(path, config=ArchiveyConfig(read_link_targets=False)) as reader:
+        link = reader.get("link")
+        assert not link.member_state_final
+        copy = link.replace(name="other")
+        assert copy.member_state_final
+        assert copy.link_target is None
+    path = tmp_path / "dup.tar"
+    path.write_bytes(_tar(_DUPLICATES))
+    with open_archive(path, streaming=True) as reader:
+        for member, _stream in reader.stream_members():
+            assert member.replace(name="x").member_state_final
