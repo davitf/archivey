@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
 from archivey.internal.filters import resolve_or_raise_on_loop
-from archivey.internal.long_paths import long_path
+from archivey.internal.long_paths import long_path, plain
 
 # More symlink follows than any supported kernel allows in one resolution (Linux 40,
 # macOS and FreeBSD 32, Windows 63 reparse points). A walk stops there: the OS
@@ -240,7 +240,8 @@ class LinkWatch:
                 return False
             if link.identity[1]:
                 return (st.st_dev, st.st_ino) == link.identity
-            return os.readlink(long_path(link.path)) == link.target
+            # Plain: Windows returns an absolute target with the extended prefix.
+            return plain(os.readlink(long_path(link.path))) == link.target
         except OSError:
             return False
 
@@ -323,7 +324,7 @@ class LinkWatch:
             try:
                 if not stat.S_ISLNK(os.lstat(long_path(path)).st_mode):
                     continue
-                link_target = os.readlink(long_path(path))
+                link_target = plain(os.readlink(long_path(path)))
             except OSError:
                 # Missing, or unreadable: kept as a name, as realpath does.
                 continue

@@ -55,6 +55,10 @@ def extended(path: str) -> str:
     device namespace (``\\\\.\\``) is unchanged too."""
     if path.startswith((_EXTENDED, _DEVICE)):
         return path
+    # Normalizing cannot lengthen an absolute path, so a short one needs no
+    # ``GetFullPathNameW`` to be measured.
+    if ntpath.isabs(path) and len(path) < _SHORT_LIMIT:
+        return path
     full = ntpath.abspath(path)
     if len(full) < _SHORT_LIMIT or full.startswith((_EXTENDED, _DEVICE)):
         return path

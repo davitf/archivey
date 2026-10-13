@@ -20,6 +20,7 @@ optimization over this core, not a correctness requirement.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import errno
 import os
@@ -264,13 +265,16 @@ def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
     try:
         while pending:
             directory = pending.pop()
-            with os.scandir(directory) as entries:
+            # Listed in the long-path form, so a deep directory can be read; each
+            # entry's path is named plain again to be placed under ``root``.
+            with os.scandir(long_path(directory)) as entries:
                 for entry in entries:
+                    path = Path(plain(entry.path))
                     if entry.is_symlink():
-                        rel = Path(entry.path).relative_to(root).as_posix()
-                        links.append((rel, os.readlink(entry.path)))
+                        rel = path.relative_to(root).as_posix()
+                        links.append((rel, plain(os.readlink(entry.path))))
                     elif entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
+                        pending.append(path)
     except OSError:
         return None
     return tuple(sorted(links))
@@ -721,10 +725,11 @@ class _RunState:
     # directory link, so the end of the run can remake one whose target turned out
     # the other kind (``_settle_link_kinds``).
     link_kinds: dict[Path, tuple[str, bool]] = field(default_factory=dict)
-    # The archive's listing, when the run has one for free, and the directories it
-    # shows (``_listed_directory``, built on first use).
+    # The archive's listing, when the run has one for free, and its names folded and
+    # sorted with the set of directory members' names (``_listed_directory``, built on
+    # first use).
     listed: list[ArchiveMember] | None = None
-    listed_dirs: set[str] | None = None
+    listed_names: tuple[list[str], set[str]] | None = None
     # The stored target of each tracked symlink whose target was written differently
     # (a disk spelling, Windows separators, a dry run's scratch path), by result
     # index, so a recheck error names it as listed.
@@ -879,10 +884,10 @@ class _DryRun:
         """
         dest = self.shown_dest
         child, ancestor = dest, dest.parent
-        while not os.path.lexists(ancestor) and ancestor != ancestor.parent:
+        while not os.path.lexists(long_path(ancestor)) and ancestor != ancestor.parent:
             child, ancestor = ancestor, ancestor.parent
         try:
-            st = os.stat(ancestor)
+            st = os.stat(long_path(ancestor))
         except OSError as exc:
             if exc.errno == errno.ENOENT:
                 # A dangling symlink: mkdir meets it as an existing entry.
@@ -899,9 +904,9 @@ class _DryRun:
             # os.access there reads the read-only attribute, which does not stop
             # creating entries in a directory.
             return
-        if not os.access(ancestor, os.X_OK):
+        if not os.access(long_path(ancestor), os.X_OK):
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(dest))
-        if not os.access(ancestor, os.W_OK):
+        if not os.access(long_path(ancestor), os.W_OK):
             # The first directory mkdir creates is the one it is refused.
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(child))
 
@@ -1013,16 +1018,16 @@ class ExtractionCoordinator:
                     sink=sink,
                 )
                 try:
-                    work.mkdir()
+                    os.mkdir(long_path(work))
                     if detour is not None:
-                        detour.mkdir()
+                        os.mkdir(long_path(detour))
                     results = self._run(reader, work_given)
                 except OSError as exc:
                     _plain_os_error(exc)
                     dry.rebase_os_error(exc)
                     raise
             with contextlib.suppress(OSError):
-                with os.scandir(work) as entries:
+                with os.scandir(long_path(work)) as entries:
                     self.dry_run_top_level = tuple(
                         sorted(
                             (entry.name, entry.is_dir(follow_symlinks=False))
@@ -2015,6 +2020,8 @@ class ExtractionCoordinator:
             return requested, None, None
         prior = self._state.collision_map.get(self._collision_key(requested))
         if prior is None and self._policy is not ExtractionPolicy.TRUSTED:
+            # TRUSTED reports no collision event (``collided`` below), so an alias
+            # found there would change nothing; the guard saves its ``lstat``.
             prior = self._alias_claim(requested)
         collided = (
             prior.path
@@ -2587,17 +2594,19 @@ class ExtractionCoordinator:
         state = self._state
         if state.listed is None:
             return False
-        if state.listed_dirs is None:
+        if state.listed_names is None:
+            # One string per member: an ancestor is found by a prefix search, so no
+            # string is built for each directory a deep name passes through.
+            names: list[str] = []
             dirs: set[str] = set()
             for member in state.listed:
                 name = posixpath.normpath(member.name.replace("\\", "/").strip("/"))
-                parts = name.split("/")
-                for depth in range(1, len(parts)):
-                    dirs.add("/".join(parts[:depth]).casefold())
+                folded = name.casefold()
+                names.append(folded)
                 if member.type == MemberType.DIRECTORY:
-                    dirs.add(name.casefold())
-            dirs.discard(".")
-            state.listed_dirs = dirs
+                    dirs.add(folded)
+            names.sort()
+            state.listed_names = (names, dirs)
         try:
             rel_parent = dest_path.parent.relative_to(state.dest).as_posix()
         except ValueError:
@@ -2608,7 +2617,13 @@ class ExtractionCoordinator:
         named = posixpath.normpath(posixpath.join(rel_parent, spelled))
         if named == ".." or named.startswith("../"):
             return False
-        return named.casefold() in state.listed_dirs
+        folded = named.casefold()
+        names, dirs = state.listed_names
+        if folded in dirs:
+            return True
+        inside = folded + "/"
+        at = bisect.bisect_left(names, inside)
+        return at < len(names) and names[at].startswith(inside)
 
     def _settle_link_kinds(self) -> None:
         """Remake each symlink this run made of the wrong kind for what its target is
@@ -2626,7 +2641,9 @@ class ExtractionCoordinator:
             if path not in state.written_paths:
                 continue
             try:
-                if os.readlink(long_path(path)) != on_disk:
+                # Windows hands back an absolute target with the extended
+                # prefix: compared plain, as it was created.
+                if plain(os.readlink(long_path(path))) != on_disk:
                     continue
             except OSError:
                 continue

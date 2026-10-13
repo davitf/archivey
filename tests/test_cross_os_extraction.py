@@ -9,11 +9,15 @@ only on Windows or simulate the Windows error with monkeypatch.
 
 from __future__ import annotations
 
+import builtins
 import errno
 import io
 import os
+import shutil
 import stat
+import sys
 import tarfile
+import tempfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -920,54 +924,132 @@ def test_extended_prefix_is_stripped_for_display() -> None:
     assert long_paths.plain("/tmp/a") == "/tmp/a"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the no-op is the POSIX branch")
 def test_long_path_is_a_no_op_off_windows() -> None:
     path = Path("/" + "d" * 400)
-    if os.name != "nt":
-        assert long_paths.long_path(path) is path
+    assert long_paths.long_path(path) is path
 
 
 def _fake_long_paths(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Take the Windows long-path route on POSIX, for every path.
 
-    ``/.`` before an absolute POSIX path names the same file, so the run still works,
-    and any path that shows the prefix leaked out of the filesystem calls. Returns the
-    paths the helper extended.
+    A second leading ``/`` names the same file on Linux, so the run still works, and
+    pathlib keeps it (POSIX leaves two leading slashes to the implementation), so a
+    ``Path`` built from a returned path keeps the prefix as one built from ``\\\\?\\``
+    does on Windows. Any path that shows it leaked out of the filesystem calls. Returns
+    the paths the helper extended.
     """
     seen: list[str] = []
 
     def fake(path: str) -> str:
-        if path.startswith("/./"):
+        if path.startswith("//"):
             return path
         seen.append(path)
-        return "/." + os.path.abspath(path)
+        return "/" + os.path.abspath(path)
 
     monkeypatch.setattr(long_paths, "_ENABLED", True)
-    monkeypatch.setattr(long_paths, "_PREFIXES", (("/./", "/"),))
+    monkeypatch.setattr(long_paths, "_PREFIXES", (("//", "/"),))
     monkeypatch.setattr(long_paths, "extended", fake)
     return seen
 
 
-@_POSIX_SYMLINKS
-@pytest.mark.parametrize("streaming", [False, True])
-def test_filesystem_calls_take_the_long_path_form(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
-) -> None:
-    """Every write goes through the long-path helper, and no result shows its form."""
-    seen = _fake_long_paths(monkeypatch)
-    calls: list[str] = []
-    for name in ("replace", "makedirs", "symlink", "link", "unlink", "rmdir"):
-        real = getattr(os, name)
+# The filesystem calls the extraction code makes, by module, for the routing inventory.
+_ROUTED_CALLS: list[tuple[object, str]] = [
+    *(
+        (os, name)
+        for name in (
+            "open",
+            "lstat",
+            "stat",
+            "replace",
+            "rename",
+            "unlink",
+            "rmdir",
+            "link",
+            "symlink",
+            "makedirs",
+            "mkdir",
+            "chmod",
+            "utime",
+            "readlink",
+            "scandir",
+            "walk",
+            "access",
+        )
+    ),
+    *((os.path, name) for name in ("lexists", "exists", "isdir", "islink")),
+    (tempfile, "mkstemp"),
+    (shutil, "rmtree"),
+    (builtins, "open"),
+]
+
+
+def _spy_on_paths(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[str]:
+    """Record each path under ``root`` that archivey's own code hands to a filesystem
+    call in ``_ROUTED_CALLS``, as "<call> <path>". Calls the standard library makes
+    inside those (``os.makedirs`` calling ``os.mkdir``) are not archivey's and are left
+    out: the caller's module decides."""
+    seen: list[str] = []
+    prefix = os.fspath(root)
+
+    def under_root(value: object) -> str | None:
+        if not isinstance(value, (str, os.PathLike)):
+            return None
+        text = os.fspath(value)
+        if not isinstance(text, str):
+            return None
+        plain = text[1:] if text.startswith("//") else text
+        return text if plain.startswith(prefix) else None
+
+    for module, name in _ROUTED_CALLS:
+        real = getattr(module, name)
 
         def spy(
             *args: object, _real: object = real, _name: str = name, **kwargs: object
         ) -> object:
-            # The path under dest: a symlink's first argument is its target, and
-            # os.replace and os.link move or link onto their second.
-            where = args[0] if _name in ("makedirs", "unlink", "rmdir") else args[1]
-            calls.append(f"{_name} {os.fspath(where)}")  # type: ignore[arg-type]
+            caller = sys._getframe(1).f_globals.get("__name__", "")
+            if caller.startswith("archivey."):
+                for value in (*args, kwargs.get("dir")):
+                    path = under_root(value)
+                    if path is not None:
+                        seen.append(f"{_name} {path}")
             return _real(*args, **kwargs)  # type: ignore[operator]
 
-        monkeypatch.setattr(os, name, spy)
+        monkeypatch.setattr(module, name, spy)
+    return seen
+
+
+@_POSIX_SYMLINKS
+@pytest.mark.parametrize(
+    "streaming,dry_run,policy",
+    [
+        (False, False, ExtractionPolicy.STRICT),
+        (True, False, ExtractionPolicy.STRICT),
+        (False, True, ExtractionPolicy.STRICT),
+        (False, False, ExtractionPolicy.TRUSTED),
+    ],
+)
+@pytest.mark.parametrize("link_limit", [False, True])
+def test_filesystem_calls_take_the_long_path_form(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    dry_run: bool,
+    policy: ExtractionPolicy,
+    link_limit: bool,
+) -> None:
+    """Each path under the destination (or a dry run's scratch copy) that archivey
+    hands to one of ``_ROUTED_CALLS`` is in the long-path form, and no result shows
+    that form. A new call site that forgets the helper fails here. ``link_limit``
+    refuses every hard link, so the copy fallback runs too."""
+    seen = _fake_long_paths(monkeypatch)
+    if link_limit:
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise OSError(errno.EMLINK, "Too many links")
+
+        monkeypatch.setattr(os, "link", refuse)
+    calls = _spy_on_paths(monkeypatch, Path(tempfile.gettempdir()).resolve())
     dest = tmp_path / "out"
     report = open_and_extract(
         io.BytesIO(
@@ -979,25 +1061,35 @@ def test_filesystem_calls_take_the_long_path_form(
                     ("sym", "d/l", "f"),
                     ("hard", "d/h", "d/f"),
                     ("file", "D/F", b"3"),
-                    ("dir", "e/sub", None),
+                    ("dir", "d/sub", None),
                 ]
             )
         ),
         dest,
         streaming=streaming,
+        dry_run=dry_run,
+        policy=policy,
         overwrite=OverwritePolicy.REPLACE,
     )
     assert seen
     statuses = [r.status for r in report.results]
-    assert statuses.count(ExtractionStatus.EXTRACTED) == 6, report.results
-    assert (dest / "d" / "f").read_bytes() == b"3"
-    assert os.readlink(dest / "d" / "l") == "f"
+    if policy is ExtractionPolicy.TRUSTED:
+        # No case-only collision: D/F is its own file.
+        assert statuses == [ExtractionStatus.EXTRACTED] * 7, report.results
+    else:
+        assert statuses.count(ExtractionStatus.EXTRACTED) == 6, report.results
+    if dry_run:
+        # One top-level directory, so its links were walked and recorded.
+        assert report._dry_run_links == (("d/l", "f"),)
+    else:
+        assert (dest / "d" / "h").read_bytes() == b"1"
+        assert os.readlink(dest / "d" / "l") == "f"
     assert calls
-    for call in calls:
-        assert call.split(" ", 1)[1].startswith("/./"), call
+    unrouted = [call for call in calls if not call.split(" ", 1)[1].startswith("//")]
+    assert unrouted == []
     for result in report.results:
         for path in (result.path, result.requested_path, result.collided_with):
-            assert path is None or not str(path).startswith("/./")
+            assert path is None or not str(path).startswith("//")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the stand-in prefix is POSIX-only")
@@ -1019,7 +1111,7 @@ def test_long_path_errors_name_the_plain_path(
     error = result.error
     assert isinstance(error, OSError)
     assert error.filename is not None
-    assert not str(error.filename).startswith("/./")
+    assert not str(error.filename).startswith("//")
 
 
 def test_too_long_path_without_long_path_support_is_typed() -> None:
@@ -1152,6 +1244,36 @@ def test_symlink_whose_target_turns_out_a_directory_is_recreated(
     assert os.readlink(dest / "l") == "d"
     assert sorted(os.listdir(dest)) == ["d", "l"]
     assert report.results[0].path == dest / "l"
+
+
+@_POSIX_SYMLINKS
+def test_link_read_back_with_the_extended_prefix_is_still_remade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows reads an absolute link target back with the extended prefix; the
+    end-of-run pass compares it plain, so the link is still known as this run's."""
+    calls = _record_symlinks(monkeypatch)
+    _fake_long_paths(monkeypatch)
+    real_readlink = os.readlink
+
+    def readlink(path: object) -> str:
+        target = real_readlink(path)  # type: ignore[arg-type]
+        return "/" + target if target.startswith("/") else target
+
+    monkeypatch.setattr(os, "readlink", readlink)
+    dest = tmp_path / "out"
+
+    def absolute(member: ArchiveMember) -> ArchiveMember:
+        if member.name == "l":
+            return member.replace(link_target=str(dest / "d"))
+        return member
+
+    report = open_and_extract(
+        io.BytesIO(_tar(_LINK_BEFORE_DIR)), dest, streaming=True, filter=absolute
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    assert [flag for _, _, flag in calls] == [False, True]
+    assert real_readlink(dest / "l") == str(dest / "d")
 
 
 @_POSIX_SYMLINKS
@@ -1295,6 +1417,36 @@ def test_short_name_alias_collides_with_the_member_it_names(
             ExtractionStatus.FAILED,
             ExtractionStatus.NOT_OVERWRITTEN,
         )
+
+
+@pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.REPLACE])
+def test_short_name_alias_is_a_file_already_there_under_trusted(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """``TRUSTED`` defers to the local OS: the alias meets an entry already there, so
+    there is no collision event and the earlier member's result is not revised."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(
+            _tar([("file", "longfilename.txt", b"1"), ("file", "LONGFI~1.TXT", b"2")])
+        ),
+        dest,
+        filter=_alias_after_first(dest, "longfilename.txt", "LONGFI~1.TXT"),
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+    one, two = report.results
+    assert one.status is ExtractionStatus.EXTRACTED
+    assert two.collided_with is None
+    if overwrite is OverwritePolicy.REPLACE:
+        assert two.status is ExtractionStatus.EXTRACTED
+        assert two.path == dest / "LONGFI~1.TXT"
+    else:
+        assert two.status is ExtractionStatus.FAILED
+        assert isinstance(two.error, ExtractionError)
+        assert "already exists" in two.error.message
+        assert (dest / "longfilename.txt").read_bytes() == b"1"
 
 
 def test_hard_link_the_caller_already_had_is_not_a_collision(tmp_path: Path) -> None:

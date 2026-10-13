@@ -269,14 +269,18 @@ bytes. The outcome is the same on every platform. ADR
   link-count limit is written as a copy (`_link_refused_here`), counted toward
   `max_extracted_bytes` and the archive-wide `max_ratio` (see
   [Extraction bombs](#extraction-bombs)).
-- On Windows every filesystem call under the destination takes a path of 200 characters
-  or more in the extended `\\?\` form (`internal/long_paths.py`), so a path past
-  `MAX_PATH` is written without `LongPathsEnabled`. The prefix is stripped from what
-  comes back (`os.path.realpath`, `OSError` file names), so results, errors and the
-  path-safety comparisons use the plain path. `resolve_or_raise_on_loop` resolves a
-  long path through the extended form, so a symlink deep in the tree is followed by the
-  checks as it is by the write; without that the checks would fall back to a lexical
-  path there while the write followed the link.
+- On Windows each filesystem call the extraction code (`internal/extraction.py`,
+  `internal/link_watch.py`, `resolve_or_raise_on_loop`) makes under the destination or a
+  dry run's scratch copy takes a path of 200 characters or more in the extended `\\?\`
+  form (`internal/long_paths.py`), so a path past `MAX_PATH` is written without
+  `LongPathsEnabled`. `test_filesystem_calls_take_the_long_path_form` holds the inventory
+  of those calls. The CLI's own walks after a run (the hoist) take plain paths. The
+  prefix is stripped from what comes back (`os.path.realpath`, `os.readlink`, `OSError`
+  file names), so results, errors and the path-safety comparisons use the plain path.
+  `resolve_or_raise_on_loop` resolves a long path through the extended form, so a
+  symlink deep in the tree is followed by the checks as it is by the write; without
+  that the checks would fall back to a lexical path there while the write followed the
+  link.
 - On Windows a symlink is created as a directory link when its target is a directory or
   the archive's listing shows one (`_link_to_directory`); a link whose kind turns out
   wrong is remade at the end of the run (`_settle_link_kinds`), only when it is still
