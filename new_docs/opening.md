@@ -13,6 +13,10 @@ as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` turns into an except
 object that can't seek, such as a pipe or an HTTP response, needs `streaming=True` and works only
 for some formats, which [Reading once](reading.md#reading-once) lists.
 
+??? note "Why not refuse bytes after the archive?"
+    They aren't part of any member, so every member still reads correctly. GNU gzip and bzip2 also
+    decompress such a file and only warn, though `xz` refuses it.
+
 ## Format
 
 Archivey identifies the format from the file's contents, so a ZIP named `backup.bin` still
@@ -33,6 +37,13 @@ archivey.open_archive("secret.zip", password=["likely", "fallback"])
 Archivey tries a list in order, and each wrong password costs some hashing work before it's
 rejected, so the most likely one is best placed first. An archive can use different passwords for
 different members, and archivey finds the right one from your list for each.
+
+??? note "How does archivey know which password is right?"
+    The archive can't simply say. A ZIP stores a check value of one byte, or two with AES, so about
+    one wrong password in 256 (or in 65,536) passes it, and a 7z stores none. Archivey decrypts the
+    start of the member and decompresses it: a wrong password gives random bytes, which most
+    compression methods reject within a few hundred bytes. When more than one password gets through
+    that, it reads the member to its end and checks its checksum.
 
 You can also pass a function, such as one that asks the user. Archivey calls it only when a
 password is needed and none tried so far works. It passes a `PasswordRequest` with the member being
@@ -59,6 +70,11 @@ names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR lists as `'caf\udc
 and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO and RAR read `encoding=`. The other
 formats decode names their own way, and a value passed to them is ignored and noted in the
 diagnostics.
+
+??? note "Why does valid UTF-8 win over `encoding=`?"
+    Text in another encoding almost never happens to be valid UTF-8. `café`, `Müller` and `Größe`,
+    written in Latin-1, all fail to decode as UTF-8. So a name that decodes as UTF-8 almost
+    certainly is UTF-8, even in an archive whose other names use your encoding.
 
 `member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name with an
 escaped byte, like `'caf\udce9.txt'`, can't be encoded as UTF-8, so printing or logging it can raise
