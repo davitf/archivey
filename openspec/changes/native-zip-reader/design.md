@@ -438,9 +438,10 @@ failure. A directory entry pointing at a local header an earlier entry already t
 the pass with its own `CorruptionError`: the seekable read lists both, and a forward
 pass reads that data once, for one member. So does a member whose directory entry and
 local header store different names (question A, case 3): the seekable read refuses it
-when it reads the local header, and a forward pass has both names only now. A directory whose entries fill a different
-size than the end record declares is a warning (`ARCHIVE_EOF_MARKER_MISSING`, marker
-`central_directory`), and every entry stays listed.
+when it reads the local header, and a forward pass has both names only now.
+A directory whose entries fill a different size than the end record declares is a
+warning (`ARCHIVE_EOF_MARKER_MISSING`, marker `central_directory`), and every entry
+stays listed.
 
 ### What the caller sees in a forward pass
 
