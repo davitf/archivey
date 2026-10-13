@@ -123,7 +123,11 @@ and 3.3f that need no ZIP pipe reader (3.3e1, 3.3f1), 3b3 the rest (3.2a, 3.3 to
 - [ ] 3.3e2 Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
       caller sees in a forward pass"; `member_state_final` false for a pipe ZIP member
       until the directory has been read (test), and the ZIP row of the
-      `docs/formats.md` table gains the directory's fields.
+      `docs/formats.md` table gains the directory's fields. Once a pipe ZIP no longer
+      refuses `max_members`, `ListingLimits` discard becomes reachable for a
+      data-stored link: a symlink yielded after the discard still needs
+      `_link_target_unread` set, and `close()` must settle a kept-prefix symlink the
+      caller holds although `_listed` is empty (tests for both).
 - [x] 3.3f1 A reparse-flagged member whose data is not a reparse buffer is typed when
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
       (a seekable ZIP needs no read-ahead: the pass reads the target, then opens the

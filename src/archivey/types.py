@@ -877,7 +877,9 @@ class ArchiveMember:
 
     A forward pass hands each member to the caller before it has seen the rest of the
     archive, so a later member can still change it (``is_current`` is stamped when the
-    walk ends). Cleared when the walk ends, or stops keeping members. Read it through
+    walk ends). Cleared once the listing's links are resolved, when the walk stops
+    keeping members, when the reader closes, and on a :meth:`replace` copy; not when
+    the walk ends, since a peek ends it before any link is resolved. Read it through
     the public :attr:`member_state_final`. Not part of the public contract."""
     _link_target_unread: bool = field(default=False, repr=False, compare=False)
     """Set while this symlink's target is stored as member data nobody has read yet.
