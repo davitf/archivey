@@ -80,6 +80,11 @@ existing folder is a conflict like any other.
 A refused member isn't a failure, so `"stop"` doesn't stop there.
 `abort_on=["blocked_member"]` does.
 
+??? note "Why doesn't a refused member stop the extraction?"
+    Refusing it is the protection doing its job, and the rest of the archive is still safe to write.
+    Otherwise one stray name, such as an absolute path in an archive made on another system, would
+    stop everything after it.
+
 `abort_on` lists events that stop the whole extraction immediately if they happen, even ones that
 aren't failures. It's empty by default:
 
@@ -123,9 +128,22 @@ Some members are refused under every policy, and others depend on it:
 | A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
 | A file with mode `rw-rw-rw-` | Written as `rw-r--r--` | Written as is | Written as is |
 
-`"strict"` and `"standard"` treat `README` and `readme` as the same file on every system, since
-macOS and Windows can't tell them apart by default. An archive that writes more in total than
-`limits` allows stops the whole extraction, whatever the policy.
+`"strict"` and `"standard"` treat `README` and `readme` as the same file on every system. An
+archive that writes more in total than `limits` allows stops the whole extraction, whatever the
+policy.
+
+??? note "Why the same result on every system?"
+    So code tested on one system behaves the same on another. macOS and Windows can't tell `README`
+    from `readme` by default, and if `CON` were written on Linux and refused only on Windows, the
+    first time you'd see the refusal is on a user's machine. `CON` and names with `:` are refused
+    rather than rewritten because on Windows they're unsafe, not just unusual: `CON` opens the
+    console, and `file:ads` writes data hidden inside `file`.
+
+    A name that isn't valid UTF-8 is percent-escaped for the same reason: Linux writes it as is,
+    but macOS refuses it. `%E9` is the byte's value, as in URLs, and a `%` in a rewritten name is
+    written as `%25`, so the original can be worked out again. A name that already held `%E9` is
+    written unchanged, so only a name archivey rewrote can be reversed: `result.presented_name` and
+    `NameRewrite.PORTABLE_NAME` in `result.rewrites` say which ones those are.
 
 A `filter` sees each member before these checks run, so it can rename one they would refuse, such as
 `../evil.txt`, and that member is then written under its new name. Device files are refused whatever
@@ -169,6 +187,11 @@ expands too much fails like any other member.
 By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
 expands more than 1000 times. The expansion check starts after the first 5 MiB. To extract
 something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
+
+??? note "Why wait for 5 MiB?"
+    Small files compress very well without being dangerous. 1 MiB of zeros compresses about 1,000
+    times with DEFLATE and about 23,000 times with bzip2, so a check from the first byte would stop
+    ordinary archives. A real bomb is still caught once it has written 5 MiB.
 
 Some limits apply before extraction starts, such as the number of members or how much memory a
 decoder may use. Those are set when you open the archive, through

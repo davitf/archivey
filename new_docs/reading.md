@@ -35,9 +35,14 @@ even on an ordinary file. You get one pass, through `stream_members` or `extract
 is used up even if you leave the loop early.
 
 A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
-compressed files can come from one. ZIP and 7z keep their index at the end of the file, and reading
-a RAR or an ISO means jumping between places in the file, so all four need a file or another source
+compressed files can come from one. ZIP, 7z, RAR and ISO archives need a file or another source
 that can seek.
+
+??? note "Why can't the others come from a pipe?"
+    7z keeps its index at the end of the file, and reading an ISO means jumping between places in
+    it. ZIP and RAR store a header before each member, so archivey could read them from a pipe,
+    for RAR copying what it reads to a temporary file for `unrar` as it goes. It doesn't yet.
+    Reading ZIP from a pipe is planned, and RAR may follow.
 
 ## Seeking inside a member
 

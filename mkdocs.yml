@@ -49,6 +49,8 @@ theme:
   navigation_depth: 2
 
 markdown_extensions:
+  - admonition
+  - pymdownx.details
   - toc:
       toc_depth: 3
   - pymdownx.highlight:

@@ -419,8 +419,10 @@ other output. The consequence is in §5.
 
 Where the ratio check draws its numbers from depends on the source. A compressed tar
 opened from a path is checked against the file's size; one read from a stream is checked
-live against compressed bytes consumed, which is why a piped `.tar.gz` bomb stops
-mid-pass. A plain tar has nothing to decompress and is checked against the archive size.
+live against compressed bytes consumed, once `live_ratio_activation_threshold` (256 MiB)
+has been written, which is why a piped `.tar.gz` bomb stops mid-pass. The floor exists
+because a disk image whose data starts with a long blank run reads as a bomb until the
+data after that run arrives; from a path the same file passes on the whole-file ratio. A plain tar has nothing to decompress and is checked against the archive size.
 
 **`extract_all` is one forward pass in both modes.** Random access does not list the
 archive first: `TarReader._list_before_extraction` leaves the listing to the pass,
@@ -477,7 +479,8 @@ extraction checks (§2.4).
   cap (§2.2), in every mode, and holds no header behind the member list (O1).
 - **A sparse member is a ratio claim.** A few hundred bytes of sparse map can declare a
   logical size of terabytes. Extraction writes the logical bytes, so what stops it is the
-  decompression-ratio guard, the same one that stops a gzip bomb; `ExtractionLimits`
+  decompression-ratio guard, the same one that stops a gzip bomb (from a pipe, only
+  after 256 MiB of output; `max_extracted_bytes` bounds the rest); `ExtractionLimits`
   with `max_ratio=None` removes it.
 - **Nothing authenticates data.** Only the header has a checksum, and it is a byte sum
   over 512 bytes, not a digest. A plain tar with altered member data lists and reads

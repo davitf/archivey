@@ -23,7 +23,7 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 | `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, but that's a guess, so catch `CorruptionError` for both |
 | `EncryptionError` | A password is needed and none was given, or none of the ones given works |
 | `FormatDetectionError` | The file isn't in a format archivey recognizes |
-| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle. An unknown compression method or version number can also mean a damaged header: nothing checksums the header field it's read from, such as a ZIP entry's compression method, so archivey can't tell the two apart, and the message says so. If all you need to know is whether you can use the file, the answer is no either way |
+| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method. A damaged header can raise it too, when the damaged field is one nothing checks, such as a ZIP entry's compression method. Either way, you can't use the file |
 | `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
 | `ResourceLimitError` | The archive went over one of the [limits](security.md#hardening) |
 
@@ -66,6 +66,11 @@ with archivey.open_archive("damaged.tar") as archive:
     if report.error is not None:
         print("The list stops early:", report.error)
 ```
+
+??? note "Why does `members()` raise if the archive is damaged?"
+    It returns a list, and a shorter list looks just like a complete one, so code that only looks at
+    the list would carry on as if the archive ended there. Iterating hands you each member as it's
+    found, so the exception at the end still tells you the rest is missing.
 
 A TAR archive cut between two members, or inside a member's header, has nothing left that looks
 wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
@@ -122,6 +127,10 @@ what you called:
 All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
 records themselves. An archive keeps at most 256 records by default, counting those attached to
 members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes that.
+
+??? note "Why a cap?"
+    A crafted archive can have a problem in each of a million members, and a record for each would
+    take memory that the listing limits don't count. `counts` stays exact either way.
 
 Each diagnostic is also logged as a warning on a logger under `archivey`, such as
 `archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each. To
