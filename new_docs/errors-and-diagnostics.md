@@ -42,11 +42,11 @@ rather than a damaged one.
 
 Mistakes in the calling code raise `ArchiveyUsageError`, which isn't an `ArchiveyError`, so a
 catch-all for archive problems never hides a bug. The ones you're most likely to meet are calling
-`members()`, `open()` or `read()` on a reader opened with `streaming=True`, opening a second
-member stream while another is still open, without `concurrent_members=True`, and calling `open()`
-or `read()` on a directory. [Choosing how to
-read](reading.md) explains both. A source that isn't a path or a file object raises `TypeError`, and
-asking for a member name the archive doesn't have raises `KeyError`, as a dictionary would.
+`members()`, `open()` or `read()` on a reader opened with `streaming=True`, and opening a second
+member stream while another is still open, without `concurrent_members=True`. [Choosing how to
+read](reading.md) explains both. Calling `open()` or `read()` on a directory raises it too. A source
+that isn't a path or a file object raises `TypeError`, and asking for a member name the archive
+doesn't have raises `KeyError`, as a dictionary would.
 
 Errors that aren't about the archive also pass through as themselves. A missing file raises
 `FileNotFoundError`, and a disk or permission error while reading or writing raises `OSError`, so
