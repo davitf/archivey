@@ -214,21 +214,24 @@ class _MemberGlob:
             body = pattern.removesuffix("/")
             if not body.strip("/") or "" in body.split("/")[1:]:
                 raise _UsageValueError(
-                    f"match_glob() got {pattern!r}, which has an empty component; "
-                    "a pattern must name something between its '/' separators"
+                    f"match_glob(): {pattern!r} has an empty component; a pattern "
+                    "must name something between its '/' separators"
                 )
+            try:
+                re.compile(_glob_to_regex(body))
+            except re.error as exc:
+                # exc.msg, not str(exc): the position it adds is in the translated
+                # regex, not in the caller's pattern.
+                raise _UsageValueError(
+                    f"match_glob(): {pattern!r} has a malformed [...] set: {exc.msg}"
+                ) from None
         self.patterns = patterns
         self.with_contents = with_contents
         # Patterns ending in "/" select directories only, so they get their own regex.
         any_kind = [p for p in patterns if not p.endswith("/")]
         dirs_only = [p.removesuffix("/") for p in patterns if p.endswith("/")]
-        try:
-            self._any = _compile_globs(any_kind)
-            self._dirs_only = _compile_globs(dirs_only)
-        except re.error as exc:
-            raise _UsageValueError(
-                f"match_glob() got a malformed [...] set: {exc}"
-            ) from None
+        self._any = _compile_globs(any_kind)
+        self._dirs_only = _compile_globs(dirs_only)
 
     def __call__(self, member: ArchiveMember | str) -> bool:
         if isinstance(member, str):

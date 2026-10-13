@@ -38,11 +38,11 @@ class _Pattern:
         pattern = text.replace("\\", "/") if backslash_is_separator else text
         try:
             self._predicate = match_glob(pattern, with_contents=True)
-        except ArchiveyUsageError:
+        except ArchiveyUsageError as exc:
+            # match_glob's own reason, so the message names only what is wrong here.
+            reason = exc.message.removeprefix("match_glob(): ")
             raise CliError(
-                f"invalid member pattern {text!r}: a pattern needs something between "
-                "its '/' separators, and a [...] range must run low to high",
-                code=EXIT_USAGE,
+                f"invalid member pattern: {reason}", code=EXIT_USAGE
             ) from None
 
     def matches(self, member: ArchiveMember) -> bool:

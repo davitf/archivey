@@ -128,13 +128,27 @@ def test_unmatched_patterns_use_the_same_rule(tmp_path: Path) -> None:
     assert selection.unmatched_includes() == ["docs.txt/", "missing"]
 
 
-@pytest.mark.parametrize("pattern", ["a//b", "[z-a]"])
+@pytest.mark.parametrize(
+    ("pattern", "reason", "unrelated"),
+    [
+        ("a//b", "has an empty component", "[...]"),
+        ("[z-a]", "has a malformed [...] set: bad character range z-a", "'/'"),
+    ],
+)
 def test_an_invalid_pattern_is_a_usage_error(
-    pattern: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    pattern: str,
+    reason: str,
+    unrelated: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # The message carries match_glob's own reason, so it names only what is wrong.
     archive = _tar(tmp_path / "t.tar", _TREE)
     assert main(["list", str(archive), pattern]) == EXIT_USAGE
-    assert f"invalid member pattern {pattern!r}" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"archivey: invalid member pattern: {pattern!r} {reason}" in err
+    assert unrelated not in err
+    assert "position" not in err
 
 
 @pytest.mark.parametrize("pattern", ["docs", "docs/", "docs/**"])

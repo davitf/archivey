@@ -2,7 +2,8 @@
 
 ## Purpose
 
-Shell interface for inspecting, verifying, and extracting archives with glob member filters and optional I/O instrumentation; CLI-only deps stay out of core.
+Shell interface for inspecting, verifying, and extracting archives with glob member
+filters and optional I/O instrumentation; CLI-only deps stay out of core.
 
 ## Related specs
 
