@@ -12,6 +12,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -144,14 +145,28 @@ class LzipCodec(_SizedLzmaCodec):
         member.hashes = hashes
 
 
+# liblzma's ``LZMA_LCLP_MAX``: the largest lc + lp its LZMA1 decoder takes.
+_LIBLZMA_LCLP_MAX = 4
+
+
+def _split_lzma_props(props: int) -> tuple[int, int, int] | None:
+    """The ``(lc, lp, pb)`` an LZMA1 properties byte encodes, or ``None`` out of range.
+
+    The byte is (pb * 5 + lp) * 9 + lc with lc <= 8, lp <= 4, pb <= 4: 225 of the 256
+    values are in range.
+    """
+    if props >= 9 * 5 * 5:
+        return None
+    return props % 9, props // 9 % 5, props // 45
+
+
 def _alone_props_plausible(props: int) -> bool:
     """Whether ``props`` encodes a valid Alone ``(lc, lp, pb)`` triple.
 
-    The format's range, props = (pb * 5 + lp) * 9 + lc with lc <= 8, lp <= 4, pb <= 4:
-    225 of the 256 values. Detection admits all of them, since a header grammar accepts
-    the format's full legal range and the decode decides.
+    Detection admits all 225 values in the format's range, since a header grammar
+    accepts the format's full legal range and the decode decides.
     """
-    return props <= (4 * 5 + 4) * 9 + 8
+    return _split_lzma_props(props) is not None
 
 
 def _alone_props_liblzma_decodes(props: int) -> bool:
@@ -160,9 +175,8 @@ def _alone_props_liblzma_decodes(props: int) -> bool:
     liblzma also requires lc + lp <= 4 (``LZMA_LCLP_MAX``). The next-stream check uses
     this, because a header liblzma refuses there fails the whole read.
     """
-    lc = props % 9
-    lp = props // 9 % 5
-    return _alone_props_plausible(props) and lc + lp <= 4
+    split = _split_lzma_props(props)
+    return split is not None and split[0] + split[1] <= _LIBLZMA_LCLP_MAX
 
 
 def _alone_header_plausible(prefix: bytes) -> bool:
@@ -392,9 +406,6 @@ if _raw_decode_filter_properties is None:  # pragma: no cover
     )
 _decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
 
-# liblzma's ``LZMA_LCLP_MAX``: the largest lc + lp its LZMA1 decoder takes.
-_LIBLZMA_LCLP_MAX = 4
-
 
 def decode_lzma_filter_properties(filter_id: int, props: bytes, *, what: str) -> dict:
     """liblzma filter dict for a raw LZMA1/LZMA2 property blob.
@@ -402,20 +413,21 @@ def decode_lzma_filter_properties(filter_id: int, props: bytes, *, what: str) ->
     7-Zip accepts LZMA1 ``lc + lp`` up to 12 (``-mm=LZMA:lc=8`` writes it, in 7z and in
     ZIP method 14); liblzma decodes at most 4. Such a properties byte is well formed,
     so it raises ``UnsupportedFeatureError`` naming ``what`` (the container's coder).
-    Any other blob liblzma refuses propagates as liblzma's own error, for the caller
-    to report as corruption in its own terms.
+    Any other blob liblzma refuses is malformed: ``CorruptionError`` naming ``what``.
+    The caller adds its archive context.
     """
     try:
         return _decode_filter_properties(filter_id, props)
     except (lzma.LZMAError, ValueError) as exc:
-        if filter_id == lzma.FILTER_LZMA1 and len(props) == 5 and props[0] < 9 * 5 * 5:
-            lc, lp = props[0] % 9, props[0] // 9 % 5
+        split = _split_lzma_props(props[0]) if len(props) == 5 else None
+        if filter_id == lzma.FILTER_LZMA1 and split is not None:
+            lc, lp, _pb = split
             if lc + lp > _LIBLZMA_LCLP_MAX:
                 raise UnsupportedFeatureError(
                     f"{what} with lc={lc}, lp={lp} is not supported: "
                     f"liblzma decodes lc + lp up to {_LIBLZMA_LCLP_MAX}"
                 ) from exc
-        raise
+        raise CorruptionError(f"Malformed {what} properties") from exc
 
 
 class _RawLzmaCodec(_LzmaErrorCodec):

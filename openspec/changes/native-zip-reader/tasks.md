@@ -65,7 +65,12 @@
       `docs/formats.md`.
 - [ ] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
 
-## 3. Streaming (PR 3)
+## 3. Streaming (PRs 3a, 3b, 3c)
+
+3a is the forward walk alone (3.1, 3.2's parser half, 3.3d); 3b the reader over a
+non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 3.3e and 3.3f,
+3b3 the rest (3.2a, 3.3 to 3.3d, 3.3g, 3.3h, 3.4, 3.5, 3.5a); 3c the seekable cases
+(3.0, 3.0a, 3.0b).
 
 - [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
@@ -79,11 +84,21 @@
       a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
       (`CorruptionError` after the members before it); a sized member is seeked over
       (counted reads).
-- [ ] 3.1 `parse_local_header` / `parse_central_header` on bytes, shared by both walks;
-      `LocalHeaderWalk` over a forward reader; data descriptor parsing (signature
-      optional, 4- or 8-byte sizes).
-- [ ] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
+- [x] 3.1 Central and local headers parsed by the same code in both walks;
+      `LocalHeaderWalk` over a forward reader (`zip_local_walk.py`); data descriptor
+      parsing (signature optional, 4- or 8-byte sizes).
+- [x] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
       STORED + bit 3 descriptor scan; tests with stdlib `zipfile` writing to a pipe.
+      3a: the walk's half (sized data, the scan, `settle(used)` putting back what a
+      codec's layers read past its end), tested in `test_zip_local_walk.py`. 3b1: the
+      codec half, `settle(crc=)` finding a codec member's descriptor by its decoded
+      CRC, and PPMd8 with `CodecParams.input_runs_on`; tests for DEFLATE, Deflate64,
+      bzip2, LZMA with EOS, PPMd and Zstandard, signed and unsigned, in
+      `test_zip_walk_codec_end.py`.
+- [ ] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
+      codec's input, so the AES stage authenticates the ciphertext as it goes, holding
+      back the bytes past the codec's end until `settle` says where the data ended
+      (test: an AE-1 and an AE-2 deflated member from a pipe, and a wrong code).
 - [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
       and reported; a missing one is handled per 3.3g.
@@ -97,7 +112,7 @@
 - [ ] 3.3c `is_current` from the directory order; same-name members in reverse order are
       detected at the end of the pass, with 3.3g's outcome (fixture with the two orders
       reversed).
-- [ ] 3.3d A stream that starts neither with a local header nor an end record: scan
+- [x] 3.3d A stream that starts neither with a local header nor an end record: scan
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
 - [ ] 3.3e Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
@@ -127,7 +142,13 @@
       `member_state_final` (and `safe-extraction` if the filter re-run needs a
       sentence); `docs/access-and-cost.md`, `docs/formats.md`; handbook §1, §2.2, §5,
       §6; `dev-docs/formats/tar.md`, `7z.md` and `rar.md` for which fields
-      `member_state_final` covers there.
+      `member_state_final` covers there. From 3b1: `archive-reading`'s
+      "`None` SHALL decode every member in-process" (a bit-3 PPMd member from a pipe
+      is refused under `None`), and the same field in `new_docs/security.md`,
+      `docs/extracting.md` (limits table and the PPMd paragraph); in
+      `dev-docs/threat-model.md`, the residual that junk between a bit-3 codec
+      member's end and its descriptor is refused from a file (DR-3) and accepted
+      from a pipe (DR-5a, `design.md` §"Where a member's data ends").
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):

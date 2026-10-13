@@ -3102,6 +3102,10 @@ def test_real_7z_cli_created_slot_matches_its_host(tmp_path: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
+        # A 7z that hangs (seen once on Windows CI) must fail this test, not run into
+        # the 60 s thread timeout, which kills the whole xdist worker with no traceback.
+        stdin=subprocess.DEVNULL,
+        timeout=30,
     )
     if result.returncode != 0:
         pytest.skip(f"7z CLI cannot build a -mtc=on fixture: {result.stderr}")

@@ -517,14 +517,9 @@ def _plan_lzma_family(
 def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
     if coder.properties is None:
         return {"id": filter_id}
-    try:
-        return decode_lzma_filter_properties(
-            filter_id, coder.properties, what="7z LZMA coder"
-        )
-    except (lzma.LZMAError, ValueError) as exc:
-        raise CorruptionError(
-            f"Malformed 7z LZMA coder properties for {_method_hex(coder.method)}"
-        ) from exc
+    return decode_lzma_filter_properties(
+        filter_id, coder.properties, what=f"7z LZMA coder {_method_hex(coder.method)}"
+    )
 
 
 def _lzma_filter(coder: SevenZipCoder) -> dict:

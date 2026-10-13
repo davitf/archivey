@@ -121,8 +121,9 @@ class EndRecord:
     comment_declared: int
     #: Bytes after the record and its declared comment, up to the end of the file. The
     #: reader reports them; the parser only counts them. Junk longer than the search
-    #: window hides the record itself, as it does for stdlib.
-    trailing: int
+    #: window hides the record itself, as it does for stdlib. ``None`` when nothing
+    #: counted them: a forward walk has no file size and reads what follows instead.
+    trailing: int | None
 
     @property
     def cd_start(self) -> int:
@@ -678,6 +679,31 @@ def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader:
         if fixed and not LOCAL_HEADER_SIGNATURE.startswith(fixed[:4]):
             raise CorruptionError("Bad magic number for file header")
         raise TruncatedError("Truncated local file header")
+    variable_len = local_header_variable_length(fixed)
+    variable = read_at(header_offset + LOCAL_HEADER_SIZE, variable_len)
+    if len(variable) != variable_len:
+        raise TruncatedError("Truncated local file header")
+    data_start = header_offset + LOCAL_HEADER_SIZE + variable_len
+    if data_start > MAX_DATA_OFFSET:
+        raise CorruptionError(f"Absurd local-header data offset: {data_start}")
+    return local_header_from(fixed, variable, data_start)
+
+
+def local_header_variable_length(fixed: bytes) -> int:
+    """How many name and extra-field bytes follow the fixed local header ``fixed``."""
+    name_len, extra_len = struct.unpack_from("<HH", fixed, LOCAL_HEADER_SIZE - 4)
+    return name_len + extra_len
+
+
+def local_header_from(
+    fixed: bytes, variable: bytes, data_start: int, *, zip64_sizes: bool = False
+) -> LocalHeader:
+    """The :class:`LocalHeader` for the fixed 30 bytes and the name and extra field.
+
+    Both walks read the bytes their own way and call this. The sizes are the stored
+    32-bit fields unless ``zip64_sizes``, which applies a ZIP64 extra field's sizes
+    (:func:`_local_sizes`): the forward walk has no central entry to take them from.
+    """
     (
         _sig,
         needed_version,
@@ -690,14 +716,11 @@ def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader:
         compressed_size,
         file_size,
         name_len,
-        extra_len,
+        _extra_len,
     ) = _LOCAL_HEADER.unpack(fixed)
-    variable = read_at(header_offset + LOCAL_HEADER_SIZE, name_len + extra_len)
-    if len(variable) != name_len + extra_len:
-        raise TruncatedError("Truncated local file header")
-    data_start = header_offset + LOCAL_HEADER_SIZE + name_len + extra_len
-    if data_start > MAX_DATA_OFFSET:
-        raise CorruptionError(f"Absurd local-header data offset: {data_start}")
+    extra = variable[name_len:]
+    if zip64_sizes:
+        compressed_size, file_size = _local_sizes(extra, compressed_size, file_size)
     return LocalHeader(
         version_needed=(needed_system << 8) | needed_version,
         flags=flags,
@@ -708,6 +731,35 @@ def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader:
         compressed_size=compressed_size,
         file_size=file_size,
         name=variable[:name_len],
-        extra=variable[name_len:],
+        extra=extra,
         data_start=data_start,
     )
+
+
+def _local_sizes(extra: bytes, compressed_size: int, file_size: int) -> tuple[int, int]:
+    """The two sizes after a local ZIP64 extra field replaces the deferred ones.
+
+    In a local header the field holds both sizes, uncompressed first, whichever is
+    deferred (APPNOTE 4.5.3). A field shorter than that holds the deferred ones in the
+    central directory's order. A deferred size no field holds stays all ones.
+    """
+    if compressed_size != _U32_MAX and file_size != _U32_MAX:
+        return compressed_size, file_size
+    for field in iter_extra_fields(extra):
+        if field.tag != _ZIP64_EXTRA_TAG:
+            continue
+        data = field.data
+        if len(data) >= 16:
+            if file_size == _U32_MAX:
+                file_size = int.from_bytes(data[:8], "little")
+            if compressed_size == _U32_MAX:
+                compressed_size = int.from_bytes(data[8:16], "little")
+        else:
+            cursor = 0
+            if file_size == _U32_MAX and len(data) >= 8:
+                file_size = int.from_bytes(data[:8], "little")
+                cursor = 8
+            if compressed_size == _U32_MAX and len(data) >= cursor + 8:
+                compressed_size = int.from_bytes(data[cursor : cursor + 8], "little")
+        break
+    return compressed_size, file_size

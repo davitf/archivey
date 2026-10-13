@@ -405,6 +405,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (default 1000, checked once 5 MiB has been written; for the whole archive read from
   a source of unknown size, such as a pipe, once 256 MiB has been written), and entry
   count (default 262,144) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+  Archivey never writes more of a member than the size the archive records for it, so
+  where the archive records both a member's size and its compressed size, a member
+  over the per-member ratio is refused before any of it is written.
 - **Listing materialization** — member count (default 262,144) and retained metadata
   bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction,

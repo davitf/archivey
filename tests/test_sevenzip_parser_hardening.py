@@ -51,6 +51,7 @@ _COPY = b"\x00"
 _DELTA = b"\x03"
 _BCJ_X86 = b"\x04"
 _BCJ_ARM = b"\x07"
+_LZMA = b"\x03\x01\x01"
 _LZMA2 = b"\x21"
 
 # ---------------------------------------------------------------------------
@@ -483,6 +484,41 @@ def _bcj_folder(method: bytes, props: bytes) -> sevenzip_parser.SevenZipFolder:
 def test_bcj_properties_of_the_wrong_length_are_corruption() -> None:
     with raises_corruption_not_truncation(match="Malformed 7z BCJ coder properties"):
         plan_folder(_bcj_folder(_BCJ_X86, b"\x00\x10\x00"))
+
+
+@pytest.mark.parametrize(
+    ("method", "props", "method_hex"),
+    [
+        pytest.param(_LZMA, b"\x5d\x00", "0x030101", id="lzma1-wrong-length"),
+        # 225 and above is not an lc/lp/pb byte at all.
+        pytest.param(
+            _LZMA,
+            bytes([225]) + (1 << 16).to_bytes(4, "little"),
+            "0x030101",
+            id="lzma1-byte-225",
+        ),
+        # LZMA2 dictionary codes stop at 40.
+        pytest.param(_LZMA2, b"\x29", "0x21", id="lzma2-dict-code-41"),
+    ],
+)
+def test_malformed_lzma_properties_are_corruption(
+    method: bytes, props: bytes, method_hex: str
+) -> None:
+    """Properties liblzma refuses, other than an lc + lp over 4, are malformed; the
+    message names the coder's method id."""
+    with raises_corruption_not_truncation(
+        match=f"Malformed 7z LZMA coder {method_hex} properties"
+    ):
+        plan_folder(_bcj_folder(method, props))
+
+
+def test_lzma1_lc_lp_over_four_is_unsupported_at_plan_time() -> None:
+    # lc=8, lp=0, pb=2: what ``7z a -m0=LZMA:lc=8`` writes; liblzma stops at lc + lp 4.
+    props = bytes([8 + 9 * (0 + 5 * 2)]) + (1 << 16).to_bytes(4, "little")
+    with pytest.raises(
+        UnsupportedFeatureError, match="7z LZMA coder 0x030101 with lc=8, lp=0"
+    ):
+        plan_folder(_bcj_folder(_LZMA, props))
 
 
 def test_misaligned_bcj_start_offset_is_refused_at_plan_time() -> None:

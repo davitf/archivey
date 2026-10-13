@@ -783,6 +783,40 @@ under `OnError.CONTINUE`; global guards remain always-stop.
 | `compressed_size is None` or `0` | Per-member ratio skipped; cumulative/global guards still apply |
 | `ExtractionLimits(max_ratio=100)` | Members over 100:1 trip this guard |
 
+### Requirement: A recorded size decides the per-member ratio before decoding
+
+A member stream never yields more than the member's recorded `size` (a byte past it
+is `CorruptionError`), so a recorded size bounds the member's output. When a FILE
+member is about to be decoded (`BombTracker.check_recorded_size()`, called at the
+start of every FILE write, after the selector, the filter, the policy checks and the
+overwrite policy have accepted it), the system SHALL refuse it with the per-member
+`ResourceLimitError` when its `size` exceeds both `ratio_activation_threshold` and
+`max_ratio * compressed_size` (only when both are known and `compressed_size` is
+greater than zero). The refusal is member-scoped, as the measured per-member check's
+is, and the member has no temp file and adds no bytes to any counter. When the orphan pass
+writes an excluded hard-link source's content at a link's path, the source's sizes are
+the ones checked.
+
+For a member that delivers its whole recorded `size`, this is the verdict the measured
+check would reach after decoding past the threshold. A member whose data stops short
+of its recorded `size` is refused here as over the ratio, where the measured check
+might not trip and the read would fail as damaged instead; either way only that member
+fails.
+
+The archive-wide ratios SHALL NOT be checked from recorded sizes. A recorded size is
+unverified until the member is decoded, and refusing the archive-wide (always-stop)
+ratio on it would stop the run on one damaged member and lose the intact members after
+it. The measured archive-wide checks stop at the chunk that crosses the limit, so an
+earlier check would save little. Members without a recorded `size` or
+`compressed_size` are left to the measured checks, which still run on every chunk.
+
+#### Scenario: recorded-size ratio matrix
+
+| Case | Expected |
+| --- | --- |
+| Member whose recorded sizes are over the per-member ratio after the threshold | Per-member `ResourceLimitError` before any byte of it is written; under `OnError.CONTINUE` the rest are extracted |
+| Member whose recorded sizes overstate its data | Only that member fails, whichever error names it |
+
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
 The system SHALL apply `ExtractionLimits` bomb guards only during
