@@ -37,10 +37,12 @@ Each idea carries a status:
   large file: reduce the stored offsets of a small archive, as
   `tests/test_audit_backup_scan.py` does.
 - **List a ZIP whose central directory is lost, and read spanned ZIP sets.** *Needs
-  design.* The native ZIP reader (*Planned for 0.2.0*, the `native-zip-reader`
-  OpenSpec change) walks local headers forward to read ZIPs from pipes and sockets, and
-  keeps an archive readable when one name's UTF-8 flag is wrong. The same walk could
-  list a ZIP whose central directory is lost, and its parser's per-entry disk number is
+  design.* The native ZIP reader (the `native-zip-reader` OpenSpec change) already
+  lists a damaged central directory up to the damage, and a wrong UTF-8 flag on one name
+  stops the listing there, after the entries before it. Its later stages, planned for
+  0.2.0, walk local headers forward to read ZIPs from pipes and sockets and when the end
+  record is not in the file's tail (which lists a ZIP cut before its directory), and
+  decode a wrongly flagged name as an unflagged one. Its parser's per-entry disk number is
   what reading spanned `.z01`…`.zip` sets would follow (by resolving each (disk, offset)
   pair). See [`formats/zip.md`](formats/zip.md) §5.
 - **Read raw CD sector images (`.bin`).** *Open idea.* 0.2.0 recognizes a raw image and

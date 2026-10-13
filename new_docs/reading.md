@@ -48,28 +48,33 @@ mean decompressing the member again from its start. If you install the `seekable
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
-compression in gzip files and in most ZIP members. Reading a member from start to end lets archivey
-notice if its data is damaged, but after a seek, damage may go unnoticed. If you'll seek a lot,
-extracting the member to a file first is often faster.
+compression in gzip files and in most ZIP members. A forward seek keeps the checksum check when
+reaching the target means decoding the bytes in between, which is the usual case in compressed
+data. A seek that can jump over those bytes instead, as the accelerator can, gives the check up
+once you read on from there, until you seek back to a point you had already read up to. A seek to
+or past the member's end keeps it either way. [Damaged
+archives](errors-and-diagnostics.md#damaged-archives) lists the other seeks that jump, and what is
+still checked after one. If you'll seek a lot, extracting the member to a file first is often
+faster.
 
 ## Several members at once
 
-By default only one member stream can be open at a time, and opening a second while the first
-is still open raises. A thread pool that reads different members at once needs
-`concurrent_members=True`. Each stream is opened the same way `open` always opens one, so on a
-solid archive it may first decompress the members stored before it. The streams share the
-source and take turns reading compressed data from it, but they decompress in parallel. That can
-be cheaper than opening the archive once per worker, which reads the archive's index each
-time. The exception is a source where each jump to a new position is costly, such as a member
-of another archive or a file read over the network. There, streams that take turns make the
-source jump back and forth, and each jump throws away what it had buffered.
+By default only one member stream can be open at a time, and opening a second while the first is
+still open raises. A thread pool that reads different members at once needs
+`concurrent_members=True`, which can't be combined with `streaming=True`. Each stream is opened the
+same way `open` always opens one, so on a solid archive it may first decompress the members stored
+before it. The streams share the source and take turns reading compressed data from it, but they
+decompress in parallel. That can be cheaper than opening the archive once per worker, which reads
+the archive's index each time. The exception is a source where each jump to a new position is
+costly, such as a member of another archive or a file read over the network. There, streams that
+take turns make the source jump back and forth, and each jump throws away what it had buffered.
 
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off
-out-of-order reads. Each of these can be slow in some cases, or let damaged data go unnoticed, and
-nothing in the calling code shows it. With these defaults, the risky pattern raises instead of
-running.
+out-of-order reads. Each of these can be slow in some cases, and nothing in the calling code shows
+it. Some seeks also skip the check for damage. With these defaults, the risky pattern raises instead
+of running.
 
 A ZIP can be read out of order at no cost, but a `.tar.gz` can't. If archivey raised only on the
 `.tar.gz`, code tested on ZIPs would first fail in production. So archivey raises on every
@@ -82,5 +87,5 @@ format, and the mistake shows up during development.
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
 | Read from a pipe | `streaming=True` | [TAR and single compressed files only](#reading-once) |
-| Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and damage may go unnoticed after a seek |
+| Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_members=True` | [Slow on sources where each jump is costly](#several-members-at-once) |

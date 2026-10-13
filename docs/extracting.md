@@ -47,14 +47,13 @@ These are the places where the guarantees above stop. Each one is a trade-off th
 chosen, not a bug waiting for a fix, so please don't report them as vulnerabilities.
 
 - **A native decoder that crashes can take the process with it.** Decoders written in
-  C run inside your process: the standard library's `zlib`, `bz2` and `lzma`, pyppmd
-  for PPMd members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB by default),
-  and the optional bzip2 accelerator. The known crashes have been designed around: the
-  rapidgzip accelerator for gzip, zlib and raw DEFLATE runs in a child process, a larger
-  PPMd member is decoded in a child process, and a smaller one is handed to pyppmd whole,
-  which avoids the input pattern that crashes it. A crash nobody has found yet in an
-  in-process decoder would still abort the process. The bzip2 accelerator stays
-  in-process because no crash has been seen in it.
+  C run inside your process: the standard library's `zlib`, `bz2` and `lzma`, and pyppmd
+  for PPMd members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB by default).
+  The known crashes have been designed around: the rapidgzip accelerator (gzip, zlib, raw
+  DEFLATE and bzip2) runs in a child process, a larger PPMd member is decoded in a child
+  process, and a smaller one is handed to pyppmd whole, which avoids the input pattern
+  that crashes it. A crash nobody has found yet in an in-process decoder would still
+  abort the process.
 - **`MemoryError` is not translated.** It passes through as itself, so that running out
   of memory is never mistaken for a damaged archive. The `DecoderLimits` and
   `ListingLimits` caps are there to keep a hostile archive from getting that far.
@@ -395,7 +394,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply to every call that lists members, in both access modes: `members()`, `members_report()`, `stream_members()`, `for member in reader` and `extract_all()`. Formats that already apply `max_members` at parse (7z, RAR and ISO) raise in `open_archive` itself. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a PAX or GNU long-name header larger than what is left of `max_metadata_bytes` before reading it. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply to every call that lists members, in both access modes: `members()`, `members_report()`, `stream_members()`, `for member in reader` and `extract_all()`. Formats that already apply `max_members` at parse (ZIP, 7z, RAR and ISO) raise in `open_archive` itself, or, for a ZIP whose end record understates the count, as its directory is walked. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a PAX or GNU long-name header larger than what is left of `max_metadata_bytes` before reading it. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -411,15 +410,16 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   extraction, and any extraction from a streaming reader, does not list first: it checks
   the limits as each member arrives in its one pass, so members before the one that
   crosses a cap are already written when it raises. A `stream_members()` pass that lists
-  as it goes yields the members before the one that crosses a cap, the same way. 7z, RAR
-  and ISO check `max_members` at `open_archive`. Raise `listing_limits.max_members` to
-  open a larger 7z, RAR or ISO. For 7z and RAR that parse bound is a member count, not a
-  byte budget: `max_metadata_bytes` still fires when the list is materialized. RAR also
-  checks it at `open_archive` against the declared sizes of compressed RAR 1.5/2.x
-  comments, before decoding them. ISO checks it at `open_archive` against the bytes of
-  the directory records `pycdlib` parses, which are more than the text a listing keeps;
-  and ISO counts every directory record of one tree, so an image right at a cap may need
-  a slightly higher one.
+  as it goes yields the members before the one that crosses a cap, the same way. ZIP,
+  7z, RAR and ISO check `max_members` at `open_archive` (on ZIP, as the directory is
+  read when its end record understates the count). Raise `listing_limits.max_members`
+  to open a larger ZIP, 7z, RAR or ISO. For 7z and RAR that parse bound is a member
+  count, not a byte budget: `max_metadata_bytes` still fires when the list is
+  materialized. RAR also checks it at `open_archive` against the declared sizes of
+  compressed RAR 1.5/2.x comments, before decoding them. ISO checks it at
+  `open_archive` against the bytes of the directory records `pycdlib` parses, which are
+  more than the text a listing keeps; and ISO counts every directory record of one
+  tree, so an image right at a cap may need a slightly higher one.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
@@ -475,8 +475,9 @@ open the archive again with a new `ArchiveyConfig`.
 
 Bomb guards apply during **extraction**. Listing caps apply when a full member list is
 materialized — prefer `stream_members()` for huge untrusted archives when you only need
-a sequential subset, except on 7z, RAR and ISO where `max_members` is already checked at
-open (`stream_members()` / `streaming=True` included). Encrypted 7z folders
+a sequential subset, except on ZIP, 7z, RAR and ISO where `max_members` is already checked at
+open (`stream_members()` / `streaming=True` included; a ZIP whose end record
+understates the count raises as its directory is read). Encrypted 7z folders
 confirm the password by decoding on the first
 member read, which is neither listing nor extract: peak memory is a 64 KiB chunk plus
 codec buffers. The decode stops at the first member CRC covering 4 bytes, or at 64 KiB
@@ -530,13 +531,12 @@ members as archives, bound the depth and the cumulative size yourself.
 decoder) are a performance path. The fuzz harness decodes each input with them and
 without them, and fails when the bytes or the verdict differ. The default is
 `AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
-a caller asks for seeking, so turning them off is something you do yourself. The
-gzip, zlib and raw DEFLATE decoder runs in a child process, so a native abort there
-costs only the member; a busy loop in that child is not bounded by a timeout. The bzip2
-decoder runs in-process. Third-party C++ can busy-loop on crafted input in a way Python
-timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
-latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
-set to `AcceleratorMode.OFF`) or enforce their own resource limits.
+a caller asks for seeking, so turning them off is something you do yourself. Both
+decoders run in a child process, so a native abort there costs only the member; a busy
+loop in that child is not bounded by a timeout. Third-party C++ can busy-loop on crafted
+input in a way Python timeouts cannot cleanly interrupt. Callers processing untrusted
+archives under a hard latency budget should turn accelerators off (`use_rapidgzip` and
+`use_indexed_bzip2` set to `AcceleratorMode.OFF`) or enforce their own resource limits.
 
 **External tools:** RAR member *data* is decompressed by an external program: RARLAB
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB

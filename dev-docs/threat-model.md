@@ -48,7 +48,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
-| Source bytes to parsers | Archive structure | Pure-Python parsers for 7z, RAR and TAR headers, stdlib `zipfile`, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
+| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR and TAR headers, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
 | Parsers to decoders | Compressed streams, declared decoder parameters | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
@@ -313,11 +313,10 @@ archive declares.
   `stream_members()`, `for member in reader` and `extract_all()`, in both access modes.
   Crossing a cap raises `ResourceLimitError` at the member that crosses it, before it
   is listed; a TAR walk parses no header after it. `None` (`ListingLimits.UNLIMITED`)
-  disables it. 7z, RAR and ISO also check the caps while parsing, at `open_archive`.
-  The TAR walker keeps nothing behind the member list, so nothing else is held. ZIP
-  (through `zipfile`) reads its whole central directory at open, before any cap is
-  checked: the source holds that index uncompressed, so its size follows the
-  archive's. The caps bound memory, not work: a forward-only TAR walk reads through
+  disables it. ZIP, 7z, RAR and ISO also check `max_members` while parsing, at
+  `open_archive` (ZIP, as it walks the directory when the end record understates the
+  count). The TAR walker keeps nothing behind the member list, so nothing else is
+  held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, for the bytes present rather than the size a header declares
   (a member declaring more than the archive holds raises `TruncatedError` at the first
   short read).
@@ -412,37 +411,38 @@ The 1 048 576 default stays (davitf, 2026-10-01), for these reasons:
   and an honest header of similar names compresses well too, so it would refuse real
   archives.
 
-Revisit this if a stricter safety-first configuration mode lands (it could carry a
-lower default), if member records become lazy (removing most of the fixed cost), or if
-callers are found to open untrusted 7z with default limits. ZIP builds the
-whole central directory at open through stdlib `zipfile` (ADR
-[0006](decisions/0006-stdlib-zipfile.md)), so its memory at open is linear in the
-central directory and `max_members` binds at `members()`. `max_metadata_bytes` counts
-retained metadata, not a transient decode buffer discarded before any member exists.
-ISO's counts are a superset of the listing's: the extra records of a multi-extent file
-and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are records as
-stored, System Use areas included, not only the text kept. An image right at a cap can
-therefore be refused at open. Below the caps `pycdlib` still builds the whole tree, so
-memory at open stays linear in the records the budget allows: about 0.8 KB per plain
-record measured, so roughly 1 GiB per tree at the default `max_members`. The UDF tree
-`pycdlib` also walks is counted as one more tree, though archivey lists no UDF
-namespace: each File Identifier but the parent entry is a member, and each File
-Identifier and each File Entry, with the extended attributes and allocation descriptors
-it declares, is weighed against `max_metadata_bytes`, the File Entry before `pycdlib`
-parses it. `pycdlib` keeps every tree it walked, so `max_metadata_bytes` is one sum for
-the whole image, every tree together (ruled by davi, 2026-10-10; reasons and the reopen
-condition in `dev-docs/formats/iso.md` §2.2). A budget per tree let an image carrying
-all three trees peak near 2.6 GiB at the limits of the time (`max_members` 1,048,576):
-a PVD tree and a Joliet tree at about 1 GiB each, plus a UDF tree, where a name weighs at least about 220 bytes and
-was measured at about 2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB.
-`max_members` stays per tree, because a Joliet tree repeats every file and one count
-would halve the cap for such an image. At the default `max_members` of 262,144 the
-member cap per tree binds before the byte sum: two trees hold at most 524,288 records,
-about 0.42 GB at 0.8 KB each (an estimate from the per-record figure, not measured at
-this scale), while 64 MiB of minimal 34-byte records would allow about 2 million. The
-byte sum binds first only when `max_members` is raised past about a million per tree. Any UDF bytes
-come out of the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660
-record.
+Revisit this if a stricter safety-first configuration mode lands (it could carry a lower
+default), if member records become lazy (removing most of the fixed cost), or if callers
+are found to open untrusted 7z with default limits. ZIP reads its central directory as
+members are listed (ADR [0020](decisions/0020-native-zip-reader.md)) and keeps a small
+locator per member, so nothing is built at open; an end record declaring more entries
+than `max_members` is refused at open, and the walk charges `max_members` in every mode,
+so an end record that understates the count is refused when the walk passes the limit.
+`max_metadata_bytes` counts retained metadata, not a transient decode buffer discarded
+before any member exists. ISO's counts are a superset of the listing's: the extra
+records of a multi-extent file and the Rock Ridge `rr_moved` scaffolding count as
+members, and the bytes are records as stored, System Use areas included, not only the
+text kept. An image right at a cap can therefore be refused at open. Below the caps
+`pycdlib` still builds the whole tree, so memory at open stays linear in the records the
+budget allows: about 0.8 KB per plain record measured, so roughly 1 GiB per tree at the
+default `max_members`. The UDF tree `pycdlib` also walks is counted as one more tree,
+though archivey lists no UDF namespace: each File Identifier but the parent entry is a
+member, and each File Identifier and each File Entry, with the extended attributes and
+allocation descriptors it declares, is weighed against `max_metadata_bytes`, the File
+Entry before `pycdlib` parses it. `pycdlib` keeps every tree it walked, so
+`max_metadata_bytes` is one sum for the whole image, every tree together (ruled by davi,
+2026-10-10; reasons and the reopen condition in `dev-docs/formats/iso.md` §2.2). A
+budget per tree let an image carrying all three trees peak near 2.6 GiB at the limits of
+the time (`max_members` 1,048,576): a PVD tree and a Joliet tree at about 1 GiB each,
+plus a UDF tree, where a name weighs at least about 220 bytes and was measured at about
+2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB. `max_members` stays
+per tree, because a Joliet tree repeats every file and one count would halve the cap for
+such an image. At the default `max_members` of 262,144 the member cap per tree binds
+before the byte sum: two trees hold at most 524,288 records, about 0.42 GB at 0.8 KB
+each (an estimate from the per-record figure, not measured at this scale), while 64 MiB
+of minimal 34-byte records would allow about 2 million. The byte sum binds first only
+when `max_members` is raised past about a million per tree. Any UDF bytes come out of
+the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660 record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
@@ -761,7 +761,7 @@ that are not errors are `Diagnostic` values with stable codes and a per-code pol
 (`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
 the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
-accelerator for gzip, zlib and raw DEFLATE (`internal/streams/codecs/rapidgzip_child.py`), and
+accelerator for gzip, zlib, raw DEFLATE and bzip2 (`internal/streams/codecs/rapidgzip_child.py`), and
 PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
 `internal/streams/codecs/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
 costs only the member. A rapidgzip child stopped at its memory cap
@@ -1004,10 +1004,10 @@ worker they can kill. Public: [known and accepted limits](../docs/extracting.md#
 
 ### A native decoder crash or MemoryError
 
-The stdlib `zlib`, `bz2` and `lzma`, pyppmd below 16 MiB (handed the member whole, which
-avoids the input pattern known to crash it) and the bzip2 accelerator run in-process. A
-crash nobody has found yet would abort the process. The bzip2 accelerator stays
-in-process because no crash has been seen in it. `MemoryError` is not translated, so
+The stdlib `zlib`, `bz2` and `lzma` and pyppmd below 16 MiB (handed the member whole, which
+avoids the input pattern known to crash it) run in-process. A crash nobody has found yet
+would abort the process. Both rapidgzip decoders run in a child process;
+`scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
 [known and accepted limits](../docs/extracting.md#known-and-accepted-limits).

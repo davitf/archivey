@@ -322,7 +322,7 @@ def test_structural_bad_zip_is_corruption_not_password_ambiguity() -> None:
     blob[30] ^= 0x01  # local-header name no longer matches the central directory
 
     with open_archive(io.BytesIO(blob), password=[RIGHT, b"also-wrong"]) as ar:
-        with raises_corruption_not_truncation(match="Error reading ZIP archive"):
+        with raises_corruption_not_truncation(match="File name in directory .* differ"):
             ar.open(NAME)
 
 

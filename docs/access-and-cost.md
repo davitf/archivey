@@ -21,7 +21,7 @@ rather than here — they go stale faster than this page is revised.
 | --- | --- |
 | Large-member ZIP/TAR/gzip **read** (decompression-dominated) | ≤ **1.3×** stdlib peer |
 | ZIP/TAR **extract** (safety floor) | ≤ ~**2×** stdlib peer |
-| ZIP **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` |
+| ZIP **open+list** (native parser) | ≤ **2–3×** `zipfile` |
 | TAR **open+list** (native parser) | ≤ **2–3×** `tarfile` |
 | 7z/RAR **open+list** (native parsers) | ≈parity (~**1.25×**) vs `py7zr` / `rarfile` |
 
@@ -118,11 +118,12 @@ CRC check, and so does a forward seek in a compressed member. That seek itself i
 free: the next read decodes and hashes the bytes it skipped, so that read pays for the
 gap, and a seek you undo or a stream you close before reading costs nothing. A forward
 seek that jumps (a stored member, or a seek by an index or the accelerator) gives the
-CRC up once you read past it, until a seek back to 0. The check covers the first pass
-over each byte: bytes read again after a seek back are not checked again. None of this
-touches WinZip AES's HMAC: the HMAC covers the ciphertext, so the read that reaches
-the member's end first reads, without decrypting, whatever ciphertext your seeks
-skipped, and then checks it.
+CRC up once you read past it, until you seek back to a point you had already read up
+to and read on from there to the end. The check covers the first pass over each byte:
+bytes read again after a seek back are not checked again. None of this touches WinZip
+AES's HMAC: the HMAC covers the ciphertext, so the read that reaches the member's end
+first reads, without decrypting, whatever ciphertext your seeks skipped, and then
+checks it.
 
 A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
 seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
@@ -187,7 +188,10 @@ raises `PackageNotInstalledError` naming `[seekable]` — even without
 `seekable_members=True`, at the first gzip, zlib or deflate stream it would handle.
 `AUTO` treats the accelerator as an enhancement and falls back to the stdlib decoder
 without raising. The stream is still seekable, but a backward seek may re-decode from
-the start. `use_indexed_bzip2` behaves the same way for bzip2.
+the start. `use_indexed_bzip2` behaves the same way for bzip2. Its decoder runs in a
+child process too, and `AUTO` selects it from `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`
+(1 MiB) of compressed input: the standard library decodes bzip2 slowly, so the child
+pays for its start much sooner than for gzip.
 
 An accelerator raises on the same corrupt input as the stdlib decoder, with one
 exception: in a multi-member `.gz`, rapidgzip does not check the length field (ISIZE) of

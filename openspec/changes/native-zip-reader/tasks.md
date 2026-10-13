@@ -2,12 +2,13 @@
 
 ## 0. Before coding
 
-- [ ] 0.1 The three ZIP fix PRs from the October code sweep have merged (trailing bytes
+- [x] 0.1 The three ZIP fix PRs from the October code sweep have merged (trailing bytes
       after a codec's end, malformed Unicode Path field, comment decoding). Rebase on
-      main; their tests are acceptance tests from here on.
+      main; their tests are acceptance tests from here on. (The Unicode Path one, PR 715,
+      closed unmerged; stage 2 carries its tests and docs.)
 - [x] 0.2 Questions A, B and C in `design.md` are answered (davi, 2026-10-10) and
       recorded in `dev-docs/formats/zip.md` §6 and `dev-docs/design-rules.md` DR-8.
-- [ ] 0.3 `openspec validate --strict native-zip-reader`.
+- [x] 0.3 `openspec validate --strict native-zip-reader`.
 - [x] 0.4 Question D is answered (davi, 2026-10-10: a per-member field, working name
       `member_state_final`, settled in the stage 3 PR).
 
@@ -33,29 +34,32 @@
 
 ## 2. Switch the reader (PR 2)
 
-- [ ] 2.1 `ZipReader` reads through the parser; `import zipfile` leaves `src/`.
-- [ ] 2.1a Add the newer-Python row for a comment plus trailing bytes totalling 65 536 to the
+- [x] 2.1 `ZipReader` reads through the parser; `import zipfile` leaves `src/`.
+- [x] 2.1a Add the newer-Python row for a comment plus trailing bytes totalling 65 536 to the
   handbook's behaviour notes, as the design's §"Behaviour that changes" table records
   it (the search window stays stdlib's older one).
-- [ ] 2.2 Reader-owned lock; the source is the handle for path sources too.
-- [ ] 2.3 Lazy `_iter_members`; `member_count` from a complete walk, `None` when it fails
+- [x] 2.2 Reader-owned lock; the source is the handle for path sources too.
+- [x] 2.3 Lazy `_iter_members`; `member_count` from a complete walk, `None` when it fails
       or stops at `max_members`.
-- [ ] 2.4 Offsets and count collected by the listing walk; the index pass only when a
+- [x] 2.4 Offsets and count collected by the listing walk; the index pass only when a
       member open or `member_count` comes first; both charge `max_members` (tests:
       a listing then an open walks the directory once, counted reads).
-- [ ] 2.4a Open refuses a declared entry count over `max_members` when `cd_size` can hold
+- [x] 2.4a Open refuses a declared entry count over `max_members` when `cd_size` can hold
       it; a count the directory cannot hold stays a finding (tests for both).
-- [ ] 2.5 Damaged directory lists the entries before the damage, then raises (tests
+- [x] 2.5 Damaged directory lists the entries before the damage, then raises (tests
       first: bad signature mid-directory, directory cut by end of file).
-- [ ] 2.6 Version needed above 6.3 lists and reads (test first).
-- [ ] 2.6a Trailing bytes after the end record report `ARCHIVE_TRAILING_DATA` as
+- [x] 2.6 Version needed above 6.3 lists and reads (test first).
+- [x] 2.6a Trailing bytes after the end record report `ARCHIVE_TRAILING_DATA` as
       `design.md` §"Trailing bytes" states (1 MiB bound shared with TAR,
       `expected_marker="zeros_to_eof"`, zeros silent, strict refuses; the constant and
       zero-byte loop move to `internal/trailing_scan.py`); tests first,
-      including a first non-zero byte past 1 MiB (silent) and a pipe.
-- [ ] 2.7 Remove every row of `design.md` §"What the parser removes" except the name
+      (the end record is always within 65 558 bytes of the end, so the 1 MiB bound and a
+      pipe cannot arise for ZIP until stage 3).
+- [x] 2.6b `member._raw` is a slotted locator, not the `CentralEntry` (design §"`zip_reader.py`");
+      a tracemalloc test bounds the per-member listing cost below today's.
+- [x] 2.7 Remove every row of `design.md` §"What the parser removes" except the name
       decode; tests that read `ZipInfo` off `member._raw` move to `CentralEntry`.
-- [ ] 2.8 New ADR superseding 0006; format-zip spec; the `diagnostics` spec row and the
+- [x] 2.8 New ADR superseding 0006; format-zip spec; the `diagnostics` spec row and the
       `ArchiveEofContext` docstring for `"zeros_to_eof"`; `docs/gotchas.md` (trailing
       data, open pipe); `dev-docs/formats/zip.md` §2.2, §5, §6; `dev-docs/IDEAS.md`;
       `docs/formats.md`.
@@ -67,6 +71,14 @@
       forward only (question C); a test counts its seeks.
 - [ ] 3.0a Before the walk: open a real self-extractor fixture through a pipe under the
       `FAST` and default budgets and record what `payload_offset` comes back as.
+- [ ] 3.0b A seekable source whose end record is not in the last 65 558 bytes runs the
+      local-header walk, per `design.md` §"A seekable source whose end record is not in
+      the tail": tests first for a ZIP followed by 1 MiB of non-zero bytes (opens, members
+      updated from the directory, `ARCHIVE_TRAILING_DATA`), a ZIP cut before its
+      directory (members listed, then `TruncatedError`; `members_report()` carries both),
+      a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
+      (`CorruptionError` after the members before it); a sized member is seeked over
+      (counted reads).
 - [ ] 3.1 `parse_local_header` / `parse_central_header` on bytes, shared by both walks;
       `LocalHeaderWalk` over a forward reader; data descriptor parsing (signature
       optional, 4- or 8-byte sizes).
@@ -119,7 +131,8 @@
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):
-      - `max_members` at parse, ZIP joins: `docs/gotchas.md` (§Limits; the
+      - `max_members` at parse, ZIP joins (done in stage 2, which applies it at open and
+        in the walk): `docs/gotchas.md` (§Limits; the
         `documentation` spec requires that residual there),
         `docs/opening-and-listing.md`, `docs/extracting.md` (the limits table and two sentences),
         `dev-docs/threat-model.md` (the recorded residual shrinks; say so),
@@ -155,7 +168,7 @@
 - [ ] 6.3 Format-zip spec, handbook §3 and §5, `docs/formats.md`; close the `IDEAS.md`
       item.
 
-## 7. Shrink and Implode (PR 7)
+## 7. Shrink and Implode (deferred until after 0.2.0, maintainer 2026-10-13)
 
 - [ ] 7.1 Pure-Python decoders for methods 1 and 6, registered with the codec layer.
 - [ ] 7.2 Fixtures from a real writer (Info-ZIP `zip` 1.x / PKZIP 1.x output or the

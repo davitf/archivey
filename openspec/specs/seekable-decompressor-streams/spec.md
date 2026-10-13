@@ -40,6 +40,9 @@ zlib, gzip), so per-stream accelerator setup is not paid for members too small t
 threshold value is fixed by benchmark and recorded in design. When the input size is not known
 in advance, `AUTO` SHALL behave as it did before this threshold existed (select the accelerator
 when otherwise eligible). `ON` ignores the threshold; `OFF` never selects rapidgzip.
+`use_indexed_bzip2` SHALL have its own documented `AUTO` threshold
+(`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), fixed by benchmark the same way, with the same
+rules for an unknown size, `ON` and `OFF`.
 
 Over a ZipCrypto decrypt stage `AUTO` SHALL resolve to `OFF` for the codec that reads
 it, because every backward seek restarts decryption from the member's start.
@@ -52,6 +55,8 @@ it, because every backward seek restarts decryption from the member's start.
 | Same stream opened with seekability, `AUTO`, accelerator installed, size ≥ threshold | Accelerator or native index provides random access |
 | Declared-seekable deflate/zlib/gzip under `AUTO`, known size < threshold | rapidgzip not selected; stdlib backend used |
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
+| Declared-seekable bzip2 under `AUTO`, known size < `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` | rapidgzip not selected; stdlib backend used |
+| Declared-seekable bzip2, `use_indexed_bzip2=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from start and warns/names `[seekable]` accelerator |
 
 ### Requirement: XZ and lzip use format-native indexes
@@ -84,12 +89,26 @@ When rapidgzip is unavailable or disabled, gzip and bzip2 SHALL use stdlib
 decoders; backward seek is serviced by re-decompressing from the start and MUST
 not degrade silently.
 
+The system MUST NOT run any rapidgzip decoder in the caller's process. The bzip2 decoder
+SHALL run in a child process with the same rules as the DEFLATE family's (next
+requirement): the child opens a path source itself, a stream source stays in the caller's
+process, a child that dies on the data is a verdict the standard library takes over from,
+and where no child can be started `AUTO` decodes with the stdlib backend, logging one
+warning per process that names `use_indexed_bzip2=OFF`, and `ON` raises
+`ResourceLimitError`. No crash of that decoder has been seen; it is isolated as a precaution,
+because it comes from the same library as the DEFLATE decoder, whose crashes cannot always be
+avoided. A maintainer script SHALL run each rapidgzip decoder
+in-process on damaged input in a watched process and report every crash by its
+signature, so that whether the isolation is still needed stays measurable.
+
 #### Scenario: accelerator matrix
 
 | Case | Expected |
 | --- | --- |
 | `use_rapidgzip` enabled and package installed | gzip seeks without full re-decompression |
-| `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File`; standalone `indexed_bzip2` never imports |
+| `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
+| `use_indexed_bzip2=AUTO`, no child process can start | stdlib decoder; one warning per process naming `use_indexed_bzip2=OFF` |
+| `use_indexed_bzip2=ON`, no child process can start | `ResourceLimitError`; never decoded in-process |
 | rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses and warns |
 
 ### Requirement: DEFLATE-family random access uses rapidgzip
@@ -129,7 +148,7 @@ codecs with rapidgzip in the caller's process. A path source SHALL be opened by 
 stream source SHALL stay in the caller's process, which serves the child's reads, seeks and
 tells, so an exception from the caller's source reaches the caller as itself. The child SHALL
 be ended and reaped when the stream closes or is collected. bzip2 through
-`rapidgzip.IndexedBzip2File` stays in-process.
+`rapidgzip.IndexedBzip2File` runs in the same kind of child (previous requirement).
 
 Where no child process can be started (a frozen application, an interpreter without
 `sys.executable`, an archivey imported from a zip with no worker script on disk, a spawn or
@@ -246,8 +265,9 @@ raised first, unchanged. An exception that rapidgzip raised in the child SHALL r
 translator as the same built-in type, and any `RuntimeError` rapidgzip raised SHALL translate
 to `CorruptionError` when no listed message says truncation.
 
-The same rule SHALL hold for bzip2 through rapidgzip's in-process decoder: a data error it
-raises (on a cut stream an opaque `RuntimeError('std::exception')`), on a read or a seek, SHALL
+The same rule SHALL hold for bzip2 through rapidgzip's decoder process: a data error it
+raises (on a cut stream an opaque `RuntimeError('std::exception')`), or a crash of the process
+on the data, on a read or a seek, SHALL
 hand the operation to the standard library decoder, so the bytes delivered and the error match
 `use_indexed_bzip2=OFF`. The standard library SHALL start at the newest block from rapidgzip's
 index at or before the position delivered to the caller, among a bounded number of the newest
@@ -313,22 +333,23 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 
 ### Requirement: Accelerator lifecycle is safe at shutdown
 
-The system SHALL protect rapidgzip streams with a `weakref.finalize` guard that
-closes the raw object exactly once when the wrapper is collected or at
-interpreter exit. The guard MUST hold a strong reference to the raw object until
-close completes, because `join_threads()` alone does not stop rapidgzip's C++
-worker thread and an unclosed worker can abort the process during finalization.
+No rapidgzip object SHALL live in the caller's process. The decoder process SHALL close
+its rapidgzip stream before it exits and then skip interpreter finalization
+(`os._exit`), because `join_threads()` alone does not stop rapidgzip's C++ worker thread
+and a worker still running at finalization aborts the process. The caller's process SHALL
+reap the decoder process when its stream is closed, collected, or left at interpreter
+exit.
 
-The system SHALL keep one accelerator library in process by using rapidgzip for
-both gzip and bzip2 and never importing standalone `indexed_bzip2`. With these
-measures, `AUTO` MAY select rapidgzip for declared random access on every
-platform.
+The decoder process SHALL use rapidgzip for both gzip and bzip2 and never import
+standalone `indexed_bzip2`. With these measures, `AUTO` MAY select rapidgzip for declared
+random access on every platform.
 
 #### Scenario: accelerator safety matrix
 
 | Case | Expected |
 | --- | --- |
-| Accelerator stream is leaked, cyclically collected, or process exits | Finalizer closes raw object before free; process terminates cleanly |
+| Accelerator stream is leaked, cyclically collected, or process exits | The decoder process is reaped; the caller's process holds no rapidgzip object and terminates cleanly |
+| Decoder process finishes a stream | It closes the rapidgzip stream, then exits with `os._exit` |
 | Process accelerates gzip and bzip2 | Both use rapidgzip; standalone `indexed_bzip2` is absent; no cross-library heap double-free |
 | Declared random access with `AUTO` and rapidgzip available | rapidgzip may be selected on every platform |
 

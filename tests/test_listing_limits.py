@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import struct
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -32,8 +34,19 @@ def _zip_with_members(names: list[str], *, comment: bytes | None = None) -> byte
     return buf.getvalue()
 
 
+def _tar_with_members(names: list[str]) -> bytes:
+    """A TAR: a format whose listing walk does not apply ``max_members`` at parse."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name in names:
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            tf.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
 def test_max_members_raises_on_members() -> None:
-    data = _zip_with_members([f"f{i}.txt" for i in range(5)])
+    data = _tar_with_members([f"f{i}.txt" for i in range(5)])
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
     with open_archive(io.BytesIO(data), config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_members"):
@@ -79,20 +92,55 @@ def test_unlimited_disables_guards() -> None:
         assert len(reader.members()) == 20
 
 
-def test_stream_members_enforces_max_members() -> None:
-    """ZIP lists the whole archive before the pass, so it raises before any yield."""
+def test_zip_applies_max_members_at_open() -> None:
+    """ZIP keeps every member's local-header offset for the overlap guard, so
+    ``max_members`` bounds it in every mode: an end record declaring more entries
+    than the limit is refused at open, when the directory is large enough to hold
+    them (DR-15b)."""
     data = _zip_with_members([f"f{i}.txt" for i in range(5)])
-    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
-    with open_archive(io.BytesIO(data), config=cfg) as reader:
-        names: list[str] = []
-        with pytest.raises(ResourceLimitError, match="max_members"):
-            for m, _ in reader.stream_members():
-                names.append(m.name)
-        assert names == []
-        # The peek walks the upfront index again and is refused the same way.
-        with pytest.raises(ResourceLimitError, match="max_members"):
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
+    with pytest.raises(ResourceLimitError, match="declares 5 entries"):
+        open_archive(io.BytesIO(data), config=cfg)
+
+
+def test_zip_walk_charges_max_members_when_the_declared_count_lies() -> None:
+    """A declared count the directory cannot hold is a wrong field, not a breach: the
+    open goes ahead and the walk charges the entries really there, in a pass too."""
+    data = bytearray(_zip_with_members([f"f{i}.txt" for i in range(5)]))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 1000, 1000)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
+    with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
+            list(reader.stream_members())
+        # The peek walks the index again and is refused the same way.
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
             reader.members_report_if_available()
-        with pytest.raises(ResourceLimitError, match="max_members"):
+    with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
+            reader.members()
+        assert reader.info.member_count is None
+
+
+def test_zip_members_before_the_limit_read_when_opened_first() -> None:
+    """A streaming pass reads each member as it is yielded, so the index pass runs
+    before the listing reaches the limit. It stops at the same entry and keeps the
+    offsets before it, so the members inside the limit read, as after damage."""
+    data = bytearray(_zip_with_members([f"f{i}.txt" for i in range(5)]))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 1, 1)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
+    read: list[str] = []
+    with open_archive(io.BytesIO(bytes(data)), config=cfg, streaming=True) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                assert stream.read() == b"x"
+                read.append(member.name)
+    assert read == ["f0.txt", "f1.txt", "f2.txt"]
+    with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
+        assert reader.info.member_count is None
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
             reader.members()
 
 
@@ -110,8 +158,8 @@ def test_matched_defaults_list_then_extract(tmp_path: Path) -> None:
 def test_extract_all_runs_under_the_open_time_listing_limits(tmp_path: Path) -> None:
     # extract_all() takes no config=: the reader's open config governs the whole call,
     # so nothing per call can raise the listing ceiling set at open.
-    src = tmp_path / "a.zip"
-    src.write_bytes(_zip_with_members([f"f{i}.txt" for i in range(5)]))
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_with_members([f"f{i}.txt" for i in range(5)]))
     dest = tmp_path / "out"
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     loose = ArchiveyConfig(listing_limits=ListingLimits(max_members=1000))

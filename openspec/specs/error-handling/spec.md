@@ -263,7 +263,7 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 
 The system SHALL preserve original decoding-library exceptions as `__cause__`
 using `raise ... from exc`; libraries MUST NOT swallow the original traceback.
-Type translation is per underlying library (for example `zipfile`, `lzma`,
+Type translation is per underlying library (for example `zlib`, `lzma`,
 `pycdlib`, `unrar`, crypto backend), not per format. The `ArchiveReader` base class
 SHALL centrally stamp `source_format`, `archive_name`, and `member_name` on
 propagating `ArchiveyError`s; backends do not hand-fill those fields.
@@ -277,7 +277,7 @@ there is no codec taxonomy to translate.
 
 | Case | Expected |
 | --- | --- |
-| `zipfile.BadZipFile` is wrapped as `CorruptionError` | `__cause__` is the original `BadZipFile` |
+| `zlib.error` from a damaged DEFLATE member is wrapped as `CorruptionError` | `__cause__` is the original `zlib.error` |
 | `traceback.print_exc()` after catching `ArchiveyError` | Chained output includes original exception and traceback |
 | Decoder raises an unexpected taxonomy exception | Re-raised as an `ArchiveyError` subclass with `raise ... from exc` |
 | Context-free translator raises while reading 7z member `"data/file.txt"` from `"/tmp/a.7z"` | Base reader stamps `SEVEN_Z`, archive name, and member name |

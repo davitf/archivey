@@ -65,7 +65,7 @@ permissions gets written as it is:
 | `"error"` (default) | The member fails, and `on_error` decides whether extraction goes on |
 | `"skip"` | The existing file stays. This isn't a failure, so `on_error` doesn't apply |
 | `"replace"` | The existing file is deleted, and the member is written |
-| `"rename"` | The member is written next to it, as `name (1)` |
+| `"rename"` | The member is written next to it, with a number before the extension: `a.txt` becomes `a (1).txt` |
 
 A folder member merges into a folder that's already there. A file member whose path is an
 existing folder is a conflict like any other.
@@ -77,6 +77,9 @@ existing folder is a conflict like any other.
 | `"stop"` (default) | The first failure raises, and extraction stops there |
 | `"continue"` | The failure is recorded in the report, and extraction goes on |
 
+A refused member isn't a failure, so `"stop"` doesn't stop there.
+`abort_on=["blocked_member"]` does.
+
 `abort_on` lists events that stop the whole extraction immediately if they happen, even ones that
 aren't failures. It's empty by default:
 
@@ -84,7 +87,7 @@ aren't failures. It's empty by default:
 |---|---|
 | `"blocked_member"` | A member is refused |
 | `"name_collision"` | Two members of the archive would be written to the same path. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
-| `"name_sanitized"` | A name is rewritten to its portable spelling, or an absolute name is placed inside the destination |
+| `"name_sanitized"` | A name is rewritten to its portable spelling, or an absolute name is placed inside the destination. Under `"strict"` an absolute name is refused instead, so `"blocked_member"` is the one that catches it |
 
 After an abort there's no report, and the files already written stay on disk.
 
@@ -113,7 +116,7 @@ Some members are refused under every policy, and others depend on it:
 | A link to `../../outside` or `/etc/passwd` | Refused | Refused | Refused |
 | A device file or a named pipe | Refused | Refused | Refused |
 | `CON`, `aux.txt` or `file:ads`, which Windows can't create | Refused | Refused | Written as is |
-| A name with hidden characters that make an `.exe` look like a `.png` | Refused | Refused | Written as is |
+| A name with characters that reorder how it displays, making an `.exe` look like a `.png` | Refused | Refused | Written as is |
 | `notes. `, with a trailing dot and space | Written as `notes` | Written as is | Written as is |
 | `caf\xe9.txt`, a name that isn't valid UTF-8 | Written as `caf%E9.txt` | Written as `caf%E9.txt` | Written as is |
 | `README`, then `readme` | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
@@ -124,16 +127,19 @@ Some members are refused under every policy, and others depend on it:
 macOS and Windows can't tell them apart by default. An archive that writes more in total than
 `limits` allows stops the whole extraction, whatever the policy.
 
-A `filter` sees each member before these checks run, so it can rename one they would refuse,
-such as `../evil.txt`, and that member is then written under its new name. Device files are
-refused whatever the filter does, and a link pointing outside is refused unless the filter also
-changes its target. `archivey.sanitize_names` is a ready-made filter for this, passed as
-`filter=` to `extract_all`. It drops a leading `/` or drive letter, resolves or drops `..`,
-removes the hidden characters, and adds `_` to names Windows reserves, such as `CON`. In a
-symlink's target it makes only the character and reserved-name fixes, and it leaves a
-hard link's target as stored. A hard link is a second name for the file at the end of its chain
-of links, so it is written when that file is written and refused when that file is refused,
-and changing its target in a filter does nothing.
+A `filter` sees each member before these checks run, so it can rename one they would refuse, such as
+`../evil.txt`, and that member is then written under its new name. Device files are refused whatever
+the filter does, and a link pointing outside is refused unless the filter also changes its target.
+`archivey.sanitize_names` is a ready-made filter for this, passed as `filter=` to `extract_all`. It
+drops a leading `/` or drive letter, resolves or drops `..`, removes those reordering characters,
+and adds `_` to names Windows reserves, such as `CON`. In a symlink's target it makes only the
+character and reserved-name fixes, and it leaves a hard link's target as stored.
+
+A hard link gets the contents of the file it points to in the archive, whatever happens to that
+file's name. If a filter renamed that file, the link points to the new name. If the file was left
+out, by `members=` or a filter, the link is written as a separate copy of its contents, except with
+`streaming=True`, where that data is gone by then and the link fails. If the file is refused, the
+link is refused too. Changing a hard link's target in a filter does nothing.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, with the path it was written to in `result.path` and the

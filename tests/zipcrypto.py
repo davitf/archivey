@@ -254,18 +254,16 @@ def zip_with_truncated_zipcrypto_header(
     """A ZipCrypto ZIP whose 12-byte encryption header cannot be read.
 
     stdlib ``ZipExtFile._init_decrypter`` does ``self._decrypter(header)[11]`` after
-    ``read(12)``. This fixture inflates the local extra-field length so that skip
-    lands at EOF, then adds a dummy central-directory entry with a huge
-    ``header_offset`` so zipfile's overlap guard does not fire first. Opening the
-    encrypted member then raises a bare ``IndexError`` — the Atheris nightly
-    2026-09-01 finding (run 33505689273).
+    ``read(12)``. This fixture inflates the local extra-field length so the
+    member's data starts 5 bytes before the end of the file (the extra field holds the
+    rest of the archive, so the local header itself reads whole), and adds a dummy
+    central-directory entry with a huge ``header_offset`` so the overlap guard does not
+    fire first. Opening the encrypted member raised a bare ``IndexError`` under stdlib —
+    the Atheris nightly 2026-09-01 finding (run 33505689273).
     """
     blob = bytearray(
         build_zipcrypto_zip(password, name, data, compression=zipfile.ZIP_STORED)
     )
-    # Local extra-field length (LFH offset 28). 0xFFFF skips past the 12-byte header
-    # and the rest of the file, whether zipfile uses read() (3.11) or seek() (3.12+).
-    struct.pack_into("<H", blob, 28, 0xFFFF)
     eocd_at = blob.rfind(b"PK\x05\x06")
     if eocd_at < 0:
         raise ValueError("EOCD not found")
@@ -297,7 +295,12 @@ def zip_with_truncated_zipcrypto_header(
     struct.pack_into(
         "<HHI", blob, eocd_at + 8, n_this + 1, n_total + 1, cd_size + len(dummy_cdh)
     )
-    return bytes(blob[:eocd_at] + dummy_cdh + blob[eocd_at:])
+    out = bytearray(blob[:eocd_at] + dummy_cdh + blob[eocd_at:])
+    # Local extra-field length (LFH offset 28): the data starts 5 bytes before EOF,
+    # short of the 12-byte encryption header.
+    (name_len,) = struct.unpack_from("<H", out, 26)
+    struct.pack_into("<H", out, 28, len(out) - 5 - 30 - name_len)
+    return bytes(out)
 
 
 def corrupt_zipcrypto_payload(blob: bytes) -> bytes:

@@ -539,8 +539,8 @@ class BaseArchiveReader(ArchiveReader):
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
-        # A backend that shares one underlying handle across member streams (zipfile fp,
-        # the TAR walk's stream, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
+        # A backend that shares one underlying handle across member streams (the TAR
+        # walk's stream, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
         # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
         # handle to serialize (default readers, path-per-open backends).
@@ -843,9 +843,9 @@ class BaseArchiveReader(ArchiveReader):
 
         Immutable, already-materialized state (the member list / name index) MAY be read
         read-only. Backends whose member addressing is owned by an external library that
-        already coordinates the shared handle (ISO via ``pycdlib``, ZIP via stdlib
-        ``zipfile``) are not required to route through an archivey ``SharedSource`` view,
-        but archivey-owned reader state still MUST NOT hold unsynchronized per-open scratch.
+        already coordinates the shared handle (ISO via ``pycdlib``) are not required to
+        route through an archivey ``SharedSource`` view, but archivey-owned reader state
+        still MUST NOT hold unsynchronized per-open scratch.
 
         Concurrent ``open`` is supported when the reader declared concurrency
         (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_members=True)``):
@@ -1603,8 +1603,16 @@ class BaseArchiveReader(ArchiveReader):
             self._materialize_members()
 
     def _account_archive_comment(self) -> None:
-        comment = self._get_archive_info().comment
-        self._listing_tracker.account_archive_comment(comment)
+        self._listing_tracker.account_archive_comment(self._archive_comment())
+
+    def _archive_comment(self) -> str | None:
+        """The archive comment, weighed before the member walk starts.
+
+        ``ArchiveInfo``'s by default. A backend whose ``ArchiveInfo`` can cost a pass
+        over its index (ZIP's ``member_count``) answers directly, so starting the walk
+        does not walk the index first.
+        """
+        return self._get_archive_info().comment
 
     def _register_member(
         self,
@@ -2473,6 +2481,10 @@ class BaseArchiveReader(ArchiveReader):
     @property
     def cost(self) -> CostReceipt:
         self._state.require_open("cost")
+        return self._cost_receipt()
+
+    def _cost_receipt(self) -> CostReceipt:
+        """``ArchiveInfo.cost``; overridden as :meth:`_archive_comment` is."""
         return self._get_archive_info().cost
 
     @property

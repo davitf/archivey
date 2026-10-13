@@ -1,10 +1,11 @@
 """Look for non-zero bytes after the end of an archive whose structure gives its end.
 
-7z, RAR and ISO each say where the archive ends: the next header, the end-of-archive
-block, the volume space. Bytes after that end are reported as ``ARCHIVE_TRAILING_DATA``
-(DR-3): a warning by default, refused under ``DiagnosticPolicy.STRICT``. Zero padding
-is silent, as it is after a TAR trailer. TAR and the stream codecs have their own scans,
-because theirs read decoded bytes; this one reads the raw source.
+ZIP, 7z, RAR and ISO each say where the archive ends: the end record's comment, the next
+header, the end-of-archive block, the volume space. Bytes after that end are reported as
+``ARCHIVE_TRAILING_DATA`` (DR-3): a warning by default, refused under
+``DiagnosticPolicy.STRICT``. Zero padding is silent, as it is after a TAR trailer. TAR
+and the stream codecs have their own scans, because theirs read decoded bytes; this one
+reads the raw source.
 """
 
 from __future__ import annotations

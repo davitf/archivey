@@ -22,11 +22,12 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   the bytes it skipped, as it would have to anyway, and Archivey hashes them as it goes.
   A forward seek that jumps over bytes without decoding them (a stored member, or a seek
   by an index or the `[seekable]` accelerator) gives up the check once you read past the
-  jump, until you seek back to 0. The check covers the first pass over each byte: bytes
-  read again after a seek back are not checked again. A WinZip AES member's HMAC is the
-  exception: it is still checked when a read reaches the end, and that read first
-  re-reads, without decrypting, the ciphertext your seeks skipped. A short read at the
-  end of a large AES member can therefore read the whole member from the archive.
+  jump, until you seek back to a point you had already read up to and read on to the end
+  from there. The check covers the first pass over each byte: bytes read again after a
+  seek back are not checked again. A WinZip AES member's HMAC is the exception: it is
+  still checked when a read reaches the end, and that read first re-reads, without
+  decrypting, the ciphertext your seeks skipped. A short read at the end of a large AES
+  member can therefore read the whole member from the archive.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
@@ -105,6 +106,12 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   source (a pipe or socket) the listing reads up to 1 MiB past the trailer, so a
   sender that keeps the connection open after the tar ends makes the listing wait for
   more bytes or EOF. Close the sending side when the tar is done.
+- **ZIP trailing data is seen only when the end record is still found.** Bytes after a
+  ZIP's end record and its comment emit `ARCHIVE_TRAILING_DATA`; zero padding passes.
+  The end record is searched for in the last 64 KiB of the file, so a ZIP followed by
+  more than that is not opened at all today: `open_archive` raises
+  `CorruptionError`, or does not recognise the file without `format=`. Cut the tail
+  off, or open the ZIP part through a stream that ends where it does.
 - **The rapidgzip accelerator starts a child process for gzip, zlib and deflate.**
   rapidgzip aborts the process on a stream that ends early, so archivey decodes these
   codecs with it in a child Python process, one per open stream. When the child aborts,

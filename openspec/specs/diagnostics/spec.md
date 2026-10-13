@@ -79,7 +79,8 @@ record gives, with `observed_kind="nonzero"`, `expected_bytes` that size and
 `observed_bytes` where the entry would end, both counted from the directory's start;
 `"zeros_to_eof"` for the trailing-bytes check after an archive's end (a TAR
 trailer, a 7z next header or last packed stream, whichever is later, a RAR
-end-of-archive block, or an ISO image's volume space and partitions), whose `format`
+end-of-archive block, an ISO image's volume space and partitions, or a ZIP end record
+and its declared comment), whose `format`
 names the archive format and whose `observed_bytes` is the offset of the first non-zero
 byte past that end;
 `"end_of_stream"` for bytes after a compressed stream's end, whose `format` is the
@@ -126,8 +127,9 @@ and cross-run id stability are not promised.
 closed before its declared digest was reached **and** the password behind those bytes was
 accepted on a check weaker than that digest. `check` names what accepted the password
 (`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names why the digest was
-not reached (`"partial_read"`, or `"seek"` when a seek forfeited it: a read skipped
-bytes past the furthest read, or the stream was closed while parked there; a WinZip AES
+not reached (`"partial_read"`, or `"seek"` when a seek left it unreached: a read skipped
+bytes past the hashing frontier and no read from it reached the end, or the stream was
+closed while parked past it; a WinZip AES
 HMAC survives seeks, so there `"seek"` means only that a failed seek left the position
 unknown). It SHALL NOT be emitted for a partial read whose password was confirmed
 against an integrity anchor — that restates what the caller already knows, which the
@@ -147,6 +149,7 @@ returned bytes, since nothing unchecked was delivered.
 | Non-zero byte within 1 MiB past a 7z archive's end (next header or last packed stream) | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="7z"` |
 | Non-zero byte within 1 MiB past a RAR volume's end-of-archive block | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="rar"`, once per volume |
 | Non-zero byte within 1 MiB past an ISO image's volume space and listed partitions | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="iso"` |
+| Non-zero byte past a ZIP end record and its declared comment | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="zip"` |
 | Non-zero bytes after a single-file codec's stream | `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` and the codec name as `format` |
 | Probe-only single-file read raises, uncorroborated `GUESS` | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
 | Probe-only single-file read raises, uncorroborated **`PROBABLE`** (compressed-first Brotli) | `PROBE_FORMAT_UNCONFIRMED` too — **changed**; confidence is not the trigger |

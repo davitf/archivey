@@ -491,12 +491,12 @@ class ListingLimits:
 Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
 limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
 at parse/open for nonsensical or hostile headers and are complementary, not a
-substitute. 7z, RAR and ISO apply `listing_limits.max_members` at parse
-(`format-7z`, `format-rar`, `format-iso`); `None` disables that bound. Other formats that
-build an internal member table during `open_archive()` MAY still allocate up
-to their own parser ceilings before spine `ListingLimits` are evaluated as the
-reader lists members. Being indexed (ZIP central
-directory) is not the same as applying `max_members` at parse.
+substitute. ZIP, 7z, RAR and ISO apply `listing_limits.max_members` at parse
+(`format-zip`, `format-7z`, `format-rar`, `format-iso`); `None` disables that
+bound. Other formats that build an internal member table during `open_archive()`
+MAY still allocate up to their own parser ceilings before spine `ListingLimits`
+are evaluated as the reader lists members. Being indexed is not the same as
+applying `max_members` at parse.
 
 **Every listing call enforces them:** `members()`, `members_report()`,
 `stream_members()`, `for member in reader` and `extract_all()` SHALL apply
@@ -514,8 +514,9 @@ error; so does `members_report_if_available()` on a reader with an upfront
 index (ZIP, 7z, RAR, ISO, single-file).
 An archive with more members than the limits allow is read only by raising
 them; `ListingLimits.UNLIMITED` streams any archive, and the reader then keeps
-every member until it closes. Formats that apply `max_members` at parse (7z, RAR
-and ISO) fail at `open_archive` instead.
+every member until it closes. Formats that apply `max_members` at parse (ZIP,
+7z, RAR and ISO) fail at `open_archive` instead (ZIP, when its end record
+understates the count, as the directory walk passes the limit).
 
 #### Scenario: listing-limits matrix
 
@@ -526,7 +527,7 @@ and ISO) fail at `open_archive` instead.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (7z, RAR and ISO, together with RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
+| `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 | `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
 | `stream_members()` on a streaming reader or a random-access TAR, past a cap | Yields the members within the caps, then raises `ResourceLimitError` at the member that crosses one, without parsing the headers after it; `members_report_if_available()` then returns `None` |

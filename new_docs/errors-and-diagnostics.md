@@ -76,17 +76,31 @@ Where the format stores a checksum for each member, reading a member from start 
 and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
 checked. A loop that reads in chunks gets every byte that could be read before the error, but those
 bytes may be wrong too, since archivey can't tell where the damage starts. Some archives store
-nothing to check a single member against, so damage there can go unnoticed. A TAR member has no
-checksum of its own, and the checksum of a `.tar.gz` covers the whole file rather than one member.
-ISO images and Brotli, `.Z` and `.lzma` files have no checksums at all, and `.xz`, `.zst` and `.lz4`
-files have one only if the program that wrote them added it. When archivey can't check a member that
-you'd expect to be checked, such as a 7z member encrypted without a CRC, it records the diagnostic
-`DIGEST_UNVERIFIABLE`, which `STRICT` also turns into an exception.
+nothing to check a single member against, so damage there can go unnoticed:
 
-If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)), a
-seek back to the start begins the check again, but after a seek anywhere else, damage may go
-unnoticed. Once a read has raised, a later read that reaches the end raises the same error, even
-after a seek, so seeking back can't hand you the damaged member as if it were complete.
+- A TAR member has no checksum of its own, and the checksum of a `.tar.gz` covers the whole file
+  rather than one member.
+- ISO images and Brotli, `.Z` and `.lzma` files have no checksums at all.
+- `.xz`, `.zst` and `.lz4` files have one only if the program that wrote them added it.
+
+When archivey can't check a member that you'd expect to be checked, such as a 7z member encrypted
+without a CRC, it records the diagnostic `DIGEST_UNVERIFIABLE`, which `STRICT` also turns into an
+exception.
+
+A damaged member doesn't always raise before its end. Depending on the compression method, damaged
+data can decode to wrong bytes with no error, and only the checksum at the end catches it. A member
+stored without compression never notices damage on its own.
+
+If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
+most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that
+the next read has to decode its way through anyway. Bytes you read again after a seek back aren't
+checked a second time. A seek forward that jumps over bytes without decoding them, and lands before
+the end, stops the checksum check once you read on from there. That happens in a member stored
+without compression, and through the `seekable` accelerator when it has a restart point between
+what you've read and where you seek to. Seeking back to a point you had already read up to brings
+it back. The length is still checked after a jump, and damage the decompressor itself notices still
+raises. Once a read has raised, a later read that reaches the end raises the same error, even after
+a seek, so seeking back can't hand you the damaged member as if it were complete.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 
