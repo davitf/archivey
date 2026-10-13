@@ -91,6 +91,19 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
     validate_zip_local_header,
 )
+from archivey.internal.backends.zip_parser import (
+    ARCHIVE_EXTRA_DATA_SIGNATURE as _ZIP_ARCHIVE_EXTRA_DATA_SIG,
+)
+from archivey.internal.backends.zip_parser import CENTRAL_HEADER_SIZE as _CD_HEADER_SIZE
+from archivey.internal.backends.zip_parser import EOCD_SIGNATURE as _EOCD_SIG
+from archivey.internal.backends.zip_parser import EOCD_SIZE as _EOCD_SIZE
+from archivey.internal.backends.zip_parser import MAX_DATA_OFFSET as _MAX_DATA_OFFSET
+from archivey.internal.backends.zip_parser import (
+    ZIP64_EOCD_SIGNATURE as _ZIP64_END_RECORD_SIG,
+)
+from archivey.internal.backends.zip_parser import (
+    disk_field_is_split as _disk_field_is_split,
+)
 from archivey.internal.backends.zipcrypto import (
     ZIPCRYPTO_HEADER_LEN,
     ZipCryptoDecryptStream,
@@ -197,19 +210,9 @@ _ZIP_EXTRA_STRONG_ENCRYPTION = 0x0017
 # Info-ZIP Unicode Path extra field: the name as UTF-8, tied to the header's name bytes
 # by their CRC-32 (`_unicode_path_name`).
 _ZIP_EXTRA_UNICODE_PATH = 0x7075
-# Archive extra data record: written in front of a central directory that PKWARE
-# Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
-_ZIP_ARCHIVE_EXTRA_DATA_SIG = b"PK\x06\x08"
-# The classic and the ZIP64 end-of-central-directory record signatures.
-_EOCD_SIG = b"PK\x05\x06"
-_ZIP64_END_RECORD_SIG = b"PK\x06\x06"
 _STRONG_ENCRYPTION_MSG = (
     "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are)"
 )
-
-# Classic EOCD ``this_disk`` / ``cd_start_disk`` use 0xFFFF to mean "see ZIP64 EOCD",
-# not disk 65535. A naive ``!= 0`` check would refuse legitimate ZIP64 archives.
-_ZIP64_DISK_SENTINEL = 0xFFFF
 
 # ZIP compression-method id -> our codec algorithm. Unknown ids map to UNKNOWN rather than
 # raising, matching the open-ended CompressionAlgorithm contract.
@@ -267,12 +270,6 @@ def _zip_directory_stores_data(info: zipfile.ZipInfo) -> bool:
     return info.compress_size > _ZIP_EMPTY_BODY_SIZES.get(info.compress_type, 0)
 
 
-# Local name/extra lengths are uint16; 65535 is the format maximum, so a separate
-# cap cannot fire (S1-F2). Absurd *offsets* are this bound, same discipline as
-# the native parsers.
-_MAX_DATA_OFFSET = 1 << 40
-
-
 # The end-of-central-directory record as stdlib parsed it: the classic record, or the
 # ZIP64 one when stdlib found and used it. `_EndRecData` and the `_ECD_*` indices into
 # its result are private stdlib API, bound once here so a Python that drops or renames
@@ -298,8 +295,6 @@ _ECD_COMMENT: int = _zipfile_private("_ECD_COMMENT")
 _ECD_LOCATION: int = _zipfile_private("_ECD_LOCATION")
 _ECD_DISK_NUMBER: int = _zipfile_private("_ECD_DISK_NUMBER")
 _ECD_DISK_START: int = _zipfile_private("_ECD_DISK_START")
-_EOCD_SIZE = 22
-_CD_HEADER_SIZE = 46
 
 # ZIP create-system values whose entries use "\" as a path separator (DOS/Windows family).
 # For these, a stored backslash is a separator; for Unix/other entries it is a literal
@@ -1455,8 +1450,8 @@ class ZipReader(BaseArchiveReader):
                 raise _closed_archive_error()
             saved = fp.tell()
             try:
-                # A ZIP64 extra can declare any uint64; past ssize_t, ``seek`` raises a
-                # raw OverflowError. Refuse an absurd offset before seeking to it.
+                # A ZIP64 extra can declare any uint64: refuse one past the policy
+                # bound (``MAX_DATA_OFFSET`` in zip_parser) before seeking to it.
                 if not 0 <= info.header_offset <= _MAX_DATA_OFFSET:
                     raise zipfile.BadZipFile(
                         f"Absurd local-header offset: {info.header_offset}"
@@ -2553,10 +2548,7 @@ def _end_record_findings(
 
         declared = endrec[_ECD_ENTRIES_TOTAL]
         read = len(infos)
-        # A classic record counts in 16 bits. Old 7-Zip versions stored the low 16 bits
-        # of a larger count there without writing ZIP64; current 7-Zip (ZipIn.cpp)
-        # accepts that with a "16-bit overflow for number of files in headers" note
-        # rather than a Headers Error, so the comparison here is modulo 65536 too.
+        # Modulo 65536 for a classic record: why is in zip_parser's walk.
         if declared != (read if is_zip64 else read & 0xFFFF):
             record = "ZIP64 end of central directory" if is_zip64 else "end record"
             findings.append(
@@ -2798,10 +2790,6 @@ def _sequential_accelerator(mode: AcceleratorMode) -> AcceleratorMode:
     cost grows with the square of the member size.
     """
     return AcceleratorMode.OFF if mode is AcceleratorMode.AUTO else mode
-
-
-def _disk_field_is_split(value: int) -> bool:
-    return value != 0 and value != _ZIP64_DISK_SENTINEL
 
 
 def _looks_like_multivolume(exc: zipfile.BadZipFile) -> bool:
