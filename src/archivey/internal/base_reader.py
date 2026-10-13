@@ -459,6 +459,10 @@ class BaseArchiveReader(ArchiveReader):
     # (ZIP, 7z, RAR 4)? Such a link reads ``member_state_final=False`` until that read.
     # Elsewhere the target is set while the member is typed, so nothing is left to read.
     _LINK_TARGETS_IN_DATA: bool = False
+    # Does a forward pass change members it has already yielded, once the walk ends (a
+    # ZIP read from a pipe, whose central directory comes last)? ``extract_all`` then
+    # keeps what it wrote each such member as, and settles it at the end of the pass.
+    _REVISES_YIELDED_MEMBERS: bool = False
 
     def __init__(
         self,

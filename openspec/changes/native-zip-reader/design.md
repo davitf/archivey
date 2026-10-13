@@ -335,15 +335,22 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 - `stream_members()` yields each member with what its local header gives (name, flags,
   method, sizes, times from the local extra fields). `mode`, `create_system` and
   `comment` are `None` until the directory has been read, not guessed. The type cannot
-  be `None`: it is `FILE` or `DIRECTORY` from the name until then. Then the members
-  already yielded are updated in place (`ArchiveMember` is mutable, ADR 0007), before
-  the pass ends. Each such member has `member_state_final` false until then (question
-  D), so a caller sees the gap on the member before reading anything (DR-8).
+  be `None`: it is `FILE` or `DIRECTORY` from the name until then. A name ending in
+  `\` is a `DIRECTORY` until then, because a DOS or Windows writer marks its folders
+  that way, and a folder written as a file would stop every member inside it from being
+  written. A Unix host makes it a file: an empty one is written at the end of the pass,
+  and one with data fails there, its bytes passed (only a crafted archive has one).
+  Then the members already yielded are updated in place (`ArchiveMember` is mutable,
+  ADR 0007), before the pass ends. Each such member has `member_state_final` false
+  until then (question D), so a caller sees the gap on the member before reading
+  anything (DR-8).
 - Extraction writes each member as it arrives, then at the end of the pass applies
   modes, turns a member the directory types as a symlink into a link (its target is the
   data just written, at most the link-target cap), and removes what it wrote for a
-  member the directory types `OTHER`. It only touches what it created (DR-18). This is
-  the same end-of-pass step that already resolves links in a streaming pass.
+  member the directory types `OTHER`. A member the directory renames (a DOS host makes
+  `\` a separator) is written again under its name, from the bytes already on disk.
+  It only touches what it created (DR-18). This is the same end-of-pass step that
+  already resolves links in a streaming pass.
 - A member whose type the directory changes goes through the caller's `filter` and the
   extraction policy's checks **again**, on the updated member (name, type, link
   target), before the link is made, exactly as `extract_all` already calls the filter
@@ -353,6 +360,45 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   escapes the destination is therefore refused from a pipe as from a file. Links are
   made only after the last member has been written, so no member is ever written
   through one.
+- The selection is made again too, on what each member became. A `members=` list is
+  matched during the pass against every name a member can end with (with `\` as a
+  separator or not, with or without a folder's trailing `/`), so the data of any
+  member it may select is written while the stream holds it; at the end the list
+  selects for good, and what it no longer takes is removed with no result, and
+  nothing is recorded as matched before then. A member a `members=` predicate or the
+  filter left out during the pass is asked about again at the end; if it is taken
+  then, it is written when it needs no bytes the stream has passed (a link, whose
+  target the reader kept, a folder or an empty file) and fails otherwise. That
+  failure is the one place a forward pass cannot match the seekable one: a filter
+  that selects by a name only the directory gives (a DOS name, `docs/` against a
+  stored `docs\r.txt`) sees the stored name during the pass on POSIX (on Windows
+  it already sees `docs/r.txt`). The member fails with `ExtractionError`, as a
+  hard link whose source a forward pass has passed does: the archive is sound. A
+  `members=` predicate is called twice for every member, and the filter twice for
+  one it left out; both read `member_state_final` as `False` on the first call, so
+  either can tell the two apart. A member first handled at the end of the pass is
+  reported to `on_progress` then. A member the pass writes is reported when it is
+  written, so progress moves while the stream is read; one the end of the pass then
+  leaves out was reported all the same, and from a pipe `members_done` can count a
+  member the report does not hold. Holding every tick until the directory is read
+  would leave a pipe extraction with no member progress at all until its end.
+- What the pass writes before the end of it decides must be undone without loss. An
+  entry the caller had at a destination the pass replaces (`overwrite="replace"`) is
+  moved aside and put back at the end of the run unless the member still lands there
+  (on Windows a read-only entry is not moved, so the member fails as it does from a
+  file). A run that stops before the end of the pass (`abort_on`, `on_error="stop"`, a
+  limit) never learns which members it keeps, so a write over a caller's entry is
+  taken back and the entry returns; the members it wrote elsewhere stay, as a stopped
+  run's do. One that stops while the end of the pass settles keeps what it settled.
+  Two effects outlive the take-back. `abort_on` fires before a write begins, which for
+  such a member is before the end decides, so a run can stop for a member that would
+  not have been selected; deferring it would mean writing the member it exists to
+  stop. And the bomb limits: what the pass writes is on disk while the pass runs, so
+  it is counted then and given back when it is taken back. A member the selection
+  takes only provisionally (a Unix `x\y` that a list naming `x/y` may take) can
+  therefore stop a run under `max_entries` or `max_extracted_bytes` that the same
+  bytes from a file complete. Not counting it would let an archive write unbounded
+  data the run then deletes.
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
   member) is removed from disk and reported: data outside any member is a warning
@@ -680,8 +726,9 @@ target has been read (`read_link_targets=False`, or a listing from the index alo
 is true everywhere else, so a caller checks it on each member before reading anything.
 Its documented meaning is "any field of this member may still change"; each format's
 handbook page and `docs/formats.md` name which fields that is in practice (for a ZIP
-forward pass: type, mode, host, comment, `is_current`; for a data-stored link: the
-target).
+forward pass, any field the directory builds: above all type, name, where a DOS host
+makes `\` a separator, mode, host, comment, times from the directory's extra fields,
+and `is_current`; for a data-stored link: the target).
 
 ## Out of scope
 

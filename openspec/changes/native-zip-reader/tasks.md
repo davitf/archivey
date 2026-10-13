@@ -79,9 +79,11 @@ each lands with nothing half-done reachable:
   checked against the header or descriptor as it is read, members updated in place
   from the directory at the end of the pass; 3.3h, 3.3e2's reader half, 3.3f2's
   listing half.
-- 3b3b, extraction's end of the pass: 3.3, 3.3a, 3.3f2, and the local entries no
-  directory entry points to (3.3i).
-- 3b3c, the failures found at the end of the pass: 3.3b, 3.3c, 3.3g.
+- 3b3b, extraction's end of the pass: 3.3's modes, symlinks, `OTHER` removal and
+  names, 3.3a, 3.3f2.
+- 3b3c, the failures found at the end of the pass: 3.3b, 3.3c, 3.3g, and the local
+  entries no directory entry points to (3.3i), which waits on the maintainer's pick of
+  a diagnostic code.
 - 3b3d, encrypted members from a pipe: 3.2a, and password candidates (3.2b).
 - 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
   (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
@@ -119,8 +121,20 @@ each lands with nothing half-done reachable:
       (test: an AE-1 and an AE-2 deflated member from a pipe, and a wrong code).
 - [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
-      and reported; a missing one is handled per 3.3g.
-- [ ] 3.3a A retyped member goes through the filter and the policy checks again before
+      and reported; a missing one is handled per 3.3g. 3b3b: extraction keeps what it
+      wrote each member of a pass that can still change as
+      (`_REVISES_YIELDED_MEMBERS`), and at the end of the pass handles a member whose
+      type or name changed again from the start (taking back what was written; a file
+      that moved is written again from its bytes on disk) and applies metadata the
+      directory added, unless the filter set that field
+      (`ExtractionCoordinator._settle_revised_members`, `test_zip_pipe_extract.py`,
+      which also extracts the corpus both ways). 3b3b also selects again at the end:
+      `members=` and `filter=` are applied to what each member became, a list matches
+      every spelling a member can end with during the pass, a member taken only at
+      the end fails with `ExtractionError` when its bytes have gone by, and an entry
+      the caller had where the pass wrote is kept aside until the end
+      (`design.md`, "The selection is made again"). Left: 3.3i and 3.3g (3b3c).
+- [x] 3.3a A retyped member goes through the filter and the policy checks again before
       its link is made; refused, its file is removed (test: a pipe ZIP whose directory
       types `payload` as a symlink to `../../etc/passwd` is refused from a pipe and from
       a file).
@@ -151,14 +165,18 @@ each lands with nothing half-done reachable:
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
       (a seekable ZIP needs no read-ahead: the pass reads the target, then opens the
       member); tests in both modes, red first.
-- [ ] 3.3f2 From a pipe such a member stays a file (test). 3b3a: the listing half,
-      `test_a_reparse_member_whose_data_is_no_link_stays_a_file`; extraction is 3b3b.
+- [x] 3.3f2 From a pipe such a member stays a file (test). 3b3a: the listing half,
+      `test_a_reparse_member_whose_data_is_no_link_stays_a_file`; extraction (3b3b), the
+      test of the same name in `test_zip_pipe_extract.py`.
 - [ ] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
       the pass" states them, under `OnError.CONTINUE` and `STOP`, for 3.3b, 3.3c and a
       directory entry with no local entry. Each test checks every affected result and
       what is at the path afterwards (the reversed pair: `M1` `FAILED`, `M2`
       `SUPERSEDED`, the path empty); `stream_members()` raises for 3.3b and the missing
-      entry, not for 3.3c.
+      entry, not for 3.3c. A member whose local header and directory entry store
+      different names (3b3a raises after the pass) gets the same treatment: the file
+      written under the local name is taken back and the member fails, as the
+      seekable extraction fails it when it reads the local header.
 - [ ] 3.3i A local entry no directory entry points to: dropped from the listing and,
       when extracting, from disk, and reported (diagnostic code pending the
       maintainer's pick, 2026-10-13). Until 3b3b it stays listed as its local header
@@ -183,7 +201,14 @@ each lands with nothing half-done reachable:
       `docs/extracting.md` (limits table and the PPMd paragraph); in
       `dev-docs/threat-model.md`, the residual that junk between a bit-3 codec
       member's end and its descriptor is refused from a file (DR-3) and accepted
-      from a pipe (DR-5a, `design.md` §"Where a member's data ends").
+      from a pipe (DR-5a, `design.md` §"Where a member's data ends"). From 3b3b: the
+      selection made again at the end of the pass (`design.md`, "The selection is
+      made again") in `docs/extracting.md` (member selection, and beside the other
+      "a filter can see such a member twice" cases), the `MemberSelector`
+      requirement in `archive-reading`; the bomb-limit and `abort_on` divergences in
+      `docs/extracting.md` (beside the limits table), `new_docs/security.md` and
+      `docs/errors-and-diagnostics.md`; and the `members_done` divergence wherever
+      `on_progress` is described (`new_docs/extracting.md`).
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):

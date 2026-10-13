@@ -445,6 +445,7 @@ class ZipForwardReader(ZipReader):
 
     # The member list exists only once the walk has passed every member.
     _MEMBER_LIST_UPFRONT = False
+    _REVISES_YIELDED_MEMBERS = True
 
     def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
         self._fp = None
@@ -553,14 +554,18 @@ class ZipForwardReader(ZipReader):
 
         No field the directory alone holds is guessed: ``mode``, ``create_system`` and
         ``comment`` are ``None``, and the type is ``FILE`` or ``DIRECTORY`` from the
-        name. A backslash is a literal character until the host says otherwise.
-        Nothing is reported here; the directory's version of the member reports what
-        it finds, once.
+        name. A backslash is a literal character until the host says otherwise, except
+        at the end of the name, which makes the member a ``DIRECTORY`` until then: a
+        DOS or Windows writer marks its folders that way, and a folder the pass wrote
+        as a file would stop every member inside it from being written, where a
+        directory the host turns out not to make one is taken back at the end of the
+        pass. Nothing is reported here; the directory's version of the member reports
+        what it finds, once.
         """
         header = entry.header
         central = _central_from_local(entry)
         decoded_name = self._decode_member_name(central)
-        stored_as_directory = decoded_name.text.endswith("/")
+        stored_as_directory = decoded_name.text.endswith(("/", "\\"))
         member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
         name = normalize_member_name(
             decoded_name.text, member_type, backslash_is_separator=False

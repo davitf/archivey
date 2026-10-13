@@ -23,6 +23,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import errno
+import io
 import os
 import posixpath
 import shutil
@@ -92,6 +93,9 @@ _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 # extraction destination are archivey's and are safe to delete. Documented in
 # docs/safe-extraction.md; keep the value and that doc in sync.
 _TMP_PREFIX = ".archivey-tmp-"
+
+# The fields ``_apply_metadata`` puts on disk.
+_APPLIED_METADATA = ("uid", "gid", "mode", "modified")
 
 # Prefix of the private scratch directory a dry run extracts into (see
 # ``ExtractionCoordinator.run``). Removed when the run ends, like the temp files above.
@@ -351,6 +355,19 @@ class _AlwaysStopResourceLimitError(ResourceLimitError):
 _AlwaysStopExtractionError = _AlwaysStopResourceLimitError
 
 
+class _CopyCounter:
+    """Counts the chunks ``_copy_to_fileobj`` writes as a copy of bytes this run
+    already wrote (``BombTracker.count_copy``), not as decoded output."""
+
+    __slots__ = ("_tracker",)
+
+    def __init__(self, tracker: BombTracker) -> None:
+        self._tracker = tracker
+
+    def count(self, chunk_bytes: int) -> None:
+        self._tracker.count_copy(chunk_bytes, at_link_limit=False)
+
+
 class BombTracker:
     """Cumulative byte / per-member ratio / archive-wide ratio / entry-count guards.
 
@@ -513,6 +530,10 @@ class BombTracker:
         cross-device copy does not: whether it happens depends on where the caller
         extracts to, not on the archive. Neither counts toward the per-member ratio,
         since a link member's compressed size says nothing about the copy's size.
+
+        A streaming pass that writes a member again from its own earlier copy, once
+        the archive's directory changed the member (``_redo_revised_member``), counts
+        it here too: nothing is decoded a second time.
         """
         self._check_cumulative_bytes(chunk_bytes)
         self._copied_bytes += chunk_bytes
@@ -596,6 +617,44 @@ def _report_stored_spelling(
         exc.member_name = member.name
     if exc.link_target is not None and exc.link_target == on_disk.link_target:
         exc.link_target = member.link_target
+
+
+def _final_members_only(
+    selector: Callable[[ArchiveMember], bool],
+) -> Callable[[ArchiveMember], bool]:
+    """``selector`` for the members the walk will not change, and yes for the rest,
+    which the pass selects provisionally (``_provisionally_selected``) and the end
+    of the pass for good."""
+
+    def select(member: ArchiveMember) -> bool:
+        return not member.member_state_final or selector(member)
+
+    return select
+
+
+def _provisionally_selected(
+    selector: Callable[[ArchiveMember], bool], member: ArchiveMember
+) -> bool:
+    """Whether the pass reads and writes a member the walk can still change, before
+    the end of the pass selects it for good (``_settle_revised_members``).
+
+    A ``members=`` collection matches any name the member can end up with, so the
+    data of every member it may select is written while the stream holds it, and
+    nothing is recorded as matched yet. A predicate is asked about the member as it
+    is now; a member it leaves out holds a place, and its bytes, if it has any,
+    cannot be written later.
+    """
+    if isinstance(selector, CollectionSelector):
+        return selector.would_select(member, _possible_names(member.name))
+    return selector(member)
+
+
+def _possible_names(name: str) -> set[str]:
+    """The names a member the walk has yet to settle can end with: a ZIP's
+    directory can make ``\\`` a separator (a DOS host) and a provisional directory
+    a file or a link, which drops the trailing ``/``."""
+    names = {name, name.replace("\\", "/")}
+    return names | {n[:-1] for n in names if n.endswith("/")}
 
 
 def _until_listing_damage(
@@ -788,6 +847,29 @@ class _RunState:
     # copy is then copied from that file if it still matches.
     streaming_now: int | None = None
     declined: set[int] = field(default_factory=set)
+    # A pass whose members can change once its walk ends (a ZIP from a pipe, whose
+    # central directory comes last; ``_REVISES_YIELDED_MEMBERS``): result index -> the
+    # member as the pass handled it and the member written for it (``None`` when
+    # nothing was), so the end of the pass settles what changed
+    # (``_settle_revised_members``). ``None`` for a member the selection or the
+    # filter left out during the pass (``_hold_place``).
+    revisable: dict[int, tuple[ArchiveMember, ArchiveMember | None] | None] = field(
+        default_factory=dict
+    )
+    # Results the end of the pass took back with no outcome of their own: the filter
+    # excluded the member once it was changed, so random access records nothing for
+    # it. Dropped from the report when the run returns it.
+    dropped: set[int] = field(default_factory=set)
+    # Held places of members the selection left out, which the pass did not count
+    # toward ``members_done``; the end of the pass counts the ones it writes.
+    untallied: set[int] = field(default_factory=set)
+    # Whether the pass ended and settled what it wrote (``_settle_revised_members``);
+    # a run stopped before then never knew which provisional writes to keep.
+    settled: bool = False
+    # Entries that were at a destination before the run, moved aside so a member
+    # the pass wrote there before the walk settled it could be taken back
+    # (``_set_aside``): the destination -> where the entry is now.
+    set_aside: dict[Path, Path] = field(default_factory=dict)
     written_files: dict[tuple[int, Path], tuple[int, int, int, int]] = field(
         default_factory=dict
     )
@@ -822,6 +904,13 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
+    # Set by ``_run_pass`` for a member the walk can still change, so a caller's
+    # entry it replaces is moved aside rather than removed (``_set_aside``).
+    provisional: bool = False
+    # Set by ``_redo_revised_member`` when the FILE body is this run's own earlier
+    # copy, read back from disk: nothing is decoded, so it counts as a copy
+    # (``BombTracker.count_copy``), not toward the decompression ratio.
+    recopy: bool = False
     # A streaming pass's earlier copies of this member's name, left in place while it
     # is handled so it can replace one atomically: path -> index of the superseded
     # result. See ``_park_earlier_copies``.
@@ -1230,8 +1319,11 @@ class ExtractionCoordinator:
             # write begins, and FILE writes land atomically in any case.
             raise abort.error from None
         finally:
-            # Also when the run stops early. Links first: remaking one changes its
-            # directory, whose times come next.
+            # Also when the run stops early. The caller's entries a streaming pass
+            # moved aside come back first, where nothing of the run's replaced them.
+            if self._state.set_aside:
+                self._restore_set_aside()
+            # Links first: remaking one changes its directory, whose times come next.
             self._settle_link_kinds()
             # The directories the run did write end with their stored metadata, as
             # the ones of a completed run do.
@@ -1241,7 +1333,8 @@ class ExtractionCoordinator:
             unmatched_pending.report_unmatched(
                 reader._diagnostics_collector, reader._archive_name
             )
-        return self._state.results
+        dropped = self._state.dropped
+        return [r for i, r in enumerate(self._state.results) if i not in dropped]
 
     def _run_pass(
         self,
@@ -1275,8 +1368,17 @@ class ExtractionCoordinator:
         # it at once, which closes the open member stream (a held traceback would
         # otherwise keep it, and an unrar child, alive).
         listing_damage: list[CorruptionError] = []
+        revises = reader._REVISES_YIELDED_MEMBERS
+        # A member the walk can still rename or retype is selected on what it
+        # becomes, so the reader yields it whatever the selection says now; the loop
+        # holds its place (``_hold_place``).
+        walk_selector = (
+            stream_selector
+            if stream_selector is None or not revises
+            else _final_members_only(stream_selector)
+        )
         for original, stream in _until_listing_damage(
-            reader, reader._stream_members(stream_selector, copies), listing_damage
+            reader, reader._stream_members(walk_selector, copies), listing_damage
         ):
             member_started = False
             recorded_index: int | None = None
@@ -1284,6 +1386,23 @@ class ExtractionCoordinator:
             rewrites: frozenset[NameRewrite] = frozenset()
             current = self._current = _MemberState()
             link_error: ArchiveyError | None = None
+            provisional = current.provisional = (
+                revises and not original.member_state_final
+            )
+            transformed: ArchiveMember | None = None
+            if (
+                provisional
+                and stream_selector is not None
+                and not _provisionally_selected(stream_selector, original)
+            ):
+                # The selection is made again on what the member becomes
+                # (``_settle_revised_members``); until then it holds a place, and
+                # is not counted as handled.
+                self._close(stream)
+                self._hold_place(original, selected_later=True)
+                continue
+            # What the member was when handled, if the walk can still change it.
+            before = original.replace() if provisional else None
             try:
                 self._park_earlier_copies(
                     original.name, current_by_name.get(original.name)
@@ -1296,7 +1415,10 @@ class ExtractionCoordinator:
                 if transformed is None:
                     # Filter returned None: caller-elected exclusion — no ExtractionResult
                     # (same as a selector exclusion). Still counts as processed for progress.
-                    pass
+                    # A member the walk can still change holds a place until the
+                    # filter has seen what it becomes.
+                    if before is not None:
+                        recorded_index = self._hold_place(original)
                 elif not original.is_current:
                     recorded_index = self._append_result(
                         ExtractionResult(
@@ -1371,6 +1493,16 @@ class ExtractionCoordinator:
 
             if member_started and recorded_index is not None:
                 state.counted[recorded_index] = tracker.member_bytes
+            if (
+                before is not None
+                and recorded_index is not None
+                and recorded_index not in state.dropped
+            ):
+                landed = results[recorded_index].status is ExtractionStatus.EXTRACTED
+                state.revisable[recorded_index] = (
+                    before,
+                    transformed if landed else None,
+                )
 
             # A portable rewrite is recorded on whatever result this member ended up with,
             # including a BLOCKED/FAILED one: the rewrite happened before the outcome.
@@ -1392,6 +1524,10 @@ class ExtractionCoordinator:
             )
             if selected_total is not None and members_done >= selected_total:
                 break
+
+        if state.revisable:
+            self._settle_revised_members(stream_selector, members_done)
+        state.settled = True
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1440,6 +1576,28 @@ class ExtractionCoordinator:
         is dropped with the result it would fill. An error recorded on the earlier
         result is dropped with it: random access never tried that copy.
         """
+        self._take_back_written(index)
+        prior = self._state.results[index]
+        self._set_result(
+            index,
+            ExtractionResult(
+                prior.member,
+                None,
+                ExtractionStatus.SUPERSEDED,
+                None,
+                presented_name=prior.presented_name,
+                rewrites=prior.rewrites,
+            ),
+        )
+
+    def _take_back_written(self, index: int) -> None:
+        """Undo what result ``index`` put on disk and counted, for a member a streaming
+        pass wrote and must now handle otherwise (``_supersede_written_copy``,
+        ``_redo_revised_member``); the caller records its new result.
+
+        A file is parked in ``_current``, a directory removed when empty, and the
+        claim, hardlink-source entries and bomb-limit counts are released.
+        """
         state = self._state
         prior = state.results[index]
         path = prior.path
@@ -1468,17 +1626,6 @@ class ExtractionCoordinator:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
-        self._set_result(
-            index,
-            ExtractionResult(
-                prior.member,
-                None,
-                ExtractionStatus.SUPERSEDED,
-                None,
-                presented_name=prior.presented_name,
-                rewrites=prior.rewrites,
-            ),
-        )
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -1524,6 +1671,345 @@ class ExtractionCoordinator:
                 state.unremoved.setdefault(name, {})[path] = index
             else:
                 state.written_paths.discard(path)
+
+    def _settle_revised_members(
+        self, selector: Callable[[ArchiveMember], bool] | None, members_done: int
+    ) -> None:
+        """Bring what the pass wrote in line with the members as the walk left them
+        (``_REVISES_YIELDED_MEMBERS``): a ZIP from a pipe learns each member's mode,
+        host and full type only from the central directory, after the last member.
+
+        The selection is made here, on what each member became: one it no longer
+        selects is taken back with no result, as random access never saw it. A member
+        the selection or the filter left out during the pass held a place
+        (``_hold_place``) and is handled now, if it is selected, so the filter sees
+        it again; one the selection had left out is counted toward ``members_done``
+        then, as the pass did not count it. A member whose type or name changed is
+        handled again from the start (``_redo_revised_member``). One whose metadata
+        alone changed gets it applied to what was written
+        (``_reapply_revised_metadata``). Nothing else is touched.
+        """
+        state = self._state
+        revisable, state.revisable = state.revisable, {}
+        if selector is not None:
+            # Members inside a folder come after it, so the last are taken back
+            # first and the folder is empty by the time its turn comes.
+            for index in sorted(revisable, reverse=True):
+                if not selector(state.results[index].member):
+                    del revisable[index]
+                    if index not in state.dropped:
+                        self._unselect_revised_member(index)
+        # The selection is final from here: a member written so far is kept, if
+        # the run stops now, as a file run keeps what it wrote before stopping.
+        state.settled = True
+        for index, handled in revisable.items():
+            member = state.results[index].member
+            if handled is None:
+                self._redo_revised_member(index)
+                # A member the filter then drops counts too, as it does in the pass.
+                if index in state.untallied:
+                    members_done += 1
+                    self._report_progress(
+                        member, members_done, state.counted.get(index, 0)
+                    )
+                continue
+            before, written = handled
+            if index in state.dropped:
+                self._redo_revised_member(index)
+            elif member.type is not before.type or member.name != before.name:
+                self._redo_revised_member(index)
+            elif written is not None:
+                self._reapply_revised_metadata(index, before, written)
+
+    def _unselect_revised_member(self, index: int) -> None:
+        """Take back what result ``index`` wrote for a member the selection no longer
+        takes, now that the walk has settled it, and leave it no result. The
+        folders created for it go too, once empty: random access never wrote it."""
+        state = self._state
+        path = state.results[index].path
+        self._current = _MemberState()
+        try:
+            self._take_back_written(index)
+            self._hold_place_at(index)
+        finally:
+            if self._current.parked:
+                self._drop_parked_copies(state.results[index].member.name, None)
+        parent = path.parent if path is not None else None
+        # Only the folders made as its parents: one a member of the run wrote stays.
+        # One whose own member the selection also drops is removed when its turn
+        # comes, which is after everything inside it.
+        while parent is not None and parent != state.dest:
+            if parent not in state.created_dirs or parent in state.written_paths:
+                break
+            try:
+                os.rmdir(long_path(parent))
+            except OSError:
+                break
+            self._forget_removed_directory(parent)
+            parent = parent.parent
+
+    def _forget_removed_directory(self, path: Path) -> None:
+        """Drop what the run recorded for the directory it just removed at ``path``:
+        its deferred metadata, and the records that it is the run's own."""
+        state = self._state
+        self._drop_pending_dir(path)
+        state.created_dirs.discard(path)
+        state.written_paths.discard(path)
+        key = self._physical_key(path)
+        recorded = state.run_dirs.get(key)
+        if recorded is not None:
+            recorded.discard(self._physical_path(path))
+            if not recorded:
+                del state.run_dirs[key]
+
+    def _hold_place(
+        self, member: ArchiveMember, *, selected_later: bool = False
+    ) -> int:
+        """Record a result for ``member`` that the report leaves out unless the end
+        of the pass gives it an outcome (``_settle_revised_members``), and return its
+        index. Nothing is kept of it but the result: the end of the pass reads the
+        member the reader holds. ``selected_later`` marks a member the selection
+        left out, which the pass did not count as handled (``untallied``)."""
+        state = self._state
+        index = self._append_result(
+            ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
+        )
+        state.dropped.add(index)
+        state.revisable[index] = None
+        if selected_later:
+            state.untallied.add(index)
+        return index
+
+    def _hold_place_at(self, index: int) -> None:
+        """Turn result ``index`` back into a held place with no outcome."""
+        member = self._state.results[index].member
+        self._set_result(
+            index, ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
+        )
+        self._state.dropped.add(index)
+
+    def _set_aside(self, path: Path) -> None:
+        """Move the caller's entry at ``path`` (a file, a symlink or an empty
+        directory) to a free name beside it, for a member the walk can still change
+        that is about to replace it (``_MemberState.provisional``).
+
+        Random access writes such a member only once the selection and the filter
+        have seen what it is, and only then replaces what the caller had there. A
+        streaming pass writes it before, so the entry it replaces is kept until the
+        end of the run (``_restore_set_aside``)."""
+        aside = self._temp_sibling(path.parent)
+        os.rename(long_path(path), long_path(aside))
+        self._state.set_aside[path] = aside
+
+    def _restore_set_aside(self) -> None:
+        """Put back each entry ``_set_aside`` moved, unless the run's final write is
+        at its path, as random access would have replaced it too; then the entry is
+        removed. One whose path holds something else now is left where it was moved,
+        with a warning, rather than lost.
+
+        A run that stopped before the end of its pass never settled what it wrote
+        there, so that write is taken back and the caller's entry returns: whether
+        the member was selected is not known."""
+        state = self._state
+        set_aside, state.set_aside = state.set_aside, {}
+        for path, aside in set_aside.items():
+            on_disk = long_path(aside)
+            try:
+                if not state.settled and path in state.written_paths:
+                    self._remove_unsettled(path)
+                if path in state.written_paths and not any(
+                    path in unremoved for unremoved in state.unremoved.values()
+                ):
+                    if os.path.isdir(on_disk) and not os.path.islink(on_disk):
+                        os.rmdir(on_disk)
+                    else:
+                        os.unlink(on_disk)
+                elif os.path.lexists(long_path(path)):
+                    logger.warning(
+                        "Could not put back %r, moved aside while the archive's "
+                        "directory was read: its place is taken. It is at %r",
+                        str(self._shown(path)),
+                        str(self._shown(aside)),
+                    )
+                else:
+                    os.rename(on_disk, long_path(path))
+                    self._note_link_change(path)
+            except OSError as exc:
+                self._rebase_os_error(exc)
+                logger.warning(
+                    "Could not settle %r, moved aside while the archive's directory "
+                    "was read: %s",
+                    str(self._shown(path)),
+                    exc,
+                )
+
+    def _remove_unsettled(self, path: Path) -> None:
+        """Remove what the run wrote at ``path`` before its pass was cut short (a
+        file, a link or an empty folder); a folder with entries stays."""
+        state = self._state
+        target = long_path(path)
+        if os.path.isdir(target) and not os.path.islink(target):
+            os.rmdir(target)
+            self._forget_removed_directory(path)
+        else:
+            os.unlink(target)
+            self._note_link_change(path)
+        state.written_paths.discard(path)
+
+    def _reapply_revised_metadata(
+        self, index: int, before: ArchiveMember, written: ArchiveMember
+    ) -> None:
+        """Apply to result ``index``'s entry the metadata its member gained after it
+        was written (a mode, owner or time the central directory holds).
+
+        The policy transform runs on the member as it is now, and each field it
+        changes replaces the written one, unless the caller's filter had set that
+        field itself: what the filter returned wins, as it does when nothing changed.
+        A directory's metadata is still waiting for the end of the run, so its entry
+        there is replaced instead.
+        """
+        state = self._state
+        result = state.results[index]
+        path = result.path
+        if (
+            result.status is not ExtractionStatus.EXTRACTED
+            or path is None
+            or path not in state.written_paths
+        ):
+            return
+        transform = POLICY_TRANSFORMS[self._policy]
+        was = transform(before)
+        now = transform(result.member)
+        changes = {
+            name: getattr(now, name)
+            for name in _APPLIED_METADATA
+            if getattr(written, name) == getattr(was, name)
+            and getattr(now, name) != getattr(was, name)
+        }
+        if not changes:
+            return
+        revised = written.replace(**changes)
+        if revised.type is MemberType.DIRECTORY:
+            pending = state.pending_dirs.get(self._physical_key(path), {})
+            if self._physical_path(path) in pending:
+                self._defer_directory_metadata(path, revised)
+        elif not os.path.islink(long_path(path)):
+            self._apply_metadata(path, revised)
+
+    def _redo_revised_member(self, index: int) -> None:
+        """Handle result ``index``'s member again, now that the walk has changed its
+        type or name, as random access would have handled it from the start.
+
+        The filter and the policy checks run again on the changed member
+        (``safe-extraction``), and whatever the pass wrote for it is taken back first,
+        so a refusal leaves nothing at its path. A file whose name changed is written
+        again from the bytes already on disk; a link's target comes from its data,
+        which the reader kept. A member that now needs bytes the stream has passed,
+        and that were not written, fails, unless it has none (an empty file). That is
+        also how a member the pass left out (a held place) is handled: its bytes were
+        not written, so it can be a link, a directory or an empty file, and fails
+        otherwise. Results other than ``EXTRACTED`` and ``BLOCKED`` stand: nothing was
+        written for them that the change could alter.
+        """
+        state = self._state
+        result = state.results[index]
+        member = result.member
+        held_place = index in state.dropped
+        if not held_place and result.status not in (
+            ExtractionStatus.EXTRACTED,
+            ExtractionStatus.BLOCKED,
+        ):
+            return
+        current = self._current = _MemberState()
+        written = result.status is ExtractionStatus.EXTRACTED
+        old_path = result.path if written else None
+        held: BinaryIO | None = None
+        member_started = False
+        presented_name: str | None = None
+        rewrites: frozenset[NameRewrite] = frozenset()
+        link_error: ArchiveyError | None = None
+        try:
+            # A BLOCKED result wrote nothing, and is released all the same: what it
+            # was charged, if anything, is refunded rather than charged twice.
+            self._take_back_written(index)
+            transformed, presented_name, rewrites = self._transform(member)
+            if transformed is None:
+                # Not tallied, then dropped from the report.
+                self._hold_place_at(index)
+            elif held_place and not member.is_current:
+                state.dropped.discard(index)
+            else:
+                state.dropped.discard(index)
+                if transformed.type is MemberType.FILE:
+                    if old_path is not None and old_path in current.parked:
+                        held = open(long_path(old_path), "rb")  # noqa: SIM115
+                        current.recopy = True
+                    elif member.size == 0:
+                        held = io.BytesIO()
+                    else:
+                        raise ExtractionError(
+                            f"The data of {quoted(member.name)} was passed before "
+                            "the archive's directory changed the member, and was "
+                            "not written",
+                            member_name=member.name,
+                        )
+                if not member.is_anti:
+                    state.tracker.start_member(member)
+                    member_started = True
+                self._set_result(
+                    index, ExtractionResult(member, None, ExtractionStatus.FAILED, None)
+                )
+                self._set_result(
+                    index, self._write_member(member, transformed, held, index)
+                )
+        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
+            raise
+        except (ArchiveyError, OSError) as exc:
+            spelled_from = current.spelled_from
+            if isinstance(exc, ArchiveyError) and spelled_from is not None:
+                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
+            error, status = self._classify(exc, member.name)
+            state.dropped.discard(index)
+            self._set_result(
+                index,
+                ExtractionResult(
+                    member,
+                    None,
+                    status,
+                    error,
+                    requested_path=current.requested_path,
+                    collided_with=current.collided_with,
+                ),
+            )
+            self._stop_or_log(
+                exc, error, status, kind=member.type.value, name=member.name
+            )
+        finally:
+            self._close(held)
+            if current.parked:
+                self._drop_parked_copies(member.name, index)
+            link_error = self._recheck_links()
+        if link_error is not None:
+            raise link_error
+        if member_started:
+            state.counted[index] = state.tracker.member_bytes
+        if presented_name is not None:
+            self._set_result(
+                index,
+                replace(
+                    state.results[index],
+                    presented_name=presented_name,
+                    rewrites=rewrites,
+                ),
+            )
+
+    def _is_callers_entry(self, path: Path, st: os.stat_result) -> bool:
+        """Whether the entry at ``path`` (``st`` its ``lstat``) was there before this
+        run, rather than written or created by it."""
+        state = self._state
+        if path in state.written_paths or path in state.created_dirs:
+            return False
+        return not (stat.S_ISDIR(st.st_mode) and self._is_run_directory(path, st))
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a parked superseded copy."""
@@ -1635,6 +2121,9 @@ class ExtractionCoordinator:
         # unsafe ones included, and can rename one to something safe. Whatever it
         # returns is what gets checked and written.
         if self._filter is not None:
+            # The filter is told, as a predicate is, when the walk can still change
+            # the member (``member_state_final``): it may see the member again.
+            transformed._listing_pending = original._listing_pending
             filtered = self._filter(transformed)
             if filtered is None:
                 return None, None, frozenset()
@@ -3423,9 +3912,10 @@ class ExtractionCoordinator:
         must be created at its final name for the escape re-validation's cycle check, and
         a directory cannot be renamed over a file at all."""
         try:
-            existing = os.lstat(long_path(dest_path)).st_mode
+            st = os.lstat(long_path(dest_path))
         except (OSError, ValueError):  # the same errors ``os.path.lexists`` absorbs
             return True
+        existing = st.st_mode
         # Replacing a symlink or a directory can move where an earlier link resolves;
         # the member's handler rechecks the links once the member is done.
         moves_links = stat.S_ISLNK(existing) or stat.S_ISDIR(existing)
@@ -3433,6 +3923,16 @@ class ExtractionCoordinator:
         # member replaces it under any policy, as random access would never have
         # written it.
         parked = dest_path in self._current.parked
+        # A member the walk can still change keeps the caller's entry it replaces
+        # (``_set_aside``): the end of the pass may not select it.
+        # On Windows a read-only entry of the caller's is not moved: replacing it
+        # fails, as it does from a file (``_readonly_cleared``).
+        aside = (
+            not parked
+            and self._current.provisional
+            and self._is_callers_entry(dest_path, st)
+            and not (_WINDOWS and not st.st_mode & stat.S_IWRITE)
+        )
         if not parked:
             # A real directory recreated as a directory is fine under any policy.
             if member.type == MemberType.DIRECTORY and stat.S_ISDIR(existing):
@@ -3472,8 +3972,11 @@ class ExtractionCoordinator:
                             member_name=member.name,
                         )
                 self._note_link_change(dest_path)
-                with self._readonly_cleared(dest_path):
-                    os.rmdir(long_path(dest_path))
+                if aside:
+                    self._set_aside(dest_path)
+                else:
+                    with self._readonly_cleared(dest_path):
+                        os.rmdir(long_path(dest_path))
                 # Its member's metadata has no directory left to go on.
                 self._drop_pending_dir(dest_path)
                 self._current.removed_existing = True
@@ -3490,7 +3993,10 @@ class ExtractionCoordinator:
         # RENAME over an existing file or symlink.
         if moves_links:
             self._note_link_change(dest_path)
-        if not atomic:
+        if aside:
+            self._set_aside(dest_path)
+            self._current.removed_existing = True
+        elif not atomic:
             with self._readonly_cleared(dest_path):
                 os.unlink(long_path(dest_path))
             # A parked copy's result is already SUPERSEDED: nothing to revise.
@@ -3536,7 +4042,9 @@ class ExtractionCoordinator:
                 self._copy_to_fileobj(
                     stream,
                     dst if self._dry is None else self._dry.sink,
-                    self._state.tracker,
+                    _CopyCounter(self._state.tracker)
+                    if self._current.recopy
+                    else self._state.tracker,
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
@@ -3552,7 +4060,7 @@ class ExtractionCoordinator:
     def _copy_to_fileobj(
         stream: BinaryIO | None,
         dst: BinaryIO,
-        tracker: BombTracker | None,
+        tracker: BombTracker | _CopyCounter | None,
         emit_progress: Callable[[], None] | None = None,
     ) -> None:
         """Copy ``stream`` into the already-open ``dst`` in chunks, counting each toward the
