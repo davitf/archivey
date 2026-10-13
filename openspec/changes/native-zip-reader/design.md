@@ -189,6 +189,9 @@ yielded, and on the directory's entries as it reads them, since a directory can 
 more entries than the stream held members. The fields the directory adds (a comment
 above all) are weighed against `max_metadata_bytes` when the members are updated, and a
 pass that does not enforce the limits discards its listing there if they took it over.
+The links the directory made are read before the listing is dropped, because the pass
+cannot read them later, and a target that fails is reported there; the seekable pass
+leaves that report to its link finalization, which a discarded listing never reaches.
 
 ### Trailing bytes
 
@@ -389,12 +392,7 @@ Three things are known only once the directory has been read: a size or CRC from
 descriptor that differs from the central entry, two same-name members whose directory
 order reverses their file order, and a directory entry with no local entry. Each is a
 member-scoped failure of the member it names, handled as `safe-extraction` handles any
-other (the `OnError` requirement). Two more are known only then and are not member
-failures: a directory entry pointing at a local header an earlier entry already took
-ends the pass with its own `CorruptionError` (the seekable read lists both; a forward
-pass reads that data once, for one member), and a directory whose entries fill a
-different size than the end record declares is a warning
-(`ARCHIVE_EOF_MARKER_MISSING`, marker `central_directory`), every entry listed:
+other (the `OnError` requirement):
 
 - In `extract_all`, the end of the pass settles every member the directory changes
   (its `is_current`, type or sizes), and every path such a member was written to:
@@ -426,6 +424,13 @@ the same archive writes. That is the only place the two access modes differ on d
 Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
 a little; matching them would mean buffering every member until the directory arrives
 (ADR 0010).
+
+Two more things are known only once the directory has been read, and neither is a member
+failure. A directory entry pointing at a local header an earlier entry already took ends
+the pass with its own `CorruptionError`: the seekable read lists both, and a forward
+pass reads that data once, for one member. A directory whose entries fill a different
+size than the end record declares is a warning (`ARCHIVE_EOF_MARKER_MISSING`, marker
+`central_directory`), and every entry stays listed.
 
 ### What the caller sees in a forward pass
 

@@ -30,7 +30,6 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
-    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -715,15 +714,11 @@ class ZipForwardReader(ZipReader):
         The base checks after each member it yields, and the directory arrives after the
         last one, so nothing else would. The links the directory made get their
         targets first, as the end of the pass would give them (``_finalize_links``):
-        a discarded listing is never finalized.
+        a discarded listing is never finalized, and the pass cannot come back for those
+        bytes. A target that fails is reported here; the seekable pass leaves that
+        report to finalization, so after its discard it reports nothing (DR-5a).
         """
-        if self._progressive_enforce_listing_limits or self._listing_discarded:
-            return
-        try:
-            self._listing_tracker.assert_within_limits()
-        except ResourceLimitError:
-            pass
-        else:
+        if self._progressive_enforce_listing_limits or not self._listing_over_limits():
             return
         if self._config.read_link_targets:
             for member, _ in updates:

@@ -426,30 +426,53 @@ def test_a_directory_size_the_entries_do_not_fill_is_reported(
     assert found == [("central_directory", kind)]
 
 
-def test_a_stream_members_pass_discards_a_listing_the_directory_overfills() -> None:
-    """The directory's comments take the listing over the limit after the last
-    member; the pass keeps nothing then, as from a file, and the link it made still
-    gets its target."""
+def _overfilled_with_link(target: bytes, *, damaged: bool = False) -> bytes:
+    """A link first, then 20 members whose directory comments cross 100 000 bytes."""
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        link = zipfile.ZipInfo("link")
+        link.create_system = 3
+        link.external_attr = 0o120777 << 16
+        zf.writestr(link, target)
         for i in range(20):
             info = zipfile.ZipInfo(f"{i}.txt")
             info.comment = b"c" * 6000
             zf.writestr(info, b"x")
-        link = zipfile.ZipInfo("link")
-        link.create_system = 3
-        link.external_attr = 0o120777 << 16
-        zf.writestr(link, b"0.txt")
-    config = archivey.ArchiveyConfig(
-        listing_limits=ListingLimits(max_metadata_bytes=100_000)
-    )
+    data = buf.getvalue()
+    return _corrupt_data(data, zipfile.ZIP_DEFLATED) if damaged else data
+
+
+_OVER_100K = archivey.ArchiveyConfig(
+    listing_limits=ListingLimits(max_metadata_bytes=100_000)
+)
+
+
+def test_a_stream_members_pass_discards_a_listing_the_directory_overfills() -> None:
+    """The directory's comments take the listing over the limit after the last
+    member; the pass keeps nothing then, as from a file, and the link it made still
+    gets its target."""
+    data = _overfilled_with_link(b"0.txt")
     with archivey.open_archive(
-        _pipe(buf.getvalue()), streaming=True, config=config
+        _pipe(data), streaming=True, config=_OVER_100K
     ) as reader:
         yielded = [m for m, _ in reader.stream_members()]
         assert reader._listing_discarded
         assert reader._listed == []
-    assert (yielded[-1].type, yielded[-1].link_target) == (MemberType.SYMLINK, "0.txt")
+    assert (yielded[0].type, yielded[0].link_target) == (MemberType.SYMLINK, "0.txt")
+
+
+def test_a_damaged_link_target_is_reported_before_the_discard() -> None:
+    """The pass reads the link before it drops the listing, so a damaged target is
+    reported; the seekable pass reports it only from link finalization, which a
+    discarded listing never reaches (``design.md``, the ``max_members`` paragraph)."""
+    data = _overfilled_with_link(b"payload bytes " * 100, damaged=True)
+    with archivey.open_archive(
+        _pipe(data), streaming=True, config=_OVER_100K
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        assert reader._listing_discarded
+        assert _link_target_reasons(reader) == ["target_data_damaged"]
 
 
 def test_too_many_local_headers_name_what_was_counted() -> None:
