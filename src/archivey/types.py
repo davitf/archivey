@@ -47,8 +47,9 @@ class MemberStreams(Flag):
         Multiple overlapping ``open()`` calls are allowed. First-touch member
         materialization is coordinated (one build; waiters share the snapshot);
         ``close()`` drains in-flight worker calls. Callers still synchronize any
-        *shared* stream objects they hand around. Reader-wide passes
-        (``__iter__`` / ``stream_members`` / ``extract_all``) remain single-owner.
+        *shared* stream objects they hand around. ``__iter__`` and
+        ``stream_members`` run beside random access and beside one another;
+        ``extract_all`` remains single-owner.
         Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
 
     ``SEEKABLE``

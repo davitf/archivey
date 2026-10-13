@@ -3092,7 +3092,10 @@ class BaseArchiveReader(ArchiveReader):
                 # beside a CONCURRENT pass on the strength of this: none of them can
                 # meet a pass that is still walking or finalizing the listing, and a
                 # call that arrives during this listing waits for it in the election.
-                self._materialize_members(enforce_listing_limits=False)
+                # The listing enforces ListingLimits, as ZIP's parse does at open: a
+                # listing kept past the caps would let the archive choose the memory,
+                # and an unguarded pass bounds it only by discarding as it goes.
+                self._materialize_members(enforce_listing_limits=True)
             source = self._iter_with_data(copies)
             self._state.set_pass_closer(token, _closer_of(source))
             for m, stream in source:

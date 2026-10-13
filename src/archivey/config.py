@@ -257,7 +257,10 @@ class ListingLimits:
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
     ``stream_members`` and ``for member in reader`` do not enforce these caps: they
     yield every member, but stop keeping the listing once a cap is crossed, so their
-    memory stays bounded by it. ``extract_all`` enforces them in both access modes.
+    memory stays bounded by it. The exception is ``stream_members`` on a reader
+    opened with ``concurrent_members=True``: it lists the archive before its first
+    member, under the caps, so an archive over them raises ``ResourceLimitError``
+    there. ``extract_all`` enforces them in both access modes.
     ZIP, 7z, RAR and ISO apply ``max_members`` at parse (ZIP at open, or as it reads
     the directory when the end record understates the count), RAR weighs its comments against
     ``max_metadata_bytes`` (the declared sizes of compressed RAR 1.5/2.x comments

@@ -233,9 +233,11 @@ member list before its first yield, as ZIP, ISO, non-solid RAR, directory and
 single-file passes always do. On TAR, 7z and solid RAR this costs one walk of the
 headers before the data (on a compressed TAR a second decode of the stream), plus
 reading data-stored link targets, on the first pass only. A child pass that
-`extract_all()` drives keeps its own listing. The pass lists without enforcing
-`ListingLimits`, as a ZIP pass does; on an archive over a limit, the listing calls and
-the random calls beside the pass raise `ResourceLimitError`.
+`extract_all()` drives keeps its own listing. This listing enforces `ListingLimits`,
+as ZIP, 7z, RAR and ISO already do at open: an archive over a limit raises
+`ResourceLimitError` before the first member. An unguarded pass that lists as it goes
+bounds its memory by discarding the listing past the caps; a listing kept for others
+to share cannot do that, so it refuses instead.
 
 **Independence.** Each admitted call or pass opens its own streams, as concurrent
 random opens do; it SHALL NOT move another pass's position or read through another
@@ -264,6 +266,7 @@ suspended pass is wound down, each once; several wind-down failures surface as o
 
 | Case | Expected |
 | --- | --- |
+| `CONCURRENT` TAR over `ListingLimits` | `stream_members()` → `ResourceLimitError` before the first member; memory bounded by the caps |
 | Another thread calls `read()` while a `CONCURRENT` pass is still listing | Waits for the listing, then reads; no `ArchiveyUsageError` |
 | `CONCURRENT`, any format, loop body calls `open()`/`read()`/`get()`/`members()`/iteration, first pass, no prior `members()` | Correct answers and bytes; pass unaffected |
 | Same from another thread while the pass is suspended or reading | Same |

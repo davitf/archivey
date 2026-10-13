@@ -595,3 +595,30 @@ def test_member_that_crosses_the_cap_still_resolves_its_link(
     link = yielded[-1]
     assert link.link_target == "f0"
     assert link.link_target_member is yielded[0]
+
+
+def test_concurrent_pass_refuses_an_archive_past_the_caps(tmp_path: Path) -> None:
+    """A CONCURRENT pass lists before its first member, under the caps.
+
+    The listing is kept for random access and other passes beside the pass, so it
+    cannot be discarded as an unguarded pass's is: past the caps it refuses, as ZIP's
+    parse does at open, and keeps no more than the caps.
+    """
+    count = 4_000
+    tar_path = _tar_of_empty_members(tmp_path / "many.tar", count)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
+    retained: list[int] = []
+
+    def run_pass() -> None:
+        with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
+            with pytest.raises(ResourceLimitError, match="max_members"):
+                next(reader.stream_members())
+            with pytest.raises(ResourceLimitError, match="max_members"):
+                reader.members()
+            retained.append(tracemalloc.get_traced_memory()[0])
+
+    run_pass()
+    retained.clear()
+    peak = traced_peak(run_pass)
+    assert retained[0] < 1_000_000, retained
+    assert peak < 2_000_000, peak
