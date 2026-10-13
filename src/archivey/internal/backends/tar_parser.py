@@ -208,7 +208,7 @@ def parse_number(field: bytes) -> int:
 
 # Adler-32's low 16 bits are 1 plus the byte sum modulo 65521. A piece of 256 bytes
 # sums to at most 255 * 256 = 65280, below the modulus, so each piece's value is the
-# exact sum. ``sum()`` over a 512-byte block takes about six times as long.
+# exact sum. It saves about 1 µs per header over ``sum()`` (CPython 3.11 and 3.12).
 _SUM_PIECE = 256
 
 

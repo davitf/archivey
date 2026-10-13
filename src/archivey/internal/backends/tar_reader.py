@@ -1252,9 +1252,12 @@ class TarReader(BaseArchiveReader):
             # A view of its own: a read seeks the shared stream under the handle lock
             # when the handle is elsewhere, so members and the walk read independently.
             assert self._source is not None
-            # The view's length clamp needs the source size. A plain file's is the
-            # fact the walk already uses (_new_walker), so it is passed, not probed
-            # again on every open; a codec stream is probed as before.
+            # The view clamps its length to the source size when it has one, so a
+            # read stops at the end of the file instead of running into EOF. For a
+            # plain tar that is the fact the walk already uses (_new_walker), passed
+            # rather than probed on every open; it is None for a source with no cheap
+            # size, as the probe would find. A codec stream keeps the probe: its size
+            # comes from the decompressor (try_get_size), not from the source.
             view = SharedView(
                 self._stream,
                 entry.data_offset,

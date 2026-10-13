@@ -215,7 +215,8 @@ def test_signed_checksum_is_accepted() -> None:
 def test_checksum_sum_is_exact_for_any_byte_values(fill: int) -> None:
     """The block sum behind the checksum check is exact even when every byte is at
     its largest, where a half block sums closest to the Adler-32 modulus it is
-    computed with."""
+    computed with. Summing whole 512-byte blocks (``_SUM_PIECE = 512``) fails the
+    0xFF case: 128 776 is past the modulus."""
     block = bytearray([fill]) * BLOCKSIZE
     block[148:156] = b" " * 8
     unsigned = sum(block)
