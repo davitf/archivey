@@ -11,7 +11,9 @@ import errno
 import gzip
 import io
 import os
+import shutil
 import struct
+import subprocess
 import tarfile
 import time
 import unicodedata
@@ -565,46 +567,17 @@ def test_recorded_size_passes_what_count_would_pass(
         t.count(size)  # and the measured check agrees
 
 
-def test_recorded_size_refuses_the_archive_wide_ratio_before_the_member() -> None:
+def test_recorded_size_leaves_the_archive_wide_ratio_to_count() -> None:
+    # The archive's recorded sizes are not checked up front: a size nothing has
+    # verified must not stop the whole run (see the forged-size test below).
     source = SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=None)
     t = BombTracker(
         max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=10, source=source
     )
-    t.start_member(_member("a").replace(size=15))
-    t.check_recorded_size()  # 15 bytes from 10 is under 2:1
-    t.count(15)
-    t.start_member(_member("b").replace(size=6))
-    with pytest.raises(
-        _AlwaysStopResourceLimitError, match=r"Archive-wide .*from recorded sizes"
-    ):
-        t.check_recorded_size()  # 21 bytes from 10 is over 2:1
-    assert t.total_bytes == 15
-
-
-def test_recorded_size_raises_the_ratio_count_would_reach_first() -> None:
-    # Both ratios trip within this member. count() checks both on every chunk, so the
-    # one whose limit the output passes first is the one it raises.
-    source = SimpleNamespace(compressed_source_size=100, compressed_bytes_consumed=None)
-
-    def tracker() -> BombTracker:
-        return BombTracker(
-            max_bytes=10**12,
-            max_ratio=2.0,
-            ratio_activation_threshold=10,
-            source=source,
-        )
-
-    # Archive-wide limit 200 bytes, per-member limit 300 bytes: archive-wide first.
-    t = tracker()
-    t.start_member(_member("f").replace(size=1000, compressed_size=150))
+    t.start_member(_member("f").replace(size=1000))
+    t.check_recorded_size()
     with pytest.raises(_AlwaysStopResourceLimitError, match="Archive-wide"):
-        t.check_recorded_size()
-    # Per-member limit 20 bytes: per-member first, and skippable.
-    t = tracker()
-    t.start_member(_member("f").replace(size=1000, compressed_size=10))
-    with pytest.raises(ResourceLimitError) as ei:
-        t.check_recorded_size()
-    assert not isinstance(ei.value, _AlwaysStopResourceLimitError)
+        t.count(1000)
 
 
 def test_max_entries_guard() -> None:
@@ -1606,6 +1579,38 @@ def test_zip_bomb_member_is_refused_before_any_byte_is_written(tmp_path: Path) -
     assert not (dest / "bomb.bin").exists()
 
 
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("7z", ["a", "-bd", "-bso0", "-ms=off", "bomb.7z"]),
+        ("rar", ["a", "-inul", "bomb.rar"]),
+    ],
+)
+def test_7z_and_rar_bomb_members_are_refused_before_any_byte_is_written(
+    tmp_path: Path, tool: str, args: list[str]
+) -> None:
+    exe = shutil.which(tool)
+    if exe is None:
+        pytest.skip(f"{tool} not installed")
+    work = tmp_path / "in"
+    work.mkdir()
+    (work / "small.txt").write_bytes(b"hello")
+    (work / "bomb.bin").write_bytes(b"\x00" * (8 * 2**20))
+    subprocess.run([exe, *args, "small.txt", "bomb.bin"], cwd=work, check=True)
+    written: list[int] = []
+    report = open_and_extract(
+        work / args[-1],
+        tmp_path / "out",
+        limits=_TIGHT_RATIO,
+        on_error=OnError.CONTINUE,
+        on_progress=lambda p: written.append(p.bytes_written),
+    )
+    by_name = {r.member.name: r for r in report.results}
+    assert "from recorded sizes" in str(by_name["bomb.bin"].error)
+    assert by_name["small.txt"].status is ExtractionStatus.EXTRACTED
+    assert max(written) == len(b"hello")
+
+
 def test_recorded_size_check_runs_on_a_dry_run(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with pytest.raises(ResourceLimitError, match="from recorded sizes"):
@@ -1643,48 +1648,40 @@ def test_recorded_size_check_skips_members_the_run_does_not_decode(
     assert (dest / "bomb.bin").read_bytes() == b"kept"
 
 
-def test_targz_archive_wide_ratio_refuses_the_member_that_would_cross_it(
-    tmp_path: Path,
-) -> None:
-    # TAR records no compressed size per member, so only the archive-wide ratio
-    # applies. Its members' recorded sizes say which member takes the output past it:
-    # the members before it are written, and that one is refused before it is decoded.
-    src = tmp_path / "bomb.tar.gz"
-    zeros = b"\x00" * (2 * 2**20)
-    src.write_bytes(
-        _tar_bytes([("file", "a.bin", zeros), ("file", "b.bin", zeros)], mode="w:gz")
-    )
-    limit = 3 * 2**20 / src.stat().st_size  # a.bin passes, a.bin + b.bin does not
+def test_forged_recorded_size_fails_only_its_member(tmp_path: Path) -> None:
+    # A member whose recorded sizes overstate its data fails alone; the intact member
+    # after it is still extracted and the report comes back. An up-front archive-wide
+    # check on the recorded sizes stopped the whole run here.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("a.bin", b"\x01" * (2 * 2**20), compress_type=zipfile.ZIP_STORED)
+        z.writestr("bomb.bin", b"hello", compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("c.txt", b"intact", compress_type=zipfile.ZIP_STORED)
+    raw = bytearray(buf.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(raw))) as z:
+        local = z.getinfo("bomb.bin").header_offset
+    # Compressed 1 MiB, uncompressed 8 MiB, in the local header and the directory.
+    struct.pack_into("<II", raw, local + 18, 2**20, 8 * 2**20)
+    entry = raw.index(b"PK\x01\x02")
+    while raw[entry + 46 : entry + 54] != b"bomb.bin":
+        entry = raw.index(b"PK\x01\x02", entry + 4)
+    struct.pack_into("<II", raw, entry + 20, 2**20, 8 * 2**20)
+    src = tmp_path / "forged.zip"
+    src.write_bytes(bytes(raw))
     dest = tmp_path / "out"
-    with pytest.raises(
-        _AlwaysStopResourceLimitError, match=r"Archive-wide .*from recorded sizes"
-    ):
-        open_and_extract(
-            src,
-            dest,
-            limits=ExtractionLimits(max_ratio=limit, ratio_activation_threshold=1024),
-            on_error=OnError.CONTINUE,
-        )
-    assert (dest / "a.bin").read_bytes() == zeros
-    assert not (dest / "b.bin").exists()
-
-
-def test_orphan_hardlink_source_is_refused_from_its_recorded_size(
-    tmp_path: Path,
-) -> None:
-    # Extracting only a hardlink writes its excluded source's content at the link's
-    # path. That content is the source's, so the source's recorded size decides.
-    src = tmp_path / "links.tar.gz"
-    src.write_bytes(
-        _tar_bytes(
-            [("file", "A.bin", b"\x00" * (2 * 2**20)), ("hard", "L.bin", "A.bin")],
-            mode="w:gz",
-        )
+    report = open_and_extract(
+        src,
+        dest,
+        limits=ExtractionLimits(max_ratio=1.2, ratio_activation_threshold=1024),
+        on_error=OnError.CONTINUE,
     )
-    dest = tmp_path / "out"
-    with pytest.raises(ResourceLimitError, match="from recorded sizes"):
-        open_and_extract(src, dest, limits=_TIGHT_RATIO, members=["L.bin"])
-    assert not (dest / "L.bin").exists()
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses == {
+        "a.bin": ExtractionStatus.EXTRACTED,
+        "bomb.bin": ExtractionStatus.FAILED,
+        "c.txt": ExtractionStatus.EXTRACTED,
+    }
+    assert (dest / "c.txt").read_bytes() == b"intact"
 
 
 def test_entry_count_bomb(tmp_path: Path) -> None:

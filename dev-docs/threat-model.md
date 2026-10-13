@@ -654,9 +654,11 @@ the pass, and declined rather than refused when the cap has no room.
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
-(262,144). Where a member records its size, `check_recorded_size()` applies both
-static ratios to that size before the member is decoded, since a member stream never
-yields past its recorded size; the measured checks still run on every chunk. A non-seekable
+(262,144). Where a member records its size and compressed size, `check_recorded_size()`
+applies the per-member ratio to them before the member is decoded, since a member
+stream never yields past its recorded size; the measured checks still run on every
+chunk. The archive-wide ratio is not checked from recorded sizes: an unverified size
+must not stop the whole run. A non-seekable
 caller stream's `size` attribute counts as unknown size: nothing can check it, and an
 inflated claim used as the static denominator would also switch off the live ratio
 (`BaseArchiveReader._trusted_source_size`). The global guards
@@ -691,7 +693,14 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_live_ratio_default_floor`, `::test_piped_blank_start_passes_like_a_file`,
 `::test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator`,
 `::test_forged_member_declaration_is_refused_only_after_the_decode`,
-`::test_link_limit_copies_count_toward_the_archive_wide_ratio`;
+`::test_link_limit_copies_count_toward_the_archive_wide_ratio`,
+`::test_recorded_size_refuses_a_member_before_its_data`,
+`::test_recorded_size_leaves_the_archive_wide_ratio_to_count`,
+`::test_zip_bomb_member_is_refused_before_any_byte_is_written`,
+`::test_7z_and_rar_bomb_members_are_refused_before_any_byte_is_written`,
+`::test_recorded_size_check_runs_on_a_dry_run`,
+`::test_recorded_size_check_skips_members_the_run_does_not_decode`,
+`::test_forged_recorded_size_fails_only_its_member`;
 `tests/test_cross_os_extraction.py::test_link_limit_copies_trip_the_archive_wide_ratio`.
 
 #### RAR reads by glob-named member

@@ -193,10 +193,9 @@ class ExtractionLimits:
     counts the copies written when a file runs out of hard-link slots (1024 names on
     NTFS), since the archive's declared link count drives them.
 
-    A member's output never passes the size the archive records for it. Where that
-    size is recorded, a member that would fail either check is refused before any of
-    it is written; the archive-wide check does this only when the archive's own size
-    is known.
+    A member's output never passes the size the archive records for it. Where both
+    sizes are recorded, a member over the per-member ratio is refused before any of it
+    is written.
     """
 
     ratio_activation_threshold: int = 5 * 2**20

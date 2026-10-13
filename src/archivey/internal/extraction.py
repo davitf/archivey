@@ -392,58 +392,32 @@ class BombTracker:
 
     def check_recorded_size(self) -> None:
         """Refuse the current member before its data is read, when its recorded size
-        already decides that ``count()`` would refuse it.
+        is over the per-member ratio.
 
         Called once the member is about to be decoded, after every check that could
         still skip it, so a member that would not be decoded is never refused here.
         A member's output never passes its recorded size: the member stream refuses
-        a byte past it (``CorruptionError``). So when the recorded size is known, the
-        ratio checks in ``count()`` can be decided now. This applies them to the
-        member's output as if it were all written: the per-member ratio over its
-        ``compressed_size``, and the static archive-wide ratio over the output so far
-        plus this member. Each refuses here exactly when ``count()`` would refuse during
-        this member, and with the same kind of error. When both would, the one
-        ``count()`` would reach first is raised, so an always-stop archive-wide trip is
-        not replaced by a skippable per-member one. The live archive-wide ratio is
-        left to ``count()``, as its denominator grows during the read.
+        a byte past it (``CorruptionError``). So a member whose recorded size is over
+        the per-member ratio is one ``count()`` would refuse after decoding past the
+        activation threshold, and it is refused now instead, with the same skippable
+        error. The one difference is a member whose data stops short of its recorded
+        size: ``count()`` might never refuse it, and the read would fail as damaged
+        instead. Both fail that member alone.
 
-        ``count()`` still runs on every chunk; this check only makes its verdict
-        earlier.
+        The archive-wide ratios are left to ``count()``. Refusing early on the archive's
+        recorded sizes would stop the whole run on a size nothing has verified, losing
+        the intact members after a damaged one; and ``count()`` already stops at the
+        chunk that crosses the archive-wide limit, so an early check would save little.
+        ``count()`` still runs on every chunk.
         """
         member = self._member
-        size = member.size if member is not None else None
-        if self._max_ratio is None or member is None or size is None:
+        if self._max_ratio is None or member is None:
             return
-        floor = self._ratio_floor
-        # The output at which count() trips each check, counted within this member;
-        # None when the member's whole output stays under it.
-        member_trip: float | None = None
+        size = member.size
         cs = member.compressed_size
-        if cs and cs > 0:
-            threshold = max(floor, self._max_ratio * cs)
-            if size > threshold:
-                member_trip = threshold
-        archive_trip: float | None = None
-        css = self._compressed_source_size
-        output = self._total_bytes + self._link_limit_copied_bytes
-        if css and css > 0:
-            threshold = max(floor, self._max_ratio * css) - output
-            if size > threshold:
-                archive_trip = threshold
-        # count() checks the per-member ratio first, so it wins a tie.
-        if archive_trip is not None and (
-            member_trip is None or archive_trip < member_trip
-        ):
-            assert css is not None
-            total = output + size
-            raise _AlwaysStopResourceLimitError(
-                f"Archive-wide decompression ratio {total / css:.0f}:1 exceeds limit "
-                f"max_ratio={self._max_ratio:.0f}:1 (from recorded sizes: "
-                f"{quoted(member.name)} would bring the output to {total} bytes, "
-                f"from an archive of {css} bytes)"
-            )
-        if member_trip is not None:
-            assert cs is not None
+        if size is None or not cs or cs <= 0:
+            return
+        if size > max(self._ratio_floor, self._max_ratio * cs):
             raise ResourceLimitError(
                 f"Decompression ratio {size / cs:.0f}:1 exceeds limit "
                 f"max_ratio={self._max_ratio:.0f}:1 (from recorded sizes: "
@@ -3292,9 +3266,9 @@ class ExtractionCoordinator:
         ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
         final mode. STRICT and STANDARD give a mode-less member their own default instead
         (see ``_effective_mode``), so this arm is TRUSTED's alone."""
-        # Every check that could still skip the member has passed, so a member its
-        # recorded size already marks as over the ratio is refused before any temp
-        # file exists.
+        # Every check that could still skip the member has passed, so a member whose
+        # recorded size is already over the ratio is refused before any temp file
+        # exists.
         self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
             tmp = self._temp_sibling(dest_path.parent)
