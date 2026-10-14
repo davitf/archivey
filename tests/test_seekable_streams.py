@@ -1450,6 +1450,62 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
             assert stream.size == len(data)
 
 
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+def test_a_bare_xz_scans_its_index_once_for_size_and_seeks(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    small_seek_cap: int,
+    source_kind: str,
+) -> None:
+    """Open scans the index for ``member.size``; the member stream reuses that scan.
+
+    Before, the member stream threw the open-time index away and scanned the whole
+    file again on its first seek, and the thinned index was reported twice (once to
+    a throwaway collector at open, once to the reader's). The cap is lowered so
+    a few thousand streams are enough to thin the index.
+    """
+    import logging
+
+    import archivey
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.streams.codecs import xz_decoder
+
+    parts = [bytes([65 + i % 26]) * (1 + i % 5) for i in range(2000)]
+    full = b"".join(parts)
+    compressed = make_multi_stream_xz(parts)
+    path = tmp_path / "many.xz"
+    path.write_bytes(compressed)
+    source: Any = path if source_kind == "path" else io.BytesIO(compressed)
+
+    scans = 0
+    real_scan = xz_decoder.build_index_backwards
+
+    def counting_scan(*args: Any, **kwargs: Any) -> Any:
+        nonlocal scans
+        scans += 1
+        return real_scan(*args, **kwargs)
+
+    # The whole-file scan; a forward read still reads each finished stream's own index.
+    monkeypatch.setattr(xz_decoder, "build_index_backwards", counting_scan)
+    caplog.set_level(logging.WARNING)
+    with archivey.open_archive(source, seekable_members=True) as reader:
+        member = reader.members()[0]
+        assert member.size == len(full)
+        assert scans == 1
+        for _ in range(2):  # a second open reuses the scan too
+            with reader.open(member) as stream:
+                for pos in (len(full) // 2, 7, len(full) - 3, len(full) // 3):
+                    assert stream.seek(pos) == pos
+                    assert stream.read(40) == full[pos : pos + 40]
+                assert stream.seek(0, io.SEEK_END) == len(full)
+        assert scans == 1
+        assert reader.diagnostics.counts[DiagnosticCode.SEEK_INDEX_DEGRADED] == 2
+    # One report per member stream that uses the index, and none at open.
+    logged = [r for r in caplog.records if "index has more than" in r.getMessage()]
+    assert len(logged) == 2
+
+
 def _strict_collector() -> Any:
     from archivey import DiagnosticPolicy
     from archivey.internal.diagnostics_collector import DiagnosticCollector

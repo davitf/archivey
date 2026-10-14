@@ -53,6 +53,7 @@ from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
+    PrebuiltIndex,
     SeekPoint,
     SpacedCollector,
     build_index_backwards,
@@ -1214,11 +1215,14 @@ def XzDecompressorStream(
     seekable: bool = True,
     decoder_limits: DecoderLimits = DecoderLimits(),
     report_trailing_data: bool = False,
+    initial_index: PrebuiltIndex | None = None,
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
     ``decoder_limits`` caps the dictionary each block header declares (see
     :func:`new_capped_decompressor`); it defaults to the public default, not to no cap.
+    ``initial_index`` is an index scan already made over the same source, used in
+    place of a second one (see :class:`PrebuiltIndex`).
 
     ``stream_cell`` late-binds the constructed stream so ``XzDecoder.recreate`` can
     read ``_index_built`` — the same coupling the old
@@ -1253,6 +1257,7 @@ def XzDecompressorStream(
         codec_name="xz",
         seekable=seekable,
         report_trailing_data=report_trailing_data,
+        initial_index=initial_index,
     )
     stream_cell[0] = stream
     return stream

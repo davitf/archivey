@@ -118,6 +118,14 @@ neither is known before the read ends. Another archive's member stream, passed t
 decided by the source's shape, and member streams are excluded as a group
 ([`single-file.md`](single-file.md) §2.2).
 
+When seeking was declared, the xz scan made at open is kept, and each member stream
+uses it (`PrebuiltIndex`) in place of a second scan of every stream's index. A crafted
+file of many tiny streams makes that scan cost seconds, so it runs once. A thinned or
+unreadable index is then reported by the member stream, on the seek or size query that
+needs the index, and not also at open. lzip does not share this: its open-time walk
+(`peek_index_summary`) keeps no seek points, so a member stream scans the trailers
+itself.
+
 **Through bytes after the end.** The walk has to start at the last stream's end, not at
 the file's. Zero bytes are skipped first. For xz, `_data_end()` in
 `internal/streams/codecs/xz_decoder.py` then looks back for a footer that checks out: `YZ`
@@ -349,6 +357,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Claim | Pinned by |
 | --- | --- |
 | Size from the index and trailers; not on a pipe or another archive's member stream | `tests/test_single_file.py::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `::test_member_stream_source_is_not_seeked_to_its_end`, `tests/test_seekable_streams.py::test_xz_try_get_size_uses_index_not_full_decode` |
+| The open-time xz scan is reused by member streams | `tests/test_seekable_streams.py::test_a_bare_xz_scans_its_index_once_for_size_and_seeks` |
 | The combined lzip CRC-32 | `tests/test_single_file.py::test_lzip_exposes_stored_crc32`, `::test_multi_member_lzip_exposes_combined_crc32`, `tests/test_review_simplicity_consistency.py::test_lzip_surfaces_crc32_without_declaring_seekable_members` |
 | Block and member seeks read the right bytes | `tests/test_seekable_streams.py::test_xz_backward_seek_uses_block_index`, `::test_xz_multiblock_seek_serves_the_right_bytes_across_feed_chunks`, `::test_xz_multistream_block_resume_crosses_a_stream_gap`, `::test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes` |
 | Seeks trust a self-consistent index; forward reads verify | `::test_xz_cold_seek_trusts_a_self_consistent_block_index`, `::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`, `::test_xz_block_resume_refuses_blocks_that_disagree_with_the_index`, `::test_lzip_trailer_member_size_mismatch_raises_on_forward_read` |
