@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import lzma
 import random
+import sys
 import zlib
 
 import pytest
@@ -417,6 +418,22 @@ def test_watch_is_silent_after_read_all() -> None:
     assert watch.read() == b"0123456789"
     watch.close()
     assert calls.count == 0
+
+
+@pytest.mark.parametrize(("read_all", "reported"), [(True, 0), (False, 1)])
+def test_watch_with_no_known_end_counts_only_reaching_eof(
+    read_all: bool, reported: int
+) -> None:
+    """A size no read reaches (a ZIP pass, which checks on the read after the last
+    byte): ``read(-1)`` returns at EOF, so it counts; ``read(len(data))`` does not."""
+    data = b"0123456789"
+    calls = _Calls()
+    watch = UnverifiedPasswordReadWatch(
+        io.BytesIO(data), size=sys.maxsize, on_unverified=calls
+    )
+    assert (watch.read() if read_all else watch.read(len(data))) == data
+    watch.close()
+    assert calls.count == reported
 
 
 def test_watch_is_silent_when_nothing_was_read() -> None:

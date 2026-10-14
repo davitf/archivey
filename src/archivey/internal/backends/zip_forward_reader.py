@@ -114,6 +114,11 @@ from archivey.types import (
 
 # Read size when the pass reads through data nobody asked for.
 _DRAIN_CHUNK = 1 << 16
+#: A watch size no read reaches, for a stream whose check runs only at EOF.
+_NO_END_BEFORE_EOF = sys.maxsize
+#: The most ciphertext kept for an encrypted member that may be a link: twice the
+#: target's cap, room for the encryption header, the AES code and a codec's framing.
+_MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 
 # A forward pass decides nothing by seeking back, and reads each member's data once.
 _ZIP_FORWARD_COST = CostReceipt(
@@ -245,8 +250,13 @@ class _PassData:
         self._unconfirmed = False
         #: The stream ended inside the data (not a wrong key's short output).
         self._cut_short = False
-        #: What failed when the pass decoded the data for a link target on its own.
+        #: What an encrypted member's read raised, for its link target's read.
         self._failure: ArchiveyError | None = None
+        #: What opening the decoded stream raised: it runs once, as the decrypt
+        #: stage reads its header from the data (a second try would read past it).
+        self._open_error: ArchiveyError | None = None
+        #: An encrypted member's ciphertext, kept by ``drain`` for a link target.
+        self._kept: _KeptCiphertext | None = None
         self._crc = 0
         self._size = 0
         self._capture: bytearray | None = bytearray()
@@ -271,6 +281,16 @@ class _PassData:
     def _open_decoded(self) -> BinaryIO:
         if self._decoded is not None:
             return self._decoded
+        if self._open_error is not None:
+            raise self._open_error
+        try:
+            self._decoded = self._open_decoded_once()
+        except ArchiveyError as exc:
+            self._open_error = exc
+            raise
+        return self._decoded
+
+    def _open_decoded_once(self) -> BinaryIO:
         member = self.member
         header = self.entry.header
         reader = self._reader
@@ -293,7 +313,6 @@ class _PassData:
                 keyed = method in _ZIP_KEYED_SETTINGS_METHODS
             source = self._decrypted(loc)
         if method == 0:
-            self._decoded = source
             return source
         codec = reader._member_codec(
             method,
@@ -336,7 +355,7 @@ class _PassData:
             # PPMd holds a sized member's input until it is all in; a bit-3 member
             # has no size to wait for, so it is fed in pieces, in a child process.
             params = replace(params, input_runs_on=True)
-        self._decoded = open_codec_stream(
+        return open_codec_stream(
             codec,
             source,
             config=config,
@@ -344,7 +363,6 @@ class _PassData:
             seekable=False,
             collector=reader._diagnostics_collector,
         )
-        return self._decoded
 
     def _decrypted(self, loc: _ZipLocator) -> BinaryIO:
         """The member's plaintext, decrypted from its data as the pass reads it.
@@ -422,7 +440,16 @@ class _PassData:
                     )
                 head = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
                 if len(head) != ZIPCRYPTO_HEADER_LEN:
-                    raise TruncatedError("Truncated ZipCrypto header")
+                    # Only a bit-3 member gets here: a sized one's data raises
+                    # TruncatedError itself when the stream ends inside it. Its scan
+                    # found the descriptor first, so the data is whole and short.
+                    raise CorruptionError(
+                        "ZipCrypto member too short for its encryption header "
+                        f"({len(head)} < {ZIPCRYPTO_HEADER_LEN})",
+                        archive_name=reader._archive_name,
+                        member_name=member.name,
+                        source_format=ArchiveFormat.ZIP,
+                    )
                 keys, check = keys_after_header(password, head)
                 if check != check_byte:
                     raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
@@ -450,10 +477,16 @@ class _PassData:
                 self._finish(raise_mismatch=True)
         except ArchiveyError as exc:
             failure = self._as_read_failure(exc)
+            if self._encrypted():
+                self._failure = failure
             if failure is exc:
                 raise
             raise failure from exc
         return chunk
+
+    def _encrypted(self) -> bool:
+        header = self.entry.header
+        return _is_encrypted_entry(header.flags, header.method)
 
     def _as_read_failure(self, exc: ArchiveyError) -> ArchiveyError:
         """``exc`` as the caller sees it: under ZipCrypto, a failed integrity check
@@ -555,12 +588,12 @@ class _PassData:
         A member whose local header states its size is skipped without decoding,
         unless it is short enough to be a link target: the directory may yet make it
         one, and its target is these bytes. That decode is only for the target, so
-        its failure loses the bytes, and an encrypted member's is kept for the
-        target's read (a missing or wrong password among them), as a member nobody
-        reads costs nothing from a file. A bit-3 member is decoded to its end, which
-        is the only way to find it, so there a failure ends the walk; an encrypted
-        bit-3 STORED one is skipped instead, as its scan finds the end without the
-        key.
+        its failure loses the bytes and nothing else, as a member nobody reads costs
+        nothing from a file. An encrypted one keeps its ciphertext instead, decrypted
+        only if the directory makes it a link (``_KeptCiphertext``): no key is derived
+        for a member nobody asked for. A bit-3 member is decoded to its end, which is
+        the only way to find it, so there a failure ends the walk; an encrypted bit-3
+        STORED one is skipped instead, as its scan finds the end without the key.
         """
         if self.done:
             return
@@ -583,6 +616,17 @@ class _PassData:
             skip = encrypted
         else:
             skip = header.file_size > MAX_LINK_TARGET_BYTES
+            if encrypted and self._decoded is None:
+                # No key derived yet, and none is derived for a member nobody read.
+                if (
+                    not skip
+                    and self._open_error is None
+                    and header.compressed_size <= _MAX_KEPT_CIPHERTEXT
+                ):
+                    self._kept = _KeptCiphertext(
+                        self.entry, read_exact(self._data, header.compressed_size)
+                    )
+                skip = True
         if not skip:
             try:
                 while self._read_chunk(_DRAIN_CHUNK):
@@ -607,16 +651,19 @@ class _PassData:
                 self._failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
 
     @property
-    def uncaptured(self) -> str | ArchiveyError | None:
+    def uncaptured(self) -> str | ArchiveyError | _KeptCiphertext | None:
         """Why a drained member's bytes were not kept, when not for their length:
-        what failed as the pass decoded them, or ``"encrypted"`` or ``"damaged"``
-        (see ``ZipForwardReader._link_target_opener``).
+        what the caller's read of an encrypted member raised, its kept ciphertext, or
+        ``"encrypted"`` or ``"damaged"`` (see ``ZipForwardReader._link_target_opener``).
         """
         if self._failure is not None:
             return self._failure
+        if self._kept is not None:
+            return self._kept
         header = self.entry.header
-        if self._deferred() and _is_encrypted_entry(header.flags, header.method):
-            return "encrypted"
+        if self._encrypted():
+            # Sized and not kept: over the length a link target may have.
+            return "encrypted" if self._deferred() else None
         if not self.verified and (
             self._deferred() or header.file_size <= MAX_LINK_TARGET_BYTES
         ):
@@ -627,6 +674,55 @@ class _PassData:
         """Release the decoder of a pass that will not read on."""
         self.done = True
         self._close_decoded()
+
+
+class _KeptCiphertext:
+    """An encrypted member's ciphertext, kept as the pass read past it, so its link
+    target is decrypted only once the directory says it is a link: a member nobody
+    asked for costs no key derivation, as from a file."""
+
+    def __init__(self, entry: LocalEntry, data: bytes) -> None:
+        self.entry = entry
+        self.data = data
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def decode(self, reader: ZipForwardReader, member: ArchiveMember) -> bytes:
+        """The plaintext, read as the caller's stream reads it: the same password
+        attempt, codec and checks, so a failure is the one a read raises."""
+        decoder = _PassData(reader, self.entry, member, _KeptData(self))
+        out = bytearray()
+        while chunk := decoder.read(_DRAIN_CHUNK):
+            out += chunk
+        return bytes(out)
+
+
+class _KeptData(MemberData):
+    """Kept ciphertext, read as the member's data from the walk would be."""
+
+    def __init__(self, kept: _KeptCiphertext) -> None:  # noqa: PLW0231 - no walk
+        ReadOnlyIOStream.__init__(self)
+        self.entry = kept.entry
+        self.consumed = 0
+        self._settled = False
+        self._kept = kept.data
+
+    def _read_some(self, size: int) -> bytes:
+        chunk = self._kept[self.consumed : self.consumed + size]
+        self.consumed += len(chunk)
+        return chunk
+
+    def settle(
+        self,
+        used: int | None = None,
+        *,
+        crc: int | None = None,
+        file_size: int | None = None,
+    ) -> DataDescriptor | None:
+        # A sized member's: nothing after it to read past, and no descriptor.
+        self._settled = True
+        return None
 
 
 class _CutShortWatch(ReadOnlyIOStream):
@@ -713,7 +809,7 @@ class ZipForwardReader(ZipReader):
         self._captured: dict[int, bytes] = {}
         # Member id -> why its bytes were not kept, when not for their length
         # (``_PassData.uncaptured``), so a link's missing target says why.
-        self._uncaptured: dict[int, str | ArchiveyError] = {}
+        self._uncaptured: dict[int, str | ArchiveyError | _KeptCiphertext] = {}
         # Local header offset -> what the data descriptor after a bit-3 member's data
         # said (CRC, compressed size, size), for the directory to confirm at the end.
         self._descriptors: dict[int, tuple[int, int, int]] = {}
@@ -785,6 +881,10 @@ class ZipForwardReader(ZipReader):
                 )
             elif (why := current.uncaptured) is not None:
                 self._uncaptured[member._member_id] = why
+                if isinstance(why, _KeptCiphertext):
+                    self._listing_tracker.account_retained_bytes(
+                        len(why), enforce=False
+                    )
         if self._listing_discarded:
             self._by_offset.clear()
             self._captured.clear()
@@ -1271,12 +1371,14 @@ class ZipForwardReader(ZipReader):
         stream: BinaryIO = _PassStream(current)
         header = current.entry.header
         if _is_encrypted_entry(header.flags, header.method):
-            # Only a cheap check vouched for the password; the pass runs the CRC or
-            # the HMAC on the read that finds the end, so only that read counts.
+            # Only a cheap check vouched for the password. The pass runs the CRC or
+            # the HMAC on the read after the last byte, not on the one reaching the
+            # member's size, so no size is handed to the watch: only reaching the
+            # end counts. Seeks would forfeit the check, but nothing seeks a pass.
             stream = self._watch_unverified_read(
                 stream,
                 member,
-                size=sys.maxsize,
+                size=_NO_END_BEFORE_EOF,
                 check="weak_open_check",
                 format_label="ZIP",
                 digest="integrity check",
@@ -1316,9 +1418,14 @@ class ZipForwardReader(ZipReader):
 
         @contextmanager
         def open_data() -> Iterator[ReadableStream]:
-            if captured is None:
+            if captured is not None:
+                yield io.BytesIO(captured)
+            elif isinstance(why, _KeptCiphertext):
+                with self._translated_errors(member.name):
+                    plain = why.decode(self, member)
+                yield io.BytesIO(plain)
+            else:
                 raise missing()
-            yield io.BytesIO(captured)
 
         return open_data
 

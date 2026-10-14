@@ -119,15 +119,19 @@ def _with_plain_member(data: bytes) -> bytes:
     return body + local + directory + end
 
 
-def _bit3_stored_zipcrypto(data: bytes, *, dos_time: int = 0x5A3C) -> bytes:
+def _bit3_stored_zipcrypto(
+    data: bytes, *, dos_time: int = 0x5A3C, stored: bytes | None = None
+) -> bytes:
     """One STORED ZipCrypto member written as a pipe writer would: bit 3, zero sizes
     and CRC in the local header, a descriptor after the data. The check byte is then
-    the DOS time's high byte."""
+    the DOS time's high byte. ``stored`` replaces the encrypted data."""
     from tests.zipcrypto import _encrypt
 
     name = b"a.txt"
     crc = zlib.crc32(data)
-    enc = _encrypt(_PASSWORD, (dos_time >> 8) & 0xFF, data)
+    enc = (
+        _encrypt(_PASSWORD, (dos_time >> 8) & 0xFF, data) if stored is None else stored
+    )
     flags = 0x1 | 0x8
     local = (
         struct.pack(
@@ -185,6 +189,10 @@ def _fixtures() -> list[pytest.ParameterSet]:
             lambda: _bit3_stored_zipcrypto(b""), id="zipcrypto-bit3-stored-empty"
         ),
         pytest.param(
+            lambda: _bit3_stored_zipcrypto(b"", stored=b"\x01\x02\x03\x04"),
+            id="zipcrypto-bit3-shorter-than-its-header",
+        ),
+        pytest.param(
             lambda: _aes_zip(vendor_version=1, method=0),
             id="aes-ae1-stored",
             marks=requires("cryptography"),
@@ -202,19 +210,19 @@ def _fixtures() -> list[pytest.ParameterSet]:
     ]
 
 
-def _file_read(data: bytes, password: object) -> dict[str, bytes | type]:
-    out: dict[str, bytes | type] = {}
+def _file_read(data: bytes, password: object) -> dict[str, object]:
+    out: dict[str, object] = {}
     with archivey.open_archive(io.BytesIO(data), password=password) as reader:  # type: ignore[arg-type]
         for member in reader.members():
             try:
                 out[member.name] = reader.read(member)
             except ArchiveyError as exc:
-                out[member.name] = type(exc)
+                out[member.name] = (type(exc), str(exc))
     return out
 
 
-def _pipe_read(data: bytes, password: object) -> dict[str, bytes | type]:
-    out: dict[str, bytes | type] = {}
+def _pipe_read(data: bytes, password: object) -> dict[str, object]:
+    out: dict[str, object] = {}
     with archivey.open_archive(
         NonSeekableBytesIO(data),
         streaming=True,
@@ -225,7 +233,7 @@ def _pipe_read(data: bytes, password: object) -> dict[str, bytes | type]:
             try:
                 out[member.name] = stream.read()
             except ArchiveyError as exc:
-                out[member.name] = type(exc)
+                out[member.name] = (type(exc), str(exc))
     return out
 
 
@@ -243,8 +251,9 @@ def test_a_wrong_or_missing_password_fails_as_from_a_file(build) -> None:  # noq
     data = _with_plain_member(build())
     for password in (b"not the password", None):
         expected = _file_read(data, password)
-        assert isinstance(expected["a.txt"], type)
-        assert issubclass(expected["a.txt"], EncryptionError)
+        kind, _ = expected["a.txt"]  # type: ignore[misc]
+        # The member shorter than its encryption header is refused for that first.
+        assert issubclass(kind, (EncryptionError, CorruptionError))
         assert _pipe_read(data, password) == expected
 
 
@@ -293,7 +302,7 @@ def test_damage_under_a_zipcrypto_password_fails_as_from_a_file(method: int) -> 
         build_zipcrypto_zip(_PASSWORD, b"a.txt", _TEXT, compression=method)
     )
     expected = _file_read(data, _PASSWORD)
-    assert expected["a.txt"] is EncryptionError
+    assert expected["a.txt"][0] is EncryptionError  # type: ignore[index]
     assert _pipe_read(data, _PASSWORD) == expected
 
 
@@ -301,7 +310,7 @@ def test_damage_under_a_zipcrypto_password_fails_as_from_a_file(method: int) -> 
 def test_a_tampered_aes_hmac_fails_as_from_a_file() -> None:
     data = _aes_zip(vendor_version=2, method=8, tamper_hmac=True)
     expected = _file_read(data, _PASSWORD)
-    assert expected["a.txt"] is CorruptionError
+    assert expected["a.txt"][0] is CorruptionError  # type: ignore[index]
     assert _pipe_read(data, _PASSWORD) == expected
 
 
@@ -397,3 +406,96 @@ def _aes_zip_link() -> bytes:
     return build_aes_zip(
         [(b"link", b"target.txt")], password=_PASSWORD, unix_mode=0o120777
     )
+
+
+def _method_6_link() -> bytes:
+    """A ZipCrypto symlink whose method says Implode in both headers: the password
+    is right, and the codec is refused once the stage is built."""
+    data = bytearray(
+        build_zipcrypto_zip(
+            _PASSWORD,
+            b"link",
+            b"target.txt",
+            compression=zipfile.ZIP_STORED,
+            unix_mode=0o120777,
+        )
+    )
+    struct.pack_into("<H", data, 8, 6)
+    struct.pack_into("<H", data, data.index(b"PK\x01\x02") + 10, 6)
+    return bytes(data)
+
+
+def _counted_decrypts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    from archivey.internal.backends import zip_forward_reader
+
+    calls: list[str] = []
+    original = zip_forward_reader._PassData._decrypted
+
+    def counted(self, loc):  # noqa: ANN001, ANN202
+        calls.append(self.member.name)
+        return original(self, loc)
+
+    monkeypatch.setattr(zip_forward_reader._PassData, "_decrypted", counted)
+    return calls
+
+
+def test_a_link_whose_codec_is_refused_says_so_as_from_a_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _method_6_link()
+    calls = _counted_decrypts(monkeypatch)
+    with pytest.raises(UnsupportedFeatureError) as from_file:
+        _link_targets(data, _PASSWORD, pipe=False)
+    with pytest.raises(UnsupportedFeatureError) as from_pipe:
+        _link_targets(data, _PASSWORD, pipe=True)
+    assert str(from_pipe.value) == str(from_file.value)
+    assert calls == ["link"]
+
+
+def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stage read the encryption header; a second open would read the next
+    twelve bytes as one. The caller's error stands, for the link target too."""
+    data = _method_6_link()
+    calls = _counted_decrypts(monkeypatch)
+    with archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader:
+        with pytest.raises(UnsupportedFeatureError) as from_file:
+            reader.read(reader.members()[0])
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        passes = reader.stream_members()
+        _, stream = next(passes)
+        assert stream is not None
+        for _ in range(2):
+            with pytest.raises(UnsupportedFeatureError) as from_pipe:
+                stream.read()
+            assert str(from_pipe.value) == str(from_file.value)
+        # The directory makes it a link, and its target raises what the read did,
+        # as the file's listing does.
+        with pytest.raises(UnsupportedFeatureError) as at_end:
+            next(passes)
+        assert str(at_end.value) == str(from_file.value)
+    assert calls == ["link"]
+
+
+@requires("cryptography")
+def test_no_key_is_derived_for_a_member_nobody_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short members are kept as ciphertext in case the directory makes them links;
+    only a link's is decrypted, as a file read only reads a link's target."""
+    from tests.zip_aes_fixture import build_aes_zip
+
+    data = build_aes_zip(
+        [(f"m{i}.txt".encode(), b"x") for i in range(20)], password=_PASSWORD
+    )
+    calls = _counted_decrypts(monkeypatch)
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        assert len(reader.members_report().members) == 20
+    assert calls == []

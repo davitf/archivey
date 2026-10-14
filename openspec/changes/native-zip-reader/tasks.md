@@ -122,11 +122,14 @@ each lands with nothing half-done reachable:
       3b3d1: one password, taken on its cheap check as from a file (the CRC or HMAC
       at the end is the test; a ZipCrypto integrity failure says the password may be
       wrong; `ENCRYPTED_MEMBER_UNVERIFIED` for a stream closed before the read that
-      finds the end); a short member is decrypted as the pass drains it, for a link
-      target, and what failed is kept for the target's read
-      (`test_zip_pipe_encrypted.py`). Several candidates, or a provider, are refused
-      when read until 3b3d3, and the drain must not call a provider for a member
-      nobody asked for.
+      finds the end); a short member nobody read keeps its ciphertext, decrypted
+      only once the directory makes it a link (no key derived for a member nobody
+      asked for), and an encrypted member's failed read is kept for its target's
+      read (`test_zip_pipe_encrypted.py`). Several candidates, or a provider, are
+      refused when read until 3b3d3, and the pass must not call a provider for a
+      member nobody asked for. Left for 3b3d2: a bit-3 STORED ZipCrypto link nobody
+      read still reports its target unavailable ("encrypted"), where a file reads
+      it.
 - [ ] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
       codec's input, so the AES stage authenticates the ciphertext as it goes, holding
       back the bytes past the codec's end until `settle` says where the data ended
