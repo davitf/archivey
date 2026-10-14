@@ -448,8 +448,8 @@ descriptor that differs from the central entry, two same-name members whose dire
 order reverses their file order, a directory entry with no local entry, and a member
 whose directory entry and local header store different names (question A, case 3: the
 seekable read refuses it when it reads the local header, and a forward pass has both
-names only now). Each is a member-scoped failure of the member it names, handled as `safe-extraction` handles any
-other (the `OnError` requirement):
+names only now). Each is a member-scoped failure of the member it names, handled as
+`safe-extraction` handles any other (the `OnError` requirement):
 
 - In `extract_all`, the end of the pass settles every member the directory changes
   (its `is_current`, type or sizes), and every path such a member was written to:
@@ -473,11 +473,12 @@ other (the `OnError` requirement):
     the earliest point it is known; the revisions and removals above are made first.
 - In `stream_members()`, which has no results and no `OnError`, the descriptor mismatch,
   the missing local entry and the differing names raise `CorruptionError` from the
-  iterator at the end of the pass. The reversed pair raises nothing: the members are updated in place and
-  `member_state_final` said they might be. Nothing is on disk to settle.
+  iterator at the end of the pass. The reversed pair raises nothing: the members are
+  updated in place and `member_state_final` said they might be. Nothing is on disk to
+  settle.
 
-The first two (and the differing names) make a streaming extraction fail a member that the seekable extraction of
-the same archive writes. That is the only place the two access modes differ on disk.
+The first two (and the differing names) make a streaming extraction fail a member that
+the seekable extraction of the same archive writes. That is the only place the two access modes differ on disk.
 Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
 a little; matching them would mean buffering every member until the directory arrives
 (ADR 0010).
