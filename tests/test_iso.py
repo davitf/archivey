@@ -375,6 +375,35 @@ def test_an_image_cut_inside_its_first_descriptor_is_truncated() -> None:
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
 
 
+def test_a_damaged_image_names_the_damage_not_a_python_error() -> None:
+    """A parser failure inside pycdlib (here ``struct.error`` from a path table moved
+    to block 0) reads as damage to the image, not as the repr of a Python error. The
+    original stays the cause."""
+    image = bytearray(_build_iso(rock_ridge=True, joliet=False))
+    # Byte 140 of the primary descriptor is the low byte of the type L path table's
+    # location.
+    image[16 * 2048 + 140] = 0
+    with raises_corruption_not_truncation() as excinfo:
+        with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO):
+            pass
+    assert isinstance(excinfo.value.__cause__, struct.error)
+    message = str(excinfo.value)
+    assert message.startswith("Error reading ISO image: a structure in the image is ")
+    assert "unpack_from" not in message
+    assert "error(" not in message
+
+
+def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
+    from archivey.exceptions import TruncatedError
+
+    truncated = _build_iso(rock_ridge=True, joliet=False)[:32780]
+    with pytest.raises(TruncatedError) as excinfo:
+        open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
+    message = str(excinfo.value)
+    assert "(Failed to read entire volume descriptor)" in message
+    assert "PyCdlibInvalidISO(" not in message
+
+
 @pytest.mark.timeout(5)
 @pytest.mark.parametrize(
     (

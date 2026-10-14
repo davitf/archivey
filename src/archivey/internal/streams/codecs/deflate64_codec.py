@@ -45,5 +45,5 @@ class Deflate64Codec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, (ValueError, zlib.error)):
-            return CorruptionError(f"Error reading deflate64 stream: {exc!r}")
+            return CorruptionError(f"Error reading deflate64 stream: {exc}")
         return self._eof_truncation(exc, "deflate64")

@@ -96,7 +96,13 @@ class ArchiveyError(Exception):
     - a member name, link target or path → :func:`~archivey.terminal.quoted`, not
       ``!r``. ``!r`` escapes first, and this escapes the backslashes it introduced.
     - a caught exception that might be one of ours → :func:`raw_message_of`, not
-      ``{exc}`` or ``{exc!r}``.
+      ``{exc}`` or ``{exc!r}``. A handler that catches only a third-party decoder's
+      type can use ``{exc}``.
+    - never ``{exc!r}`` for a caught exception: it shows Python's spelling
+      (``error('unpack_from requires …')``), not what is wrong with the archive. When
+      the exception's own text does not describe the archive (``struct.error``,
+      ``IndexError`` from a parser), write that description instead and keep the
+      original as ``__cause__``.
 
     Note this is the opposite of the rule for ``logger.*`` calls, whose records the CLI
     does **not** escape: there, ``%r`` is what makes an interpolated name inert and must

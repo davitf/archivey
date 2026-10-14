@@ -75,7 +75,7 @@ class BrotliCodec(StreamCodec):
         # DecompressorStream surfaces that as TruncatedError on its own.
         brotli = deps.brotli.loaded()
         if brotli is not None and isinstance(exc, brotli.error):
-            return CorruptionError(f"Error reading brotli stream: {exc!r}")
+            return CorruptionError(f"Error reading brotli stream: {exc}")
         return None
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:

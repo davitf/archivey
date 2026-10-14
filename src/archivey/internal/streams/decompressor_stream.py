@@ -95,8 +95,8 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
     """
     text = str(exc)
     if "incorrect data check" in text or "incorrect length check" in text:
-        return _StreamChecksumError(f"Error reading {label} stream: {exc!r}")
-    return CorruptionError(f"Error reading {label} stream: {exc!r}")
+        return _StreamChecksumError(f"Error reading {label} stream: {exc}")
+    return CorruptionError(f"Error reading {label} stream: {exc}")
 
 
 # zlib's gzip-window errors for a member header that gzip(1) refuses as unsupported,
@@ -130,7 +130,7 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     """
     if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
         return UnsupportedFeatureError(
-            f"Unsupported gzip member header: {exc!r}; a damaged header reads the "
+            f"Unsupported gzip member header: {exc}; a damaged header reads the "
             "same way"
         )
     return gzip_corruption(exc)

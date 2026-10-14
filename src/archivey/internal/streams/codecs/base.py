@@ -378,7 +378,7 @@ class StreamCodec:
         decoder, or ``None`` for any other exception. A :meth:`translate` calls it for
         its ``EOFError`` arm, so every codec words a truncation the same way."""
         if isinstance(exc, EOFError):
-            return TruncatedError(f"{truncated_message(label)}: {exc!r}")
+            return TruncatedError(f"{truncated_message(label)}: {exc}")
         return None
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
