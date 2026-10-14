@@ -11,7 +11,6 @@ import io
 import lzma
 import os
 import struct
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,7 +24,13 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
+from tests.conftest import (
+    requires,
+    requires_binary,
+    requires_zstd,
+    run_7z,
+    zstd_backend,
+)
 from tests.test_audit_sevenzip import (
     _COPY,
     _DELTA,
@@ -56,9 +61,7 @@ def _two_coder_folder(outer: bytes, inner: bytes) -> bytes:
 
 
 def _run_7z(args: list[str], cwd: Path) -> None:
-    result = subprocess.run(
-        ["7z", *args], cwd=cwd, capture_output=True, check=False, text=True
-    )
+    result = run_7z(args, cwd=cwd, check=False, text=True)
     if result.returncode != 0:
         pytest.skip(f"7z CLI could not build the fixture: {result.stdout[-400:]}")
 
@@ -290,9 +293,7 @@ def test_arm64_filtered_archive_reads(tmp_path: Path, explicit: bool) -> None:
     exe.write_bytes(payload)
     exe.chmod(0o755)
     _run_7z(["a", *(["-mf=ARM64"] if explicit else []), "a.7z", "armexe"], tmp_path)
-    listing = subprocess.run(
-        ["7z", "l", "-slt", "a.7z"], cwd=tmp_path, capture_output=True, text=True
-    ).stdout
+    listing = run_7z(["l", "-slt", "a.7z"], cwd=tmp_path, text=True).stdout
     if "ARM64" not in listing:
         pytest.skip("this 7z did not write the ARM64 filter")
     with open_archive(tmp_path / "a.7z") as reader:
