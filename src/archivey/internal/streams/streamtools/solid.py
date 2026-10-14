@@ -14,8 +14,12 @@ Not the same as :class:`~archivey.internal.streams.streamtools.shared.SharedSour
 ``open_member(..., lazy=True)`` defers open/skip until the first read — so an
 iterator that yields then closes an unselected member pays nothing.
 
-Like the rest of ``streamtools``, truncated blocks surface as plain :class:`EOFError`
-for the caller to translate.
+A block that ends early is reported in two ways. A block that ends before a member's
+start makes the skip to that member (:func:`skip_forward`, on ``open_member`` or a lazy
+slice's first read) raise a plain :class:`EOFError` for the caller to translate. A block
+that ends inside a member raises nothing: the member's ``read`` returns the bytes that
+are there and then ``b""``. The caller must compare the bytes read with the member's
+size (the ``ArchiveStream`` verifier does this when it has an ``expected_size``).
 
 The closed / superseded / same-offset guards on :class:`_MemberSlice` are
 defence-in-depth for this primitive's own contract. Current backends serialize

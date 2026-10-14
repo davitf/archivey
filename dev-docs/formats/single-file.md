@@ -407,7 +407,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A file `xz -t` or `zstd -t` refuses reads, with a warning | **archivey** | Bytes after the stream are reported, not refused (§6); `DiagnosticPolicy.STRICT` refuses them |
 | Zero bytes read as an empty `.lzma` | **format** | Eighteen zero bytes are a complete empty LZMA Alone stream, a 13-byte header and 5 bytes of range coder, and the rest is padding (§2.3) |
 | A backward seek is slow, and the log says so | **format** | No resume point before the target (§2.3). Use `stream_members()` or read forward once; for gzip and bzip2, `rapidgzip` |
-| The rewind warning says the codec "has no random-access index" on an `.xz` or `.lz` that has one | **archivey** | The message is chosen by codec, not by whether a resume point was found; on a multi-block `.xz` it is wrong. Tracked internally |
 | A second `open()` of the member of a pipe raises `StreamNotSeekableError` | **format** | The one pass is spent; buffer the source to re-read it |
 | A file that is not the claimed codec fails at `open_archive`, a damaged one only at the read | **archivey** | Open decodes one byte (§2.2) |
 | `password=` or `encoding=` is accepted and has no effect | **archivey** | Shared behaviour for formats without encryption or stored names |

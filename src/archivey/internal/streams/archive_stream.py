@@ -690,7 +690,7 @@ class ArchiveStream(ReadOnlyIOStream):
             to_offset=after,
             accelerator=warning.accelerator,
         )
-        message = self._rewind_message(warning, distance)
+        message = self._rewind_message(warning, distance, resume, after)
         collector = resolve_collector(self._diagnostics_collector)
         if self._rewind_warned:
             collector.escalate_only(
@@ -708,14 +708,30 @@ class ArchiveStream(ReadOnlyIOStream):
         )
 
     @staticmethod
-    def _rewind_message(warning: RewindWarning, distance: int) -> str:
+    def _rewind_message(
+        warning: RewindWarning, distance: int, resume: int, target: int
+    ) -> str:
+        """The rewind report's text.
+
+        It says where decoding resumes (``resume``, at or before ``target``), not what
+        the codec can do: a multi-block ``.xz`` has resume points, and a seek can still
+        land far past the nearest one.
+        """
         cost = (
             f"Backward seek in a {warning.codec_name} stream discards {distance} "
             f"decompressed bytes; returning to the previous position re-decompresses "
             f"them"
         )
         if warning.accelerator is None:
-            return f"{cost}, because this codec has no random-access index."
+            if resume == 0:
+                return (
+                    f"{cost}. Decoding restarts from the start of the stream: no "
+                    f"resume point is closer to the seek target."
+                )
+            return (
+                f"{cost}. Decoding restarts from the nearest resume point, "
+                f"{target - resume} bytes before the seek target."
+            )
         if warning.suggest_install:
             return (
                 f"{cost}. Install the 'seekable' extra ({warning.accelerator}) for "

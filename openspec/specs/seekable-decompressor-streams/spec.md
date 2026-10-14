@@ -371,7 +371,10 @@ loop quadratic.
 When a backward seek's `redecode_distance` reaches
 `REWIND_REDECODE_WARN_BYTES` (an **absolute** byte threshold), the system SHALL report
 `STREAM_REWIND_REDECOMPRESSES` with codec, before/after offsets, the distance, and
-accelerator name or `None`. Forward and no-op seeks SHALL report nothing.
+accelerator name or `None`. Forward and no-op seeks SHALL report nothing. Without an
+accelerator, the message SHALL say where decoding restarts: the start of the stream, or
+the nearest resume point and how far before the target it is. It SHALL NOT say that the
+codec has no index, because a multi-block `.xz` or multi-member `.lz` has one.
 
 A `RewindWarning` MAY carry `min_redecode_bytes`. The distance used by the predicate
 is `max(redecode_distance, min_redecode_bytes)`, so a carrier that re-decodes bytes
