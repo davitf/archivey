@@ -845,6 +845,36 @@ def test_the_confirm_spool_fits_in_the_walks_window() -> None:
     assert zip_forward_reader._CONFIRM_SPOOL <= zip_local_walk._CODEC_RETAIN
 
 
+def test_a_wrong_password_running_out_of_an_intact_archive_is_skipped() -> None:
+    """A bit-3 member's data runs to the stream's end, so a wrong key whose PPMd
+    garbage runs out of input there has not met a cut stream: the archive's end
+    record went by. The right password after it reads the member."""
+    pytest.importorskip("pyppmd")
+    data = _with_plain_member(
+        _bit3(
+            build_zipcrypto_zip(
+                _PASSWORD,
+                b"a.txt",
+                _TEXT,
+                compression=98,
+                compressed=_ppmd(_TEXT),
+                check_byte=0,
+            )
+        )
+    )
+    passwords = [_check_byte_collision(data, _ppmd_accepted), _PASSWORD]
+    expected = _file_read(data, passwords)
+    assert expected["a.txt"] == _TEXT
+    assert _pipe_read(data, passwords) == expected
+
+
+def _ppmd_accepted(start: bytes) -> bool:
+    """A decrypted PPMd header archivey accepts (restore 0 or 1, order 2 or more):
+    the garbage after it decodes, and here runs out of input."""
+    (word,) = struct.unpack("<H", start)
+    return word >> 12 <= 1 and word & 0xF >= 1
+
+
 def test_a_cut_stream_is_damage_with_several_passwords_too() -> None:
     """A stream cut inside a bit-3 member's data is truncation with one password;
     with the right one among several it is the same, not a password failure."""

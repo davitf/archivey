@@ -1192,9 +1192,15 @@ class _CutShortWatch(ReadOnlyIOStream):
         except TruncatedError:
             self._owner._cut_short = True
             raise
-        if not chunk and n != 0 and self._owner._runs_on():
+        if (
+            not chunk
+            and n != 0
+            and self._owner._runs_on()
+            and not self._data.read_end_record
+        ):
             # A bit-3 codec member's data runs on into what follows it, so its end
-            # is the stream's.
+            # is the stream's: cut, unless the archive's end record went by first,
+            # as the walk judges a descriptor it does not find.
             self._owner._cut_short = True
         return chunk
 

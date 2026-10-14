@@ -370,6 +370,13 @@ class MemberData(ReadOnlyIOStream):
         not find itself (its codec's, or its stated size)."""
         return None
 
+    @property
+    def read_end_record(self) -> bool:
+        """Whether the archive's end record is among the last bytes handed out: a
+        stream that ended after it was not cut. Only a codec member's data, which
+        runs on to the stream's end, can hand it out."""
+        return False
+
     def settle(
         self,
         used: int | None = None,
@@ -483,6 +490,10 @@ class _CodecData(MemberData):
 
     def readall(self) -> bytes:
         return self.read(-1)
+
+    @property
+    def read_end_record(self) -> bool:
+        return EOCD_SIGNATURE in b"".join(self._kept)
 
     def _read_some(self, size: int) -> bytes:
         data = self._source.read(size)
