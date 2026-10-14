@@ -656,7 +656,9 @@ exists"), governed by `OnError`; `SKIP` records `NOT_OVERWRITTEN` and leaves the
 `REPLACE` removes the entry and writes the member under a new directory there; `RENAME`
 leaves the entry and writes the member under a derived name for the parent (`foo/x` at
 `foo (1)/x`, `requested_path` `foo/x`), which later members inside it follow as above.
-No raw `OSError` from creating the parent SHALL leave the library. The same applies to the
+The entry already there SHALL NOT cause a raw `OSError` to leave the library; a
+filesystem failure creating the parent (no space, no permission) still propagates as an
+`OSError`, recorded as `FAILED` under `OnError.CONTINUE`. The same applies to the
 members inside an explicit DIRECTORY entry that `ERROR` or `SKIP` left out. The entry is
 not a collision event, so `collided_with` stays `None`. A symlink of the caller's that
 resolves to a directory is a directory here and is followed, subject to the parent

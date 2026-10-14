@@ -758,6 +758,25 @@ def _follows_renamed_dir(
     return False
 
 
+def _implied_dir_rename(requested: Path, path: Path) -> tuple[Path, Path] | None:
+    """The directory rename that ``requested`` -> ``path`` only followed, or ``None``:
+    the one ancestor whose name differs, with the same tail below it.
+
+    A parent the archive implies but does not store has no result of its own, so
+    when the library renames it (``foo/x`` -> ``foo (1)/x``) only its members show
+    the rename."""
+    if len(requested.parts) != len(path.parts):
+        return None
+    for i, (asked, written) in enumerate(zip(requested.parts, path.parts)):
+        if asked != written:
+            if i == len(requested.parts) - 1:
+                return None  # the member's own name: its own rename
+            if requested.parts[i + 1 :] != path.parts[i + 1 :]:
+                return None
+            return Path(*requested.parts[: i + 1]), Path(*path.parts[: i + 1])
+    return None
+
+
 def _report_extraction(
     report: ExtractionReport,
     *,
@@ -812,6 +831,22 @@ def _report_extraction(
         and r.path is not None
         and r.requested_path != r.path
     }
+    # A renamed directory the archive only implies has no result: take its rename
+    # from the members that followed it, and print it once, at the first of them.
+    implied_dirs: dict[Path, Path] = {}
+    for r in report.results:
+        if (
+            r.status is ExtractionStatus.EXTRACTED
+            and r.requested_path is not None
+            and r.path is not None
+            and not r.member.is_anti
+            and not _follows_renamed_dir(r.requested_path, r.path, renamed_dirs)
+        ):
+            implied = _implied_dir_rename(r.requested_path, r.path)
+            if implied is not None:
+                asked, written = implied
+                implied_dirs.setdefault(asked, written)
+    renamed_dirs.update(implied_dirs)
 
     def shown(path: Path | None) -> str:
         """``path`` as the line names it."""
@@ -836,6 +871,21 @@ def _report_extraction(
                     result.requested_path, result.path, renamed_dirs
                 )
             )
+            if (
+                result.requested_path is not None
+                and implied_dirs
+                and not result.member.is_anti
+            ):
+                for ancestor in result.requested_path.parents:
+                    if ancestor in renamed_dirs:
+                        renamed_to = implied_dirs.pop(ancestor, None)
+                        if renamed_to is not None:
+                            renamed += 1
+                            print(
+                                f"renamed: {shown(ancestor)} -> {shown(renamed_to)}",
+                                file=err,
+                            )
+                        break
             landed = shown(result.path)
             if was_renamed:
                 renamed += 1

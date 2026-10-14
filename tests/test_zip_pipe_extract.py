@@ -433,6 +433,40 @@ def test_a_run_stopped_in_the_pass_puts_the_callers_parent_back(
         assert sorted(p.name for p in (tmp_path / where).iterdir()) == ["x"]
 
 
+def test_a_stopped_run_that_cannot_take_back_the_parent_keeps_the_callers_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As ``test_a_run_stopped_in_the_pass_puts_the_callers_parent_back``, where
+    the filesystem refuses to remove ``x/y`` (Windows, for a read-only member):
+    the run's ``x`` stays, so the caller's file stays where it was moved aside
+    rather than being deleted."""
+    data = _zip([(_entry("x\\y"), b"ARCHIVE"), (_entry("../evil"), b"Z")])
+    dest = tmp_path / "pipe"
+    _seed(dest, {"x": b"MINE"})
+    refused = dest / "x" / "y"
+    real_unlink = os.unlink
+
+    def unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(os.fspath(path)) == refused:  # type: ignore[arg-type]
+            raise PermissionError(13, "Access is denied", os.fspath(path))  # type: ignore[arg-type]
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    with pytest.raises(ArchiveyError):
+        _extract(
+            data,
+            dest,
+            piped=True,
+            members=["x/y", "../evil"],
+            overwrite="replace",
+            abort_on=["blocked_member"],
+        )
+    monkeypatch.undo()
+    kept = [p for p in dest.iterdir() if p.is_file()]
+    assert [p.read_bytes() for p in kept] == [b"MINE"]
+    assert (dest / "x" / "y").read_bytes() == b"ARCHIVE"
+
+
 def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
     tmp_path: Path,
 ) -> None:

@@ -975,6 +975,29 @@ def test_extract_reports_a_renamed_directory_once(
     assert (dest / "dd (1)" / "s" / "g").read_bytes() == b"y"
 
 
+def test_extract_reports_a_renamed_implied_directory_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """As ``test_extract_reports_a_renamed_directory_once``, with no ``dd/`` entry:
+    the members imply ``dd``, which is renamed around the file all the same, and no
+    result carries that rename. It is still one rename."""
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for i in range(3):
+            zf.writestr(f"dd/f{i}", b"x")
+        zf.writestr("dd/s/g", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    assert (
+        main(["extract", str(z), "-d", str(dest), "--overwrite", "rename"]) == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert _report_lines(err, "renamed:") == ["renamed: dd -> dd (1)"]
+    assert "4 extracted, 1 renamed, 0 skipped" in err
+    assert (dest / "dd (1)" / "s" / "g").read_bytes() == b"y"
+
+
 def test_extract_reports_a_renamed_directory_stored_twice_once(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3362,9 +3385,8 @@ def _hoist_and_direct(
     each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``
     and ``args``; return each tree and stderr. Both runs must exit 0.
 
-    A name ending in ``/`` is stored as a directory, at ``dir_mode``. A root directory
-    that collides with a file is stored, because a direct extraction fails on an
-    implied one. ``mine_modes`` sets the mode of the operator's entries it names."""
+    A name ending in ``/`` is stored as a directory, at ``dir_mode``. ``mine_modes``
+    sets the mode of the operator's entries it names."""
     runs = []
     for how, extra in (("hoist", []), ("direct", ["-d", "."])):
         cwd = tmp_path / overwrite / how

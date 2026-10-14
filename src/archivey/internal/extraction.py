@@ -1986,7 +1986,8 @@ class ExtractionCoordinator:
 
         A run that stopped before the end of its pass never settled what it wrote
         there, so that write is taken back and the caller's entry returns: whether
-        the member was selected is not known."""
+        the member was selected is not known. A write the filesystem refuses to take
+        back leaves the entry where it was moved, with a warning."""
         state = self._state
         set_aside, state.set_aside = state.set_aside, {}
         for path, aside in set_aside.items():
@@ -2025,16 +2026,21 @@ class ExtractionCoordinator:
 
     def _remove_unsettled_tree(self, path: Path) -> None:
         """``_remove_unsettled`` for what the run wrote or created at ``path`` and
-        under it, deepest first. A folder that still has entries stays."""
+        under it, deepest first. A folder that still has entries stays.
+
+        A failure to remove ``path`` itself propagates, as one entry left under it
+        makes that removal fail: the run's directory is still there, so the caller
+        must not take it as replaced (``_restore_set_aside``)."""
         state = self._state
-        under = [
+        under = {
             p
             for p in (*state.written_paths, *state.created_dirs)
-            if p.is_relative_to(path)
-        ]
-        for p in sorted(set(under), key=lambda p: len(p.parts), reverse=True):
+            if p.is_relative_to(path) and p != path
+        }
+        for p in sorted(under, key=lambda p: len(p.parts), reverse=True):
             with contextlib.suppress(OSError):
                 self._remove_unsettled(p)
+        self._remove_unsettled(path)
 
     def _remove_unsettled(self, path: Path) -> None:
         """Remove what the run wrote at ``path`` before its pass was cut short (a
@@ -2740,7 +2746,10 @@ class ExtractionCoordinator:
         result if the policy declines, else ``None``. A check that skips the member
         comes first, so it cannot remove an entry under ``OverwritePolicy.REPLACE``.
         A parent the caller holds as a non-directory is handled first, as an explicit
-        directory entry there would be (``_make_room_for_parents``)."""
+        directory entry there would be (``_make_room_for_parents``). That keeps the
+        rule across both calls: the parent's own skip check runs before it removes
+        anything, and once it has replaced the parent nothing is left at
+        ``dest_path`` for ``_prepare_destination`` to skip."""
         if not self._make_room_for_parents(
             transformed, dest_path
         ) or not self._prepare_destination(transformed, dest_path, atomic=atomic):
@@ -2832,8 +2841,14 @@ class ExtractionCoordinator:
         names it."""
         dest = self._state.dest
         parent = path.parent
-        if parent == dest or os.path.isdir(long_path(parent)):
-            return None  # the common case: one stat
+        if (
+            parent == dest
+            or parent in self._state.created_dirs
+            or os.path.isdir(long_path(parent))
+        ):
+            # The common case: a directory this run made (``created_dirs`` drops
+            # one the run removes), else one stat.
+            return None
         try:
             parts = parent.relative_to(dest).parts
         except ValueError:
