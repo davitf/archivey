@@ -1715,8 +1715,9 @@ class ZipForwardReader(ZipReader):
 
         The seekable read builds a member from each entry as it reads it and weighs
         that; a forward pass holds the entries until the last is read, to match each
-        to a local header, and the held text is what it weighs instead. It is charged to the listing, which it would
-        have become, so the pass raises ``ResourceLimitError`` here.
+        to a local header, and the held text is what it weighs instead. It is charged
+        to the listing, which it would have become, so the pass raises
+        ``ResourceLimitError`` here.
         """
         self._listing_tracker.account_retained_bytes(held)
         raise AssertionError("held directory text over the cap passed the tracker")

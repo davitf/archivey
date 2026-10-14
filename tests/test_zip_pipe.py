@@ -583,12 +583,23 @@ def test_max_members_is_charged_under_streaming(source: str) -> None:
                 pass
 
 
-def test_bytes_after_the_end_record_are_reported() -> None:
-    data = _zip([("a.txt", b"one")]) + b"\x00\x00junk"
-    with archivey.open_archive(_pipe(data), streaming=True) as reader:
-        reader.members_report()
-        codes = {d.code for d in reader.diagnostics.retained}
-    assert DiagnosticCode.ARCHIVE_TRAILING_DATA in codes
+@pytest.mark.parametrize("comment", [b"", b"thirteen byte"])
+def test_bytes_after_the_end_record_are_reported_as_from_a_file(comment: bytes) -> None:
+    """The report names where the junk starts after the record and its comment."""
+    data = _zip([("a.txt", b"one")], comment=comment) + b"\x00\x00junk"
+
+    def trailing(source: object, streaming: bool) -> list[object]:
+        with archivey.open_archive(source, streaming=streaming) as reader:  # type: ignore[arg-type]
+            reader.members_report()
+            return [
+                d.context
+                for d in reader.diagnostics.retained
+                if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+            ]
+
+    from_pipe = trailing(_pipe(data), True)
+    assert from_pipe == trailing(io.BytesIO(data), False)
+    assert [c.observed_bytes for c in from_pipe] == [2]  # type: ignore[attr-defined]
 
 
 def test_a_stream_that_is_no_zip_fails_at_open() -> None:
@@ -956,10 +967,58 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     with archivey.open_archive(_pipe(inside), streaming=True, config=config) as reader:
         assert [m.name for m, _ in reader.stream_members()] == ["a.txt", "b.txt"]
         assert [m.name for m in reader.members_report().members] == ["a.txt", "b.txt"]
-    with pytest.raises(ResourceLimitError, match="within the listing limits"):
-        with archivey.open_archive(_pipe(far), streaming=True, config=config) as reader:
+    # The ZIP64 end record itself before what the pass keeps: the locator names it
+    # in bytes the bound dropped.
+    record_dropped = _with_zip64_extensible(plain, keep + 5000)
+    assert [m["name"] for m in _seekable_view(record_dropped)[0]] == ["a.txt", "b.txt"]
+    for data, what in ((far, "central directory"), (record_dropped, "ZIP64 end")):
+        with pytest.raises(ResourceLimitError, match=f"ZIP {what}.*listing limits"):
+            with archivey.open_archive(
+                _pipe(data), streaming=True, config=config
+            ) as reader:
+                for _ in reader.stream_members():
+                    pass
+
+
+def test_a_zip64_end_record_among_the_members_data_is_refused() -> None:
+    """A locator naming a record the pass read past, inside a member's data: a file
+    read and stdlib list the archive by it; the pass cannot see it, and says so
+    rather than calling it missing."""
+    name = b"x.txt"
+    data_at = 30 + len(name)
+    # The member's data holds a directory listing the member, then a ZIP64 end
+    # record naming that directory; the archive ends with a locator naming the record.
+    entry_size = 46 + len(name)
+    member_size = entry_size + 56
+    central = struct.pack(
+        "<4sHHHHHHIIIHHHHHII",
+        b"PK\x01\x02", 20, 20, 0, 0, 0, 0, 0, member_size, member_size,
+        len(name), 0, 0, 0, 0, 0, 0,
+    ) + name  # fmt: skip
+    record_at = data_at + entry_size
+    record = struct.pack(
+        "<4sQHHIIQQQQ",
+        b"PK\x06\x06", 44, 45, 45, 0, 0, 1, 1, entry_size, data_at,
+    )  # fmt: skip
+    local = struct.pack(
+        "<4sHHHHHIIIHH",
+        b"PK\x03\x04", 20, 0, 0, 0, 0, 0, member_size, member_size, len(name), 0,
+    ) + name  # fmt: skip
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, record_at, 1)
+    eocd = struct.pack("<4sHHHHIIH", b"PK\x05\x06", 0, 0, 1, 1, entry_size, data_at, 0)
+    data = local + central + record + locator + eocd
+    assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["x.txt"]
+    assert [m["name"] for m in _seekable_view_listing(data)] == ["x.txt"]
+    message = "ZIP64 end of central directory record.* inside the members' data"
+    with pytest.raises(CorruptionError, match=message):
+        with archivey.open_archive(_pipe(data), streaming=True) as reader:
             for _ in reader.stream_members():
                 pass
+
+
+def _seekable_view_listing(data: bytes) -> list[dict[str, object]]:
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        return [_visible(m) for m in reader.members()]
 
 
 def test_a_header_offset_past_what_the_array_holds_is_a_missing_member() -> None:

@@ -440,6 +440,17 @@ def test_the_bound_keeps_the_last_bytes() -> None:
         tail.end_record()
 
 
+@pytest.mark.parametrize("keep", [0, 1])
+def test_a_bound_under_one_chunk_keeps_that_many_bytes(keep: int) -> None:
+    raw = _write(pipe=False)
+    walk = LocalHeaderWalk(_Unseekable(raw))
+    while (entry := walk.next_entry()) is not None:
+        _decode(walk, entry)
+    tail = walk.read_rest(keep)
+    assert tail.data == raw[len(raw) - keep :]
+    assert tail.start == len(raw) - keep
+
+
 def test_a_directory_among_the_members_data_is_refused() -> None:
     # A declared size past the directory's start puts it back in the members' data.
     raw = bytearray(_write(pipe=False))

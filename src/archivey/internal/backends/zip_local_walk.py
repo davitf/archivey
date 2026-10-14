@@ -42,6 +42,7 @@ diagnostic. Damage raises ``CorruptionError``, a stream that ends early
 
 from __future__ import annotations
 
+import struct
 import zlib
 from collections import deque
 from dataclasses import dataclass
@@ -67,6 +68,9 @@ from archivey.internal.backends.zip_parser import (
     EOCD_SIZE,
     STRONG_ENCRYPTED_DIRECTORY_MSG,
     ZIP64_EOCD_SIGNATURE,
+    ZIP64_EOCD_SIZE,
+    ZIP64_LOCATOR_SIGNATURE,
+    ZIP64_LOCATOR_SIZE,
     EndRecord,
     LocalHeader,
     find_end_record,
@@ -1046,7 +1050,9 @@ class LocalHeaderWalk:
             chunks.append(chunk)
             held += len(chunk)
             # A whole chunk goes once the ones after it hold ``keep`` bytes.
-            while keep is not None and held - len(chunks[0]) >= keep:
+            while (
+                keep is not None and len(chunks) > 1 and held - len(chunks[0]) >= keep
+            ):
                 gone = len(chunks.popleft())
                 held -= gone
                 dropped += gone
@@ -1106,15 +1112,16 @@ class ForwardTail:
         ``find_end_record`` runs over :meth:`read_at`, so it picks the record a file
         read picks, decoy signatures in the comment included. A record that places
         a non-empty directory among the members' data, which the walk has read past,
-        is refused; so is one placing it, or a ZIP64 end record, in bytes the bound
-        dropped (``ResourceLimitError``).
+        is refused, and so is a ZIP64 end record there; either in bytes the bound
+        dropped is a ``ResourceLimitError``.
 
         A missing end record is described from the bytes after the members while all
         of them are kept: the first four say whether the stream was cut inside the
         directory, the directory is encrypted, or no ZIP structure follows at all.
         Every other fault is ``find_end_record``'s, in the file read's words.
         """
-        if locate_classic_record(self.read_at, self.size) is None and not self.dropped:
+        found = locate_classic_record(self.read_at, self.size)
+        if found is None and not self.dropped:
             # No end record at all: what follows the members says why. Only while
             # every byte after the members is kept, so the first four are theirs.
             head = self.data[:4]
@@ -1131,38 +1138,46 @@ class ForwardTail:
                     "a ZIP header, and no end of central directory record follows "
                     "them"
                 )
-        # Bytes after the members that the bound dropped, which a read asked for.
-        dropped_read: list[int] = []
-
-        def read_at(offset: int, n: int) -> bytes:
-            if self.members_end <= offset < self.start:
-                dropped_read.append(offset)
-            return self.read_at(offset, n)
-
-        # Any other failure is the record's own, in the file read's words, unless the
-        # search read bytes the bound dropped (a ZIP64 end record further back than
-        # the bound allows for).
-        try:
-            end = find_end_record(read_at, self.size)
-        except CorruptionError as exc:
-            if dropped_read:
-                raise self._out_of_reach(dropped_read[0]) from exc
-            raise
+        if found is not None:
+            self._refuse_unseen_zip64_record(found[0])
+        # Any other failure is the record's own, in the file read's words.
+        end = find_end_record(self.read_at, self.size)
         if end.cd_size and end.cd_start < self.start:
-            if end.cd_start >= self.members_end:
-                raise self._out_of_reach(end.cd_start)
-            raise CorruptionError(
-                f"ZIP end record places the central directory at stream offset "
-                f"{end.cd_start}, inside the members' data, which a read from a "
-                "source that cannot seek has passed"
-            )
+            self._refuse_unseen("central directory", end.cd_start)
         return end
 
-    def _out_of_reach(self, offset: int) -> ResourceLimitError:
-        return ResourceLimitError(
-            f"ZIP central directory records start {self.size - offset} bytes before "
-            "the end of the stream, more than a forward read holds within the "
-            "listing limits"
+    def _refuse_unseen_zip64_record(self, eocd_offset: int) -> None:
+        """Refuse a ZIP64 locator naming a record in bytes this tail does not hold.
+
+        ``find_end_record`` reads the record at the locator's offset, and falls back
+        to one right before the locator when that offset holds none (data prepended
+        to the archive moved it). A record found right before the locator is read as
+        a file read reads it; otherwise one the locator names in unkept bytes is
+        unseen, not missing."""
+        locator_at = eocd_offset - ZIP64_LOCATOR_SIZE
+        locator = self.read_at(locator_at, ZIP64_LOCATOR_SIZE)
+        if locator[:4] != ZIP64_LOCATOR_SIGNATURE:
+            return
+        (record_at,) = struct.unpack_from("<Q", locator, 8)
+        adjacent = locator_at - ZIP64_EOCD_SIZE
+        if record_at >= self.start or record_at > adjacent:
+            return
+        if adjacent >= self.start and self.read_at(adjacent, 4) == ZIP64_EOCD_SIGNATURE:
+            return
+        self._refuse_unseen("ZIP64 end of central directory record", record_at)
+
+    def _refuse_unseen(self, what: str, offset: int) -> NoReturn:
+        """Refuse ``what``, which an end record places at stream ``offset``, before the
+        bytes this tail holds: among the members' data, which the walk read past, or
+        in bytes the bound dropped (``ResourceLimitError``)."""
+        if offset >= self.members_end:
+            raise ResourceLimitError(
+                f"ZIP {what} starts {self.size - offset} bytes before the end of the "
+                "stream, more than a forward read holds within the listing limits"
+            )
+        raise CorruptionError(
+            f"ZIP end records place the {what} at stream offset {offset}, inside the "
+            "members' data, which a read from a source that cannot seek has passed"
         )
 
 

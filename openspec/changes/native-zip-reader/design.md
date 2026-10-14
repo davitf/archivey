@@ -446,8 +446,7 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   bytes the declared directory size covers, and cuts an entry that runs past them as
   the file read does, with the same report. What the pass keeps is bounded by the
   listing limits: each entry's 46-byte header and its text, plus four end-record
-  search windows for the end records, the comment, a digital signature and a ZIP64
-  end record's extensible data. While reading it holds that plus one 64 KiB chunk,
+  search windows (`_tail_bound` in `zip_forward_reader.py` says what each is for). While reading it holds that plus one 64 KiB chunk,
   and joining the kept chunks at the end holds them twice for that moment. Past the
   bound it keeps the last bytes, where the end record is, and a directory or ZIP64
   end record that starts before them is `ResourceLimitError`. A record that places the
