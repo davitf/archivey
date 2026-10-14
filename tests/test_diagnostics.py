@@ -404,7 +404,8 @@ def test_replayed_raise_does_not_grow_its_traceback() -> None:
             depth += 1
             tb = tb.tb_next
         depths.append(depth)
-    assert depths == [depths[0]] * len(depths), depths
+    # The first run raises from the recording site; compare the replays with each other.
+    assert depths[1:] == [depths[1]] * (len(depths) - 1), depths
     assert strict.snapshot().counts == {DiagnosticCode.MEMBER_NAME_NORMALIZED: 1}
 
 
