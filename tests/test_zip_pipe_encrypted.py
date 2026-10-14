@@ -954,6 +954,7 @@ def test_an_inconclusive_password_closed_early_is_reported_as_such() -> None:
         assert [c.check for c in _unverified(reader)] == ["confirm_budget_exhausted"]
 
 
+@requires("cryptography")
 @pytest.mark.parametrize("vendor_version", [1, 2])
 def test_a_bit3_aes_codec_member_in_the_kept_bytes_is_confirmed(
     vendor_version: int,
