@@ -63,7 +63,10 @@ from archivey.internal.backends.zip_reader import (
     _zip_timestamps,
     _ZipLocator,
 )
-from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
+from archivey.internal.base_reader import (
+    MAX_LINK_TARGET_BYTES,
+    _apply_last_entry_wins_is_current,
+)
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
@@ -172,10 +175,22 @@ def _descriptor_error(
     )
 
 
-def _renamed_error(local_name: bytes, central: CentralEntry) -> CorruptionError:
+def _missing_error(member: ArchiveMember, offset: int) -> CorruptionError:
+    return CorruptionError(
+        f"ZIP central directory entry {quoted(member.name)} points to offset "
+        f"{offset}, where the stream held no local header",
+        member_name=member.name,
+        source_format=ArchiveFormat.ZIP,
+    )
+
+
+def _renamed_error(
+    local_name: bytes, central: CentralEntry, member_name: str
+) -> CorruptionError:
     return CorruptionError(
         f"File name in directory {quoted(_stored_text(central.name))} and header "
         f"{quoted(_stored_text(local_name))} differ.",
+        member_name=member_name,
         source_format=ArchiveFormat.ZIP,
     )
 
@@ -525,10 +540,6 @@ class ZipForwardReader(ZipReader):
         self._descriptors: dict[int, tuple[int, int, int]] = {}
         # The kept members in the directory's order, once it has been read.
         self._directory_order: list[ArchiveMember] | None = None
-        # Members the directory fails at the end of the pass, in its order, with why.
-        # Extraction is to give each its result when it settles the pass; nothing
-        # reads it yet.
-        self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
         self._end_record: EndRecord | None = None
         # The first header is parsed at open, so a stream that is no ZIP fails here
         # (DR-15b), as a TAR's does.
@@ -733,15 +744,25 @@ class ZipForwardReader(ZipReader):
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
         matched: set[int] = set()
         order: list[ArchiveMember] = []
-        # Entries pointing where no local header was, and entries pointing at a local
-        # header an earlier entry already took (by position in the directory).
+        # Entries pointing where no local header was, when their text was not kept
+        # to build a member from, and entries pointing at a local header an earlier
+        # entry already took (by position in the directory).
         unmatched: list[int] = []
         shared: list[int] = []
         failed: list[tuple[int, ArchiveMember, CorruptionError]] = []
+        # Listed and missing members in the directory's order, for is_current.
+        placed: list[ArchiveMember] = []
+        any_missing = False
         for position, stored in enumerate(stored_offsets):
             offset = stored + end.base
             if offset not in local_offsets:
-                unmatched.append(position)
+                if entries is None:
+                    unmatched.append(position)
+                else:
+                    missing = self._missing_member(entries[position], len(failed))
+                    failed.append((position, missing, _missing_error(missing, offset)))
+                    placed.append(missing)
+                    any_missing = True
                 continue
             if offset in matched:
                 shared.append(position)
@@ -751,6 +772,7 @@ class ZipForwardReader(ZipReader):
             if member is None:
                 continue
             order.append(member)
+            placed.append(member)
             if entries is None:
                 continue
             central = entries[position]
@@ -758,7 +780,9 @@ class ZipForwardReader(ZipReader):
             if central.name != local_name:
                 # The seekable read refuses this member when it reads its local
                 # header; a forward pass has both copies only now.
-                failed.append((position, member, _renamed_error(local_name, central)))
+                failed.append(
+                    (position, member, _renamed_error(local_name, central, member.name))
+                )
                 continue
             updates.append((member, central))
             descriptor = self._descriptors.get(offset)
@@ -769,6 +793,12 @@ class ZipForwardReader(ZipReader):
         unlisted = sorted(local_offsets - matched)
         for member, central in updates:
             self._update_from_directory(member, central)
+        if any_missing:
+            # A missing entry has a name too, and takes part in last-entry-wins as the
+            # seekable read's listing does: a listed copy it follows is not current.
+            # The stamp over the listed members alone (``_end_walk``) leaves a member
+            # made not current here as it is.
+            _apply_last_entry_wins_is_current(placed)
         if discard:
             # The unlisted members leave first, so the order covers what is listed,
             # and the discard stamps is_current by it; after it no member is named.
@@ -807,6 +837,7 @@ class ZipForwardReader(ZipReader):
         self._local_offsets = set()
         self._descriptors = {}
         if unmatched:
+            # No member to fail: the entry's text was not kept.
             first = unmatched[0]
             raise CorruptionError(
                 f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
@@ -828,6 +859,19 @@ class ZipForwardReader(ZipReader):
         if failed:
             _, _, error = failed[0]
             raise error
+
+    def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:
+        """The member a directory entry with no local entry describes, for the end of
+        the pass to fail (``_failed_at_end``).
+
+        The pass never yielded it and the listing does not keep it; its id follows
+        those the walk gave out, so it is told apart from every listed member. Its
+        name counts for which copy is current (``_read_directory``).
+        """
+        member = self._to_member(central, self._walk_position + nth)
+        member._member_id = self._walk_position + nth
+        member._archive_id = self._archive_id
+        return member
 
     def _report_unlisted(self, offsets: list[int]) -> None:
         """Drop the members at ``offsets`` from the listing, and report each.
