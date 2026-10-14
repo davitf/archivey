@@ -125,9 +125,8 @@ class EndRecord:
     comment_declared: int
     #: Bytes after the record and its declared comment, up to the end of the file. The
     #: reader reports them; the parser only counts them. Junk longer than the search
-    #: window hides the record itself, as it does for stdlib. ``None`` when nothing
-    #: counted them: a forward walk has no file size and reads what follows instead.
-    trailing: int | None
+    #: window hides the record itself, as it does for stdlib.
+    trailing: int
 
     @property
     def cd_start(self) -> int:
@@ -148,7 +147,7 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     set) and for an encrypted central directory (PKWARE Strong Encryption), and
     ``CorruptionError`` when no record is found or the records contradict each other.
     """
-    found = _locate_classic_record(read_at, file_size)
+    found = locate_classic_record(read_at, file_size)
     if found is None:
         raise CorruptionError(
             "truncated or corrupt ZIP (no end of central directory record found)"
@@ -196,7 +195,7 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     return end
 
 
-def _locate_classic_record(
+def locate_classic_record(
     read_at: ReadAt, file_size: int
 ) -> tuple[int, bytes, bytes] | None:
     """``(offset, record, comment)`` of the classic end record, or ``None``."""

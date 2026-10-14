@@ -444,10 +444,13 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   `CentralDirectoryWalk` over the directory the record places, so the pass picks the
   end record a file read picks (a decoy in the comment included), reads exactly the
   bytes the declared directory size covers, and cuts an entry that runs past them as
-  the file read does, with the same report. What the pass holds is bounded by the
-  listing limits: each entry's 46-byte header and its text, plus the end records and
-  the comment. Past that it keeps the last bytes, where the end record is, and a
-  directory that starts before them is `ResourceLimitError`. A record that places the
+  the file read does, with the same report. What the pass keeps is bounded by the
+  listing limits: each entry's 46-byte header and its text, plus four end-record
+  search windows for the end records, the comment, a digital signature and a ZIP64
+  end record's extensible data. While reading it holds that plus one 64 KiB chunk,
+  and joining the kept chunks at the end holds them twice for that moment. Past the
+  bound it keeps the last bytes, where the end record is, and a directory or ZIP64
+  end record that starts before them is `ResourceLimitError`. A record that places the
   directory among the members' data, which the pass has read past, is
   `CorruptionError`; a file read would read entries there. One case a forward read
   cannot take, where the seekable read can: a gap after a last member with bit 3 set

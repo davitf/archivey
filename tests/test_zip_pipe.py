@@ -453,24 +453,30 @@ def test_a_decoy_end_record_in_the_comment_is_the_one_used() -> None:
     assert DiagnosticCode.ARCHIVE_UNLISTED_DATA in codes
 
 
-def test_a_name_running_past_the_directory_is_cut_as_from_a_file() -> None:
-    """The last entry's comment length runs past the directory's declared end: the
-    file read cuts it there and reports it, and so does the pass, where it used to
-    read on through the end record."""
+@pytest.mark.parametrize(
+    ("field", "at"), [("name", 28), ("extra field", 30), ("comment", 32)]
+)
+def test_a_field_running_past_the_directory_is_cut_as_from_a_file(
+    field: str, at: int
+) -> None:
+    """The last entry's name, extra field or comment length runs past the
+    directory's declared end: the file read cuts it there and reports it, and so does
+    the pass, where it used to read on through the end record."""
     data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
     last = data.rindex(b"PK\x01\x02")
-    struct.pack_into("<H", data, last + 32, 3000)
+    struct.pack_into("<H", data, last + at, 3000)
     assert _piped_view(bytes(data)) == _seekable_view(bytes(data))
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
         for _ in reader.stream_members():
             pass
         found = [
-            d.context.expected_marker
+            (d.context.expected_marker, d.message)
             for d in reader.diagnostics.retained
             if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
             and isinstance(d.context, ArchiveEofContext)
         ]
-    assert found == ["central_directory"]
+    assert [marker for marker, _ in found] == ["central_directory"]
+    assert f"its {field} is cut short" in found[0][1]
 
 
 def _commented(count: int, comment_len: int) -> bytes:
@@ -907,3 +913,112 @@ def test_a_directory_that_takes_the_listing_over_the_limits_ends_the_pass(
             for member, _ in reader.stream_members():
                 yielded.append(member)
         assert len(yielded) == 20
+
+
+def _with_zip64_extensible(data: bytes, extensible: int) -> bytes:
+    """``data`` with a ZIP64 end record and locator before its end record, the record
+    carrying ``extensible`` bytes of extensible data: bytes after the directory that no
+    listing limit counts."""
+    eocd = data.rindex(b"PK\x05\x06")
+    entries, cd_size, cd_offset = struct.unpack_from("<HII", data, eocd + 10)
+    record = struct.pack(
+        "<4sQHHIIQQQQ",
+        b"PK\x06\x06",
+        44 + extensible,
+        45,
+        45,
+        0,
+        0,
+        entries,
+        entries,
+        cd_size,
+        cd_offset,
+    ) + bytes(extensible)
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, eocd, 1)
+    return data[:eocd] + record + locator + data[eocd:]
+
+
+def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> None:
+    """The pass keeps what a directory within the listing limits takes, plus room for
+    the records after it; a directory that starts before that is out of reach."""
+    limits = ListingLimits(max_members=2, max_metadata_bytes=200_000)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    plain = _zip([("a.txt", b"one"), ("b.txt", b"two")])
+    # What the pass keeps: two 46-byte headers, the text the limit allows, and four
+    # end-record search windows. After the members come the directory (102 bytes),
+    # the ZIP64 end record (56 and its extensible data), its locator (20) and the end
+    # record (22): 200 bytes and the extensible data.
+    keep = 2 * 46 + 200_000 + 4 * 65_558
+    inside = _with_zip64_extensible(plain, keep - 200 - 100)
+    far = _with_zip64_extensible(plain, keep - 200 + 100)
+    for data in (inside, far):
+        assert [m["name"] for m in _seekable_view(data)[0]] == ["a.txt", "b.txt"]
+    with archivey.open_archive(_pipe(inside), streaming=True, config=config) as reader:
+        assert [m.name for m, _ in reader.stream_members()] == ["a.txt", "b.txt"]
+        assert [m.name for m in reader.members_report().members] == ["a.txt", "b.txt"]
+    with pytest.raises(ResourceLimitError, match="within the listing limits"):
+        with archivey.open_archive(_pipe(far), streaming=True, config=config) as reader:
+            for _ in reader.stream_members():
+                pass
+
+
+def test_a_header_offset_past_what_the_array_holds_is_a_missing_member() -> None:
+    """A ZIP64 extra field may put a local header offset anywhere in 64 bits: past
+    ``MAX_DATA_OFFSET`` it points at no local header, as from a file."""
+    data = bytearray(_zip([("a.txt", b"one")], method=zipfile.ZIP_STORED))
+    central = data.index(b"PK\x01\x02")
+    struct.pack_into("<I", data, central + 42, 0xFFFF_FFFF)
+    name_len, extra_len = struct.unpack_from("<HH", data, central + 28)
+    assert extra_len == 0
+    extra = struct.pack("<HHQ", 1, 8, 1 << 63)
+    struct.pack_into("<H", data, central + 30, len(extra))
+    at = central + 46 + name_len
+    data[at:at] = extra
+    eocd = data.rindex(b"PK\x05\x06")
+    (cd_size,) = struct.unpack_from("<I", data, eocd + 12)
+    struct.pack_into("<I", data, eocd + 12, cd_size + len(extra))
+    with pytest.raises(CorruptionError) as caught:
+        with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
+            for _ in reader.stream_members():
+                pass
+    assert str(1 << 63) in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        ("cd_size", "Bad offset for central directory"),
+        ("locator", "Corrupt ZIP64 end of central directory locator"),
+    ],
+)
+def test_a_damaged_end_record_fails_in_the_file_reads_words(
+    edit: str, message: str
+) -> None:
+    """Only a missing end record is described from the bytes after the members; any
+    other fault is the record's, said as a file read says it."""
+    data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
+    eocd = data.rindex(b"PK\x05\x06")
+    if edit == "cd_size":
+        struct.pack_into("<I", data, eocd + 12, 0xFFFF_FF00)
+    else:
+        data[eocd:eocd] = struct.pack("<4sIQI", b"PK\x06\x07", 0, 1 << 40, 1)
+    with pytest.raises(CorruptionError, match=message) as from_file:
+        _seekable_view(bytes(data))
+    with pytest.raises(CorruptionError, match=message) as from_pipe:
+        _piped_view(bytes(data))
+    assert type(from_pipe.value) is type(from_file.value)
+
+
+def test_a_digital_signature_record_is_refused_as_from_a_file() -> None:
+    """A digital signature record (APPNOTE 4.3.13) between the directory and the end
+    record is counted as the directory's, which moves it off its entries; stdlib
+    ``zipfile`` and the file read refuse the archive, and so does the pass."""
+    data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
+    eocd = data.rindex(b"PK\x05\x06")
+    data[eocd:eocd] = b"PK\x05\x05" + struct.pack("<H", 5) + b"sig!!"
+    with pytest.raises(zipfile.BadZipFile, match="Bad magic number"):
+        zipfile.ZipFile(io.BytesIO(bytes(data)))
+    with pytest.raises(CorruptionError, match="Bad magic number"):
+        _seekable_view(bytes(data))
+    with pytest.raises(CorruptionError, match="Bad magic number"):
+        _piped_view(bytes(data))

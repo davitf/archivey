@@ -72,6 +72,7 @@ from archivey.internal.backends.zip_parser import (
     find_end_record,
     local_header_from,
     local_header_variable_length,
+    locate_classic_record,
 )
 from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
@@ -1031,28 +1032,35 @@ class LocalHeaderWalk:
         with the seekable read's own code (``find_end_record``,
         ``CentralDirectoryWalk``) and lists what that read lists. ``keep`` bounds what
         is held: past it only the last ``keep`` bytes stay, which is where the end
-        record and the directory before it are; ``None`` keeps everything.
+        record and the directory before it are; ``None`` keeps everything. While the
+        stream is read the chunks held come to at most ``keep`` plus one chunk; joining
+        them at the end holds them and their copy for that moment.
         """
         if self._unsettled is not None:
             raise ValueError("settle the previous member's data first")
         members_end = self.source.offset
-        kept = bytearray()
+        chunks: deque[bytes] = deque()
+        held = 0
         dropped = 0
         while chunk := self.source.read(_READ_CHUNK):
-            kept += chunk
-            if keep is not None and len(kept) > 2 * keep:
-                cut = len(kept) - keep
-                del kept[:cut]
-                dropped += cut
-        if keep is not None and len(kept) > keep:
-            cut = len(kept) - keep
-            del kept[:cut]
+            chunks.append(chunk)
+            held += len(chunk)
+            # A whole chunk goes once the ones after it hold ``keep`` bytes.
+            while keep is not None and held - len(chunks[0]) >= keep:
+                gone = len(chunks.popleft())
+                held -= gone
+                dropped += gone
+        if keep is not None and held > keep:
+            cut = held - keep
+            chunks[0] = chunks[0][cut:]
             dropped += cut
+        data = b"".join(chunks)
+        chunks.clear()
         return ForwardTail(
             after=self._where(),
             members_end=members_end,
             start=members_end + dropped,
-            data=bytes(kept),
+            data=data,
         )
 
 
@@ -1098,42 +1106,64 @@ class ForwardTail:
         ``find_end_record`` runs over :meth:`read_at`, so it picks the record a file
         read picks, decoy signatures in the comment included. A record that places
         a non-empty directory among the members' data, which the walk has read past,
-        is refused; so is one placing it in bytes the bound dropped
-        (``ResourceLimitError``).
+        is refused; so is one placing it, or a ZIP64 end record, in bytes the bound
+        dropped (``ResourceLimitError``).
+
+        A missing end record is described from the bytes after the members while all
+        of them are kept: the first four say whether the stream was cut inside the
+        directory, the directory is encrypted, or no ZIP structure follows at all.
+        Every other fault is ``find_end_record``'s, in the file read's words.
         """
-        try:
-            end = find_end_record(self.read_at, self.size)
-        except CorruptionError as exc:
-            if type(exc) is not CorruptionError:
-                raise
+        if locate_classic_record(self.read_at, self.size) is None and not self.dropped:
+            # No end record at all: what follows the members says why. Only while
+            # every byte after the members is kept, so the first four are theirs.
             head = self.data[:4]
             if head == CENTRAL_HEADER_SIGNATURE:
                 raise TruncatedError(
                     "ZIP stream ends inside the central directory, before the end of "
                     "central directory record"
-                ) from exc
+                )
             if head == ARCHIVE_EXTRA_DATA_SIGNATURE:
-                raise UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG) from exc
+                raise UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
             if head not in _DIRECTORY_STARTS:
                 raise CorruptionError(
                     f"bytes at stream offset {self.members_end} {self.after} are not "
                     "a ZIP header, and no end of central directory record follows "
                     "them"
-                ) from exc
+                )
+        # Bytes after the members that the bound dropped, which a read asked for.
+        dropped_read: list[int] = []
+
+        def read_at(offset: int, n: int) -> bytes:
+            if self.members_end <= offset < self.start:
+                dropped_read.append(offset)
+            return self.read_at(offset, n)
+
+        # Any other failure is the record's own, in the file read's words, unless the
+        # search read bytes the bound dropped (a ZIP64 end record further back than
+        # the bound allows for).
+        try:
+            end = find_end_record(read_at, self.size)
+        except CorruptionError as exc:
+            if dropped_read:
+                raise self._out_of_reach(dropped_read[0]) from exc
             raise
         if end.cd_size and end.cd_start < self.start:
             if end.cd_start >= self.members_end:
-                raise ResourceLimitError(
-                    f"ZIP central directory starts {self.size - end.cd_start} bytes "
-                    "before the end of the stream, more than a forward read holds "
-                    "within the listing limits"
-                )
+                raise self._out_of_reach(end.cd_start)
             raise CorruptionError(
                 f"ZIP end record places the central directory at stream offset "
                 f"{end.cd_start}, inside the members' data, which a read from a "
                 "source that cannot seek has passed"
             )
         return end
+
+    def _out_of_reach(self, offset: int) -> ResourceLimitError:
+        return ResourceLimitError(
+            f"ZIP central directory records start {self.size - offset} bytes before "
+            "the end of the stream, more than a forward read holds within the "
+            "listing limits"
+        )
 
 
 __all__ = [

@@ -251,7 +251,7 @@ each lands with nothing half-done reachable:
       give what a file read gives. The forward walk's own directory and end-record
       reader, its gap skip and `DirectorySizeMismatch` are gone. A digital signature
       record before the end records is now refused as the file read (and stdlib)
-      refuses it.
+      refuses it (`dev-docs/formats/zip.md` §5).
 - [ ] 3.4b A member's data checked against its directory entry at the end of the pass.
 - [ ] 3.4c A Windows reparse buffer longer than the link cap kept as far as it declares.
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`

@@ -59,7 +59,6 @@ from archivey.internal.backends.zip_local_walk import (
 from archivey.internal.backends.zip_parser import (
     CENTRAL_HEADER_SIZE,
     EOCD_SEARCH_WINDOW,
-    EOCD_SIZE,
     CentralDirectoryWalk,
     CentralEntry,
     EndRecord,
@@ -74,6 +73,7 @@ from archivey.internal.backends.zip_reader import (
     _ZIP_MASK_LZMA_EOS_MARKER,
     _ZIP_REJECTING_METHODS,
     ZipReader,
+    _bound_offset,
     _CandidateFailures,
     _is_candidate_integrity_failure,
     _is_encrypted_entry,
@@ -263,9 +263,13 @@ def _tail_bound(limits: ListingLimits) -> int | None:
     """How many bytes after the members a pass holds to find the directory in.
 
     The most a directory within the listing limits takes (each entry's fixed header
-    and its text), then the end records, a digital signature and the comment, each
-    under 64 KiB. Past it the pass keeps the last bytes, which is where they are.
-    ``None`` when a limit is off.
+    and its text), then four end-record search windows (64 KiB and 22 bytes each) for
+    what may follow it: the end record with its comment and any bytes after them
+    (the window the record is searched in), a digital signature record, a ZIP64 end
+    record's extensible data, and one more for bytes between the last member and the
+    directory. Past it the pass keeps the last bytes, which is where they are; a
+    directory or ZIP64 end record further back is a ``ResourceLimitError``. ``None``
+    when a limit is off.
     """
     if limits.max_members is None or limits.max_metadata_bytes is None:
         return None
@@ -1519,7 +1523,9 @@ class ZipForwardReader(ZipReader):
             for central in walk:
                 if max_members is not None and len(offsets) >= max_members:
                     raise _max_members_error(max_members)
-                offsets.append(central.header_offset)
+                # Clamped as the seekable read's are: one past what the array holds
+                # points at no local header either, and fails as missing.
+                offsets.append(_bound_offset(central.header_offset))
                 held += len(central.name) + len(central.extra) + len(central.comment)
                 if max_meta is not None and held > max_meta:
                     self._charge_held_directory(held)
@@ -1540,7 +1546,13 @@ class ZipForwardReader(ZipReader):
         for position, offset in enumerate(offsets):
             if offset not in local_offsets:
                 missing = self._missing_member(entries[position], len(failed))
-                failed.append((position, missing, _missing_error(missing, offset)))
+                failed.append(
+                    (
+                        position,
+                        missing,
+                        _missing_error(missing, entries[position].header_offset),
+                    )
+                )
                 placed.append(missing)
                 any_missing = True
                 continue
@@ -1597,8 +1609,10 @@ class ZipForwardReader(ZipReader):
         last = entries[-1] if entries else None
         for finding in walk.findings:
             self._emit_walk_finding(finding, last)
-        after = end.eocd_offset + EOCD_SIZE + end.comment_declared - tail.start
-        found = first_nonzero_offset(io.BytesIO(tail.data[after:]))
+        # The kept bytes end where the stream does, so the last ``trailing`` of them
+        # follow the end record and its declared comment.
+        trailing = tail.data[len(tail.data) - end.trailing :]
+        found = first_nonzero_offset(io.BytesIO(trailing))
         if found is not None:
             self._emit_trailing_data(found)
         self._by_offset = {}
@@ -1700,8 +1714,8 @@ class ZipForwardReader(ZipReader):
         """Stop holding directory entries: their text passed ``max_metadata_bytes``.
 
         The seekable read builds a member from each entry as it reads it and weighs
-        that; a forward pass must hold the entries until the end record, and the held
-        text is what it weighs instead. It is charged to the listing, which it would
+        that; a forward pass holds the entries until the last is read, to match each
+        to a local header, and the held text is what it weighs instead. It is charged to the listing, which it would
         have become, so the pass raises ``ResourceLimitError`` here.
         """
         self._listing_tracker.account_retained_bytes(held)
@@ -1835,8 +1849,7 @@ class ZipForwardReader(ZipReader):
         return self._decode_unflagged_comment(end.comment)
 
     def _known_member_count(self) -> int | None:
-        end = self._end_record
-        return None if end is None else self._entries_read
+        return self._entries_read
 
     def _cost_receipt(self) -> CostReceipt:
         return _ZIP_FORWARD_COST
