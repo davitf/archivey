@@ -4,7 +4,9 @@ Layout this code assumes::
 
     [ local file header + payload ]*   # PK\\x03\\x04 … name | extra | [data]
     [ central directory ]              # walked lazily as members are listed (INDEXED)
-    [ EOCD (+ optional ZIP64) ]        # at EOF → seekable source required
+    [ EOCD (+ optional ZIP64) ]        # at EOF: this reader seeks to it
+
+A source that cannot seek is read front to back by ``zip_forward_reader`` instead.
 
 Who does what:
 
@@ -98,6 +100,7 @@ from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
+    DirectorySizeMismatch,
     EndRecord,
     EntryCountMismatch,
     EntryOverrun,
@@ -181,7 +184,11 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from _typeshed import WriteableBuffer
+
+    from archivey.internal.streams.streamtools import ReadableStream
 
 # Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
 # default, which maps every byte and therefore never fails). An unflagged comment goes
@@ -778,10 +785,14 @@ class _DataBounds:
         return ordered[above] if above < len(ordered) else self._cd_start
 
 
-def _max_members_error(max_members: int) -> ResourceLimitError:
+def _max_members_error(
+    max_members: int, counted: str = "ZIP central directory holds"
+) -> ResourceLimitError:
+    """``counted`` names what crossed the limit: the directory, or the local headers a
+    forward walk met before any directory."""
     return ResourceLimitError(
-        f"Listing limit reached: max_members={max_members} (ZIP central directory "
-        f"holds more than {max_members} entries)"
+        f"Listing limit reached: max_members={max_members} ({counted} more than "
+        f"{max_members} entries)"
     )
 
 
@@ -864,6 +875,7 @@ class ZipReader(BaseArchiveReader):
     ``zip_parser``, member data through archivey's decrypt stages and codec layer."""
 
     _MEMBER_LIST_UPFRONT = True
+    _LINK_TARGETS_IN_DATA = True
 
     def __init__(
         self,
@@ -908,26 +920,35 @@ class ZipReader(BaseArchiveReader):
         # than acted on. The source states it, so no wrapper between the boundary and
         # here can hide it.
         self._volume_count: int = source.volume_count
+        self._refuse_lone_split_segment()
+        self._open_index(source, start_offset)
 
-        if not source.seekable():
-            raise StreamNotSeekableError(
-                "ZIP archives cannot be read from a non-seekable source: the central "
-                "directory lives at the end of the file.",
-                archive_name=archive_name,
-            )
-
+    def _refuse_lone_split_segment(self) -> None:
+        """Refuse a split-set segment read alone."""
         # A split-set segment read alone. A joined set arrives here still carrying
         # part one's name, so the name alone does not decide it: what is refused is a
         # segment that was *not* rejoined. Numbered ``.zip.NNN`` incompleteness is
         # ``TruncatedError`` in ``open_archive``; this backstop is Info-ZIP's spanned
         # ``.zNN`` (and any ``.zip.NNN`` that skipped that refuse).
-        if self._volume_count == 1 and is_zip_split_segment_name(archive_name):
+        if self._volume_count == 1 and is_zip_split_segment_name(self._archive_name):
             raise UnsupportedFeatureError(
                 ZIP_MULTI_VOLUME_MSG,
-                archive_name=archive_name,
+                archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
 
+    def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
+        """Find the end record and get ready to walk the central directory.
+
+        :class:`~archivey.internal.backends.zip_forward_reader.ZipForwardReader`
+        replaces this for a source that cannot seek.
+        """
+        if not source.seekable():
+            raise StreamNotSeekableError(
+                "ZIP archives cannot be read from a non-seekable source: the central "
+                "directory lives at the end of the file.",
+                archive_name=self._archive_name,
+            )
         # The counter and the slice over the source close nothing of the caller's;
         # the base closes the source itself after ``_close_archive``.
         handle = self._track_source_seeks(source)
@@ -1018,8 +1039,12 @@ class ZipReader(BaseArchiveReader):
             found = first_nonzero_offset(tail)
         finally:
             tail.close()
-        if found is None:
-            return
+        if found is not None:
+            self._emit_trailing_data(found)
+
+    def _emit_trailing_data(self, found: int) -> None:
+        """Report a non-zero byte ``found`` bytes past the end record's comment; the
+        seekable read and the forward walk both find it."""
         self._diagnostics_collector.emit(
             code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
             message=(
@@ -1107,7 +1132,10 @@ class ZipReader(BaseArchiveReader):
 
     def _emit_walk_finding(
         self,
-        finding: EntryCountMismatch | CommentCutShort | EntryOverrun,
+        finding: EntryCountMismatch
+        | CommentCutShort
+        | EntryOverrun
+        | DirectorySizeMismatch,
         last: CentralEntry | None,
     ) -> None:
         """One disagreement between the end record and the central directory."""
@@ -1126,6 +1154,20 @@ class ZipReader(BaseArchiveReader):
                 expected_bytes=0,
                 observed_bytes=end.eocd_offset,
                 observed_kind="nonzero",
+            )
+        elif isinstance(finding, DirectorySizeMismatch):
+            message = (
+                f"ZIP end record declares a central directory of {finding.declared} "
+                f"bytes, but the stream holds {finding.held} bytes of directory "
+                "entries; read from a source that cannot seek, every entry is listed."
+            )
+            context = ArchiveEofContext(
+                archive_name=archive_name,
+                format="zip",
+                expected_marker="central_directory",
+                expected_bytes=finding.declared,
+                observed_bytes=finding.held,
+                observed_kind="short" if finding.held < finding.declared else "nonzero",
             )
         elif isinstance(finding, CommentCutShort):
             message = (
@@ -2602,9 +2644,16 @@ class ZipReader(BaseArchiveReader):
         # errors surface translated like any member-read error.
         self._link_target_from_data(
             member,
-            lambda: self._open_member(member),
+            self._link_target_opener(member),
             reparse_fallback=loc.reparse_fallback,
         )
+
+    def _link_target_opener(
+        self, member: ArchiveMember
+    ) -> Callable[[], AbstractContextManager[ReadableStream]]:
+        """How ``_ensure_link_target`` opens a link's data: the member itself here; the
+        bytes the pass kept in a forward walk."""
+        return lambda: self._open_member(member)
 
     def _locked_link_target_report(
         self, member: ArchiveMember, exc: EncryptionError
@@ -2807,8 +2856,10 @@ class ZipReadBackend(ReadBackend):
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )
     SFX_HIT_VALIDATOR = staticmethod(validate_zip_local_header)
-    # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
-    # so even a forward-only pass needs a seekable source.
+    # SUPPORTS_STREAMING_NON_SEEKABLE stays False until a pipe ZIP is read whole:
+    # `ZipForwardReader` lists and reads one, and extraction's end of the pass, the
+    # failures found there and encrypted members are still to come (the
+    # native-zip-reader change, stage 3b3).
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
     USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 
@@ -2828,7 +2879,16 @@ class ZipReadBackend(ReadBackend):
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
-        return ZipReader(
+        reader_cls = ZipReader
+        if not source.seekable():
+            # Only streaming=True gets here with such a source (open_archive refuses
+            # random access on one). Imported here: that module builds on this one.
+            from archivey.internal.backends.zip_forward_reader import (
+                ZipForwardReader,
+            )
+
+            reader_cls = ZipForwardReader
+        return reader_cls(
             source,
             streaming,
             passwords,

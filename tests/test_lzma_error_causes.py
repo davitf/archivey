@@ -13,17 +13,19 @@ import lzma
 import struct
 import tarfile
 import zlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import DecoderLimits, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.streams.codecs import LzmaAloneCodec
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from tests.corruption_util import (
@@ -101,6 +103,27 @@ def test_each_liblzma_cause_maps_to_its_own_error(
     translated = lzma_error_to_archivey(lzma.LZMAError(message), "ctx")
     assert type(translated) is expected
     assert message in str(translated)
+
+
+def test_a_memlimit_refusal_names_the_cap_when_given_the_limits() -> None:
+    """The cap message serves xz and .lzma alike: the sentence the translator writes
+    names no format, and the caller's context names the path that refused."""
+    error = lzma.LZMAError("Memory usage limit exceeded")
+    translated = lzma_error_to_archivey(
+        error, "ctx", DecoderLimits(max_decoder_memory=4096)
+    )
+    assert type(translated) is ResourceLimitError
+    assert "max_decoder_memory=4096" in str(translated)
+    # The caller's context says which path refused.
+    assert "(ctx: " in str(translated)
+    assert "xz" not in str(translated).lower()
+    # The codec's translator carries the stream's limits.
+    config = replace(
+        DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits(max_decoder_memory=4096)
+    )
+    via_codec = LzmaAloneCodec().translator(config)(error)
+    assert isinstance(via_codec, ResourceLimitError)
+    assert "max_decoder_memory=4096" in str(via_codec)
 
 
 def test_the_lzma_codecs_translate_by_cause() -> None:

@@ -99,7 +99,9 @@ as the parameter that would have allowed the operation.
 `ArchiveyUsageError` SHALL also cover:
 
 - reader-wide exclusive pass overlap (`__iter__`, `stream_members`,
-  `extract_all`, materialization, active worker calls);
+  `extract_all`, materialization, active worker calls), except the calls and passes
+  `reader-concurrency` admits beside a `stream_members()` pass under
+  `concurrent_members=True`;
 - close overlapping an active worker call without declared concurrency;
 - any reader operation/property after `close()` except repeated `close()` /
   `__exit__`;
@@ -409,7 +411,7 @@ Whether the probe's claim was the only evidence is the same question for every e
 read raises.
 The rewritten message for a limit trip SHALL say the read was stopped by a limit
 rather than that decoding failed, since a decoder-memory refusal stops the read
-before any decoder is built; it still MUST NOT imply that nothing was produced.
+before the dictionary is allocated; it still MUST NOT imply that nothing was produced.
 
 **The trigger is provenance, not confidence.** The question this signal answers is "was
 there any evidence besides one probe?", which `DetectionConfidence` does not track:

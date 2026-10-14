@@ -28,6 +28,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from archivey.exceptions import ExtractionError, FilterRejectionError
+from archivey.internal.long_paths import long_path, plain
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
@@ -155,13 +156,19 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
     The errno is ``ELOOP`` on every platform too: Windows reports a loop as
     ``ERROR_CANT_RESOLVE_FILENAME``, which Python maps to ``EINVAL``. The platform's
     own error stays on the chain as ``__cause__``.
+
+    On Windows a path past ``MAX_PATH`` is resolved in the extended form
+    (``long_paths``), so a link deep in the tree is followed as it is for a short
+    path, and the result is given without the prefix, for comparison with a plain
+    root. A short path whose links lead past ``MAX_PATH`` comes back from Windows with
+    the prefix too, and loses it the same way.
     """
     try:
-        resolved = path.resolve()
+        resolved = Path(plain(os.fspath(Path(long_path(path)).resolve())))
     except RuntimeError as exc:
         raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from exc
     try:
-        resolved.stat()
+        Path(long_path(resolved)).stat()
     except OSError as exc:
         if exc.errno == errno.ELOOP or (
             getattr(exc, "winerror", None) == _ERROR_CANT_RESOLVE_FILENAME

@@ -1648,6 +1648,39 @@ def test_rar3_service_comment_maps_to_member_comment() -> None:
         assert member.comment == comment.decode()
 
 
+def test_rar3_service_comment_is_weighed_by_the_walk_as_it_attaches() -> None:
+    """A ``CMT`` comment reaches its member after the member was weighed, so the walk
+    weighs it as it attaches: ``item.txt`` (8 + 8 bytes) and its 14-byte comment
+    make 30, refused at 29 by the walk itself and listed at 30."""
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    comment = b"member comment"
+    file_hdr = _rar3_file_block(b"item.txt", flags=0, pack_lo=0, unp_lo=0)
+    service_hdr = _rar3_file_block(
+        b"CMT",
+        flags=_RAR3_FILE_SOLID,
+        pack_lo=len(comment),
+        unp_lo=len(comment),
+        block_type=0x7A,
+    )
+    blob = RAR_ID + main_hdr + file_hdr + service_hdr + comment + end_hdr
+
+    def limits(max_metadata_bytes: int) -> ArchiveyConfig:
+        return ArchiveyConfig(
+            listing_limits=ListingLimits(max_metadata_bytes=max_metadata_bytes)
+        )
+
+    with pytest.raises(
+        ResourceLimitError, match=r"=29 \(RAR headers of 1 members hold 30 bytes\)"
+    ):
+        open_archive(io.BytesIO(blob), config=limits(29))
+    with open_archive(io.BytesIO(blob), config=limits(30)) as archive:
+        member = archive.get("item.txt")
+        assert member is not None
+        assert member.comment == comment.decode()
+
+
 # unrar reads a RAR 2.9-4 ``CMT`` as UTF-16LE only when bit 0 of the SERVICE
 # header's attribute field (``SUBHEAD_FLAGS_CMT_UNICODE``) is set, and as 8-bit
 # text cut at the first NUL otherwise (``Archive::ReadCommentData``). Checked with
@@ -2096,11 +2129,20 @@ def test_rar3_compressed_comments_over_metadata_budget_refused_before_decode(
     assert calls == []
 
 
+# Two members named ``m0.txt``/``m1.txt`` (12 bytes each as name and raw name) with
+# comments of this declared size weigh exactly 100 000 bytes.
+_AT_BUDGET_COMMENT = 50_000 - 2 * len("m0.txt")
+
+
 def test_rar3_compressed_comments_within_metadata_budget_are_decoded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """At or under the budget every comment is still decoded, and ``None`` lifts it."""
-    blob = _rar3_commented_archive(count=2, unpacked_size=50_000)
+    """At or under the budget every comment is still decoded, and ``None`` lifts it.
+
+    The names count too: ``m0.txt`` weighs 12 bytes (``name`` and ``raw_name``), so
+    two members with 49 988-byte comments sit exactly at 100 000.
+    """
+    blob = _rar3_commented_archive(count=2, unpacked_size=_AT_BUDGET_COMMENT)
     for limits in (
         ListingLimits(max_metadata_bytes=100_000),
         ListingLimits(max_metadata_bytes=None),
@@ -2117,19 +2159,19 @@ def test_rar3_compressed_archive_comment_counts_toward_budget(
 ) -> None:
     """The MAIN header's compressed comment is weighed with the members' comments.
 
-    The members alone sit exactly at the budget, so only the archive comment's
-    bytes push the total over it.
+    The members alone (names and comments) sit exactly at the budget, so only the
+    archive comment's bytes push the total over it.
     """
     calls = _count_comment_decodes(monkeypatch)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
-    at_budget = _rar3_commented_archive(count=2, unpacked_size=50_000)
+    at_budget = _rar3_commented_archive(count=2, unpacked_size=_AT_BUDGET_COMMENT)
     with open_archive(io.BytesIO(at_budget), config=config):
         pass
     assert len(calls) == 2
 
     calls.clear()
     over = _rar3_commented_archive(
-        count=2, unpacked_size=50_000, archive_comment_size=1
+        count=2, unpacked_size=_AT_BUDGET_COMMENT, archive_comment_size=1
     )
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
         open_archive(io.BytesIO(over), config=config)
@@ -3804,7 +3846,9 @@ def test_rar5_qo_non_file_records_parse_in_linear_time() -> None:
     size = bytes([len(qbody)])
     rec = zlib.crc32(size + qbody).to_bytes(4, "little") + size + qbody
     payload = rec * (2 * 1024 * 1024 // len(rec))
-    result = rar_parser._parse_rar5_qo_payload(payload, 10**9, 0, max_members=None)
+    result = rar_parser._parse_rar5_qo_payload(
+        payload, 10**9, 0, max_members=None, max_metadata_bytes=None
+    )
     assert result is None
 
 
@@ -4789,6 +4833,7 @@ def test_qo_over_max_members_raises_not_unusable(tmp_path: Path) -> None:
                 volume_index=0,
                 min_file_offset=source.tell(),
                 max_members=2,
+                max_metadata_bytes=None,
             )
 
 
@@ -4909,6 +4954,7 @@ def _qo_cached_filenames(path: Path) -> set[str]:
             volume_index=0,
             min_file_offset=source.tell(),
             max_members=None,
+            max_metadata_bytes=None,
         )
         assert listed is not None
         members, _end = listed

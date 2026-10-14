@@ -236,6 +236,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
     ),
+    "archivey.internal.backends.tar_reader._WalkHandoffStream": (
+        "assigns _data and _view, all close() reads, before ReadOnlyIOStream.__init__"
+    ),
     "archivey.internal.backends.tar_reader._MemberDataView": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
@@ -276,6 +279,9 @@ _CLOSE_STATE_FIRST = {
     ),
     "archivey.internal.backends.zipcrypto.ZipCryptoDecryptStream": (
         "assigns _source before RawIOBase.__init__; nothing after it can raise"
+    ),
+    "archivey.internal.backends.zip_aes.WinZipAesForwardStream": (
+        "assigns _source, all close() reads, before ReadOnlyIOStream.__init__"
     ),
     "archivey.internal.password_confirm.UnverifiedPasswordReadWatch": (
         "assigns every field close() reads before DelegatingStream.__init__"

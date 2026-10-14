@@ -397,6 +397,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.tar_parser as tar_parser
     import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
+    import archivey.internal.backends.zip_forward_reader as zip_forward_reader
     import archivey.internal.backends.zip_local_walk as zip_local_walk
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.backends.zipcrypto as zipcrypto
@@ -467,6 +468,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         source_mod.ArchiveSource,
         # Decrypt stages below the codec: compressed-side offsets, no table.
         zip_aes.WinZipAesDecryptStream,
+        zip_aes.WinZipAesForwardStream,
         zipcrypto.ZipCryptoDecryptStream,
         # Translates errors between the reader's unverified-read watch and the
         # member's verifier; like the watch, nothing above it asks it for a resume
@@ -476,15 +478,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # nothing above it asks it for a resume offset.
         password_confirm.UnverifiedPasswordReadWatch,
         detection._BoundedPeekReader,
-        # Stands in for a refused .lzma decoder: every read raises, so it produces no
-        # bytes and has no seek-point table to forward to.
-        codecs.lzma_codec._RefusedAloneStream,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
         # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
         tar_parser._ForwardSlice,
+        # A random-access pass's member data: the slice above, or a member view from
+        # where the slice stopped once the walk moves on. Forward-only, stored bytes.
+        tar_reader._WalkHandoffStream,
         # A random-access member's data view: the view's offsets, forwarded.
         tar_reader._MemberDataView,
         # A ZIP member's compressed bytes, read forward from the local-header walk's
@@ -493,6 +495,14 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         zip_local_walk._SizedData,
         zip_local_walk._CodecData,
         zip_local_walk._ScannedData,
+        # A pipe ZIP pass's member stream, over the codec stream the pass reads
+        # once: forward-only, so nothing seeks it or asks it for a resume offset.
+        zip_forward_reader._PassStream,
+        # The member's data under a pipe pass's decrypt stage: compressed offsets,
+        # read forward once.
+        zip_forward_reader._CutShortWatch,
+        # Kept ciphertext, read once from the start for a link target.
+        zip_forward_reader._KeptData,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,

@@ -285,6 +285,14 @@ wrappers sit outside it; exception translation, diagnostics/logging, lifecycle r
 callbacks, and finalizers run after the lock is released. Unsupported positioning
 retains normal `io.UnsupportedOperation` behavior.
 
+A random-access `stream_members()` pass reads the member the header walk is at
+through the walk's buffer, so a compressed tar is decoded once. Under
+`MemberStreams.CONCURRENT` another caller (a `members()` call, a second pass) may move
+the walk on while that stream is part read; before the walk moves, the stream SHALL
+switch to a member view of its own at the same position, so its remaining bytes are
+unchanged (`reader-concurrency`, "Random-access calls beside a `stream_members()`
+pass"). Reads through the walk and the walk's own steps hold the reader's walk lock.
+
 Compressed TAR remains `SOLID`; locking guarantees correctness but not parallel
 throughput. Streaming TAR (`streaming=True`) remains one forward pass and does not gain
 random concurrent open.
@@ -297,6 +305,7 @@ random concurrent open.
 | Two file members opened and read interleaved from compressed RA TAR | Each yields exact bytes; serialization is acceptable |
 | Multiple threads open/read distinct TAR members under `MemberStreams.CONCURRENT` after materialization | No data races on the shared handle |
 | Materialization then strict EOF verification | The header walk and the EOF read use the same lock |
+| `CONCURRENT` pass stream half read, then `members()` walks past it | The stream's remaining bytes are the member's |
 | Member operation raises/closes | Translation/logging/lifecycle/callback work runs without the TAR handle lock held |
 | GNU sparse member opened | Stream yields the member's logical bytes, holes as zeros |
 | A member `seek` past its end | Returns the target; the next read returns `b""` |

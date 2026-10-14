@@ -76,11 +76,14 @@ encrypted members fail as if no password had been given.
 - Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`) go before or after the
   verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...) go after a verb that
   owns them (`--policy` after `extract`, `--exclude` after `list`, `test` or `extract`).
-- A pattern naming a directory selects the directory and everything under it, as `tar`
-  does: `archivey extract a.zip docs` and `archivey extract a.zip docs/` both extract
-  `docs/` and its contents, but not a file named `docs.txt`. On Windows, `docs\sub`
-  works like `docs/sub`. `--exclude` matches the same way. This is a CLI rule: in the
-  Python API, `members=` needs the exact stored name (`docs/` for the directory entry).
+- Patterns are globs where `*` stays inside one folder and `**` matches any depth:
+  `archivey extract a.zip '*.md'` extracts the top-level `.md` files, and `'**/*.md'`
+  those at every depth. A pattern matching a directory selects it and everything under
+  it, as `tar` does: `archivey extract a.zip docs` and `docs/` both extract `docs/` and
+  its contents, but not a file named `docs.txt`. On Windows, `docs\sub` works like
+  `docs/sub`. `--exclude` matches the same way. In the Python API this is
+  `members=match_glob(pattern, with_contents=True)` from `archivey.paths`; `members=`
+  on its own needs the exact stored name (`docs/` for the directory entry).
 - A pattern that matches is a pattern, even if a local folder has the same name:
   `archivey x a.tar out` extracts the archive's `out/` subtree and gives no `-d` hint.
   The hint appears only when such a pattern matches nothing.

@@ -149,6 +149,7 @@ def build_zipcrypto_zip(
     extra_flags: int = 0,
     extra: bytes = b"",
     compressed: bytes | None = None,
+    check_byte: int | None = None,
 ) -> bytes:
     """A single-entry ZIP whose one member is ZipCrypto-encrypted with ``password``.
 
@@ -159,7 +160,8 @@ def build_zipcrypto_zip(
     general-purpose flags and ``extra`` is written as the extra field of both headers.
     ``compressed`` supplies the member body already compressed with ``compression``,
     for a method this builder cannot compress itself (its ZIP header included, if the
-    method has one).
+    method has one). ``check_byte`` replaces the verification byte: ``0`` is the one a
+    reader takes from the (zero) DOS time once bit 3 is set.
     """
     made_by = 20 if unix_mode is None else (3 << 8) | 20
     external_attr = 0 if unix_mode is None else unix_mode << 16
@@ -185,7 +187,9 @@ def build_zipcrypto_zip(
         flags |= 0x2  # ZIP's LZMA end-of-stream marker flag
     else:
         raise ValueError(f"unsupported test compression method: {compression}")
-    enc = _encrypt(password, (crc >> 24) & 0xFF, stored)
+    if check_byte is None:
+        check_byte = (crc >> 24) & 0xFF
+    enc = _encrypt(password, check_byte, stored)
     # The encryption header is part of the compressed size, inside ``enc``.
     local, central = _member_bytes(
         name,

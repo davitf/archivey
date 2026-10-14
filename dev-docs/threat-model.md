@@ -269,12 +269,35 @@ bytes. The outcome is the same on every platform. ADR
   link-count limit is written as a copy (`_link_refused_here`), counted toward
   `max_extracted_bytes` and the archive-wide `max_ratio` (see
   [Extraction bombs](#extraction-bombs)).
+- On Windows each filesystem call the extraction code (`internal/extraction.py`,
+  `internal/link_watch.py`, `resolve_or_raise_on_loop`) makes under the destination or a
+  dry run's scratch copy takes a path of 200 characters or more in the extended `\\?\`
+  form (`internal/long_paths.py`), so a path past `MAX_PATH` is written without
+  `LongPathsEnabled`. `test_filesystem_calls_take_the_long_path_form` holds the inventory
+  of those calls. The CLI's own walks after a run (the hoist) take plain paths. The
+  prefix is stripped from what comes back (`os.path.realpath`, `os.readlink`, `OSError`
+  file names), so results, errors and the path-safety comparisons use the plain path.
+  `resolve_or_raise_on_loop` resolves a long path through the extended form, so a
+  symlink deep in the tree is followed by the checks as it is by the write; without
+  that the checks would fall back to a lexical path there while the write followed the
+  link.
+- On Windows a symlink is created as a directory link when its target is a directory or
+  the archive's listing shows one (`_link_to_directory`); a link whose kind turns out
+  wrong is remade at the end of the run (`_settle_link_kinds`), only when it is still
+  the link this run made. The target and its escape check do not change.
+- A member whose destination holds an entry with no claim of its own, but which is the
+  same file (`st_dev`, `st_ino`) as one this run claimed, collides with that claim
+  (`_alias_claim`): an 8.3 short name on Windows. Under `TRUSTED` it stays a file
+  already there.
 - Bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069) in a name or link
   target are rejected under `STRICT` and `STANDARD` (`_reject_bidi_override`); directional
   marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,
   only the name read back later (ADR
   [0017](decisions/0017-bidi-override-rejection-is-policy-keyed.md)). Listing always
-  presents the stored name with `MEMBER_NAME_BIDI_CONTROL`.
+  presents the stored name with `MEMBER_NAME_BIDI_CONTROL`. Other invisible format
+  characters (Unicode Cf) are never rejected: U+200B, U+2060 and U+FEFF get
+  `MEMBER_NAME_ZERO_WIDTH_CHARACTER` (raised under the `STRICT` diagnostic policy), the
+  rest (joiners, soft hyphen, tags) get `MEMBER_NAME_INVISIBLE_CHARACTER`.
 
 `TRUSTED` keys collisions on the exact path and writes faithful bytes; the local OS
 decides.
@@ -293,7 +316,8 @@ percent spelling; it can be added without breaking anything.
 `test_unrepresentable_name_oserror_is_translated`, and the `test_bidi_*` tests.
 `tests/test_cross_os_extraction.py` covers the separator rewrite, the Win32 character
 escapes, the further device names, the typed Windows errors, symlink targets on Windows,
-read-only entries and the link-count copy; the re-check after a rewrite is
+read-only entries, the link-count copy, long paths, directory symlinks and 8.3 short
+names; the re-check after a rewrite is
 `::test_rewritten_name_is_checked_where_it_is_written`.
 
 ### Resource use is bounded
@@ -311,11 +335,14 @@ archive declares.
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
   materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
-  `stream_members()` and `for member in reader` are unguarded: they yield every
-  member, except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing. Their memory
+  `stream_members()` and `for member in reader` are unguarded: they yield every member,
+  except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing (7z and RAR
+  weigh their header names against `max_metadata_bytes` there too). Their memory
   is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
-  reader, and TAR in both modes) counts members as usual and stops keeping them once
-  the totals cross a cap, in `base_reader.py` `_discard_listing`. The TAR walker keeps
+  reader, and TAR in both modes) counts members as usual and stops keeping them once the
+  totals cross a cap, in `base_reader.py` `_discard_listing`. On a `CONCURRENT` reader a
+  `members()` call beside such a pass raises `ResourceLimitError` one member past the
+  cap without discarding the walk the pass is on (`_drain_walk`). The TAR walker keeps
   nothing behind the member list, so nothing else is held. After the discard, the
   listing calls raise the same `ResourceLimitError` as `members()`. `extract_all()`
   enforces the caps in both modes, because it resolves hard links against the members
@@ -997,14 +1024,21 @@ trust boundary. `unar`'s password is [visible to other users](#the-unar-password
 **Property.** On a reader declaring `MemberStreams.CONCURRENT`, after random-access
 materialization, concurrent `open()` and independent use of different member streams is
 data-race-free without the GIL. Otherwise a second overlapping open raises
-`ArchiveyUsageError`, so accidental sharing fails fast. Iteration, extraction,
-`stream_members()` and close are single-owner. Stream leases defer backend teardown
-until the last stream closes, because an accelerator must close before it is finalized
+`ArchiveyUsageError`, so accidental sharing fails fast. On a `CONCURRENT` reader,
+random-access calls and further `stream_members()` passes also run beside a
+`stream_members()` pass: they share the reader's one member walk, each at its own
+position, and every pull, cursor step and link finalization holds the walk lock
+(`base_reader.py` `_walk_lock`). A TAR pass stream reading through the walk moves to a
+view of its own before the walk moves on for another caller (`_WalkHandoffStream`).
+Extraction and close stay single-owner, as does everything on a reader without
+`CONCURRENT`. Stream leases defer backend teardown until the last stream closes, because
+an accelerator must close before it is finalized
 ([`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §6).
 
 **Tests.** The required `free-threaded-concurrency` job (Linux CPython 3.13t,
-`.github/workflows/ci.yml`); optional backends are not claimed until a job runs them.
+`.github/workflows/ci.yml`), which runs `tests/test_concurrent_pass_workers.py` among
+the rest; optional backends are not claimed until a job runs them.
 Scope: [`docs/support-matrix.md`](../docs/support-matrix.md); design:
 [`investigations/parallel-reader.md`](investigations/parallel-reader.md) §4.
 

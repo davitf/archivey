@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from typing import BinaryIO, NoReturn
 
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -294,6 +295,10 @@ class MemberData(ReadOnlyIOStream):
         #: Bytes handed out so far. For a codec member that is past its data: what
         #: its compressed size is, the descriptor ``settle`` returns says.
         self.consumed = 0
+        #: The data's bytes after the last one handed out, which :meth:`settle` read
+        #: to find the descriptor (a codec member's bytes between its codec's end and
+        #: its descriptor); empty until then and on any other member.
+        self.passed_over = b""
         self._settled = False
 
     def read(self, n: int = -1, /) -> bytes:
@@ -333,7 +338,12 @@ class MemberData(ReadOnlyIOStream):
         if self._settled:
             raise ValueError("settle() called twice")
         self._settled = True
-        descriptor = self._finish(used, crc=crc, file_size=file_size)
+        try:
+            descriptor = self._finish(used, crc=crc, file_size=file_size)
+        except ArchiveyError as exc:
+            # Where the data ends is unknown, so no next header can be found.
+            self._walk._member_failed(exc)
+            raise
         self._walk._member_settled()
         return descriptor
 
@@ -476,7 +486,8 @@ class _CodecData(MemberData):
         walk reads on from inside its data; comparing the descriptor with the central
         entry at the end of the pass (task 3.3b) is what will catch it.
         """
-        base = self.consumed - self._kept_len
+        handed = self._kept_len  # where the bytes handed out end in ``buffer``
+        base = self.consumed - handed
         ahead = self._source.read(_DESCRIPTOR_LOOKAHEAD)
         at_end = len(ahead) < _DESCRIPTOR_LOOKAHEAD
         buffer = b"".join([*self._kept, ahead])
@@ -527,6 +538,7 @@ class _CodecData(MemberData):
                 f"{crc:08x}"
             )
         pos, descriptor = found
+        self.passed_over = buffer[handed:pos]
         self._source.unread(buffer[pos + descriptor.length :])
         return descriptor
 
@@ -692,6 +704,8 @@ class LocalHeaderWalk:
         self._index = 0
         # The entry :meth:`next_entry` returned last, until its data is settled.
         self._unsettled: LocalEntry | None = None
+        #: What a member's ``settle`` raised: the walk cannot go past that member.
+        self._failure: ArchiveyError | None = None
         self._open: MemberData | None = None
         #: Stream offset of the first local header, once found.
         self.first_offset: int | None = None
@@ -701,6 +715,9 @@ class LocalHeaderWalk:
         self.gap: tuple[int, int] | None = None
         #: Stream offset of the first central header, once the directory is reached.
         self.cd_start: int | None = None
+        #: Stream offset where the directory ends (after its digital signature, if
+        #: any), once :meth:`directory` has read it.
+        self.cd_end: int | None = None
         #: The end record, once :meth:`directory` has read it. Its ``base`` and
         #: ``eocd_offset`` are stream positions; ``trailing`` is ``None`` (not counted).
         self.end: EndRecord | None = None
@@ -712,10 +729,14 @@ class LocalHeaderWalk:
     def next_entry(self) -> LocalEntry | None:
         """The next local entry, or ``None`` once the directory or end records follow.
 
-        The previous member's data must have been settled. Raises ``TruncatedError``
+        The previous member's data must have been settled; if its ``settle`` raised,
+        this raises the same error, as the next header cannot be found. Raises
+        ``TruncatedError``
         when the stream ends where a header should be, ``CorruptionError`` for bytes
         that are no ZIP structure and lead to no directory.
         """
+        if self._failure is not None:
+            raise self._failure
         if self._unsettled is not None:
             raise ValueError("settle the previous member's data first")
         if not self._started:
@@ -838,21 +859,27 @@ class LocalHeaderWalk:
         self._index += 1
         return entry
 
-    def member_data(self, entry: LocalEntry, *, encrypted: bool = False) -> MemberData:
+    def member_data(
+        self, entry: LocalEntry, *, encrypted: bool = False, stored: bool | None = None
+    ) -> MemberData:
         """The reader for ``entry``'s compressed data (for an encrypted member, its
         ciphertext, encryption header included).
 
-        Must be called once for each entry :meth:`next_entry` returns, and settled
-        before the next one.
+        ``stored`` says whether the data is STORED when the header's method does not
+        (WinZip AES names the real method in an extra field); by default it is the
+        header's. Must be called once for each entry :meth:`next_entry` returns, and
+        settled before the next one.
         """
         if entry is not self._unsettled or self._open is not None:
             raise ValueError(
                 "member_data() is for the entry next_entry() returned last"
             )
+        if stored is None:
+            stored = entry.header.method == _METHOD_STORED
         data: MemberData
         if not entry.deferred:
             data = _SizedData(self, entry)
-        elif entry.header.method == _METHOD_STORED:
+        elif stored:
             data = _ScannedData(self, entry, check_crc=not encrypted)
         else:
             data = _CodecData(self, entry)
@@ -862,6 +889,10 @@ class LocalHeaderWalk:
     def _member_settled(self) -> None:
         self._open = None
         self._unsettled = None
+
+    def _member_failed(self, exc: ArchiveyError) -> None:
+        self._member_settled()
+        self._failure = exc
 
     def _read_descriptor(
         self,
@@ -985,6 +1016,7 @@ class LocalHeaderWalk:
             if self.source.skip(size) != size:
                 raise TruncatedError("ZIP stream ends inside the digital signature")
             sig = self.source.peek(4)
+        self.cd_end = self.source.offset
         zip64: tuple[int, int, int, int, int] | None = None
         if sig == ZIP64_EOCD_SIGNATURE:
             zip64 = self._read_zip64_records()

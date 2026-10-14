@@ -10,7 +10,7 @@ reads the raw source.
 
 from __future__ import annotations
 
-from typing import BinaryIO
+from typing import Protocol
 
 # How far past the archive's end the scan looks, the same bound as the TAR scan's: an
 # effort limit, not a claim that the rest is zero. A non-zero byte at or past it goes
@@ -20,7 +20,15 @@ MAX_TRAILING_SCAN = 1 << 20
 _SCAN_CHUNK = 64 * 1024
 
 
-def first_nonzero_offset(fp: BinaryIO, *, limit: int = MAX_TRAILING_SCAN) -> int | None:
+class _Readable(Protocol):
+    """All the scan needs: ``read(n)`` with a positive ``n``."""
+
+    def read(self, n: int, /) -> bytes: ...
+
+
+def first_nonzero_offset(
+    fp: _Readable, *, limit: int = MAX_TRAILING_SCAN
+) -> int | None:
     """The offset of the first non-zero byte in ``fp`` from its current position.
 
     ``None`` when ``fp`` holds only zeros up to its end or up to ``limit`` bytes,

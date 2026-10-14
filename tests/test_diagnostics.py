@@ -990,6 +990,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
         # ``zip -FI`` writes the shape and the bytes are delivered; nothing hidden.
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+        # A zero-width joiner is part of ordinary emoji and of Indic spelling.
+        DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
     }
 
 

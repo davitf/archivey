@@ -191,13 +191,23 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   for each; its context's `field` is `"name"` or `"link_target"`. A target stored as the
   member's data (ZIP, 7z, RAR4) is reported when it is read.
 
-    Unlike the rules above, this one **is** lifted by `TRUSTED`, which extracts the
-    member under its stored name. The distinction is that nothing here is unsafe to
-    *write* — the file lands inside your destination under exactly its stored bytes; what
-    is misleading is the name you read back later. `TRUSTED` means "faithful bytes", and
-    faithful round-tripping (mirroring an archive, converting between formats) needs a
-    route that the default correctly refuses. A caller filter that renames the member
-    also works at any policy, since the check runs on the final name.
+    Unlike the rules above, the override and isolate rejection **is** lifted by
+    `TRUSTED`, which extracts the member under its stored name. The distinction is that
+    nothing here is unsafe to *write* — the file lands inside your destination under
+    exactly its stored bytes; what is misleading is the name you read back later.
+    `TRUSTED` means "faithful bytes", and faithful round-tripping (mirroring an archive,
+    converting between formats) needs a route that the default correctly refuses. A
+    caller filter that renames the member also works at any policy, since the check
+    runs on the final name.
+
+    Other invisible format characters are never rejected by any extraction filter,
+    because writing them is safe; they are reported the same way, in a name or a link
+    target. A zero-width space, word joiner or BOM (`invoice<U+200B>.pdf` looks like
+    `invoice.pdf`) gets `MEMBER_NAME_ZERO_WIDTH_CHARACTER`. That code is in
+    `ARCHIVE_INTEGRITY_CODES`, so the `DiagnosticPolicy.STRICT` diagnostic policy
+    refuses the archive over it; the default policy lists and extracts both files. The
+    rest, such as the zero-width joiner in ordinary emoji, get the advisory
+    `MEMBER_NAME_INVISIBLE_CHARACTER`.
 - **Decompression bombs at extraction:** cumulative output cap, per-member ratio,
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.
@@ -208,6 +218,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
+  A name the filesystem makes a second name of a file this run wrote (a Windows 8.3
+  short name) collides with that file too, matched by file identity.
   Directories are not in the collision map, and archivey checks a directory member
   against it only when a file or symlink already holds its destination. So a *file* `x`
   collides with a *directory* `x/` stored after it, but not with one stored before it.
@@ -385,7 +397,9 @@ Archive order and identity matter more than “the” name.
 | Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. The member's mode is compared as the platform stores it, so on Windows only the read-only attribute counts: a `0o755` member over a writable directory reports no `kept_mode`. |
 | Directory modes and times | archivey sets a directory's stored mode and modification time once the run ends, deepest directory first, as GNU tar does. So a directory stored without write or search permission (`0o555`, `0o644`) still gets its members, and writing them does not change its time. This also happens when the run stops early on an error. |
 | Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `COM¹`, `CONIN$`, `file:ads`, …). |
-| Links on Windows | A symlink target's `/` is written as `\`, so `sub/file` resolves as on POSIX. Creating a symlink needs Developer Mode or an elevated process; without it each symlink member fails with an `ExtractionError` that says so. NTFS allows 1024 names for one file; a hard link past that is written as a copy, and those copied bytes count toward `max_extracted_bytes` and the archive-wide `max_ratio`. |
+| Links on Windows | A symlink target's `/` is written as `\`, so `sub/file` resolves as on POSIX. Creating a symlink needs Developer Mode or an elevated process; without it each symlink member fails with an `ExtractionError` that says so. Windows has separate file and directory symlinks. A link is made a directory link when its target is already a directory, or when the archive's listing shows it is one (an archive whose members are listed up front, such as ZIP, 7z, RAR or ISO; a TAR archive, a directory or a `streaming=True` read is not listed up front). Otherwise it starts as a file link, and when the run ends a link whose target turned out to be a directory is made again as a directory link. NTFS allows 1024 names for one file; a hard link past that is written as a copy, and those copied bytes count toward `max_extracted_bytes` and the archive-wide `max_ratio`. |
+| Long paths on Windows | A path of 260 characters or more (`MAX_PATH`) is written without the `LongPathsEnabled` setting: archivey hands such paths to Windows in the `\\?\C:\...` form. Results, errors and CLI output still show the plain path. A name the filesystem cannot hold, such as one component longer than 255 characters, fails that member with an `ExtractionError`. Name length limits differ per filesystem: 255 bytes on ext4, 255 UTF-16 code units on NTFS, so a name can fit on one and not the other. |
+| 8.3 short names on Windows | On a volume that makes 8.3 short names, `LONGFI~1.TXT` is a second name of `longfilename.txt`. Under `STRICT` and `STANDARD`, a member with such a name collides with the file this run wrote, as a case variant does, instead of counting as a file already there. Under `REPLACE` the earlier member's result becomes `OVERWRITTEN`. |
 | Read-only members | A file, or an empty directory, that the archive stores without write permission is still replaced by a later member of the same name under `REPLACE`, on Windows too. |
 | `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |
 | `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. To raise instead, pass `abort_on={AbortOn.BLOCKED_MEMBER}`. |
@@ -394,7 +408,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`, and to `extract_all()` in both access modes. `stream_members()` and `for member in reader` are intentionally unguarded, but their memory stays bounded by the limits: past them the reader stops keeping the listing, and listing calls afterwards raise `ResourceLimitError`. The exceptions are formats that already apply `max_members` at parse (ZIP, 7z, RAR and ISO): `open_archive` itself raises, or, for a ZIP whose end record understates the count, the walk of its directory. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`, and to `extract_all()` in both access modes. `stream_members()` and `for member in reader` are intentionally unguarded, but their memory stays bounded by the limits: past them the reader stops keeping the listing, and listing calls afterwards raise `ResourceLimitError`. The exceptions are formats that already apply `max_members` at parse (ZIP, 7z, RAR and ISO): `open_archive` itself raises, or, for a ZIP whose end record understates the count, the walk of its directory. 7z and RAR also weigh the names and comments their headers hold against `max_metadata_bytes` at open. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR weighs its compressed RAR 1.5/2.x comments by their declared sizes, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -418,13 +432,12 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   stays bounded), except on ZIP, 7z, RAR and ISO where `max_members` is checked
   at `open_archive` (on ZIP, as the directory is read when its end record understates
   the count). Raise `listing_limits.max_members` to open a larger ZIP, 7z, RAR or
-  ISO. For 7z and RAR that parse bound is a member count, not a byte budget:
-  `max_metadata_bytes` still fires when the list is materialized. RAR also checks it at
-  `open_archive` against the declared sizes of compressed RAR 1.5/2.x comments, before
-  decoding them. ISO checks it at `open_archive` against the bytes of the directory
-  records `pycdlib` parses, which are more than the text a listing keeps; and ISO
-  counts every directory record of one tree, so an image right at a cap may need a
-  slightly higher one.
+  ISO. 7z and RAR also check `max_metadata_bytes` at `open_archive`, against the
+  names and comments their headers hold (RAR's compressed RAR 1.5/2.x comments by
+  their declared sizes, before decoding them). ISO checks it at `open_archive`
+  against the bytes of the directory records `pycdlib` parses, which are more than
+  the text a listing keeps; and ISO counts every directory record of one tree, so an
+  image right at a cap may need a slightly higher one.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
