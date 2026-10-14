@@ -485,9 +485,9 @@ a little; matching them would mean buffering every member until the directory ar
 One more thing is known only once the directory has been read, and is not a member
 failure. A directory entry pointing at a local header an earlier entry already took ends
 the pass with its own `CorruptionError`: the seekable read lists both, and a forward
-pass reads that data once, for one member. A directory whose entries fill a different size than the end record declares is a
-warning (`ARCHIVE_EOF_MARKER_MISSING`, marker `central_directory`), and every entry
-stays listed.
+pass reads that data once, for one member. A directory whose entries fill a different
+size than the end record declares is a warning (`ARCHIVE_EOF_MARKER_MISSING`, marker
+`central_directory`), and every entry stays listed.
 
 ### What the caller sees in a forward pass
 

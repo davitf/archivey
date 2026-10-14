@@ -525,9 +525,9 @@ class ZipForwardReader(ZipReader):
         self._descriptors: dict[int, tuple[int, int, int]] = {}
         # The kept members in the directory's order, once it has been read.
         self._directory_order: list[ArchiveMember] | None = None
-        # Members the directory fails at the end of the pass, in its order, with why
-        # (design.md §"Failures found at the end of the pass"). Extraction's half of
-        # stage 3b3c (3b3c2) gives each its result; nothing reads it before then.
+        # Members the directory fails at the end of the pass, in its order, with why.
+        # Extraction is to give each its result when it settles the pass; nothing
+        # reads it yet.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
         self._end_record: EndRecord | None = None
         # The first header is parsed at open, so a stream that is no ZIP fails here
@@ -688,7 +688,7 @@ class ZipForwardReader(ZipReader):
 
         The end record comes after the last entry, so the entries are held until then.
         Their names, extra fields and comments are weighed against
-        ``max_metadata_bytes`` as they arrive (``_drop_held_directory``); past it only
+        ``max_metadata_bytes`` as they arrive (``_charge_held_directory``); past it only
         each entry's offset is kept, which the checks below need.
 
         A local entry no directory entry points to is dropped from the listing and
@@ -708,6 +708,9 @@ class ZipForwardReader(ZipReader):
         stored_offsets = array("Q")
         entries: list[CentralEntry] | None = None if self._listing_discarded else []
         held = 0
+        # The held text passed max_metadata_bytes: the listing is discarded once the
+        # directory has said which copy of a name is current.
+        discard = False
         with self._translated_errors():
             for central in walker.directory():
                 if max_members is not None and len(stored_offsets) >= max_members:
@@ -718,7 +721,8 @@ class ZipForwardReader(ZipReader):
                 held += len(central.name) + len(central.extra) + len(central.comment)
                 if max_meta is not None and held > max_meta:
                     entries = None
-                    self._drop_held_directory(held)
+                    discard = True
+                    self._charge_held_directory(held)
                     continue
                 entries.append(central)
             end = walker.end
@@ -765,7 +769,16 @@ class ZipForwardReader(ZipReader):
         unlisted = sorted(local_offsets - matched)
         for member, central in updates:
             self._update_from_directory(member, central)
-        if not self._listing_discarded:
+        if discard:
+            # The unlisted members leave first, so the order covers what is listed,
+            # and the discard stamps is_current by it; after it no member is named.
+            self._drop_listed([by_offset[o] for o in unlisted if o in by_offset])
+            self._directory_order = order
+            self._discard_listing()
+            by_offset.clear()
+            self._captured.clear()
+            self._uncaptured.clear()
+        elif not self._listing_discarded:
             self._directory_order = order
         self._failed_at_end = [(member, error) for _, member, error in failed]
         # Only a link's bytes are read again, for its target.
@@ -889,25 +902,23 @@ class ZipForwardReader(ZipReader):
             return f"#{position}"
         return quoted(self._decode_member_name(entries[position]).text)
 
-    def _drop_held_directory(self, held: int) -> None:
+    def _charge_held_directory(self, held: int) -> None:
         """Stop holding directory entries: their text passed ``max_metadata_bytes``.
 
         The seekable read builds a member from each entry as it reads it and weighs
         that; a forward pass must hold the entries until the end record, and the held
         text is what it weighs instead. It is charged to the listing, which it would
         have become: an enforcing pass raises here, and one that does not enforce the
-        limits discards its listing, as ``_keep_updated_listing_within_limits`` does,
-        so the members it yielded stay as their local headers made them. The links
-        among them get no target: matching them needs the end record (DR-5a; the
-        seekable pass reports nothing either once it discards).
+        limits discards its listing once the entries' offsets are matched
+        (``_read_directory``), as ``_keep_updated_listing_within_limits`` does, so the
+        members it yielded stay as their local headers made them, but for
+        ``is_current``, which follows the directory's order. The links among them get
+        no target: that needs each entry's text (DR-5a; the seekable pass reports
+        nothing either once it discards).
         """
         self._listing_tracker.account_retained_bytes(
             held, enforce=self._progressive_enforce_listing_limits
         )
-        self._discard_listing()
-        self._by_offset.clear()
-        self._captured.clear()
-        self._uncaptured.clear()
 
     def _keep_updated_listing_within_limits(
         self, updates: list[tuple[ArchiveMember, CentralEntry]]

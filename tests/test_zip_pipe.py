@@ -506,13 +506,13 @@ def test_directory_text_is_held_only_up_to_max_metadata_bytes(
     discards its listing, as the seekable streaming pass does on the same archive."""
     data = _commented(40, 6000)
     held: list[int] = []
-    original = ZipForwardReader._drop_held_directory
+    original = ZipForwardReader._charge_held_directory
 
     def spy(self: ZipForwardReader, nbytes: int) -> None:
         held.append(nbytes)
         original(self, nbytes)
 
-    monkeypatch.setattr(ZipForwardReader, "_drop_held_directory", spy)
+    monkeypatch.setattr(ZipForwardReader, "_charge_held_directory", spy)
     config = archivey.ArchiveyConfig(
         listing_limits=ListingLimits(max_metadata_bytes=30_000)
     )
@@ -926,17 +926,31 @@ def test_an_unlisted_entry_of_a_discarded_listing_is_reported_by_offset() -> Non
     assert context.compressed_size is None
 
 
-def test_a_discarded_listing_stamps_the_current_copy_by_the_directory() -> None:
-    """When the directory's comments push the listing over the limits, the discard
-    stamps ``is_current`` too, and in the directory's order as well."""
+@pytest.mark.parametrize(
+    "limit",
+    [
+        pytest.param(100_000, id="members-overfill"),
+        pytest.param(20_000, id="held-text-overfills"),
+    ],
+)
+def test_a_discarded_listing_stamps_the_current_copy_by_the_directory(
+    limit: int,
+) -> None:
+    """When the directory pushes the listing over the limits, the discard stamps
+    ``is_current`` too, and in the directory's order as well: whether the members
+    the directory updated overfill it, or the directory's text overfills it while
+    it is held, before any member is updated."""
     buf = io.BytesIO()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # zipfile: duplicate name
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("dup.txt", b"first")
             zf.writestr("dup.txt", b"second")
+            # Long names take the updated members over 100 000 bytes; short ones
+            # keep the walk under 20 000, which the held comments then pass.
+            stem = "n" * 1900 if limit == 100_000 else "n"
             for i in range(20):
-                info = zipfile.ZipInfo(f"{i}-" + "n" * 1900 + ".txt")
+                info = zipfile.ZipInfo(f"{i}-{stem}.txt")
                 info.comment = b"c" * 2000
                 zf.writestr(info, b"x")
     data = bytearray(buf.getvalue())
@@ -946,8 +960,11 @@ def test_a_discarded_listing_stamps_the_current_copy_by_the_directory() -> None:
     length = 46 + len("dup.txt")
     one, two = data[first : first + length], data[first + length : first + 2 * length]
     data[first : first + 2 * length] = two + one
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=limit)
+    )
     with archivey.open_archive(
-        _pipe(bytes(data)), streaming=True, config=_OVER_100K
+        _pipe(bytes(data)), streaming=True, config=config
     ) as reader:
         yielded = [m for m, _ in reader.stream_members()]
         assert reader._listing_discarded
