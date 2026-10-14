@@ -63,6 +63,10 @@ ones code using `ZipInfo` or `TarInfo` reads most map like this:
 | `info.is_dir()` | `info.isdir()`, `info.isfile()`, `info.issym()` | `member.is_dir`, `member.is_file`, `member.is_link` |
 | | `info.linkname` | `member.link_target` |
 
+zipfile doesn't recognize symbolic links: a ZIP entry that records one is a plain file to it, and
+`extractall` writes the target's path as the file's contents. Archivey reports it as a link, with
+`member.is_link` and `member.link_target`.
+
 A field the archive doesn't record is `None`, such as `compressed_size` for a member of a
 `.tar.gz`. A directory's name ends with `/` in every format, so a directory tarfile lists as `docs`
 is `docs/` in archivey. `reader.get` returns `None` for a name that isn't there, where `getinfo` and
