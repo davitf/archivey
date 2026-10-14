@@ -521,10 +521,12 @@ member is confirmed only when it ends inside them, by its descriptor's CRC or th
 When several candidates are still inconclusive, the first wins, and its CRC or HMAC at
 the end decides, as for one password (§6). The pass keeps the ciphertext of an unread
 encrypted member short enough to be a link (8 KiB) and decrypts it only if the directory
-makes it one. A member whose plaintext fits a link but whose ciphertext is longer (only a
-padded codec stream) is decoded as the pass drains it instead. That may ask a password
-provider about a member that turns out to be no link, so with a provider it happens only
-under `read_link_targets`, which allows asking for a target (its default).
+makes it one. A member whose local header states a plaintext size that fits a link but
+whose ciphertext is longer (only a padded codec stream) is decoded as the pass drains it
+instead, only under `read_link_targets` (its default): that reads a target nobody asked
+for, and may ask a password provider about a member that turns out to be no link. A
+bit-3 member's sizes come after its data, so one that long is not kept or decoded, and
+its target is lost where the file read has it (tracked for stage 3.4).
 
 With one ZipCrypto password, a wrong password that passes the check byte fails where the
 decrypted bytes first meet a check. `open()` parses an LZMA or PPMd member's codec

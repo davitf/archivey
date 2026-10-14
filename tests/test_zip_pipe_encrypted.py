@@ -845,10 +845,14 @@ def test_the_confirm_spool_fits_in_the_walks_window() -> None:
     assert zip_forward_reader._CONFIRM_SPOOL <= zip_local_walk._CODEC_RETAIN
 
 
-def test_a_wrong_password_running_out_of_an_intact_archive_is_skipped() -> None:
+@pytest.mark.parametrize("with_right", [True, False], ids=["list", "alone"])
+def test_a_wrong_password_running_out_of_an_intact_archive_is_not_a_cut(
+    with_right: bool,
+) -> None:
     """A bit-3 member's data runs to the stream's end, so a wrong key whose PPMd
     garbage runs out of input there has not met a cut stream: the archive's end
-    record went by. The right password after it reads the member."""
+    record went by. The right password after it reads the member; alone, it fails
+    as a password that may be wrong, as from a file."""
     pytest.importorskip("pyppmd")
     data = _with_plain_member(
         _bit3(
@@ -862,10 +866,17 @@ def test_a_wrong_password_running_out_of_an_intact_archive_is_skipped() -> None:
             )
         )
     )
-    passwords = [_check_byte_collision(data, _ppmd_accepted), _PASSWORD]
+    wrong = _check_byte_collision(data, _ppmd_accepted)
+    passwords: object = [wrong, _PASSWORD] if with_right else wrong
     expected = _file_read(data, passwords)
-    assert expected["a.txt"] == _TEXT
-    assert _pipe_read(data, passwords) == expected
+    got = _pipe_read(data, passwords)
+    if with_right:
+        assert expected["a.txt"] == _TEXT
+        assert got == expected
+    else:
+        # Only the key finds a bit-3 codec member's end, so a wrong one ends the walk.
+        assert expected["a.txt"][0] is EncryptionError  # type: ignore[index]
+        assert got == {"a.txt": expected["a.txt"], _WALK_ENDED: expected["a.txt"]}
 
 
 def _ppmd_accepted(start: bytes) -> bool:
@@ -942,15 +953,16 @@ def test_an_inconclusive_password_closed_early_is_reported_as_such() -> None:
         assert [c.check for c in _unverified(reader)] == ["confirm_budget_exhausted"]
 
 
+@pytest.mark.parametrize("form", ["value", "list", "provider"])
 @pytest.mark.parametrize("read_link_targets", [True, False])
-def test_a_long_ciphertext_asks_a_provider_only_under_read_link_targets(
-    read_link_targets: bool,
+def test_a_long_ciphertext_is_decoded_only_under_read_link_targets(
+    read_link_targets: bool, form: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A short-plaintext member whose ciphertext is over what the pass keeps is
-    decoded as the pass drains it. With a provider that may ask it, which
-    ``read_link_targets`` allows, as for any link target; with it off the target is
-    left unread instead. (A kept ciphertext is decrypted once the directory
-    makes it a link, which may ask, as from a file.)"""
+    decoded as the pass drains it, which may ask a provider: ``read_link_targets``
+    allows that, as for any link target. With it off nothing decrypts the member,
+    whatever the password's form. (A kept ciphertext is decrypted once the
+    directory makes it a link, which may ask, as from a file.)"""
     data = _with_plain_member(
         build_zipcrypto_zip(
             _PASSWORD,
@@ -966,10 +978,16 @@ def test_a_long_ciphertext_asks_a_provider_only_under_read_link_targets(
         asked.append(request)
         return _PASSWORD
 
+    password = {
+        "value": _PASSWORD,
+        "list": [b"not the password", _PASSWORD],
+        "provider": provider,
+    }[form]
+    calls = _counted_decrypts(monkeypatch)
     with archivey.open_archive(
         NonSeekableBytesIO(data),
         streaming=True,
-        password=provider,
+        password=password,  # type: ignore[arg-type]
         config=archivey.ArchiveyConfig(read_link_targets=read_link_targets),
     ) as reader:
         read = {
@@ -984,15 +1002,16 @@ def test_a_long_ciphertext_asks_a_provider_only_under_read_link_targets(
             if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
         ]
     assert read == {"plain.txt": b"plain"}
+    assert reasons == []
     if read_link_targets:
-        assert len(asked) == 1
+        assert calls == ["link"]
+        assert len(asked) == (form == "provider")
         assert report.members[0].link_target == "target.txt"
-        assert reasons == []
     else:
         # Nothing reads a target on its own, so nothing is reported either.
+        assert calls == []
         assert asked == []
         assert report.members[0].link_target is None
-        assert reasons == []
 
 
 def _unverified(reader: archivey.ArchiveReader) -> list[EncryptedVerificationContext]:

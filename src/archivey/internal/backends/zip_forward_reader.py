@@ -950,9 +950,10 @@ class _PassData:
         only if the directory makes it a link (``_KeptCiphertext``): no key is derived
         for a member nobody asked for, unless its ciphertext is over
         ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here, its failure kept for
-        the target's read. With a password provider, only under
-        ``read_link_targets``, which allows asking it for a target: the member may
-        turn out to be no link, which only a padded codec stream makes this long.
+        the target's read. Only under ``read_link_targets``, which allows reading a
+        target nobody asked for, and asking a password provider for it: the member
+        may turn out to be no link, which only a padded codec stream makes this
+        long.
 
         A bit-3 member is decoded to its end, which is the only way to find it from
         its decoded data, so there a failure ends the walk. An encrypted one is the
@@ -997,17 +998,16 @@ class _PassData:
                 encrypted
                 and not skip
                 and unopened
-                and self._reader._passwords.has_provider()
                 and not self._reader._config.read_link_targets
             ):
-                # Decoding it here may ask the provider, which only
-                # ``read_link_targets`` allows for a member nobody read: its target
-                # is reported locked instead.
+                # Decoding it here is reading a target nobody asked for, which
+                # ``read_link_targets`` off rules out, with any password: no key
+                # derived and no provider asked.
                 self._failure = EncryptionError(
-                    f"The pass did not ask the password provider for "
-                    f"{quoted(self.member.name)}: nobody read it, its ciphertext "
-                    f"is over the {_MAX_KEPT_CIPHERTEXT} bytes the pass keeps for a "
-                    "symlink target, and read_link_targets is off"
+                    f"The pass did not decrypt {quoted(self.member.name)}: nobody "
+                    f"read it, its ciphertext is over the {_MAX_KEPT_CIPHERTEXT} "
+                    "bytes the pass keeps for a symlink target, and "
+                    "read_link_targets is off"
                 )
                 skip = True
         if not skip:
@@ -1336,6 +1336,10 @@ class ZipForwardReader(ZipReader):
         try:
             with self._translated_errors(member.name):
                 current.drain()
+        except BaseException:
+            # The walk ends here: release the decoder (a PPMd child process).
+            current.abandon()
+            raise
         finally:
             self._pass_data = None
         captured = current.captured

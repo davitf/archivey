@@ -137,12 +137,15 @@ each lands with nothing half-done reachable:
       ciphertext is kept the same way. 3b3d3: several candidates or a provider,
       confirmed on the first 1 MiB of the data, kept and replayed to the winner;
       several inconclusive candidates take the first (davi's choice, `design.md`), and
-      an unread member whose ciphertext is over what the pass keeps is decoded
-      with a provider only under `read_link_targets`. Left for 3.4 (every fixture through a
-      pipe): a sized member whose data decodes short of its local header's size
-      reports the pass's own size-mismatch `CorruptionError` where the file read
-      reports the verifier's `TruncatedError`, encrypted or not (both
-      `CorruptionError` under DR-4; a ZipCrypto member shows neither, as the
+      an unread sized member whose ciphertext is over what the pass keeps is
+      decoded only under `read_link_targets`. Left for 3.4 (every fixture through a
+      pipe): a bit-3 encrypted link whose ciphertext is over what the pass keeps
+      loses its target, reported as damaged and over 4096 bytes when it is
+      neither (the kept ciphertext and the rest could be replayed to a decode as
+      the pass drains it); a sized member whose data decodes short of its local
+      header's size reports the pass's own size-mismatch `CorruptionError` where
+      the file read reports the verifier's `TruncatedError`, encrypted or not
+      (both `CorruptionError` under DR-4; a ZipCrypto member shows neither, as the
       password-or-damage error). Data past the declared size already gives the
       file read's error.
 - [x] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the

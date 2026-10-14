@@ -310,11 +310,11 @@ or under a codec that accepts random input, where a wrong candidate passes the c
 check (1 in 256 under ZipCrypto, 1 in 65 536 under AES). A choice that may change: the
 pass could spool the whole ciphertext, walk every survivor to its end and serve the
 winner from the spool, once spool limits are designed. The pass decodes as it drains only
-an unread member whose ciphertext is over what it keeps for a link target. With a
-provider that may ask it about a member that turns out to be no link, so it does so only
-under `read_link_targets`, which allows asking for a target; with it
-off nothing reads a target on its own. A kept one is decrypted only once the directory
-makes it a link, provider or not, as from a file.
+an unread sized member whose plaintext fits a link and whose ciphertext is over what it
+keeps, and only under `read_link_targets`: that reads a target nobody asked for, and may
+ask a provider about a member that turns out to be no link. With it off nothing reads a
+target on its own. A kept one is decrypted only once the directory makes it a link,
+provider or not, as from a file. A bit-3 one that long is neither kept nor decoded.
 
 A codec stream stops after its end without saying how far past it it read: its
 decoder takes input in chunks of up to 1 MiB, and Deflate64 and PPMd cannot say how much
