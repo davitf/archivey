@@ -376,10 +376,10 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   `read_link_targets` says (no key or provider is involved). When that byte reaches the
   data's end, as it does for an unpadded buffer, the data's CRC is checked, as the file
   read's byte past the buffer checks it. An encrypted member nobody read is the
-  exception: no key is derived for it and its ciphertext is longer than the pass keeps,
-  so its target read fails from a pipe, saying so, where a file read decrypts it. It
-  keeps none of a buffer longer than a symlink's with both names at the target cap
-  (16 408 bytes), which Windows does not write: the read of such a link's target fails
+  exception: no key is derived for it and the pass keeps no ciphertext of data that
+  decodes past the cap, so its target read fails from a pipe, saying so, where a file
+  read decrypts it. It keeps none of a buffer longer than a symlink's with both names at
+  the target cap (16 408 bytes), which Windows does not write: the read of such a link's target fails
   as a damaged one's does (`SYMLINK_TARGET_UNAVAILABLE` at listing, a failed member in
   extraction) where a file read reads up to 64 KiB of it. Each such member costs a
   decoder (about 0.1 ms, more for PPMd), which a file read does not spend on a member it

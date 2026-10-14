@@ -1267,8 +1267,8 @@ class _PassData:
                     self._failure = failure
                 skip = True
         if over_cap and encrypted and unopened:
-            # No key is derived for it, and its ciphertext is longer than the pass
-            # keeps: the reason, for its target's report.
+            # No key is derived for it, and the pass keeps no ciphertext of data
+            # that decodes past the target cap: the reason, for its target's report.
             self._capture = None
             self._unread_encrypted = True
         elif over_cap:
@@ -2091,8 +2091,8 @@ class ZipForwardReader(ZipReader):
                 # did not try one.
                 return CorruptionError(
                     f"The pass did not decrypt {quoted(member.name)}: nobody read it, "
-                    f"and its data is over the {cap} bytes the pass keeps the "
-                    "ciphertext of for a symlink target"
+                    f"and it decodes to more than the {cap}-byte symlink target cap, "
+                    "past which the pass keeps no ciphertext"
                 )
             if why == "damaged":
                 return CorruptionError(

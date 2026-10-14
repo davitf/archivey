@@ -312,8 +312,9 @@ def test_a_reparse_buffer_that_is_all_the_data_has_its_crc_checked(
 
 def test_an_unread_encrypted_reparse_buffer_over_the_cap_says_why_from_a_pipe() -> None:
     """The stated exception: the pass derives no key for a member nobody read and
-    keeps no ciphertext this long, so the target a file read reports is unavailable
-    from a pipe, and the reason names the encryption, not a size cap."""
+    keeps no ciphertext of data that decodes past the cap, so the target a file read
+    reports is unavailable from a pipe, and the reason says the pass did not decrypt
+    it."""
     raw = bytearray(build_zipcrypto_zip(b"secret", b"linkdir/", _long_link_buffer()))
     central = raw.rindex(b"PK\x01\x02")
     attributes = _FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
@@ -333,6 +334,7 @@ def test_an_unread_encrypted_reparse_buffer_over_the_cap_says_why_from_a_pipe() 
             if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
         ]
     assert "did not decrypt" in message
+    assert "decodes to more than the 4096-byte symlink target cap" in message
 
 
 def test_a_reparse_buffer_the_caller_read_to_a_failed_crc_is_no_link() -> None:
