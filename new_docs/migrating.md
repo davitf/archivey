@@ -33,8 +33,9 @@ damaged one ([Format](opening.md#format)).
 
 A password is given once, when opening: one string, a list of candidates, or a function that
 supplies them ([Passwords](opening.md#passwords)). zipfile takes one per read or through
-`setpassword`, and only for the older ZIP encryption. Archivey also reads WinZip AES. py7zr takes the
-password when opening, like archivey, and rarfile takes it per read or through `setpassword`.
+`setpassword`, and only for the older ZIP encryption. With the `recommended` extra, archivey also
+reads WinZip AES. py7zr takes the password when opening, like archivey, and rarfile takes it per
+read or through `setpassword`.
 
 Like rarfile, archivey needs a program for the data in a RAR archive: RARLAB's `unrar` or `rar`, or
 `unar` when neither is installed. rarfile can also use `7z` or `bsdtar`, and archivey can't.
@@ -162,7 +163,7 @@ what took several exception types before:
 | --- | --- | --- | --- | --- | --- |
 | Not an archive | `BadZipFile` | `ReadError` | `Bad7zFile` | `NotRarFile` | `FormatDetectionError` |
 | Damaged or cut short | `BadZipFile` | `ReadError`, or `EOFError` from the decompressor | `Bad7zFile`, `CrcError` | `BadRarFile` | `CorruptionError`, or `TruncatedError` when cut short |
-| Wrong password | `RuntimeError` | | `LZMAError` | `BadRarFile` | `EncryptionError` |
+| Wrong password | `RuntimeError` | | `LZMAError` | `BadRarFile`, or `RarWrongPassword` when the names are encrypted too | `EncryptionError` |
 | No member with that name | `KeyError` | `KeyError` | `KeyError` | `NoRarEntry` | `KeyError` |
 
 A missing name raises `KeyError`, which isn't an `ArchiveyError`, because the mistake is in the
