@@ -32,6 +32,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
+    EncryptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
@@ -616,20 +617,30 @@ def test_a_stream_that_is_no_zip_fails_at_open() -> None:
         )
 
 
-def test_an_encrypted_member_is_refused_when_read_and_skipped_otherwise() -> None:
+def test_an_encrypted_member_fails_when_read_as_from_a_file_and_is_skipped() -> None:
     plain = _zip([("a.txt", b"one"), ("b.txt", b"two")], method=zipfile.ZIP_STORED)
     data = bytearray(plain)
-    # Set the encryption bit on a.txt in both headers; its data is then "ciphertext".
+    # Set the encryption bit on a.txt in both headers; its data is then "ciphertext",
+    # too short to hold a ZipCrypto header.
     data[6] |= 0x01
     cd = data.index(b"PK\x01\x02")
     data[cd + 8] |= 0x01
-    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        passes = reader.stream_members()
-        member, stream = next(passes)
-        assert member.is_encrypted and stream is not None
-        with pytest.raises(UnsupportedFeatureError, match="encrypted"):
-            stream.read()
-        assert [m.name for m, _ in passes] == ["b.txt"]
+    for password, error, match in (
+        (None, EncryptionError, "Password required"),
+        ("pw", CorruptionError, "too short"),
+    ):
+        with archivey.open_archive(io.BytesIO(bytes(data)), password=password) as rd:
+            with pytest.raises(error, match=match):
+                rd.read(rd.members()[0])
+        with archivey.open_archive(
+            _pipe(bytes(data)), streaming=True, password=password
+        ) as reader:
+            passes = reader.stream_members()
+            member, stream = next(passes)
+            assert member.is_encrypted and stream is not None
+            with pytest.raises(error, match=match):
+                stream.read()
+            assert [m.name for m, _ in passes] == ["b.txt"]
 
 
 def test_a_bit3_lzma_member_with_no_end_marker_is_refused() -> None:

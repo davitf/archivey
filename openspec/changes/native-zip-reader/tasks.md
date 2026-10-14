@@ -84,7 +84,11 @@ each lands with nothing half-done reachable:
 - 3b3c, the failures found at the end of the pass, in two PRs: 3b3c1 the reader's
   half (the listing and `stream_members()` for 3.3b, 3.3c and 3.3i), 3b3c2 the
   extraction's half (3.3g, and 3.3i's removal from disk).
-- 3b3d, encrypted members from a pipe: 3.2a, and password candidates (3.2b).
+- 3b3d, encrypted members from a pipe, in three PRs: 3b3d1 one password, on a member
+  whose local header states its size or a bit-3 STORED ZipCrypto one (3.2b's first
+  half); 3b3d2 bit-3 encrypted codec members (ZipCrypto through `settle(crc=)`, and
+  3.2a for AES) and bit-3 STORED under AES; 3b3d3 several candidates (3.2b's second
+  half).
 - 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
   (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
 
@@ -115,6 +119,14 @@ each lands with nothing half-done reachable:
       and several candidates, whose bounded confirm reads a prefix the pass keeps
       (`archive-reading`'s "Confirm candidates" requirement); a bit-3 STORED member
       under ZipCrypto or AES ends by the scan without a key, so a skip needs none.
+      3b3d1: one password, taken on its cheap check as from a file (the CRC or HMAC
+      at the end is the test; a ZipCrypto integrity failure says the password may be
+      wrong; `ENCRYPTED_MEMBER_UNVERIFIED` for a stream closed before the read that
+      finds the end); a short member is decrypted as the pass drains it, for a link
+      target, and what failed is kept for the target's read
+      (`test_zip_pipe_encrypted.py`). Several candidates, or a provider, are refused
+      when read until 3b3d3, and the drain must not call a provider for a member
+      nobody asked for.
 - [ ] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
       codec's input, so the AES stage authenticates the ciphertext as it goes, holding
       back the bytes past the codec's end until `settle` says where the data ended
