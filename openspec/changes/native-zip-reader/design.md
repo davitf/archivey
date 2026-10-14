@@ -373,11 +373,13 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   no link makes the member a file again, so of data over the link-target cap the pass
   keeps the start a reparse buffer's parse reads (the 8-byte header, the payload a link
   tag declares, and one byte), decoding that much of a member nobody read unless it is
-  encrypted or `read_link_targets` is off. It keeps none of a buffer longer than a
-  symlink's with both names at the target cap (16 408 bytes), so a link whose buffer is
-  padded past that reports its target unavailable where a file read reads up to 64 KiB of
-  it; and each such member costs a decoder (about 0.1 ms, more for PPMd), which a file
-  read does not spend on a member it does not read. A member the directory renames (a DOS
+  encrypted, whatever `read_link_targets` says (no key or provider is involved). It keeps
+  none of a buffer longer than a symlink's with both names at the target cap (16 408
+  bytes), which Windows does not write: the read of such a link's target fails as a
+  damaged one's does (`SYMLINK_TARGET_UNAVAILABLE` at listing, a failed member in
+  extraction) where a file read reads up to 64 KiB of it. Each such member costs a
+  decoder (about 0.1 ms, more for PPMd), which a file read does not spend on a member it
+  does not read. A member the directory renames (a DOS
   host makes `\` a separator) is written again under its name, from the bytes already on
   disk. It only touches what it created (DR-18). This is the same end-of-pass step that
   already resolves links in a streaming pass.

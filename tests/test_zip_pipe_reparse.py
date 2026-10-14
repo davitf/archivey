@@ -20,6 +20,7 @@ import archivey
 from archivey import ExtractionStatus
 from archivey.config import ListingLimits
 from archivey.diagnostics import DiagnosticCode
+from archivey.internal.backends.zip_forward_reader import _MAX_REPARSE_PREFIX
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.windows_reparse import (
@@ -28,6 +29,7 @@ from archivey.internal.windows_reparse import (
     IO_REPARSE_TAG_SYMLINK,
 )
 from archivey.types import ArchiveMember, MemberType
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_windows_reparse import _reparse_buffer
 
@@ -198,3 +200,73 @@ def test_parent_folders_of_a_file_the_pass_made_a_refused_link_are_taken_back(
         assert [r.status for r in report.results] == [ExtractionStatus.BLOCKED]
         trees.append(sorted(p.relative_to(out) for p in out.rglob("*")))
     assert trees == [[], []]
+
+
+def _extracted(
+    data: bytes, out: Path, *, piped: bool, config: archivey.ArchiveyConfig
+) -> tuple[list[ExtractionStatus], list[tuple[Path, bool]]]:
+    source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=piped, config=config) as reader:
+        report = reader.extract_all(out)
+    tree = sorted((p.relative_to(out), p.is_symlink()) for p in out.rglob("*"))
+    return [r.status for r in report.results], tree
+
+
+@pytest.mark.parametrize("read_link_targets", [True, False])
+def test_a_reparse_link_over_the_cap_is_written_from_a_pipe_as_from_a_file(
+    tmp_path: Path, read_link_targets: bool
+) -> None:
+    """Nobody reads a folder-named member's data, so the pass keeps its buffer's
+    start while draining it, whatever ``read_link_targets`` says: a file read still
+    reads the target extraction asks for."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "t" * 1990, "t" * 1990)
+    assert len(buffer) > MAX_LINK_TARGET_BYTES
+    attributes = _FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
+    data = _zip([("linkdir/", attributes, buffer)])
+    config = archivey.ArchiveyConfig(read_link_targets=read_link_targets)
+    from_file = _extracted(data, tmp_path / "file", piped=False, config=config)
+    piped = _extracted(data, tmp_path / "pipe", piped=True, config=config)
+    assert piped == from_file
+
+
+def _padded_link() -> bytes:
+    """A symlink buffer whose payload declares 20 000 bytes of padding past its names:
+    longer than Windows writes, and well formed."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "tree\\target", "tree\\target")
+    tag, length, reserved = struct.unpack_from("<IHH", buffer)
+    padded = struct.pack("<IHH", tag, length + 20_000, reserved) + buffer[8:]
+    return padded + bytes(20_000)
+
+
+def test_a_link_buffer_padded_past_the_bound_is_read_only_from_a_file() -> None:
+    """The stated exception: the pass keeps no buffer over the bound, so the target a
+    file read reports is unavailable from a pipe, and says why."""
+    content = _padded_link()
+    assert len(content) > _MAX_REPARSE_PREFIX
+    data = _zip([("link", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, content)])
+    assert _from_file(data)["link"].link_target == "tree/target"
+    assert _target_messages(io.BytesIO(data), streaming=False) == []
+    assert _from_pipe(data, read=False)["link"].link_target is None
+    (message,) = _target_messages(NonSeekableBytesIO(data), streaming=True)
+    assert f"reparse buffer of {len(content)} bytes" in message
+    assert f"over the {_MAX_REPARSE_PREFIX}" in message
+
+
+def test_members_refused_a_reparse_prefix_keep_no_message_while_the_pass_runs() -> None:
+    """A member whose data declares a buffer over the bound costs the pass what one
+    declaring none does; the message is built only for a link."""
+
+    def archive(tag: int) -> bytes:
+        content = struct.pack("<IHH", tag, 0xFFFF, 0) + bytes(4100)
+        return _zip([(f"{i}.bin", 0x20, content) for i in range(3000)])
+
+    def listing(data: bytes) -> None:
+        with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+            for _ in reader.stream_members():
+                pass
+
+    refused, control = archive(IO_REPARSE_TAG_SYMLINK), archive(0x80000013)
+    listing(control)
+    refused_peak = traced_peak(lambda: listing(refused))
+    control_peak = traced_peak(lambda: listing(control))
+    assert refused_peak < control_peak + 3000 * 100

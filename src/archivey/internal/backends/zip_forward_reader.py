@@ -313,11 +313,11 @@ def _renamed_error(
     )
 
 
-def _reparse_prefix_length(header: bytes) -> int:
-    """How much of a member's data the file read reads for a Windows reparse buffer
-    starting with ``header`` (``_read_bounded_link_data``): the header, the payload a
-    link tag declares, and one byte."""
-    return REPARSE_HEADER_BYTES + reparse_payload_length(header) + 1
+def _declared_reparse_buffer(header: bytes) -> int:
+    """The length of a Windows reparse buffer starting with ``header``: the header
+    and the payload a link tag declares. The file read reads one byte more
+    (``_read_bounded_link_data``)."""
+    return REPARSE_HEADER_BYTES + reparse_payload_length(header)
 
 
 #: The most of a reparse buffer the pass keeps for a member it cannot yet tell is one:
@@ -385,6 +385,9 @@ class _PassData:
         #: What an encrypted member's read raised, or why the start of data over the
         #: target cap was not kept (``reparse_prefix``), for its link target's read.
         self._failure: ArchiveyError | None = None
+        #: The length of a reparse buffer the data declares over
+        #: ``_MAX_REPARSE_PREFIX``, which the pass did not keep.
+        self._overlong_buffer: int | None = None
         #: What opening the decoded stream raised: it runs once, as the decrypt
         #: stage reads its header from the data (a second try would read past it).
         self._open_error: ArchiveyError | None = None
@@ -410,7 +413,7 @@ class _PassData:
         self._size = 0
         self._capture: bytearray | None = bytearray()
         # Once the data is over the target cap: how much of its start the capture
-        # keeps, for a Windows reparse buffer (``_reparse_prefix_length``).
+        # keeps, for a Windows reparse buffer (``_declared_reparse_buffer``).
         self._prefix_want: int | None = None
         #: The data has ended and been checked, or the pass has moved past it.
         self.done = False
@@ -436,7 +439,7 @@ class _PassData:
         and data whose tag is no link's goes back to being a file whatever follows, so
         the file read reads no more than this (``_read_bounded_link_data``). Whether the
         member is a reparse point at all is only known from the directory, so the pass
-        keeps no buffer longer than ``_MAX_REPARSE_PREFIX`` (``_failure`` says so).
+        keeps no buffer longer than ``_MAX_REPARSE_PREFIX`` (``uncaptured`` says so).
         """
         capture = self._capture
         want = self._prefix_want
@@ -474,19 +477,16 @@ class _PassData:
             # what was kept and this chunk.
             head = bytes(capture[:REPARSE_HEADER_BYTES])
             head += chunk[: REPARSE_HEADER_BYTES - len(head)]
-            want = _reparse_prefix_length(head)
-            if want - 1 > _MAX_REPARSE_PREFIX:
+            declared = _declared_reparse_buffer(head)
+            if declared > _MAX_REPARSE_PREFIX:
                 # The member's own bytes say how much the pass keeps of every such
                 # member until the directory comes, so no more than a target within
-                # the cap needs.
+                # the cap needs. The length alone is kept: the message is built only
+                # if the directory makes the member a link.
                 self._capture = None
-                self._failure = CorruptionError(
-                    f"The data of {quoted(self.member.name)} starts with a reparse "
-                    f"buffer of {want - 1} bytes, over the {_MAX_REPARSE_PREFIX} the "
-                    "pass keeps of one before the directory says it is a link"
-                )
+                self._overlong_buffer = declared
                 return
-            self._prefix_want = want
+            want = self._prefix_want = declared + 1
             del capture[want:]
         room = want - len(capture)
         if room > 0:
@@ -1171,21 +1171,22 @@ class _PassData:
         A member whose local header states its size is skipped without decoding, unless
         it is short enough to be a link target: the directory may yet make it one, and
         its target is these bytes. Of a longer one only the start a Windows reparse
-        buffer's parse reads is decoded (``reparse_prefix``), under
-        ``read_link_targets``, unless it is encrypted and nobody read it (no key is
-        derived for it). That costs every such member a decoder, which a file read does
-        not pay for a member it does not read: about 0.1 ms, and for PPMd, whose decoder
-        holds a sized member's input until it is all in, that input up to
-        ``DecoderLimits``' in-process bound, past which a child process starts. That
-        decode is only for the target, so its failure loses the bytes and nothing else,
-        as a member nobody reads costs nothing from a file. An encrypted one keeps its
-        ciphertext instead, decrypted only if the directory makes it a link
-        (``_KeptCiphertext``): no key is derived for a member nobody asked for, unless
-        its ciphertext is over ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here,
-        its failure kept for the target's read. Only under ``read_link_targets``, which
-        allows reading a target nobody asked for, and asking a password provider for it:
-        the member may turn out to be no link, which only a padded codec stream makes
-        this long.
+        buffer's parse reads is decoded (``reparse_prefix``), unless it is encrypted and
+        nobody read it (no key is derived for it). As with data within the cap,
+        ``read_link_targets`` off does not stop it: no key is derived and no provider
+        asked, and a file read still reads the target when asked. That costs every such
+        member a decoder, which a file read does not pay for a member it does not read:
+        about 0.1 ms, and for PPMd, whose decoder holds a sized member's input until it
+        is all in, that input up to ``DecoderLimits``' in-process bound, past which a
+        child process starts. That decode is only for the target, so its failure loses
+        the bytes and nothing else, as a member nobody reads costs nothing from a file.
+        An encrypted one keeps its ciphertext instead, decrypted only if the directory
+        makes it a link (``_KeptCiphertext``): no key is derived for a member nobody
+        asked for, unless its ciphertext is over ``_MAX_KEPT_CIPHERTEXT``, and then it
+        is decoded here, its failure kept for the target's read. Only under
+        ``read_link_targets``, which allows reading a target nobody asked for, and
+        asking a password provider for it: the member may turn out to be no link, which
+        only a padded codec stream makes this long.
 
         A bit-3 member is decoded to its end, which is the only way to find it from
         its decoded data, so there a failure ends the walk. An encrypted one is the
@@ -1257,11 +1258,7 @@ class _PassData:
                 if encrypted:
                     self._failure = failure
                 skip = True
-        if (
-            over_cap
-            and not (encrypted and unopened)
-            and self._reader._config.read_link_targets
-        ):
+        if over_cap and not (encrypted and unopened):
             # Data over the target cap that nobody read to its end: its start, which
             # decides a reparse point's type and target once the directory makes it
             # one, as a file read reads it (``reparse_prefix``).
@@ -1292,13 +1289,16 @@ class _PassData:
                 self._failure = error
 
     @property
-    def uncaptured(self) -> str | ArchiveyError | _KeptCiphertext | None:
+    def uncaptured(self) -> str | int | ArchiveyError | _KeptCiphertext | None:
         """Why a drained member's bytes were not kept, when not for their length:
-        what the read of an encrypted member raised, its kept ciphertext, or
-        ``"damaged"`` (see ``ZipForwardReader._link_target_opener``).
+        what the read of an encrypted member raised, its kept ciphertext, the length
+        of a reparse buffer over ``_MAX_REPARSE_PREFIX``, or ``"damaged"`` (see
+        ``ZipForwardReader._link_target_opener``).
         """
         if self._failure is not None:
             return self._failure
+        if self._overlong_buffer is not None:
+            return self._overlong_buffer
         if self._kept is not None:
             return self._kept
         if self._too_long:
@@ -1525,7 +1525,7 @@ class ZipForwardReader(ZipReader):
         self._captured: dict[int, bytes] = {}
         # Member id -> why its bytes were not kept, when not for their length
         # (``_PassData.uncaptured``), so a link's missing target says why.
-        self._uncaptured: dict[int, str | ArchiveyError | _KeptCiphertext] = {}
+        self._uncaptured: dict[int, str | int | ArchiveyError | _KeptCiphertext] = {}
         # Local header offset -> what the data descriptor after a bit-3 member's data
         # said (CRC, compressed size, size), for the directory to confirm at the end.
         self._descriptors: dict[int, tuple[int, int, int]] = {}
@@ -2053,6 +2053,14 @@ class ZipForwardReader(ZipReader):
                 return CorruptionError(
                     f"The data of symlink {quoted(member.name)} failed its check as "
                     "the pass read it"
+                )
+            if isinstance(why, int):
+                # A target report takes a CorruptionError: the pass cannot read what
+                # the file read would.
+                return CorruptionError(
+                    f"The data of {quoted(member.name)} starts with a reparse buffer "
+                    f"of {why} bytes, over the {_MAX_REPARSE_PREFIX} the pass keeps "
+                    "of one before the directory says it is a link"
                 )
             cap = MAX_LINK_TARGET_BYTES
             return CorruptionError(
