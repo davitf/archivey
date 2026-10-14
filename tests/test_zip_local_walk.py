@@ -32,6 +32,7 @@ from archivey.internal.backends.zip_local_walk import (
     match_descriptor,
 )
 from archivey.internal.sfx import SFX_MAX
+from tests.zip_descriptors import without_descriptor_signatures
 
 
 class _Unseekable(io.RawIOBase):
@@ -313,7 +314,7 @@ def test_a_gap_after_a_deferred_last_member_is_not_read_past() -> None:
     # the scan take the real descriptor for data. Gaps are read past only after a
     # member whose header states its size.
     walk = LocalHeaderWalk(_Unseekable(_with_gap(_write(pipe=True), b"APK " * 10)))
-    with pytest.raises(UnsupportedFeatureError, match="no signature"):
+    with pytest.raises(UnsupportedFeatureError, match="none matches its data"):
         while (entry := walk.next_entry()) is not None:
             _decode(walk, entry)
 
@@ -362,20 +363,30 @@ def test_a_stream_cut_inside_scanned_stored_data_is_truncation() -> None:
         data.read()
 
 
-def test_a_stored_descriptor_without_its_signature_is_unsupported() -> None:
-    """The scan finds a descriptor by its signature; a writer that left it out makes a
-    whole archive a forward read cannot split."""
-    raw = bytearray(_write(pipe=True))
-    first = raw.index(DATA_DESCRIPTOR_SIGNATURE)
-    del raw[first : first + 4]
-    # Every offset after it moved back by four bytes.
-    eocd = raw.rindex(b"PK\x05\x06")
-    cd_offset = struct.unpack_from("<L", raw, eocd + 16)[0] - 4
-    struct.pack_into("<L", raw, eocd + 16, cd_offset)
+def test_descriptors_without_their_signature_are_found_by_what_follows() -> None:
+    """Early PKZIP wrote descriptors without ``PK\\x07\\x08`` (APPNOTE 4.3.9.3): the
+    scan finds one by the ZIP signature after it and the size and CRC it states."""
+    piped = _write(pipe=True)
+    raw = without_descriptor_signatures(piped)
+    assert DATA_DESCRIPTOR_SIGNATURE not in raw
+    read, _walk_ = _walk(raw)
+    with zipfile.ZipFile(io.BytesIO(piped)) as zf:
+        assert [r.data for r in read] == [zf.read(i) for i in zf.infolist()]
+    stored = next(r for r in read if r.name == b"big-stored.bin")
+    assert stored.descriptor is not None
+    assert stored.descriptor.length == 12
+
+
+def test_an_unsigned_descriptor_that_matches_nothing_is_unsupported() -> None:
+    """A descriptor whose sizes do not match the data cannot be told from data: the
+    scan reads to the end record and gives up."""
+    raw = bytearray(without_descriptor_signatures(_write(pipe=True)))
+    first = raw.index(b"stored " * 50) + len(b"stored " * 50)
+    raw[first + 4] ^= 0xFF  # the compressed size's low byte
     walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
     entry = walk.next_entry()
     assert entry is not None
-    with pytest.raises(UnsupportedFeatureError, match="no signature"):
+    with pytest.raises(UnsupportedFeatureError, match="none matches its data"):
         walk.member_data(entry).read()
 
 

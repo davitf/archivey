@@ -357,18 +357,19 @@ def test_an_encrypted_link_target_needs_a_password_as_from_a_file() -> None:
             assert _link_target_reasons(reader) == ["password_required"]
 
 
-def test_an_encrypted_bit3_compressed_member_ends_the_pass_without_its_password() -> (
-    None
-):
-    """Nothing but its decrypted codec finds where its data ends, so the pass needs
-    the key to go past it, though nobody asked for it."""
+def test_an_encrypted_bit3_compressed_member_is_passed_without_its_password() -> None:
+    """Nobody asked for it, so the scan finds its end on the bytes as stored, and
+    the pass needs no key to go past it."""
     data = bytearray(_streamed(_zip([("a.txt", b"one" * 50), ("b.txt", b"two")])))
     data[6] |= 0x01
     data[data.index(b"PK\x01\x02") + 8] |= 0x01
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        with pytest.raises(EncryptionError, match="Password required"):
-            for _ in reader.stream_members(lambda m: m.name == "b.txt"):
-                pass
+        read = [
+            (member.name, stream.read())
+            for member, stream in reader.stream_members(lambda m: m.name == "b.txt")
+            if stream is not None
+        ]
+    assert read == [("b.txt", b"two")]
 
 
 def _repeat_directory(data: bytes, times: int) -> bytes:

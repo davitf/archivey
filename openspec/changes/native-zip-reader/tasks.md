@@ -84,11 +84,12 @@ each lands with nothing half-done reachable:
 - 3b3c, the failures found at the end of the pass, in two PRs: 3b3c1 the reader's
   half (the listing and `stream_members()` for 3.3b, 3.3c and 3.3i), 3b3c2 the
   extraction's half (3.3g, and 3.3i's removal from disk).
-- 3b3d, encrypted members from a pipe, in three PRs: 3b3d1 one password, on a member
+- 3b3d, encrypted members from a pipe, in four PRs: 3b3d1 one password, on a member
   whose local header states its size or a bit-3 STORED ZipCrypto one (3.2b's first
   half); 3b3d2 bit-3 encrypted codec members (ZipCrypto through `settle(crc=)`, and
-  3.2a for AES) and bit-3 STORED under AES; 3b3d3 several candidates (3.2b's second
-  half).
+  3.2a for AES) and bit-3 STORED under AES; 3b3d2b the descriptor scan for unread
+  encrypted codec members, and descriptors without their signature; 3b3d3 several
+  candidates (3.2b's second half).
 - 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
   (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
 
@@ -127,12 +128,13 @@ each lands with nothing half-done reachable:
       asked for), and an encrypted member's failed read is kept for its target's
       read (`test_zip_pipe_encrypted.py`). Several candidates, or a provider, are
       refused when read until 3b3d3, and the pass must not call a provider for a
-      member nobody asked for (3b3d3 must still pass a bit-3 codec member nobody
-      asked for, which needs its key). 3b3d2: a bit-3 STORED member nobody read
-      keeps its ciphertext as a sized one does, its scan's descriptor with it, so
-      its link target reads as from a file; a bit-3 codec member is decrypted and
-      decoded to find its end, read or not, and without the key the walk ends there
-      with the member's error. Left for 3.4 (every fixture through a pipe): a sized member whose data
+      member nobody asked for. 3b3d2: a bit-3 STORED member nobody read keeps its
+      ciphertext as a sized one does, its scan's descriptor with it, so its link
+      target reads as from a file; a bit-3 codec member the caller reads is
+      decrypted and decoded to find its end, and a failure ends the walk there with
+      the member's error. 3b3d2b: one nobody read is scanned for like a STORED one
+      (signed or unsigned descriptor), so passing it needs no key, and its
+      ciphertext is kept the same way. Left for 3.4 (every fixture through a pipe): a sized member whose data
       decodes short of its local header's size reports the pass's own
       size-mismatch `CorruptionError` where the file read reports the verifier's
       `TruncatedError`, encrypted or not (both `CorruptionError` under DR-4; a

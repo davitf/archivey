@@ -302,8 +302,9 @@ class _PassData:
         return self.entry.deferred
 
     def _runs_on(self) -> bool:
-        """The data has no end of its own: only the codec finds it (bit 3)."""
-        return self._deferred() and self._method() != 0
+        """The data has no end of its own: only the codec finds it (bit 3). Kept
+        ciphertext ends where the walk's scan found the data's end."""
+        return self._deferred() and self._method() != 0 and not self._from_kept
 
     def _method(self) -> int:
         """The compression method, under WinZip AES the one its extra field names."""
@@ -402,9 +403,10 @@ class _PassData:
         candidate could not start over.
 
         A bit-3 member's data has no size to decrypt by. A STORED one's ends where
-        the walk's scan finds its descriptor, on the ciphertext; a codec one's where
-        the decrypted codec ends, and the AES code is checked once the descriptor
-        says where that was (``_finish``).
+        the walk's scan finds its descriptor, on the ciphertext, as does a codec
+        one's kept by ``drain``; a codec one's read from the walk where the decrypted
+        codec ends, and the AES code is checked once the descriptor says where that
+        was (``_finish``).
         """
         reader = self._reader
         member = self.member
@@ -427,7 +429,8 @@ class _PassData:
                 "source that cannot seek are not supported yet: give one password"
             )
         raw = _CutShortWatch(self._data, self)
-        # A bit-3 STORED member's data ends where its ciphertext does.
+        # A bit-3 STORED member's data, or kept ciphertext, ends where its
+        # ciphertext does.
         ends_with_data = not self._runs_on()
         stage: Callable[[bytes], BinaryIO]
         aes = loc.aes
@@ -670,11 +673,12 @@ class _PassData:
         ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here, its failure kept for
         the target's read.
 
-        A bit-3 member is decoded to its end, which is the only way to find it, so
-        there a failure ends the walk; an encrypted one needs its key for that, even
-        when nobody asked for it. An encrypted bit-3 STORED one is the exception: its
-        scan finds the end on the ciphertext, which it keeps as a sized one does, if
-        it is short enough to be a link's.
+        A bit-3 member is decoded to its end, which is the only way to find it from
+        its decoded data, so there a failure ends the walk. An encrypted one is the
+        exception, STORED or nobody read it: the walk's scan finds the end on the
+        ciphertext, with no key, and its ciphertext is kept as a sized one's is, if
+        it is short enough to be a link's. One the caller opened is decoded to its
+        end with the key it was opened with.
         """
         if self.done:
             return
@@ -683,8 +687,12 @@ class _PassData:
         deferred = self._deferred()
         unopened = self._decoded is None and self._open_error is None
         # The data's end is found without decoding it: by its size, or for encrypted
-        # bit-3 STORED data by the scan, on the ciphertext.
-        ends_undecoded = not deferred or (encrypted and self._method() == 0)
+        # bit-3 data by the scan, on the ciphertext.
+        ends_undecoded = not deferred or (
+            encrypted and (self._method() == 0 or unopened)
+        )
+        if deferred and ends_undecoded and self._method() != 0:
+            self._data = self._reader._walker.scan_member_data(self._data)
         kept: bytes | None = None
         if deferred:
             skip = False
