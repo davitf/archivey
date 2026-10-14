@@ -466,7 +466,10 @@ names only now). Each is a member-scoped failure of the member it names, handled
     entry it is `NOT_OVERWRITTEN`, and under `"error"` it carries the collision's
     `ExtractionError`. A refusal by the filter or a policy check, which random access
     makes on every copy, stands on a member now not current. A directory entry with no
-    local entry never had a result, so one is added, `FAILED`. Results stay in
+    local entry never had a result, so one is added: it is handled as any member, and
+    the overwrite policy decides first, so it is `FAILED` where the write reads its
+    data. Its name counts for which copy is current, as in the seekable listing, so a
+    listed copy it follows is not current and is taken back. Results stay in
     member-processing order.
   - **The path.** After the revisions, an entry this run wrote stays only if the member
     whose result names it is `EXTRACTED`. Any other entry archivey wrote there is

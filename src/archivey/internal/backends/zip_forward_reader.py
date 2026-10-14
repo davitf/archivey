@@ -63,7 +63,10 @@ from archivey.internal.backends.zip_reader import (
     _zip_timestamps,
     _ZipLocator,
 )
-from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
+from archivey.internal.base_reader import (
+    MAX_LINK_TARGET_BYTES,
+    _apply_last_entry_wins_is_current,
+)
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
@@ -747,6 +750,9 @@ class ZipForwardReader(ZipReader):
         unmatched: list[int] = []
         shared: list[int] = []
         failed: list[tuple[int, ArchiveMember, CorruptionError]] = []
+        # Listed and missing members in the directory's order, for is_current.
+        placed: list[ArchiveMember] = []
+        any_missing = False
         for position, stored in enumerate(stored_offsets):
             offset = stored + end.base
             if offset not in local_offsets:
@@ -755,6 +761,8 @@ class ZipForwardReader(ZipReader):
                 else:
                     missing = self._missing_member(entries[position], len(failed))
                     failed.append((position, missing, _missing_error(missing, offset)))
+                    placed.append(missing)
+                    any_missing = True
                 continue
             if offset in matched:
                 shared.append(position)
@@ -764,6 +772,7 @@ class ZipForwardReader(ZipReader):
             if member is None:
                 continue
             order.append(member)
+            placed.append(member)
             if entries is None:
                 continue
             central = entries[position]
@@ -784,6 +793,12 @@ class ZipForwardReader(ZipReader):
         unlisted = sorted(local_offsets - matched)
         for member, central in updates:
             self._update_from_directory(member, central)
+        if any_missing:
+            # A missing entry has a name too, and takes part in last-entry-wins as the
+            # seekable read's listing does: a listed copy it follows is not current.
+            # The stamp over the listed members alone (``_end_walk``) leaves a member
+            # made not current here as it is.
+            _apply_last_entry_wins_is_current(placed)
         if discard:
             # The unlisted members leave first, so the order covers what is listed,
             # and the discard stamps is_current by it; after it no member is named.
@@ -850,7 +865,8 @@ class ZipForwardReader(ZipReader):
         the pass to fail (``_failed_at_end``).
 
         The pass never yielded it and the listing does not keep it; its id follows
-        those the walk gave out, so it is told apart from every listed member.
+        those the walk gave out, so it is told apart from every listed member. Its
+        name counts for which copy is current (``_read_directory``).
         """
         member = self._to_member(central, self._walk_position + nth)
         member._member_id = self._walk_position + nth

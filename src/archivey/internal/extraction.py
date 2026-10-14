@@ -1861,41 +1861,17 @@ class ExtractionCoordinator:
         failures: list[tuple[int, ArchiveyError]],
     ) -> None:
         """Give ``member``, which the index lists and the stream never held, the
-        result random access gives it: the filter and the policy checks run as for any
-        member, and one they let through fails with ``error``, its data being absent.
-        A ``FAILED`` result is appended to ``failures`` for the caller to stop on; any
-        other outcome stops or is logged here, as the pass does."""
-        current = self._current = _MemberState()
-        try:
-            transformed, presented_name, rewrites = self._transform(member)
-        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-            raise
-        except (ArchiveyError, OSError) as exc:
-            spelled_from = current.spelled_from
-            if isinstance(exc, ArchiveyError) and spelled_from is not None:
-                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
-            found, status = self._classify(exc, member.name)
-            index = self._append_result(ExtractionResult(member, None, status, found))
-            if isinstance(found, ArchiveyError) and status is ExtractionStatus.FAILED:
-                failures.append((index, found))
-            else:
-                self._stop_or_log(
-                    exc, found, status, kind=member.type.value, name=member.name
-                )
-            return
-        if transformed is None:
-            return
+        result random access gives it: it is handled as a held place
+        (``_redo_revised_member``), so the filter, the policy checks and the overwrite
+        policy run as for any member, and its data, read where the write needs it,
+        fails with ``error``. A ``FAILED`` result is appended to ``failures`` for the
+        caller to stop on; any other outcome stops or is logged there, as the pass
+        does."""
         index = self._append_result(
-            ExtractionResult(
-                member,
-                None,
-                ExtractionStatus.FAILED,
-                error,
-                presented_name=presented_name,
-                rewrites=rewrites,
-            )
+            ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
         )
-        failures.append((index, error))
+        self._state.dropped.add(index)
+        self._redo_revised_member(index, missing=error, failures=failures)
 
     def _fail_at_end(self, index: int, error: ArchiveyError) -> None:
         """Take back what result ``index`` wrote, and record it ``FAILED``."""
@@ -2099,6 +2075,7 @@ class ExtractionCoordinator:
         index: int,
         *,
         damaged: bool = False,
+        missing: ArchiveyError | None = None,
         failures: list[tuple[int, ArchiveyError]] | None = None,
     ) -> None:
         """Handle result ``index``'s member again, now that the walk has changed its
@@ -2118,7 +2095,9 @@ class ExtractionCoordinator:
         written for them that the change could alter.
 
         ``damaged``: the walk changed the member because the archive contradicts
-        itself, so a failure for passed bytes is ``CorruptionError``. ``failures``:
+        itself, so a failure for passed bytes is ``CorruptionError``. ``missing``: the
+        member's data was never in the stream (``_settle_missing_member``), and reading
+        it raises this, whatever its size. ``failures``:
         a failure is appended there for the caller to stop on, not stopped on here.
         """
         state = self._state
@@ -2151,7 +2130,9 @@ class ExtractionCoordinator:
             else:
                 state.dropped.discard(index)
                 if transformed.type is MemberType.FILE:
-                    if old_path is not None and old_path in current.parked:
+                    if missing is not None:
+                        held = _passed_data(missing)
+                    elif old_path is not None and old_path in current.parked:
                         held = open(long_path(old_path), "rb")  # noqa: SIM115
                         current.recopy = True
                     elif member.size == 0:

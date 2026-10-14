@@ -932,3 +932,79 @@ def test_a_reversed_pair_refused_before_the_write_matches_the_seekable_results(
             (r.member.is_current, r.status.value) for r in report.results
         )
     assert outcomes[True] == outcomes[False] == [(False, status), (True, status)]
+
+
+def _compare_with_file_read(
+    data: bytes, tmp_path: Path, *, seed: bytes | None = None, **options: object
+) -> dict[bool, tuple[list[tuple[str, bool, str, str]], dict[str, bytes]]]:
+    """Each run's (name, is_current, status, error type) results, sorted, and what it
+    left on disk, for a pipe read (``True``) and a file read (``False``) of ``data``.
+    ``seed`` is put at ``b.txt`` in each destination first."""
+    runs = {}
+    for piped in (True, False):
+        dest = tmp_path / ("pipe" if piped else "file")
+        dest.mkdir()
+        if seed is not None:
+            (dest / "b.txt").write_bytes(seed)
+        source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=piped) as reader:
+            report = reader.extract_all(dest, on_error=OnError.CONTINUE, **options)  # type: ignore[arg-type]
+        runs[piped] = (
+            sorted(
+                (
+                    r.member.name,
+                    r.member.is_current,
+                    r.status.value,
+                    type(r.error).__name__,
+                )
+                for r in report.results
+            ),
+            {p.name: p.read_bytes() for p in dest.iterdir()},
+        )
+    return runs
+
+
+def test_a_missing_entry_makes_the_copy_it_follows_not_current(tmp_path: Path) -> None:
+    hand = _Hand()
+    hand.local(b"a.txt", b"one")
+    hand.local(b"b.txt", b"two")
+    data = bytearray(hand.directory(0, 1))
+    # The second entry names a.txt and points where the stream held nothing.
+    cd = data.rindex(b"PK\x01\x02")
+    struct.pack_into("<I", data, cd + 42, 999_999)
+    data[cd + 46 : cd + 51] = b"a.txt"
+    runs = _compare_with_file_read(bytes(data), tmp_path)
+    assert (
+        runs[True]
+        == runs[False]
+        == (
+            [
+                ("a.txt", False, "superseded", "NoneType"),
+                ("a.txt", True, "failed", "CorruptionError"),
+            ],
+            {},
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("overwrite", "outcome"),
+    [
+        (OverwritePolicy.SKIP, ("not_overwritten", "NoneType")),
+        (OverwritePolicy.ERROR, ("failed", "ExtractionError")),
+    ],
+)
+def test_a_missing_entry_meets_the_overwrite_policy_first(
+    tmp_path: Path, overwrite: OverwritePolicy, outcome: tuple[str, str]
+) -> None:
+    runs = _compare_with_file_read(
+        _missing_entry(), tmp_path, seed=b"caller's", overwrite=overwrite
+    )
+    assert (
+        runs[True]
+        == runs[False]
+        == (
+            [("a.txt", True, "extracted", "NoneType"), ("b.txt", True, *outcome)],
+            {"a.txt": b"one", "b.txt": b"caller's"},
+        )
+    )
