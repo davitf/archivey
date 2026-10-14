@@ -401,6 +401,8 @@ def test_strict_mode_none_defaults() -> None:
         (0o755, 0o755),
         (0o700, 0o700),
         (0o744, 0o744),
+        (0o011, 0o000),  # no owner execute: group/other execute go too, as in tarfile
+        (0o655, 0o644),
         (0o604, 0o604),
         (0o000, 0o000),
     ],
@@ -1004,11 +1006,15 @@ def _extract_removing_a_directory(
     freed inode."""
     import archivey.internal.extraction as extraction_mod
 
-    escapes = extraction_mod._symlink_escapes
+    problem = extraction_mod._symlink_problem
     monkeypatch.setattr(
         extraction_mod,
-        "_symlink_escapes",
-        lambda link, target, root: link.name == "d" or escapes(link, target, root),
+        "_symlink_problem",
+        lambda link, target, root: (
+            extraction_mod.SYMLINK_LOOPS
+            if link.name == "d"
+            else problem(link, target, root)
+        ),
     )
     lstat, fstat = os.lstat, os.fstat
     monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))

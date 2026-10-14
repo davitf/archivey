@@ -186,18 +186,13 @@ def link_resolution_problem(path: Path, root: Path) -> str | None:
     does: ``SYMLINK_LOOPS`` for a loop on the way, else ``SYMLINK_ESCAPES``. A path
     that cannot be resolved for another reason counts as an escape, as it does in the
     check after a link is created. Both are refused the same way; only the message
-    differs, so a loop inside the destination is not reported as an escape."""
+    differs. A loop cannot be resolved at all, so there is no inside or outside to
+    compare: the loop message wins even when the target might have led outside."""
     try:
         resolved = resolve_or_raise_on_loop(path)
     except OSError as exc:
         return SYMLINK_LOOPS if exc.errno == errno.ELOOP else SYMLINK_ESCAPES
     return None if _within(resolved, root) else SYMLINK_ESCAPES
-
-
-def _escapes(path: Path, root: Path) -> bool:
-    """Whether ``path`` resolves outside ``root`` (or loops; see
-    ``link_resolution_problem``)."""
-    return link_resolution_problem(path, root) is not None
 
 
 def _check_path_string(
@@ -462,8 +457,10 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
     that distrusts the archive must not be the one that opens a file up to other users.
     Execute bits the archive stored are kept, as GNU tar, unzip, 7-Zip, unar and
     ``tarfile``'s ``data`` filter keep them: a script extracted from a release tarball
-    must still run. Only setuid, setgid and sticky are what make a stored mode
-    dangerous, and those are stripped.
+    must still run. Setuid, setgid and sticky are stripped (the ``0o755`` mask clears
+    them). As in the ``data`` filter, a file whose owner has no execute bit loses the
+    group and other execute bits too, so ``0o011`` is written ``0o000``. The filter's
+    other step, adding owner read and write, is left out: it would widen the mode.
 
     A hardlink's mode is treated as a file's: a link materialized as a copy (the source
     was not selected, or it sits on another device) is written with it.
@@ -481,7 +478,7 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
         if mode is None:
             new["mode"] = 0o644
         else:
-            new["mode"] = mode & ~_HIGH_BITS & 0o755
+            new["mode"] = mode & 0o755 if mode & 0o100 else mode & 0o644
     return member.replace(**new)
 
 

@@ -598,6 +598,7 @@ group.
 | FILE `mode=0o755` under `STRICT` | Written as `0o755` |
 | FILE `mode=0o777` or `0o4755` under `STRICT` | Written as `0o755` |
 | FILE `mode=0o660` under `STRICT` | Written as `0o640`: a bit the file did not store is never added |
+| FILE `mode=0o011` or `0o655` under `STRICT` | Written as `0o000` / `0o644`: without the owner execute bit, group and other execute are cleared too, as `tarfile`'s `data` filter does |
 | FILE `mode=0o755` under `STANDARD` | Execute bits preserved; setuid/setgid/sticky stripped |
 | FILE with uid/gid under `TRUSTED` as root | uid/gid applied |
 | FILE with uid/gid under `STANDARD` | A `filter` sees the stored uid/gid; nothing is chowned |

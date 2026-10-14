@@ -73,9 +73,10 @@ encrypted members fail as if no password had been given.
 ### Notes
 
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
-- Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`, `--probe-content`) go
-  before or after the verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...) go after a verb that
-  owns them (`--policy` after `extract`, `--exclude` after `list`, `test` or `extract`).
+- Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`, `--probe-content`)
+  go before or after the verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...)
+  go after a verb that owns them (`--policy` after `extract`, `--exclude` after `list`,
+  `test` or `extract`).
 - A raw LZMA, zlib or Brotli stream has no magic bytes, so it is recognised only by its
   extension (`.lzma`, `.zz`, `.br`, ...). For a file named otherwise, pass
   `--probe-content`: detection then trial-decodes the start of the file. It is off by

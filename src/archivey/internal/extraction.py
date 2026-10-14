@@ -168,7 +168,9 @@ def _symlink_problem(link_path: Path, target: str, dest_root: Path) -> str | Non
     Resolved through the real filesystem, so links on the way are followed. A link
     that cannot be resolved is refused: fail safe rather than crash. A symlink loop
     (found on every Python version by ``resolve_or_raise_on_loop``) is refused with
-    its own message; anything else with the escape message.
+    its own message; anything else with the escape message. A loop cannot be
+    resolved at all, so the loop message wins even when the target might have led
+    outside ``dest_root``.
     """
     try:
         resolved = resolve_or_raise_on_loop(link_path.parent / target)
@@ -177,12 +179,6 @@ def _symlink_problem(link_path: Path, target: str, dest_root: Path) -> str | Non
     if resolved == dest_root or resolved.is_relative_to(dest_root):
         return None
     return SYMLINK_ESCAPES
-
-
-def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
-    """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now (or
-    cannot be resolved; see ``_symlink_problem``)."""
-    return _symlink_problem(link_path, target, dest_root) is not None
 
 
 def _typed_os_error(
@@ -3895,14 +3891,22 @@ class ExtractionCoordinator:
         if links is None or not links.has_changes:
             return None
         dest_root = state.dest_root
-        outcome = links.recheck(
-            lambda path, target: _symlink_escapes(path, target, dest_root)
-        )
+        # The recheck asks a yes/no question; the reason is kept here, per link path,
+        # so a loop a later member closed is named as a loop.
+        problems: dict[Path, str] = {}
+
+        def escapes(path: Path, target: str) -> bool:
+            problem = _symlink_problem(path, target, dest_root)
+            if problem is not None:
+                problems[path] = problem
+            return problem is not None
+
+        outcome = links.recheck(escapes)
         removed = [
             (
                 link,
-                "Symlink target escapes destination: a later member changed a path "
-                "it resolves through",
+                f"{problems.get(link.path, SYMLINK_ESCAPES)}: a later member changed "
+                "a path it resolves through",
             )
             for link in outcome.escaped
         ] + [

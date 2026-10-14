@@ -148,7 +148,7 @@ Some members are refused under every policy, and others depend on it:
 | `what?.txt`, with a character Windows doesn't allow | Written as `what%3F.txt` | Written as `what%3F.txt` | Written as is |
 | `back\slash` in a TAR | Written as `slash` in a folder `back` | Same as `"strict"` | Written as is |
 | `README`, then `readme`, or `café` written two ways in Unicode | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
-| A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
+| A file with mode `rwsr-xr-x` | Written as `rwxr-xr-x` | Written as `rwxr-xr-x` | Written as is |
 | A file with mode `rw-rw-rw-` | Written as `rw-r--r--` | Written as is | Written as is |
 
 `"strict"` and `"standard"` treat `README` and `readme` as the same file on every system. An
