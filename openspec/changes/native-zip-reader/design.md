@@ -478,10 +478,10 @@ names only now). Each is a member-scoped failure of the member it names, handled
   settle.
 
 The first two (and the differing names) make a streaming extraction fail a member that
-the seekable extraction of the same archive writes. That is the only place the two access modes differ on disk.
-Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
-a little; matching them would mean buffering every member until the directory arrives
-(ADR 0010).
+the seekable extraction of the same archive writes. That is the only place the two
+access modes differ on disk. These shapes come only from crafted or hand-edited
+archives, which DR-5a allows to differ a little; matching them would mean buffering
+every member until the directory arrives (ADR 0010).
 
 One more thing is known only once the directory has been read, and is not a member
 failure. A directory entry pointing at a local header an earlier entry already took ends
