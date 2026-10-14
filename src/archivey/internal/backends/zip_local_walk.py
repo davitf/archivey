@@ -1063,6 +1063,9 @@ class LocalHeaderWalk:
         chunks.clear()
         return ForwardTail(
             after=self._where(),
+            members_start=(
+                members_end if self.first_offset is None else self.first_offset
+            ),
             members_end=members_end,
             start=members_end + dropped,
             data=data,
@@ -1076,6 +1079,9 @@ class ForwardTail:
     #: Where the members ended, for a message: "after member #n" or "before the
     #: first local header".
     after: str
+    #: Stream offset of the first local header (``members_end`` with none): how
+    #: much data was prepended to the archive at most.
+    members_start: int
     #: Stream offset where the members ended: the walk read no header after it.
     members_end: int
     #: Stream offset of ``data[0]``; past ``members_end`` when the bound dropped some.
@@ -1150,12 +1156,15 @@ class ForwardTail:
 
         ``find_end_record`` reads the record at the locator's offset, and falls back
         to one right before the locator when that offset holds none (data prepended
-        to the archive moved it). That fallback is taken here only when the file
-        read would take it whatever the unkept bytes hold: the record right before
-        the locator passes the parser's own checks (``zip64_record_matches``).
-        Otherwise the record the locator names is unseen, not missing. The
-        locator's own refusals come first, as from a file
-        (``read_zip64_locator``)."""
+        to the archive moved it). The unkept bytes at the locator's offset decide
+        that, so here the fallback is taken only for a record right before the
+        locator that passes the parser's own checks (``zip64_record_matches``) and
+        whose shift, from where the locator places it, fits before the first local
+        header: no more than the data a stub could have prepended. A record the
+        locator names in unkept bytes within that shift would be read by a file
+        read instead; that takes a stub longer than the tail keeps. Otherwise the
+        record the locator names is unseen, not missing. The locator's own
+        refusals come first, as from a file (``read_zip64_locator``)."""
         located = read_zip64_locator(self.read_at, eocd_offset)
         if located is None:
             return
@@ -1163,8 +1172,12 @@ class ForwardTail:
         if record_at >= self.start:
             return
         adjacent = locator_at - ZIP64_EOCD_SIZE
-        if adjacent >= self.start and zip64_record_matches(
-            self.read_at(adjacent, ZIP64_EOCD_SIZE), record_at, 0
+        if (
+            adjacent >= self.start
+            and adjacent - record_at <= self.members_start
+            and zip64_record_matches(
+                self.read_at(adjacent, ZIP64_EOCD_SIZE), record_at, 0
+            )
         ):
             return
         self._refuse_unseen("ZIP64 end of central directory record", record_at)

@@ -981,10 +981,20 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     record_at = len(record_dropped) - 22 - 20 - 56
     decoy = record_dropped[:record_at] + b"PK\x06\x06" + record_dropped[record_at + 4 :]
     assert [m["name"] for m in _seekable_view(decoy)[0]] == ["a.txt", "b.txt"]
+    # A whole record there that fits the locator: a file read still reads the one
+    # the locator names, as no stub moved the archive (its first member is at 0).
+    (named,) = struct.unpack_from("<Q", record_dropped, len(record_dropped) - 22 - 12)
+    cd_size = 102
+    whole_record = struct.pack(
+        "<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0, 2, 2, cd_size, named - cd_size
+    )
+    whole = record_dropped[:record_at] + whole_record + record_dropped[record_at + 56 :]
+    assert [m["name"] for m in _seekable_view(whole)[0]] == ["a.txt", "b.txt"]
     cases = (
         (far, "ZIP central directory starts"),
         (record_dropped, "ZIP64 end of central directory record starts"),
         (decoy, "ZIP64 end of central directory record starts"),
+        (whole, "ZIP64 end of central directory record starts"),
     )
     for data, what in cases:
         with pytest.raises(ResourceLimitError, match=f"^{what}.*listing limits"):

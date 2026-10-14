@@ -453,12 +453,15 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   them is `ResourceLimitError`. End records that place the directory or the ZIP64 end
   record among the members' data, which the pass has read past, are
   `CorruptionError`; a file read would read them there. A ZIP64 end record right
-  before its locator that passes the file read's checks is read instead, as a file
-  read reads it behind a self-extractor stub (`zip64_record_matches`). One case a
-  forward read cannot take, where the seekable read can: a gap after a last member
-  with bit 3 set (a descriptor counts only when a ZIP signature follows it, which is
-  what stops a planted one inside STORED data). Recognising an APK signing block by
-  its own size fields would cover it; it is not done.
+  before its locator that passes the file read's checks, shifted from where the
+  locator places it by no more than the bytes before the first local header, is read
+  instead, as a file read reads it behind a self-extractor stub. Two cases a forward
+  read cannot take, where the seekable read can: a stub longer than the kept bytes,
+  which could hide a record at the locator's own offset that a file read would take
+  instead; and a gap after a last member with bit 3 set (a descriptor counts only
+  when a ZIP signature follows it, which is what stops a planted one inside STORED
+  data). Recognising an APK signing block by its own size fields would cover the
+  second; it is not done.
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
   Writers put both in the same order; when they differ, `is_current` follows the
