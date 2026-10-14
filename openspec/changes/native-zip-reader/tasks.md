@@ -110,6 +110,11 @@ each lands with nothing half-done reachable:
       a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
       (`CorruptionError` after the members before it); a sized member is seeked over
       (counted reads).
+- [ ] 3.0c The same walk instead of a refusal for a damaged ZIP64 end record or locator
+      (the classic record's fields when none is saturated, with a diagnostic), a bad
+      directory offset and an unreadable directory entry, so a file read writes what
+      a pipe writes (davi 2026-10-14); `test_zip_pipe_parity.py`'s `_DIFFERS` loses
+      those rows.
 - [x] 3.1 Central and local headers parsed by the same code in both walks;
       `LocalHeaderWalk` over a forward reader (`zip_local_walk.py`); data descriptor
       parsing (signature optional, 4- or 8-byte sizes).

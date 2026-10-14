@@ -6,21 +6,23 @@ The fixtures are the committed ``.zip`` files, the adversarial set
 under the right password, no password, a wrong one, and a list. The corpus entries
 without passwords are compared in ``test_zip_pipe.py`` and
 ``test_zip_pipe_extract.py``. Where the two reads may differ is in the native ZIP
-reader's ``design.md`` (§"Failures found at the end of the pass"); ``_DIFFER_ON_DISK``
-names the fixtures that reach it.
+reader's ``design.md`` (§"Failures found at the end of the pass"); ``_DIFFERS`` names
+the fixtures that reach it.
 """
 
 from __future__ import annotations
 
 import io
+import struct
 import time
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 import archivey
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
 from archivey.types import OnError
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
@@ -46,6 +48,8 @@ _PasswordArg = str | list[str] | None
 # link is refused for its missing target (``LinkTargetNotFoundError``).
 # ``"disk"``: the directory refuses the archive, which a file read finds before
 # writing anything and the pass only after writing every member.
+# The file read is to stop refusing these (design.md; tasks 3.0c and 4.1), which
+# removes the rows.
 _DIFFERS: dict[str, str] = {
     "sevenzip/encrypted_link.zip-no-password": "error",
     "sevenzip/encrypted_link.zip-wrong": "error",
@@ -196,3 +200,20 @@ def test_an_encrypted_corpus_entry_reads_from_a_pipe_as_from_a_file(
     path = tmp_path / "corpus.zip"
     build_archive(entry, key, path)  # type: ignore[arg-type]
     _assert_same(path.read_bytes(), password, tmp_path / "out")
+
+
+def test_an_encrypted_directory_writes_nothing_either_way(tmp_path: Path) -> None:
+    """PKWARE Strong Encryption over the directory masks the local headers too and
+    encrypts every member's data with it: neither read gets a member out."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("a.txt", b"data")
+    raw = bytearray(buf.getvalue())
+    flags = struct.unpack_from("<H", raw, 6)[0]
+    struct.pack_into("<H", raw, 6, flags | 0x41)  # encrypted, Strong Encryption
+    cd = raw.index(b"PK\x01\x02")
+    body = raw.rindex(b"PK\x05\x06") - cd - 8
+    raw[cd : cd + 8 + body] = b"PK\x06\x08" + struct.pack("<I", body) + b"\xa5" * body
+    assert _from_file(bytes(raw), None) is UnsupportedFeatureError
+    _assert_same(bytes(raw), None, tmp_path)
+    assert not any((tmp_path / "pipe").iterdir())

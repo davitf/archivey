@@ -574,8 +574,12 @@ Two more differences are recorded (`tests/test_zip_pipe_parity.py`, `_DIFFERS`):
 - An archive-wide refusal that comes from the directory or the end records (a damaged
   ZIP64 end record or locator, a name flagged UTF-8 that is not valid UTF-8) is found
   by a file read before anything is written, and by the pass only after every member
-  has been written: the files stay, and the same error is raised. Whether the pass
-  should take them back is for the maintainer to decide.
+  has been written: the files stay, and the same error is raised. The pass keeps them:
+  the file read stops refusing these instead (davi, 2026-10-14). A damaged ZIP64 end
+  record, a damaged directory or a missing end record makes the file read walk the
+  local headers (task 3.0b), and a name flagged UTF-8 that is not valid UTF-8 decodes as
+  unflagged (task 4.1); once both land, the two reads write the same files. A split set
+  and an encrypted central directory stay refused: no member of either can be read.
 
 ### What the caller sees in a forward pass
 
