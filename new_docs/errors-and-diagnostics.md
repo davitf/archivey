@@ -23,25 +23,26 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 | `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, but that's a guess, so catch `CorruptionError` for both |
 | `EncryptionError` | A password is needed and none was given, or none of the ones given works |
 | `FormatDetectionError` | The file isn't in a format archivey recognizes |
-| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method. A damaged header can raise it too, when the damaged field is one nothing checks, such as a ZIP entry's compression method. Either way, you can't use the file |
+| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method |
 | `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
 | `ResourceLimitError` | The archive went over one of the [limits](security.md#hardening) |
 
 The [reference](api.md#archivey.ArchiveyError) lists the rest, such as `ReadError`, the parent of
 the first two.
 
+Damage can look like something else, and then the exception names what it looks like. In an
+encrypted member, a format with no reliable password check can't tell damaged data from a wrong
+password, so it raises `EncryptionError`. That's the case for 7z, and for the old ZIP encryption,
+whose check is a single byte. WinZip AES and RAR 5 check the password on its own, so damage there
+raises `CorruptionError`. A damaged header field that nothing else checks, such as a ZIP entry's
+compression method, can look like a feature archivey doesn't support and raise
+`UnsupportedFeatureError`. Either way, you can't use the file.
+
 If reading fails and the format was only a guess, the exception has `format_unconfirmed=True`. That
 happens when nothing in the file confirmed its format, so archivey went by the file name, or when
 the format has no reliable signature and only a check of the contents suggested it, as for zlib or
 Brotli data. The file may not be in that format at all, such as a file of zeros named `backup.gz`,
 rather than a damaged one.
-
-Mistakes in the calling code raise `ArchiveyUsageError`, which isn't an `ArchiveyError`, so a
-catch-all for archive problems never hides a bug. The ones you're most likely to meet are calling
-`members()`, `open()` or `read()` on a reader opened with `streaming=True`, and opening a second
-member stream while another is still open, without `concurrent_members=True`. [Choosing how to
-read](reading.md) explains both. A source that isn't a path or a file object raises `TypeError`, and
-asking for a member name the archive doesn't have raises `KeyError`, as a dictionary would.
 
 Errors that aren't about the archive also pass through as themselves. A missing file raises
 `FileNotFoundError`, and a disk or permission error while reading or writing raises `OSError`, so
@@ -51,6 +52,21 @@ from inside archivey is a bug, and we'd like to hear about it.
 Exception messages are safe to print. Control characters from the archive, such as a member name
 built to move the terminal cursor, are escaped in the message. Attributes like `e.member_name` keep
 the raw value.
+
+### Mistakes in the calling code
+
+Mistakes in the calling code raise `ArchiveyUsageError`, which isn't an `ArchiveyError`, so a
+catch-all for archive problems never hides a bug. The ones you're most likely to meet are:
+
+- calling `members()`, `open()` or `read()` on a reader opened with `streaming=True`;
+- opening a second member stream while another is still open, without `concurrent_members=True`;
+- calling `open()` or `read()` on a directory;
+- giving an option a value it doesn't know, such as `policy="strictt"`. The error names the
+  accepted values.
+
+[Choosing how to read](reading.md) explains the first two. A source that isn't a path or a file
+object raises `TypeError`, and asking for a member name the archive doesn't have raises `KeyError`,
+as a dictionary would.
 
 ## Damaged archives
 
@@ -95,6 +111,20 @@ exception.
 A damaged member doesn't always raise before its end. Depending on the compression method, damaged
 data can decode to wrong bytes with no error, and only the checksum at the end catches it. A member
 stored without compression never notices damage on its own.
+
+A cut-off member can also end early without an error. `stream.read(member.size)` then returns fewer
+bytes than the member should hold, and the next read raises `TruncatedError`. So code that reads a
+member in one call and then stops should check the length it got, or call `read()` once more.
+
+No option makes archivey check a member before handing you its bytes. If you must never use
+unchecked data, read the whole member into memory or a temporary file first, and use it only once
+the read has finished without an error.
+
+An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
+old ZIP encryption, is in the same position. If you close its stream before the end, or seek past
+bytes without reading them, archivey logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read
+may come from a wrong password. WinZip AES members are the exception: their check holds across
+seeks.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that

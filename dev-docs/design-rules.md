@@ -44,7 +44,8 @@ binds.
   guarantee is for a start-to-end read.** Integrity checks are promised for a start-to-end
   read with no skipped bytes; a read after a seek that jumps gives the digest up.
 - [DR-5](#dr-5-same-input-same-outcome). **Same input, same outcome.** One archive gives
-  one result across formats, access modes, sources and OSes.
+  one result across formats, access modes, sources and OSes, and a call that works once
+  works every time.
 - [DR-5a](#dr-5a-malformed-corner-cases-may-differ-a-little). **Malformed corner cases may
   differ a little.** A malformed, crafted-only shape may keep per-format behaviour when
   matching costs code.
@@ -377,6 +378,12 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
   error type.
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
   what `open_archive` opens).
+- **When and where a call is made.** A call that works on one archive, or at one point in
+  a reader's life, works on every archive and at every point, or raises on all of them.
+  That holds across threads too: a reader opened with `concurrent_members=True` can be
+  handed to several threads that each do what they need, whatever the others are doing.
+  A call that raised only sometimes would ship bugs that never showed during development
+  (2026-10-13).
 
 **Why.** "Consistency between formats is a core promise of the library" (PR 290).
 "Consistent behavior unless we have a good reason not to" (2026-10-07). A field
@@ -399,6 +406,13 @@ that is right on one format and wrong on another breaks callers silently.
   (2026-10-06, PR 620, ADR 0017).
 - A truncated `.bz2` raises the same error with the accelerator on as off (2026-10-03).
   zlib under the accelerator checks Adler-32 like the standard library (2026-09-27).
+- `streaming=True` refuses out-of-order reads on every format, ZIP included, although a
+  ZIP could serve them cheaply, so the mistake shows on the first archive tested
+  (2026-09-29, `new_docs/reading.md` §"Why these aren't on by default").
+- Under `concurrent_members=True`, `open`, `read`, `get` and `members()` work during a
+  `stream_members` pass, on every format and from any thread, because they share one lazy
+  walk of the archive with the pass; `extract_all` beside a pass keeps raising (2026-10-13;
+  applied by PR 786).
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
@@ -747,8 +761,8 @@ library that makes callers stop and think becomes a bottleneck (2026-10-09).
   (PR 275).
 
 **Tension.** Declared opt-ins (DR-10) add a thing to know. They stay, because they turn a
-production surprise on another format into an error during development. This rule asks
-that the error make the fix obvious.
+production surprise on another format into an error during development (DR-5, "When and
+where a call is made"). This rule asks that the error make the fix obvious.
 
 ### DR-15. Usage errors are for what the types cannot rule out
 
@@ -1007,7 +1021,8 @@ reaches him.
 - **Does this affect other formats? Is there a shared path?** A cross-format check of
   recent format-specific bugs found 20 more (2026-10-06).
 - **What does the official tool do?** Run it (DR-6).
-- **Do streaming and random access agree? Does each OS agree?** (DR-5)
+- **Do streaming and random access agree? Does each OS agree? Does the call work on
+  every archive and at every point, or raise on all?** (DR-5)
 - **Is this a limit of the library we use, or are we refusing by spec?** (the lc=8
   question, 2026-10-08)
 - **Don't we already have an option or class for this?** (DR-14)

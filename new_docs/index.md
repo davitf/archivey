@@ -50,6 +50,13 @@ with archive.open("holiday/video.mp4") as stream, open("video.mp4", "wb") as out
     shutil.copyfileobj(stream, out)
 ```
 
+`archive.get(name)` gives you the member with that name, or `None`.
+
+`open` and `read` follow a link to another member of the archive and give you that member's
+contents. They never follow it outside the archive: a link whose target isn't a member, such as one
+pointing to `/etc/passwd` or to a file the archive doesn't hold, raises `LinkTargetNotFoundError`. A
+directory has no contents to read, so they raise `ArchiveyUsageError`.
+
 On some archives, reading a member means first decompressing the members stored before it, so
 reading them out of order gets slow. [Solid archives](reading.md#solid-archives) explains when this
 happens. The next section shows how to avoid it by reading them all in one pass.

@@ -55,21 +55,23 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   password-hashing work, not time. Raising an exception from `on_progress` stops an extraction, but
   the callback only runs between chunks of written data, so a decompressor that's slow to produce
   the next chunk can't be interrupted. If you need a hard time limit, run archivey in a process you
-  can stop.
+  can stop. Archivey's exceptions can be pickled, so an error raised in that process comes back
+  with its details.
 - **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
   of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
   memory, so the data you read takes additional memory on top. `ExtractionLimits` doesn't apply,
   because it covers only what `extract_all` writes to disk. A RAR archive opened from a file object
-  rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`,
-  and `spool_limits.max_bytes` caps that copy. When the archive records a member's size in
+  rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`.
+  `spool_limits.max_bytes` caps that copy, along with the few other temporary files archivey makes
+  for RAR archives, listed in the table below. When the archive records a member's size in
   `member.size`, archivey never decodes more than that, and a member holding more raises
   `CorruptionError`.
-- **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR, or with
-  `streaming=True`, `stream_members()` yields members up to the limit and then raises, and
-  `extract_all` leaves the files it wrote before then on disk. ZIP, 7z, RAR and ISO archives check
-  the limits before the first member.
+- **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
+  `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
+  files it wrote before then on disk. ZIP, 7z, RAR and ISO archives check the limits when they're
+  opened, with or without `streaming=True`.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
@@ -133,13 +135,13 @@ in the repository measures what each limit costs in time and memory on your mach
 |---|---|---|---|
 | `extraction_limits.max_extracted_bytes` | 2 GiB | Bytes one extraction writes | Disk space, plus 5-10 ms per MiB written, 10-20 s at the default |
 | `extraction_limits.max_entries` | 262,144 | Members one extraction writes | About 0.6 ms per file written, under 3 minutes at the default |
-| `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands, checked once it has written 5 MiB | None of its own |
+| `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands. It's checked as data is written, and for a member whose size and compressed size the archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive read from a pipe, aren't checked | None of its own |
 | `listing_limits.max_members` | 262,144 | Members an archive can list | About 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default |
 | `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets | About 1.7 MiB of memory per MiB counted, 110 MiB at the default |
 | `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE | The memory itself |
 | `decoder_limits.max_key_derivation_rounds` | 2^25 | Password-hashing work per open archive | 0.2-0.7 µs per round, 7-25 s at the default |
 | `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process | Up to twice the limit in memory while a PPMd member decodes, 32 MiB at the default |
-| `spool_limits.max_bytes` | 1 GiB | Temporary disk space, used when archivey needs a copy of the source, such as a pipe | The disk space itself |
+| `spool_limits.max_bytes` | 1 GiB | Temporary disk space for RAR archives. `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and so are volumes archivey can't link into its temporary folder and, for `unar`, an archive with data before it. A pass over a solid RAR also keeps the members that later file copies repeat | The disk space itself |
 
 The costs were measured on one 2.8 GHz core.
 

@@ -22,12 +22,31 @@ with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=["README.md", "docs/guide.pdf"])
 ```
 
+Names must match exactly, and a directory's name ends in `/`. `members=["docs/"]` extracts only the
+directory entry, not what's in it, and `members=["docs"]` extracts nothing. A name that matches
+nothing is noted as the diagnostic `MEMBER_SELECTOR_UNMATCHED`, which logs a warning.
+
 `members` also takes a function, which gets each member and returns whether to extract it:
 
 ```python
 with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=lambda member: member.name.endswith(".txt"))
 ```
+
+`archivey.paths` builds such functions from wildcard patterns, with either of two sets of rules:
+
+```python
+from archivey.paths import match_glob, match_tar_glob
+
+with archivey.open_archive("download.zip") as archive:
+    archive.extract_all("out/", members=match_glob("docs/**"))
+    archive.extract_all("out/", members=match_tar_glob("*.md"))
+```
+
+| Function | `*` | A folder's name |
+|---|---|---|
+| `match_glob` | Matches within one folder level, and `**` matches any number of levels, so `"docs/**"` selects a folder with everything in it | Selects only the folder, unless you pass `with_contents=True` |
+| `match_tar_glob` | Matches across folders too, as in `tar`, so `"*.md"` selects every `.md` file at any depth | Selects the folder with everything in it |
 
 Another argument, `filter`, sees each member before it's checked and written. It can change the
 member by returning a changed copy, with a new name or new permissions, for example, or skip it by
@@ -64,7 +83,7 @@ permissions gets written as it is:
 |---|---|
 | `"error"` (default) | The member fails, and `on_error` decides whether extraction goes on |
 | `"skip"` | The existing file stays. This isn't a failure, so `on_error` doesn't apply |
-| `"replace"` | The existing file is deleted, and the member is written |
+| `"replace"` | The existing file is deleted, and the member is written. An existing folder is replaced only if it's empty, and otherwise the member fails |
 | `"rename"` | The member is written next to it, with a number before the extension: `a.txt` becomes `a (1).txt` |
 
 A folder member merges into a folder that's already there. A file member whose path is an
@@ -122,9 +141,13 @@ Some members are refused under every policy, and others depend on it:
 | A device file or a named pipe | Refused | Refused | Refused |
 | `CON`, `aux.txt` or `file:ads`, which Windows can't create | Refused | Refused | Written as is |
 | A name with characters that reorder how it displays, making an `.exe` look like a `.png` | Refused | Refused | Written as is |
+| `invoice\u200b.pdf`, with a zero-width space, word joiner or byte-order mark | Written as is, and noted as `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, which `DiagnosticPolicy.STRICT` turns into an exception | Same as `"strict"` | Same as `"strict"` |
+| A name with another invisible character, such as a zero-width joiner or a soft hyphen | Written as is, and noted as `MEMBER_NAME_INVISIBLE_CHARACTER` | Same as `"strict"` | Same as `"strict"` |
 | `notes. `, with a trailing dot and space | Written as `notes` | Written as is | Written as is |
 | `caf\xe9.txt`, a name that isn't valid UTF-8 | Written as `caf%E9.txt` | Written as `caf%E9.txt` | Written as is |
-| `README`, then `readme` | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
+| `what?.txt`, with a character Windows doesn't allow | Written as `what%3F.txt` | Written as `what%3F.txt` | Written as is |
+| `back\slash` in a TAR | Written as `slash` in a folder `back` | Same as `"strict"` | Written as is |
+| `README`, then `readme`, or `café` written two ways in Unicode | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
 | A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
 | A file with mode `rw-rw-rw-` | Written as `rw-r--r--` | Written as is | Written as is |
 
@@ -177,21 +200,40 @@ If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` 
 
 A member that fails partway leaves nothing behind. Archivey writes each file under a temporary
 name and renames it only once it's complete. The files written before the failure stay on disk,
-even with `on_error="stop"`. Going over the total size or entry count in
-`limits`, or the whole archive expanding too much, stops the extraction even with
-`on_error="continue"`, since it's a sign that the whole archive is hostile. A single member that
-expands too much fails like any other member.
+even with `on_error="stop"`. Going over the total size or entry count in `limits`, or the whole
+archive expanding too much, stops the extraction even with `on_error="continue"`, since it's a sign
+that the whole archive is hostile. A single member that expands too much fails like any other
+member.
+
+If the damage is in the list of members itself, such as a TAR or RAR cut short or a damaged ZIP
+central directory, the members before it are written and the call then raises, with either
+`on_error`, and returns no report. A damaged 7z index, or a ZIP whose end record is missing, fails
+`open_archive` before anything is written.
+
+A process killed during an extraction can leave a file named `.archivey-tmp-` followed by random
+characters in the destination. It's safe to delete.
 
 ## Archives you trust
 
 By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
-expands more than 1000 times. The expansion check starts after the first 5 MiB. To extract
-something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
+expands more than 1000 times. When the archive records both a member's size and its compressed
+size, a member that would expand too much is refused before any of it is written. Other members,
+and the whole archive, are checked as data is written. The expansion check ignores outputs under
+5 MiB, or under 256 MiB for a whole archive read from a pipe. To extract something bigger, pass
+higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
 
-??? note "Why wait for 5 MiB?"
+??? note "Why ignore small outputs?"
     Small files compress very well without being dangerous. 1 MiB of zeros compresses about 1,000
-    times with DEFLATE and about 23,000 times with bzip2, so a check from the first byte would stop
-    ordinary archives. A real bomb is still caught once it has written 5 MiB.
+    times with DEFLATE and about 23,000 times with bzip2, so a check on every member would stop
+    ordinary archives. A real bomb writes far more than 5 MiB, so it's still caught.
+
+    From a pipe, archivey doesn't know the archive's size, so it compares what it has written with
+    what it has read so far. An honest archive that starts with a large blank file looks like a
+    bomb until the rest arrives, so that check waits longer.
+
+A sparse file in a TAR, such as a disk image, is stored without its empty regions, so it can expand
+far more than 1000 times and stop the extraction. `member.is_sparse` tells you which members are
+sparse.
 
 Some limits apply before extraction starts, such as the number of members or how much memory a
 decoder may use. Those are set when you open the archive, through
