@@ -129,7 +129,12 @@ each lands with nothing half-done reachable:
       refused when read until 3b3d3, and the pass must not call a provider for a
       member nobody asked for. Left for 3b3d2: a bit-3 STORED ZipCrypto link nobody
       read still reports its target unavailable ("encrypted"), where a file reads
-      it.
+      it. Left for 3.4 (every fixture through a pipe): a sized member whose data
+      decodes short of its local header's size reports the pass's own
+      size-mismatch `CorruptionError` where the file read reports the verifier's
+      `TruncatedError`, encrypted or not (both `CorruptionError` under DR-4; a
+      ZipCrypto member shows neither, as the password-or-damage error). Data past
+      the declared size already gives the file read's error.
 - [ ] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
       codec's input, so the AES stage authenticates the ciphertext as it goes, holding
       back the bytes past the codec's end until `settle` says where the data ended

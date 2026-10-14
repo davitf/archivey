@@ -212,6 +212,12 @@ def _fixtures() -> list[pytest.ParameterSet]:
             id="aes-ae2-deflate",
             marks=requires("cryptography"),
         ),
+        pytest.param(
+            # The overrun's message is the pipe's own copy of the file read's.
+            lambda: _declared_size(_aes_zip(method=0), 10),
+            id="aes-data-past-its-declared-size",
+            marks=requires("cryptography"),
+        ),
     ]
 
 
@@ -454,7 +460,11 @@ def _declared_size(data: bytes, size: int) -> bytes:
     """``data``'s one member with ``size`` as its uncompressed size in both headers."""
     out = bytearray(data)
     struct.pack_into("<I", out, 22, size)
-    struct.pack_into("<I", out, out.index(b"PK\x01\x02") + 24, size)
+    # The directory's offset from the end record: the ciphertext may hold the
+    # central header's signature by chance.
+    eocd = data.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
+    struct.pack_into("<I", out, cd_offset + 24, size)
     return bytes(out)
 
 

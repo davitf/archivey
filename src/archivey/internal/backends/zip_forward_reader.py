@@ -505,14 +505,16 @@ class _PassData:
 
     def _read_chunk(self, n: int) -> bytes:
         """Up to ``n`` decoded bytes, or ``b""`` once the codec or the data ends."""
-        if self.done:
+        if self.done or n == 0:
             return b""
+        assert n > 0, "callers ask for a number of bytes"
         decoded = self._open_decoded()
         declared = None if self._deferred() else self.entry.header.file_size
         if declared is not None:
             # Nothing past the declared size and one byte is decoded: that byte is
-            # the overrun, refused as the file read refuses it.
-            n = max(1, min(n, declared + 1 - self._size))
+            # the overrun, refused as the file read refuses it. The raise below
+            # keeps ``_size`` at or under ``declared``, so this asks for one at least.
+            n = min(n, declared + 1 - self._size)
         try:
             chunk = decoded.read(n)
         except DataAfterEndError:
@@ -521,6 +523,8 @@ class _PassData:
             # The codec ended and its input goes on: the descriptor is next.
             chunk = b""
         if declared is not None and self._size + len(chunk) > declared:
+            # The file read's verifier words it (``streams/verify.py``); the
+            # ``_fixtures()`` table in ``test_zip_pipe_encrypted.py`` compares them.
             raise CorruptionError(
                 f"Decompressed content exceeds its declared size of {declared} bytes."
             )
