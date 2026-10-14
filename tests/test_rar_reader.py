@@ -27,6 +27,7 @@ from archivey.config import (
     ArchiveyConfig,
     ListingLimits,
     PasswordRequest,
+    RarDecompressor,
 )
 from archivey.cost import AccessCost
 from archivey.diagnostics import DiagnosticCode
@@ -2175,6 +2176,193 @@ def test_rar3_compressed_archive_comment_counts_toward_budget(
     )
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
         open_archive(io.BytesIO(over), config=config)
+    assert calls == []
+
+
+# The comment texts ``scripts/gen_rar_fixtures.py`` gives the two
+# ``comment_compressed*__rar4.rar`` fixtures. ``rar`` 6.23 compresses each into a
+# RAR 2.9-4 ``CMT`` SERVICE header; the unicode one is UTF-16LE with
+# ``SUBHEAD_FLAGS_CMT_UNICODE`` set.
+_COMPRESSED_CMT_TEXTS = {
+    "comment_compressed__rar4.rar": "A compressed RAR4 archive comment.\n" * 20,
+    "comment_compressed_unicode__rar4.rar": (
+        "Caf\u00e9 \u2014 a compressed UTF-16 comment.\n" * 20
+    ),
+}
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", sorted(_COMPRESSED_CMT_TEXTS))
+def test_rar3_compressed_service_comment_is_read(name: str) -> None:
+    """A compressed ``CMT`` SERVICE header is decoded by ``unrar``, as
+    ``unrar l`` shows it. It used to be skipped, and the archive listed with no
+    comment."""
+    with open_archive(_fixture(name)) as archive:
+        assert archive.info.comment == _COMPRESSED_CMT_TEXTS[name]
+        assert len(archive.members()) == 3
+
+
+def test_rar3_compressed_service_comment_without_a_decompressor_is_none() -> None:
+    """With no program to decode it, the comment is ``None``, as a compressed
+    RAR 1.5-2.x comment is, and the listing is unchanged."""
+    config = ArchiveyConfig(rar_decompressor=RarDecompressor.NONE)
+    with open_archive(
+        _fixture("comment_compressed__rar4.rar"), config=config
+    ) as archive:
+        assert archive.info.comment is None
+        assert len(archive.members()) == 3
+
+
+def _rar3_compressed_cmt(
+    *,
+    unpacked_size: int,
+    packed: bytes = b"\x00" * 16,
+    crc32: int = 0,
+    flags: int = 0,
+    attributes: int = 0,
+) -> bytes:
+    """A RAR 2.9-4 ``CMT`` SERVICE header with ``-m3`` (0x33) data, then the data."""
+    return (
+        _rar3_file_block(
+            b"CMT",
+            flags=flags,
+            pack_lo=len(packed),
+            unp_lo=unpacked_size,
+            method=0x33,
+            block_type=0x7A,
+            extract_version=29,
+            attributes=attributes,
+            crc32=crc32,
+        )
+        + packed
+    )
+
+
+def test_rar3_compressed_service_comment_counts_toward_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The declared size of a compressed ``CMT`` is weighed before any decode,
+    as a compressed RAR 1.5-2.x comment is: at the budget it is decoded, one byte
+    over it the listing is refused and ``unrar`` never runs."""
+    main_hdr, end_hdr = _rar3_main_and_end()
+    size = 1000
+
+    def config(max_metadata_bytes: int) -> ArchiveyConfig:
+        return ArchiveyConfig(
+            listing_limits=ListingLimits(max_metadata_bytes=max_metadata_bytes)
+        )
+
+    blob = RAR_ID + main_hdr + _rar3_compressed_cmt(unpacked_size=size) + end_hdr
+    calls = _count_comment_decodes(monkeypatch)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        open_archive(io.BytesIO(blob), config=config(size - 1))
+    assert calls == []
+    with open_archive(io.BytesIO(blob), config=config(size)) as archive:
+        assert archive.info.comment is None  # the counter decodes nothing
+    assert len(calls) == 1
+
+
+def test_rar3_compressed_member_service_comment_is_weighed_as_it_attaches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A solid ``CMT`` after a member attaches to it. When compressed, the walk
+    weighs its declared size: ``item.txt`` (8 + 8 bytes) and a 14-byte comment make
+    30, refused at 29 by the walk itself and listed at 30."""
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
+
+    text = b"member comment"
+    main_hdr, end_hdr = _rar3_main_and_end()
+    file_hdr = _rar3_file_block(b"item.txt", flags=0, pack_lo=0, unp_lo=0)
+    blob = (
+        RAR_ID
+        + main_hdr
+        + file_hdr
+        + _rar3_compressed_cmt(
+            unpacked_size=len(text),
+            crc32=zlib.crc32(text),
+            flags=_RAR3_FILE_SOLID,
+        )
+        + end_hdr
+    )
+
+    def config(max_metadata_bytes: int) -> ArchiveyConfig:
+        return ArchiveyConfig(
+            listing_limits=ListingLimits(max_metadata_bytes=max_metadata_bytes)
+        )
+
+    calls: list[int] = []
+
+    def _fake_decode(**kwargs: object) -> bytes:
+        calls.append(1)
+        return text
+
+    monkeypatch.setattr(rar_reader, "decompress_rar3_blob", _fake_decode)
+    with pytest.raises(
+        ResourceLimitError, match=r"=29 \(RAR headers of 1 members hold 30 bytes\)"
+    ):
+        open_archive(io.BytesIO(blob), config=config(29))
+    assert calls == []
+    with open_archive(io.BytesIO(blob), config=config(30)) as archive:
+        member = archive.get("item.txt")
+        assert member is not None
+        assert member.comment == text.decode()
+        assert archive.info.comment is None
+
+
+@pytest.mark.parametrize(
+    ("decoded", "attributes", "expected"),
+    [
+        pytest.param(b"ok\0rest", 0, "ok", id="8bit"),
+        pytest.param("caf\u00e9".encode("utf-16le"), 1, "caf\u00e9", id="unicode"),
+        # The CRC32 is checked in full, not only its low 16 bits.
+        pytest.param(None, 0, None, id="crc-mismatch"),
+    ],
+)
+def test_rar3_compressed_service_comment_checks_crc32_and_unicode_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    decoded: bytes | None,
+    attributes: int,
+    expected: str | None,
+) -> None:
+    main_hdr, end_hdr = _rar3_main_and_end()
+    good = decoded if decoded is not None else b"right text"
+    crc = zlib.crc32(good)
+    # Same low 16 bits as the declared CRC32, different high bits.
+    output = good if decoded is not None else b"wrong text"
+    if decoded is None:
+        while zlib.crc32(output) & 0xFFFF != crc & 0xFFFF or zlib.crc32(output) == crc:
+            output = hashlib.sha256(output).digest()[: len(good)]
+    blob = (
+        RAR_ID
+        + main_hdr
+        + _rar3_compressed_cmt(
+            unpacked_size=len(good), crc32=crc, attributes=attributes
+        )
+        + end_hdr
+    )
+    monkeypatch.setattr(rar_reader, "decompress_rar3_blob", lambda **_: output)
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert archive.info.comment == expected
+
+
+def test_rar3_compressed_service_comment_over_rar_maximum_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``rar`` writes no comment over 256 KiB. One that declares more is dropped
+    by the walk: not weighed against the budget, not decoded."""
+    from archivey.internal.backends.rar_parser import RAR3_MAX_COMMENT_SIZE
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    blob = (
+        RAR_ID
+        + main_hdr
+        + _rar3_compressed_cmt(unpacked_size=RAR3_MAX_COMMENT_SIZE + 1)
+        + end_hdr
+    )
+    calls = _count_comment_decodes(monkeypatch)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1000))
+    with open_archive(io.BytesIO(blob), config=config) as archive:
+        assert archive.info.comment is None
     assert calls == []
 
 

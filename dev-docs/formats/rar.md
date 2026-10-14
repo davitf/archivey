@@ -26,7 +26,7 @@ out-of-order solid `open()` is its own whole-archive decode (§2.4). RARLAB `rar
 exist. Reads still spawn only `p` (§3).
 
 The 6.0 floor is the **banner probe**, not archive open. Missing or too-old `unrar`
-does not fail `open_archive` or stored reads; compressed old-style comments stay
+does not fail `open_archive` or stored reads; compressed comments stay
 `None` (§1, §2.2).
 
 ## 1. Shape
@@ -69,8 +69,9 @@ Everything about that boundary is a consequence:
 
 - **Listing completes without `unrar`** — names, sizes, timestamps, modes, flags, hashes,
   link targets and header decryption come out of the parser (§2.2). Stored old-style
-  comments do too; compressed RAR 1.5 / 2.x comments are filled when the binary is
-  available and otherwise stay `None`. A stored, unencrypted member is read by slicing
+  comments do too; compressed RAR 1.5-4 comments (RAR 1.5 / 2.x COMMENT subblocks and
+  compressed RAR 2.9-4 `CMT` headers) are filled when the binary is available and
+  otherwise stay `None`. A stored, unencrypted member is read by slicing
   the source, whatever its solid flag, and a split one by joining its parts, so an
   archive of those reads end to end with no subprocess (§2.3).
 - **`unrar` seeks the archive, so it cannot be piped one** — which is why a stream source
@@ -724,7 +725,7 @@ so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`. Comments follow `unrar`: a RA
 `CMT` SERVICE header whose attribute field has bit 0 set (`SUBHEAD_FLAGS_CMT_UNICODE`)
 is UTF-16LE, read in whole 2-byte units (an odd trailing byte is dropped, as `unrar`
 reads `CmtSize / 2` units) and cut at the first U+0000. Every other RAR 1.5-4 comment
-(an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or compressed) is
+(an unflagged `CMT`, or an old-style COMMENT subblock, stored or compressed) is
 8-bit text cut at the first NUL, decoded as strict UTF-8, then with the caller's
 `encoding=` when one was passed, then windows-1252. A byte the code page leaves undefined
 (five in windows-1252) survives as a lone surrogate (`surrogateescape`). That is the
@@ -732,12 +733,18 @@ order and the error handler an 8-bit name uses, and the ones a ZIP comment uses,
 a comment records its code page no more than a name does; only the last fallback differs
 from a name's (`unrar`'s windows-1252 rather than the host's OEM code page). It is never
 guessed as UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to
-list as CJK. A compressed `CMT` SERVICE header is not decoded: the parser reads only a
-stored one, so such an archive lists with no comment and no diagnostic. A stored `CMT` is
-read from the span the walk skips after its header, which is its PACK_SIZE whether or not
+list as CJK. A compressed `CMT` SERVICE header (what `rar` 2.9-6.x writes for a comment
+that shrinks, so most real ones) is decoded the way a compressed old-style comment is:
+the parser keeps its packed bytes as a `_Rar3Comment` with the header's CRC32 and
+unicode bit, the listing budget weighs its declared size, and `_resolve_rar3_comment`
+wraps the bytes in a one-file archive for the selected program. The decoded bytes are
+used only when their CRC32 matches, and then decoded as a stored `CMT` is. One that
+declares more than 256 KiB (`RAR3_MAX_COMMENT_SIZE`, the most `rar` writes) is dropped
+by the walk without being weighed; an encrypted or split `CMT` is skipped, stored or
+compressed. A `CMT` is read from the span the walk skips after its header, which is its PACK_SIZE whether or not
 LONG_BLOCK is set, as `unrar` reads it. So no byte is read both as comment data and as a
 later header; a read that could overlap the next headers would let a stack of 35-byte
-`CMT` headers each re-read the rest of the archive (DR-9a). A stored `CMT` whose
+`CMT` headers each re-read the rest of the archive (DR-9a). A `CMT` whose
 PACK_SIZE runs past the end of the file is a `CorruptionError`, with LONG_BLOCK set or
 clear.
 
@@ -760,13 +767,13 @@ between to blame or to defer to.
 | `is_encrypted` | Per-member encryption flag | — |
 | `is_current` | `False` for a file-version history row, `True` for the live revision. Stamped for duplicate names when the walk ends, and members settle (`member_state_final`) when links are resolved: a streaming pass, and a random-access pass over a solid archive with no listing call before it, yield each member with `member_state_final=False` until the pass ends; a pass after `members()` yields settled members. A RAR4 symlink whose target is unread (`read_link_targets=False`) also reads `False` until it is read | — |
 | `extra` | `is_file_copy` on a file copy; `is_junction` on a Windows junction, `is_reparse_point` on a Windows symlink or junction (redirect types 2 and 3) — RAR is the one format that names the kind in a header field, so both are set while listing with nothing read; `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.extract_version` when the FILE header recorded one (stored and compressed) — RAR3 `UNP_VER` as stored (unvalidated), RAR5 reports 50. The RAR5 compression-info version (0 for RAR 5.0 data, 1 for RAR 7.0) is read only to refuse one `unrar` cannot decode, and is deliberately kept internal: `rar.extract_version` stays 50 for both because the `rarfile` parity oracle compares it, and a second key waits for a caller who needs it | — |
-| `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored old-style comments decode natively; compressed old-style comments decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), a compressed old-style comment without `unrar` / with an invalid CRC16, or an encrypted old-style comment (known limitation, §5) |
+| `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored comments decode natively; compressed ones (old-style or `CMT`) decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), a compressed comment without `unrar` / with an invalid CRC, or an encrypted comment (known limitation, §5) |
 
 **Archive comments are `ArchiveInfo.comment`.** RAR5 `CMT` is archive-only — it never
 becomes a member comment. RAR3 `CMT` without the solid flag is the archive comment;
 with it, the preceding member (row above). RAR 1.5 / 2.x COMMENT subblocks on MAIN are
-the archive comment. Stored old-style archive comments decode natively; a compressed
-one without `unrar` stays `None` and listing still succeeds.
+the archive comment. Stored archive comments decode natively; a compressed one
+(old-style or `CMT`) without `unrar` stays `None` and listing still succeeds.
 
 **A RAR5 file copy is a `FILE`.** `rar -oi` stores a second identical file as a
 redirect of type 5 (`FILE_COPY`; `unrar lt` says "File reference") naming an earlier
@@ -1026,7 +1033,7 @@ naming RARLAB `unrar` or `rar` and naming the lookalikes that are *not* accepted
 RARLAB binary older than 6.0 (or whose banner version cannot be parsed) raises the same
 exception at the banner probe, once, cached with the probe, naming the floor and the
 version found. Open, listing, and stored reads still succeed: a missing or too-old
-binary is caught when resolving compressed old-style comments, and those stay `None`
+binary is caught when resolving compressed comments, and those stay `None`
 (§2.2). With the default `rar_decompressor="auto"`, `unar` is used instead when no
 RARLAB program is found; `7z` and `unrar-free` never are (§3, threat-model C1).
 
@@ -1198,9 +1205,10 @@ RAR-specific only. General extraction and name hazards are §2.4.
   enormous member table; `listing_limits.max_members` bounds the walk at parse
   (`ResourceLimitError`; `ListingLimits.UNLIMITED` disables it). [`threat-model.md`](../threat-model.md) O1.
 - **Per-member comments expand after the parse-time bound.** RAR 1.5/2.x FILE `COMM`
-  subblocks hold *compressed* bytes at parse, and `_resolve_rar3_comment` unpacks each one
-  in the reader once the walk has returned (§2.2), so `max_members` never weighs them. Each
-  is `uint16`-bounded at 64 KiB. **The sum is bounded:** the header walk weighs each
+  subblocks and compressed RAR 2.9-4 `CMT` headers hold *compressed* bytes at parse, and
+  `_resolve_rar3_comment` unpacks each one in the reader once the walk has returned
+  (§2.2), so `max_members` never weighs them. A `COMM` subblock is `uint16`-bounded at
+  64 KiB, a `CMT` at 256 KiB (`RAR3_MAX_COMMENT_SIZE`). **The sum is bounded:** the header walk weighs each
   member's declared `unpacked_size` with its names as it appends the member, and before
   decoding any the reader weighs the final list again with the archive comment, raising
   `ResourceLimitError` past `listing_limits.max_metadata_bytes`, so a refused archive
