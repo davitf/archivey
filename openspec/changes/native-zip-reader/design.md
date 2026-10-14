@@ -364,13 +364,19 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   ADR 0007), before the pass ends. Each such member has `member_state_final` false
   until then (question D), so a caller sees the gap on the member before reading
   anything (DR-8).
-- Extraction writes each member as it arrives, then at the end of the pass applies
-  modes, turns a member the directory types as a symlink into a link (its target is the
-  data just written, at most the link-target cap), and removes what it wrote for a
-  member the directory types `OTHER`. A member the directory renames (a DOS host makes
-  `\` a separator) is written again under its name, from the bytes already on disk.
-  It only touches what it created (DR-18). This is the same end-of-pass step that
-  already resolves links in a streaming pass.
+- Extraction writes each member as it arrives, then at the end of the pass applies modes,
+  turns a member the directory types as a symlink into a link (its target is the data
+  just written, at most the link-target cap), and removes what it wrote for a member the
+  directory types `OTHER`. A folder it wrote for a member the directory makes a link goes
+  too, with the parent folders it made for that member alone, while they are empty. For a
+  Windows reparse point the target is in a buffer up to 64 KiB long, and a tag that names
+  no link makes the member a file again, so of data over the link-target cap the pass
+  keeps the start a reparse buffer's parse reads (the 8-byte header, the payload a link
+  tag declares, and one byte), decoding that much of a member nobody read unless it is
+  encrypted. A member the directory renames (a DOS host makes `\` a separator) is written
+  again under its name, from the bytes already on disk. It only touches what it created
+  (DR-18). This is the same end-of-pass step that already resolves links in a streaming
+  pass.
 - A member whose type the directory changes goes through the caller's `filter` and the
   extraction policy's checks **again**, on the updated member (name, type, link
   target), before the link is made, exactly as `extract_all` already calls the filter

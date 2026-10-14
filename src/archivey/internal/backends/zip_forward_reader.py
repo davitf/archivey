@@ -121,6 +121,10 @@ from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.streamtools import ReadableStream, read_exact
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.trailing_scan import first_nonzero_offset
+from archivey.internal.windows_reparse import (
+    REPARSE_HEADER_BYTES,
+    reparse_payload_length,
+)
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -309,6 +313,13 @@ def _renamed_error(
     )
 
 
+def _reparse_prefix_length(header: bytes) -> int:
+    """How much of a member's data the file read reads for a Windows reparse buffer
+    starting with ``header`` (``_read_bounded_link_data``): the header, the payload a
+    link tag declares, and one byte."""
+    return REPARSE_HEADER_BYTES + reparse_payload_length(header) + 1
+
+
 def _tail_bound(limits: ListingLimits) -> int | None:
     """How many bytes after the members a pass holds to find the directory in.
 
@@ -388,6 +399,9 @@ class _PassData:
         self._crc = 0
         self._size = 0
         self._capture: bytearray | None = bytearray()
+        # Once the data is over the target cap: how much of its start the capture
+        # keeps, for a Windows reparse buffer (``_reparse_prefix_length``).
+        self._prefix_want: int | None = None
         #: The data has ended and been checked, or the pass has moved past it.
         self.done = False
         #: The walk has moved on: the caller's stream reads nothing more.
@@ -399,9 +413,73 @@ class _PassData:
     def captured(self) -> bytes | None:
         """The member's whole decoded data, when it is short enough to be a link
         target and was read to its end; else ``None``."""
-        if not self.verified or self._capture is None:
+        if not self.verified or self._capture is None or self._prefix_want is not None:
             return None
         return bytes(self._capture)
+
+    @property
+    def reparse_prefix(self) -> bytes | None:
+        """The start of data over the target cap, as far as a Windows reparse buffer's
+        parse reads it, when it was decoded that far; else ``None``.
+
+        A link buffer's target may sit anywhere in its declared payload, up to 64 KiB,
+        and data whose tag is no link's goes back to being a file whatever follows, so
+        the file read reads no more than this (``_read_bounded_link_data``). Whether the
+        member is a reparse point at all is only known from the directory.
+        """
+        capture = self._capture
+        want = self._prefix_want
+        if capture is None or want is None:
+            return None
+        # Data shorter than the buffer declares is all there is to parse.
+        ended = self.verified or (
+            not self._deferred() and self._size >= self.entry.header.file_size
+        )
+        if len(capture) < want and not ended:
+            return None
+        return bytes(capture)
+
+    def _over_cap(self) -> bool:
+        """The local header states a size over the target cap."""
+        return (
+            not self._deferred() and self.entry.header.file_size > MAX_LINK_TARGET_BYTES
+        )
+
+    def _keep(self, chunk: bytes) -> None:
+        """Add ``chunk``, just decoded, to what the pass keeps of the data."""
+        capture = self._capture
+        if capture is None:
+            return
+        want = self._prefix_want
+        if want is None:
+            if self._over_cap():
+                if self._size < REPARSE_HEADER_BYTES:
+                    capture += chunk
+                    return
+            elif self._size <= MAX_LINK_TARGET_BYTES:
+                capture += chunk
+                return
+            # Over the cap: only a reparse buffer's start stays. Its header is in
+            # what was kept and this chunk.
+            head = bytes(capture[:REPARSE_HEADER_BYTES])
+            head += chunk[: REPARSE_HEADER_BYTES - len(head)]
+            want = self._prefix_want = _reparse_prefix_length(head)
+            del capture[want:]
+        room = want - len(capture)
+        if room > 0:
+            capture += chunk[:room]
+
+    def _wants_prefix(self) -> int:
+        """How many more decoded bytes the capture wants, to tell a target or a reparse
+        buffer's start."""
+        capture = self._capture
+        if capture is None:
+            return 0
+        if self._prefix_want is not None:
+            return max(0, self._prefix_want - len(capture))
+        if self._over_cap():
+            return REPARSE_HEADER_BYTES - self._size
+        return MAX_LINK_TARGET_BYTES + 1 - self._size
 
     def _deferred(self) -> bool:
         return self.entry.deferred
@@ -971,12 +1049,7 @@ class _PassData:
         if chunk:
             self._crc = zlib.crc32(chunk, self._crc)
             self._size += len(chunk)
-            capture = self._capture
-            if capture is not None:
-                if len(capture) + len(chunk) > MAX_LINK_TARGET_BYTES:
-                    self._capture = None
-                else:
-                    capture += chunk
+            self._keep(chunk)
         return chunk
 
     def _finish(self, *, raise_mismatch: bool) -> CorruptionError | None:
@@ -1106,6 +1179,7 @@ class _PassData:
         if deferred and ends_undecoded and self._method() != 0:
             self._data = self._reader._walker.scan_member_data(self._data)
         kept: bytes | None = None
+        over_cap = False
         if deferred:
             skip = False
             if ends_undecoded and unopened:
@@ -1113,7 +1187,7 @@ class _PassData:
                 kept = read_exact(self._data, _MAX_KEPT_CIPHERTEXT + 1)
                 skip = True
         else:
-            skip = header.file_size > MAX_LINK_TARGET_BYTES
+            skip = over_cap = header.file_size > MAX_LINK_TARGET_BYTES
             if (
                 encrypted
                 and not skip
@@ -1154,9 +1228,19 @@ class _PassData:
                 if encrypted:
                     self._failure = failure
                 skip = True
+        if over_cap and not (encrypted and unopened):
+            # Data over the target cap that nobody read to its end: its start, which
+            # decides a reparse point's type and target once the directory makes it
+            # one, as a file read reads it (``reparse_prefix``).
+            try:
+                while (want := self._wants_prefix()) and self._read_chunk(want):
+                    pass
+            except ArchiveyError:
+                self._capture = None
         if skip:
             self.done = True
-            self._capture = None
+            if self._prefix_want is None:
+                self._capture = None
             self._close_decoded()
             descriptor = self._data.settle()
             if descriptor is not None:
@@ -1400,8 +1484,10 @@ class ZipForwardReader(ZipReader):
         # though a set costs some 60 bytes an offset against their array's 8, for a
         # lookup per directory entry.
         self._local_offsets: set[int] = set()
-        # Member id -> its whole data, when short enough to be a link target, until
-        # the directory says which members are links. Weighed by the listing tracker.
+        # Member id -> its whole data, when short enough to be a link target, or the
+        # start a Windows reparse buffer's parse reads of longer data
+        # (``_PassData.reparse_prefix``), until the directory says which members are
+        # links. Weighed by the listing tracker.
         self._captured: dict[int, bytes] = {}
         # Member id -> why its bytes were not kept, when not for their length
         # (``_PassData.uncaptured``), so a link's missing target says why.
@@ -1476,6 +1562,8 @@ class ZipForwardReader(ZipReader):
         finally:
             self._pass_data = None
         captured = current.captured
+        if captured is None:
+            captured = current.reparse_prefix
         assert member._member_id is not None
         if captured is not None:
             self._captured[member._member_id] = captured
@@ -1690,11 +1778,17 @@ class ZipForwardReader(ZipReader):
             _apply_last_entry_wins_is_current(placed)
         self._directory_order = order
         self._failed_at_end = [(member, error) for _, member, error in failed]
-        # Only a link's bytes are read again, for its target.
+        # Only a link's bytes are read again, for its target; of data over the
+        # target cap, only a Windows reparse point's start.
         links = {
             member._member_id
             for member, _ in updates
             if member.type is MemberType.SYMLINK
+            and (
+                cast("_ZipLocator", member._raw).reparse_fallback is not None
+                or member.size is None
+                or member.size <= MAX_LINK_TARGET_BYTES
+            )
         }
         self._captured = {
             member_id: data

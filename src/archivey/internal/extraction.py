@@ -1906,10 +1906,16 @@ class ExtractionCoordinator:
         finally:
             if self._current.parked:
                 self._drop_parked_copies(state.results[index].member.name, None)
-        parent = path.parent if path is not None else None
-        # Only the folders made as its parents: one a member of the run wrote stays.
         # One whose own member the selection also drops is removed when its turn
         # comes, which is after everything inside it.
+        self._remove_created_parents(path)
+
+    def _remove_created_parents(self, path: Path | None) -> None:
+        """Remove the folders this run created as parents of ``path`` alone, now that
+        what it wrote there is taken back: each while it is empty, up to the first
+        one a member of the run wrote, or one the run found there."""
+        state = self._state
+        parent = path.parent if path is not None else None
         while parent is not None and parent != state.dest:
             if parent not in state.created_dirs or parent in state.written_paths:
                 break
@@ -2117,8 +2123,12 @@ class ExtractionCoordinator:
         link_error: ArchiveyError | None = None
         try:
             # A BLOCKED result wrote nothing, and is released all the same: what it
-            # was charged, if anything, is refunded rather than charged twice.
+            # was charged, if anything, is refunded rather than charged twice. The
+            # folders made for what it wrote go too, while empty: random access makes
+            # them only if the member is written again, and then they are made again.
             self._take_back_written(index)
+            if written and old_path is not None and old_path not in state.written_paths:
+                self._remove_created_parents(old_path)
             transformed, presented_name, rewrites = self._transform(member)
             if transformed is None:
                 # Not tallied, then dropped from the report.
