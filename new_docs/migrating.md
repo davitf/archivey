@@ -47,3 +47,31 @@ Seeking and keeping several members open are cheap on some archives and slow on 
 in the calling code shows which. Archivey turns them off by default so that code tested on a ZIP
 doesn't first turn slow on a `.tar.gz` in production. [Choosing how to read](reading.md) explains
 each option and what it costs.
+
+## Members and their details
+
+Every format gives an [`ArchiveMember`](api.md#archivey.ArchiveMember) with the same fields. The
+ones code using `ZipInfo` or `TarInfo` reads most map like this:
+
+| zipfile | tarfile | archivey |
+| --- | --- | --- |
+| `info.filename` | `info.name` | `member.name` |
+| `info.file_size` | `info.size` | `member.size` |
+| `info.compress_size` | | `member.compressed_size` |
+| `info.date_time` | `info.mtime` | `member.modified` |
+| `info.external_attr >> 16` | `info.mode` | `member.mode` |
+| `info.is_dir()` | `info.isdir()`, `info.isfile()`, `info.issym()` | `member.is_dir`, `member.is_file`, `member.is_link` |
+| | `info.linkname` | `member.link_target` |
+
+A field the archive doesn't record is `None`, such as `compressed_size` for a member of a
+`.tar.gz`.
+
+`member.modified` is a `datetime` holding what the archive stores. A ZIP records local time with no
+time zone, which is why zipfile gives a plain tuple, so `modified` has no time zone either. A TAR
+records UTC, which tarfile gives as a timestamp, and `modified` is then a UTC `datetime`.
+`member.modified_utc()` gives UTC for both, and treats a time with no zone as your local time unless
+you pass another zone.
+
+When an archive holds a name twice, zipfile, tarfile and archivey all list it twice, and reading by
+name gives the last copy. Going through the member list, `member.is_current` tells you which copy
+that is ([Members with the same name](opening.md#members-with-the-same-name)).
