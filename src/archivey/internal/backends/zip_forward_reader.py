@@ -129,6 +129,8 @@ _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 #: until the descriptor says where the data ended: the walk finds the descriptor
 #: among the last ``_CODEC_RETAIN`` bytes handed out and one read more, so the
 #: codec's layers cannot have read further past the end than that, plus the code.
+#: About 4 MiB, held on top of the walk's own window over the same bytes, so a bit-3
+#: AES codec member costs twice ``_CODEC_RETAIN`` while it is read.
 _AES_HOLD_BACK = _CODEC_RETAIN + FORWARD_READ + 10
 
 # A forward pass decides nothing by seeking back, and reads each member's data once.
@@ -599,6 +601,9 @@ class _PassData:
                 except CorruptionError as exc:
                     error = exc
             crc, file_size = descriptor.crc, descriptor.file_size
+            # A kept member is decoded for its link target after the directory has
+            # updated it: stamping the descriptor's view now would overwrite the
+            # directory's, and ``drain`` already noted this descriptor.
             if not self._from_kept:
                 self._reader._note_descriptor(self.entry, descriptor)
                 # The descriptor dates the end from its own position, so its
@@ -699,10 +704,14 @@ class _PassData:
                 while self._read_chunk(_DRAIN_CHUNK):
                     pass
             except ArchiveyError as exc:
+                failure = self._as_read_failure(exc) if encrypted else exc
                 if not ends_undecoded:
-                    raise
+                    # As the member's own read words it.
+                    if failure is exc:
+                        raise
+                    raise failure from exc
                 if encrypted:
-                    self._failure = self._as_read_failure(exc)
+                    self._failure = failure
                 skip = True
         if skip:
             self.done = True

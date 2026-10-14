@@ -862,10 +862,12 @@ class LocalHeaderWalk:
             raise ValueError(
                 "member_data() is for the entry next_entry() returned last"
             )
+        if stored is None:
+            stored = entry.header.method == _METHOD_STORED
         data: MemberData
         if not entry.deferred:
             data = _SizedData(self, entry)
-        elif stored if stored is not None else entry.header.method == _METHOD_STORED:
+        elif stored:
             data = _ScannedData(self, entry, check_crc=not encrypted)
         else:
             data = _CodecData(self, entry)

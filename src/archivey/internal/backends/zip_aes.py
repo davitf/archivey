@@ -406,6 +406,11 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
     def read(self, size: int | None = -1) -> bytes:
         if size is None:
             size = -1
+        if size < 0 and not self._ends_with_data:
+            # As the walk's codec data refuses it: the source runs on past the data.
+            raise ValueError(
+                "a codec member's ciphertext has no known end; read it in pieces"
+            )
         if size == 0:
             return b""
         while (size < 0 or len(self._buf) < size) and not self._ended:
@@ -436,8 +441,9 @@ def open_winzip_aes_forward(
     A ``hold_back=None`` source ends with the member's data, so the code's length is
     read with the header: a member too short for both is refused before the password
     is checked (``CorruptionError``), as the sized read refuses it. A ``hold_back``
-    source that ends inside the header was cut (``TruncatedError``). Both come
-    before the availability gate, as in :func:`open_winzip_aes_member`.
+    source that ends inside the header was cut (``TruncatedError``). The order is
+    :func:`open_winzip_aes_member`'s: the impossible member before the availability
+    gate (no library reads it), the cut source after it.
     """
     header_len = aes.salt_len + 2
     overhead = header_len + _HMAC_LEN
@@ -446,12 +452,12 @@ def open_winzip_aes_forward(
         raise CorruptionError(
             f"WinZip AES member too short for salt/verify/HMAC ({len(head)} < {overhead})"
         )
-    if len(head) < header_len:
-        raise TruncatedError("Truncated WinZip AES salt or password-verification value")
     if not _crypto_available():
         raise PackageNotInstalledError(
             CRYPTO_REQUIREMENT.message("WinZip AES decryption")
         )
+    if len(head) < header_len:
+        raise TruncatedError("Truncated WinZip AES salt or password-verification value")
     salt, stored_verify = head[: aes.salt_len], head[aes.salt_len : header_len]
     enc_key, auth_key, pw_verify = derive_winzip_aes_keys(
         password, salt=salt, key_len=aes.key_len

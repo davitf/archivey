@@ -23,6 +23,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import zip_aes
 from archivey.internal.backends.zip_aes import (
     ExtraField,
     WinZipAesDecryptStream,
@@ -30,6 +31,7 @@ from archivey.internal.backends.zip_aes import (
     WinZipAesInfo,
     derive_winzip_aes_keys,
     iter_extra_fields,
+    open_winzip_aes_forward,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
@@ -1059,7 +1061,9 @@ def test_forward_stream_authenticates_once_told_where_the_data_ends(
         hold_back=64,
     )
     assert stage.read(len(_PAYLOAD)) == _PAYLOAD
-    stage.read()  # on into the code and past it, as a codec's layers read ahead
+    stage.read(1 << 10)  # on into the code and past it, as a codec's layers read ahead
+    with pytest.raises(ValueError, match="read it in pieces"):
+        stage.read()
     data_len = 18 + len(cipher) + 10
     if tamper:
         with pytest.raises(CorruptionError, match="HMAC mismatch"):
@@ -1089,3 +1093,28 @@ def test_forward_stream_ending_with_its_data_holds_back_the_code(tamper: bool) -
             stage.read()
     else:
         assert stage.read() == _PAYLOAD
+
+
+@pytest.mark.parametrize(
+    ("hold_back", "data", "refusal"),
+    [
+        # Whole and too short: no library could read it, so the gate comes after.
+        pytest.param(None, b"\x01" * 20, CorruptionError, id="too-short"),
+        # Cut: the gate comes first, as for a sized member.
+        pytest.param(64, b"\x01" * 5, PackageNotInstalledError, id="cut"),
+    ],
+)
+def test_forward_open_checks_in_the_sized_open_order(
+    monkeypatch: pytest.MonkeyPatch,
+    hold_back: int | None,
+    data: bytes,
+    refusal: type[Exception],
+) -> None:
+    monkeypatch.setattr(zip_aes, "_crypto_available", lambda: False)
+    with pytest.raises(refusal):
+        open_winzip_aes_forward(
+            io.BytesIO(data),
+            aes=WinZipAesInfo(2, 3, 8),
+            password=_PASSWORD,
+            hold_back=hold_back,
+        )

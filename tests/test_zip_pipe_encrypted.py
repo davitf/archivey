@@ -247,6 +247,53 @@ def _bit3_zipcrypto(compression: int) -> bytes:
     )
 
 
+#: Past several of the decrypt stage's 64 KiB reads, and compressible only in part.
+_LONG = random.Random(5).randbytes(100_000) + _TEXT * 100
+
+
+def _deflate64(data: bytes) -> bytes:
+    import inflate64
+
+    deflater = inflate64.Deflater()
+    return deflater.deflate(data) + deflater.flush()
+
+
+def _ppmd(data: bytes) -> bytes:
+    """ZIP method 98: the order and memory word, then PPMd8 with its end mark."""
+    import pyppmd
+
+    order, mem_mb = 6, 16
+    encoder = pyppmd.Ppmd8Encoder(order, mem_mb << 20, 0)
+    word = (order - 1) | ((mem_mb - 1) << 4)
+    return struct.pack("<H", word) + encoder.encode(data) + encoder.flush(True)
+
+
+def _aes_precompressed(method: int, encode, *, vendor_version: int) -> bytes:  # noqa: ANN001
+    from tests.zip_aes_fixture import build_aes_zip
+
+    return build_aes_zip(
+        [(b"a.txt", _LONG)],
+        password=_PASSWORD,
+        method=method,
+        encode=encode,
+        vendor_version=vendor_version,
+    )
+
+
+def _zipcrypto_precompressed(method: int, encode, *, bit3: bool) -> bytes:  # noqa: ANN001
+    """``_LONG`` under ZipCrypto, compressed with a codec stdlib cannot write: the two
+    whose decoders cannot say how much of their last input they used."""
+    data = build_zipcrypto_zip(
+        _PASSWORD,
+        b"a.txt",
+        _LONG,
+        compression=method,
+        compressed=encode(_LONG),
+        check_byte=0 if bit3 else None,
+    )
+    return _bit3(data) if bit3 else data
+
+
 def _ends_the_walk(data: bytes) -> bool:
     """Whether the first member is a bit-3 codec member: from a pipe, only its key
     finds where its data ends, so a read that fails ends the walk there."""
@@ -293,6 +340,34 @@ def _fixtures() -> list[pytest.ParameterSet]:
         ),
         pytest.param(
             lambda: _bit3_zipcrypto(zipfile.ZIP_LZMA), id="zipcrypto-bit3-lzma"
+        ),
+        *(
+            pytest.param(
+                lambda method=method, encode=encode, bit3=bit3: (
+                    _zipcrypto_precompressed(method, encode, bit3=bit3)
+                ),
+                id=f"zipcrypto-{'bit3-' if bit3 else ''}{name}",
+                marks=requires(package),
+            )
+            for name, method, encode, package in (
+                ("deflate64", 9, _deflate64, "inflate64"),
+                ("ppmd", 98, _ppmd, "pyppmd"),
+            )
+            for bit3 in (False, True)
+        ),
+        *(
+            pytest.param(
+                lambda method=method, encode=encode, version=version: _bit3(
+                    _aes_precompressed(method, encode, vendor_version=version)
+                ),
+                id=f"aes-ae{version}-bit3-{name}",
+                marks=[requires("cryptography"), requires(package)],
+            )
+            for name, method, encode, package in (
+                ("deflate64", 9, _deflate64, "inflate64"),
+                ("ppmd", 98, _ppmd, "pyppmd"),
+            )
+            for version in (1, 2)
         ),
         pytest.param(
             lambda: _bit3(_aes_zip(vendor_version=1, method=0)),
@@ -417,6 +492,29 @@ def test_real_bit3_members_read_as_from_a_file() -> None:
     expected = _file_read(data, _PASSWORD)
     assert set(expected) == {"stored.txt", "deflated.txt"}
     assert _pipe_read(data, _PASSWORD) == expected
+
+
+def test_damage_in_an_unread_bit3_codec_member_ends_the_pass_as_its_read_fails() -> (
+    None
+):
+    """Only the check byte vouched for the password, so the integrity failure that
+    ends the pass may be a wrong password, and says so, as the member's read does."""
+    data = _with_plain_member(
+        _bit3(
+            corrupt_zipcrypto_payload(
+                build_zipcrypto_zip(_PASSWORD, b"a.txt", _TEXT, check_byte=0)
+            )
+        )
+    )
+    kind, message = _file_read(data, _PASSWORD)["a.txt"]  # type: ignore[misc]
+    assert kind is EncryptionError
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        with pytest.raises(EncryptionError) as ended:
+            for _ in reader.stream_members(lambda m: m.name == "plain.txt"):
+                pass
+    assert str(ended.value) == message
 
 
 @pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
