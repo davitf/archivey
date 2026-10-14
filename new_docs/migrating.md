@@ -106,14 +106,14 @@ bytes and tarfile's `extractfile` returns `None`. Reading a symbolic link gives 
 contents, as tarfile does, and raises `LinkTargetNotFoundError` when the target isn't in the
 archive, where tarfile raises `KeyError`. zipfile gives the link's own text, the target's path.
 
-py7zr has no `open` or `read`. Code that extracts members into a `py7zr.io.BytesIOFactory` to read
-them in memory uses `reader.read` or `reader.open` instead.
-
-In a `.tar.gz`, members are compressed together, so reading one in the middle means decompressing
-everything before it, with tarfile or with archivey. `stream_members()` reads each member once, in
-order, in every format, which also suits 7z and RAR archives that compress members together ([Solid
-archives](reading.md#solid-archives)). With `streaming=True`, a read out of order raises instead of
-quietly costing time.
+In a `.tar.gz`, in most 7z archives and in some RAR archives, members are compressed together, so
+reading one member on its own means decompressing everything before it. tarfile avoids repeating
+that work when you read each member while iterating over the archive, and py7zr when you pass all
+the names to one `extract` call. rarfile has no way to avoid it. With archivey, use
+`stream_members()` whenever you need several members and their order doesn't matter: it reads each
+member once, in order, in every format ([Solid archives](reading.md#solid-archives)). `read` and
+`open` decompress again for each member, even in the archive's order, and with `streaming=True` they
+raise instead of quietly costing time.
 
 ## Extracting
 
