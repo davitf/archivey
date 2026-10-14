@@ -25,13 +25,14 @@ from array import array
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
-from typing import BinaryIO, cast
+from typing import BinaryIO, Literal, cast
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, UnlistedDataContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    EncryptionError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -41,6 +42,7 @@ from archivey.internal.backends.zip_aes import (
     FORWARD_READ,
     ZIP_WRONG_PASSWORD_MSG,
     WinZipAesForwardStream,
+    WinZipAesInfo,
     open_winzip_aes_forward,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
@@ -51,6 +53,7 @@ from archivey.internal.backends.zip_local_walk import (
     LocalEntry,
     LocalHeaderWalk,
     MemberData,
+    descriptor_by_crc,
 )
 from archivey.internal.backends.zip_parser import (
     CentralEntry,
@@ -67,7 +70,9 @@ from archivey.internal.backends.zip_reader import (
     _ZIP_KEYED_SETTINGS_METHODS,
     _ZIP_MASK_COMPRESSED_PATCHED_DATA,
     _ZIP_MASK_LZMA_EOS_MARKER,
+    _ZIP_REJECTING_METHODS,
     ZipReader,
+    _CandidateFailures,
     _is_candidate_integrity_failure,
     _is_encrypted_entry,
     _max_members_error,
@@ -94,6 +99,17 @@ from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.password import wrong_password_error
+from archivey.internal.password_confirm import (
+    PASSWORD_CONFIRM_CHUNK_BYTES,
+    PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    PASSWORD_CONFIRM_MIN_VERIFIED_BYTES,
+    PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmPlan,
+    PasswordConfirmVerdict,
+    attempt_with_confirm,
+    plan_password_confirm,
+    run_password_confirm_plan,
+)
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import open_codec_stream
@@ -126,6 +142,10 @@ _NO_END_BEFORE_EOF = sys.maxsize
 #: decrypted as the pass drains it instead, at the cost of one key derivation, so it
 #: bounds only the bytes held until the directory arrives.
 _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
+#: The data a member read with several possible passwords keeps to confirm one on
+#: (``_PassData._confirm_password``): the compressed input a bounded confirm may take
+#: (``PASSWORD_CONFIRM_MAX_INPUT_BYTES``), and room for the encryption header.
+_CONFIRM_SPOOL = PASSWORD_CONFIRM_MAX_INPUT_BYTES + 64
 #: How much of a bit-3 WinZip AES codec member's ciphertext stays out of its HMAC
 #: until the descriptor says where the data ended: the walk finds the descriptor
 #: among the last ``_CODEC_RETAIN`` bytes handed out and one read more, so the
@@ -278,6 +298,14 @@ class _PassData:
         #: A bit-3 WinZip AES codec member's decrypt stage, which authenticates once
         #: the descriptor says where the data ended (``_finish``).
         self._aes_pass: WinZipAesForwardStream | None = None
+        #: Which weaker check the password was taken on, for the report when the
+        #: caller's stream closes before the end; ``None`` once a confirm settled it.
+        self._check: Literal["weak_open_check", "confirm_budget_exhausted"] | None = (
+            "weak_open_check"
+        )
+        #: The kept first bytes of the data and the rest, as the confirm's winner
+        #: reads them (``_confirm_password``).
+        self._replay: _Replay | None = None
         #: Decoding kept ciphertext for a link target: the walk has settled it.
         self._from_kept = isinstance(data, _KeptData)
         self._crc = 0
@@ -347,11 +375,24 @@ class _PassData:
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,
             )
-        keyed = False
-        source: BinaryIO = self._data
         if _is_encrypted_entry(header.flags, header.method):
             keyed = loc.aes is None and method in _ZIP_KEYED_SETTINGS_METHODS
-            source = self._decrypted(loc)
+            return self._decrypted(
+                loc, lambda source: self._decode(loc, source, keyed=keyed)
+            )
+        return self._decode(loc, self._data, keyed=False)
+
+    def _decode(self, loc: _ZipLocator, source: BinaryIO, *, keyed: bool) -> BinaryIO:
+        """``source`` (the member's data, decrypted) through its codec.
+
+        ``keyed``: ZipCrypto decrypted the codec's settings, so a decoder limit they
+        trip may be a wrong password's doing.
+        """
+        member = self.member
+        header = self.entry.header
+        reader = self._reader
+        method = self._method()
+        deferred = self._deferred()
         if method == 0:
             return source
         codec = reader._member_codec(
@@ -394,13 +435,18 @@ class _PassData:
             collector=reader._diagnostics_collector,
         )
 
-    def _decrypted(self, loc: _ZipLocator) -> BinaryIO:
-        """The member's plaintext, decrypted from its data as the pass reads it.
+    def _decrypted(
+        self, loc: _ZipLocator, decode: Callable[[BinaryIO], BinaryIO]
+    ) -> BinaryIO:
+        """The member's decoded data (``decode`` over its plaintext), decrypted from its
+        data as the pass reads it.
 
-        The one possible password is taken on its cheap check (ZipCrypto's check
-        byte, WinZip AES's ``pw_verify``), as from a file; the CRC or the HMAC at the
-        end is the real test (``_unconfirmed``). Its header is read once, so a second
-        candidate could not start over.
+        One possible password is taken on its cheap check (ZipCrypto's check byte,
+        WinZip AES's ``pw_verify``), as from a file; the CRC or the HMAC at the end is
+        the real test (``_unconfirmed``). Several are judged by a bounded confirm on
+        the first bytes of the data, which the pass keeps to replay to the winner
+        (``_confirm_password``). Its header is read once, so a second candidate could
+        not start over without them.
 
         A bit-3 member's data has no size to decrypt by. A STORED one's ends where
         the walk's scan finds its descriptor, on the ciphertext, as does a codec
@@ -410,104 +456,318 @@ class _PassData:
         """
         reader = self._reader
         member = self.member
-        header = self.entry.header
-        deferred = self._deferred()
-
-        def refuse(message: str) -> UnsupportedFeatureError:
-            return UnsupportedFeatureError(
-                message,
+        if loc.strong_encryption:
+            raise UnsupportedFeatureError(
+                _STRONG_ENCRYPTION_MSG,
                 archive_name=reader._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,
             )
-
-        if loc.strong_encryption:
-            raise refuse(_STRONG_ENCRYPTION_MSG)
-        if reader._passwords.is_ambiguous():
-            raise refuse(
-                "Several possible passwords for an encrypted ZIP member read from a "
-                "source that cannot seek are not supported yet: give one password"
+        if loc.aes is None and self.entry.header.method == 99:
+            raise UnsupportedFeatureError(
+                "ZIP compression method 99 without a valid WinZip AES (0x9901) "
+                "extra field",
+                archive_name=reader._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.ZIP,
             )
         raw = _CutShortWatch(self._data, self)
-        # A bit-3 STORED member's data, or kept ciphertext, ends where its
-        # ciphertext does.
-        ends_with_data = not self._runs_on()
-        stage: Callable[[bytes], BinaryIO]
-        aes = loc.aes
-        if header.method == 99:
-            if aes is None:
-                raise refuse(
-                    "ZIP compression method 99 without a valid WinZip AES (0x9901) "
-                    "extra field"
-                )
+        if reader._passwords.is_ambiguous():
+            return self._confirm_password(loc, raw, decode)
+        decrypted = reader._finish_password_attempt(
+            member,
+            lambda: reader._passwords.attempt(
+                member, lambda password: self._stage(loc, raw, password)
+            ),
+            ambiguous_holder=None,
+        )
+        self._unconfirmed = loc.aes is None
+        self._check = "weak_open_check"
+        return decode(decrypted)
 
-            def stage(password: bytes) -> BinaryIO:
-                if not deferred:
-                    return open_winzip_aes_member(
-                        raw,
-                        aes=aes,
-                        password=password,
-                        compress_size=header.compressed_size,
-                    )
-                forward = open_winzip_aes_forward(
+    def _stage(
+        self,
+        loc: _ZipLocator,
+        raw: BinaryIO,
+        password: bytes,
+        *,
+        probe: bool = False,
+        ends_with_data: bool | None = None,
+    ) -> BinaryIO:
+        """The decrypt stage over ``raw`` for ``password``; raises the wrong-password
+        ``EncryptionError`` when its cheap check fails.
+
+        ``probe``: a confirm's trial, which leaves this member's state alone.
+        ``ends_with_data``: ``raw`` ends where the data does (by default, unless the
+        data runs on into what follows it).
+        """
+        reader = self._reader
+        member = self.member
+        header = self.entry.header
+        deferred = self._deferred()
+        if ends_with_data is None:
+            # A bit-3 STORED member's data, or kept ciphertext, ends where its
+            # ciphertext does.
+            ends_with_data = not self._runs_on()
+        aes = loc.aes
+        if aes is not None:
+            if not deferred:
+                return open_winzip_aes_member(
                     raw,
                     aes=aes,
                     password=password,
-                    hold_back=None if ends_with_data else _AES_HOLD_BACK,
+                    compress_size=header.compressed_size,
                 )
-                if not ends_with_data:
-                    self._aes_pass = forward
-                return forward
+            forward = open_winzip_aes_forward(
+                raw,
+                aes=aes,
+                password=password,
+                hold_back=None if ends_with_data else _AES_HOLD_BACK,
+            )
+            if not ends_with_data and not probe:
+                self._aes_pass = forward
+            return forward
+        # Inside the attempt, so a missing password is reported first, as from a
+        # file.
+        if not deferred and header.compressed_size < ZIPCRYPTO_HEADER_LEN:
+            raise CorruptionError(
+                "ZipCrypto member too short for its encryption header "
+                f"({header.compressed_size} < {ZIPCRYPTO_HEADER_LEN})",
+                archive_name=reader._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        head = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
+        if len(head) != ZIPCRYPTO_HEADER_LEN:
+            # Only a bit-3 member gets here: a sized one's data raises
+            # TruncatedError itself when the stream ends inside it. A codec one's
+            # data runs on to the end of the stream; a STORED one's scan found the
+            # descriptor first, so the data is whole and short.
+            if not ends_with_data:
+                raise TruncatedError(
+                    "ZIP stream ends inside the encryption header of "
+                    f"member {quoted(member.name)}",
+                    archive_name=reader._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.ZIP,
+                )
+            raise CorruptionError(
+                "ZipCrypto member too short for its encryption header "
+                f"({len(head)} < {ZIPCRYPTO_HEADER_LEN})",
+                archive_name=reader._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        keys, check = keys_after_header(password, head)
+        if check != _zipcrypto_check_byte(loc):
+            raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
+        # The length bounds seeks only, and nothing seeks a pass.
+        length = max(0, header.compressed_size - ZIPCRYPTO_HEADER_LEN)
+        return ZipCryptoDecryptStream(raw, keys, length=length)
 
-        else:
-            check_byte = _zipcrypto_check_byte(loc)
+    def _confirm_password(
+        self,
+        loc: _ZipLocator,
+        raw: BinaryIO,
+        decode: Callable[[BinaryIO], BinaryIO],
+    ) -> BinaryIO:
+        """Pick among several possible passwords, as the file read does, on the data's
+        first ``_CONFIRM_SPOOL`` bytes.
 
-            def stage(password: bytes) -> BinaryIO:
-                # Inside the attempt, so a missing password is reported first, as
-                # from a file.
-                if not deferred and header.compressed_size < ZIPCRYPTO_HEADER_LEN:
-                    raise CorruptionError(
-                        "ZipCrypto member too short for its encryption header "
-                        f"({header.compressed_size} < {ZIPCRYPTO_HEADER_LEN})",
-                        archive_name=reader._archive_name,
-                        member_name=member.name,
-                        source_format=ArchiveFormat.ZIP,
-                    )
-                head = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
-                if len(head) != ZIPCRYPTO_HEADER_LEN:
-                    # Only a bit-3 member gets here: a sized one's data raises
-                    # TruncatedError itself when the stream ends inside it. A codec
-                    # one's data runs on to the end of the stream; a STORED one's
-                    # scan found the descriptor first, so the data is whole and short.
-                    if not ends_with_data:
-                        raise TruncatedError(
-                            "ZIP stream ends inside the encryption header of "
-                            f"member {quoted(member.name)}",
-                            archive_name=reader._archive_name,
-                            member_name=member.name,
-                            source_format=ArchiveFormat.ZIP,
-                        )
-                    raise CorruptionError(
-                        "ZipCrypto member too short for its encryption header "
-                        f"({len(head)} < {ZIPCRYPTO_HEADER_LEN})",
-                        archive_name=reader._archive_name,
-                        member_name=member.name,
-                        source_format=ArchiveFormat.ZIP,
-                    )
-                keys, check = keys_after_header(password, head)
-                if check != check_byte:
-                    raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
-                # The length bounds seeks only, and nothing seeks a pass.
-                length = max(0, header.compressed_size - ZIPCRYPTO_HEADER_LEN)
-                return ZipCryptoDecryptStream(raw, keys, length=length)
+        Each candidate that passes its cheap check decrypts and decodes those bytes
+        (``_probe``): a CRC or HMAC reached in them confirms it, a codec's rejection or
+        a mismatch rejects it, and anything else leaves it inconclusive. The data goes
+        by once, so the walk to the end the file read takes to tell several
+        inconclusive candidates apart is not available: the first of them wins, and
+        its CRC or HMAC at the end is the test, as for one password. The kept bytes
+        are replayed in front of the rest of the data for the winner.
+        """
+        reader = self._reader
+        member = self.member
+        spool = read_exact(raw, _CONFIRM_SPOOL)
+        # The data ended inside the kept bytes: they are all of it.
+        whole = self._ends_in(spool, raw)
+        failures = _CandidateFailures()
 
-        decrypted = reader._finish_password_attempt(
+        def probe(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+            return password, self._probe(loc, spool, whole, password, failures)
+
+        password, verdict = reader._finish_password_attempt(
             member,
-            lambda: reader._passwords.attempt(member, stage),
-            ambiguous_holder=None,
+            lambda: attempt_with_confirm(reader._passwords, member, probe, None),
+            ambiguous_holder=failures.ambiguous,
+            failure_is_damage=loc.aes is not None,
+            limit_holder=failures.limits,
         )
-        self._unconfirmed = aes is None
-        return decrypted
+        confirmed = verdict is PasswordConfirmVerdict.CONFIRMED
+        self._unconfirmed = loc.aes is None and not confirmed
+        self._check = None if confirmed else "confirm_budget_exhausted"
+        self._replay = _Replay(spool, raw)
+        return decode(self._stage(loc, self._replay, password))
+
+    def _ends_in(self, spool: bytes, raw: BinaryIO) -> bool:
+        """Whether the member's data ended inside ``spool``, read from ``raw``."""
+        if len(spool) < _CONFIRM_SPOOL:
+            # A short read is the data's end, except for a bit-3 codec member, whose
+            # data runs on: there it is the stream's.
+            return not self._runs_on()
+        if self._deferred():
+            return False
+        return len(spool) >= self.entry.header.compressed_size
+
+    def _probe(
+        self,
+        loc: _ZipLocator,
+        spool: bytes,
+        whole: bool,
+        password: bytes,
+        failures: _CandidateFailures,
+    ) -> PasswordConfirmVerdict:
+        """Judge one candidate on the kept bytes; never ``REJECTED``, which raises
+        the error that rejects the candidate instead."""
+        view = _SpoolView(spool)
+        # The kept bytes stop short of the data's end, or of the stream's.
+        partial = not whole and len(spool) == _CONFIRM_SPOOL
+
+        def ran_out() -> bool:
+            # A read reached the kept bytes' end before the data's: what ended
+            # there is not the key's doing.
+            return view.ended and partial
+
+        aes = loc.aes
+        keyed = aes is None and self._method() in _ZIP_KEYED_SETTINGS_METHODS
+        # A wrong key raises its EncryptionError from the stage, before anything
+        # below can mistake a damaged header for garbage.
+        body = self._stage(loc, view, password, probe=True, ends_with_data=whole)
+        decoded: BinaryIO | None = None
+        try:
+            try:
+                decoded = self._decode(loc, body, keyed=False)
+            except ResourceLimitError as exc:
+                if not keyed:
+                    raise
+                raise failures.limit_failed(exc) from exc
+            if self._deferred():
+                verdict = self._judge_deferred(decoded, aes, spool, whole, ran_out)
+            else:
+                verdict = self._judge_sized(decoded, aes, ran_out)
+        except EncryptionError:
+            raise
+        except ArchiveyError as exc:
+            if ran_out():
+                return PasswordConfirmVerdict.INCONCLUSIVE
+            if not _is_candidate_integrity_failure(exc, payload_complete=lambda: True):
+                raise
+            raise failures.failed(exc) from exc
+        finally:
+            if decoded is not None:
+                decoded.close()
+            else:
+                body.close()
+        if verdict is PasswordConfirmVerdict.REJECTED:
+            raise failures.failed(None)
+        return verdict
+
+    def _judge_sized(
+        self,
+        decoded: BinaryIO,
+        aes: WinZipAesInfo | None,
+        ran_out: Callable[[], bool],
+    ) -> PasswordConfirmVerdict:
+        """The file read's plan for a member whose local header states its size and
+        CRC: the CRC when it is within the budget, else the codec's rejection; under
+        WinZip AES the code at the end when the plan would walk there anyway."""
+        header = self.entry.header
+        size = header.file_size
+        if aes is None and self._method() == 0:
+            # As the file read's CRC pass over a STORED member: the body the
+            # header's compressed size holds, whatever size it declares.
+            size = max(0, header.compressed_size - ZIPCRYPTO_HEADER_LEN)
+        anchor = None if self._ae2() else header.crc
+        rejects = self._method() in _ZIP_REJECTING_METHODS
+        plan = plan_password_confirm(
+            [(size, anchor)],
+            None,
+            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
+            codec_rejects=rejects,
+        )
+        to_hmac = (
+            aes is not None
+            and not plan.confirms
+            and (size <= PASSWORD_CONFIRM_PREFIX_BYTES or not rejects)
+        )
+        if to_hmac:
+            plan = PasswordConfirmPlan(
+                ((size, anchor),), None, confirms=True, bounded=False
+            )
+        verdict = run_password_confirm_plan(decoded, plan, input_exhausted=ran_out)
+        if to_hmac and verdict is PasswordConfirmVerdict.CONFIRMED and decoded.read(1):
+            # The read that finds the end is the one that checks the code.
+            return PasswordConfirmVerdict.REJECTED
+        return verdict
+
+    def _judge_deferred(
+        self,
+        decoded: BinaryIO,
+        aes: WinZipAesInfo | None,
+        spool: bytes,
+        whole: bool,
+        ran_out: Callable[[], bool],
+    ) -> PasswordConfirmVerdict:
+        """A bit-3 member's size and CRC follow its data, so only a member that ends
+        inside the kept bytes can be confirmed: by the AES code when the stage ends
+        with the data, else by the descriptor's CRC, the one the walk found there (a
+        STORED member's scan, kept ciphertext) or, after a codec's end, one in the
+        kept bytes that states the decoded CRC and size. Otherwise the codec's
+        rejection is the one signal, as for a sized member past the budget."""
+        crc = 0
+        got = 0
+        budget = PASSWORD_CONFIRM_PREFIX_BYTES
+        codec_ended = False
+        while got <= budget:
+            try:
+                chunk = decoded.read(
+                    min(PASSWORD_CONFIRM_CHUNK_BYTES, budget + 1 - got)
+                )
+            except DataAfterEndError:
+                # The codec ended and its input goes on: the descriptor is next.
+                codec_ended = True
+                break
+            if not chunk:
+                break
+            crc = zlib.crc32(chunk, crc)
+            got += len(chunk)
+        # The codec's own end stands even when its read-ahead reached the kept
+        # bytes' end.
+        if got > budget or (ran_out() and not codec_ended):
+            return PasswordConfirmVerdict.INCONCLUSIVE
+        if aes is not None and whole:
+            # The stage ends with the data, and the read that found the end checked
+            # the code.
+            return PasswordConfirmVerdict.CONFIRMED
+        if self._ae2() or got < PASSWORD_CONFIRM_MIN_VERIFIED_BYTES:
+            # No CRC, or one over too few bytes to confirm.
+            return PasswordConfirmVerdict.INCONCLUSIVE
+        if whole:
+            descriptor = self._data.found_descriptor
+            if descriptor is None:
+                return PasswordConfirmVerdict.INCONCLUSIVE
+            if crc != descriptor.crc:
+                return PasswordConfirmVerdict.REJECTED
+            return PasswordConfirmVerdict.CONFIRMED
+        # A codec ended inside the kept bytes, which run on past the data. A wrong
+        # key's garbage that a codec ends early states no descriptor after it.
+        found = descriptor_by_crc(
+            spool,
+            crc=crc,
+            file_size=got,
+            base=0,
+            zip64=self.entry.zip64,
+            at_end=False,
+        )
+        if found is None:
+            return PasswordConfirmVerdict.INCONCLUSIVE
+        return PasswordConfirmVerdict.CONFIRMED
 
     def read(self, n: int) -> bytes:
         """Up to ``n`` decoded bytes; ``b""`` once the data has ended and checked.
@@ -603,8 +863,11 @@ class _PassData:
             assert descriptor is not None
             if self._aes_pass is not None:
                 try:
+                    # The data's bytes the stage did not read: what is left of the
+                    # kept ones, then what the descriptor's search read past.
+                    replayed = b"" if self._replay is None else self._replay.unread
                     self._aes_pass.authenticate_end(
-                        descriptor.compressed_size, data.passed_over
+                        descriptor.compressed_size, replayed + data.passed_over
                     )
                 except CorruptionError as exc:
                     error = exc
@@ -671,7 +934,8 @@ class _PassData:
         only if the directory makes it a link (``_KeptCiphertext``): no key is derived
         for a member nobody asked for, unless its ciphertext is over
         ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here, its failure kept for
-        the target's read.
+        the target's read. Never with a password provider, which is not asked about
+        a member nobody read.
 
         A bit-3 member is decoded to its end, which is the only way to find it from
         its decoded data, so there a failure ends the walk. An encrypted one is the
@@ -711,6 +975,22 @@ class _PassData:
                 # No key derived yet, and none is derived for a member nobody read
                 # unless the directory makes it a link.
                 kept = read_exact(self._data, header.compressed_size)
+                skip = True
+            elif (
+                encrypted
+                and not skip
+                and unopened
+                and self._reader._passwords.has_provider()
+            ):
+                # Decoding it here would ask the provider about a member nobody
+                # read, which may not be a link at all: its target is reported
+                # locked instead.
+                self._failure = EncryptionError(
+                    f"The pass did not ask the password provider for "
+                    f"{quoted(self.member.name)}: nobody read it, and its "
+                    f"ciphertext is over the {_MAX_KEPT_CIPHERTEXT} bytes the pass "
+                    "keeps for a symlink target"
+                )
                 skip = True
         if not skip:
             try:
@@ -818,6 +1098,10 @@ class _KeptData(MemberData):
         self.consumed += len(chunk)
         return chunk
 
+    @property
+    def found_descriptor(self) -> DataDescriptor | None:
+        return self._descriptor
+
     def settle(
         self,
         used: int | None = None,
@@ -828,6 +1112,52 @@ class _KeptData(MemberData):
         # Nothing after it to read past: the walk did, and kept the descriptor.
         self._settled = True
         return self._descriptor
+
+
+class _SpoolView(ReadOnlyIOStream):
+    """The kept first bytes of a member's data, as one confirm trial reads them.
+    ``ended`` is set once a read found their end."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._data = data
+        self._pos = 0
+        self.ended = False
+
+    def read(self, n: int = -1, /) -> bytes:
+        end = len(self._data) if n < 0 else self._pos + n
+        chunk = self._data[self._pos : end]
+        self._pos += len(chunk)
+        if n != 0 and self._pos >= len(self._data) and (n < 0 or len(chunk) < n):
+            self.ended = True
+        return chunk
+
+
+class _Replay(ReadOnlyIOStream):
+    """The kept first bytes of a member's data, then the rest from ``source``: the
+    data as the confirm's winner reads it. Closing it leaves ``source`` open."""
+
+    def __init__(self, kept: bytes, source: BinaryIO) -> None:
+        super().__init__()
+        self._kept = kept
+        self._pos = 0
+        self._source = source
+
+    @property
+    def unread(self) -> bytes:
+        """The kept bytes not read yet."""
+        return self._kept[self._pos :]
+
+    def read(self, n: int = -1, /) -> bytes:
+        if self._pos < len(self._kept):
+            end = len(self._kept) if n < 0 else self._pos + n
+            chunk = self._kept[self._pos : end]
+            self._pos += len(chunk)
+            if n < 0 or len(chunk) < n:
+                # Run on into the source, so a short read still means the end.
+                return chunk + self._source.read(-1 if n < 0 else n - len(chunk))
+            return chunk
+        return self._source.read(n)
 
 
 class _CutShortWatch(ReadOnlyIOStream):
@@ -1484,15 +1814,18 @@ class ZipForwardReader(ZipReader):
         stream: BinaryIO = _PassStream(current)
         header = current.entry.header
         if _is_encrypted_entry(header.flags, header.method):
-            # Only a cheap check vouched for the password. The pass runs the CRC or
-            # the HMAC on the read after the last byte, not on the one reaching the
-            # member's size, so no size is handed to the watch: only reaching the
-            # end counts. Seeks would forfeit the check, but nothing seeks a pass.
+            # Only a cheap check vouched for the password, unless a confirm settled
+            # it (``_PassData._check``, known once the first read picked it). The
+            # pass runs the CRC or the HMAC on the read after the last byte, not on
+            # the one reaching the member's size, so no size is handed to the watch:
+            # only reaching the end counts. Seeks would forfeit the check, but
+            # nothing seeks a pass.
             stream = self._watch_unverified_read(
                 stream,
                 member,
                 size=_NO_END_BEFORE_EOF,
                 check="weak_open_check",
+                check_now=lambda: current._check,
                 format_label="ZIP",
                 digest="integrity check",
                 why="the password was accepted on a weaker check",

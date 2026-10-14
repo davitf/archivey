@@ -295,6 +295,25 @@ the end of the pass (§"Failures found at the end of the pass"). This is not que
 which is about two headers that state the same field differently; here the local header
 stated no size at all.
 
+Several possible passwords (a list, or a provider) are confirmed as the file read
+confirms them (`password_confirm.attempt_with_confirm`), on the first 1 MiB of the
+member's data, which the pass keeps and replays to the winner: a candidate is decrypted
+and decoded over those bytes, a CRC or WinZip AES code reached in them confirms it, and a
+codec's rejection or a mismatch rejects it. A bit-3 member's CRC follows its data, so it
+is confirmed only when it ends inside the kept bytes: by the descriptor the STORED scan
+found there, or after a codec's end by a descriptor in them that states the decoded CRC
+and size. The file read walks each candidate that is still inconclusive to the member's
+end to tell them apart; the data goes by once here, so the first of them wins and its
+CRC or code at the end is the test, failing as one unconfirmed password does (davi
+2026-10-14, "First survivor"). It only matters for a member over the kept bytes, stored
+or under a codec that accepts random input, where a wrong candidate passes the cheap
+check (1 in 256 under ZipCrypto, 1 in 65 536 under AES). A choice that may change: the
+pass could spool the whole ciphertext, walk every survivor to its end and serve the
+winner from the spool, once spool limits are designed. A provider is never asked about a
+member nobody read: a short-plaintext member whose ciphertext is over what the pass keeps
+for a link target is not decoded as the pass drains it, and its target is reported
+locked.
+
 A codec stream stops after its end without saying how far past it it read: its
 decoder takes input in chunks of up to 1 MiB, and Deflate64 and PPMd cannot say how much
 of the last one they used. So the codec half does not count bytes. The reader decodes

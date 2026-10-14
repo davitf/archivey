@@ -116,7 +116,7 @@ each lands with nothing half-done reachable:
       CRC, and PPMd8 with `CodecParams.input_runs_on`; tests for DEFLATE, Deflate64,
       bzip2, LZMA with EOS, PPMd and Zstandard, signed and unsigned, in
       `test_zip_walk_codec_end.py`.
-- [ ] 3.2b Encrypted members from a pipe (3b3a refuses them when read): one password,
+- [x] 3.2b Encrypted members from a pipe (3b3a refuses them when read): one password,
       and several candidates, whose bounded confirm reads a prefix the pass keeps
       (`archive-reading`'s "Confirm candidates" requirement); a bit-3 STORED member
       under ZipCrypto or AES ends by the scan without a key, so a skip needs none.
@@ -134,7 +134,10 @@ each lands with nothing half-done reachable:
       decrypted and decoded to find its end, and a failure ends the walk there with
       the member's error. 3b3d2b: one nobody read is scanned for like a STORED one
       (signed or unsigned descriptor), so passing it needs no key, and its
-      ciphertext is kept the same way. Left for 3.4 (every fixture through a pipe): a sized member whose data
+      ciphertext is kept the same way. 3b3d3: several candidates or a provider,
+      confirmed on the first 1 MiB of the data, kept and replayed to the winner;
+      several inconclusive candidates take the first (davi's choice, `design.md`), and
+      the pass never asks a provider about a member nobody read. Left for 3.4 (every fixture through a pipe): a sized member whose data
       decodes short of its local header's size reports the pass's own
       size-mismatch `CorruptionError` where the file read reports the verifier's
       `TruncatedError`, encrypted or not (both `CorruptionError` under DR-4; a

@@ -2244,16 +2244,28 @@ class BaseArchiveReader(ArchiveReader):
         digest: str,
         why: str,
         seek_forfeits: bool = True,
+        check_now: Callable[
+            [], Literal["weak_open_check", "confirm_budget_exhausted"] | None
+        ]
+        | None = None,
     ) -> BinaryIO:
         """Wrap ``stream`` to report ``ENCRYPTED_MEMBER_UNVERIFIED`` if it is abandoned
         before its ``digest`` (``"checksum"``, ``"integrity check"``) is reached.
 
         ``why`` says why the password is in doubt. The report runs at close, not
         open: a member's name and id are fixed at listing, so reading them then gives
-        the open-time values.
+        the open-time values. ``check_now``, for a password picked at the first read,
+        says at close which check took it, ``None`` for one confirmed (no report);
+        it replaces ``check``.
         """
 
         def report(reason: str) -> None:
+            nonlocal check
+            if check_now is not None:
+                decided = check_now()
+                if decided is None:
+                    return
+                check = decided
             missed = (
                 f"gave up its {digest} by seeking"
                 if reason == "seek"

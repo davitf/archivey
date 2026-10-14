@@ -503,6 +503,11 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         zip_forward_reader._CutShortWatch,
         # Kept ciphertext, read once from the start for a link target.
         zip_forward_reader._KeptData,
+        # A password candidate's view of the spooled member data, and the winner's
+        # replay of that spool before the rest of the data: compressed offsets,
+        # read forward once, below any codec.
+        zip_forward_reader._SpoolView,
+        zip_forward_reader._Replay,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
