@@ -297,7 +297,10 @@ _RAR3_SUBHEAD_CMT_UNICODE = 0x01
 
 # The largest comment RARLAB ``rar`` writes and ``unrar`` shows: ``rar`` cuts a
 # longer comment file to this size. A compressed RAR 2.9-4 ``CMT`` that declares
-# more is dropped before its decode is weighed or run.
+# more, or whose packed data is larger (``rar`` compresses a comment only when that
+# makes it smaller), is dropped before its bytes are read or its decode is run. A
+# stored ``CMT`` is not capped: its bytes are the text, and ``max_metadata_bytes``
+# weighs all of them.
 RAR3_MAX_COMMENT_SIZE = 0x40000
 
 
@@ -1585,9 +1588,11 @@ def _normalize_password_utf16le(password: str | bytes) -> bytes:
 
 
 def decode_rar3_cmt_text(raw: bytes, *, utf16: bool, encoding: str | None) -> str:
-    """Decode the unpacked payload of a RAR 2.9-4 ``CMT`` SERVICE header.
+    """Decode the unpacked text of a RAR 1.5-4 comment.
 
-    ``utf16`` is ``_RAR3_SUBHEAD_CMT_UNICODE`` from the header's attribute field.
+    Two sources reach it: a RAR 2.9-4 ``CMT`` SERVICE header, and a RAR 1.5-2.x
+    old-style COMMENT subblock (always 8-bit, so ``utf16`` is false).
+    ``utf16`` is ``_RAR3_SUBHEAD_CMT_UNICODE`` from a ``CMT`` header's attribute field.
     With it, unrar converts ``CmtSize / 2`` units, so an odd trailing byte is
     dropped rather than shown as U+FFFD, and the text is cut at the first NUL
     *character*: ASCII text in UTF-16LE is full of NUL bytes. Without it, the
@@ -2431,7 +2436,13 @@ def _parse_rar3(
                 and not member.split_before
                 and not member.split_after
                 and packed_size > 0
-                and (member.is_stored or member.file_size <= RAR3_MAX_COMMENT_SIZE)
+                and (
+                    member.is_stored
+                    or (
+                        member.file_size <= RAR3_MAX_COMMENT_SIZE
+                        and packed_size <= RAR3_MAX_COMMENT_SIZE
+                    )
+                )
             ):
                 # The span the walk skips below, so no byte is read both as
                 # comment data and as a later header, which let a stack of small
@@ -2448,15 +2459,16 @@ def _parse_rar3(
                     # Compressed: ``unrar`` decodes it in the reader layer, as it
                     # does a compressed RAR 1.5-2.x comment, once the listing
                     # budget has weighed the declared size.
-                    crc32 = member.crc32 or 0
+                    # A RAR3 FILE or SUB header always carries FILE_CRC.
+                    assert member.crc32 is not None
                     cmt = _Rar3Comment(
                         packed=raw,
                         unpacked_size=member.file_size,
                         extract_version=member.extract_version or 0,
                         compress_type=member.compress_type,
-                        flags=0,
-                        crc16=crc32 & 0xFFFF,
-                        crc32=crc32,
+                        flags=member.flags,
+                        crc16=member.crc32 & 0xFFFF,
+                        crc32=member.crc32,
                         utf16=utf16,
                     )
                 if member.file_solid and members:

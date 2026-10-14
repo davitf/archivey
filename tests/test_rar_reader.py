@@ -2366,6 +2366,66 @@ def test_rar3_compressed_service_comment_over_rar_maximum_is_dropped(
     assert calls == []
 
 
+def test_rar3_compressed_service_comment_at_rar_maximum_is_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compressed ``CMT`` that declares exactly 256 KiB is kept by the walk and
+    decoded once: the cap is inclusive."""
+    from archivey.internal.backends.rar_parser import RAR3_MAX_COMMENT_SIZE
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    blob = (
+        RAR_ID
+        + main_hdr
+        + _rar3_compressed_cmt(unpacked_size=RAR3_MAX_COMMENT_SIZE)
+        + end_hdr
+    )
+    calls = _count_comment_decodes(monkeypatch)
+    config = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=2 * RAR3_MAX_COMMENT_SIZE)
+    )
+    with open_archive(io.BytesIO(blob), config=config) as archive:
+        assert archive.info.comment is None  # the counter decodes nothing
+    assert len(calls) == 1
+
+
+class _CountingBytesIO(io.BytesIO):
+    """A ``BytesIO`` that adds up the bytes each ``read`` returns."""
+
+    bytes_read = 0
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        data = super().read(size)
+        self.bytes_read += len(data)
+        return data
+
+
+def test_rar3_compressed_service_comment_with_oversized_packed_data_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compressed ``CMT`` packs smaller than its text, which the 256 KiB cap
+    bounds. One whose packed data is larger than the cap is dropped by the walk:
+    its packed bytes are not read, kept or handed to ``unrar``. Otherwise a small
+    declared size would let archive-sized packed bytes past ``max_metadata_bytes``."""
+    from archivey.internal.backends.rar_parser import RAR3_MAX_COMMENT_SIZE
+
+    packed = b"\x00" * (RAR3_MAX_COMMENT_SIZE + 1)
+    main_hdr, end_hdr = _rar3_main_and_end()
+    blob = (
+        RAR_ID
+        + main_hdr
+        + _rar3_compressed_cmt(unpacked_size=100, packed=packed)
+        + end_hdr
+    )
+    source = _CountingBytesIO(blob)
+    assert parse_rar_archive(source).comment is None
+    assert source.bytes_read < len(packed)
+    calls = _count_comment_decodes(monkeypatch)
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert archive.info.comment is None
+    assert calls == []
+
+
 def test_rar3_large_packed_member_skips_full_64bit_size() -> None:
     """F5: a RAR3 ``FILE_LARGE`` member's packed-data skip must use the full 64-bit
     size (HIGH_PACK_SIZE), not just the low 32 bits.

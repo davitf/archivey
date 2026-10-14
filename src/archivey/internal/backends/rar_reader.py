@@ -2565,10 +2565,10 @@ class RarReader(BaseArchiveReader):
         split member's parts merge after each volume weighed its own list.
 
         Each compressed comment expands to up to 64 KiB (256 KiB for a RAR 2.9-4
-        ``CMT`` header), and ``max_members`` alone
-        lets one archive carry a million of them. The header declares every
-        ``unpacked_size`` up front, so the total is checked before anything is
-        decoded, and a refused archive spawns no ``unrar`` at all. The declared size
+        ``CMT`` header), and ``max_members`` alone lets one archive carry a million
+        of them. The header declares every ``unpacked_size`` up front, so the total
+        is checked before anything is decoded, and a refused archive spawns no
+        ``unrar`` at all. The declared size
         is a real bound on the decode, not a trusted attacker number:
         ``decompress_rar3_blob`` reads at most ``unpacked_size + 1`` bytes from
         ``unrar`` and discards a result of any other length.

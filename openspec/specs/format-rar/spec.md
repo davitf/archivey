@@ -133,7 +133,7 @@ name.
 
 A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`. A RAR 2.9-4 `CMT`
 SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Every other
-RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or
+RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored or
 compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
 and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
 `encoding=` when one was passed, else as windows-1252. A byte the chosen code page
