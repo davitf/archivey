@@ -1,9 +1,11 @@
 """Encrypted ZIP members read from a source that cannot seek, with one password.
 
 The pass decrypts a member whose local header states its size, a bit-3 STORED one
-(its end is found on the ciphertext) and a bit-3 codec one (only the decrypted codec
-finds its end, so the pass needs the key to go past it). Each read must give what
-the seekable read gives: the same bytes, or the same kind of error.
+(its end is found on the ciphertext) and a bit-3 codec one. A codec one the caller
+reads is decoded to its end, and a missing or wrong password ends the walk there;
+one nobody reads is scanned on the ciphertext, as a STORED one is, with no key.
+Each read must give what the seekable read gives: the same bytes, or the same kind
+of error.
 """
 
 from __future__ import annotations
