@@ -137,12 +137,14 @@ each lands with nothing half-done reachable:
       ciphertext is kept the same way. 3b3d3: several candidates or a provider,
       confirmed on the first 1 MiB of the data, kept and replayed to the winner;
       several inconclusive candidates take the first (davi's choice, `design.md`), and
-      the pass never asks a provider about a member nobody read. Left for 3.4 (every fixture through a pipe): a sized member whose data
-      decodes short of its local header's size reports the pass's own
-      size-mismatch `CorruptionError` where the file read reports the verifier's
-      `TruncatedError`, encrypted or not (both `CorruptionError` under DR-4; a
-      ZipCrypto member shows neither, as the password-or-damage error). Data past
-      the declared size already gives the file read's error.
+      the pass does not decode an unread member whose ciphertext is over what it
+      keeps when that would ask a provider. Left for 3.4 (every fixture through a
+      pipe): a sized member whose data decodes short of its local header's size
+      reports the pass's own size-mismatch `CorruptionError` where the file read
+      reports the verifier's `TruncatedError`, encrypted or not (both
+      `CorruptionError` under DR-4; a ZipCrypto member shows neither, as the
+      password-or-damage error). Data past the declared size already gives the
+      file read's error.
 - [x] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
       codec's input, so the AES stage authenticates the ciphertext as it goes, holding
       back the bytes past the codec's end until `settle` says where the data ended

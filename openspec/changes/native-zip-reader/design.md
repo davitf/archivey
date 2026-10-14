@@ -309,10 +309,11 @@ CRC or code at the end is the test, failing as one unconfirmed password does (da
 or under a codec that accepts random input, where a wrong candidate passes the cheap
 check (1 in 256 under ZipCrypto, 1 in 65 536 under AES). A choice that may change: the
 pass could spool the whole ciphertext, walk every survivor to its end and serve the
-winner from the spool, once spool limits are designed. A provider is never asked about a
-member nobody read: a short-plaintext member whose ciphertext is over what the pass keeps
-for a link target is not decoded as the pass drains it, and its target is reported
-locked.
+winner from the spool, once spool limits are designed. The pass decodes as it drains only
+an unread member whose ciphertext is over what it keeps for a link target; with a
+provider it does not, as that would ask the provider about a member that may not be a
+link, and its target is reported locked. A kept one is decrypted only once the directory
+makes it a link, provider or not, as from a file.
 
 A codec stream stops after its end without saying how far past it it read: its
 decoder takes input in chunks of up to 1 MiB, and Deflate64 and PPMd cannot say how much

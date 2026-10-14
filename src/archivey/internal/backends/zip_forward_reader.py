@@ -145,6 +145,9 @@ _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 #: The data a member read with several possible passwords keeps to confirm one on
 #: (``_PassData._confirm_password``): the compressed input a bounded confirm may take
 #: (``PASSWORD_CONFIRM_MAX_INPUT_BYTES``), and room for the encryption header.
+#: At most ``_CODEC_RETAIN``: a bit-3 codec member's spool can run past its data, and
+#: the walk finds its descriptor among the last ``_CODEC_RETAIN`` bytes handed out
+#: (a test pins it).
 _CONFIRM_SPOOL = PASSWORD_CONFIRM_MAX_INPUT_BYTES + 64
 #: How much of a bit-3 WinZip AES codec member's ciphertext stays out of its HMAC
 #: until the descriptor says where the data ended: the walk finds the descriptor
@@ -382,11 +385,20 @@ class _PassData:
             )
         return self._decode(loc, self._data, keyed=False)
 
-    def _decode(self, loc: _ZipLocator, source: BinaryIO, *, keyed: bool) -> BinaryIO:
+    def _decode(
+        self,
+        loc: _ZipLocator,
+        source: BinaryIO,
+        *,
+        keyed: bool,
+        note_limit: bool = True,
+    ) -> BinaryIO:
         """``source`` (the member's data, decrypted) through its codec.
 
-        ``keyed``: ZipCrypto decrypted the codec's settings, so a decoder limit they
-        trip may be a wrong password's doing.
+        ``keyed``: ZipCrypto decrypted the codec's settings, so settings a wrong key
+        could produce read as corruption, and a decoder limit they trip may be a
+        wrong password's doing. ``note_limit``: say so on that limit's error; a
+        candidate's probe leaves it raw, for the attempt to note once.
         """
         member = self.member
         header = self.entry.header
@@ -417,7 +429,7 @@ class _PassData:
         except ResourceLimitError as exc:
             # The LZMA or PPMd settings a ZipCrypto key decrypted ask for more than
             # the cap: the password may be wrong, or the size real (as from a file).
-            if not keyed:
+            if not keyed or not note_limit:
                 raise
             noted = _unconfirmed_resource_limit(exc)
             reader._stamp_error_context(noted, member.name)
@@ -642,7 +654,7 @@ class _PassData:
         decoded: BinaryIO | None = None
         try:
             try:
-                decoded = self._decode(loc, body, keyed=False)
+                decoded = self._decode(loc, body, keyed=keyed, note_limit=False)
             except ResourceLimitError as exc:
                 if not keyed:
                     raise
@@ -656,7 +668,11 @@ class _PassData:
         except ArchiveyError as exc:
             if ran_out():
                 return PasswordConfirmVerdict.INCONCLUSIVE
-            if not _is_candidate_integrity_failure(exc, payload_complete=lambda: True):
+            # As the member's own read judges it: a stream cut inside the data is
+            # damage, whichever key read it.
+            if not _is_candidate_integrity_failure(
+                exc, payload_complete=lambda: not self._cut_short
+            ):
                 raise
             raise failures.failed(exc) from exc
         finally:
@@ -934,8 +950,8 @@ class _PassData:
         only if the directory makes it a link (``_KeptCiphertext``): no key is derived
         for a member nobody asked for, unless its ciphertext is over
         ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here, its failure kept for
-        the target's read. Never with a password provider, which is not asked about
-        a member nobody read.
+        the target's read. Not with a password provider: that decode would ask it
+        about a member that may not be a link.
 
         A bit-3 member is decoded to its end, which is the only way to find it from
         its decoded data, so there a failure ends the walk. An encrypted one is the
@@ -1815,7 +1831,8 @@ class ZipForwardReader(ZipReader):
         header = current.entry.header
         if _is_encrypted_entry(header.flags, header.method):
             # Only a cheap check vouched for the password, unless a confirm settled
-            # it (``_PassData._check``, known once the first read picked it). The
+            # it: ``_PassData._check``, known once the first read picked it, so read
+            # at close. The
             # pass runs the CRC or the HMAC on the read after the last byte, not on
             # the one reaching the member's size, so no size is handed to the watch:
             # only reaching the end counts. Seeks would forfeit the check, but
@@ -1824,8 +1841,7 @@ class ZipForwardReader(ZipReader):
                 stream,
                 member,
                 size=_NO_END_BEFORE_EOF,
-                check="weak_open_check",
-                check_now=lambda: current._check,
+                check=lambda: current._check,
                 format_label="ZIP",
                 digest="integrity check",
                 why="the password was accepted on a weaker check",

@@ -748,9 +748,12 @@ def test_several_passwords_read_as_from_a_file(build, passwords) -> None:  # noq
         assert got == expected
 
 
-def _check_byte_collision(data: bytes) -> bytes:
+def _check_byte_collision(
+    data: bytes, start_matches: Callable[[bytes], bool] = lambda _: True
+) -> bytes:
     """A wrong password that passes the ZipCrypto check byte of ``data``'s first
-    member, as one in 256 does."""
+    member, as one in 256 does, and whose first two decrypted data bytes pass
+    ``start_matches``."""
     from archivey.internal.backends.zipcrypto import keys_after_header
 
     flags, dos_time, crc = struct.unpack_from("<H2xHxxI", data, 6)
@@ -758,9 +761,10 @@ def _check_byte_collision(data: bytes) -> bytes:
     start = 30 + name_len + extra_len
     head = data[start : start + 12]
     expected = (dos_time >> 8) & 0xFF if flags & 0x8 else crc >> 24
-    for i in range(20_000):
+    for i in range(200_000):
         wrong = f"collide-{i}".encode()
-        if keys_after_header(wrong, head)[1] == expected:
+        keys, check = keys_after_header(wrong, head)
+        if check == expected and start_matches(keys.decrypt(data[start + 12 :][:2])):
             return wrong
     raise AssertionError("no check byte collision found")
 
@@ -809,6 +813,47 @@ def test_a_wrong_password_past_the_check_byte_is_rejected_as_from_a_file(
         }
         assert _unverified(reader) == []
     assert read == expected
+
+
+def _ppmd_restore_2(start: bytes) -> bool:
+    """A PPMd header with restore method 2 (freeze) and a valid order and memory."""
+    (word,) = struct.unpack("<H", start)
+    return word >> 12 == 2 and word & 0xF >= 1
+
+
+def test_a_wrong_password_with_an_unsupported_codec_header_is_skipped() -> None:
+    """A wrong key that passes the check byte can decrypt a PPMd header asking for
+    restore method 2. That is the key's garbage, not the archive's, so the right
+    password after it reads the member, as from a file."""
+    pytest.importorskip("pyppmd")
+    data = _with_plain_member(
+        build_zipcrypto_zip(
+            _PASSWORD, b"a.txt", _LONG, compression=98, compressed=_ppmd(_LONG)
+        )
+    )
+    passwords = [_check_byte_collision(data, _ppmd_restore_2), _PASSWORD]
+    expected = _file_read(data, passwords)
+    assert expected["a.txt"] == _LONG
+    assert _pipe_read(data, passwords) == expected
+
+
+def test_the_confirm_spool_fits_in_the_walks_window() -> None:
+    """A short bit-3 codec member's spool runs past its descriptor, which the walk
+    finds only among the last ``_CODEC_RETAIN`` bytes it handed out."""
+    from archivey.internal.backends import zip_forward_reader, zip_local_walk
+
+    assert zip_forward_reader._CONFIRM_SPOOL <= zip_local_walk._CODEC_RETAIN
+
+
+def test_a_cut_stream_is_damage_with_several_passwords_too() -> None:
+    """A stream cut inside a bit-3 member's data is truncation with one password;
+    with the right one among several it is the same, not a password failure."""
+    data = _bit3_zipcrypto(zipfile.ZIP_DEFLATED)
+    cut = data[: len(data) // 2]
+    one = _pipe_read(cut, _PASSWORD)["a.txt"]
+    assert isinstance(one, tuple)
+    assert one[0] is TruncatedError
+    assert _pipe_read(cut, [b"not the password", _PASSWORD])["a.txt"] == one
 
 
 @pytest.mark.parametrize(
@@ -867,10 +912,11 @@ def test_an_inconclusive_password_closed_early_is_reported_as_such() -> None:
         assert [c.check for c in _unverified(reader)] == ["confirm_budget_exhausted"]
 
 
-def test_the_pass_does_not_ask_a_provider_about_a_member_nobody_read() -> None:
+def test_the_pass_does_not_ask_a_provider_to_drain_a_long_ciphertext() -> None:
     """A short-plaintext member whose ciphertext is over what the pass keeps would be
     decoded as the pass drains it; with a provider its target is reported locked
-    instead of asking about a member that may not be a link."""
+    instead of asking about a member that may not be a link. (A kept ciphertext is
+    decrypted once the directory makes it a link, which may ask, as from a file.)"""
     data = _with_plain_member(
         build_zipcrypto_zip(
             _PASSWORD,
