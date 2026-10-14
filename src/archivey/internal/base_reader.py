@@ -2097,7 +2097,8 @@ class BaseArchiveReader(ArchiveReader):
         size: int,
         check: Literal[
             "weak_open_check", "confirm_budget_exhausted", "no_password_check"
-        ],
+        ]
+        | Callable[[], Literal["weak_open_check", "confirm_budget_exhausted"] | None],
         format_label: str,
         digest: str,
         why: str,
@@ -2108,10 +2109,15 @@ class BaseArchiveReader(ArchiveReader):
 
         ``why`` says why the password is in doubt. The report runs at close, not
         open: a member's name and id are fixed at listing, so reading them then gives
-        the open-time values.
+        the open-time values. ``check`` may be a callable, for a password picked at
+        the first read: it says at close which check took it, ``None`` for one
+        confirmed (no report).
         """
 
         def report(reason: str) -> None:
+            decided = check() if callable(check) else check
+            if decided is None:
+                return
             missed = (
                 f"gave up its {digest} by seeking"
                 if reason == "seek"
@@ -2128,7 +2134,7 @@ class BaseArchiveReader(ArchiveReader):
                     archive_name=self._archive_name,
                     member_name=member.name,
                     member_id=member._member_id,
-                    check=check,
+                    check=decided,
                     reason=reason,
                 ),
                 member=member,

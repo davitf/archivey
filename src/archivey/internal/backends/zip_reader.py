@@ -329,6 +329,48 @@ _CANDIDATE_FAILED_MSG = (
 )
 
 
+class _CandidateFailures:
+    """What the candidates of one confirm run failed with, for the error raised when
+    none wins (``ZipReader._finish_password_attempt``).
+
+    ``ambiguous`` holds the one failure to report, ``limits`` the first decoder limit a
+    ZipCrypto candidate's decrypted codec settings tripped.
+    """
+
+    def __init__(self) -> None:
+        self.ambiguous: list[EncryptionError] = []
+        self.limits: list[ResourceLimitError] = []
+
+    def failed(self, cause: Exception | None) -> EncryptionError:
+        """The error that rejects one candidate whose data failed its checks."""
+        failure = EncryptionError(_CANDIDATE_FAILED_MSG)
+        if cause is not None:
+            failure.__cause__ = cause
+        if not self.ambiguous:
+            self.ambiguous.append(failure)
+        elif isinstance(cause, TruncatedError) and not isinstance(
+            self.ambiguous[0].__cause__, TruncatedError
+        ):
+            # Prefer a truncation any candidate met over the first failure, so the
+            # verdict does not follow key order. For a STORED member the length is
+            # the ciphertext's and settles it; for a compressed one the decoded
+            # length depends on the key, so this is a heuristic there.
+            self.ambiguous[0] = failure
+        return failure
+
+    def limit_failed(self, exc: ResourceLimitError) -> EncryptionError:
+        """The error that rejects a ZipCrypto candidate whose decrypted codec settings
+        are over a decoder limit: it may be a wrong key that passed the check byte."""
+        if not self.limits:
+            self.limits.append(exc)
+        failure = EncryptionError(
+            "Password candidate decrypted codec settings over a decoder limit for "
+            "this ZIP member"
+        )
+        failure.__cause__ = exc
+        return failure
+
+
 def _closed_archive_error() -> ArchiveyUsageError:
     """The handle under a live reader was closed — a lifecycle fault, not damage.
 
@@ -2269,29 +2311,13 @@ class ZipReader(BaseArchiveReader):
                 confirms=True,
                 bounded=size <= PASSWORD_CONFIRM_PREFIX_BYTES,
             )
-        ambiguous_holder: list[EncryptionError] = []
-        # The first ZipCrypto candidate whose decrypted codec settings tripped a
-        # decoder limit. That counts as the candidate failing (it may be a wrong key
-        # that passed the one-byte check), and it is what is raised when no
-        # candidate succeeds. WinZip AES keeps propagating the limit: its 16-bit
-        # pw_verify and the HMAC make a garbage size from a wrong key negligible.
-        limit_holder: list[ResourceLimitError] = []
-
-        def candidate_failed(cause: Exception | None) -> EncryptionError:
-            failure = EncryptionError(_CANDIDATE_FAILED_MSG)
-            if cause is not None:
-                failure.__cause__ = cause
-            if not ambiguous_holder:
-                ambiguous_holder.append(failure)
-            elif isinstance(cause, TruncatedError) and not isinstance(
-                ambiguous_holder[0].__cause__, TruncatedError
-            ):
-                # Prefer a truncation any candidate met over the first failure, so the
-                # verdict does not follow key order. For a STORED member the length is
-                # the ciphertext's and settles it; for a compressed one the decoded
-                # length depends on the key, so this is a heuristic there.
-                ambiguous_holder[0] = failure
-            return failure
+        # A ZipCrypto candidate whose decrypted codec settings tripped a decoder
+        # limit counts as failing (it may be a wrong key that passed the one-byte
+        # check), and that limit is what is raised when no candidate succeeds.
+        # WinZip AES keeps propagating the limit: its 16-bit pw_verify and the HMAC
+        # make a garbage size from a wrong key negligible.
+        failures = _CandidateFailures()
+        candidate_failed = failures.failed
 
         # The walk to the member's end: its CRC, or for WinZip AES the HMAC. Run for
         # each candidate that survived the bounded plan when several did, since only
@@ -2321,12 +2347,7 @@ class ZipReader(BaseArchiveReader):
                 except ResourceLimitError as exc:
                     if not cipher.keyed_settings:
                         raise
-                    if not limit_holder:
-                        limit_holder.append(exc)
-                    raise EncryptionError(
-                        "Password candidate decrypted codec settings over a decoder "
-                        "limit for this ZIP member"
-                    ) from exc
+                    raise failures.limit_failed(exc) from exc
                 verdict = run_password_confirm_plan(probe, walk)
                 if verdict is not PasswordConfirmVerdict.REJECTED and walk_to_hmac:
                     # The read that finds the end is the one that checks the HMAC.
@@ -2370,9 +2391,9 @@ class ZipReader(BaseArchiveReader):
                 bounded_check,
                 None if full_plan is None else full_check,
             ),
-            ambiguous_holder=ambiguous_holder,
+            ambiguous_holder=failures.ambiguous,
             failure_is_damage=cipher.is_aes,
-            limit_holder=limit_holder,
+            limit_holder=failures.limits,
         )
         # Fresh stream for the caller: nothing decoded by a probe is handed out.
         try:

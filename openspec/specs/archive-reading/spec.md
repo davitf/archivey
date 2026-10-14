@@ -1046,6 +1046,14 @@ Then:
 - provider answers SHALL NOT be gathered this way: the provider stays lazy, and its first
   answer that is not `REJECTED` SHALL be accepted.
 
+**A unit read once** (a ZIP member from a pipe) has no second walk for the full check.
+There the backend SHALL run each candidate's bounded plan on a kept prefix of the unit's
+input, at most `PASSWORD_CONFIRM_MAX_INPUT_BYTES` and its encryption header, replayed to
+the accepted candidate. A plan that would walk past the kept prefix ends there
+`INCONCLUSIVE`. Several survivors SHALL NOT run the full check: the first SHALL be
+accepted, `INCONCLUSIVE`, and its read-time digest decides, as for one candidate. This is
+a choice that MAY change: spooling the whole unit would allow the full check.
+
 The full check is proportional to the unit's size, and it SHALL run only for candidates
 that survived the bounded plan when more than one did.
 
@@ -1086,6 +1094,8 @@ the format's normal lazy streaming path.
 | Rejecting codec, CRC past budget | Prefix only; wrong key `REJECTED`; survivor `INCONCLUSIVE` |
 | Block-transform codec (bzip2), 64 KiB output requested | Input consumed stays within the compressed cap, not 64 KiB |
 | Non-rejecting codec, CRC past budget | Walk to the CRC |
+| Unit read once, two candidates survive the kept prefix | First survivor read, `INCONCLUSIVE`; its digest at the end decides |
+| Unit read once, non-rejecting codec, CRC past the kept prefix | No walk; survivor `INCONCLUSIVE` |
 | Rejecting codec, no digest at all | Prefix; survivor `INCONCLUSIVE`; no unbounded decode |
 | Non-rejecting codec, no digest, one distinct candidate | Stop at budget; caller's digest is authoritative |
 | Non-rejecting codec, no digest, several candidates | First candidate; `DIGEST_UNVERIFIABLE`; no unbounded decode |

@@ -292,6 +292,42 @@ def match_descriptor(
     return None
 
 
+def descriptor_by_crc(
+    buffer: bytes | bytearray,
+    *,
+    crc: int,
+    file_size: int | None,
+    base: int,
+    zip64: bool,
+    at_end: bool,
+) -> tuple[int, DataDescriptor] | None:
+    """The first data descriptor in ``buffer`` whose CRC is ``crc``, with its
+    position: one that states ``file_size`` when given, a compressed size equal to
+    its own offset from the data's start (``base`` bytes before ``buffer``), and a
+    ZIP signature after it (see :func:`match_descriptor`). Found by its CRC's bytes,
+    so a buffer costs one search and a check per occurrence.
+    """
+    needle = crc.to_bytes(4, "little")
+    at = buffer.find(needle)
+    while at >= 0:
+        for pos in (at - len(DATA_DESCRIPTOR_SIGNATURE), at):
+            if pos < 0:
+                continue
+            descriptor = match_descriptor(
+                buffer,
+                pos,
+                compressed_size=base + pos,
+                crc=crc,
+                file_size=file_size,
+                zip64=zip64,
+                at_end=at_end,
+            )
+            if descriptor is not None:
+                return pos, descriptor
+        at = buffer.find(needle, at + 1)
+    return None
+
+
 class MemberData(ReadOnlyIOStream):
     """One member's compressed bytes, read forward from the walk's stream.
 
@@ -326,6 +362,20 @@ class MemberData(ReadOnlyIOStream):
 
     def _read_some(self, size: int) -> bytes:
         raise NotImplementedError
+
+    @property
+    def found_descriptor(self) -> DataDescriptor | None:
+        """The data descriptor, once a read has found the data's end before
+        :meth:`settle`; ``None`` until then, and on a member whose end the walk does
+        not find itself (its codec's, or its stated size)."""
+        return None
+
+    @property
+    def read_end_record(self) -> bool:
+        """Whether the archive's end record is among the last bytes handed out: a
+        stream that ended after it was not cut. Only a codec member's data, which
+        runs on to the stream's end, can hand it out."""
+        return False
 
     def settle(
         self,
@@ -441,6 +491,10 @@ class _CodecData(MemberData):
     def readall(self) -> bytes:
         return self.read(-1)
 
+    @property
+    def read_end_record(self) -> bool:
+        return EOCD_SIGNATURE in b"".join(self._kept)
+
     def _read_some(self, size: int) -> bytes:
         data = self._source.read(size)
         if data:
@@ -508,32 +562,30 @@ class _CodecData(MemberData):
         self._kept_len = 0
         zip64 = self.entry.zip64
 
-        def match(pos: int, *, by_crc: bool) -> DataDescriptor | None:
-            if pos < 0:
-                return None
+        def match_signed(pos: int) -> DataDescriptor | None:
+            # Damaged data: a signed descriptor whose size fits, whatever its CRC.
             return match_descriptor(
                 buffer,
                 pos,
                 compressed_size=base + pos,
-                crc=crc if by_crc else None,
-                file_size=file_size if by_crc else None,
+                crc=None,
+                file_size=None,
                 zip64=zip64,
                 at_end=at_end,
-                signed_only=not by_crc,
+                signed_only=True,
             )
 
-        found: tuple[int, DataDescriptor] | None = None
-        needle = crc.to_bytes(4, "little")
-        at = buffer.find(needle)
-        while found is None and at >= 0:
-            for pos in (at - len(DATA_DESCRIPTOR_SIGNATURE), at):
-                if descriptor := match(pos, by_crc=True):
-                    found = (pos, descriptor)
-                    break
-            at = buffer.find(needle, at + 1)
+        found = descriptor_by_crc(
+            buffer,
+            crc=crc,
+            file_size=file_size,
+            base=base,
+            zip64=zip64,
+            at_end=at_end,
+        )
         at = buffer.find(DATA_DESCRIPTOR_SIGNATURE)
         while found is None and at >= 0:
-            if descriptor := match(at, by_crc=False):
+            if descriptor := match_signed(at):
                 found = (at, descriptor)
             at = buffer.find(DATA_DESCRIPTOR_SIGNATURE, at + 1)
         if found is None:
@@ -652,6 +704,10 @@ class _ScannedData(MemberData):
             if after >= len(buf):
                 return
             at = after + 1
+
+    @property
+    def found_descriptor(self) -> DataDescriptor | None:
+        return self._descriptor
 
     @staticmethod
     def _next_signature(buf: bytearray, at: int) -> int:
