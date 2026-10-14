@@ -1160,9 +1160,10 @@ class ForwardTail:
         that, so here the fallback is taken only for a record right before the
         locator that passes the parser's own checks (``zip64_record_matches``) and
         whose shift, from where the locator places it, fits before the first local
-        header: no more than the data a stub could have prepended. A record the
-        locator names in unkept bytes within that shift would be read by a file
-        read instead; that takes a stub longer than the tail keeps. Otherwise the
+        header: no more than the data a stub could have prepended. A file read not
+        told where the archive starts (``format=`` skips the detection that slices
+        the stub off) would instead read a record the locator names in unkept bytes
+        within that shift; that takes a stub longer than the tail keeps. Otherwise the
         record the locator names is unseen, not missing. The locator's own
         refusals come first, as from a file (``read_zip64_locator``)."""
         located = read_zip64_locator(self.read_at, eocd_offset)

@@ -978,8 +978,8 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     # A record signature right before the locator, in the extensible data: the
     # file read's fallback for prepended data takes only a whole record that fits
     # the locator, so the record the locator names is still the one out of reach.
-    record_at = len(record_dropped) - 22 - 20 - 56
-    decoy = record_dropped[:record_at] + b"PK\x06\x06" + record_dropped[record_at + 4 :]
+    adjacent = len(record_dropped) - 22 - 20 - 56
+    decoy = record_dropped[:adjacent] + b"PK\x06\x06" + record_dropped[adjacent + 4 :]
     assert [m["name"] for m in _seekable_view(decoy)[0]] == ["a.txt", "b.txt"]
     # A whole record there that fits the locator: a file read still reads the one
     # the locator names, as no stub moved the archive (its first member is at 0).
@@ -988,7 +988,7 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     whole_record = struct.pack(
         "<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0, 2, 2, cd_size, named - cd_size
     )
-    whole = record_dropped[:record_at] + whole_record + record_dropped[record_at + 56 :]
+    whole = record_dropped[:adjacent] + whole_record + record_dropped[adjacent + 56 :]
     assert [m["name"] for m in _seekable_view(whole)[0]] == ["a.txt", "b.txt"]
     cases = (
         (far, "ZIP central directory starts"),
@@ -1077,6 +1077,31 @@ def test_a_zip64_archive_behind_a_stub_lists_from_a_pipe() -> None:
     data = b"MZ" + b"\x90" * 5000 + _with_zip64_extensible(plain, 0)
     assert [m["name"] for m in _seekable_view(data)[0]] == ["a.txt", "b.txt"]
     assert _piped_view(data) == _seekable_view(data)
+
+
+def test_a_record_hidden_by_the_stub_is_read_only_by_a_file_read_told_the_format() -> (
+    None
+):
+    """A whole record planted inside the stub, at the offset the locator names. With
+    detection the file read slices the stub off and agrees with the pipe; told the
+    format, it reads the planted record, which a pipe that kept only the bytes after
+    the members cannot see (``ForwardTail._refuse_unseen_zip64_record``)."""
+    plain = _zip([("a.txt", b"one"), ("b.txt", b"two")])
+    eocd = plain.rindex(b"PK\x05\x06")
+    entries, cd_size, cd_offset = struct.unpack_from("<HII", plain, eocd + 10)
+    data = bytearray(b"MZ" + b"\x90" * 5000 + _with_zip64_extensible(plain, 0))
+    extensible = (len(data) - 22 - 20 - 56) - eocd
+    data[eocd : eocd + 56] = struct.pack(
+        "<4sQHHIIQQQQ", b"PK\x06\x06", 44 + extensible, 45, 45, 0, 0,
+        entries, entries, cd_size, cd_offset,
+    )  # fmt: skip
+    data = bytes(data)
+    names = ["a.txt", "b.txt"]
+    assert [m["name"] for m in _seekable_view(data)[0]] == names
+    assert [m["name"] for m in _piped_view(data)[0]] == names
+    with pytest.raises(CorruptionError, match="Bad magic number"):
+        with archivey.open_archive(io.BytesIO(data), format="zip") as reader:
+            reader.members()
 
 
 def test_a_header_offset_past_what_the_array_holds_is_a_missing_member() -> None:

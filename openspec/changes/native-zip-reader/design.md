@@ -457,8 +457,9 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   locator places it by no more than the bytes before the first local header, is read
   instead, as a file read reads it behind a self-extractor stub. Two cases a forward
   read cannot take, where the seekable read can: a stub longer than the kept bytes,
-  which could hide a record at the locator's own offset that a file read would take
-  instead; and a gap after a last member with bit 3 set (a descriptor counts only
+  which could hide a record at the locator's own offset that a file read not told
+  where the archive starts (`format=` skips the detection that slices the stub off)
+  would take instead; and a gap after a last member with bit 3 set (a descriptor counts only
   when a ZIP signature follows it, which is what stops a planted one inside STORED
   data). Recognising an APK signing block by its own size fields would cover the
   second; it is not done.
