@@ -15,8 +15,10 @@ against the directory. Call graph: :meth:`LocalHeaderWalk.next_entry` (one
 :class:`LocalEntry` per member, in file order) → :meth:`LocalHeaderWalk.member_data`
 (the member's compressed bytes, through a reader that knows where they end) →
 :meth:`MemberData.settle` (the data descriptor, when bit 3 defers the sizes to one) →
-after the last member, :meth:`LocalHeaderWalk.directory` (the central entries, parsed by
-the same code as ``CentralDirectoryWalk``, then the end records).
+after the last member, :meth:`LocalHeaderWalk.read_rest` (the bytes after the members,
+up to a bound, for the caller to parse with the seekable read's ``find_end_record`` and
+``CentralDirectoryWalk``, so a forward read lists what a file read lists except where
+:meth:`ForwardTail.end_record` refuses a record it cannot see).
 
 Where a member's data ends (``openspec/changes/native-zip-reader/design.md``):
 
@@ -41,16 +43,15 @@ diagnostic. Damage raises ``CorruptionError``, a stream that ends early
 
 from __future__ import annotations
 
-import struct
 import zlib
 from collections import deque
-from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import BinaryIO, NoReturn
 
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -58,39 +59,30 @@ from archivey.internal.backends.zip_aes import iter_extra_fields
 from archivey.internal.backends.zip_detect import (
     LOCAL_HEADER_SIGNATURE,
     LOCAL_HEADER_SIZE,
-    ZIP_MULTI_VOLUME_MSG,
     validate_zip_local_header,
 )
 from archivey.internal.backends.zip_parser import (
-    _EOCD,
-    _ZIP64_EOCD,
-    _ZIP64_LOCATOR,
     ARCHIVE_EXTRA_DATA_SIGNATURE,
     CENTRAL_HEADER_SIGNATURE,
-    CENTRAL_HEADER_SIZE,
     EOCD_SIGNATURE,
     EOCD_SIZE,
+    STRONG_ENCRYPTED_DIRECTORY_MSG,
     ZIP64_EOCD_SIGNATURE,
     ZIP64_EOCD_SIZE,
-    ZIP64_LOCATOR_SIGNATURE,
-    ZIP64_LOCATOR_SIZE,
-    CentralEntry,
     EndRecord,
     LocalHeader,
-    _central_entry,
-    _unpack_central,
-    disk_field_is_split,
+    find_end_record,
     local_header_from,
     local_header_variable_length,
+    locate_classic_record,
+    read_zip64_locator,
+    zip64_record_matches,
 )
 from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import read_exact
 
 DATA_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
-# The digital signature record, between the directory and the end records (APPNOTE
-# 4.3.13): signature, a uint16 size, then that many bytes.
-DIGITAL_SIGNATURE_SIGNATURE = b"PK\x05\x05"
 
 _FLAG_DATA_DESCRIPTOR = 0x08
 _METHOD_STORED = 0
@@ -110,10 +102,10 @@ _AFTER_MEMBER = frozenset(
         ARCHIVE_EXTRA_DATA_SIGNATURE,
     }
 )
-# Where next_entry stops: the directory or an end record follows the members.
-_MEMBERS_OVER = frozenset(
-    {CENTRAL_HEADER_SIGNATURE, ZIP64_EOCD_SIGNATURE, EOCD_SIGNATURE}
-)
+# What the bytes after the last member may start with: the directory, the end records
+# of an archive with no entries, or the record PKWARE Strong Encryption writes in front
+# of an encrypted directory. Anything else is no ZIP structure.
+_DIRECTORY_STARTS = _AFTER_MEMBER - {LOCAL_HEADER_SIGNATURE}
 # What may open a stream without a stub in front: the same set as after a member.
 _OPENS_STREAM = _AFTER_MEMBER
 # The longest data descriptor, plus the signature after it: signature, CRC, two 8-byte
@@ -808,25 +800,12 @@ class LocalHeaderWalk:
         self._open: MemberData | None = None
         #: Stream offset of the first local header, once found.
         self.first_offset: int | None = None
-        #: Bytes that were neither a header nor a descriptor between the last member
-        #: and the directory: ``(offset, length)``. The end record decides whether the
-        #: directory accounts for them.
-        self.gap: tuple[int, int] | None = None
-        #: Stream offset of the first central header, once the directory is reached.
-        self.cd_start: int | None = None
-        #: Stream offset where the directory ends (after its digital signature, if
-        #: any), once :meth:`directory` has read it.
-        self.cd_end: int | None = None
-        #: The end record, once :meth:`directory` has read it. Its ``base`` and
-        #: ``eocd_offset`` are stream positions; ``trailing`` is ``None`` (not counted).
-        self.end: EndRecord | None = None
-        #: Central entries :meth:`directory` read.
-        self.entries_read = 0
 
     # -- members -------------------------------------------------------------
 
     def next_entry(self) -> LocalEntry | None:
-        """The next local entry, or ``None`` once the directory or end records follow.
+        """The next local entry, or ``None`` once something other than a local header
+        follows: the directory, the end records, or bytes :meth:`read_rest` reads.
 
         The previous member's data must have been settled; if its ``settle`` raised,
         this raises the same error, as the next header cannot be found. Raises
@@ -848,14 +827,6 @@ class LocalHeaderWalk:
                 self.first_offset = entry.offset
             self._unsettled = entry
             return entry
-        if sig in _MEMBERS_OVER:
-            return None
-        if sig == ARCHIVE_EXTRA_DATA_SIGNATURE:
-            raise UnsupportedFeatureError(
-                "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip "
-                "AES are); this archive's central directory appears to be encrypted "
-                "with it"
-            )
         if not sig:
             raise TruncatedError(
                 f"ZIP stream ends after {self._index} members, before the central "
@@ -866,7 +837,8 @@ class LocalHeaderWalk:
                 f"ZIP stream ends {len(sig)} bytes {self._where()}, before the "
                 "central directory"
             )
-        self._skip_to_directory()
+        # The directory, the end records, or bytes that are neither: what follows
+        # the members is read whole by ``read_rest`` and parsed as a file's is.
         return None
 
     def _where(self) -> str:
@@ -1054,171 +1026,186 @@ class LocalHeaderWalk:
         self.source.unread(buffer[descriptor.length :])
         return descriptor
 
-    def _skip_to_directory(self) -> None:
-        """Read past bytes that are no header, up to the central directory.
+    # -- after the members ----------------------------------------------------
 
-        An APK signing block sits there. The skip stops at the first directory or
-        end-record signature, so a gap holding one is not read past; and a gap after a
-        last member with bit 3 never gets here, because its descriptor needs a ZIP
-        signature after it. The end record later confirms where the directory starts;
-        until then the bytes are only recorded in :attr:`gap`.
-        """
-        start = self.source.offset
-        window = bytearray()
-        while True:
-            found = [
-                pos
-                for pos in (
-                    window.find(CENTRAL_HEADER_SIGNATURE),
-                    window.find(EOCD_SIGNATURE),
-                )
-                if pos >= 0
-            ]
-            if found:
-                self.source.unread(window[min(found) :])
-                self.gap = (start, self.source.offset - start)
-                return
-            # Keep the bytes a signature split across two reads could start in.
-            keep = window[-3:]
-            more = self.source.read(_READ_CHUNK)
-            if not more:
-                raise CorruptionError(
-                    f"bytes at stream offset {start} {self._where()} are not a ZIP "
-                    "header, and no central directory follows them"
-                )
-            window = keep + more
+    def read_rest(self, keep: int | None) -> ForwardTail:
+        """Read the stream to its end once :meth:`next_entry` has returned ``None``.
 
-    # -- directory -----------------------------------------------------------
-
-    def directory(self) -> Iterator[CentralEntry]:
-        """Yield the central entries, then read the end records into :attr:`end`.
-
-        Call once :meth:`next_entry` has returned ``None``. The entries' offsets are
-        as stored (``base`` 0): the stub offset is known only from the end record.
+        What follows the members (bytes before the directory, the directory, the end
+        records, the comment and anything after it) is kept, so the caller parses it
+        with the seekable read's own code (``find_end_record``,
+        ``CentralDirectoryWalk``) and lists what that read lists, except where
+        :meth:`ForwardTail.end_record` refuses a record before the kept bytes.
+        ``keep`` bounds what is held: past it only the last ``keep`` bytes stay, which
+        is where the end record and the directory before it are; ``None`` keeps
+        everything. While the stream is read the chunks held come to at most ``keep``
+        plus one chunk; joining them at the end holds them and their copy for that
+        moment.
         """
         if self._unsettled is not None:
             raise ValueError("settle the previous member's data first")
-        self.cd_start = self.source.offset
-        index = 0
-        while self.source.peek(4) == CENTRAL_HEADER_SIGNATURE:
-            fixed = self.source.read(CENTRAL_HEADER_SIZE)
-            if len(fixed) != CENTRAL_HEADER_SIZE:
-                raise TruncatedError(
-                    f"ZIP stream ends inside central directory entry #{index}"
-                )
-            fields = _unpack_central(fixed, 0, index)
-            name_len, extra_len, comment_len = fields[12:15]
-            variable = self.source.read(name_len + extra_len + comment_len)
-            if len(variable) != name_len + extra_len + comment_len:
-                raise TruncatedError(
-                    f"ZIP stream ends inside central directory entry #{index}"
-                )
-            name = variable[:name_len]
-            extra = variable[name_len : name_len + extra_len]
-            comment = variable[name_len + extra_len :]
-            yield _central_entry(fields, name, extra, comment, index=index, base=0)
-            index += 1
-            self.entries_read = index
-        self.entries_read = index
-        self.end = self._read_end_records()
-
-    def _read_end_records(self) -> EndRecord:
-        sig = self.source.peek(4)
-        if sig == DIGITAL_SIGNATURE_SIGNATURE:
-            head = self.source.read(6)
-            if len(head) != 6:
-                raise TruncatedError("ZIP stream ends inside the digital signature")
-            (size,) = struct.unpack_from("<H", head, 4)
-            if self.source.skip(size) != size:
-                raise TruncatedError("ZIP stream ends inside the digital signature")
-            sig = self.source.peek(4)
-        self.cd_end = self.source.offset
-        zip64: tuple[int, int, int, int, int] | None = None
-        if sig == ZIP64_EOCD_SIGNATURE:
-            zip64 = self._read_zip64_records()
-            sig = self.source.peek(4)
-        if sig != EOCD_SIGNATURE:
-            if len(sig) < 4:
-                raise TruncatedError(
-                    "ZIP stream ends after the central directory, before the end of "
-                    "central directory record"
-                )
-            raise CorruptionError(
-                f"bytes at stream offset {self.source.offset} after the central "
-                "directory are not an end of central directory record"
-            )
-        eocd_offset = self.source.offset
-        record = self.source.read(EOCD_SIZE)
-        if len(record) != EOCD_SIZE:
-            raise TruncatedError(
-                "ZIP stream ends inside the end of central directory record"
-            )
-        (
-            _sig,
-            this_disk,
-            cd_start_disk,
-            _entries_this_disk,
-            entries_total,
-            declared_cd_size,
-            cd_offset,
-            comment_declared,
-        ) = _EOCD.unpack(record)
-        if zip64 is not None:
-            this_disk, cd_start_disk, entries_total, declared_cd_size, cd_offset = zip64
-        if disk_field_is_split(this_disk) or disk_field_is_split(cd_start_disk):
-            raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
-        comment = self.source.read(comment_declared)
-        assert self.cd_start is not None
-        return EndRecord(
-            eocd_offset=eocd_offset,
-            zip64=zip64 is not None,
-            entries_declared=entries_total,
-            cd_size=declared_cd_size,
-            cd_offset=cd_offset,
-            base=self.cd_start - cd_offset,
-            comment=comment,
-            comment_declared=comment_declared,
-            trailing=None,
+        members_end = self.source.offset
+        chunks: deque[bytes] = deque()
+        held = 0
+        dropped = 0
+        while chunk := self.source.read(_READ_CHUNK):
+            chunks.append(chunk)
+            held += len(chunk)
+            # A whole chunk goes once the ones after it hold ``keep`` bytes.
+            while (
+                keep is not None and len(chunks) > 1 and held - len(chunks[0]) >= keep
+            ):
+                gone = len(chunks.popleft())
+                held -= gone
+                dropped += gone
+        if keep is not None and held > keep:
+            cut = held - keep
+            chunks[0] = chunks[0][cut:]
+            dropped += cut
+        data = b"".join(chunks)
+        chunks.clear()
+        return ForwardTail(
+            after=self._where(),
+            members_start=(
+                members_end if self.first_offset is None else self.first_offset
+            ),
+            members_end=members_end,
+            start=members_end + dropped,
+            data=data,
         )
 
-    def _read_zip64_records(self) -> tuple[int, int, int, int, int]:
-        """``(this_disk, cd_disk, entries, cd_size, cd_offset)`` from the ZIP64 end
-        record, then the locator after it read past."""
-        record = self.source.read(ZIP64_EOCD_SIZE)
-        if len(record) != ZIP64_EOCD_SIZE:
-            raise TruncatedError("ZIP stream ends inside the ZIP64 end record")
-        (
-            _sig,
-            record_size,
-            _made_by,
-            _needed,
-            this_disk,
-            cd_disk,
-            _entries_this_disk,
-            entries_total,
-            cd_size,
-            cd_offset,
-        ) = _ZIP64_EOCD.unpack(record)
-        extensible = record_size + 12 - ZIP64_EOCD_SIZE
-        if extensible < 0:
-            raise CorruptionError("Corrupt ZIP64 end of central directory record")
-        if self.source.skip(extensible) != extensible:
-            raise TruncatedError("ZIP stream ends inside the ZIP64 end record")
-        locator = self.source.read(ZIP64_LOCATOR_SIZE)
-        if len(locator) != ZIP64_LOCATOR_SIZE:
-            raise TruncatedError("ZIP stream ends inside the ZIP64 locator")
-        sig, disk_with_record, _record_offset, disks = _ZIP64_LOCATOR.unpack(locator)
-        if sig != ZIP64_LOCATOR_SIGNATURE:
-            raise CorruptionError("ZIP64 end record without its locator")
-        if disk_with_record != 0 or disks > 1:
-            raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
-        return this_disk, cd_disk, entries_total, cd_size, cd_offset
+
+@dataclass(frozen=True, slots=True)
+class ForwardTail:
+    """The bytes after a forward walk's last member, up to the end of the stream."""
+
+    #: Where the members ended, for a message: "after member #n" or "before the
+    #: first local header".
+    after: str
+    #: Stream offset of the first local header (``members_end`` with none): how
+    #: much data was prepended to the archive at most.
+    members_start: int
+    #: Stream offset where the members ended: the walk read no header after it.
+    members_end: int
+    #: Stream offset of ``data[0]``; past ``members_end`` when the bound dropped some.
+    start: int
+    data: bytes
+
+    @property
+    def dropped(self) -> int:
+        """Bytes after the members that the bound did not keep."""
+        return self.start - self.members_end
+
+    @property
+    def size(self) -> int:
+        """The stream's length: the offset of its end."""
+        return self.start + len(self.data)
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        """Up to ``n`` bytes at stream ``offset``, as a file read would read them.
+
+        Bytes before :attr:`start` were not kept and read as zeros, which hold no ZIP
+        record: the end-record search's window may reach back past the members' end,
+        and a ZIP64 locator may name an offset there (a stub stdlib's check moves
+        past). :meth:`end_record` refuses a directory that starts there."""
+        at = offset - self.start
+        if at >= 0:
+            return self.data[at : at + n]
+        missing = min(-at, n)
+        return bytes(missing) + self.data[: n - missing]
+
+    def end_record(self) -> EndRecord:
+        """The end record the seekable read would use.
+
+        ``find_end_record`` runs over :meth:`read_at`, so it picks the record a file
+        read picks, decoy signatures in the comment included. A record that places
+        a non-empty directory among the members' data, which the walk has read past,
+        is refused, and so is a ZIP64 end record there; either in bytes the bound
+        dropped is a ``ResourceLimitError``.
+
+        A missing end record is described from the bytes after the members while all
+        of them are kept: the first four say whether the stream was cut inside the
+        directory, the directory is encrypted, or no ZIP structure follows at all.
+        Every other fault is ``find_end_record``'s, in the file read's words.
+        """
+        found = locate_classic_record(self.read_at, self.size)
+        if found is None and not self.dropped:
+            # No end record at all: what follows the members says why. Only while
+            # every byte after the members is kept, so the first four are theirs.
+            head = self.data[:4]
+            if head == CENTRAL_HEADER_SIGNATURE:
+                raise TruncatedError(
+                    "ZIP stream ends inside the central directory, before the end of "
+                    "central directory record"
+                )
+            if head == ARCHIVE_EXTRA_DATA_SIGNATURE:
+                raise UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
+            if head not in _DIRECTORY_STARTS:
+                raise CorruptionError(
+                    f"bytes at stream offset {self.members_end} {self.after} are not "
+                    "a ZIP header, and no end of central directory record follows "
+                    "them"
+                )
+        if found is not None:
+            self._refuse_unseen_zip64_record(found[0])
+        # Any other failure is the record's own, in the file read's words.
+        end = find_end_record(self.read_at, self.size)
+        if end.cd_size and end.cd_start < self.start:
+            self._refuse_unseen("ZIP central directory", end.cd_start)
+        return end
+
+    def _refuse_unseen_zip64_record(self, eocd_offset: int) -> None:
+        """Refuse a ZIP64 locator naming a record in bytes this tail does not hold.
+
+        ``find_end_record`` reads the record at the locator's offset, and falls back
+        to one right before the locator when that offset holds none (data prepended
+        to the archive moved it). The unkept bytes at the locator's offset decide
+        that, so here the fallback is taken only for a record right before the
+        locator that passes the parser's own checks (``zip64_record_matches``) and
+        whose shift, from where the locator places it, fits before the first local
+        header: no more than the data a stub could have prepended. A file read not
+        told where the archive starts (``format=`` skips the detection that slices
+        the stub off) would instead read a record the locator names in unkept bytes
+        within that shift; that takes a stub longer than the tail keeps. Otherwise the
+        record the locator names is unseen, not missing. The locator's own
+        refusals come first, as from a file (``read_zip64_locator``)."""
+        located = read_zip64_locator(self.read_at, eocd_offset)
+        if located is None:
+            return
+        locator_at, record_at = located
+        if record_at >= self.start:
+            return
+        adjacent = locator_at - ZIP64_EOCD_SIZE
+        if (
+            adjacent >= self.start
+            and adjacent - record_at <= self.members_start
+            and zip64_record_matches(
+                self.read_at(adjacent, ZIP64_EOCD_SIZE), record_at, 0
+            )
+        ):
+            return
+        self._refuse_unseen("ZIP64 end of central directory record", record_at)
+
+    def _refuse_unseen(self, what: str, offset: int) -> NoReturn:
+        """Refuse ``what``, which an end record places at stream ``offset``, before the
+        bytes this tail holds: among the members' data, which the walk read past, or
+        in bytes the bound dropped (``ResourceLimitError``)."""
+        if offset >= self.members_end:
+            raise ResourceLimitError(
+                f"{what} starts {self.size - offset} bytes before the end of the "
+                "stream, more than a forward read holds within the listing limits"
+            )
+        raise CorruptionError(
+            f"ZIP end records place the {what} at stream offset {offset}, inside the "
+            "members' data, which a read from a source that cannot seek has passed"
+        )
 
 
 __all__ = [
     "DATA_DESCRIPTOR_SIGNATURE",
     "DataDescriptor",
     "ForwardSource",
+    "ForwardTail",
     "LocalEntry",
     "LocalHeaderWalk",
     "MemberData",

@@ -100,7 +100,6 @@ from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
-    DirectorySizeMismatch,
     EndRecord,
     EntryCountMismatch,
     EntryOverrun,
@@ -1037,7 +1036,8 @@ class ZipReader(BaseArchiveReader):
             return read_exact(fp, n)
 
     def _refuse_declared_count_over_limit(self) -> None:
-        """Refuse at open an end record declaring more entries than ``max_members``.
+        """Refuse an end record declaring more entries than ``max_members``, as soon
+        as it is read: at open from a file, at the end of a forward pass.
 
         Only when the directory is large enough to hold that many (46 bytes each): a
         count it cannot hold is a wrong field, which the walk reports as a count
@@ -1067,8 +1067,6 @@ class ZipReader(BaseArchiveReader):
         input; Info-ZIP ``unzip`` says nothing.
         """
         end = self._end
-        # Only the seekable read gets here; a forward walk counts no trailing bytes.
-        assert end.trailing is not None
         if end.trailing == 0:
             return
         tail = SharedView(
@@ -1174,10 +1172,7 @@ class ZipReader(BaseArchiveReader):
 
     def _emit_walk_finding(
         self,
-        finding: EntryCountMismatch
-        | CommentCutShort
-        | EntryOverrun
-        | DirectorySizeMismatch,
+        finding: EntryCountMismatch | CommentCutShort | EntryOverrun,
         last: CentralEntry | None,
     ) -> None:
         """One disagreement between the end record and the central directory."""
@@ -1196,20 +1191,6 @@ class ZipReader(BaseArchiveReader):
                 expected_bytes=0,
                 observed_bytes=end.eocd_offset,
                 observed_kind="nonzero",
-            )
-        elif isinstance(finding, DirectorySizeMismatch):
-            message = (
-                f"ZIP end record declares a central directory of {finding.declared} "
-                f"bytes, but the stream holds {finding.held} bytes of directory "
-                "entries; read from a source that cannot seek, every entry is listed."
-            )
-            context = ArchiveEofContext(
-                archive_name=archive_name,
-                format="zip",
-                expected_marker="central_directory",
-                expected_bytes=finding.declared,
-                observed_bytes=finding.held,
-                observed_kind="short" if finding.held < finding.declared else "nonzero",
             )
         elif isinstance(finding, CommentCutShort):
             message = (

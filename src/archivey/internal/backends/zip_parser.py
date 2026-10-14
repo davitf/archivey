@@ -20,7 +20,7 @@ or ``TruncatedError`` (an archive cut short), a valid feature archivey refuses r
 
 The ZIP64 record checks and the stub offset (``base``) follow stdlib ``zipfile``
 (3.13). The end-record search is stdlib's older window, one byte wider than 3.13's
-(see ``_SEARCH_BACK``), so a prefixed or commented archive resolves to the record
+(see ``EOCD_SEARCH_WINDOW``), so a prefixed or commented archive resolves to the record
 stdlib reads whenever stdlib finds one. The walk tolerates more than stdlib does: it does not refuse
 the archive for an extra field cut short or a version-needed it does not know, and it
 yields every entry before a damaged one.
@@ -67,7 +67,11 @@ CENTRAL_HEADER_SIZE = 46
 # releases shrank stdlib's window to match. Keeping the wider one reads every archive
 # either window reads, so one byte of junk after a maximal comment stays readable on
 # every Python.
-_SEARCH_BACK = (1 << 16) + 22
+EOCD_SEARCH_WINDOW = (1 << 16) + 22
+STRONG_ENCRYPTED_DIRECTORY_MSG = (
+    "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are); "
+    "this archive's central directory appears to be encrypted with it"
+)
 
 _EOCD = struct.Struct("<4s4H2LH")
 _ZIP64_LOCATOR = struct.Struct("<4sLQL")
@@ -121,9 +125,8 @@ class EndRecord:
     comment_declared: int
     #: Bytes after the record and its declared comment, up to the end of the file. The
     #: reader reports them; the parser only counts them. Junk longer than the search
-    #: window hides the record itself, as it does for stdlib. ``None`` when nothing
-    #: counted them: a forward walk has no file size and reads what follows instead.
-    trailing: int | None
+    #: window hides the record itself, as it does for stdlib.
+    trailing: int
 
     @property
     def cd_start(self) -> int:
@@ -144,7 +147,7 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     set) and for an encrypted central directory (PKWARE Strong Encryption), and
     ``CorruptionError`` when no record is found or the records contradict each other.
     """
-    found = _locate_classic_record(read_at, file_size)
+    found = locate_classic_record(read_at, file_size)
     if found is None:
         raise CorruptionError(
             "truncated or corrupt ZIP (no end of central directory record found)"
@@ -188,14 +191,11 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     # archive extra data record where the directory starts. Checked before the walk,
     # so the refusal does not depend on how the encrypted bytes happen to parse.
     if read_at(end.cd_start, 4) == ARCHIVE_EXTRA_DATA_SIGNATURE:
-        raise UnsupportedFeatureError(
-            "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES "
-            "are); this archive's central directory appears to be encrypted with it"
-        )
+        raise UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
     return end
 
 
-def _locate_classic_record(
+def locate_classic_record(
     read_at: ReadAt, file_size: int
 ) -> tuple[int, bytes, bytes] | None:
     """``(offset, record, comment)`` of the classic end record, or ``None``."""
@@ -208,7 +208,7 @@ def _locate_classic_record(
         and tail[-2:] == b"\x00\x00"
     ):
         return file_size - EOCD_SIZE, tail, b""
-    window_start = max(file_size - _SEARCH_BACK, 0)
+    window_start = max(file_size - EOCD_SEARCH_WINDOW, 0)
     window = read_at(window_start, file_size - window_start)
     idx = window.rfind(EOCD_SIGNATURE)
     if idx < 0:
@@ -219,6 +219,43 @@ def _locate_classic_record(
     (comment_declared,) = struct.unpack_from("<H", record, 20)
     comment = window[idx + EOCD_SIZE : idx + EOCD_SIZE + comment_declared]
     return window_start + idx, record, comment
+
+
+def read_zip64_locator(read_at: ReadAt, eocd_offset: int) -> tuple[int, int] | None:
+    """``(locator_offset, record_offset)`` of the ZIP64 locator right before the
+    classic record at ``eocd_offset``, or ``None`` when there is none.
+
+    A locator naming another disk is refused as a split set, and one naming a record
+    past the place right before it as corruption, before any record is read.
+    """
+    locator_offset = eocd_offset - ZIP64_LOCATOR_SIZE
+    if locator_offset < 0:
+        return None
+    locator = read_at(locator_offset, ZIP64_LOCATOR_SIZE)
+    if len(locator) != ZIP64_LOCATOR_SIZE:
+        return None
+    sig, disk_with_record, record_offset, disks = _ZIP64_LOCATOR.unpack(locator)
+    if sig != ZIP64_LOCATOR_SIGNATURE:
+        return None
+    if disk_with_record != 0 or disks > 1:
+        raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
+    adjacent = locator_offset - ZIP64_EOCD_SIZE
+    if adjacent < 0 or record_offset > adjacent:
+        raise CorruptionError("Corrupt ZIP64 end of central directory locator")
+    return locator_offset, record_offset
+
+
+def zip64_record_matches(record: bytes, record_offset: int, extensible: int) -> bool:
+    """Whether ``record`` is a whole ZIP64 end record whose directory ends at the
+    locator's ``record_offset`` and whose size counts ``extensible`` bytes after it."""
+    if len(record) != ZIP64_EOCD_SIZE or not record.startswith(ZIP64_EOCD_SIGNATURE):
+        return False
+    fields = _ZIP64_EOCD.unpack(record)
+    record_size, cd_size, cd_offset = fields[1], fields[8], fields[9]
+    return (
+        cd_offset + cd_size == record_offset
+        and record_size + 12 == ZIP64_EOCD_SIZE + extensible
+    )
 
 
 def _read_zip64_records(
@@ -235,21 +272,11 @@ def _read_zip64_records(
     against the locator's offset in both cases, as stdlib's is: with unadjusted offsets
     behind a stub, the stored offsets all omit the stub.
     """
-    locator_offset = eocd_offset - ZIP64_LOCATOR_SIZE
-    if locator_offset < 0:
+    located = read_zip64_locator(read_at, eocd_offset)
+    if located is None:
         return None
-    locator = read_at(locator_offset, ZIP64_LOCATOR_SIZE)
-    if len(locator) != ZIP64_LOCATOR_SIZE:
-        return None
-    sig, disk_with_record, record_offset, disks = _ZIP64_LOCATOR.unpack(locator)
-    if sig != ZIP64_LOCATOR_SIGNATURE:
-        return None
-    if disk_with_record != 0 or disks > 1:
-        raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
-
+    locator_offset, record_offset = located
     adjacent = locator_offset - ZIP64_EOCD_SIZE
-    if adjacent < 0 or record_offset > adjacent:
-        raise CorruptionError("Corrupt ZIP64 end of central directory locator")
     extensible = adjacent - record_offset
     record = read_at(record_offset, ZIP64_EOCD_SIZE)
     if not record.startswith(ZIP64_EOCD_SIGNATURE) and record_offset != adjacent:
@@ -257,9 +284,11 @@ def _read_zip64_records(
         record = read_at(adjacent, ZIP64_EOCD_SIZE)
     if len(record) != ZIP64_EOCD_SIZE or not record.startswith(ZIP64_EOCD_SIGNATURE):
         raise CorruptionError("ZIP64 end of central directory record not found")
+    if not zip64_record_matches(record, record_offset, extensible):
+        raise CorruptionError("Corrupt ZIP64 end of central directory record")
     (
         _sig,
-        record_size,
+        _record_size,
         _made_by,
         _needed,
         this_disk,
@@ -269,11 +298,6 @@ def _read_zip64_records(
         cd_size,
         cd_offset,
     ) = _ZIP64_EOCD.unpack(record)
-    if (
-        cd_offset + cd_size != record_offset
-        or record_size + 12 != ZIP64_EOCD_SIZE + extensible
-    ):
-        raise CorruptionError("Corrupt ZIP64 end of central directory record")
     return adjacent - extensible, this_disk, cd_disk, entries_total, cd_size, cd_offset
 
 
@@ -370,19 +394,6 @@ class EntryOverrun:
     #: Where the entry ends, counted from the directory's start.
     entry_end: int
     cd_size: int
-
-
-@dataclass(frozen=True, slots=True)
-class DirectorySizeMismatch:
-    """The directory a forward walk read is not the size the end record declares.
-
-    Only the forward walk (``LocalHeaderWalk``) finds this: it reads the entries before
-    the end record that sizes them, where the seekable read reads only the declared
-    bytes (and finds :class:`EntryOverrun` or :class:`EntryCountMismatch` instead).
-    """
-
-    declared: int
-    held: int
 
 
 WalkFinding = EntryCountMismatch | CommentCutShort | EntryOverrun
