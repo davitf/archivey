@@ -218,8 +218,9 @@ def test_a_reparse_link_over_the_cap_is_written_from_a_pipe_as_from_a_file(
 ) -> None:
     """Nobody reads a folder-named member's data, so the pass keeps its buffer's
     start while draining it, whatever ``read_link_targets`` says: a file read still
-    reads the target extraction asks for."""
-    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "t" * 1990, "t" * 1990)
+    reads the target extraction asks for. The long name is the substitute one, so
+    the target written stays within what macOS takes."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "t" * 2100, "target")
     assert len(buffer) > MAX_LINK_TARGET_BYTES
     attributes = _FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
     data = _zip([("linkdir/", attributes, buffer)])
