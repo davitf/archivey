@@ -536,11 +536,11 @@ requirement):
 
 The descriptor mismatch and the reversed pair make a streaming extraction fail a member
 that the seekable extraction of the same archive writes, and the contradicted local
-header one that it writes differently or fails too (the seekable read refuses a member
-whose two names differ, as the pass does). That is the only place the two access modes
-differ on disk. Both shapes come only from crafted or hand-edited archives, which DR-5a
-allows to differ a little; matching them would mean buffering every member until the
-directory arrives (ADR 0010).
+header one that it writes differently or fails too. Those three are the only places the
+two access modes differ on disk; a member whose two names differ fails in both, as the
+seekable read refuses it too. All three come only from crafted or hand-edited archives,
+which DR-5a allows to differ a little; matching them would mean buffering every member
+until the directory arrives (ADR 0010).
 
 One more thing is known only once the directory has been read, and is not a member
 failure. A directory entry pointing at a local header an earlier entry already took ends
