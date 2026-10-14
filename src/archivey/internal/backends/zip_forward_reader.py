@@ -27,6 +27,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
 from typing import BinaryIO, Literal, cast
 
+from archivey.config import ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, UnlistedDataContext
 from archivey.exceptions import (
@@ -56,11 +57,12 @@ from archivey.internal.backends.zip_local_walk import (
     descriptor_by_crc,
 )
 from archivey.internal.backends.zip_parser import (
+    CENTRAL_HEADER_SIZE,
+    EOCD_SEARCH_WINDOW,
+    EOCD_SIZE,
+    CentralDirectoryWalk,
     CentralEntry,
-    CommentCutShort,
-    DirectorySizeMismatch,
     EndRecord,
-    EntryCountMismatch,
 )
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
@@ -254,6 +256,23 @@ def _renamed_error(
         f"{quoted(_stored_text(local_name))} differ.",
         member_name=member_name,
         source_format=ArchiveFormat.ZIP,
+    )
+
+
+def _tail_bound(limits: ListingLimits) -> int | None:
+    """How many bytes after the members a pass holds to find the directory in.
+
+    The most a directory within the listing limits takes (each entry's fixed header
+    and its text), then the end records, a digital signature and the comment, each
+    under 64 KiB. Past it the pass keeps the last bytes, which is where they are.
+    ``None`` when a limit is off.
+    """
+    if limits.max_members is None or limits.max_metadata_bytes is None:
+        return None
+    return (
+        limits.max_members * CENTRAL_HEADER_SIZE
+        + limits.max_metadata_bytes
+        + 4 * EOCD_SEARCH_WINDOW
     )
 
 
@@ -1310,6 +1329,7 @@ class ZipForwardReader(ZipReader):
         # The kept members in the directory's order, once it has been read.
         self._directory_order: list[ArchiveMember] | None = None
         self._end_record: EndRecord | None = None
+        self._entries_read: int | None = None
         # The first header is parsed at open, so a stream that is no ZIP fails here
         # (DR-15b), as a TAR's does.
         try:
@@ -1461,17 +1481,19 @@ class ZipForwardReader(ZipReader):
     def _read_directory(self) -> None:
         """Read the directory and end records, and update the members in place.
 
-        Each local entry is matched to its directory entry by offset, once the end
-        record has said where the offsets count from. The directory is authoritative:
-        a member it describes is rebuilt from it, as the seekable read builds it, and
-        the yielded object takes every field of that build. The entries are charged
-        against ``max_members`` as they are read, as the seekable read's directory
-        walk charges them.
+        Every byte after the last member is kept (``read_rest``) and parsed with the
+        seekable read's code: ``find_end_record`` picks the end record a file read
+        picks, and ``CentralDirectoryWalk`` reads the directory it names, so the pass
+        lists what a file read lists and reports the same disagreements between the
+        end record and the directory. Each local entry is matched to its directory
+        entry by offset. The directory is authoritative: a member it describes is
+        rebuilt from it, as the seekable read builds it, and the yielded object takes
+        every field of that build. The entries are charged against ``max_members``
+        as they are read, as the seekable read's directory walk charges them.
 
-        The end record comes after the last entry, so the entries are held until then.
-        Their names, extra fields and comments are weighed against
-        ``max_metadata_bytes`` as they arrive (``_charge_held_directory``); past it only
-        each entry's offset is kept, which the checks below need.
+        The entries are held until every one has been read. Their names, extra fields
+        and comments are weighed against ``max_metadata_bytes`` as they arrive
+        (``_charge_held_directory``).
 
         A local entry no directory entry points to is dropped from the listing and
         reported (``ARCHIVE_UNLISTED_DATA``). Of two members with the same name, the
@@ -1480,26 +1502,29 @@ class ZipForwardReader(ZipReader):
         differently, fails (``_failed_at_end``): the pass raises for the first, after
         a directory entry with no local entry and two entries for one local entry.
         """
-        walker = self._walker
         limits = self._config.listing_limits
         max_members = limits.max_members
         max_meta = limits.max_metadata_bytes
-        # Every entry's offset as stored, in directory order, and the entries.
-        stored_offsets = array("Q")
+        with self._translated_errors():
+            tail = self._walker.read_rest(_tail_bound(limits))
+            end = tail.end_record()
+        self._end_record = self._end = end
+        self._refuse_declared_count_over_limit()
+        walk = CentralDirectoryWalk(tail.read_at, end)
+        # Every entry's local header offset, in directory order, and the entries.
+        offsets = array("q")
         entries: list[CentralEntry] = []
         held = 0
         with self._translated_errors():
-            for central in walker.directory():
-                if max_members is not None and len(stored_offsets) >= max_members:
+            for central in walk:
+                if max_members is not None and len(offsets) >= max_members:
                     raise _max_members_error(max_members)
-                stored_offsets.append(central.header_offset)
+                offsets.append(central.header_offset)
                 held += len(central.name) + len(central.extra) + len(central.comment)
                 if max_meta is not None and held > max_meta:
                     self._charge_held_directory(held)
                 entries.append(central)
-            end = walker.end
-            assert end is not None
-        self._end_record = self._end = end
+        self._entries_read = walk.entries_read
         local_offsets = self._local_offsets
         by_offset = self._by_offset
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
@@ -1512,8 +1537,7 @@ class ZipForwardReader(ZipReader):
         # Listed and missing members in the directory's order, for is_current.
         placed: list[ArchiveMember] = []
         any_missing = False
-        for position, stored in enumerate(stored_offsets):
-            offset = stored + end.base
+        for position, offset in enumerate(offsets):
             if offset not in local_offsets:
                 missing = self._missing_member(entries[position], len(failed))
                 failed.append((position, missing, _missing_error(missing, offset)))
@@ -1570,8 +1594,11 @@ class ZipForwardReader(ZipReader):
             if member_id in links
         }
         self._report_unlisted(unlisted)
-        self._report_directory_findings(end, len(stored_offsets))
-        found = first_nonzero_offset(walker.source)
+        last = entries[-1] if entries else None
+        for finding in walk.findings:
+            self._emit_walk_finding(finding, last)
+        after = end.eocd_offset + EOCD_SIZE + end.comment_declared - tail.start
+        found = first_nonzero_offset(io.BytesIO(tail.data[after:]))
         if found is not None:
             self._emit_trailing_data(found)
         self._by_offset = {}
@@ -1581,7 +1608,7 @@ class ZipForwardReader(ZipReader):
             first = shared[0]
             raise CorruptionError(
                 f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
-                f"points to the local header at offset {stored_offsets[first] + end.base}, "
+                f"points to the local header at offset {offsets[first]}, "
                 f"which an earlier entry already describes ({len(shared)} such entries); "
                 "a source that cannot seek reads that data once, for one member",
                 archive_name=self._archive_name,
@@ -1717,38 +1744,6 @@ class ZipForwardReader(ZipReader):
                 del self._listed_by_name[old_name]
         self._index_member_name(member)
 
-    def _report_directory_findings(self, end: EndRecord, read: int) -> None:
-        """The end record's disagreements with the directory.
-
-        The entry count and the comment are checked as the seekable read checks them
-        (``CentralDirectoryWalk.findings``). The declared directory size is not:
-        the seekable read reads only that many bytes, and reports an entry that runs
-        past them (``EntryOverrun``), where this walk has read every entry before the
-        end record sized them. So a size the entries do not fill is reported as such
-        (``DirectorySizeMismatch``), and every entry stays listed.
-        """
-        walker = self._walker
-        assert walker.cd_start is not None and walker.cd_end is not None
-        held = walker.cd_end - walker.cd_start
-        if held != end.cd_size:
-            self._emit_walk_finding(
-                DirectorySizeMismatch(declared=end.cd_size, held=held), None
-            )
-        if end.entries_declared != read:
-            self._emit_walk_finding(
-                EntryCountMismatch(
-                    declared=end.entries_declared, read=read, zip64=end.zip64
-                ),
-                None,
-            )
-        if len(end.comment) < end.comment_declared:
-            self._emit_walk_finding(
-                CommentCutShort(
-                    declared=end.comment_declared, available=len(end.comment)
-                ),
-                None,
-            )
-
     # -- data ----------------------------------------------------------------------
 
     def _iter_with_data(
@@ -1841,7 +1836,7 @@ class ZipForwardReader(ZipReader):
 
     def _known_member_count(self) -> int | None:
         end = self._end_record
-        return None if end is None else self._walker.entries_read
+        return None if end is None else self._entries_read
 
     def _cost_receipt(self) -> CostReceipt:
         return _ZIP_FORWARD_COST

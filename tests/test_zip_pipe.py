@@ -419,24 +419,58 @@ def test_directory_comments_count_toward_max_metadata_bytes() -> None:
             reader.members_report()
 
 
-@pytest.mark.parametrize(("delta", "kind"), [(-10, "nonzero"), (10, "short")])
-def test_a_directory_size_the_entries_do_not_fill_is_reported(
-    delta: int, kind: str
+@pytest.mark.parametrize(
+    ("delta", "message"),
+    [(-10, "Bad magic number"), (10, "inside the members' data")],
+)
+def test_a_directory_size_the_entries_do_not_fill_is_refused_as_from_a_file(
+    delta: int, message: str
 ) -> None:
+    """The size places the directory, so a wrong one moves it off its entries: the
+    file read refuses the archive, and so does the pass, once it reaches the end."""
     data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
     eocd = data.index(b"PK\x05\x06")
     (size,) = struct.unpack_from("<I", data, eocd + 12)
     struct.pack_into("<I", data, eocd + 12, size + delta)
+    with pytest.raises(CorruptionError, match="Bad magic number"):
+        _seekable_view(bytes(data))
+    with pytest.raises(CorruptionError, match=message):
+        _piped_view(bytes(data))
+
+
+def test_a_decoy_end_record_in_the_comment_is_the_one_used() -> None:
+    """A file read takes the last end record in the tail, here a decoy for an empty
+    archive in the comment; the pass takes the same, and the members it yielded are
+    left out as unlisted, as a file read never lists them."""
+    decoy = b"PK\x05\x06" + bytes(18)
+    data = _zip([("a.txt", b"one"), ("b.txt", b"two")], comment=b"x" + decoy)
+    assert _seekable_view(data) == ([], {})
+    with archivey.open_archive(_pipe(data), streaming=True) as reader:
+        yielded = [m.name for m, _ in reader.stream_members()]
+        listed = list(reader.members_report().members)
+        codes = list(reader.diagnostics.counts)
+    assert (yielded, listed) == (["a.txt", "b.txt"], [])
+    assert DiagnosticCode.ARCHIVE_UNLISTED_DATA in codes
+
+
+def test_a_name_running_past_the_directory_is_cut_as_from_a_file() -> None:
+    """The last entry's comment length runs past the directory's declared end: the
+    file read cuts it there and reports it, and so does the pass, where it used to
+    read on through the end record."""
+    data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
+    last = data.rindex(b"PK\x01\x02")
+    struct.pack_into("<H", data, last + 32, 3000)
+    assert _piped_view(bytes(data)) == _seekable_view(bytes(data))
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        names = [m.name for m in reader.members_report().members]
+        for _ in reader.stream_members():
+            pass
         found = [
-            (d.context.expected_marker, d.context.observed_kind)
+            d.context.expected_marker
             for d in reader.diagnostics.retained
             if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
             and isinstance(d.context, ArchiveEofContext)
         ]
-    assert names == ["a.txt", "b.txt"]
-    assert found == [("central_directory", kind)]
+    assert found == ["central_directory"]
 
 
 def _commented(count: int, comment_len: int) -> bytes:

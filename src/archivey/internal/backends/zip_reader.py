@@ -100,7 +100,6 @@ from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
-    DirectorySizeMismatch,
     EndRecord,
     EntryCountMismatch,
     EntryOverrun,
@@ -1174,10 +1173,7 @@ class ZipReader(BaseArchiveReader):
 
     def _emit_walk_finding(
         self,
-        finding: EntryCountMismatch
-        | CommentCutShort
-        | EntryOverrun
-        | DirectorySizeMismatch,
+        finding: EntryCountMismatch | CommentCutShort | EntryOverrun,
         last: CentralEntry | None,
     ) -> None:
         """One disagreement between the end record and the central directory."""
@@ -1196,20 +1192,6 @@ class ZipReader(BaseArchiveReader):
                 expected_bytes=0,
                 observed_bytes=end.eocd_offset,
                 observed_kind="nonzero",
-            )
-        elif isinstance(finding, DirectorySizeMismatch):
-            message = (
-                f"ZIP end record declares a central directory of {finding.declared} "
-                f"bytes, but the stream holds {finding.held} bytes of directory "
-                "entries; read from a source that cannot seek, every entry is listed."
-            )
-            context = ArchiveEofContext(
-                archive_name=archive_name,
-                format="zip",
-                expected_marker="central_directory",
-                expected_bytes=finding.declared,
-                observed_bytes=finding.held,
-                observed_kind="short" if finding.held < finding.declared else "nonzero",
             )
         elif isinstance(finding, CommentCutShort):
             message = (

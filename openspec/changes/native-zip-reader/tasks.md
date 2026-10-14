@@ -90,8 +90,13 @@ each lands with nothing half-done reachable:
   3.2a for AES) and bit-3 STORED under AES; 3b3d2b the descriptor scan for unread
   encrypted codec members, and descriptors without their signature; 3b3d3 several
   candidates (3.2b's second half).
-- 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
-  (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
+- 3b3e, every fixture through a pipe (3.4), the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`)
+  and the docs (3.3e2's docs half, 3.5, 3.5a), in four PRs. Reading every ZIP the
+  test suite opens (1206 archives) from a pipe and from a file turned up differences
+  the first three fix: 3b3e1 parses what follows the members with the seekable
+  read's code (3.4a); 3b3e2 checks a member's data against its directory entry
+  (3.4b); 3b3e3 keeps a Windows reparse buffer longer than the link cap (3.4c). 3b3e4
+  opens the gate, adds the fixture test (3.4) and the docs.
 
 - [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
@@ -230,17 +235,25 @@ each lands with nothing half-done reachable:
       when extracting, from disk, and reported (`ARCHIVE_UNLISTED_DATA`, the
       maintainer's pick 2026-10-13, with `UnlistedDataContext`). 3b3c1: the listing
       half (`_drop_listed`); 3b3c2: extraction takes back what it wrote, as for a
-      member the selection drops at the end. Directory entries past the size the end record declares
-      stay listed, with `DirectorySizeMismatch` reported: the seekable read takes the
-      directory as the declared size *before* the end record, not after the first
-      entry, so with a wrong size its offsets are shifted too, and no forward rule
-      matches what it lists.
+      member the selection drops at the end. Directory entries past the size the end
+      record declares are read as the seekable read reads them since 3b3e1 (3.4a),
+      which had them listed with a pipe-only `DirectorySizeMismatch` report.
 - [x] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).
 - [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
       same files on disk, except the two divergences `design.md` names (3.3b, 3.3c),
       which 3.3g tests instead.
+- [x] 3.4a What follows the members is kept and parsed by `find_end_record` and
+      `CentralDirectoryWalk` (`LocalHeaderWalk.read_rest`, `ForwardTail.end_record`),
+      bounded by the listing limits: a decoy end record in the comment, an entry
+      whose field runs past the directory's declared size, and a wrong declared size
+      give what a file read gives. The forward walk's own directory and end-record
+      reader, its gap skip and `DirectorySizeMismatch` are gone. A digital signature
+      record before the end records is now refused as the file read (and stdlib)
+      refuses it.
+- [ ] 3.4b A member's data checked against its directory entry at the end of the pass.
+- [ ] 3.4c A Windows reparse buffer longer than the link cap kept as far as it declares.
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
       and `access-mode-and-cost` specs, `archive-reading` (ZIP applies `max_members` at
       parse) and the `ListingLimits` docstring in `config.py`, `archive-data-model` for

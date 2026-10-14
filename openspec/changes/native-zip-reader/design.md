@@ -438,15 +438,22 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   naming the reason. In the seekable read a missed stub costs nothing, because `base`
   recovers the offsets; the forward walk has no end record to recover them from until
   the end.
-- Bytes between the last member and the directory (an APK signing block, for one) are
-  read past to the first directory or end-record signature. The end record, read last,
-  confirms where the directory started; the seekable read skips the same bytes without
-  reading them. Two cases a forward read cannot take, where the seekable read can: a gap
-  holding `PK\x01\x02` or `PK\x05\x06` (the skip stops there, and the bytes after it
-  are no directory), and a gap after a last member with bit 3 set (a descriptor counts
-  only when a ZIP signature follows it, which is what stops a planted one inside STORED
-  data). Recognising an APK signing block by its own size fields would cover both;
-  it is not done.
+- Everything after the last member is kept and parsed by the seekable read's own code:
+  bytes before the directory (an APK signing block, for one), the directory, the end
+  records, the comment and anything after it. `find_end_record` runs over them, then
+  `CentralDirectoryWalk` over the directory the record places, so the pass picks the
+  end record a file read picks (a decoy in the comment included), reads exactly the
+  bytes the declared directory size covers, and cuts an entry that runs past them as
+  the file read does, with the same report. What the pass holds is bounded by the
+  listing limits: each entry's 46-byte header and its text, plus the end records and
+  the comment. Past that it keeps the last bytes, where the end record is, and a
+  directory that starts before them is `ResourceLimitError`. A record that places the
+  directory among the members' data, which the pass has read past, is
+  `CorruptionError`; a file read would read entries there. One case a forward read
+  cannot take, where the seekable read can: a gap after a last member with bit 3 set
+  (a descriptor counts only when a ZIP signature follows it, which is what stops a
+  planted one inside STORED data). Recognising an APK signing block by its own size
+  fields would cover it; it is not done.
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
   Writers put both in the same order; when they differ, `is_current` follows the

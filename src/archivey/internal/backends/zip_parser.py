@@ -20,7 +20,7 @@ or ``TruncatedError`` (an archive cut short), a valid feature archivey refuses r
 
 The ZIP64 record checks and the stub offset (``base``) follow stdlib ``zipfile``
 (3.13). The end-record search is stdlib's older window, one byte wider than 3.13's
-(see ``_SEARCH_BACK``), so a prefixed or commented archive resolves to the record
+(see ``EOCD_SEARCH_WINDOW``), so a prefixed or commented archive resolves to the record
 stdlib reads whenever stdlib finds one. The walk tolerates more than stdlib does: it does not refuse
 the archive for an extra field cut short or a version-needed it does not know, and it
 yields every entry before a damaged one.
@@ -67,7 +67,11 @@ CENTRAL_HEADER_SIZE = 46
 # releases shrank stdlib's window to match. Keeping the wider one reads every archive
 # either window reads, so one byte of junk after a maximal comment stays readable on
 # every Python.
-_SEARCH_BACK = (1 << 16) + 22
+EOCD_SEARCH_WINDOW = (1 << 16) + 22
+STRONG_ENCRYPTED_DIRECTORY_MSG = (
+    "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are); "
+    "this archive's central directory appears to be encrypted with it"
+)
 
 _EOCD = struct.Struct("<4s4H2LH")
 _ZIP64_LOCATOR = struct.Struct("<4sLQL")
@@ -188,10 +192,7 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     # archive extra data record where the directory starts. Checked before the walk,
     # so the refusal does not depend on how the encrypted bytes happen to parse.
     if read_at(end.cd_start, 4) == ARCHIVE_EXTRA_DATA_SIGNATURE:
-        raise UnsupportedFeatureError(
-            "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES "
-            "are); this archive's central directory appears to be encrypted with it"
-        )
+        raise UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
     return end
 
 
@@ -208,7 +209,7 @@ def _locate_classic_record(
         and tail[-2:] == b"\x00\x00"
     ):
         return file_size - EOCD_SIZE, tail, b""
-    window_start = max(file_size - _SEARCH_BACK, 0)
+    window_start = max(file_size - EOCD_SEARCH_WINDOW, 0)
     window = read_at(window_start, file_size - window_start)
     idx = window.rfind(EOCD_SIGNATURE)
     if idx < 0:
@@ -370,19 +371,6 @@ class EntryOverrun:
     #: Where the entry ends, counted from the directory's start.
     entry_end: int
     cd_size: int
-
-
-@dataclass(frozen=True, slots=True)
-class DirectorySizeMismatch:
-    """The directory a forward walk read is not the size the end record declares.
-
-    Only the forward walk (``LocalHeaderWalk``) finds this: it reads the entries before
-    the end record that sizes them, where the seekable read reads only the declared
-    bytes (and finds :class:`EntryOverrun` or :class:`EntryCountMismatch` instead).
-    """
-
-    declared: int
-    held: int
 
 
 WalkFinding = EntryCountMismatch | CommentCutShort | EntryOverrun

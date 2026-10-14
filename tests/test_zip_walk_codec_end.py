@@ -26,6 +26,7 @@ from archivey.internal.backends.zip_local_walk import (
     LocalHeaderWalk,
     MemberData,
 )
+from archivey.internal.backends.zip_parser import CentralDirectoryWalk
 from archivey.internal.config import DecoderLimits, StreamConfig
 from archivey.internal.streams.codecs import ppmd_decoder
 from archivey.internal.streams.codecs.base import CodecParams
@@ -236,7 +237,9 @@ def _read_all(raw: bytes, **kwargs: object) -> list[tuple[bytes, bytes]]:
     while (read := _read_member(walk, **kwargs)) is not None:  # type: ignore[arg-type]
         name, out, _ = read
         got.append((name, out))
-    assert [e.name for e in walk.directory()] == [name for name, _ in got]
+    tail = walk.read_rest(None)
+    entries = CentralDirectoryWalk(tail.read_at, tail.end_record())
+    assert [e.name for e in entries] == [name for name, _ in got]
     return got
 
 
