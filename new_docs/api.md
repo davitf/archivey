@@ -1,9 +1,8 @@
 # API reference
 
-This page lists every public name in archivey, grouped by what you use it for. You can import
-each one from `archivey`, except the names in the last two groups, which live in their own
-modules. The other pages explain when to use them, starting with [Opening an
-archive](opening.md).
+This page lists every public name in archivey, grouped by what you use it for. Each heading shows
+the full name to import, such as `archivey.open_archive` or `archivey.terminal.quoted`. The other
+pages explain when to use them, starting with [Opening an archive](opening.md).
 
 ## Opening
 
