@@ -1,0 +1,178 @@
+"""A ZIP from a pipe checks each member against the central directory, and fails it
+with the error a file read gives where the pass can tell.
+
+The pass reads each member's data as its local header describes it, and meets the
+directory only at the end. A member whose local header the directory contradicts in a
+field a read relies on fails there, after its data was yielded: a file read, which
+reads by the directory, would have read it differently. ``open_archive`` still refuses
+a pipe for ZIP until the rest of the change lands, so these tests open the gate
+themselves.
+"""
+
+from __future__ import annotations
+
+import io
+import struct
+import zipfile
+
+import pytest
+
+import archivey
+from archivey.exceptions import CorruptionError, EncryptionError, TruncatedError
+from archivey.internal import password_confirm
+from archivey.internal.backends import zip_reader
+from archivey.internal.backends.zip_reader import ZipReadBackend
+from tests.conftest import requires
+from tests.streams_util import NonSeekableBytesIO
+from tests.zip_aes_fixture import build_aes_zip
+from tests.zipcrypto import build_zipcrypto_zip
+
+
+@pytest.fixture(autouse=True)
+def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
+
+
+def _zip(
+    payload: bytes = b"hello world", method: int = zipfile.ZIP_STORED
+) -> bytearray:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", method) as z:
+        z.writestr("a.txt", payload)
+    return bytearray(buf.getvalue())
+
+
+def _drain(data: bytes, **kwargs: object) -> list[bytes]:
+    """Every member's bytes from a pass over ``data`` read from a pipe."""
+    read = []
+    with archivey.open_archive(
+        NonSeekableBytesIO(data),
+        streaming=True,
+        **kwargs,  # type: ignore[arg-type]
+    ) as archive:
+        for _, stream in archive.stream_members():
+            if stream is not None:
+                read.append(stream.read())
+    return read
+
+
+def _central(raw: bytearray) -> int:
+    return raw.index(b"PK\x01\x02")
+
+
+@pytest.mark.parametrize(
+    ("field", "at", "fmt", "value"),
+    [
+        ("CRC", 16, "<I", 0x1234_5678),
+        ("compressed size", 20, "<I", 5),
+        ("size", 24, "<I", 5),
+    ],
+)
+def test_a_directory_entry_contradicting_the_local_header_fails_the_member(
+    field: str, at: int, fmt: str, value: int
+) -> None:
+    """The pass read the data the local header describes and checked it against that
+    header; the directory describes other data, so the member fails at the end."""
+    raw = _zip()
+    struct.pack_into(fmt, raw, _central(raw) + at, value)
+    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
+        with pytest.raises(CorruptionError):
+            archive.read("a.txt")
+    with pytest.raises(
+        CorruptionError, match="local header and its central directory entry disagree"
+    ):
+        _drain(bytes(raw))
+
+
+def test_an_encryption_flag_only_the_directory_sets_fails_the_member() -> None:
+    raw = _zip()
+    central = _central(raw)
+    flags = struct.unpack_from("<H", raw, central + 8)[0]
+    struct.pack_into("<H", raw, central + 8, flags | 0x1)
+    with pytest.raises(CorruptionError, match=r"\(encryption flag, local first\)"):
+        _drain(bytes(raw))
+
+
+def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_checks() -> (
+    None
+):
+    """The data matched the CRC and size the directory gives, so it is the data the
+    directory describes, whichever codec decoded it."""
+    raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
+    struct.pack_into("<H", raw, 8, 9)  # Deflate64 decodes this Deflate stream too
+    pytest.importorskip("inflate64")
+    assert _drain(bytes(raw)) == [b"hello world" * 20]
+
+
+def test_a_member_decoding_short_of_its_size_is_truncation_as_from_a_file() -> None:
+    raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
+    for at in (22, _central(raw) + 24):  # the size, in both headers
+        struct.pack_into("<I", raw, at, 1000)
+    message = r"Decompressed content ended after 220 of 1000 expected bytes\."
+    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
+        with pytest.raises(TruncatedError, match=message):
+            archive.read("a.txt")
+    with pytest.raises(TruncatedError, match=message):
+        _drain(bytes(raw))
+
+
+def test_a_local_name_the_utf8_flag_mislabels_fails_only_its_member() -> None:
+    """The name is checked against the directory's, as from a file, instead of
+    ending the pass before the member."""
+    raw = _zip()
+    flags = struct.unpack_from("<H", raw, 6)[0]
+    struct.pack_into("<H", raw, 6, flags | 0x800)
+    raw[30] = 0xFF  # the local name's first byte; the central name is untouched
+    message = r"File name in directory .a\.txt. and header .+\.txt. differ"
+    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
+        with pytest.raises(CorruptionError, match=message):
+            archive.read("a.txt")
+    read: list[bytes] = []
+    with pytest.raises(CorruptionError, match=message):
+        with archivey.open_archive(
+            NonSeekableBytesIO(bytes(raw)), streaming=True
+        ) as archive:
+            for _, stream in archive.stream_members():
+                assert stream is not None
+                read.append(stream.read())
+    assert read == [b"hello world"]
+
+
+def test_damage_past_the_prefix_under_a_lone_surviving_password_is_the_codecs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Of several passwords, one passed the check byte and its prefix decoded: the
+    data can only be under that key, so a failure further in is the codec's, as from
+    a file, not the "password may be wrong" ambiguity."""
+    right = b"very_secret_password"
+    plaintext = b"prefix-ok-then-corrupt\n" * 8000
+    blob = bytearray(build_zipcrypto_zip(right, b"a.txt", plaintext))
+    name_len, extra_len = struct.unpack_from("<HH", blob, 26)
+    compressed_size = struct.unpack_from("<I", blob, 18)[0]
+    blob[30 + name_len + extra_len + compressed_size - 8] ^= 0xFF
+    monkeypatch.setattr(password_confirm, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
+    monkeypatch.setattr(zip_reader, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
+    passwords = [right, b"also-wrong"]
+    with archivey.open_archive(io.BytesIO(bytes(blob)), password=passwords) as archive:
+        with pytest.raises(TruncatedError):
+            archive.read("a.txt")
+    with pytest.raises(TruncatedError) as caught:
+        _drain(bytes(blob), password=passwords)
+    assert not isinstance(caught.value, EncryptionError)
+
+
+@requires("cryptography")
+def test_an_aes_member_short_of_its_size_under_several_passwords_is_truncation() -> (
+    None
+):
+    raw = bytearray(
+        build_aes_zip([(b"a.bin", b"hello world" * 40)], password=b"right", method=0)
+    )
+    for signature, at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
+        struct.pack_into("<I", raw, raw.index(signature) + at, 100_000)
+    passwords = [b"right", b"wrong"]
+    with archivey.open_archive(io.BytesIO(bytes(raw)), password=passwords) as archive:
+        with pytest.raises(TruncatedError):
+            archive.read("a.bin")
+    with pytest.raises(TruncatedError):
+        _drain(bytes(raw), password=passwords)
