@@ -177,14 +177,27 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
     return resolved
 
 
-def _escapes(path: Path, root: Path) -> bool:
-    """Whether ``path`` resolves outside ``root``. A path that cannot be resolved (a
-    symlink loop, say) counts as an escape, as it does in the check after a link is
-    created."""
+SYMLINK_ESCAPES = "Symlink target escapes destination"
+SYMLINK_LOOPS = "Symlink target is part of a symlink loop"
+
+
+def link_resolution_problem(path: Path, root: Path) -> str | None:
+    """Why ``path`` does not resolve to a place inside ``root``, or ``None`` when it
+    does: ``SYMLINK_LOOPS`` for a loop on the way, else ``SYMLINK_ESCAPES``. A path
+    that cannot be resolved for another reason counts as an escape, as it does in the
+    check after a link is created. Both are refused the same way; only the message
+    differs, so a loop inside the destination is not reported as an escape."""
     try:
-        return not _within(resolve_or_raise_on_loop(path), root)
-    except OSError:
-        return True
+        resolved = resolve_or_raise_on_loop(path)
+    except OSError as exc:
+        return SYMLINK_LOOPS if exc.errno == errno.ELOOP else SYMLINK_ESCAPES
+    return None if _within(resolved, root) else SYMLINK_ESCAPES
+
+
+def _escapes(path: Path, root: Path) -> bool:
+    """Whether ``path`` resolves outside ``root`` (or loops; see
+    ``link_resolution_problem``)."""
+    return link_resolution_problem(path, root) is not None
 
 
 def _check_path_string(
@@ -422,9 +435,10 @@ def check_universal(
         # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
         if link_target_on_disk is not None:
             target = link_target_on_disk(target)
-        if _escapes((dest_root / name).parent / target, dest_root):
+        problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
+        if problem is not None:
             raise FilterRejectionError(
-                "Symlink target escapes destination",
+                problem,
                 member_name=name,
                 link_target=member.link_target,
             )

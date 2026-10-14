@@ -2043,7 +2043,8 @@ def test_tar_symlink_closing_a_loop_is_rejected(
     }
     error = next(r.error for r in results if r.member.name == closing)
     assert isinstance(error, FilterRejectionError)
-    assert error.message == "Symlink target escapes destination"
+    # Named as a loop, not as an escape: every target here is inside dest.
+    assert error.message == "Symlink target is part of a symlink loop"
     assert not os.path.lexists(dest / closing)
 
 

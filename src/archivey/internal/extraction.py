@@ -52,6 +52,8 @@ from archivey.exceptions import (
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
+    SYMLINK_ESCAPES,
+    SYMLINK_LOOPS,
     apply_name_policy,
     check_universal,
     collision_key,
@@ -159,18 +161,28 @@ def _at_link_limit(exc: OSError) -> bool:
     )
 
 
-def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
-    """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
+def _symlink_problem(link_path: Path, target: str, dest_root: Path) -> str | None:
+    """Why the symlink at ``link_path`` does not resolve inside ``dest_root`` now, or
+    ``None`` when it does.
 
     Resolved through the real filesystem, so links on the way are followed. A link
-    that cannot be resolved counts as an escape: fail safe rather than crash. That
-    includes a symlink loop, on every Python version (``resolve_or_raise_on_loop``).
+    that cannot be resolved is refused: fail safe rather than crash. A symlink loop
+    (found on every Python version by ``resolve_or_raise_on_loop``) is refused with
+    its own message; anything else with the escape message.
     """
     try:
         resolved = resolve_or_raise_on_loop(link_path.parent / target)
-    except OSError:
-        return True
-    return not (resolved == dest_root or resolved.is_relative_to(dest_root))
+    except OSError as exc:
+        return SYMLINK_LOOPS if exc.errno == errno.ELOOP else SYMLINK_ESCAPES
+    if resolved == dest_root or resolved.is_relative_to(dest_root):
+        return None
+    return SYMLINK_ESCAPES
+
+
+def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
+    """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now (or
+    cannot be resolved; see ``_symlink_problem``)."""
+    return _symlink_problem(link_path, target, dest_root) is not None
 
 
 def _typed_os_error(
@@ -3299,14 +3311,15 @@ class ExtractionCoordinator:
         # `safe-extraction` spec ("Symlink Escape Re-Validated at Extraction Time");
         # layers 1-2 are in check_universal. A *later* member can still change what
         # this link resolves to; the caller records the link in ``links`` for that.
-        if _symlink_escapes(dest_path, on_disk, self._state.dest_root):
+        problem = _symlink_problem(dest_path, on_disk, self._state.dest_root)
+        if problem is not None:
             try:
                 os.unlink(long_path(dest_path))
             except OSError:
                 pass
             self._resolutions_changed()
             raise FilterRejectionError(
-                "Symlink target escapes destination",
+                problem,
                 member_name=transformed.name,
                 link_target=target,
             )
