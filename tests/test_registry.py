@@ -515,6 +515,36 @@ def test_the_read_once_refusal_does_not_depend_on_optional_packages(
         open_archive(_NonSeekable(bytes(64)), format=fmt, streaming=True)
 
 
+@pytest.mark.parametrize(
+    ("fmt", "reason"),
+    [
+        # RAR headers sit at the front; unrar needing a file is what stops a pipe.
+        (ArchiveFormat.RAR, "unrar decompresses members from a file on disk"),
+        (ArchiveFormat.SEVEN_Z, "its index is at the end of the file"),
+    ],
+    ids=lambda v: getattr(v, "display_name", ""),
+)
+def test_the_read_once_refusal_names_the_format_s_own_reason(
+    fmt: ArchiveFormat, reason: str
+) -> None:
+    """The refusal says why this format needs seek, not one reason for all of them."""
+    with pytest.raises(StreamNotSeekableError) as ei:
+        open_archive(_NonSeekable(bytes(64)), format=fmt, streaming=True)
+    assert reason in str(ei.value)
+    assert ei.value.source_format == fmt
+
+
+def test_every_seek_only_backend_gives_its_own_reason() -> None:
+    """A backend that refuses pipes says why, rather than inheriting the default."""
+    registry = get_registry()
+    for fmt in _SEEK_ONLY_FORMATS:
+        backend_cls = registry.registered_reader(fmt)
+        assert backend_cls is not None
+        assert backend_cls.NON_SEEKABLE_REASON is not ReadBackend.NON_SEEKABLE_REASON, (
+            fmt
+        )
+
+
 def test_the_streaming_hint_still_follows_the_install_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

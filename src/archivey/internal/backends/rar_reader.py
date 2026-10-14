@@ -4386,6 +4386,10 @@ class RarReadBackend(ReadBackend):
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
     SUPPORTS_STREAMING_NON_SEEKABLE = False
+    NON_SEEKABLE_REASON = (
+        "unrar decompresses members from a file on disk, and copying a pipe to a "
+        "temporary file for it is not supported yet"
+    )
     OPTIONAL_DEPENDENCY = None
 
     def open_read(
