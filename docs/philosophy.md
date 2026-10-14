@@ -52,7 +52,7 @@ which one fits which job, and what each costs, see
 | Need | How |
 | --- | --- |
 | Read each member once, in any order | `open_archive(..., streaming=True)` — random access is refused, so it cannot slip in by accident |
-| Pipes / sockets | `open_archive(..., streaming=True)` — TAR and the single-file compressors; ZIP, ISO, 7z and RAR need a seekable source in either mode |
+| Pipes / sockets | `open_archive(..., streaming=True)` — TAR, ZIP and the single-file compressors; ISO, 7z and RAR need a seekable source in either mode |
 | Seek inside a member | `seekable_members=True` |
 | Many open members / workers | `concurrent_members=True` |
 | Trusted / unlimited extract | `ExtractionPolicy.TRUSTED`, `ExtractionLimits.UNLIMITED` |

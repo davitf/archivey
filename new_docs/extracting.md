@@ -12,7 +12,11 @@ outside `out/`, and an archive that expands far beyond its size is stopped. [Wha
 with unusual members](#what-each-policy-does-with-unusual-members) has the details.
 
 To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in order,
-so it needs no other option.
+so it needs no other option. A ZIP keeps its index at the end, so from a pipe archivey writes each
+member as it arrives, then brings the files in line with the index once it gets there: it sets
+permissions, turns symlinks into links, and removes what the index doesn't list. When `members` is
+a function it's called twice for each member, and a `filter` is called twice for a member it left
+out the first time; both see `member.member_state_final` as `False` the first time.
 
 Its `members` argument picks what to extract. It takes names,
 [`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing, or a mix of both:
@@ -121,7 +125,9 @@ well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, 
 
 `on_progress` gets a snapshot after each member and every so often during a large one: the member,
 the bytes and members done so far, and the expected totals when the archive records them. It's
-meant for progress bars.
+meant for progress bars. A ZIP read from a pipe reports each member as it's written, before its
+index says whether the extraction keeps it, so the count of members done can include one that's
+removed at the end.
 
 `dry_run=True` runs the same extraction into an empty temporary folder, which is deleted before the
 call returns. Every member is decompressed and checked, but the files it creates stay empty, and

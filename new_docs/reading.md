@@ -38,18 +38,23 @@ is used up even if you leave the loop early. Inside a `stream_members` loop, `op
 `extract_all` still can't run while a pass is going.
 Streams from the pass never seek.
 
-A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
-compressed files can come from one. ZIP, 7z, RAR and ISO archives need a file or another source
-that can seek.
+A pipe, a socket or an HTTP response can only be read this way. TAR and ZIP archives and single
+compressed files can come from one. 7z, RAR and ISO archives need a file or another source that
+can seek.
+
+A ZIP keeps the full details of its members, such as permissions, symlinks and comments, in an
+index at its end. From a pipe, archivey finds each member by the short header in front of it, and
+gives you the member with what that header says: no permissions, and a symlink looks like a file.
+When the pass reaches the index, archivey fills in the rest on the members you already have.
+Until then `member.member_state_final` is `False`.
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in
-    it. ZIP and RAR store a header before each member, so archivey could read them from a pipe,
-    for RAR copying what it reads to a temporary file for `unrar` as it goes. It doesn't yet.
-    Reading ZIP from a pipe is planned, and RAR may follow.
+    it. RAR stores a header before each member, as ZIP does, so archivey could read it from a
+    pipe, copying what it reads to a temporary file for `unrar` as it goes. It doesn't yet.
 
-If you have a ZIP, 7z, RAR or ISO archive in a pipe, copying it to a file or to an `io.BytesIO`
-first lets archivey read it.
+If you have a 7z, RAR or ISO archive in a pipe, copying it to a file or to an `io.BytesIO` first
+lets archivey read it.
 
 ## Seeking inside a member
 
@@ -99,6 +104,6 @@ format, and the mistake shows up during development.
 |---|---|---|
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
-| Read from a pipe | `streaming=True` | [TAR and single compressed files only](#reading-once) |
+| Read from a pipe | `streaming=True` | [TAR, ZIP and single compressed files only](#reading-once) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_members=True` | [Slow on sources where each jump is costly](#several-members-at-once) |

@@ -47,7 +47,7 @@ Three options to `open_archive` allow ways of reading that are off by default:
 | --- | --- | --- | --- | --- | --- |
 | Seek in a member | Allowed; a seek back decompresses again from the start | Allowed; the same | No member streams | Allowed; the same | `seekable_members=True`; with the [`seekable` extra](reading.md#seeking-inside-a-member), seeks in bzip2 and large gzip data restart near their target |
 | Keep several members open at once | Allowed | Allowed | No member streams | Allowed | `concurrent_members=True` |
-| Read from a pipe | Not possible | One pass, with mode `"r\|*"` | Not possible | Not possible | One pass, with `streaming=True`, for TAR and single compressed files |
+| Read from a pipe | Not possible | One pass, with mode `"r\|*"` | Not possible | Not possible | One pass, with `streaming=True`, for TAR, ZIP and single compressed files |
 
 Seeking and keeping several members open are cheap on some archives and slow on others, and nothing
 in the calling code shows which. Archivey turns them off by default so that code tested on a ZIP

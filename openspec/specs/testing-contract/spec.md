@@ -187,20 +187,23 @@ than an oversight — `ConcatenatedFile.__init__` probes `tell()` then `seek()` 
 requirement is stated on `seek()` and `seekable()`, which is what the doubles enforce and
 what backends branch on.
 
-A backend that requires a seekable source, including ZIP and ISO per
+A backend that requires a seekable source, including ISO, 7z and RAR per
 `access-mode-and-cost` and the format specs, SHALL fail fast at open time with
-`StreamNotSeekableError`. It MUST never implicitly buffer the non-seekable source to
-make it seekable. The recovery path is to provide a seekable source for
-seek-required formats, or to use a streaming format/path where applicable.
+`StreamNotSeekableError`. So SHALL a backend that reads front to back (TAR, ZIP, the
+single-file compressors) opened with `streaming=False`. No backend may implicitly
+buffer the non-seekable source to make it seekable. The recovery path is to provide a
+seekable source for seek-required formats, or `streaming=True` where the backend reads
+front to back.
 
 #### Scenario: non-seekable-source matrix
 
 | Case | Expected |
 | --- | --- |
-| ZIP opened through a non-seekable double | `open_archive` raises `StreamNotSeekableError` at open; no member data read; never implicitly buffers |
+| ZIP opened through a non-seekable double, `streaming=False` | `open_archive` raises `StreamNotSeekableError` at open, naming `streaming=True`; no member data read; never implicitly buffers |
+| ZIP opened through a non-seekable double, `streaming=True` | Members are iterable and data is readable without seek/tell; the members after the pass equal those of the same archive read from a file |
 | ISO opened through a non-seekable double | `StreamNotSeekableError` at open under the same seek-required rule |
 | `.tar.gz` opened through a non-seekable double | Members are iterable and data is readable without seek/tell |
-| Caller needs ZIP from non-seekable input | Use a seekable source; do not rely on Archivey buffering |
+| Caller needs random access to a ZIP from non-seekable input | Use a seekable source; do not rely on Archivey buffering |
 
 ### Requirement: Corpus conformance sweep
 

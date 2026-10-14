@@ -222,12 +222,21 @@ Same-stream access still needs caller synchronization. `__iter__` and
 `streaming=False` (default) **fails fast** if the format needs seek and the source is a
 pipe. Archivey will not silently buffer a **non-seekable** source into memory or a temp
 file to fake seekability. Use `streaming=True` for pipes and sockets — it works for TAR
-(including compressed tar) and the single-file compressors.
+(including compressed tar), ZIP and the single-file compressors.
 
-ZIP, ISO, 7z and RAR keep their index at the end of the archive or address it by
-offset, so they need seek in **either** mode; `streaming=True` cannot open them from a
-pipe. The error says so directly rather than proposing a retry that would be refused,
-and the fix is to buffer the source to a file or a `BytesIO` first.
+A ZIP's central directory is at the end, after every member, so a ZIP read from a pipe
+is found by its local headers instead: the receipt is `REQUIRES_SCANNING`, `DIRECT`,
+`FORWARD_ONLY`. The fields only the directory holds (the type of a symlink, `mode`, the
+host, comments, which of two same-named members is current) are filled in when the pass
+reaches the directory, and each member reads `member_state_final=False` until then.
+`info.member_count` and `members_report_if_available()` are `None` until then.
+`use_rapidgzip=ON` cannot decode a ZIP member from a pipe: it raises
+`StreamNotSeekableError` at the first DEFLATE member.
+
+ISO, 7z and RAR keep their index at the end of the archive or address it by offset, so
+they need seek in **either** mode; `streaming=True` cannot open them from a pipe. The
+error says so directly rather than proposing a retry that would be refused, and the fix
+is to buffer the source to a file or a `BytesIO` first.
 
 A seekable stream is not that pipe case. RAR still needs a filesystem path for compressed
 member data (RARLAB `unrar` or `rar`, or `unar`), so a `BytesIO` or file object may be copied to a
@@ -340,5 +349,5 @@ not a guarantee: an input that aborts the bzip2 decoder would end your process. 
 | Solid archive, many named opens | Reorder to archive order, or one streaming pass |
 | Need `seek()` on a member | `seekable_members=True` (+ `[seekable]` for gz/bz2/zlib/deflate) |
 | Thread pool of member readers | `concurrent_members=True` after `members()` |
-| stdin / socket | `streaming=True` for TAR and the single-file compressors; buffer ZIP / ISO / 7z / RAR to a file or `BytesIO` first ([above](#non-seekable-sources)) |
+| stdin / socket | `streaming=True` for TAR, ZIP and the single-file compressors; buffer ISO / 7z / RAR to a file or `BytesIO` first ([above](#non-seekable-sources)) |
 | “Just unzip it safely” | `open_archive(src)`, then `reader.extract_all(dest)` |

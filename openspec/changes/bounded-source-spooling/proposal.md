@@ -14,8 +14,10 @@
 > `ArchiveyConfig.spool_limits` (a frozen `SpoolLimits` with `max_bytes`, default 1 GiB,
 > and `UNLIMITED`) and bounded RAR's stream-source copy with it, raising
 > `SpoolLimitExceededError` (a `ResourceLimitError`, per Q3), before `0.2.0`. What this
-> change still holds: spooling a **non-seekable** source so ZIP, 7z, RAR and ISO can read
-> a pipe, `SpoolLimits.spool_dir`, and the free-space pre-flight. Two spellings
+> change still holds: spooling a **non-seekable** source so 7z, RAR and ISO can read a
+> pipe, and ZIP can read one under `streaming=False` (`streaming=True` reads a ZIP pipe
+> forward since the native ZIP reader), `SpoolLimits.spool_dir`, and the free-space
+> pre-flight. Two spellings
 > moved in the split. `None` on `max_bytes` means **no limit**, as on every other limit
 > class, and "never spool" is `max_bytes=0`; that change's `design.md` gives the reason.
 > Where the text below says *none*, read `max_bytes=0`. Its `format-rar` delta is gone,
@@ -53,7 +55,7 @@ announced. **That remaining half is what this change is now for**, and it is the
 half: the note's wording, its placement in `notes` rather than `diagnostics`, and its
 at-open timing are settled and shipped, and this change does not revisit them.
 
-Separately, ZIP, 7z, RAR and ISO all declare `required_source = SEEKABLE`, so a pipe is
+Separately, 7z, RAR and ISO all declare `required_source = SEEKABLE`, so a pipe is
 refused at open with `StreamNotSeekableError` under both `streaming=False` and
 `streaming=True`. ADR 0010 decided that deliberately: *"A convenience path that buffers a
 pipe into memory or a temp file to 'make ZIP work' hides unbounded resource use and
@@ -61,7 +63,8 @@ surprises callers who thought they were streaming."* That reasoning is about **h
 resource use, not about temporary storage, so a bounded and reported spool extends ADR 0010
 rather than reversing it — and there is a real class of caller (an archive arriving over
 HTTP, a socket, `stdin`) for whom "buffer it yourself first" is the only answer archivey
-gives today.
+gives today. ZIP was refused the same way until the native ZIP reader; it now reads a
+pipe forward under `streaming=True`, and still refuses one under `streaming=False`.
 
 ## What Changes
 

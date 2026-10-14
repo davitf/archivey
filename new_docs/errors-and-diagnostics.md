@@ -93,6 +93,11 @@ wrong, so it lists as a complete, shorter archive with no error. Only the diagno
 `ARCHIVE_EOF_MARKER_MISSING` shows it, and
 [`DiagnosticPolicy.STRICT`](#raising-or-quieting-a-diagnostic) turns it into an exception.
 
+A ZIP read from a pipe gives you its members before its index, which comes last, so some damage
+shows only once the index has been read, and iterating raises it after the last member. A member the
+index doesn't list, such as an update appended to the archive, is dropped from the list then and
+logged as `ARCHIVE_UNLISTED_DATA`, since reading the same archive from a file never sees it.
+
 Where the format stores a checksum for each member, reading a member from start to end checks it,
 and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
 checked. A loop that reads in chunks gets every byte that could be read before the error, but those

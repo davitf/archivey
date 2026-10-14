@@ -10,13 +10,13 @@ states the behaviour and links the row.
 | --- | --- |
 | Read | Yes |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Seekable only, in both access modes |
-| Listing cost | `INDEXED` |
+| Source | Seekable, in both access modes; a pipe under `streaming=True` only, read forward (§2.2.2) |
+| Listing cost | `INDEXED`; `REQUIRES_SCANNING` from a pipe |
 | Access cost | `DIRECT` |
-| Stream capability | `SEEKABLE` |
+| Stream capability | `SEEKABLE`; `FORWARD_ONLY` from a pipe |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
+| Refuses | A pipe under `streaming=False` · from a pipe, a bit-3 LZMA member without the end marker or PPMd member without the end mark (§2.2.2) · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).
@@ -49,7 +49,8 @@ mismatch, which was also stdlib's rule.
 **The index is at the end.** The central directory is authoritative and is found by
 scanning backwards from the last bytes for the EOCD. So:
 reading the structure requires positioning at the end, which is why a non-seekable source
-is refused outright (§2.1, §5); a ZIP can be preceded by arbitrary bytes without any of
+is read another way, forward over the local headers with the directory last, and only
+under `streaming=True` (§2.2.2); a ZIP can be preceded by arbitrary bytes without any of
 its own numbers changing meaning, which is why prefixed ZIPs work (§3); appending is
 expressed by writing a new directory at the end, which is why in-place update is possible
 in the format and refused here (§6); and a scan that lands on the wrong `PK\x03\x04` is
@@ -69,10 +70,11 @@ reported as trailing data.
 comment ends. A non-zero byte after that is `ARCHIVE_TRAILING_DATA`
 (`expected_marker="zeros_to_eof"`, `format="zip"`, `observed_bytes` counted from the
 comment's end), found at open by the scan TAR, 7z, RAR and ISO share
-(`internal/trailing_scan.py`); zero padding is silent and `STRICT` refuses (DR-3).
-Bytes inside the declared comment are the comment, whatever they look like. A tail
-longer than the search window hides the end record, so the file is not opened at all;
-the local-header walk of stage 3 of the `native-zip-reader` change reads it.
+(`internal/trailing_scan.py`), or from a pipe at the end of the pass; zero padding is
+silent and `STRICT` refuses (DR-3). Bytes inside the declared comment are the comment,
+whatever they look like. A tail longer than the search window hides the end record, so
+the file is not opened at all; the local-header walk of stage 3 of the
+`native-zip-reader` change reads it.
 
 **Members are independent.** Each member has its own LFH and its own compressed byte range,
 with no cross-member state. So reaching any member is a seek rather than a walk (`DIRECT`),
@@ -87,8 +89,9 @@ access in the real sense. Past a megabyte of re-decoding the stream says so, wit
 are both off by default even here — see §6.
 
 **Sizes and the CRC may arrive after the data.** With general-purpose bit 3 set, the LFH
-carries zeros and a DD follows the compressed bytes. The CDH carries the real values, so a random-access read is unaffected; a forward-only
-reader would see them late. This is also why the ZipCrypto verification byte is the high
+carries zeros and a DD follows the compressed bytes. The CDH carries the real values, so
+a random-access read is unaffected; a forward-only reader sees them late, and has to find
+where the data ends without them (§2.2.2). This is also why the ZipCrypto verification byte is the high
 byte of the DOS time rather than of the CRC when bit 3 is set.
 
 **Names are bytes plus one unreliable flag.** General-purpose bit 11 declares UTF-8;
@@ -435,6 +438,85 @@ end record is the last signature in the tail, so a decoy end-record signature in
 the archive comment passes the checks: the archive lists as empty (`EMPTY_ARCHIVE`), as
 with Info-ZIP unzip, where 7-Zip searches further back and lists the real members.
 
+#### 2.2.2 From a pipe: the forward pass
+
+A non-seekable source under `streaming=True` is read by `ZipForwardReader`
+(`internal/backends/zip_forward_reader.py`) over `LocalHeaderWalk`
+(`internal/backends/zip_local_walk.py`), which parses each local header and each central
+header with the parser's own code and reads the source forward only. `streaming=False`
+on a pipe raises `StreamNotSeekableError` naming `streaming=True`. Nothing is spooled
+(ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)). The receipt is
+`REQUIRES_SCANNING`, `DIRECT`, `FORWARD_ONLY`; `member_count` and the archive comment
+are `None`, and `members_report_if_available()` returns `None`, until the directory has
+been read. The full design, row by row, is the `native-zip-reader` change's `design.md`
+(§"Streaming: a forward walk over local headers").
+
+**Where a member's data ends.** A sized local header gives it. With bit 3 set the walk
+decodes to the codec's end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the
+EOS bit, PPMd with its end mark), then finds the data descriptor by the decoded CRC; a
+STORED member ends at a descriptor whose CRC and size match the bytes before it and that a
+ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed the
+same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA member
+without EOS or PPMd member without an end mark has no findable end and is
+`UnsupportedFeatureError`. A bit-3 PPMd member is always decoded in a child process
+(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several password
+candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
+
+**What the pass yields, and what changes at the end.** Each member is yielded with what
+its local header gives: `mode`, `create_system` and `comment` are `None`, the type is
+`FILE` or `DIRECTORY` from the name (a trailing `\` is a `DIRECTORY` until the host is
+known), a `\` inside a name is a literal character, and `member_state_final` is `False`.
+After the last member the pass keeps what follows (bounded by the listing limits, see
+`_tail_bound`) and parses it with `find_end_record` and `CentralDirectoryWalk`, so it
+picks the end record and reads the directory exactly as a file read does. Each member is
+then updated in place from the directory entry at its offset: type, name (a DOS host
+makes `\` a separator), mode, host, comment, times from the directory's extra fields,
+and `is_current`, which follows the directory order. Member ids and listing order stay
+the file's. A local entry no directory entry points to is dropped and reported as
+`ARCHIVE_UNLISTED_DATA`. A reparse-flagged member whose data is not a reparse buffer stays
+a file. `max_members` is charged on the local headers as they are yielded and again on
+the directory's entries, whose text is weighed against `max_metadata_bytes` as it
+arrives.
+
+**Extraction** writes each member as it arrives and settles at the end of the pass
+(`ExtractionCoordinator._settle_revised_members`): modes applied, a member the directory
+makes a symlink turned into a link after the `filter` and policy run again on it, what a
+member the directory makes `OTHER` wrote removed, a renamed member moved, and the
+selection made again on what each member became (`design.md`, "The selection is made
+again"). A caller's entry the pass replaces is moved aside and put back unless the member
+still lands there.
+
+**Failures found at the end of the pass** (`_failed_at_end`,
+`_settle_failures_at_end`): a data descriptor the directory contradicts, a local header
+whose CRC, sizes or encryption flag the directory contradicts, a same-name pair whose
+directory order reverses the file order, a directory entry with no local entry, and two
+headers storing different names. Each fails its member (`CorruptionError`; the reversed
+pair only updates the members in `stream_members()`), and extraction removes what it
+wrote for it. A directory entry pointing at a local header an earlier entry took ends the
+pass with `CorruptionError`.
+
+**Where the pass and a file read differ**, all on shapes only crafted archives have
+(DR-5a), each pinned in `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named
+in §8:
+
+- A data descriptor that understates a STORED member, and the reversed same-name pair,
+  fail a member the file read writes.
+- Junk between a bit-3 codec member's end and its descriptor counts into the member,
+  where the file read refuses it (DR-3).
+- The first of several inconclusive password candidates wins (§6).
+- Under `on_error="stop"`, a member whose data fails as the pass writes it stops the run,
+  though the directory may then not list it. `abort_on` fires before the end of the pass
+  decides a member's selection, and the bomb limits count what the pass wrote until it
+  is taken back.
+- A link member the pass wrote as a file keeps the error its data read gave: under no
+  password an encrypted link fails with `EncryptionError`, where the file read reports
+  `LinkTargetNotFoundError`.
+- An archive-wide refusal from the directory or the end records (a damaged ZIP64 end
+  record or locator, a name flagged UTF-8 that is not valid UTF-8) comes before anything
+  is written from a file, and after every member is written from a pipe: the files
+  stay, and the same error is raised. Whether the pass should take them back is the
+  maintainer's to decide.
+
 ### 2.3 Member data
 
 **`zipfile`'s own decoders were never used** — meaning `ZipExtFile`, not the standard library:
@@ -721,7 +803,8 @@ ours.
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **archivey** | The index is at the end (§1). The native ZIP reader planned for 0.2.0 reads it with `streaming=True` by walking local headers forward (the `native-zip-reader` OpenSpec change, stage 3); the metadata that lives only in the end directory (types, modes, comments) is applied to the members at the end of the pass |
+| A ZIP from a pipe opens only with `streaming=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
+| From a pipe, a few crafted shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
 | One member name whose UTF-8 flag lies stops the listing at that entry | **archivey** | Flagged names decode strictly, so the listing raises `CorruptionError` there, after the members before it (until the native reader's first stage the whole archive was unlistable). Stage 4 of the `native-zip-reader` OpenSpec change decodes such a name as an unflagged one instead |
 | A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
@@ -742,8 +825,10 @@ ours.
 | Refuse at open an end record declaring more entries than `max_members` | Every walk keeps an offset per entry for the overlap guard, so the count bounds memory in every mode (DR-15b); the directory must be 46 bytes per declared entry, so a wrong count field alone does not refuse a small archive | Charging only on `members()`, which left a streaming pass unbounded |
 | Read members whatever "version needed" says | DR-4: the method and flags say what a member needs; 7-Zip reads such members | Stdlib's refusal of the whole archive above 6.3 |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
-| Refuse a non-seekable source rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
-| Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` behind its own re-entrant lock (a source whose read closes the archive re-enters it on the same thread), for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable because the other kind is refused at open. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
+| Read a non-seekable source forward over the local headers under `streaming=True`, and refuse it under `streaming=False`, rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for; the local headers make one forward pass possible (the maintainer, 2026-10-10) | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
+| Apply the fields only the directory holds at the end of a forward pass (2026-10-02) | Matches the file read on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive's streaming reader does (a symlink becomes a file: DR-1); spooling the archive to read the directory first |
+| From a pipe, keep the files a directory-wide refusal finds after they were written (current behaviour, pending the maintainer) | The pass learns of a damaged ZIP64 end record or a mislabelled UTF-8 name only after every member is written; it raises the file read's error and leaves the files | Taking them back, as a member failure at the end of the pass does |
+| Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` behind its own re-entrant lock (a source whose read closes the archive re-enters it on the same thread), for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable for random access, because a pipe is read only by the forward pass, whose streams never seek. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
@@ -782,7 +867,12 @@ move.
 | Claim | Pinned by |
 | --- | --- |
 | Cost receipt, central-directory lookup without I/O | `tests/test_zip.py::test_cost_receipt`, `::test_central_directory_lookup_no_io` |
-| Non-seekable refused at open | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection` |
+| Non-seekable refused at open under `streaming=False`, naming `streaming=True`; read under `streaming=True` | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection`, `::test_non_seekable_zip_opens_via_detection_when_streaming` |
+| From a pipe: the walk and where each member's data ends | `tests/test_zip_local_walk.py`, `tests/test_zip_walk_codec_end.py` |
+| From a pipe: members updated from the directory, `is_current` by directory order, unlisted local entries dropped, failures at the end of the pass, limits | `tests/test_zip_pipe.py`, `tests/test_zip_pipe_directory_checks.py` |
+| From a pipe: encrypted members, one password, several, a provider | `tests/test_zip_pipe_encrypted.py` |
+| From a pipe: extraction settled at the end of the pass, selection made again, failures at the end | `tests/test_zip_pipe_extract.py`, `tests/test_zip_pipe_reparse.py` |
+| Every fixture read from a pipe and from a file gives the same members, data and files, except the recorded differences | `tests/test_zip_pipe_parity.py` |
 | Spanned set and unjoinable segment refused | `::test_split_segment_name_rejected`, `::test_infozip_spanned_set_still_refused`, `::test_sevenzip_split_segment_without_siblings_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_zip64_end_record_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format`, `tests/test_volumes.py::test_lone_numbered_volume_names_missing_parts` |
 | A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set | `tests/test_volume_missing_part.py` |
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
@@ -853,7 +943,8 @@ fixture would skip on every machine that matters and prove nothing about the ref
 - Specs: [`format-zip`](../../openspec/specs/format-zip/spec.md) ·
   [`compressed-streams`](../../openspec/specs/compressed-streams/spec.md) ·
   [`format-detection`](../../openspec/specs/format-detection/spec.md)
-- Code: `internal/backends/zip_reader.py` · `internal/backends/zip_detect.py` ·
+- Code: `internal/backends/zip_reader.py` · `internal/backends/zip_forward_reader.py` and
+  `internal/backends/zip_local_walk.py` (the forward pass) · `internal/backends/zip_detect.py` ·
   `internal/backends/zipcrypto.py` · `internal/backends/zip_aes.py` · `internal/volumes.py` (numbered-part
   discovery and joining, shared with 7z)
 - Investigations: [`archive-format-detection-algorithm.md`](../investigations/archive-format-detection-algorithm.md)

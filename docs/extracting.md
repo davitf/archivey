@@ -10,10 +10,12 @@ with archivey.open_archive("archive.zip") as reader:
 # policy=ExtractionPolicy.STRICT, overwrite=ERROR, on_error=STOP
 ```
 
-To extract a TAR or a single-file compressed stream from a pipe or a socket, pass
-`streaming=True` to `open_archive`: extraction is a single forward pass, so it needs no
-random access. ZIP, ISO, 7z and RAR keep their index away from the front of the file, so
-they cannot be read from a pipe in either mode; save them to a file or a `BytesIO` first
+To extract a TAR, a ZIP or a single-file compressed stream from a pipe or a socket,
+pass `streaming=True` to `open_archive`: extraction is a single forward pass, so it
+needs no random access. A ZIP from a pipe has its own rules, because its index comes
+last ([A ZIP from a pipe](#a-zip-from-a-pipe)). ISO, 7z and RAR keep their index away
+from the front of the file, so they cannot be read from a pipe in either mode; save them
+to a file or a `BytesIO` first
 ([Non-seekable sources](access-and-cost.md#non-seekable-sources)).
 
 ## Trust boundaries
@@ -282,7 +284,9 @@ usually `TruncatedError` or `CorruptionError`, under either `OnError`. No report
 returned. This is what unrar and 7-Zip do, and the order `stream_members()` gives. A hard
 link in that prefix still gets its content, because its source always comes before it. A
 7z or ZIP keeps its member list in one index, so damage there fails `open_archive()` and
-nothing is written.
+nothing is written. A ZIP read from a pipe reads that index last, so damage there is
+found after every member is written, and those files stay
+([A ZIP from a pipe](#a-zip-from-a-pipe)).
 
 To abort the whole archive on the first unsafe member (fail-closed strict security),
 pass `abort_on`:
@@ -410,6 +414,56 @@ Archive order and identity matter more than “the” name.
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
 | Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply to every call that lists members, in both access modes: `members()`, `members_report()`, `stream_members()`, `for member in reader` and `extract_all()`. Formats that already apply `max_members` at parse (ZIP, 7z, RAR and ISO) raise in `open_archive` itself, or, for a ZIP whose end record understates the count, as its directory is walked. 7z and RAR also weigh the names and comments their headers hold against `max_metadata_bytes` at open. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR weighs its compressed RAR 1.5/2.x comments by their declared sizes, and TAR refuses a PAX or GNU long-name header larger than what is left of `max_metadata_bytes` before reading it. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
+## A ZIP from a pipe
+
+A ZIP's central directory, which holds its member types, permissions and comments,
+comes after the last member. Read from a pipe (`streaming=True`), `extract_all` writes
+each member as the header in front of it describes it: a regular file or a folder. When
+the pass reaches the directory, it brings the files on disk to what extracting the same
+archive from a file gives. It applies permissions, turns a member the directory makes a
+symlink into a link (calling your `filter` and the policy checks again first, so a link
+that escapes the destination is refused from a pipe too), removes what it wrote for a
+member the directory makes a device or another special file, and moves a member whose
+DOS name uses `\` as a separator to its real name. Links are made only after the last
+member is written. A member the directory does not list (an update appended to the
+archive, or a member planted between two others) is removed and reported as
+`ARCHIVE_UNLISTED_DATA`.
+
+The selection is made again at the end, on what each member became. A `members=` list
+matches every name a member could end with, so the pass writes any member the list may
+select; at the end, a member the list does not take is removed and gets no result. A
+`members=` predicate is called twice for every member, and a `filter` twice for a
+member it left out; both see `member_state_final=False` the first time. A member taken
+only at the end is written if it needs no bytes the pass has gone past (a link, a
+folder, an empty file), and otherwise fails with `ExtractionError`. On POSIX, a filter
+that selects by a name only the directory gives, such as `docs/r.txt` for a DOS entry
+stored as `docs\r.txt`, sees the stored name during the pass, so that member fails. A
+file of yours that the pass replaces under `overwrite="replace"` is moved aside and put
+back at the end, unless the member still lands there.
+
+Some things go differently from a pipe, on archives no writer produces:
+
+- A data descriptor that disagrees with the directory, a local header the directory
+  contradicts, two same-named members whose directory order reverses their file order,
+  a directory entry with no member data, and a member whose two headers store different
+  names each fail that member at the end of the pass: `FAILED` with `CorruptionError`
+  under `on_error="continue"`, raised under `on_error="stop"`. A read from a file writes
+  the first two. What the pass wrote for such a member is removed.
+- Under `on_error="stop"`, a member whose data fails as the pass writes it stops the
+  run, even when the directory turns out not to list that member.
+- `abort_on` fires before a member is written, which can be before the end of the pass
+  decides that the member is not selected.
+- The bomb limits (`max_entries`, `max_extracted_bytes`) count what the pass writes
+  while it is on disk, so a member the end of the pass takes back can still stop a run
+  that the same archive from a file completes.
+- `on_progress` reports a member when it is written, so `members_done` can count a
+  member that the end of the pass then removes.
+- An encrypted link that the pass wrote as a file, read with no password, fails with
+  `EncryptionError`; from a file it fails with `LinkTargetNotFoundError`.
+- An archive the directory refuses as a whole (a damaged ZIP64 end record, a name
+  flagged UTF-8 that is not) raises from a file before anything is written, and from a
+  pipe after every member is written; those files stay.
+
 ## Limits
 
 Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLimits` on
@@ -430,13 +484,15 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   crosses a cap are already written when it raises. A `stream_members()` pass that lists
   as it goes yields the members before the one that crosses a cap, the same way. ZIP,
   7z, RAR and ISO check `max_members` at `open_archive` (on ZIP, as the directory is
-  read when its end record understates the count). Raise `listing_limits.max_members`
-  to open a larger ZIP, 7z, RAR or ISO. 7z and RAR also check `max_metadata_bytes` at
-  `open_archive`, against the names and comments their headers hold (RAR's compressed
-  RAR 1.5/2.x comments by their declared sizes, before decoding them). ISO checks it at
-  `open_archive` against the bytes of the directory records `pycdlib` parses, which are
-  more than the text a listing keeps; and ISO counts every directory record of one
-  tree, so an image right at a cap may need a slightly higher one.
+  read when its end record understates the count; on a ZIP from a pipe, as each member
+  arrives and again on the directory after the last one). Raise
+  `listing_limits.max_members` to open a larger ZIP, 7z, RAR or ISO. 7z and RAR also
+  check `max_metadata_bytes` at `open_archive`, against the names and comments their
+  headers hold (RAR's compressed RAR 1.5/2.x comments by their declared sizes, before
+  decoding them). ISO checks it at `open_archive` against the bytes of the directory
+  records `pycdlib` parses, which are more than the text a listing keeps; and ISO counts
+  every directory record of one tree, so an image right at a cap may need a slightly
+  higher one.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
@@ -478,9 +534,11 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   cap, raises `ResourceLimitError`. So does a larger member where no child process can
   be started (a frozen application, an interpreter that does not know its own path, a
   spawn the operating system refuses, or a child that cannot import pyppmd); `None`
-  decodes every member in-process, holding its whole compressed size in memory. A
-  child ended any other way (SIGTERM, a plain exit status) raises `ReadError`, which is
-  not a verdict on the data.
+  decodes every member in-process, holding its whole compressed size in memory. A ZIP
+  member read from a pipe whose size is stored after its data has no size to hold it to,
+  so it is always decoded in a child process, and `None` refuses it with
+  `ResourceLimitError`. A child ended any other way (SIGTERM, a plain exit status)
+  raises `ReadError`, which is not a verdict on the data.
 
 Loosen per call with `limits=` (extraction only), raise `listing_limits`,
 `decoder_limits` or `spool_limits` at `open_archive(config=…)`, or use
@@ -494,7 +552,8 @@ Bomb guards apply during **extraction**. Listing caps apply when a full member l
 materialized — prefer `stream_members()` for huge untrusted archives when you only need
 a sequential subset, except on ZIP, 7z, RAR and ISO where `max_members` is already checked at
 open (`stream_members()` / `streaming=True` included; a ZIP whose end record
-understates the count raises as its directory is read). Encrypted 7z folders
+understates the count raises as its directory is read, and a ZIP from a pipe as its
+members arrive). Encrypted 7z folders
 confirm the password by decoding on the first
 member read, which is neither listing nor extract: peak memory is a 64 KiB chunk plus
 codec buffers. The decode stops at the first member CRC covering 4 bytes, or at 64 KiB
@@ -530,7 +589,9 @@ A streaming pass has already gone past that content, so the member fails under
 `on_error` instead. A 7z `stream_members()` pass under the default
 `read_link_targets=True` is the exception: it reads the member's data when it reaches
 the member, re-types it there and yields the file with its content, so `extract_all`
-writes it as a file in either access mode.
+writes it as a file in either access mode. A ZIP read from a pipe learns that a member
+is a reparse point only from its index, after the member is written, so such a member
+stays the file it was written as.
 
 A hard link to a symlink, directly or through other hard links, goes the other way: your
 `filter` sees the HARDLINK the archive lists, and its result keeps that member, but what

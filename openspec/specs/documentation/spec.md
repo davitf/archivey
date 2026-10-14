@@ -204,7 +204,7 @@ header-encryption residual, and name-collision behaviour.
 | Case | Expected |
 | --- | --- |
 | Seeking re-decompresses; solid open order; streaming is one pass | Present, one line each, linking `access-and-cost.md` |
-| Multi-volume ZIP; ZIP/ISO needing seek; UTF-8 bit-11 | **Absent** — loud errors or normal format requirements; `formats.md` owns them |
+| Multi-volume ZIP; ISO needing seek; UTF-8 bit-11 | **Absent** — loud errors or normal format requirements; `formats.md` owns them |
 | Full extraction policy table | **Absent** — `extracting.md` owns it |
 | Nested-archive amplification | Present as a one-liner; the bounded-recursion recipe lives on `extracting.md` |
 | A fact stated on Gotchas and on its owning page | Digest line links out rather than restating, so the two cannot drift |

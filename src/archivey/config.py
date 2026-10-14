@@ -268,7 +268,11 @@ class ListingLimits:
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5/2.x comments by their declared sizes, before decoding them),
     and ISO the directory records, path tables and UDF descriptors ``pycdlib``
-    parses, so ``open_archive`` raises.
+    parses, so ``open_archive`` raises. A ZIP read from a stream that cannot seek
+    has no directory to read at open: its pass charges ``max_members`` on each local
+    header as it yields the member, and again on the directory's entries after the
+    last member, and weighs the directory's text against ``max_metadata_bytes`` as it
+    arrives.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``

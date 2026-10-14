@@ -30,8 +30,8 @@ block count). This spec is the **canonical** access-mode × method table;
 Non-seekable sources are never given random access: with `streaming=False` the
 library fails fast at open when the format needs seek (it does not buffer the
 source into memory or a temp file). `streaming=True` is the fix for pipes and
-sockets **only where the backend reads front to back** (TAR, the single-file
-compressors). A format that needs seek in either mode (ZIP, ISO, 7z, RAR) SHALL be
+sockets **only where the backend reads front to back** (TAR, ZIP, the single-file
+compressors). A format that needs seek in either mode (ISO, 7z, RAR) SHALL be
 refused with one message naming a seekable source as the fix, in both modes, rather
 than proposing a `streaming=True` retry the same call would then refuse. That refusal
 SHALL come before the format's availability check: a pipe cannot be read even with the
@@ -174,7 +174,8 @@ with `error is None` (either mode).
 | --- | --- |
 | Leading (ISO) | Both modes, as complete report |
 | Scan-based (directory) | `None` until a pass completes — a filesystem walk is not an index (its `listing_cost` is `REQUIRES_SCANNING`), so it has nothing to peek at |
-| Trailing (ZIP CD, 7z EOF header) | Both modes today, as complete report (those backends require seekable sources; `SUPPORTS_STREAMING_NON_SEEKABLE` is false). Future trailing+non-seekable → `None` on non-seekable |
+| Trailing (ZIP CD, 7z EOF header), seekable source | Both modes, as complete report |
+| Trailing, non-seekable source (ZIP under `streaming=True`) | `None` until the pass has read the index after the last member; then the complete report, as for TAR after a completed pass |
 | No-index (TAR), no prior materialization/pass | `None` |
 | No-index after completed successful pass / `members_report` / `members` | Complete report |
 | No-index after a terminal archive error was stored after a recoverable prefix | Incomplete report (`members` is prefix, `error` set); count is a floor |
@@ -195,7 +196,8 @@ report to a caller MUST NOT change the complete-or-raise behaviour of `members()
 
 | Case | Expected |
 | --- | --- |
-| Streaming ZIP (upfront index) | Full list; no scan/data read; forward pass still available |
+| Streaming ZIP from a seekable source (upfront index) | Full list; no scan/data read; forward pass still available |
+| Streaming ZIP from a pipe, before the pass has read the central directory | `None` |
 | No-index, not yet iterated | `None` |
 | Directory archive, either mode, not yet iterated | `None` — consistent with its own `listing_cost=REQUIRES_SCANNING` |
 | No-index after completed pass / `members_report` | Complete fully-resolved report |
@@ -276,7 +278,8 @@ the other. `ListingCost` and `AccessCost` are **not** ordered: their members nam
 kinds of work, not strengths of the same resource.
 
 Examples: ZIP file → `INDEXED`+`DIRECT`+`SEEKABLE`; plain tar file →
-`REQUIRES_SCANNING`+`DIRECT`+`SEEKABLE`; tar on pipe → same + `FORWARD_ONLY`;
+`REQUIRES_SCANNING`+`DIRECT`+`SEEKABLE`; tar on pipe → same + `FORWARD_ONLY`; ZIP on
+pipe → `REQUIRES_SCANNING`+`DIRECT`+`FORWARD_ONLY` (members found by local headers);
 `.tar.gz` file → `REQUIRES_DECOMPRESSION`+`SOLID`+`SEEKABLE`; solid 7z →
 `INDEXED`+`SOLID`+`SEEKABLE` with `solid_block_count` = folder count.
 
@@ -286,6 +289,7 @@ Examples: ZIP file → `INDEXED`+`DIRECT`+`SEEKABLE`; plain tar file →
 | --- | --- |
 | Successful open | `ar.cost` populated without separate member scan/read |
 | ZIP | `listing_cost=INDEXED`, `access_cost=DIRECT` |
+| ZIP on a pipe, `streaming=True` | `listing_cost=REQUIRES_SCANNING`, `access_cost=DIRECT`, `stream_capability=FORWARD_ONLY` |
 | `.tar.gz` | `REQUIRES_DECOMPRESSION` + `SOLID` |
 | Same plain tar: file vs pipe | `stream_capability` SEEKABLE vs FORWARD_ONLY; `access_cost=DIRECT` both |
 | Solid 7z, multiple folders | `info.is_solid`, `access_cost=SOLID`, `solid_block_count` = folder count |
