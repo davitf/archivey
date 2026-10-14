@@ -147,5 +147,5 @@ you which case you have: it's `False` while a member's fields can still change.
 Settings you'd keep the same across many archives live in `archivey.ArchiveyConfig`, passed as
 `config=`. These include the [limits](security.md#hardening), which RAR program to use, the
 [accelerators](reading.md#seeking-inside-a-member), and how [diagnostics](errors-and-diagnostics.md)
-are reported. Without it, the defaults apply. The [reference](api.md#archivey.ArchiveyConfig) lists
+are reported. Without it, the defaults apply. The [reference][archivey.ArchiveyConfig] lists
 every setting.

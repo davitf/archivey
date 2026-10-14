@@ -13,7 +13,7 @@ write, and it stops an archive that expands past its limits.
 | --- | --- | --- | --- | --- |
 | Open an archive | `zipfile.ZipFile(p)`, `tarfile.open(p)` | `py7zr.SevenZipFile(p)`, `rarfile.RarFile(p)` | `archivey.open_archive(p)` | [Any format, identified from its contents, with options for how you'll read it](#opening-an-archive) |
 | List the names | `zf.namelist()`, `tf.getnames()` | `z.getnames()`, `rf.namelist()` | `[m.name for m in reader]` | [A name can appear more than once](#members-and-their-details) |
-| Look up one member | `zf.getinfo(n)`, `tf.getmember(n)` | `z.getinfo(n)`, `rf.getinfo(n)` | `reader.get(n)` | Returns an [`ArchiveMember`](api.md#archivey.ArchiveMember) |
+| Look up one member | `zf.getinfo(n)`, `tf.getmember(n)` | `z.getinfo(n)`, `rf.getinfo(n)` | `reader.get(n)` | Returns an [`ArchiveMember`][archivey.ArchiveMember] |
 | Read one member | `zf.read(n)`, `tf.extractfile(n).read()` | `z.extract(targets=[n], factory=f)`, `rf.read(n)` | `reader.read(n)` | [A directory raises an error](#reading-members) |
 | Open one member as a file object | `zf.open(n)`, `tf.extractfile(n)` | `rf.open(n)` | `reader.open(n)` | [One open at a time, and not seekable, by default](#reading-members) |
 | Read every member, in order | `for info in tf: tf.extractfile(info)` | `z.extractall(factory=f)` | `for member, stream in reader.stream_members():` | [One pass over the archive, in every format](#reading-members) |
@@ -56,7 +56,7 @@ each option and what it costs.
 
 ## Members and their details
 
-Every format gives an [`ArchiveMember`](api.md#archivey.ArchiveMember) with the same fields. The
+Every format gives an [`ArchiveMember`][archivey.ArchiveMember] with the same fields. The
 ones code using `ZipInfo` or `TarInfo` reads most map like this:
 
 | zipfile | tarfile | py7zr | rarfile | archivey |

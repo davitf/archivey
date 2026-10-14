@@ -15,7 +15,7 @@ To extract from a pipe, open it with `streaming=True`. Extraction reads each mem
 so it needs no other option.
 
 Its `members` argument picks what to extract. It takes names,
-[`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing, or a mix of both:
+[`ArchiveMember`][archivey.ArchiveMember] objects from a listing, or a mix of both:
 
 ```python
 with archivey.open_archive("download.zip") as archive:
@@ -237,7 +237,7 @@ sparse.
 
 Some limits apply before extraction starts, such as the number of members or how much memory a
 decoder may use. Those are set when you open the archive, through
-`config=archivey.ArchiveyConfig(...)`, and the [reference](api.md#archivey.ArchiveyConfig) lists
+`config=archivey.ArchiveyConfig(...)`, and the [reference][archivey.ArchiveyConfig] lists
 them.
 
 [Security](security.md) covers what archivey relies on and where its guarantees stop.
