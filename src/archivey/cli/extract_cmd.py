@@ -232,6 +232,22 @@ class _Moves:
         )
 
 
+def _step_back(side: Path, wrapper: Path) -> Path:
+    """Rename ``side`` back to ``wrapper``; return where the remainder now is.
+
+    Only while ``wrapper`` is free: under ``--overwrite rename`` the merge can give a
+    member that name, and a rename onto an empty directory would replace it. When
+    the rename does not happen, the remainder stays in ``side``, which is returned.
+    """
+    if os.path.lexists(wrapper):
+        return side
+    try:
+        side.rename(wrapper)
+    except OSError:
+        return side
+    return wrapper
+
+
 class _HoistConflict(Exception):
     """A collision the overwrite policy cannot resolve without deleting data."""
 
@@ -557,6 +573,9 @@ def maybe_hoist_single_root(
     # The sole root shares the wrapper's name, so the wrapper is removed and the root
     # takes its place under that same name; otherwise the root is merged into the cwd.
     in_place = dest == wrapper
+    # Where the remainder is when the hoist stops: the wrapper, unless restoring it
+    # failed and the remainder stayed in the aside directory.
+    left_in = wrapper
     try:
         if in_place:
             if child.is_dir() and not child.is_symlink():
@@ -591,13 +610,15 @@ def maybe_hoist_single_root(
                     except BaseException:
                         # The entry holds the wrapper's name now; it goes back inside
                         # ``side`` first, so ``side`` can take that name again below.
-                        with contextlib.suppress(OSError):
+                        try:
                             dest.rename(side / child.name)
+                        except OSError:
+                            # It stays at its final name: report it there.
+                            moved[child.name] = (dest, False)
                         raise
                 except BaseException:
                     # Leave the entry where the messages say it is: in the wrapper.
-                    with contextlib.suppress(OSError):
-                        side.rename(wrapper)
+                    left_in = _step_back(side, wrapper)
                     raise
         else:
             # The wrapper took the first free name for the archive's stem, which can
@@ -615,8 +636,7 @@ def maybe_hoist_single_root(
                 side.rmdir()
             except BaseException:
                 # Leave the remainder where the messages say it is.
-                with contextlib.suppress(OSError):
-                    side.rename(wrapper)
+                left_in = _step_back(side, wrapper)
                 raise
             result.moves = _Moves.of(moved, wrapper)
             if landed is None:
@@ -632,26 +652,26 @@ def maybe_hoist_single_root(
             file=err,
         )
         print(
-            f"hoist stopped; remaining files left in {escape_path(wrapper)}/",
+            f"hoist stopped; remaining files left in {escape_path(left_in)}/",
             file=err,
         )
         return _HoistResult(
-            wrapper,
+            left_in,
             ok=False,
             renamed=result.renamed,
             skipped=result.skipped,
-            moves=_Moves.of(moved, wrapper, stopped=True),
+            moves=_Moves.of(moved, left_in, stopped=True),
         )
     except OSError as exc:
         # The ``archivey: `` prefix: see main._parse_and_dispatch.
         print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
-        print(f"files left in {escape_path(wrapper)}/", file=err)
+        print(f"files left in {escape_path(left_in)}/", file=err)
         return _HoistResult(
-            wrapper,
+            left_in,
             ok=False,
             renamed=result.renamed,
             skipped=result.skipped,
-            moves=_Moves.of(moved, wrapper, stopped=True),
+            moves=_Moves.of(moved, left_in, stopped=True),
         )
     if result.moves is None:
         result.moves = _Moves({child.name: child.name})  # in place: name unchanged
