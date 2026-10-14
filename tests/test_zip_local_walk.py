@@ -32,6 +32,7 @@ from archivey.internal.backends.zip_local_walk import (
     match_descriptor,
 )
 from archivey.internal.sfx import SFX_MAX
+from tests.zip_descriptors import without_descriptor_signatures
 
 
 class _Unseekable(io.RawIOBase):
@@ -313,7 +314,7 @@ def test_a_gap_after_a_deferred_last_member_is_not_read_past() -> None:
     # the scan take the real descriptor for data. Gaps are read past only after a
     # member whose header states its size.
     walk = LocalHeaderWalk(_Unseekable(_with_gap(_write(pipe=True), b"APK " * 10)))
-    with pytest.raises(UnsupportedFeatureError, match="no signature"):
+    with pytest.raises(UnsupportedFeatureError, match="none matches its data"):
         while (entry := walk.next_entry()) is not None:
             _decode(walk, entry)
 
@@ -362,20 +363,30 @@ def test_a_stream_cut_inside_scanned_stored_data_is_truncation() -> None:
         data.read()
 
 
-def test_a_stored_descriptor_without_its_signature_is_unsupported() -> None:
-    """The scan finds a descriptor by its signature; a writer that left it out makes a
-    whole archive a forward read cannot split."""
-    raw = bytearray(_write(pipe=True))
-    first = raw.index(DATA_DESCRIPTOR_SIGNATURE)
-    del raw[first : first + 4]
-    # Every offset after it moved back by four bytes.
-    eocd = raw.rindex(b"PK\x05\x06")
-    cd_offset = struct.unpack_from("<L", raw, eocd + 16)[0] - 4
-    struct.pack_into("<L", raw, eocd + 16, cd_offset)
+def test_descriptors_without_their_signature_are_found_by_what_follows() -> None:
+    """Early PKZIP wrote descriptors without ``PK\\x07\\x08`` (APPNOTE 4.3.9.3): the
+    scan finds one by the ZIP signature after it and the size and CRC it states."""
+    piped = _write(pipe=True)
+    raw = without_descriptor_signatures(piped)
+    assert DATA_DESCRIPTOR_SIGNATURE not in raw
+    read, _walk_ = _walk(raw)
+    with zipfile.ZipFile(io.BytesIO(piped)) as zf:
+        assert [r.data for r in read] == [zf.read(i) for i in zf.infolist()]
+    stored = next(r for r in read if r.name == b"big-stored.bin")
+    assert stored.descriptor is not None
+    assert stored.descriptor.length == 12
+
+
+def test_an_unsigned_descriptor_that_matches_nothing_is_unsupported() -> None:
+    """A descriptor whose sizes do not match the data cannot be told from data: the
+    scan reads to the end record and gives up."""
+    raw = bytearray(without_descriptor_signatures(_write(pipe=True)))
+    first = raw.index(b"stored " * 50) + len(b"stored " * 50)
+    raw[first + 4] ^= 0xFF  # the compressed size's low byte
     walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
     entry = walk.next_entry()
     assert entry is not None
-    with pytest.raises(UnsupportedFeatureError, match="no signature"):
+    with pytest.raises(UnsupportedFeatureError, match="none matches its data"):
         walk.member_data(entry).read()
 
 
@@ -608,23 +619,45 @@ def test_an_encrypted_stored_scan_matches_size_and_signature_only() -> None:
     assert second.header.name == b"deflated.txt"
 
 
+def _planted_signed(size: int) -> bytes:
+    """12-byte blocks: a descriptor signature, a wrong CRC, the block's own offset
+    as its compressed size. No ZIP header follows any, so none is a candidate: what
+    the scan planted before it looked for the header after a descriptor."""
+    return b"".join(
+        DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 4 + struct.pack("<L", offset)
+        for offset in range(0, size, 12)
+    )
+
+
+def _planted_followed(size: int) -> bytes:
+    """16-byte blocks: an unsigned descriptor (a wrong CRC, the block's own offset as
+    its compressed size) and a local header signature after it, so every block is a
+    candidate whose size fits and reaches the CRC. The prefix keeps block 0 from
+    being a valid descriptor for empty data."""
+    prefix = b"pfx!"
+    return prefix + b"".join(
+        struct.pack("<LLL", 0, offset, 0) + b"PK\x03\x04"
+        for offset in range(len(prefix), size, 16)
+    )
+
+
 @pytest.mark.parametrize("piece", [65536, 16])
+@pytest.mark.parametrize(
+    "plant", [_planted_signed, _planted_followed], ids=["signed", "followed"]
+)
 def test_planted_descriptor_signatures_cost_one_pass(
-    monkeypatch: pytest.MonkeyPatch, piece: int
+    monkeypatch: pytest.MonkeyPatch,
+    piece: int,
+    plant: Callable[[int], bytes],
 ) -> None:
     """A STORED member full of planted descriptors is scanned in linear time.
 
-    Each 12-byte block is a descriptor signature, a wrong CRC and the block's own
-    offset as its compressed size, so every candidate passes the size test and
-    reaches the CRC. Fails if the CRC is recomputed from the start of the buffer
-    for each candidate (quadratic bytes into ``zlib.crc32``). The 16-byte reads
-    also fail if a read re-runs the CRC over bytes an earlier read already
-    judged.
+    With ``_planted_followed`` every candidate passes the size test and reaches the
+    CRC. Fails if the CRC is recomputed from the start of the buffer for each
+    candidate (quadratic bytes into ``zlib.crc32``). The 16-byte reads also fail if
+    a read re-runs the CRC over bytes an earlier read already judged.
     """
-    payload = b"".join(
-        DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 4 + struct.pack("<L", offset)
-        for offset in range(0, 1_200_000, 12)
-    )
+    payload = plant(1_200_000)
     out = _Unseekable()
     with zipfile.ZipFile(out, "w") as zf:
         with zf.open("x", "w") as member:
@@ -648,5 +681,7 @@ def test_planted_descriptor_signatures_cost_one_pass(
         got += chunk
     assert bytes(got) == payload
     assert data.settle() is not None
-    # Once while scanning, once over the bytes handed out.
-    assert fed <= 2 * len(payload)
+    # Once over the bytes handed out, and while scanning once over each candidate's
+    # bytes past the earliest start a shape can have: up to the 12 bytes from there
+    # to its own start, per candidate.
+    assert fed <= 3 * len(payload)

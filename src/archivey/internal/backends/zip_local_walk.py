@@ -21,15 +21,17 @@ the same code as ``CentralDirectoryWalk``, then the end records).
 Where a member's data ends (``openspec/changes/native-zip-reader/design.md``):
 
 - Bit 3 clear: the local header's ``compressed_size`` bytes.
-- Bit 3 and STORED: a scan for ``PK\\x07\\x08`` followed by a CRC and a compressed size
-  that match the bytes since the data start, then by a ZIP signature (libarchive reads
-  it the same way). Under encryption the CRC covers the plaintext, so only the size
+- Bit 3 and STORED: a scan for a descriptor, with or without its ``PK\\x07\\x08``,
+  whose CRC and compressed size match the bytes since the data start and which a ZIP
+  signature follows. Under encryption the CRC covers the plaintext, so only the size
   and the signature after the descriptor are matched.
 - Bit 3 and any other method: the codec's own end. The walk cannot see it, so the
   caller decodes until the codec stream ends and hands :meth:`MemberData.settle` the
   decoded data's CRC; the walk finds the descriptor among the bytes it kept, and puts
   what follows it back in front of the stream. A caller whose codec counts the bytes
-  it used (DEFLATE) may pass that count instead.
+  it used (DEFLATE) may pass that count instead. An encrypted one nobody reads is
+  scanned for as a STORED one is (:meth:`LocalHeaderWalk.scan_member_data`), so no
+  key is needed to pass it.
 
 Like ``zip_parser``, this module decodes no name, runs no codec and emits no
 diagnostic. Damage raises ``CorruptionError``, a stream that ends early
@@ -117,6 +119,13 @@ _OPENS_STREAM = _AFTER_MEMBER
 # The longest data descriptor, plus the signature after it: signature, CRC, two 8-byte
 # sizes, next signature.
 _DESCRIPTOR_LOOKAHEAD = 4 + 4 + 8 + 8 + 4
+# Each descriptor shape's length (signature or none, 4- or 8-byte sizes), longest
+# first: a scan that knows where one ends tries them from the earliest start. The
+# order is policy: when two shapes fit, the member ends earlier, as a planted prefix
+# descriptor ends it (see ``_CodecData._find_descriptor``), and the directory check
+# at the end of the pass catches that.
+_DESCRIPTOR_LENGTHS = (24, 20, 16, 12)
+_DESCRIPTOR_LONGEST = _DESCRIPTOR_LENGTHS[0]
 # Forward reads are made in pieces of this size.
 _READ_CHUNK = 1 << 16
 # How much of what a codec member handed out is kept to put back. A codec member's
@@ -124,8 +133,9 @@ _READ_CHUNK = 1 << 16
 # to 1 MiB at once and a BufferedReader in front of it a little more.
 _CODEC_RETAIN = 4 << 20
 # The end record and its comment, the longest tail a stream can end with after the
-# directory: kept by the STORED scan to tell a descriptor without its signature (a
-# whole archive follows) from a stream cut inside the member.
+# directory: kept by the descriptor scan to tell a whole archive after the member
+# (no descriptor matched, a shape a forward read cannot split) from a stream cut
+# inside the member.
 _TAIL_KEEP = (1 << 16) + EOCD_SIZE
 
 
@@ -238,8 +248,11 @@ def match_descriptor(
     uncompressed size ``file_size`` when those are known, and a ZIP signature follows
     it, or the end of the input when ``at_end``. ``buffer`` must hold the
     longest shape and the signature after it (``_DESCRIPTOR_LOOKAHEAD`` bytes) unless
-    it ends there. ``signed_only`` drops the shapes without a signature: a scan finds
-    a descriptor by its signature.
+    it ends there. ``signed_only`` drops the shapes without a signature, for a caller
+    with nothing else to place a candidate by: ``_CodecData._find_descriptor``,
+    searching kept bytes once the decoded CRC is no needle. A caller that knows a
+    ZIP signature ends the shape (``_ScannedData._find_end``) tries unsigned ones
+    too.
     """
     widths = (8, 4) if zip64 else (4, 8)
     for width in widths:
@@ -544,11 +557,13 @@ class _CodecData(MemberData):
 
 
 class _ScannedData(MemberData):
-    """Bit-3 STORED data, ended by a scan for its data descriptor.
+    """Bit-3 data ended by a scan for its data descriptor, on the bytes as stored.
 
-    ``check_crc`` is false for an encrypted member, whose descriptor CRC covers the
-    plaintext: the scan then matches the compressed size and the signature after the
-    descriptor only.
+    A STORED member's, or an encrypted codec member's nobody read
+    (:meth:`LocalHeaderWalk.scan_member_data`). ``check_crc`` is false when the
+    descriptor's CRC covers bytes other than these (the plaintext, the decoded data):
+    the scan then matches the compressed size and the signature after the descriptor
+    only.
     """
 
     def __init__(
@@ -562,7 +577,7 @@ class _ScannedData(MemberData):
         #: Where the data ends in ``_buf``, once the descriptor is found.
         self._end_at: int | None = None
         self._descriptor: DataDescriptor | None = None
-        # Where the next candidate search starts in ``_buf``.
+        # Where the next search for a signature after a descriptor starts in ``_buf``.
         self._search_from = 0
         # The bytes read from the stream most recently, for the end-of-stream verdict.
         self._tail = bytearray()
@@ -581,60 +596,89 @@ class _ScannedData(MemberData):
     def _find_end(self) -> None:
         """Look for the descriptor in what ``_buf`` holds; set ``_end_at`` on a match.
 
-        Candidates are judged in order, each only once all the bytes a descriptor
-        and the signature after it can take are in (or the stream has ended). The
-        CRC runs on from one candidate to the next, so a buffer full of planted
+        A descriptor is followed by a ZIP signature (or the end of the stream), so
+        the scan looks for those and tries each descriptor shape ending there:
+        signed or not (APPNOTE 4.3.9.3 makes ``PK\\x07\\x08`` optional), 4- or
+        8-byte sizes. A shape is taken when its compressed size is the length of the
+        data before it, and its CRC that data's when ``check_crc``. Under encryption
+        a false match takes a planted signature and size in random bytes.
+
+        The CRC runs on from one candidate to the next, so a buffer full of planted
         signatures costs one pass, and it is computed only for a candidate whose
         compressed size already fits.
         """
         buf = self._buf
         crc = self._crc  # of the bytes handed out, then buf[:crc_at]
         crc_at = 0
-        pos = self._search_from
+        at = self._search_from
         while True:
-            pos = buf.find(DATA_DESCRIPTOR_SIGNATURE, pos)
-            if pos < 0:
+            after = self._next_signature(buf, at)
+            if after < 0:
                 # A signature can still start in the last three bytes.
                 self._search_from = max(len(buf) - 3, 0)
-                return
-            if not self._eof and len(buf) - pos < _DESCRIPTOR_LOOKAHEAD:
-                self._search_from = pos
-                return
-            length = self.consumed + pos
-            if self._size_fits(buf, pos, length):
+                if not self._eof:
+                    return
+                after = len(buf)  # the stream ends after the descriptor
+            # This candidate's shapes and every later one's start at or past here.
+            earliest = after - _DESCRIPTOR_LONGEST
+            for length in _DESCRIPTOR_LENGTHS:
+                pos = after - length
+                if pos < 0:
+                    continue
+                size = self.consumed + pos
+                if not self._size_fits(buf, pos, size):
+                    continue
                 expect_crc = None
                 if self._check_crc:
-                    crc = zlib.crc32(buf[crc_at:pos], crc)
-                    crc_at = pos
-                    expect_crc = crc
+                    if earliest > crc_at:
+                        crc = zlib.crc32(buf[crc_at:earliest], crc)
+                        crc_at = earliest
+                    expect_crc = zlib.crc32(buf[crc_at:pos], crc)
                 descriptor = match_descriptor(
                     buf,
                     pos,
-                    compressed_size=length,
+                    compressed_size=size,
                     crc=expect_crc,
                     # STORED: both sizes are the data's length, unless encryption
                     # added its header to the compressed one.
-                    file_size=length if self._check_crc else None,
+                    file_size=size if self._check_crc else None,
                     zip64=self.entry.zip64,
                     at_end=self._eof,
-                    signed_only=True,
                 )
                 if descriptor is not None:
                     self._end_at = pos
                     self._descriptor = descriptor
                     return
-            pos += 1
+            if after >= len(buf):
+                return
+            at = after + 1
+
+    @staticmethod
+    def _next_signature(buf: bytearray, at: int) -> int:
+        """Where the next signature that may follow a descriptor starts, or -1."""
+        while (at := buf.find(b"PK", at)) >= 0:
+            if bytes(buf[at : at + 4]) in _AFTER_MEMBER:
+                return at
+            at += 1
+        return -1
 
     @staticmethod
     def _size_fits(buf: bytearray, pos: int, length: int) -> bool:
-        """A signed descriptor at ``pos`` could state ``length``: the cheap test that
-        comes before a CRC."""
-        at = pos + 8  # past the signature and the CRC
+        """A descriptor at ``pos`` could state ``length``: the cheap test that comes
+        before a CRC."""
+        signed = buf[pos : pos + 4] == DATA_DESCRIPTOR_SIGNATURE
         return any(
             int.from_bytes(buf[at : at + width], "little")
             == length & ((1 << (8 * width)) - 1)
+            # Past the CRC, and the signature when there is one.
+            for at in ((pos + 8, pos + 4) if signed else (pos + 4,))
             for width in (4, 8)
         )
+
+    def _avail(self) -> int:
+        """How many bytes of ``_buf`` can be handed out before the end is found: no
+        descriptor starts in them, since the signature after it would be in."""
+        return max(len(self._buf) - _DESCRIPTOR_LOOKAHEAD + 1, 0)
 
     def _read_some(self, size: int) -> bytes:
         while True:
@@ -645,8 +689,7 @@ class _ScannedData(MemberData):
             elif self._eof:
                 self._raise_no_descriptor()
             else:
-                # The bytes before the search point start no descriptor.
-                avail = self._search_from
+                avail = self._avail()
             if avail > 0 or self._end_at is not None:
                 take = min(size, avail)
                 out = bytes(self._buf[:take])
@@ -663,12 +706,12 @@ class _ScannedData(MemberData):
         name = f"member #{self.entry.index}"
         if EOCD_SIGNATURE in self._tail:
             raise UnsupportedFeatureError(
-                f"ZIP STORED {name} defers its sizes to a data descriptor that has no "
-                "signature (or none matches its data), so a forward read cannot find "
-                "where its data ends; read the archive from a seekable source"
+                f"ZIP {name} defers its sizes to a data descriptor, and none matches "
+                "its data with a ZIP signature after it, so a forward read cannot "
+                "find where its data ends; read the archive from a seekable source"
             )
         raise TruncatedError(
-            f"ZIP stream ends inside STORED {name}'s data, before its data descriptor"
+            f"ZIP stream ends inside {name}'s data, before its data descriptor"
         )
 
     def _finish(
@@ -885,6 +928,23 @@ class LocalHeaderWalk:
             data = _CodecData(self, entry)
         self._open = data
         return data
+
+    def scan_member_data(self, data: MemberData) -> MemberData:
+        """``data``'s member read as scanned data instead: its end found by a scan for
+        its descriptor on its bytes as stored, not by its codec.
+
+        For an encrypted bit-3 codec member nobody read, so the walk goes past it
+        without its key. Only before a byte of ``data`` is read; ``data`` is done
+        with, and the returned reader is the one to read and settle.
+        """
+        if data is not self._open or not isinstance(data, _CodecData) or data.consumed:
+            raise ValueError(
+                "scan_member_data() is for an unread codec member's open data"
+            )
+        data._settled = True
+        scanned = _ScannedData(self, data.entry, check_crc=False)
+        self._open = scanned
+        return scanned
 
     def _member_settled(self) -> None:
         self._open = None
