@@ -2,9 +2,10 @@
 
 Archivey reads ZIP, TAR, 7z, RAR and ISO archives, and single compressed files, through one
 interface, so code written for zipfile, tarfile or a `7z` subprocess becomes the same few calls.
-This page gives the archivey version of each, then what behaves differently. The difference you'll
-meet first is in extraction: archivey refuses some members that zipfile or tarfile would write, and
-it stops an archive that expands past its limits.
+This page gives the archivey version of each, then what behaves differently. Archivey puts
+correctness and the same behaviour in every format ahead of matching any one library. The difference
+you'll meet first is in extraction: archivey refuses some members that zipfile or tarfile would
+write, and it stops an archive that expands past its limits.
 
 ## Equivalent calls
 
@@ -100,7 +101,7 @@ that is ([Members with the same name](opening.md#members-with-the-same-name)).
 archivey opens. For ZIP, the `recommended` extra adds compression methods zipfile can't read:
 Deflate64, PPMd, and zstd before Python 3.14.
 
-Reading a directory that holds no data raises `ArchiveyUsageError`, where zipfile returns empty
+Calling `read` or `open` on a directory raises `ArchiveyUsageError`, where zipfile returns empty
 bytes and tarfile's `extractfile` returns `None`. Reading a symbolic link gives its target's
 contents, as tarfile does, and raises `LinkTargetNotFoundError` when the target isn't in the
 archive, where tarfile raises `KeyError`. zipfile gives the link's own text, the target's path.
