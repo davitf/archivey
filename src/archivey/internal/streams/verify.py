@@ -891,11 +891,6 @@ class VerifyingStream(ReadOnlyIOStream):
                 super().close()
             raise
 
-    # For tests that check whether a decode error abandoned the checks.
-    @property
-    def _verify_enabled(self) -> bool:
-        return self._verifier.enabled
-
     def read(self, n: int | None = -1, /) -> bytes:
         return self._verifier.read(self._inner, n)
 

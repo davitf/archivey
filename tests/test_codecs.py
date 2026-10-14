@@ -2062,7 +2062,7 @@ def test_verify_decode_error_in_a_deferred_gap_raises_from_the_read() -> None:
     assert stream.seek(500) == 500
     with pytest.raises(OSError, match="bad block"):
         stream.read(1)
-    assert not stream._verify_enabled
+    assert not stream._verifier.enabled
     stream.close()
 
 

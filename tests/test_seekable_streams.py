@@ -1742,7 +1742,10 @@ def test_bzip2_accelerator_off_warns_on_rewind(
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
-    assert any("rapidgzip" in r.getMessage() for r in caplog.records)
+    (message,) = [r.getMessage() for r in caplog.records]
+    assert "rapidgzip" in message
+    # An accelerator-named report still says where decoding restarts.
+    assert "Decoding restarts from the start of the stream" in message
 
 
 # --- forward-only codecs without an accelerator: warn (generically) on a rewind ---------
@@ -1836,22 +1839,25 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
 
 
 def _resume_point_rewind_messages(
-    codec: Codec, compressed: bytes, caplog: pytest.LogCaptureFixture
+    codec: Codec,
+    compressed: bytes,
+    caplog: pytest.LogCaptureFixture,
+    past_middle: int = 100,
 ) -> list[str]:
-    """Read ``REWIND_CONTENT`` to its end, then seek back 100 bytes past its midpoint.
+    """Read ``REWIND_CONTENT`` to its end, then seek back to ``past_middle`` bytes past its midpoint.
 
     The callers split the content into pieces at the midpoint, so the seek resumes
     from a resume point that is not the start, and still discards more than the
     threshold.
     """
-    middle = len(REWIND_CONTENT) // 2
+    target = len(REWIND_CONTENT) // 2 + past_middle
     with open_codec_stream(
         codec, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
         assert stream.read() == REWIND_CONTENT
         with caplog.at_level("WARNING", logger="archivey.streams"):
-            assert stream.seek(middle + 100) == middle + 100
-        assert stream.read(10) == REWIND_CONTENT[middle + 100 : middle + 110]
+            assert stream.seek(target) == target
+        assert stream.read(10) == REWIND_CONTENT[target : target + 10]
     return [r.getMessage() for r in caplog.records]
 
 
@@ -1871,6 +1877,21 @@ def test_multi_member_lzip_rewind_message_names_the_resume_point(
     )
     assert message.endswith(_RESUME_POINT_MESSAGE)
     assert "start of the stream" not in message
+
+
+def test_rewind_to_a_resume_point_says_decoding_restarts_at_the_target(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rewind that lands exactly on a member start does not say "0 bytes before"."""
+    middle = len(REWIND_CONTENT) // 2
+    parts = [REWIND_CONTENT[:middle], REWIND_CONTENT[middle:]]
+    (message,) = _resume_point_rewind_messages(
+        Codec.LZIP, make_multi_member_lzip(parts), caplog, past_middle=0
+    )
+    assert message.endswith(
+        "Decoding restarts at the seek target, which is a resume point."
+    )
+    assert "0 bytes before" not in message
 
 
 @pytest.mark.skipif(
