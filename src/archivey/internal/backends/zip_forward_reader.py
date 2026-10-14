@@ -32,17 +32,21 @@ from archivey.diagnostics import DiagnosticCode, UnlistedDataContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    EncryptionError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_aes import (
+    _HMAC_LEN,
+    FORWARD_READ,
     ZIP_WRONG_PASSWORD_MSG,
+    WinZipAesForwardStream,
+    open_winzip_aes_forward,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
 from archivey.internal.backends.zip_local_walk import (
+    _CODEC_RETAIN,
     DataDescriptor,
     LocalEntry,
     LocalHeaderWalk,
@@ -122,6 +126,13 @@ _NO_END_BEFORE_EOF = sys.maxsize
 #: decrypted as the pass drains it instead, at the cost of one key derivation, so it
 #: bounds only the bytes held until the directory arrives.
 _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
+#: How much of a bit-3 WinZip AES codec member's ciphertext stays out of its HMAC
+#: until the descriptor says where the data ended: the walk finds the descriptor
+#: among the last ``_CODEC_RETAIN`` bytes handed out and one read more, so the
+#: codec's layers cannot have read further past the end than that, plus the code.
+#: About 4 MiB, held on top of the walk's own window over the same bytes, so a bit-3
+#: AES codec member costs twice ``_CODEC_RETAIN`` while it is read.
+_AES_HOLD_BACK = _CODEC_RETAIN + FORWARD_READ + _HMAC_LEN
 
 # A forward pass decides nothing by seeking back, and reads each member's data once.
 _ZIP_FORWARD_COST = CostReceipt(
@@ -261,6 +272,14 @@ class _PassData:
         self._open_error: ArchiveyError | None = None
         #: An encrypted member's ciphertext, kept by ``drain`` for a link target.
         self._kept: _KeptCiphertext | None = None
+        #: ``drain`` read past an encrypted bit-3 STORED member too long to be a
+        #: link target without keeping it.
+        self._too_long = False
+        #: A bit-3 WinZip AES codec member's decrypt stage, which authenticates once
+        #: the descriptor says where the data ended (``_finish``).
+        self._aes_pass: WinZipAesForwardStream | None = None
+        #: Decoding kept ciphertext for a link target: the walk has settled it.
+        self._from_kept = isinstance(data, _KeptData)
         self._crc = 0
         self._size = 0
         self._capture: bytearray | None = bytearray()
@@ -281,6 +300,15 @@ class _PassData:
 
     def _deferred(self) -> bool:
         return self.entry.deferred
+
+    def _runs_on(self) -> bool:
+        """The data has no end of its own: only the codec finds it (bit 3)."""
+        return self._deferred() and self._method() != 0
+
+    def _method(self) -> int:
+        """The compression method, under WinZip AES the one its extra field names."""
+        aes = cast("_ZipLocator", self.member._raw).aes
+        return self.entry.header.method if aes is None else aes.actual_method
 
     def _open_decoded(self) -> BinaryIO:
         if self._decoded is not None:
@@ -307,24 +335,8 @@ class _PassData:
             )
         loc = member._raw
         assert isinstance(loc, _ZipLocator)
-        method = header.method
-        keyed = False
-        source: BinaryIO = self._data
-        if _is_encrypted_entry(header.flags, header.method):
-            if loc.aes is not None:
-                method = loc.aes.actual_method
-            else:
-                keyed = method in _ZIP_KEYED_SETTINGS_METHODS
-            source = self._decrypted(loc)
-        if method == 0:
-            return source
-        codec = reader._member_codec(
-            method,
-            member.name,
-            suffix=" under WinZip AES" if loc.aes is not None else "",
-        )
+        method = self._method()
         deferred = self._deferred()
-        size = None if deferred else header.file_size
         if deferred and method == 14 and not header.flags & _ZIP_MASK_LZMA_EOS_MARKER:
             raise UnsupportedFeatureError(
                 "A ZIP LZMA member with no end-of-stream marker and its sizes in a "
@@ -334,6 +346,19 @@ class _PassData:
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,
             )
+        keyed = False
+        source: BinaryIO = self._data
+        if _is_encrypted_entry(header.flags, header.method):
+            keyed = loc.aes is None and method in _ZIP_KEYED_SETTINGS_METHODS
+            source = self._decrypted(loc)
+        if method == 0:
+            return source
+        codec = reader._member_codec(
+            method,
+            member.name,
+            suffix=" under WinZip AES" if loc.aes is not None else "",
+        )
+        size = None if deferred else header.file_size
         # A sized member's data is its codec's input exactly, so a byte after the
         # codec's end is refused as from a file (DR-3). A bit-3 member's data runs on
         # into the descriptor, so there the same refusal is how its end is found.
@@ -371,12 +396,15 @@ class _PassData:
     def _decrypted(self, loc: _ZipLocator) -> BinaryIO:
         """The member's plaintext, decrypted from its data as the pass reads it.
 
-        Only where the walk finds the data's end without the key: a member whose local
-        header states its size, or a bit-3 STORED one under ZipCrypto (its scan runs
-        on the ciphertext). The one possible password is taken on its cheap check
-        (ZipCrypto's check byte, WinZip AES's ``pw_verify``), as from a file; the CRC
-        or the HMAC at the end is the real test (``_unconfirmed``). Its header is read
-        once, so a second candidate could not start over.
+        The one possible password is taken on its cheap check (ZipCrypto's check
+        byte, WinZip AES's ``pw_verify``), as from a file; the CRC or the HMAC at the
+        end is the real test (``_unconfirmed``). Its header is read once, so a second
+        candidate could not start over.
+
+        A bit-3 member's data has no size to decrypt by. A STORED one's ends where
+        the walk's scan finds its descriptor, on the ciphertext; a codec one's where
+        the decrypted codec ends, and the AES code is checked once the descriptor
+        says where that was (``_finish``).
         """
         reader = self._reader
         member = self.member
@@ -393,19 +421,14 @@ class _PassData:
 
         if loc.strong_encryption:
             raise refuse(_STRONG_ENCRYPTION_MSG)
-        if deferred and header.method != 0:
-            # Only the decrypted codec finds the end of this one.
-            raise refuse(
-                "An encrypted ZIP member whose sizes are in a data descriptor cannot "
-                "be read from a source that cannot seek: only decrypting it finds "
-                "where its data ends"
-            )
         if reader._passwords.is_ambiguous():
             raise refuse(
                 "Several possible passwords for an encrypted ZIP member read from a "
                 "source that cannot seek are not supported yet: give one password"
             )
         raw = _CutShortWatch(self._data, self)
+        # A bit-3 STORED member's data ends where its ciphertext does.
+        ends_with_data = not self._runs_on()
         stage: Callable[[bytes], BinaryIO]
         aes = loc.aes
         if header.method == 99:
@@ -416,12 +439,22 @@ class _PassData:
                 )
 
             def stage(password: bytes) -> BinaryIO:
-                return open_winzip_aes_member(
+                if not deferred:
+                    return open_winzip_aes_member(
+                        raw,
+                        aes=aes,
+                        password=password,
+                        compress_size=header.compressed_size,
+                    )
+                forward = open_winzip_aes_forward(
                     raw,
                     aes=aes,
                     password=password,
-                    compress_size=header.compressed_size,
+                    hold_back=None if ends_with_data else _AES_HOLD_BACK,
                 )
+                if not ends_with_data:
+                    self._aes_pass = forward
+                return forward
 
         else:
             check_byte = _zipcrypto_check_byte(loc)
@@ -440,8 +473,17 @@ class _PassData:
                 head = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
                 if len(head) != ZIPCRYPTO_HEADER_LEN:
                     # Only a bit-3 member gets here: a sized one's data raises
-                    # TruncatedError itself when the stream ends inside it. Its scan
-                    # found the descriptor first, so the data is whole and short.
+                    # TruncatedError itself when the stream ends inside it. A codec
+                    # one's data runs on to the end of the stream; a STORED one's
+                    # scan found the descriptor first, so the data is whole and short.
+                    if not ends_with_data:
+                        raise TruncatedError(
+                            "ZIP stream ends inside the encryption header of "
+                            f"member {quoted(member.name)}",
+                            archive_name=reader._archive_name,
+                            member_name=member.name,
+                            source_format=ArchiveFormat.ZIP,
+                        )
                     raise CorruptionError(
                         "ZipCrypto member too short for its encryption header "
                         f"({len(head)} < {ZIPCRYPTO_HEADER_LEN})",
@@ -534,32 +576,52 @@ class _PassData:
                     capture += chunk
         return chunk
 
-    def _finish(self, *, raise_mismatch: bool) -> None:
+    def _finish(self, *, raise_mismatch: bool) -> CorruptionError | None:
         """Settle the data and check what was read against the header or descriptor.
 
         A mismatch is the caller's to see when the caller read the data; data the
         pass read past on its own is not checked for the caller, as a skipped member
-        is not in the seekable read, and only loses its kept bytes.
+        is not in the seekable read, and only loses its kept bytes. Returns the
+        mismatch it did not raise.
         """
         self.done = True
         self._close_decoded()
         header = self.entry.header
         data = self._data
         member = self.member
+        error: CorruptionError | None = None
         if self._deferred():
-            if header.method == 0:
+            if self._method() == 0:
                 descriptor = data.settle()
             else:
-                descriptor = data.settle(crc=self._crc, file_size=self._size)
+                # An AE-2 member's descriptor stores no CRC: zero.
+                crc = 0 if self._ae2() else self._crc
+                descriptor = data.settle(crc=crc, file_size=self._size)
             assert descriptor is not None
-            self._reader._note_descriptor(self.entry, descriptor)
+            if self._aes_pass is not None:
+                try:
+                    self._aes_pass.authenticate_end(
+                        descriptor.compressed_size, data.passed_over
+                    )
+                except CorruptionError as exc:
+                    error = exc
             crc, file_size = descriptor.crc, descriptor.file_size
-            # The descriptor dates the end from its own position, so its compressed
-            # size is the member's, past any byte the codec's layers read ahead.
-            member.compressed_size = descriptor.compressed_size
-            member.size = self._size
-            if crc == self._crc and member.type is not MemberType.DIRECTORY:
-                member.hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
+            # A kept member is decoded for its link target after the directory has
+            # updated it: stamping the descriptor's view now would overwrite the
+            # directory's, and ``drain`` already noted this descriptor.
+            if not self._from_kept:
+                self._reader._note_descriptor(self.entry, descriptor)
+                # The descriptor dates the end from its own position, so its
+                # compressed size is the member's, past any byte the codec's layers
+                # read ahead.
+                member.compressed_size = descriptor.compressed_size
+                member.size = self._size
+                if (
+                    crc == self._crc
+                    and not self._ae2()
+                    and member.type is not MemberType.DIRECTORY
+                ):
+                    member.hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
         else:
             data.settle()
             crc, file_size = header.crc, header.file_size
@@ -567,14 +629,14 @@ class _PassData:
         size_ok = file_size == self._size or (
             self._deferred() and file_size == self._size & 0xFFFF_FFFF
         )
-        error: CorruptionError | None = None
-        if not size_ok:
+        # A failed AES code comes first: the data is not what was written.
+        if error is None and not size_ok:
             where = "data descriptor" if self._deferred() else "local header"
             error = CorruptionError(
                 f"ZIP member {quoted(member.name)} decoded to {self._size} bytes; "
                 f"its {where} says {file_size}"
             )
-        elif crc != self._crc and not self._ae2():
+        elif error is None and crc != self._crc and not self._ae2():
             error = CorruptionError(
                 f"CRC-32 mismatch in ZIP member {quoted(member.name)}: stored "
                 f"{crc:08x}, computed {self._crc:08x}"
@@ -583,6 +645,7 @@ class _PassData:
             self.verified = True
         elif raise_mismatch:
             raise error
+        return error
 
     def _ae2(self) -> bool:
         """A WinZip AE-2 member stores no CRC: its HMAC is the check."""
@@ -605,53 +668,55 @@ class _PassData:
         only if the directory makes it a link (``_KeptCiphertext``): no key is derived
         for a member nobody asked for, unless its ciphertext is over
         ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here, its failure kept for
-        the target's read. A bit-3 member is decoded to its end, which is
-        the only way to find it, so there a failure ends the walk; an encrypted bit-3
-        STORED one is skipped instead, as its scan finds the end without the key.
+        the target's read.
+
+        A bit-3 member is decoded to its end, which is the only way to find it, so
+        there a failure ends the walk; an encrypted one needs its key for that, even
+        when nobody asked for it. An encrypted bit-3 STORED one is the exception: its
+        scan finds the end on the ciphertext, which it keeps as a sized one does, if
+        it is short enough to be a link's.
         """
         if self.done:
             return
         header = self.entry.header
         encrypted = _is_encrypted_entry(header.flags, header.method)
         deferred = self._deferred()
+        unopened = self._decoded is None and self._open_error is None
+        # The data's end is found without decoding it: by its size, or for encrypted
+        # bit-3 STORED data by the scan, on the ciphertext.
+        ends_undecoded = not deferred or (encrypted and self._method() == 0)
+        kept: bytes | None = None
         if deferred:
-            if encrypted and header.method != 0:
-                # Only the decrypted codec finds the end of this one.
-                raise UnsupportedFeatureError(
-                    "An encrypted ZIP member whose sizes are in a data descriptor "
-                    "cannot be read past from a source that cannot seek: only "
-                    "decrypting it finds where its data ends",
-                    archive_name=self._reader._archive_name,
-                    member_name=self.member.name,
-                    source_format=ArchiveFormat.ZIP,
-                )
-            # Encrypted STORED data ends where its scan finds the descriptor, with no
-            # key needed; anything else is decoded to find its end.
-            skip = encrypted
+            skip = False
+            if ends_undecoded and unopened:
+                # Keep what a link target could be, and one byte more to tell.
+                kept = read_exact(self._data, _MAX_KEPT_CIPHERTEXT + 1)
+                skip = True
         else:
             skip = header.file_size > MAX_LINK_TARGET_BYTES
             if (
                 encrypted
                 and not skip
-                and self._decoded is None
-                and self._open_error is None
+                and unopened
                 and header.compressed_size <= _MAX_KEPT_CIPHERTEXT
             ):
                 # No key derived yet, and none is derived for a member nobody read
                 # unless the directory makes it a link.
-                self._kept = _KeptCiphertext(
-                    self.entry, read_exact(self._data, header.compressed_size)
-                )
+                kept = read_exact(self._data, header.compressed_size)
                 skip = True
         if not skip:
             try:
                 while self._read_chunk(_DRAIN_CHUNK):
                     pass
             except ArchiveyError as exc:
-                if deferred:
-                    raise
+                failure = self._as_read_failure(exc) if encrypted else exc
+                if not ends_undecoded:
+                    # As the member's own read words it.
+                    if failure is exc:
+                        raise
+                    raise failure from exc
                 if encrypted:
-                    self._failure = self._as_read_failure(exc)
+                    self._failure = failure
                 skip = True
         if skip:
             self.done = True
@@ -660,25 +725,31 @@ class _PassData:
             descriptor = self._data.settle()
             if descriptor is not None:
                 self._reader._note_descriptor(self.entry, descriptor)
+            if kept is not None and len(kept) <= _MAX_KEPT_CIPHERTEXT:
+                self._kept = _KeptCiphertext(self.entry, kept, descriptor)
+            elif kept is not None:
+                self._too_long = True
             return
         if not self.done:
-            self._finish(raise_mismatch=False)
+            error = self._finish(raise_mismatch=False)
             if self._unconfirmed and not self.verified:
                 self._failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+            elif encrypted and error is not None:
+                self._failure = error
 
     @property
     def uncaptured(self) -> str | ArchiveyError | _KeptCiphertext | None:
         """Why a drained member's bytes were not kept, when not for their length:
-        what the caller's read of an encrypted member raised, its kept ciphertext, or
-        ``"encrypted"`` or ``"damaged"`` (see ``ZipForwardReader._link_target_opener``).
+        what the read of an encrypted member raised, its kept ciphertext, or
+        ``"damaged"`` (see ``ZipForwardReader._link_target_opener``).
         """
         if self._failure is not None:
             return self._failure
         if self._kept is not None:
             return self._kept
+        if self._too_long:
+            return None
         header = self.entry.header
-        if self._encrypted() and self._deferred():
-            return "encrypted"
         if not self.verified and (
             self._deferred() or header.file_size <= MAX_LINK_TARGET_BYTES
         ):
@@ -696,9 +767,13 @@ class _KeptCiphertext:
     target is decrypted only once the directory says it is a link: a member nobody
     asked for costs no key derivation, as from a file."""
 
-    def __init__(self, entry: LocalEntry, data: bytes) -> None:
+    def __init__(
+        self, entry: LocalEntry, data: bytes, descriptor: DataDescriptor | None
+    ) -> None:
         self.entry = entry
         self.data = data
+        #: What followed a bit-3 member's data, which the walk read past it.
+        self.descriptor = descriptor
 
     def __len__(self) -> int:
         return len(self.data)
@@ -725,8 +800,10 @@ class _KeptData(MemberData):
         ReadOnlyIOStream.__init__(self)
         self.entry = kept.entry
         self.consumed = 0
+        self.passed_over = b""
         self._settled = False
         self._kept = kept.data
+        self._descriptor = kept.descriptor
 
     def _read_some(self, size: int) -> bytes:
         chunk = self._kept[self.consumed : self.consumed + size]
@@ -740,9 +817,9 @@ class _KeptData(MemberData):
         crc: int | None = None,
         file_size: int | None = None,
     ) -> DataDescriptor | None:
-        # A sized member's: nothing after it to read past, and no descriptor.
+        # Nothing after it to read past: the walk did, and kept the descriptor.
         self._settled = True
-        return None
+        return self._descriptor
 
 
 class _CutShortWatch(ReadOnlyIOStream):
@@ -757,10 +834,15 @@ class _CutShortWatch(ReadOnlyIOStream):
 
     def read(self, n: int = -1, /) -> bytes:
         try:
-            return self._data.read(n)
+            chunk = self._data.read(n)
         except TruncatedError:
             self._owner._cut_short = True
             raise
+        if not chunk and n != 0 and self._owner._runs_on():
+            # A bit-3 codec member's data runs on into what follows it, so its end
+            # is the stream's.
+            self._owner._cut_short = True
+        return chunk
 
 
 class _PassStream(ReadOnlyIOStream):
@@ -862,6 +944,7 @@ class ZipForwardReader(ZipReader):
             if max_members is not None and index >= max_members:
                 raise _max_members_error(max_members, "ZIP stream's local headers name")
             member = self._local_member(entry, index)
+            aes = cast("_ZipLocator", member._raw).aes
             self._pass_data = _PassData(
                 self,
                 entry,
@@ -871,6 +954,8 @@ class ZipForwardReader(ZipReader):
                     encrypted=_is_encrypted_entry(
                         entry.header.flags, entry.header.method
                     ),
+                    # WinZip AES names the real method in its extra field.
+                    stored=None if aes is None else aes.actual_method == 0,
                 ),
             )
             self._by_offset[entry.offset] = member
@@ -1419,12 +1504,6 @@ class ZipForwardReader(ZipReader):
         def missing() -> ArchiveyError:
             if isinstance(why, ArchiveyError):
                 return why
-            if why == "encrypted":
-                return EncryptionError(
-                    f"The symlink target of {quoted(member.name)} is encrypted, and "
-                    "from a source that cannot seek the pass reads past it before "
-                    "the archive's directory says it is a link"
-                )
             if why == "damaged":
                 return CorruptionError(
                     f"The data of symlink {quoted(member.name)} failed its check as "

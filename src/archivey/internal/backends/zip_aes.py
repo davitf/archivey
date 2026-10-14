@@ -47,6 +47,9 @@ ZIP_WRONG_PASSWORD_MSG = "Wrong password for this ZIP member"
 _AES_EXTRA_ID = 0x9901
 _HMAC_LEN = 10
 _PBKDF2_ITERS = 1000
+#: What :class:`WinZipAesForwardStream` reads from its source at once. A caller that
+#: sizes ``hold_back`` from how far its own reads run ahead adds this.
+FORWARD_READ = 1 << 16
 
 
 @dataclass(frozen=True)
@@ -298,6 +301,181 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             self._source.close()
         finally:
             super().close()
+
+
+class WinZipAesForwardStream(ReadOnlyIOStream):
+    """Decrypt an AE ciphertext whose length is not known up front, read forward once.
+
+    A bit-3 member's sizes come after its data, so where the ciphertext ends is
+    learned only at the end, in one of two ways:
+
+    - ``hold_back=None``: ``source`` ends where the member's data ends (a STORED
+      member's descriptor scan found it). The last 10 bytes are the HMAC, so the
+      stream holds back 10 and authenticates when ``source`` ends, before the read
+      that returns ``b""``.
+    - ``hold_back=n``: ``source`` runs on past the data (a codec member, whose codec
+      finds its own end). Everything is decrypted as it is read, and the last ``n``
+      bytes read are kept out of the HMAC until :meth:`authenticate_end` says where
+      the data ended. ``n`` must cover how far past the end the codec's layers can
+      have read.
+
+    ``source`` must be positioned at the start of the ciphertext. Close owns it.
+    """
+
+    def __init__(
+        self,
+        source: BinaryIO,
+        *,
+        enc_key: bytes,
+        auth_key: bytes,
+        header_len: int,
+        hold_back: int | None,
+        read_ahead: bytes = b"",
+    ) -> None:
+        # First: close() reads it, and IOBase.__del__ runs close() on a refused instance.
+        self._source = source
+        super().__init__()
+        if not _crypto_available():
+            raise PackageNotInstalledError(
+                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
+            )
+        self._ctr = open_aes_ctr_stage(
+            AesCtrParams(enc_key, initial_counter=1, counter_byteorder="little")
+        )
+        self._hmac = hmac.new(auth_key, digestmod=hashlib.sha1)
+        self._header_len = header_len
+        self._ends_with_data = hold_back is None
+        self._hold_back = _HMAC_LEN if hold_back is None else hold_back
+        # Bytes read from ``source`` and not yet in the HMAC: the last ones read.
+        # ``read_ahead`` is ciphertext the opener read past the header.
+        self._held = bytearray(read_ahead)
+        # Ciphertext bytes read from ``source``, MAC and beyond included.
+        self._read = len(read_ahead)
+        self._buf = bytearray()
+        self._ended = False
+
+    def _pull(self) -> None:
+        chunk = self._source.read(FORWARD_READ)
+        if not chunk:
+            self._ended = True
+            if self._ends_with_data:
+                self._check_mac(bytes(self._held))
+            return
+        self._read += len(chunk)
+        if not self._ends_with_data:
+            self._buf += self._ctr.process(chunk)
+        held = self._held
+        held += chunk
+        over = len(held) - self._hold_back
+        if over > 0:
+            self._hmac.update(held[:over])
+            if self._ends_with_data:
+                self._buf += self._ctr.process(bytes(held[:over]))
+            del held[:over]
+
+    def _check_mac(self, mac: bytes) -> None:
+        if not hmac.compare_digest(mac, self._hmac.digest()[:_HMAC_LEN]):
+            raise CorruptionError(
+                "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
+            )
+
+    def readall(self) -> bytes:
+        # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.
+        return self.read(-1)
+
+    def authenticate_end(self, data_len: int, passed_over: bytes) -> None:
+        """Authenticate a ``hold_back`` stream once the data's end is known.
+
+        ``data_len`` is the member's whole data length (its descriptor's compressed
+        size, salt to MAC); ``passed_over`` the data's bytes after those this stream
+        read, which the end's search read instead. Raises ``CorruptionError`` on a
+        data length too short for the envelope or a code that does not match.
+        """
+        assert not self._ends_with_data, (
+            "a stream that ends with its data checks itself"
+        )
+        cipher_len = data_len - self._header_len - _HMAC_LEN
+        if cipher_len < 0:
+            raise CorruptionError(
+                "WinZip AES member too short for salt/verify/HMAC "
+                f"({data_len} < {self._header_len + _HMAC_LEN})"
+            )
+        hashed = self._read - len(self._held)
+        # The codec's layers read at most ``hold_back`` past the data's end.
+        assert hashed <= cipher_len, "hold_back covers how far the codec read ahead"
+        rest = bytes(self._held) + passed_over
+        self._hmac.update(rest[: cipher_len - hashed])
+        self._check_mac(rest[cipher_len - hashed : cipher_len - hashed + _HMAC_LEN])
+
+    def read(self, size: int | None = -1) -> bytes:
+        if size is None:
+            size = -1
+        if size < 0 and not self._ends_with_data:
+            # As the walk's codec data refuses it: the source runs on past the data.
+            raise ValueError(
+                "a codec member's ciphertext has no known end; read it in pieces"
+            )
+        if size == 0:
+            return b""
+        while (size < 0 or len(self._buf) < size) and not self._ended:
+            self._pull()
+        if size < 0:
+            out = bytes(self._buf)
+            self._buf.clear()
+        else:
+            out = bytes(self._buf[:size])
+            del self._buf[:size]
+        return out
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            self._source.close()
+        finally:
+            super().close()
+
+
+def open_winzip_aes_forward(
+    raw: BinaryIO, *, aes: WinZipAesInfo, password: bytes, hold_back: int | None
+) -> WinZipAesForwardStream:
+    """Like :func:`open_winzip_aes_member`, for data whose size is not known up front
+    (see :class:`WinZipAesForwardStream` for ``hold_back``).
+
+    A ``hold_back=None`` source ends with the member's data, so the code's length is
+    read with the header: a member too short for both is refused before the password
+    is checked (``CorruptionError``), as the sized read refuses it. A ``hold_back``
+    source that ends inside the header was cut (``TruncatedError``). The order is
+    :func:`open_winzip_aes_member`'s: the impossible member before the availability
+    gate (no library reads it), the cut source after it.
+    """
+    header_len = aes.salt_len + 2
+    overhead = header_len + _HMAC_LEN
+    head = read_exact(raw, overhead if hold_back is None else header_len)
+    if hold_back is None and len(head) < overhead:
+        raise CorruptionError(
+            f"WinZip AES member too short for salt/verify/HMAC ({len(head)} < {overhead})"
+        )
+    if not _crypto_available():
+        raise PackageNotInstalledError(
+            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
+        )
+    if len(head) < header_len:
+        raise TruncatedError("Truncated WinZip AES salt or password-verification value")
+    salt, stored_verify = head[: aes.salt_len], head[aes.salt_len : header_len]
+    enc_key, auth_key, pw_verify = derive_winzip_aes_keys(
+        password, salt=salt, key_len=aes.key_len
+    )
+    if not hmac.compare_digest(stored_verify, pw_verify):
+        raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
+    return WinZipAesForwardStream(
+        raw,
+        enc_key=enc_key,
+        auth_key=auth_key,
+        header_len=header_len,
+        hold_back=hold_back,
+        read_ahead=head[header_len:],
+    )
 
 
 def open_winzip_aes_member(
