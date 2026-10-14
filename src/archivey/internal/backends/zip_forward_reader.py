@@ -1201,7 +1201,8 @@ class _PassData:
         exception, STORED or nobody read it: the walk's scan finds the end on the
         ciphertext, with no key, and its ciphertext is kept as a sized one's is, if
         it is short enough to be a link's. One the caller opened is decoded to its
-        end with the key it was opened with.
+        end with the key it was opened with, and the scan takes over where that
+        decode fails (``_scan_past_failed_decode``).
         """
         if self.done:
             return
@@ -1209,6 +1210,16 @@ class _PassData:
         encrypted = _is_encrypted_entry(header.flags, header.method)
         deferred = self._deferred()
         unopened = self._decoded is None and self._open_error is None
+        if (
+            deferred
+            and encrypted
+            and self._decoded is None
+            and self._reader._walker.can_scan_member_data(self._data)
+        ):
+            # A decrypt stage that failed to open (no password, or none passed its
+            # check) read only the data's first bytes, which the scan puts back: the
+            # member is passed over as one nobody read, as from a file.
+            unopened = True
         # The data's end is found without decoding it: by its size, or for encrypted
         # bit-3 data by the scan, on the ciphertext.
         ends_undecoded = not deferred or (
@@ -1252,13 +1263,18 @@ class _PassData:
                     "read_link_targets is off"
                 )
                 skip = True
+        if not skip and deferred and encrypted and self._failure is not None:
+            # The caller's read failed inside the data.
+            skip = self._scan_past_failed_decode()
         if not skip:
             try:
                 while self._read_chunk(_DRAIN_CHUNK):
                     pass
             except ArchiveyError as exc:
                 failure = self._as_read_failure(exc) if encrypted else exc
-                if not ends_undecoded:
+                if not ends_undecoded and not (
+                    deferred and encrypted and self._scan_past_failed_decode()
+                ):
                     # As the member's own read words it.
                     if failure is exc:
                         raise
@@ -1319,6 +1335,20 @@ class _PassData:
         if failure is not None:
             self._capture = None
             self._failure = failure
+
+    def _scan_past_failed_decode(self) -> bool:
+        """Find the end of an encrypted bit-3 codec member whose decode failed by the
+        walk's scan on its ciphertext, from the data's start, so the walk goes on as
+        it does past one nobody read; the file read fails the member alone. A wrong
+        key that passed its check byte decodes garbage, or the data is damaged; in
+        both the codec's end is not the data's. False when the bytes read so far
+        are no longer all kept (``LocalHeaderWalk.can_scan_member_data``)."""
+        walker = self._reader._walker
+        if self._method() == 0 or not walker.can_scan_member_data(self._data):
+            return False
+        self._close_decoded()
+        self._data = walker.scan_member_data(self._data)
+        return True
 
     @property
     def uncaptured(self) -> str | int | ArchiveyError | _KeptCiphertext | None:

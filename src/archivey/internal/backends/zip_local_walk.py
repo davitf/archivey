@@ -957,18 +957,31 @@ class LocalHeaderWalk:
         self._open = data
         return data
 
+    def can_scan_member_data(self, data: MemberData) -> bool:
+        """Whether :meth:`scan_member_data` takes ``data``."""
+        return (
+            data is self._open
+            and isinstance(data, _CodecData)
+            and data.consumed <= data._kept_len
+        )
+
     def scan_member_data(self, data: MemberData) -> MemberData:
         """``data``'s member read as scanned data instead: its end found by a scan for
         its descriptor on its bytes as stored, not by its codec.
 
-        For an encrypted bit-3 codec member nobody read, so the walk goes past it
-        without its key. Only before a byte of ``data`` is read; ``data`` is done
-        with, and the returned reader is the one to read and settle.
+        For an encrypted bit-3 codec member nobody read, or whose read failed, so
+        the walk goes past it without its key. The bytes a failed read took are put
+        back, so the scan starts at the data's start; that needs every one of them
+        still kept (:data:`_CODEC_RETAIN`). ``data`` is done with, and the returned
+        reader is the one to read and settle.
         """
-        if data is not self._open or not isinstance(data, _CodecData) or data.consumed:
+        if not isinstance(data, _CodecData) or not self.can_scan_member_data(data):
             raise ValueError(
-                "scan_member_data() is for an unread codec member's open data"
+                "scan_member_data() is for an open codec member's data whose bytes "
+                "read so far are all kept"
             )
+        if data.consumed:
+            self.source.unread(b"".join(data._kept)[-data.consumed :])
         data._settled = True
         scanned = _ScannedData(self, data.entry, check_crc=False)
         self._open = scanned
