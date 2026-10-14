@@ -89,7 +89,8 @@ byte past that end;
 `"end_of_stream"` for bytes after a compressed stream's end, whose `format` is the
 codec name, such as `"gzip"`, and whose `observed_bytes` is the offset of the first
 non-zero byte after that end).
-`member_id` MAY be `None` only before registration.
+`member_id` MAY be `None` only before registration, or where the context names a
+member the reader no longer holds (`UnlistedDataContext` after a discarded listing).
 `controls` SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints
 found, in the order they occur, so a caller can tell an override from a mark
 without re-scanning the name. `chosen_by` ∈ `{"argument","extension","content_probe"}`;

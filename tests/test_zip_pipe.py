@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import struct
+import warnings
 import zipfile
 import zlib
 from collections.abc import Iterator
@@ -796,8 +797,9 @@ def test_a_local_entry_the_directory_does_not_list_is_dropped_and_reported() -> 
         m.name for m in _listing(data, pipe=False).members
     ]
     planted = yielded[1]
+    # It leaves the listing; the report is what says why.
     assert planted.member_state_final
-    assert not planted.is_current
+    assert all(m is not planted for m in report.members)
     (context,) = _unlisted(report)
     assert (context.member_name, context.member_id) == ("planted.txt", 1)
     assert (context.offset, context.compressed_size) == (hand.locals[1][1], 10)
@@ -883,3 +885,70 @@ def test_a_descriptor_the_directory_contradicts_fails_at_the_end_of_the_pass() -
         ("after.txt", 5),
     ]
     assert [c.member_name for c in _unlisted(report)] == ["inner"]
+
+
+def test_an_unlisted_entry_of_a_discarded_listing_is_reported_by_offset() -> None:
+    """A directory whose text overfills ``max_metadata_bytes`` leaves the pass no
+    member to drop or name, so the report carries the offset alone."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("planted.txt", b"not listed")
+        for i in range(20):
+            info = zipfile.ZipInfo(f"{i}.txt")
+            info.comment = b"c" * 2000
+            zf.writestr(info, b"x")
+    data = bytearray(buf.getvalue())
+    # Remove planted.txt's directory entry, the first, and fix the end record.
+    cd = data.index(b"PK\x01\x02")
+    name_len, extra_len, comment_len = struct.unpack_from("<HHH", data, cd + 28)
+    entry_len = 46 + name_len + extra_len + comment_len
+    del data[cd : cd + entry_len]
+    eocd = data.rindex(b"PK\x05\x06")
+    count, _, size, offset = struct.unpack_from("<HHII", data, eocd + 8)
+    struct.pack_into(
+        "<HHII", data, eocd + 8, count - 1, count - 1, size - entry_len, offset
+    )
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=20_000)
+    )
+    with archivey.open_archive(
+        _pipe(bytes(data)), streaming=True, config=config
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        assert reader._listing_discarded
+        retained = reader._diagnostics_collector.snapshot().retained
+    (context,) = [
+        d.context for d in retained if d.code is DiagnosticCode.ARCHIVE_UNLISTED_DATA
+    ]
+    assert isinstance(context, UnlistedDataContext)
+    assert (context.member_name, context.member_id, context.offset) == ("", None, 0)
+    assert context.compressed_size is None
+
+
+def test_a_discarded_listing_stamps_the_current_copy_by_the_directory() -> None:
+    """When the directory's comments push the listing over the limits, the discard
+    stamps ``is_current`` too, and in the directory's order as well."""
+    buf = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # zipfile: duplicate name
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("dup.txt", b"first")
+            zf.writestr("dup.txt", b"second")
+            for i in range(20):
+                info = zipfile.ZipInfo(f"{i}-" + "n" * 1900 + ".txt")
+                info.comment = b"c" * 2000
+                zf.writestr(info, b"x")
+    data = bytearray(buf.getvalue())
+    # Swap the two dup.txt directory entries, which are the first two and the same
+    # length, so the directory lists the second copy first.
+    first = data.index(b"PK\x01\x02")
+    length = 46 + len("dup.txt")
+    one, two = data[first : first + length], data[first + length : first + 2 * length]
+    data[first : first + 2 * length] = two + one
+    with archivey.open_archive(
+        _pipe(bytes(data)), streaming=True, config=_OVER_100K
+    ) as reader:
+        yielded = [m for m, _ in reader.stream_members()]
+        assert reader._listing_discarded
+    assert [(m.size, m.is_current) for m in yielded[:2]] == [(5, True), (6, False)]

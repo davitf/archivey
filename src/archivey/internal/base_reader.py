@@ -1568,6 +1568,11 @@ class BaseArchiveReader(ArchiveReader):
         They keep their ids, so the ids of the listing have gaps where they were, and
         nothing changes them from here (``member_state_final``). Not for a discarded
         listing, which keeps no member to drop.
+
+        Safe for the cursors that read ``_listed`` by position only when the backend
+        calls it from the end of its walk under a forward pass: that pass's single
+        cursor is then past every member, and ``ReaderState.acquire_pass`` refuses a
+        second operation beside it, so no cursor stands behind a dropped member.
         """
         gone = {id(member) for member in dropped}
         self._listed = [member for member in self._listed if id(member) not in gone]
@@ -1641,7 +1646,7 @@ class BaseArchiveReader(ArchiveReader):
 
         A backend that keeps its own record of the walk extends this to drop it too.
         """
-        _apply_last_entry_wins_is_current(self._listed)
+        _apply_last_entry_wins_is_current(self._listed_in_index_order())
         _settle_listing(self._listed)
         self._listing_discarded = True
         self._listed = []

@@ -526,7 +526,8 @@ class ZipForwardReader(ZipReader):
         # The kept members in the directory's order, once it has been read.
         self._directory_order: list[ArchiveMember] | None = None
         # Members the directory fails at the end of the pass, in its order, with why
-        # (design.md §"Failures found at the end of the pass").
+        # (design.md §"Failures found at the end of the pass"). Extraction's half of
+        # stage 3b3c (3b3c2) gives each its result; nothing reads it before then.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
         self._end_record: EndRecord | None = None
         # The first header is parsed at open, so a stream that is no ZIP fails here
@@ -820,16 +821,21 @@ class ZipForwardReader(ZipReader):
 
         No directory entry lists them, so the seekable read never sees them: an update
         appended to the archive without rewriting its directory, or a member planted
-        between two others. Data outside any member is a warning (DR-3). A discarded
-        listing kept no member to drop, so only the offset is reported.
+        between two others. Data outside any member is a warning (DR-3). The report is
+        the signal: the object the pass yielded keeps its fields (``is_current``
+        among them), and only leaves the listing. A discarded listing kept no member
+        to drop, so only the offset is reported.
+
+        A dropped member's metadata stays charged to the listing limits: the pass
+        held it while it walked, as it holds any member, and refunding it would let
+        planted entries cost nothing. So a pipe read can go over the limits on
+        entries a file read never sees (DR-5a).
         """
         if not offsets:
             return
         by_offset = self._by_offset
         dropped = [by_offset[offset] for offset in offsets if offset in by_offset]
         if dropped:
-            for member in dropped:
-                member.is_current = False
             self._drop_listed(dropped)
         for offset in offsets:
             member = by_offset.get(offset)
@@ -840,8 +846,8 @@ class ZipForwardReader(ZipReader):
                 message=(
                     f"ZIP stream holds {what} at offset {offset} that the central "
                     "directory does not list; it is left out, as reading the "
-                    "archive from a file leaves it out (this file may hold something "
-                    "added to the archive)."
+                    "archive from a file leaves it out (the archive may carry "
+                    "something added to it without its directory being rewritten)."
                 ),
                 context=UnlistedDataContext(
                     archive_name=self._archive_name,
@@ -864,6 +870,12 @@ class ZipForwardReader(ZipReader):
         )
 
     def _listed_in_index_order(self) -> list[ArchiveMember]:
+        """The kept members in the directory's order, once it has been read.
+
+        The walk's order before then, and after a discard: ``_listed`` is empty then
+        and the recorded order names members it no longer holds, which is what the
+        length check catches (``_discard_listing`` stamps the prefix through here
+        before emptying it)."""
         order = self._directory_order
         if order is None or len(order) != len(self._listed):
             return self._listed

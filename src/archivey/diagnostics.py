@@ -369,8 +369,8 @@ class UnlistedDataContext(_JsonSafeContext):
     and learns only from the central directory, after the last one, which of them the
     archive lists. A local entry the directory does not list (an update appended
     without rewriting it, or a planted member) is dropped from the listing, as the
-    seekable read never sees it, and what an extraction wrote for it is removed.
-    ``member_name`` and ``member_id`` are what the pass gave it before then;
+    seekable read never sees it. ``member_name`` and ``member_id`` are what the pass
+    gave it before then (``""`` and ``None`` when the listing was discarded);
     ``offset`` is where its local header starts and ``compressed_size`` the bytes of
     data after it.
     """
@@ -1060,10 +1060,10 @@ __all__ = [
     "SeekIndexContext",
     "SelectorUnmatchedContext",
     "SpecialFileDataContext",
-    "UnlistedDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",
+    "UnlistedDataContext",
     "UnusedArgumentContext",
     "format_path_name",
     "raw_name_to_base64",

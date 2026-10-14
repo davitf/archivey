@@ -443,10 +443,12 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 
 ### Failures found at the end of the pass
 
-Three things are known only once the directory has been read: a size or CRC from a data
+Four things are known only once the directory has been read: a size or CRC from a data
 descriptor that differs from the central entry, two same-name members whose directory
-order reverses their file order, and a directory entry with no local entry. Each is a
-member-scoped failure of the member it names, handled as `safe-extraction` handles any
+order reverses their file order, a directory entry with no local entry, and a member
+whose directory entry and local header store different names (question A, case 3: the
+seekable read refuses it when it reads the local header, and a forward pass has both
+names only now). Each is a member-scoped failure of the member it names, handled as `safe-extraction` handles any
 other (the `OnError` requirement):
 
 - In `extract_all`, the end of the pass settles every member the directory changes
@@ -469,24 +471,21 @@ other (the `OnError` requirement):
   - Under `OnError.CONTINUE` the report completes. Under `OnError.STOP` the first such
     failure raises `CorruptionError` naming the member, at the end of the pass, which is
     the earliest point it is known; the revisions and removals above are made first.
-- In `stream_members()`, which has no results and no `OnError`, the descriptor mismatch
-  and the missing local entry raise `CorruptionError` from the iterator at the end of
-  the pass. The reversed pair raises nothing: the members are updated in place and
+- In `stream_members()`, which has no results and no `OnError`, the descriptor mismatch,
+  the missing local entry and the differing names raise `CorruptionError` from the
+  iterator at the end of the pass. The reversed pair raises nothing: the members are updated in place and
   `member_state_final` said they might be. Nothing is on disk to settle.
 
-The first two make a streaming extraction fail a member that the seekable extraction of
+The first two (and the differing names) make a streaming extraction fail a member that the seekable extraction of
 the same archive writes. That is the only place the two access modes differ on disk.
 Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
 a little; matching them would mean buffering every member until the directory arrives
 (ADR 0010).
 
-Two more things are known only once the directory has been read, and neither is a member
+One more thing is known only once the directory has been read, and is not a member
 failure. A directory entry pointing at a local header an earlier entry already took ends
 the pass with its own `CorruptionError`: the seekable read lists both, and a forward
-pass reads that data once, for one member. So does a member whose directory entry and
-local header store different names (question A, case 3): the seekable read refuses it
-when it reads the local header, and a forward pass has both names only now.
-A directory whose entries fill a different size than the end record declares is a
+pass reads that data once, for one member. A directory whose entries fill a different size than the end record declares is a
 warning (`ARCHIVE_EOF_MARKER_MISSING`, marker `central_directory`), and every entry
 stays listed.
 
