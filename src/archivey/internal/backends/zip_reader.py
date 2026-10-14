@@ -2881,6 +2881,7 @@ class ZipReadBackend(ReadBackend):
     # `ZipForwardReader` lists and reads one, and extraction's end of the pass, the
     # failures found there and encrypted members are still to come (the
     # native-zip-reader change, stage 3b3).
+    NON_SEEKABLE_REASON = "its member list is at the end of the file"
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
     USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 

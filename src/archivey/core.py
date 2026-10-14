@@ -687,8 +687,8 @@ def _open_resolved(
         )
         raise StreamNotSeekableError(
             f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
-            f"in either access mode (its index/metadata is not at the front of "
-            f"the stream). Buffer it to disk or a BytesIO and reopen.",
+            f"in either access mode ({refused_cls.NON_SEEKABLE_REASON}). Buffer it to "
+            f"disk or a BytesIO and reopen.",
             source_format=resolved_format,
             archive_name=archive_name,
         )

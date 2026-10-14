@@ -2807,6 +2807,10 @@ class IsoReadBackend(ReadBackend):
     # needs a seekable source.
     # Same requirement the reader raises from, so the hint reported by listing /
     # format_availability and the one in the open() failure cannot diverge.
+    NON_SEEKABLE_REASON = (
+        "its volume descriptors and directory records are at absolute offsets in the "
+        "image"
+    )
     USES_ENCODING = True  # for Rock Ridge and plain names that are not valid UTF-8
     OPTIONAL_DEPENDENCY = _PYCDLIB_REQUIREMENT.name
     INSTALL_HINT = _PYCDLIB_REQUIREMENT.install_hint

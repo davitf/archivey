@@ -261,6 +261,14 @@ AUTO_CHOSE_UNAR_NOTE = (
 # reports 901 volumes for a longer set, and the member is then short.
 _UNAR_MAX_OLD_STYLE_VOLUMES = 901
 
+# Why a RAR cannot come from a pipe. The block headers are at the front, but the header
+# walk seeks past each member's packed data (and to the RAR5 quick-open record), and
+# unrar reads members from a file on disk.
+_NON_SEEKABLE_REASON = (
+    "the header walk seeks past each member's data, and unrar reads members from a "
+    "file on disk"
+)
+
 
 def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
     """Each volume's number in its set, when the names leave a gap; else ``None``.
@@ -1223,8 +1231,7 @@ class RarReader(BaseArchiveReader):
 
         if not source.seekable():
             raise StreamNotSeekableError(
-                "RAR archives require a seekable source: headers and stored member "
-                "ranges are addressed by offsets.",
+                f"RAR archives require a seekable source: {_NON_SEEKABLE_REASON}.",
                 archive_name=archive_name,
                 source_format=ArchiveFormat.RAR,
             )
@@ -4386,6 +4393,7 @@ class RarReadBackend(ReadBackend):
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
     SUPPORTS_STREAMING_NON_SEEKABLE = False
+    NON_SEEKABLE_REASON = _NON_SEEKABLE_REASON
     OPTIONAL_DEPENDENCY = None
 
     def open_read(
