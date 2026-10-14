@@ -33,6 +33,7 @@ from archivey.types import ArchiveMember, MemberType
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_windows_reparse import _reparse_buffer
+from tests.zipcrypto import build_zipcrypto_zip
 
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
 
@@ -274,3 +275,78 @@ def test_members_refused_a_reparse_prefix_keep_no_message_while_the_pass_runs() 
     refused_peak = traced_peak(lambda: listing(refused))
     control_peak = traced_peak(lambda: listing(control))
     assert refused_peak < control_peak + 3000 * 100
+
+
+def _long_link_buffer() -> bytes:
+    """A symlink buffer over the target cap whose target is short."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "t" * 2100, "target")
+    assert len(buffer) > MAX_LINK_TARGET_BYTES
+    return buffer
+
+
+def test_a_reparse_buffer_that_is_all_the_data_has_its_crc_checked(
+    tmp_path: Path,
+) -> None:
+    """The file read reads one byte past the buffer, reaches the data's end and checks
+    it; so does the pass, and a damaged one is no link from either."""
+    attributes = _FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
+    raw = bytearray(_zip([("linkdir/", attributes, _long_link_buffer())]))
+    central = raw.rindex(b"PK\x01\x02")
+    for crc_at in (14, central + 16):
+        raw[crc_at] ^= 0xFF
+    data = bytes(raw)
+    from_file = _from_file(data)["linkdir"]
+    piped = _from_pipe(data, read=False)["linkdir"]
+    assert from_file.link_target is piped.link_target is None
+    assert len(_target_messages(io.BytesIO(data), streaming=False)) == 1
+    (message,) = _target_messages(NonSeekableBytesIO(data), streaming=True)
+    assert "CRC" in message
+    results = []
+    for streaming in (False, True):
+        source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=streaming) as reader:
+            report = reader.extract_all(tmp_path / str(streaming), on_error="continue")
+        results.append([r.status for r in report.results])
+    assert results == [[ExtractionStatus.FAILED]] * 2
+
+
+def test_an_unread_encrypted_reparse_buffer_over_the_cap_says_why_from_a_pipe() -> None:
+    """The stated exception: the pass derives no key for a member nobody read and
+    keeps no ciphertext this long, so the target a file read reports is unavailable
+    from a pipe, and the reason names the encryption, not a size cap."""
+    raw = bytearray(build_zipcrypto_zip(b"secret", b"linkdir/", _long_link_buffer()))
+    central = raw.rindex(b"PK\x01\x02")
+    attributes = _FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
+    struct.pack_into("<I", raw, central + 38, attributes)
+    data = bytes(raw)
+    with archivey.open_archive(io.BytesIO(data), password="secret") as reader:
+        assert reader.members()[0].link_target == "target"
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password="secret"
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        assert reader.members_report().members[0].link_target is None
+        (message,) = [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+    assert "did not decrypt" in message
+
+
+def test_a_reparse_buffer_the_caller_read_to_a_failed_crc_is_no_link() -> None:
+    raw = bytearray(
+        _zip([("link", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, _long_link_buffer())])
+    )
+    central = raw.rindex(b"PK\x01\x02")
+    for crc_at in (14, central + 16):
+        raw[crc_at] ^= 0xFF
+    with archivey.open_archive(
+        NonSeekableBytesIO(bytes(raw)), streaming=True
+    ) as reader:
+        for _, stream in reader.stream_members():
+            assert stream is not None
+            with pytest.raises(archivey.CorruptionError):
+                stream.read()
+        assert reader.members_report().members[0].link_target is None

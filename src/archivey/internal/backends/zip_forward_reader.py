@@ -388,6 +388,9 @@ class _PassData:
         #: The length of a reparse buffer the data declares over
         #: ``_MAX_REPARSE_PREFIX``, which the pass did not keep.
         self._overlong_buffer: int | None = None
+        #: Encrypted data over the target cap that nobody read: the pass neither
+        #: decrypts it nor keeps its ciphertext.
+        self._unread_encrypted = False
         #: What opening the decoded stream raised: it runs once, as the decrypt
         #: stage reads its header from the data (a second try would read past it).
         self._open_error: ArchiveyError | None = None
@@ -445,10 +448,14 @@ class _PassData:
         want = self._prefix_want
         if capture is None or want is None:
             return None
-        # Data shorter than the buffer declares is all there is to parse.
         ended = self.verified or (
             not self._deferred() and self._size >= self.entry.header.file_size
         )
+        if ended and not self.verified:
+            # Read to its end and failed its check, as the file read's byte past the
+            # buffer finds.
+            return None
+        # Data shorter than the buffer declares is all there is to parse.
         if len(capture) < want and not ended:
             return None
         return bytes(capture)
@@ -500,9 +507,8 @@ class _PassData:
             return 0
         if self._prefix_want is not None:
             return max(0, self._prefix_want - len(capture))
-        if self._over_cap():
-            return REPARSE_HEADER_BYTES - self._size
-        return MAX_LINK_TARGET_BYTES + 1 - self._size
+        # ``drain`` asks only of data over the cap.
+        return max(0, REPARSE_HEADER_BYTES - self._size)
 
     def _deferred(self) -> bool:
         return self.entry.deferred
@@ -1172,22 +1178,23 @@ class _PassData:
         it is short enough to be a link target: the directory may yet make it one, and
         its target is these bytes. Of a longer one only the start a Windows reparse
         buffer's parse reads is decoded (``reparse_prefix``), unless it is encrypted and
-        nobody read it (no key is derived for it). As with data within the cap,
-        ``read_link_targets`` off does not stop it: no key is derived and no provider
-        asked, and a file read still reads the target when asked. That costs every such
-        member a decoder, which a file read does not pay for a member it does not read:
-        about 0.1 ms, and for PPMd, whose decoder holds a sized member's input until it
-        is all in, that input up to ``DecoderLimits``' in-process bound, past which a
-        child process starts. That decode is only for the target, so its failure loses
-        the bytes and nothing else, as a member nobody reads costs nothing from a file.
-        An encrypted one keeps its ciphertext instead, decrypted only if the directory
-        makes it a link (``_KeptCiphertext``): no key is derived for a member nobody
-        asked for, unless its ciphertext is over ``_MAX_KEPT_CIPHERTEXT``, and then it
-        is decoded here, its failure kept for the target's read. That decryption, unlike
-        the reparse prefix, happens only under ``read_link_targets``, which allows
-        reading a target nobody asked for, and asking a password provider for it: the
-        member may turn out to be no link, which only a padded codec stream makes this
-        long.
+        nobody read it (no key is derived for it, and its target's read says so). When
+        the prefix reaches the data's end its CRC is checked, as the file read's byte
+        past the buffer checks it. As with data within the cap, ``read_link_targets``
+        off does not stop that decode: no key is derived and no provider asked, and a
+        file read still reads the target when asked. That costs every such member a
+        decoder, which a file read does not pay for a member it does not read: about
+        0.1 ms, and for PPMd, whose decoder holds a sized member's input until it is all
+        in, that input up to ``DecoderLimits``' in-process bound, past which a child
+        process starts. That decode is only for the target, so its failure loses the bytes and
+        nothing else, as a member nobody reads costs nothing from a file. An encrypted
+        one keeps its ciphertext instead, decrypted only if the directory makes it a
+        link (``_KeptCiphertext``): no key is derived for a member nobody asked for,
+        unless its ciphertext is over ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded
+        here, its failure kept for the target's read. That decryption, unlike the
+        reparse prefix, happens only under ``read_link_targets``, which allows reading a
+        target nobody asked for, and asking a password provider for it: the member may
+        turn out to be no link, which only a padded codec stream makes this long.
 
         A bit-3 member is decoded to its end, which is the only way to find it from
         its decoded data, so there a failure ends the walk. An encrypted one is the
@@ -1259,7 +1266,12 @@ class _PassData:
                 if encrypted:
                     self._failure = failure
                 skip = True
-        if over_cap and not (encrypted and unopened):
+        if over_cap and encrypted and unopened:
+            # No key is derived for it, and its ciphertext is longer than the pass
+            # keeps: the reason, for its target's report.
+            self._capture = None
+            self._unread_encrypted = True
+        elif over_cap:
             # Data over the target cap that nobody read to its end: its start, which
             # decides a reparse point's type and target once the directory makes it
             # one, as a file read reads it (``reparse_prefix``).
@@ -1269,6 +1281,12 @@ class _PassData:
             except ArchiveyError as exc:
                 self._capture = None
                 self._failure = self._as_read_failure(exc) if encrypted else exc
+            else:
+                if self._size >= header.file_size:
+                    # The start is all the data, as for most reparse buffers: the
+                    # file read's byte past the buffer reaches the end and checks it.
+                    self._finish_prefix(encrypted=encrypted)
+                    return
         if skip:
             self.done = True
             if self._prefix_want is None:
@@ -1289,6 +1307,19 @@ class _PassData:
             elif encrypted and error is not None:
                 self._failure = error
 
+    def _finish_prefix(self, *, encrypted: bool) -> None:
+        """Check data whose reparse prefix reached its end; a mismatch loses the
+        prefix and is kept for the target's read."""
+        error = self._finish(raise_mismatch=False)
+        failure: ArchiveyError | None = None
+        if self._unconfirmed and not self.verified:
+            failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+        elif error is not None:
+            failure = self._as_read_failure(error) if encrypted else error
+        if failure is not None:
+            self._capture = None
+            self._failure = failure
+
     @property
     def uncaptured(self) -> str | int | ArchiveyError | _KeptCiphertext | None:
         """Why a drained member's bytes were not kept, when not for their length:
@@ -1300,13 +1331,17 @@ class _PassData:
             return self._failure
         if self._overlong_buffer is not None:
             return self._overlong_buffer
+        if self._unread_encrypted:
+            return "encrypted"
         if self._kept is not None:
             return self._kept
         if self._too_long:
             return None
         header = self.entry.header
         if not self.verified and (
-            self._deferred() or header.file_size <= MAX_LINK_TARGET_BYTES
+            self._deferred()
+            or header.file_size <= MAX_LINK_TARGET_BYTES
+            or self._size >= header.file_size
         ):
             return "damaged"
         return None
@@ -2050,6 +2085,15 @@ class ZipForwardReader(ZipReader):
         def missing() -> ArchiveyError:
             if isinstance(why, ArchiveyError):
                 return why
+            cap = MAX_LINK_TARGET_BYTES
+            if why == "encrypted":
+                # Not an EncryptionError, which reports a missing password: the pass
+                # did not try one.
+                return CorruptionError(
+                    f"The pass did not decrypt {quoted(member.name)}: nobody read it, "
+                    f"and its data is over the {cap} bytes the pass keeps the "
+                    "ciphertext of for a symlink target"
+                )
             if why == "damaged":
                 return CorruptionError(
                     f"The data of symlink {quoted(member.name)} failed its check as "
@@ -2063,7 +2107,6 @@ class ZipForwardReader(ZipReader):
                     f"of {why} bytes, over the {_MAX_REPARSE_PREFIX} the pass keeps "
                     "of one before the directory says it is a link"
                 )
-            cap = MAX_LINK_TARGET_BYTES
             return CorruptionError(
                 f"The symlink target of {quoted(member.name)} was not kept as the "
                 f"pass read its data: it is over {cap} bytes"
