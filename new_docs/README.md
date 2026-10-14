@@ -3,10 +3,9 @@
 A rewrite of the user docs, grown one agreed paragraph at a time. Not published and not in
 `mkdocs.yml`. `docs/` stays the live site until this replaces it.
 
-Some sentences describe behaviour that another PR brings, so they aren't true of `main` until it
-merges. Check each before the switch, and empty this list:
+Some sentences will go stale when work in progress lands. Check each before the switch, and empty
+this list:
 
-- `security.md`, the listing limits on `stream_members()` (PR 773).
 - Every ZIP claim in the tree, once the native ZIP reader is complete: reading from a pipe,
   damaged or missing end records, and bytes after the archive are all expected to change.
 
