@@ -1,9 +1,11 @@
 """Encrypted ZIP members read from a source that cannot seek, with one password.
 
 The pass decrypts a member whose local header states its size, a bit-3 STORED one
-(its end is found on the ciphertext) and a bit-3 codec one (only the decrypted codec
-finds its end, so the pass needs the key to go past it). Each read must give what
-the seekable read gives: the same bytes, or the same kind of error.
+(its end is found on the ciphertext) and a bit-3 codec one. A codec one the caller
+reads is decoded to its end, and a missing or wrong password ends the walk there;
+one nobody reads is scanned on the ciphertext, as a STORED one is, with no key.
+Each read must give what the seekable read gives: the same bytes, or the same kind
+of error.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
+from tests.zip_descriptors import without_descriptor_signatures
 from tests.zipcrypto import (
     build_stored_zipcrypto_zip,
     build_zipcrypto_zip,
@@ -494,11 +497,9 @@ def test_real_bit3_members_read_as_from_a_file() -> None:
     assert _pipe_read(data, _PASSWORD) == expected
 
 
-def test_damage_in_an_unread_bit3_codec_member_ends_the_pass_as_its_read_fails() -> (
-    None
-):
-    """Only the check byte vouched for the password, so the integrity failure that
-    ends the pass may be a wrong password, and says so, as the member's read does."""
+def test_damage_in_an_unread_bit3_codec_member_does_not_end_the_pass() -> None:
+    """The scan finds its end on the ciphertext, so damage nobody reads costs
+    nothing, as from a file."""
     data = _with_plain_member(
         _bit3(
             corrupt_zipcrypto_payload(
@@ -506,15 +507,61 @@ def test_damage_in_an_unread_bit3_codec_member_ends_the_pass_as_its_read_fails()
             )
         )
     )
-    kind, message = _file_read(data, _PASSWORD)["a.txt"]  # type: ignore[misc]
+    kind, _message = _file_read(data, _PASSWORD)["a.txt"]  # type: ignore[misc]
     assert kind is EncryptionError
     with archivey.open_archive(
         NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
     ) as reader:
-        with pytest.raises(EncryptionError) as ended:
-            for _ in reader.stream_members(lambda m: m.name == "plain.txt"):
-                pass
-    assert str(ended.value) == message
+        read = {
+            member.name: stream.read()
+            for member, stream in reader.stream_members(lambda m: m.name == "plain.txt")
+            if stream is not None
+        }
+    assert read == {"plain.txt": _file_read(data, _PASSWORD)["plain.txt"]}
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: _bit3_zipcrypto(zipfile.ZIP_DEFLATED), id="zipcrypto-deflate"
+        ),
+        pytest.param(
+            lambda: _bit3(
+                build_zipcrypto_zip(
+                    _PASSWORD, b"a.txt", _TEXT, compression=zipfile.ZIP_BZIP2
+                )
+            ),
+            id="zipcrypto-bzip2",
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip()), id="aes", marks=requires("cryptography")
+        ),
+    ],
+)
+@pytest.mark.parametrize("password", [_PASSWORD, b"not the password", None])
+@pytest.mark.parametrize("signed", [True, False], ids=["signed", "unsigned"])
+def test_an_unread_bit3_codec_member_is_passed_without_its_key(
+    build,  # noqa: ANN001
+    password: bytes | None,
+    signed: bool,
+) -> None:
+    """The scan finds its end on the ciphertext, by the descriptor and the header
+    after it, so neither a missing nor a wrong password stops the pass."""
+    data = _with_plain_member(build())
+    if not signed:
+        data = without_descriptor_signatures(data)
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=password
+    ) as reader:
+        read = {
+            member.name: stream.read()
+            for member, stream in reader.stream_members(lambda m: m.name == "plain.txt")
+            if stream is not None
+        }
+        names = [m.name for m in reader.members_report().members]
+    assert names == ["a.txt", "plain.txt"]
+    assert read == {"plain.txt": b"plain"}
 
 
 @pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
@@ -804,7 +851,7 @@ def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> Non
 
 
 @pytest.mark.parametrize(
-    "build",
+    ("build", "target"),
     [
         pytest.param(
             lambda: _bit3(
@@ -812,21 +859,43 @@ def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> Non
                     b"target.txt", check_byte=0, compression=zipfile.ZIP_DEFLATED
                 )
             ),
+            "target.txt",
             id="zipcrypto",
         ),
         pytest.param(
             lambda: _bit3(_aes_zip_link()),
+            "target.txt",
             id="aes",
             marks=requires("cryptography"),
         ),
+        pytest.param(
+            # Over the ciphertext the pass keeps: passed without a key, and its
+            # target too long for one.
+            lambda: _bit3(
+                _zipcrypto_link(
+                    random.Random(1).randbytes(9000),
+                    check_byte=0,
+                    compression=zipfile.ZIP_DEFLATED,
+                )
+            ),
+            None,
+            id="zipcrypto-over-the-kept-ciphertext",
+        ),
     ],
 )
-def test_a_bit3_codec_link_target_is_read_as_from_a_file(build) -> None:  # noqa: ANN001
-    """The pass decodes it to find its end, so its target is what it read."""
+@pytest.mark.parametrize("password", [_PASSWORD, b"not the password", None])
+def test_a_bit3_codec_link_target_is_read_as_from_a_file(
+    build,  # noqa: ANN001
+    target: str | None,
+    password: bytes | None,
+) -> None:
+    """The pass keeps its ciphertext, found by the scan, and decodes it once the
+    directory says it is a link: the pipe gives what the file gives."""
     data = build()
-    targets = _link_targets(data, _PASSWORD, pipe=False)
-    assert targets[0] == ("link", archivey.MemberType.SYMLINK, "target.txt")
-    assert _link_targets(data, _PASSWORD, pipe=True) == targets
+    targets = _link_targets(data, password, pipe=False)
+    if password == _PASSWORD:
+        assert targets[0] == ("link", archivey.MemberType.SYMLINK, target)
+    assert _link_targets(data, password, pipe=True) == targets
 
 
 def _zipcrypto_link(
@@ -961,15 +1030,25 @@ def test_no_key_is_derived_for_a_member_nobody_reads(
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(lambda: _bit3_zipcrypto(zipfile.ZIP_STORED), id="zipcrypto"),
+        pytest.param(
+            lambda: _bit3_zipcrypto(zipfile.ZIP_STORED), id="zipcrypto-stored"
+        ),
+        pytest.param(
+            lambda: _bit3_zipcrypto(zipfile.ZIP_DEFLATED), id="zipcrypto-deflate"
+        ),
         pytest.param(
             lambda: _bit3(_aes_zip(method=0)),
-            id="aes",
+            id="aes-stored",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip()),
+            id="aes-deflate",
             marks=requires("cryptography"),
         ),
     ],
 )
-def test_no_key_is_derived_for_a_bit3_stored_member_nobody_reads(
+def test_no_key_is_derived_for_a_bit3_member_nobody_reads(
     build,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
