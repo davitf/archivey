@@ -2123,12 +2123,8 @@ class ExtractionCoordinator:
         link_error: ArchiveyError | None = None
         try:
             # A BLOCKED result wrote nothing, and is released all the same: what it
-            # was charged, if anything, is refunded rather than charged twice. The
-            # folders made for what it wrote go too, while empty: random access makes
-            # them only if the member is written again, and then they are made again.
+            # was charged, if anything, is refunded rather than charged twice.
             self._take_back_written(index)
-            if written and old_path is not None and old_path not in state.written_paths:
-                self._remove_created_parents(old_path)
             transformed, presented_name, rewrites = self._transform(member)
             if transformed is None:
                 # Not tallied, then dropped from the report.
@@ -2206,6 +2202,11 @@ class ExtractionCoordinator:
             if current.parked:
                 self._drop_parked_copies(member.name, index)
             link_error = self._recheck_links()
+        if written and old_path is not None and old_path not in state.written_paths:
+            # What an EXTRACTED result wrote is gone (a parked file only now): the
+            # folders made for it alone go too, while empty. Random access makes
+            # them only if the member is written there, and then they stay.
+            self._remove_created_parents(old_path)
         if link_error is not None:
             raise link_error
         if member_started:

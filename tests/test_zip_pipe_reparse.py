@@ -10,6 +10,7 @@ the gate themselves.
 from __future__ import annotations
 
 import io
+import struct
 import zipfile
 from pathlib import Path
 
@@ -17,6 +18,8 @@ import pytest
 
 import archivey
 from archivey import ExtractionStatus
+from archivey.config import ListingLimits
+from archivey.diagnostics import DiagnosticCode
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.windows_reparse import (
@@ -116,6 +119,76 @@ def test_a_folder_the_pass_made_for_a_junction_is_taken_back(tmp_path: Path) -> 
     )
     attributes = _FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
     data = _zip([("tree/junction_dir/", attributes, buffer)])
+    trees = []
+    for piped in (False, True):
+        out = tmp_path / ("pipe" if piped else "file")
+        source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=piped) as reader:
+            report = reader.extract_all(out)
+        assert [r.status for r in report.results] == [ExtractionStatus.BLOCKED]
+        trees.append(sorted(p.relative_to(out) for p in out.rglob("*")))
+    assert trees == [[], []]
+
+
+def test_a_member_declaring_a_huge_link_buffer_costs_the_pass_nothing() -> None:
+    """Data over the cap that opens like a symlink buffer declaring 64 KiB keeps
+    nothing: no target within the cap needs that much, and the directory never said
+    these are reparse points. Kept, 40 of them would pass this listing limit."""
+    content = struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, 0xFFFF, 0) + bytes(70_000)
+    data = _zip([(f"{i}.bin", 0x20, content) for i in range(40)])
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=1 << 20)
+    )
+    with archivey.open_archive(io.BytesIO(data), config=config) as reader:
+        from_file = [m.name for m in reader.members()]
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, config=config
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        piped = [m.name for m in reader.members_report().members]
+    assert piped == from_file
+
+
+def _target_messages(source: io.BytesIO, *, streaming: bool) -> list[str]:
+    with archivey.open_archive(source, streaming=streaming) as reader:
+        if streaming:
+            for _ in reader.stream_members():
+                pass
+        else:
+            reader.members()
+        return [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+
+
+def test_a_damaged_reparse_buffer_over_the_cap_says_why_as_from_a_file() -> None:
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "t" * 1990, "t" * 1990)
+    assert len(buffer) > MAX_LINK_TARGET_BYTES
+    raw = bytearray(_zip([("link", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, buffer)]))
+    name_len, extra_len = struct.unpack_from("<HH", raw, 26)
+    start = 30 + name_len + extra_len
+    raw[start + 2] ^= 0xFF
+    raw[start + 3] ^= 0xFF
+    from_file = _target_messages(io.BytesIO(bytes(raw)), streaming=False)
+    piped = _target_messages(NonSeekableBytesIO(bytes(raw)), streaming=True)
+    assert len(piped) == len(from_file) == 1
+    assert "over 4096 bytes" not in piped[0]
+    assert "deflate" in piped[0] and "deflate" in from_file[0]
+
+
+def test_parent_folders_of_a_file_the_pass_made_a_refused_link_are_taken_back(
+    tmp_path: Path,
+) -> None:
+    """The pass writes ``d/f`` as a file; the directory makes it a link to an
+    absolute target, which is refused, and ``d`` goes with it, as the file read never
+    makes it."""
+    buffer = _reparse_buffer(
+        IO_REPARSE_TAG_SYMLINK, "C:\\tree\\target", "C:\\tree\\target"
+    )
+    data = _zip([("d/f", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, buffer)])
     trees = []
     for piped in (False, True):
         out = tmp_path / ("pipe" if piped else "file")
