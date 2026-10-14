@@ -114,8 +114,12 @@ that work when you read each member while iterating over the archive, and py7zr 
 the names to one `extract` call. rarfile has no way to avoid it. With archivey, use
 `stream_members()` whenever you need several members and their order doesn't matter: it reads each
 member once, in order, in every format ([Solid archives](reading.md#solid-archives)). `read` and
-`open` decompress again for each member, even in the archive's order, and with `streaming=True` they
-raise instead of quietly costing time.
+`open` cost more. In a `.tar.gz`, the first one lists the whole archive, which takes a pass of its
+own, and reading members in the archive's order after that takes one more pass. Going back to an
+earlier member starts again from the beginning. In 7z and RAR, each read decompresses again
+everything before its member. If you want to make sure your code avoids these costs, open the
+archive with `streaming=True`: `read` and `open` then always raise, and `stream_members()` is the
+only way to read members.
 
 ## Extracting
 
