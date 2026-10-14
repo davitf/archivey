@@ -14,7 +14,7 @@ from archivey import open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.cli.format import format_format_label
-from archivey.config import PasswordInput
+from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.exceptions import StreamNotSeekableError
 
 # The one internal import in the CLI, allowlisted in tests/test_cli_uses_public_api.py:
@@ -69,6 +69,7 @@ def open_for_cli(
     *,
     password: PasswordInput = None,
     track_io: bool = False,
+    config: ArchiveyConfig | None = None,
     err: TextIO | None = None,
 ) -> Iterator[ForwardArchiveReader]:
     """Open an archive, optionally wrapping the call in measurement for ``--track-io``.
@@ -82,19 +83,29 @@ def open_for_cli(
     streaming = is_read_once(archive)
     if track_io:
         with enable_measurement():
-            with _open(archive, password=password, streaming=streaming) as reader:
+            with _open(
+                archive, password=password, streaming=streaming, config=config
+            ) as reader:
                 yield reader
                 _report_track_io(reader, err)
     else:
-        with _open(archive, password=password, streaming=streaming) as reader:
+        with _open(
+            archive, password=password, streaming=streaming, config=config
+        ) as reader:
             yield reader
 
 
 def _open(
-    archive: str | Path, *, password: PasswordInput, streaming: bool
+    archive: str | Path,
+    *,
+    password: PasswordInput,
+    streaming: bool,
+    config: ArchiveyConfig | None,
 ) -> ForwardArchiveReader:
     try:
-        return open_archive(archive, password=password, streaming=streaming)
+        return open_archive(
+            archive, password=password, streaming=streaming, config=config
+        )
     except StreamNotSeekableError as exc:
         message = read_once_refusal(archive, exc, streaming=streaming)
         if message is None:

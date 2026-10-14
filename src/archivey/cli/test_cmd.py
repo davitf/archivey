@@ -14,7 +14,7 @@ from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
-from archivey.config import PasswordInput
+from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
@@ -41,6 +41,7 @@ def run_test(
     verbose: bool,
     password: str | None,
     track_io: bool,
+    config: ArchiveyConfig | None = None,
     hide_progress: bool = False,
     out: TextIO | None = None,
     err: TextIO | None = None,
@@ -54,7 +55,9 @@ def run_test(
     ok = 0
     failed = 0
     members_total: int | None = None
-    with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
+    with open_for_cli(
+        archive, password=pwd, track_io=track_io, config=config, err=err
+    ) as reader:
         indexed = reader.members_report_if_available()
         total_bytes: int | None = None
         if indexed is not None:
