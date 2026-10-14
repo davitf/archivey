@@ -519,7 +519,11 @@ From a pipe the data goes by once, so there is no second walk. The pass keeps th
 bounded confirm on it; the winner reads those bytes, then the rest of the stream. A bit-3
 member is confirmed only when it ends inside them, by its descriptor's CRC or the HMAC.
 When several candidates are still inconclusive, the first wins, and its CRC or HMAC at
-the end decides, as for one password (§6).
+the end decides, as for one password (§6). An unread encrypted symlink whose ciphertext is
+over what the pass keeps (8 KiB, which only a padded codec stream reaches) is decoded as
+the pass drains it; under a password provider it is not, since that would ask the
+provider about a member that may not be a link, so its target is reported locked
+(`password_required`) even where a password list holding the same password resolves it.
 
 With one ZipCrypto password, a wrong password that passes the check byte fails where the
 decrypted bytes first meet a check. `open()` parses an LZMA or PPMd member's codec

@@ -312,7 +312,8 @@ pass could spool the whole ciphertext, walk every survivor to its end and serve 
 winner from the spool, once spool limits are designed. The pass decodes as it drains only
 an unread member whose ciphertext is over what it keeps for a link target; with a
 provider it does not, as that would ask the provider about a member that may not be a
-link, and its target is reported locked. A kept one is decrypted only once the directory
+link, and its target is reported locked, even when a password the pass already holds
+would open it (a password list resolves the same target). A kept one is decrypted only once the directory
 makes it a link, provider or not, as from a file.
 
 A codec stream stops after its end without saying how far past it it read: its
