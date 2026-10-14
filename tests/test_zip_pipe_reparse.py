@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import struct
+import sys
 import zipfile
 from pathlib import Path
 
@@ -228,6 +229,8 @@ def test_a_reparse_link_over_the_cap_is_written_from_a_pipe_as_from_a_file(
     from_file = _extracted(data, tmp_path / "file", piped=False, config=config)
     piped = _extracted(data, tmp_path / "pipe", piped=True, config=config)
     assert piped == from_file
+    if not sys.platform.startswith("win"):
+        assert from_file == ([ExtractionStatus.EXTRACTED], [(Path("linkdir"), True)])
 
 
 def _padded_link() -> bytes:

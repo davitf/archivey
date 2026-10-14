@@ -1183,10 +1183,11 @@ class _PassData:
         An encrypted one keeps its ciphertext instead, decrypted only if the directory
         makes it a link (``_KeptCiphertext``): no key is derived for a member nobody
         asked for, unless its ciphertext is over ``_MAX_KEPT_CIPHERTEXT``, and then it
-        is decoded here, its failure kept for the target's read. Only under
-        ``read_link_targets``, which allows reading a target nobody asked for, and
-        asking a password provider for it: the member may turn out to be no link, which
-        only a padded codec stream makes this long.
+        is decoded here, its failure kept for the target's read. That decryption, unlike
+        the reparse prefix, happens only under ``read_link_targets``, which allows
+        reading a target nobody asked for, and asking a password provider for it: the
+        member may turn out to be no link, which only a padded codec stream makes this
+        long.
 
         A bit-3 member is decoded to its end, which is the only way to find it from
         its decoded data, so there a failure ends the walk. An encrypted one is the

@@ -379,10 +379,10 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   damaged one's does (`SYMLINK_TARGET_UNAVAILABLE` at listing, a failed member in
   extraction) where a file read reads up to 64 KiB of it. Each such member costs a
   decoder (about 0.1 ms, more for PPMd), which a file read does not spend on a member it
-  does not read. A member the directory renames (a DOS
-  host makes `\` a separator) is written again under its name, from the bytes already on
-  disk. It only touches what it created (DR-18). This is the same end-of-pass step that
-  already resolves links in a streaming pass.
+  does not read. A member the directory renames (a DOS host makes `\` a separator) is
+  written again under its name, from the bytes already on disk. It only touches what it
+  created (DR-18). This is the same end-of-pass step that already resolves links in a
+  streaming pass.
 - A member whose type the directory changes goes through the caller's `filter` and the
   extraction policy's checks **again**, on the updated member (name, type, link
   target), before the link is made, exactly as `extract_all` already calls the filter
