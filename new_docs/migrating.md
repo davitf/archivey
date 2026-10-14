@@ -98,3 +98,39 @@ everything before it, with tarfile or with archivey. `stream_members()` reads ea
 order, in every format, which also suits 7z and RAR archives that compress members together ([Solid
 archives](reading.md#solid-archives)). With `streaming=True`, a read out of order raises instead of
 quietly costing time.
+
+## Extracting
+
+`extract_all` never writes outside the destination folder, in any format or under any policy.
+zipfile and tarfile treat the same members differently:
+
+| Member | zipfile | tarfile with `filter="data"` | archivey, `strict` (the default) | archivey, `standard` |
+| --- | --- | --- | --- | --- |
+| `/abs.txt` | Written as `abs.txt` | Written as `abs.txt` | Refused | Written as `abs.txt` |
+| `../up.txt` | Written as `up.txt` | Raises, ending the extraction | Refused | Refused |
+| Link to `../../etc/passwd` | A plain file holding the path | Raises, ending the extraction | Refused | Refused |
+| File with mode 4755 (setuid) | Not kept | 755 | 644 | 755 |
+| File with mode 666 | Not kept | 644 | 644 | 666 |
+| File with mode 755 | Not kept | 755 | 644 | 755 |
+
+zipfile ignores the permissions an archive records, so each file gets the system's default for new
+files, usually 644. The data filter is tarfile's default from Python 3.14. Before that, tarfile with
+no filter writes every member as recorded, outside the destination too, and Python 3.12 and 3.13
+warn about it. The Extracting page has [a longer
+table](extracting.md#what-each-policy-does-with-unusual-members), with more kinds of member and
+every policy.
+
+When archivey refuses a member, it skips it and goes on with the others, where tarfile's data
+filter raises and ends the whole extraction. `abort_on=["blocked_member"]` makes archivey stop too.
+If you want zipfile's renaming, pass `filter=archivey.sanitize_names`. `filter=` also takes your own
+function, which can rename, skip or change each member ([Extracting all or some
+members](extracting.md#extracting-all-or-some-members)).
+
+zipfile and tarfile write as much as the archive holds. Archivey stops at 2 GiB written, 262,144
+members, or a member that expands more than 1000 times, and all three can be changed ([Archives you
+trust](extracting.md#archives-you-trust)). `extract_all` returns an `ExtractionReport` saying what
+happened to each member, where `extractall` returns `None`.
+
+`shutil.unpack_archive` picks the format from the extension, handles ZIP and TAR (with gzip, bzip2,
+xz, and zstd from Python 3.14), and extracts them through zipfile and tarfile, so the comparison
+above applies to it too.
