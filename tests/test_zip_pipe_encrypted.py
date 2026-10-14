@@ -247,13 +247,21 @@ def test_a_pipe_decrypts_as_the_file_read_does(build) -> None:  # noqa: ANN001
 
 
 @pytest.mark.parametrize("build", _fixtures())
-def test_a_wrong_or_missing_password_fails_as_from_a_file(build) -> None:  # noqa: ANN001
+def test_a_wrong_or_missing_password_fails_as_from_a_file(
+    build,  # noqa: ANN001
+    request: pytest.FixtureRequest,
+) -> None:
     data = _with_plain_member(build())
+    # The member shorter than its encryption header is refused for that, whatever
+    # the password, from a file too.
+    short = "zipcrypto-bit3-shorter-than-its-header" in request.node.name
     for password in (b"not the password", None):
         expected = _file_read(data, password)
         kind, _ = expected["a.txt"]  # type: ignore[misc]
-        # The member shorter than its encryption header is refused for that first.
-        assert issubclass(kind, (EncryptionError, CorruptionError))
+        if short and password is not None:
+            assert kind is CorruptionError
+        else:
+            assert issubclass(kind, EncryptionError)
         assert _pipe_read(data, password) == expected
 
 
@@ -384,6 +392,17 @@ def _link_targets(data: bytes, password: object, *, pipe: bool) -> list[object]:
             id="zipcrypto",
         ),
         pytest.param(
+            lambda: build_zipcrypto_zip(
+                _PASSWORD,
+                b"link",
+                b"target.txt",
+                compression=zipfile.ZIP_DEFLATED,
+                unix_mode=0o120777,
+                compressed=_padded_deflate(b"target.txt"),
+            ),
+            id="zipcrypto-deflate-padded-past-the-kept-ciphertext",
+        ),
+        pytest.param(
             lambda: _aes_zip_link(),
             id="aes",
             marks=requires("cryptography"),
@@ -392,8 +411,8 @@ def _link_targets(data: bytes, password: object, *, pipe: bool) -> list[object]:
 )
 @pytest.mark.parametrize("password", [_PASSWORD, b"not the password", None])
 def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> None:  # noqa: ANN001
-    """The pass decrypts a short member for its target before the directory says
-    it is a link, without the caller asking."""
+    """The pass keeps a short member's ciphertext and decrypts it for the target
+    once the directory says it is a link, without the caller asking."""
     data = build()
     assert _link_targets(data, password, pipe=True) == _link_targets(
         data, password, pipe=False
@@ -499,3 +518,10 @@ def test_no_key_is_derived_for_a_member_nobody_reads(
             pass
         assert len(reader.members_report().members) == 20
     assert calls == []
+
+
+def _padded_deflate(data: bytes) -> bytes:
+    """``data`` as raw deflate after 1700 empty stored blocks: a valid member whose
+    stored length (8.5 KB) is out of all proportion to its 10 bytes."""
+    body = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return b"\x00\x00\x00\xff\xff" * 1700 + body.compress(data) + body.flush()

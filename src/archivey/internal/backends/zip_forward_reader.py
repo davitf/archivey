@@ -118,6 +118,9 @@ _DRAIN_CHUNK = 1 << 16
 _NO_END_BEFORE_EOF = sys.maxsize
 #: The most ciphertext kept for an encrypted member that may be a link: twice the
 #: target's cap, room for the encryption header, the AES code and a codec's framing.
+#: Not a limit on what is read: a longer member (deflate padded with empty blocks) is
+#: decrypted as the pass drains it instead, at the cost of one key derivation, so it
+#: bounds only the bytes held until the directory arrives.
 _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 
 # A forward pass decides nothing by seeking back, and reads each member's data once.
@@ -230,7 +233,8 @@ class _PassData:
 
     A member whose data could be a symlink's target (at most
     :data:`MAX_LINK_TARGET_BYTES` decoded bytes) keeps them: the directory, which says
-    whether it is a link, comes after the data.
+    whether it is a link, comes after the data. An encrypted one nobody read keeps its
+    ciphertext instead (:class:`_KeptCiphertext`).
     """
 
     def __init__(
@@ -591,7 +595,9 @@ class _PassData:
         its failure loses the bytes and nothing else, as a member nobody reads costs
         nothing from a file. An encrypted one keeps its ciphertext instead, decrypted
         only if the directory makes it a link (``_KeptCiphertext``): no key is derived
-        for a member nobody asked for. A bit-3 member is decoded to its end, which is
+        for a member nobody asked for, unless its ciphertext is over
+        ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here, its failure kept for
+        the target's read. A bit-3 member is decoded to its end, which is
         the only way to find it, so there a failure ends the walk; an encrypted bit-3
         STORED one is skipped instead, as its scan finds the end without the key.
         """
@@ -616,16 +622,18 @@ class _PassData:
             skip = encrypted
         else:
             skip = header.file_size > MAX_LINK_TARGET_BYTES
-            if encrypted and self._decoded is None:
-                # No key derived yet, and none is derived for a member nobody read.
-                if (
-                    not skip
-                    and self._open_error is None
-                    and header.compressed_size <= _MAX_KEPT_CIPHERTEXT
-                ):
-                    self._kept = _KeptCiphertext(
-                        self.entry, read_exact(self._data, header.compressed_size)
-                    )
+            if (
+                encrypted
+                and not skip
+                and self._decoded is None
+                and self._open_error is None
+                and header.compressed_size <= _MAX_KEPT_CIPHERTEXT
+            ):
+                # No key derived yet, and none is derived for a member nobody read
+                # unless the directory makes it a link.
+                self._kept = _KeptCiphertext(
+                    self.entry, read_exact(self._data, header.compressed_size)
+                )
                 skip = True
         if not skip:
             try:
@@ -661,9 +669,8 @@ class _PassData:
         if self._kept is not None:
             return self._kept
         header = self.entry.header
-        if self._encrypted():
-            # Sized and not kept: over the length a link target may have.
-            return "encrypted" if self._deferred() else None
+        if self._encrypted() and self._deferred():
+            return "encrypted"
         if not self.verified and (
             self._deferred() or header.file_size <= MAX_LINK_TARGET_BYTES
         ):
@@ -689,11 +696,16 @@ class _KeptCiphertext:
         return len(self.data)
 
     def decode(self, reader: ZipForwardReader, member: ArchiveMember) -> bytes:
-        """The plaintext, read as the caller's stream reads it: the same password
-        attempt, codec and checks, so a failure is the one a read raises."""
+        """The plaintext, up to one byte past the target cap, read as the caller's
+        stream reads it: the same password attempt, codec and checks, so a failure is
+        the one a read raises."""
         decoder = _PassData(reader, self.entry, member, _KeptData(self))
         out = bytearray()
-        while chunk := decoder.read(_DRAIN_CHUNK):
+        # One byte past the cap, as ``_read_link_target_data`` reads: a target that
+        # long is refused there, and a shorter one reaches its end and its checks.
+        while (left := MAX_LINK_TARGET_BYTES + 1 - len(out)) > 0 and (
+            chunk := decoder.read(left)
+        ):
             out += chunk
         return bytes(out)
 
