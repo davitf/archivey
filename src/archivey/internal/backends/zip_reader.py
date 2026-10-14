@@ -198,6 +198,8 @@ _ZIP_ENCODINGS = ("utf-8", "cp437")
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
 # then the high byte of the DOS time rather than of the CRC-32.
 _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
+# ZIP general-purpose bit 11: the name and comment are UTF-8.
+_ZIP_MASK_UTF8 = 0x800
 
 # ZIP general-purpose bit 0: the member is encrypted.
 _ZIP_MASK_ENCRYPTED = 0x1
@@ -1379,7 +1381,7 @@ class ZipReader(BaseArchiveReader):
         the directory marker. It reports nothing, so the end-record findings can name
         an entry the listing already decoded."""
         raw_name = entry.name
-        is_utf8_flagged = bool(entry.flags & 0x800)
+        is_utf8_flagged = bool(entry.flags & _ZIP_MASK_UTF8)
         if is_utf8_flagged:
             try:
                 decoded = raw_name.decode("utf-8")
@@ -1584,7 +1586,7 @@ class ZipReader(BaseArchiveReader):
             # APPNOTE puts the member comment under the name's UTF-8 flag.
             member.comment = (
                 _decode_with_fallback(entry.comment)
-                if entry.flags & 0x800
+                if entry.flags & _ZIP_MASK_UTF8
                 else self._decode_unflagged_comment(entry.comment)
             )
         member.create_system = create_system

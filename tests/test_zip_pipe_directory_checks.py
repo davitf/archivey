@@ -89,10 +89,12 @@ def test_an_encryption_flag_only_the_directory_sets_fails_the_member() -> None:
     central = _central(raw)
     flags = struct.unpack_from("<H", raw, central + 8)[0]
     struct.pack_into("<H", raw, central + 8, flags | 0x1)
-    with pytest.raises(CorruptionError, match=r"\(encryption flag, local first\)"):
+    message = r"\(encrypted in the directory, not in the local header\)"
+    with pytest.raises(CorruptionError, match=message):
         _drain(bytes(raw))
 
 
+@requires("inflate64")
 def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_checks() -> (
     None
 ):
@@ -100,8 +102,18 @@ def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_che
     directory describes, whichever codec decoded it."""
     raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
     struct.pack_into("<H", raw, 8, 9)  # Deflate64 decodes this Deflate stream too
-    pytest.importorskip("inflate64")
     assert _drain(bytes(raw)) == [b"hello world" * 20]
+
+
+@requires("cryptography")
+def test_a_crc_the_two_headers_disagree_on_does_not_fail_an_ae2_member() -> None:
+    """WinZip AE-2 stores no CRC to check (the authentication code stands in for it),
+    so neither read compares one."""
+    raw = bytearray(build_aes_zip([(b"a.bin", b"payload")], password=b"right"))
+    struct.pack_into("<I", raw, _central(raw) + 16, 0x1234_5678)
+    with archivey.open_archive(io.BytesIO(bytes(raw)), password=b"right") as archive:
+        assert archive.read("a.bin") == b"payload"
+    assert _drain(bytes(raw), password=b"right") == [b"payload"]
 
 
 def test_a_member_decoding_short_of_its_size_is_truncation_as_from_a_file() -> None:

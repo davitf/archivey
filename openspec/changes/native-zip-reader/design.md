@@ -481,7 +481,8 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   updated in place, `is_current` included, and `member_state_final` said so.
 
 ### Failures found at the end of the pass
- Five things are known only once the directory has been read: a size or CRC from a data
+
+Five things are known only once the directory has been read: a size or CRC from a data
 descriptor that differs from the central entry, a local header the central entry
 contradicts in its CRC, sizes or encryption flag, two same-name members whose directory
 order reverses their file order, a directory entry with no local entry, and a member
@@ -533,12 +534,13 @@ requirement):
   nothing: the members are updated in place and `member_state_final` said they might be.
   Nothing is on disk to settle.
 
-The first two make a streaming extraction fail a member that the seekable extraction of
-the same archive writes (the seekable read refuses a member whose two names differ, as
-the pass does). That is the only place the two access modes differ on disk. Both shapes
-come only from crafted or hand-edited archives, which DR-5a allows to differ a little;
-matching them would mean buffering every member until the directory arrives (ADR
-0010).
+The descriptor mismatch and the reversed pair make a streaming extraction fail a member
+that the seekable extraction of the same archive writes, and the contradicted local
+header one that it writes differently or fails too (the seekable read refuses a member
+whose two names differ, as the pass does). That is the only place the two access modes
+differ on disk. Both shapes come only from crafted or hand-edited archives, which DR-5a
+allows to differ a little; matching them would mean buffering every member until the
+directory arrives (ADR 0010).
 
 One more thing is known only once the directory has been read, and is not a member
 failure. A directory entry pointing at a local header an earlier entry already took ends

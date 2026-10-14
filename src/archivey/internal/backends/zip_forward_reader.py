@@ -62,7 +62,6 @@ from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
     EndRecord,
-    LocalHeader,
 )
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
@@ -72,6 +71,8 @@ from archivey.internal.backends.zip_reader import (
     _ZIP_KEYED_SETTINGS_METHODS,
     _ZIP_MASK_COMPRESSED_PATCHED_DATA,
     _ZIP_MASK_LZMA_EOS_MARKER,
+    _ZIP_MASK_USE_DATA_DESCRIPTOR,
+    _ZIP_MASK_UTF8,
     _ZIP_REJECTING_METHODS,
     ZipReader,
     _bound_offset,
@@ -137,10 +138,6 @@ from archivey.types import (
 
 # Read size when the pass reads through data nobody asked for.
 _DRAIN_CHUNK = 1 << 16
-# General purpose flag bit 3: the CRC and sizes are in a data descriptor.
-_FLAG_DATA_DESCRIPTOR = 0x08
-# General purpose flag bit 11: the name and comment are UTF-8.
-_FLAG_UTF8 = 0x800
 #: A watch size no read reaches, for a stream whose check runs only at EOF.
 _NO_END_BEFORE_EOF = sys.maxsize
 #: The most ciphertext kept for an encrypted member that may be a link: twice the
@@ -230,10 +227,10 @@ def _contradicts(descriptor: tuple[int, int, int], central: CentralEntry) -> boo
 
 
 def _header_disagreements(
-    local: tuple[int, int, int, int, int], central: CentralEntry, *, crc_used: bool
+    local: _ZipLocator, central: CentralEntry, *, crc_used: bool
 ) -> list[str]:
-    """The fields a local header (``_local_fields``) and ``central`` disagree on, out
-    of those that decide what a read yields.
+    """The fields a member's local header (its pass-time ``_raw``) and ``central``
+    disagree on, out of those that decide what a read yields.
 
     The pass reads a member's data as its local header describes it; a file read reads
     it as the directory does. The CRC and sizes count only when the local header holds
@@ -242,13 +239,17 @@ def _header_disagreements(
     not count: the data the pass decoded matched the CRC and size the directory gives,
     so it is the data the directory describes, whichever codec produced it.
     """
-    flags, method, crc, compressed_size, file_size = local
+    flags, crc = local.flags, local.crc
+    compressed_size, file_size = local.compressed_size, local.file_size
     differ = []
-    if _is_encrypted_entry(flags, method) != _is_encrypted_entry(
-        central.flags, central.method
-    ):
-        differ.append("encryption flag")
-    if not flags & _FLAG_DATA_DESCRIPTOR:
+    encrypted = _is_encrypted_entry(flags, local.method)
+    if encrypted != _is_encrypted_entry(central.flags, central.method):
+        differ.append(
+            "encrypted in the local header, not in the directory"
+            if encrypted
+            else "encrypted in the directory, not in the local header"
+        )
+    if not flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
         if crc_used and crc != central.crc:
             differ.append(f"CRC-32 {crc:08x} against {central.crc:08x}")
         if compressed_size != central.compressed_size:
@@ -260,21 +261,12 @@ def _header_disagreements(
     return differ
 
 
-def _local_fields(header: LocalHeader) -> tuple[int, int, int, int, int]:
-    """What :func:`_header_disagreements` compares, kept per member until the end."""
-    return (
-        header.flags,
-        header.method,
-        header.crc,
-        header.compressed_size,
-        header.file_size,
-    )
-
-
 def _header_error(member: ArchiveMember, differ: list[str]) -> CorruptionError:
+    # Which side of an "X against Y" pair is the local header's.
+    order = ", local first" if any(" against " in item for item in differ) else ""
     return CorruptionError(
         f"ZIP member {quoted(member.name)}: its local header and its central "
-        f"directory entry disagree ({', '.join(differ)}, local first); the data the "
+        f"directory entry disagree ({', '.join(differ)}{order}); the data the "
         "stream held for it was read as the local header describes it, and a read "
         "that follows the directory reads it differently",
         member_name=member.name,
@@ -1408,9 +1400,6 @@ class ZipForwardReader(ZipReader):
         # though a set costs some 60 bytes an offset against their array's 8, for a
         # lookup per directory entry.
         self._local_offsets: set[int] = set()
-        # Local header offset -> what that header says of the fields a read uses
-        # (``_local_fields``), for the directory to confirm at the end.
-        self._local_headers: dict[int, tuple[int, int, int, int, int]] = {}
         # Member id -> its whole data, when short enough to be a link target, until
         # the directory says which members are links. Weighed by the listing tracker.
         self._captured: dict[int, bytes] = {}
@@ -1466,7 +1455,6 @@ class ZipForwardReader(ZipReader):
             )
             self._by_offset[entry.offset] = member
             self._local_offsets.add(entry.offset)
-            self._local_headers[entry.offset] = _local_fields(entry.header)
             yield member
             index += 1
         self._read_directory()
@@ -1515,14 +1503,14 @@ class ZipForwardReader(ZipReader):
         try:
             decoded_name = self._decode_member_name(central)
         except CorruptionError:
-            if not central.flags & _FLAG_UTF8:
+            if not central.flags & _ZIP_MASK_UTF8:
                 raise
             # A name the UTF-8 flag mislabels is the directory's to refuse: a file
             # read refuses this member when its local name differs from the central
             # one, and the whole listing only when the central name is the bad one.
             # Read as unflagged, the member goes on to that check at the end.
             decoded_name = self._decode_member_name(
-                replace(central, flags=central.flags & ~_FLAG_UTF8)
+                replace(central, flags=central.flags & ~_ZIP_MASK_UTF8)
             )
         stored_as_directory = decoded_name.text.endswith(("/", "\\"))
         member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
@@ -1606,9 +1594,10 @@ class ZipForwardReader(ZipReader):
         A local entry no directory entry points to is dropped from the listing and
         reported (``ARCHIVE_UNLISTED_DATA``). Of two members with the same name, the
         later in the directory is current (``_listed_in_index_order``). A member whose
-        data descriptor the directory contradicts, or whose local header names it
-        differently, fails (``_failed_at_end``): the pass raises for the first, after
-        a directory entry with no local entry and two entries for one local entry.
+        data descriptor or local header the directory contradicts, or whose local
+        header names it differently, fails (``_failed_at_end``): the pass raises for
+        the first, after a directory entry with no local entry and two entries for one
+        local entry.
         """
         limits = self._config.listing_limits
         max_members = limits.max_members
@@ -1677,11 +1666,11 @@ class ZipForwardReader(ZipReader):
                 )
                 continue
             updates.append((member, central))
-            aes = cast("_ZipLocator", member._raw).aes
+            # ``_raw`` still holds the local header's fields: the directory replaces
+            # it only in ``_update_from_directory``, after this loop.
+            local = cast("_ZipLocator", member._raw)
             differ = _header_disagreements(
-                self._local_headers[offset],
-                central,
-                crc_used=aes is None or not aes.is_ae2,
+                local, central, crc_used=local.aes is None or not local.aes.is_ae2
             )
             descriptor = self._descriptors.get(offset)
             if differ:
@@ -1729,7 +1718,6 @@ class ZipForwardReader(ZipReader):
             self._emit_trailing_data(found)
         self._by_offset = {}
         self._local_offsets = set()
-        self._local_headers = {}
         self._descriptors = {}
         if shared:
             first = shared[0]

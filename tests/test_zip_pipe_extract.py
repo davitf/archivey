@@ -762,6 +762,34 @@ def test_a_contradicted_descriptor_under_stop_raises(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["after.txt"]
 
 
+def _contradicted_header() -> bytes:
+    """``a.txt`` and ``b.txt``, with ``a.txt``'s central CRC contradicting the CRC its
+    local header holds and its data matches."""
+    hand = _Hand()
+    hand.local(b"a.txt", b"one")
+    hand.local(b"b.txt", b"two")
+    data = bytearray(hand.directory(0, 1))
+    struct.pack_into("<I", data, data.index(b"PK\x01\x02") + 16, 0x1234_5678)
+    return bytes(data)
+
+
+def test_a_contradicted_local_header_fails_the_member(tmp_path: Path) -> None:
+    report = _piped_report(_contradicted_header(), tmp_path, on_error=OnError.CONTINUE)
+    assert _outcomes(report) == [
+        ("a.txt", ExtractionStatus.FAILED, CorruptionError),
+        ("b.txt", ExtractionStatus.EXTRACTED, None),
+    ]
+    # The pass wrote a.txt's bytes before the directory contradicted its header.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.txt"]
+
+
+def test_a_contradicted_local_header_under_stop_raises(tmp_path: Path) -> None:
+    with pytest.raises(CorruptionError, match="local header and its central") as raised:
+        _piped_report(_contradicted_header(), tmp_path, on_error=OnError.STOP)
+    assert raised.value.member_name == "a.txt"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.txt"]
+
+
 def _missing_entry(name: bytes = b"b.txt") -> bytes:
     """``a.txt`` and ``b.txt``, with ``b.txt``'s directory entry pointing past the
     stream's last local header, and named ``name`` (five bytes) there."""
