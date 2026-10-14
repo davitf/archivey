@@ -21,3 +21,29 @@ it stops an archive that expands past its limits.
 | Unpack any supported format | `shutil.unpack_archive(p, d)` | `open_archive(p)`, then `reader.extract_all(d)` | [More formats, and a report of what was written](#extracting) |
 | Decompress a single file | `gzip.open(p)`, `bz2.open(p)`, `lzma.open(p)` | `archivey.open_stream(p)` | [One call for every compression format](opening.md#single-compressed-files) |
 | Identify the format | the file's extension | `archivey.detect_format(p)` | [Reads the contents](opening.md#format) |
+
+## Opening an archive
+
+`open_archive` opens every format archivey reads and identifies it from the file's contents, so a
+TAR file named `backup.bin` opens too, where `shutil.unpack_archive` fails because of the extension.
+If your code actually needs to handle only one format, you can pass `format="zip"` or
+`format=archivey.ArchiveFormat.TAR_GZ` to skip detection. A file in another format then fails like a
+damaged one ([Format](opening.md#format)).
+
+A password is given once, when opening: one string, a list of candidates, or a function that
+supplies them ([Passwords](opening.md#passwords)). zipfile takes one per read or through
+`setpassword`, and only for the older ZIP encryption. Archivey also reads WinZip AES, and 7z and RAR
+archives with a password.
+
+Three options to `open_archive` allow ways of reading that are off by default:
+
+| To do this | zipfile | tarfile | archivey |
+| --- | --- | --- | --- |
+| Seek in a member | Allowed; a seek back decompresses again from the start | Allowed; the same | `seekable_members=True` |
+| Keep several members open at once | Allowed | Allowed | `concurrent_members=True` |
+| Read from a pipe | Not possible | One pass, with mode `"r\|*"` | One pass, with `streaming=True`, for TAR and single compressed files |
+
+Seeking and keeping several members open are cheap on some archives and slow on others, and nothing
+in the calling code shows which. Archivey turns them off by default so that code tested on a ZIP
+doesn't first turn slow on a `.tar.gz` in production. [Choosing how to read](reading.md) explains
+each option and what it costs.
