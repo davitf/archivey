@@ -415,3 +415,22 @@ def test_what_the_stream_read_past_a_large_member_is_put_back() -> None:
     assert data.consumed > len(members[0].packed)
     data.settle(crc=zlib.crc32(out), file_size=len(out))
     assert _read_member(walk) == (b"after", _SMALL, None)
+
+
+def test_settle_hands_over_the_data_it_read_past_what_was_handed_out() -> None:
+    """A caller whose reads stop short of the data's end (a decrypt stage that has
+    not reached the authentication code) gets the rest from ``passed_over``."""
+    method = _METHODS["deflate"].values[0]
+    member = _member(b"a", method, _SMALL)
+    walk = LocalHeaderWalk(_Pipe(_streamed_zip([member, _stored(b"next", b"x")])))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    assert data.passed_over == b""
+    handed = data.read(len(member.packed) - 3)
+    descriptor = data.settle(crc=zlib.crc32(_SMALL), file_size=len(_SMALL))
+    assert descriptor.compressed_size == len(member.packed)
+    assert handed + data.passed_over == member.packed
+    after = _read_member(walk)
+    assert after is not None
+    assert after[:2] == (b"next", b"x")

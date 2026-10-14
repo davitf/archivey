@@ -294,6 +294,10 @@ class MemberData(ReadOnlyIOStream):
         #: Bytes handed out so far. For a codec member that is past its data: what
         #: its compressed size is, the descriptor ``settle`` returns says.
         self.consumed = 0
+        #: The data's bytes after the last one handed out, which :meth:`settle` read
+        #: to find the descriptor (a codec member's bytes between its codec's end and
+        #: its descriptor); empty until then and on any other member.
+        self.passed_over = b""
         self._settled = False
 
     def read(self, n: int = -1, /) -> bytes:
@@ -476,7 +480,8 @@ class _CodecData(MemberData):
         walk reads on from inside its data; comparing the descriptor with the central
         entry at the end of the pass (task 3.3b) is what will catch it.
         """
-        base = self.consumed - self._kept_len
+        handed = self._kept_len  # where the bytes handed out end in ``buffer``
+        base = self.consumed - handed
         ahead = self._source.read(_DESCRIPTOR_LOOKAHEAD)
         at_end = len(ahead) < _DESCRIPTOR_LOOKAHEAD
         buffer = b"".join([*self._kept, ahead])
@@ -527,6 +532,7 @@ class _CodecData(MemberData):
                 f"{crc:08x}"
             )
         pos, descriptor = found
+        self.passed_over = buffer[handed:pos]
         self._source.unread(buffer[pos + descriptor.length :])
         return descriptor
 
@@ -841,12 +847,16 @@ class LocalHeaderWalk:
         self._index += 1
         return entry
 
-    def member_data(self, entry: LocalEntry, *, encrypted: bool = False) -> MemberData:
+    def member_data(
+        self, entry: LocalEntry, *, encrypted: bool = False, stored: bool | None = None
+    ) -> MemberData:
         """The reader for ``entry``'s compressed data (for an encrypted member, its
         ciphertext, encryption header included).
 
-        Must be called once for each entry :meth:`next_entry` returns, and settled
-        before the next one.
+        ``stored`` says whether the data is STORED when the header's method does not
+        (WinZip AES names the real method in an extra field); by default it is the
+        header's. Must be called once for each entry :meth:`next_entry` returns, and
+        settled before the next one.
         """
         if entry is not self._unsettled or self._open is not None:
             raise ValueError(
@@ -855,7 +865,7 @@ class LocalHeaderWalk:
         data: MemberData
         if not entry.deferred:
             data = _SizedData(self, entry)
-        elif entry.header.method == _METHOD_STORED:
+        elif stored if stored is not None else entry.header.method == _METHOD_STORED:
             data = _ScannedData(self, entry, check_crc=not encrypted)
         else:
             data = _CodecData(self, entry)

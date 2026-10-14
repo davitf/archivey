@@ -468,6 +468,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         source_mod.ArchiveSource,
         # Decrypt stages below the codec: compressed-side offsets, no table.
         zip_aes.WinZipAesDecryptStream,
+        zip_aes.WinZipAesForwardStream,
         zipcrypto.ZipCryptoDecryptStream,
         # Translates errors between the reader's unverified-read watch and the
         # member's verifier; like the watch, nothing above it asks it for a resume

@@ -127,18 +127,24 @@ each lands with nothing half-done reachable:
       asked for), and an encrypted member's failed read is kept for its target's
       read (`test_zip_pipe_encrypted.py`). Several candidates, or a provider, are
       refused when read until 3b3d3, and the pass must not call a provider for a
-      member nobody asked for. Left for 3b3d2: a bit-3 STORED ZipCrypto link nobody
-      read still reports its target unavailable ("encrypted"), where a file reads
-      it. Left for 3.4 (every fixture through a pipe): a sized member whose data
+      member nobody asked for (3b3d3 must still pass a bit-3 codec member nobody
+      asked for, which needs its key). 3b3d2: a bit-3 STORED member nobody read
+      keeps its ciphertext as a sized one does, its scan's descriptor with it, so
+      its link target reads as from a file; a bit-3 codec member is decrypted and
+      decoded to find its end, read or not, and without the key the walk ends there
+      with the member's error. Left for 3.4 (every fixture through a pipe): a sized member whose data
       decodes short of its local header's size reports the pass's own
       size-mismatch `CorruptionError` where the file read reports the verifier's
       `TruncatedError`, encrypted or not (both `CorruptionError` under DR-4; a
       ZipCrypto member shows neither, as the password-or-damage error). Data past
       the declared size already gives the file read's error.
-- [ ] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
+- [x] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
       codec's input, so the AES stage authenticates the ciphertext as it goes, holding
       back the bytes past the codec's end until `settle` says where the data ended
       (test: an AE-1 and an AE-2 deflated member from a pipe, and a wrong code).
+      3b3d2: `WinZipAesForwardStream` (also bit-3 STORED under AES, which ends with
+      its source and holds back the code alone); `MemberData.passed_over` hands it
+      the data the descriptor search read past its last read.
 - [x] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
       and reported; a missing one is handled per 3.3g. 3b3b: extraction keeps what it

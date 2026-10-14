@@ -26,6 +26,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.zip_aes import (
     ExtraField,
     WinZipAesDecryptStream,
+    WinZipAesForwardStream,
     WinZipAesInfo,
     derive_winzip_aes_keys,
     iter_extra_fields,
@@ -1027,3 +1028,64 @@ def test_method_99_without_encryption_flag_lists_as_encrypted() -> None:
         assert member.is_encrypted
         with pytest.raises(UnsupportedFeatureError, match="0x9901"):
             ar.open(member)
+
+
+def _forward_envelope() -> tuple[bytes, bytes, bytes, bytes]:
+    """Keys and an AE ciphertext with its code, for :class:`WinZipAesForwardStream`."""
+    enc_key, auth_key, _ = derive_winzip_aes_keys(_PASSWORD, salt=bytes(16), key_len=32)
+    cipher = aes_ctr_le_encrypt(enc_key, _PAYLOAD)
+    mac = hmac.new(auth_key, cipher, hashlib.sha1).digest()[:10]
+    return enc_key, auth_key, cipher, mac
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("pulled", [0, 4, 10, 30])
+@pytest.mark.parametrize("tamper", [False, True])
+def test_forward_stream_authenticates_once_told_where_the_data_ends(
+    pulled: int, tamper: bool
+) -> None:
+    """A codec member's stage reads past the code into what follows, or stops short
+    of it; the walk's ``passed_over`` holds what it did not read."""
+    enc_key, auth_key, cipher, mac = _forward_envelope()
+    if tamper:
+        mac = bytes([mac[0] ^ 1]) + mac[1:]
+    rest = mac + b"PK\x07\x08 and what follows"
+    read, passed_over = rest[:pulled], rest[pulled:10] if pulled < 10 else b""
+    stage = WinZipAesForwardStream(
+        io.BytesIO(cipher + read),
+        enc_key=enc_key,
+        auth_key=auth_key,
+        header_len=18,
+        hold_back=64,
+    )
+    assert stage.read(len(_PAYLOAD)) == _PAYLOAD
+    stage.read()  # on into the code and past it, as a codec's layers read ahead
+    data_len = 18 + len(cipher) + 10
+    if tamper:
+        with pytest.raises(CorruptionError, match="HMAC mismatch"):
+            stage.authenticate_end(data_len, passed_over)
+    else:
+        stage.authenticate_end(data_len, passed_over)
+    with pytest.raises(CorruptionError, match=r"too short .*\(27 < 28\)"):
+        stage.authenticate_end(27, b"")
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("tamper", [False, True])
+def test_forward_stream_ending_with_its_data_holds_back_the_code(tamper: bool) -> None:
+    enc_key, auth_key, cipher, mac = _forward_envelope()
+    if tamper:
+        mac = bytes([mac[0] ^ 1]) + mac[1:]
+    stage = WinZipAesForwardStream(
+        io.BytesIO(cipher[10:] + mac),
+        enc_key=enc_key,
+        auth_key=auth_key,
+        header_len=18,
+        hold_back=None,
+        read_ahead=cipher[:10],
+    )
+    if tamper:
+        with pytest.raises(CorruptionError, match="HMAC mismatch"):
+            stage.read()
+    else:
+        assert stage.read() == _PAYLOAD
