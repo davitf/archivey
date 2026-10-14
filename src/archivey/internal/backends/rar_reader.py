@@ -3031,6 +3031,9 @@ class RarReader(BaseArchiveReader):
             return solid
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
+            # Read straight from the archive (RAR3/4 stores the target as plain
+            # member data), not through the pipe, so its offsets do not move.
+            self._read_pass_link_target(member)
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_copy():

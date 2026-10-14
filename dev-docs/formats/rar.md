@@ -435,8 +435,10 @@ A target the direct read does reach is checked twice before it is used. Its decl
 size must equal its packed size, since a stored target is its packed bytes; a header
 that declares more would have the read run into the next header. Then the bytes are held
 to the member's data CRC32, since the header CRC does not cover the data. On either
-mismatch the read raises `CorruptionError`, and link finalization treats it as ZIP and
-7z treat a damaged target (`_report_damaged_link_target`): the link stays
+mismatch the read raises `CorruptionError`, and it is reported as ZIP and 7z report a
+damaged target (`_report_damaged_link_target`): by the listing, or by a
+`stream_members()` pass when it reaches the link (solid or not; the read goes straight
+to the archive, not through the `unrar` pipe), and once only. The link stays
 listed with `link_target` unset, `SYMLINK_TARGET_UNAVAILABLE` carries
 `reason="target_data_damaged"` (so a strict policy refuses the archive), and opening or
 extracting the link raises the fault. A RAR5 redirect needs no such check, since its

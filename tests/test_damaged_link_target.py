@@ -149,34 +149,67 @@ def test_damaged_link_target_in_a_streaming_pass() -> None:
         assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
 
 
+def _damaged_link_case(fmt: str, tmp_path: Path) -> tuple[bytes, str]:
+    """An archive with one damaged data-stored symlink target, and the link's name."""
+    if fmt == "zip":
+        return _damaged_zip_symlink(), "link"
+    if fmt == "7z":
+        return _damaged_7z_symlink(tmp_path), "link"
+    return _damaged_rar4_symlink(), _RAR4_DAMAGED
+
+
+# Each format's own pass: ZIP the base pass, 7z its folder pass, the solid RAR4 fixture
+# the ``unrar`` pass.
+_PASS_FORMATS = [
+    pytest.param("zip", id="zip"),
+    pytest.param("7z", id="7z", marks=requires_binary("7z")),
+    pytest.param("rar4-solid", id="rar4-solid", marks=requires_binary("unrar")),
+]
+
+
+@pytest.mark.parametrize("fmt", _PASS_FORMATS)
 @pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
-def test_damaged_link_target_in_a_pass_left_early(streaming: bool) -> None:
+def test_damaged_link_target_in_a_pass_left_early(
+    tmp_path: Path, fmt: str, streaming: bool
+) -> None:
     """A pass the caller leaves at the link never resolves links, yet reports it.
 
     The pass reads the target when it reaches the link, so the damage is known there;
     reported only by the link finalization a finished pass runs, it went unreported.
     """
-    with open_archive(io.BytesIO(_damaged_zip_symlink()), streaming=streaming) as ar:
+    blob, link = _damaged_link_case(fmt, tmp_path)
+    with open_archive(io.BytesIO(blob), streaming=streaming) as ar:
         for member, _ in ar.stream_members():
-            if member.name == "link":
+            if member.name == link:
                 break
         assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
 
 
+@pytest.mark.parametrize("fmt", _PASS_FORMATS)
 @pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
 def test_damaged_link_target_under_strict_policy_refuses_the_pass(
-    streaming: bool,
+    tmp_path: Path, fmt: str, streaming: bool
 ) -> None:
     """A strict pass refuses before handing out the link it cannot vouch for."""
+    blob, link = _damaged_link_case(fmt, tmp_path)
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     seen = []
-    with open_archive(
-        io.BytesIO(_damaged_zip_symlink()), streaming=streaming, config=config
-    ) as ar:
+    with open_archive(io.BytesIO(blob), streaming=streaming, config=config) as ar:
         with pytest.raises(DiagnosticRaisedError):
             for member, _ in ar.stream_members():
                 seen.append(member.name)
-    assert "link" not in seen
+    assert link not in seen
+
+
+@pytest.mark.parametrize("fmt", _PASS_FORMATS)
+def test_damaged_link_target_in_a_finished_pass_is_reported_once(
+    tmp_path: Path, fmt: str
+) -> None:
+    blob, _ = _damaged_link_case(fmt, tmp_path)
+    with open_archive(io.BytesIO(blob), streaming=True) as ar:
+        for _ in ar.stream_members():
+            pass
+        assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
 
 
 def test_damaged_link_target_in_a_streaming_extraction_is_reported_once(

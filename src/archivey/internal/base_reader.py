@@ -816,25 +816,8 @@ class BaseArchiveReader(ArchiveReader):
             report = self._materialize_members().report
             members = iter(report.members)
 
-        read_targets = self._config.read_link_targets
-
         def _open(member: ArchiveMember) -> ArchiveStream | None:
-            if (
-                read_targets
-                and member.type is MemberType.SYMLINK
-                and not member._link_target_damaged
-            ):
-                # A streaming pass resolves links when it ends, after the caller has
-                # had the member. A reparse point whose data is not a link buffer is a
-                # file, and the caller needs its stream now, so read the target here,
-                # as the 7z pass does. A random-access listing has read it already.
-                try:
-                    self._read_link_target_on_request(member)
-                except CorruptionError as exc:
-                    # Reported now, not left to the pass's link finalization: a pass
-                    # the caller leaves early never finalizes, and a strict policy
-                    # must still refuse the link it was handed.
-                    self._report_damaged_link_target(member, exc)
+            self._read_pass_link_target(member)
             if member.is_file:
                 return self._lazy_member_stream(member)
             return None
@@ -849,6 +832,32 @@ class BaseArchiveReader(ArchiveReader):
             close_previous=True,
             after_members=_raise_report_error,
         )
+
+    def _read_pass_link_target(self, member: ArchiveMember) -> None:
+        """A data pass has reached ``member``: read its link target before yielding it.
+
+        A streaming pass resolves links when it ends, after the caller has had the
+        member. A reparse point whose data is not a link buffer is a file, and the
+        caller needs its stream now, so the target is read here, as the 7z pass does.
+        A random-access listing has read it already (the memo, or the damage flag,
+        makes this a no-op).
+
+        A damaged target is reported here rather than left to link finalization: a
+        pass the caller leaves early, or one a later member stops, never finalizes,
+        and a strict policy must refuse before the link is handed out. Finalization
+        skips a link already reported as damaged.
+        """
+        if (
+            not self._config.read_link_targets
+            or member.type is not MemberType.SYMLINK
+            # Already read and reported; reading it again would only re-raise.
+            or member._link_target_damaged
+        ):
+            return
+        try:
+            self._read_link_target_on_request(member)
+        except CorruptionError as exc:
+            self._report_damaged_link_target(member, exc)
 
     def _lazy_member_stream(
         self,
@@ -1348,6 +1357,7 @@ class BaseArchiveReader(ArchiveReader):
                     if member.is_link
                     and member.link_target is None
                     and not member._link_target_resolved
+                    # A pass that read it first has reported it already.
                     and not member._link_target_damaged
                 ]
                 if unread:
