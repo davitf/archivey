@@ -81,3 +81,20 @@ you pass another zone.
 When an archive holds a name twice, zipfile, tarfile and archivey all list it twice, and reading by
 name gives the last copy. Going through the member list, `member.is_current` tells you which copy
 that is ([Members with the same name](opening.md#members-with-the-same-name)).
+
+## Reading members
+
+`reader.read` and `reader.open` work like their zipfile and tarfile counterparts, in every format
+archivey opens. For ZIP, the `recommended` extra adds compression methods zipfile can't read:
+Deflate64, PPMd, and zstd before Python 3.14.
+
+Reading a directory that holds no data raises `ArchiveyUsageError`, where zipfile returns empty
+bytes and tarfile's `extractfile` returns `None`. Reading a symbolic link gives its target's
+contents, as tarfile does, and raises `LinkTargetNotFoundError` when the target isn't in the
+archive, where tarfile raises `KeyError`. zipfile gives the link's own text, the target's path.
+
+In a `.tar.gz`, members are compressed together, so reading one in the middle means decompressing
+everything before it, with tarfile or with archivey. `stream_members()` reads each member once, in
+order, in every format, which also suits 7z and RAR archives that compress members together ([Solid
+archives](reading.md#solid-archives)). With `streaming=True`, a read out of order raises instead of
+quietly costing time.
