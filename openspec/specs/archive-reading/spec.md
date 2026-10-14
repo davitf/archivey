@@ -1576,7 +1576,12 @@ message naming the fault. The member SHALL NOT be memoized as resolved: opening 
 following it, or extracting it SHALL read the target again and raise the fault itself,
 and extraction SHALL record that link as a per-member failure. `SYMLINK_TARGET_UNAVAILABLE`
 is in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the archive.
-This holds in random access and at the end of a streaming pass alike.
+This holds in random access and at the end of a streaming pass alike. A
+`stream_members()` pass that reads the target when it reaches the link, to type it before
+handing it out, SHALL report the damage there, before it yields the link, and link
+finalization SHALL NOT report it again. A pass the caller leaves early, or one a later
+member stops, therefore still reports every damaged target it read, and
+`DiagnosticPolicy.STRICT` refuses the pass at that link.
 
 #### Scenario: damaged link target matrix
 
@@ -1586,6 +1591,9 @@ This holds in random access and at the end of a streaming pass alike.
 | Same, `open()` on the link | `CorruptionError` |
 | Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `CorruptionError`; other members extract |
 | Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
+| Same, `stream_members()` in either access mode, left at the link | `SYMLINK_TARGET_UNAVAILABLE`, `reason="target_data_damaged"`, once |
+| Same, `stream_members()` in either access mode, `DiagnosticPolicy.STRICT` | The pass raises `DiagnosticRaisedError` before it yields the link |
+| Same, streaming `extract_all(on_error=CONTINUE)` | Link `FAILED` with `CorruptionError`; reported once |
 | WinZip AES symlink with a failing HMAC, one password or several | Listed targetless with `reason="target_data_damaged"` |
 | 7z symlink whose data fails its CRC | Listed targetless with `reason="target_data_damaged"` |
 | ZIP symlink whose data outruns its declared size | Listed targetless; the message names the declared size |

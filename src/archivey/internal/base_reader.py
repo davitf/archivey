@@ -819,17 +819,22 @@ class BaseArchiveReader(ArchiveReader):
         read_targets = self._config.read_link_targets
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
-            if read_targets and member.type is MemberType.SYMLINK:
+            if (
+                read_targets
+                and member.type is MemberType.SYMLINK
+                and not member._link_target_damaged
+            ):
                 # A streaming pass resolves links when it ends, after the caller has
                 # had the member. A reparse point whose data is not a link buffer is a
                 # file, and the caller needs its stream now, so read the target here,
                 # as the 7z pass does. A random-access listing has read it already.
                 try:
                     self._read_link_target_on_request(member)
-                except CorruptionError:
-                    # The pass's link finalization reads it again and reports it, once,
-                    # as it reports any damaged target.
-                    pass
+                except CorruptionError as exc:
+                    # Reported now, not left to the pass's link finalization: a pass
+                    # the caller leaves early never finalizes, and a strict policy
+                    # must still refuse the link it was handed.
+                    self._report_damaged_link_target(member, exc)
             if member.is_file:
                 return self._lazy_member_stream(member)
             return None
@@ -1343,6 +1348,7 @@ class BaseArchiveReader(ArchiveReader):
                     if member.is_link
                     and member.link_target is None
                     and not member._link_target_resolved
+                    and not member._link_target_damaged
                 ]
                 if unread:
                     self._prepare_link_target_reads(unread)
@@ -1396,6 +1402,8 @@ class BaseArchiveReader(ArchiveReader):
         (``reason="target_data_damaged"``) says why; a strict policy still refuses the
         archive, since the code is an integrity one. The memo stays unset, so opening
         or extracting the link reads the target again and raises the fault itself.
+        ``_link_target_damaged`` marks it reported, so link finalization after a
+        ``stream_members()`` pass that read it first does not report it twice.
         """
         self._emit_link_target_unavailable(
             member,
@@ -1408,6 +1416,8 @@ class BaseArchiveReader(ArchiveReader):
             # this member rather than dropping it under a status that reads as success.
             target_in_archive=True,
         )
+        # After the emit: if a strict policy raises there, the next look reports again.
+        member._link_target_damaged = True
 
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Hook: ``members`` are about to have their data-stored targets read.

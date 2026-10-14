@@ -898,6 +898,13 @@ class ArchiveMember:
     omission, and only the first is an extraction outcome rather than a failure, so the
     backend that knows which it is says so here. Read it through the public
     :attr:`link_target_unrecorded`."""
+    _link_target_damaged: bool = field(default=False, repr=False, compare=False)
+    """Set once this link's target data has failed its integrity check and been reported.
+
+    The fault itself is not kept: opening or extracting the link reads the target again
+    and raises it. This only stops a second report, when a ``stream_members()`` pass
+    read the target as it reached the link and its listing then resolves links. Not
+    part of the public contract."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
     # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``

@@ -149,6 +149,47 @@ def test_damaged_link_target_in_a_streaming_pass() -> None:
         assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
+def test_damaged_link_target_in_a_pass_left_early(streaming: bool) -> None:
+    """A pass the caller leaves at the link never resolves links, yet reports it.
+
+    The pass reads the target when it reaches the link, so the damage is known there;
+    reported only by the link finalization a finished pass runs, it went unreported.
+    """
+    with open_archive(io.BytesIO(_damaged_zip_symlink()), streaming=streaming) as ar:
+        for member, _ in ar.stream_members():
+            if member.name == "link":
+                break
+        assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
+def test_damaged_link_target_under_strict_policy_refuses_the_pass(
+    streaming: bool,
+) -> None:
+    """A strict pass refuses before handing out the link it cannot vouch for."""
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    seen = []
+    with open_archive(
+        io.BytesIO(_damaged_zip_symlink()), streaming=streaming, config=config
+    ) as ar:
+        with pytest.raises(DiagnosticRaisedError):
+            for member, _ in ar.stream_members():
+                seen.append(member.name)
+    assert "link" not in seen
+
+
+def test_damaged_link_target_in_a_streaming_extraction_is_reported_once(
+    tmp_path: Path,
+) -> None:
+    with open_archive(io.BytesIO(_damaged_zip_symlink()), streaming=True) as ar:
+        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
+    by_name = {result.member.name: result for result in report.results}
+    assert by_name["link"].status is ExtractionStatus.FAILED
+    assert is_corruption_not_truncation(by_name["link"].error)
+
+
 def test_damaged_link_target_fails_only_that_link_at_extraction(
     tmp_path: Path,
 ) -> None:
