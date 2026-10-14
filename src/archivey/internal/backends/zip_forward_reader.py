@@ -1485,11 +1485,13 @@ class ZipForwardReader(ZipReader):
     def _read_directory(self) -> None:
         """Read the directory and end records, and update the members in place.
 
-        Every byte after the last member is kept (``read_rest``) and parsed with the
-        seekable read's code: ``find_end_record`` picks the end record a file read
-        picks, and ``CentralDirectoryWalk`` reads the directory it names, so the pass
-        lists what a file read lists and reports the same disagreements between the
-        end record and the directory. Each local entry is matched to its directory
+        The bytes after the last member are kept up to ``_tail_bound`` (``read_rest``)
+        and parsed with the seekable read's code: ``find_end_record`` picks the end
+        record a file read picks, and ``CentralDirectoryWalk`` reads the directory it
+        names, so the pass lists what a file read lists and reports the same
+        disagreements between the end record and the directory, except where
+        ``ForwardTail.end_record`` refuses a record the pass cannot see (passed, or
+        past the bound). Each local entry is matched to its directory
         entry by offset. The directory is authoritative: a member it describes is
         rebuilt from it, as the seekable read builds it, and the yielded object takes
         every field of that build. The entries are charged against ``max_members``

@@ -15,9 +15,10 @@ against the directory. Call graph: :meth:`LocalHeaderWalk.next_entry` (one
 :class:`LocalEntry` per member, in file order) → :meth:`LocalHeaderWalk.member_data`
 (the member's compressed bytes, through a reader that knows where they end) →
 :meth:`MemberData.settle` (the data descriptor, when bit 3 defers the sizes to one) →
-after the last member, :meth:`LocalHeaderWalk.read_rest` (every byte after the members,
-for the caller to parse with the seekable read's ``find_end_record`` and
-``CentralDirectoryWalk``, so a forward read lists what a file read lists).
+after the last member, :meth:`LocalHeaderWalk.read_rest` (the bytes after the members,
+up to a bound, for the caller to parse with the seekable read's ``find_end_record`` and
+``CentralDirectoryWalk``, so a forward read lists what a file read lists except where
+:meth:`ForwardTail.end_record` refuses a record it cannot see).
 
 Where a member's data ends (``openspec/changes/native-zip-reader/design.md``):
 
@@ -1033,11 +1034,13 @@ class LocalHeaderWalk:
         What follows the members (bytes before the directory, the directory, the end
         records, the comment and anything after it) is kept, so the caller parses it
         with the seekable read's own code (``find_end_record``,
-        ``CentralDirectoryWalk``) and lists what that read lists. ``keep`` bounds what
-        is held: past it only the last ``keep`` bytes stay, which is where the end
-        record and the directory before it are; ``None`` keeps everything. While the
-        stream is read the chunks held come to at most ``keep`` plus one chunk; joining
-        them at the end holds them and their copy for that moment.
+        ``CentralDirectoryWalk``) and lists what that read lists, except where
+        :meth:`ForwardTail.end_record` refuses a record before the kept bytes.
+        ``keep`` bounds what is held: past it only the last ``keep`` bytes stay, which
+        is where the end record and the directory before it are; ``None`` keeps
+        everything. While the stream is read the chunks held come to at most ``keep``
+        plus one chunk; joining them at the end holds them and their copy for that
+        moment.
         """
         if self._unsettled is not None:
             raise ValueError("settle the previous member's data first")
