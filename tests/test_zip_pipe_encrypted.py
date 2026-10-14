@@ -1,4 +1,5 @@
-"""Encrypted ZIP members read from a source that cannot seek, with one password.
+"""Encrypted ZIP members read from a source that cannot seek, with one password, a
+list of them or a provider.
 
 The pass decrypts a member whose local header states its size, a bit-3 STORED one
 (its end is found on the ciphertext) and a bit-3 codec one. A codec one the caller
@@ -951,6 +952,28 @@ def test_an_inconclusive_password_closed_early_is_reported_as_such() -> None:
                 stream.read(10)
                 stream.close()
         assert [c.check for c in _unverified(reader)] == ["confirm_budget_exhausted"]
+
+
+@pytest.mark.parametrize("vendor_version", [1, 2])
+def test_a_bit3_aes_codec_member_in_the_kept_bytes_is_confirmed(
+    vendor_version: int,
+) -> None:
+    """Its codec ends inside the kept bytes, and the descriptor after it says where
+    the code is, so the HMAC confirms the password there, as the file read's walk
+    to the end does: closing it early reports nothing."""
+    data = _bit3(_aes_zip(vendor_version=vendor_version, method=8))
+    passwords = [_PASSWORD, b"not the password"]
+    reports = []
+    for source in (io.BytesIO(data), NonSeekableBytesIO(data)):
+        with archivey.open_archive(
+            source, streaming=True, password=passwords
+        ) as reader:
+            for _member, stream in reader.stream_members():
+                assert stream is not None
+                assert stream.read(10) == _TEXT[:10]
+                stream.close()
+            reports.append([c.check for c in _unverified(reader)])
+    assert reports == [[], []]
 
 
 @pytest.mark.parametrize("form", ["value", "list", "provider"])

@@ -176,11 +176,6 @@ class _PasswordCandidates:
                 self._known_good or self._candidates or self._provider is not None
             )
 
-    def has_provider(self) -> bool:
-        """Whether the caller gave a provider callable."""
-        with self._state_lock:
-            return self._provider is not None
-
     def has_concrete_passwords(self) -> bool:
         """Whether the caller gave a password value (a str, bytes or a list of them).
 

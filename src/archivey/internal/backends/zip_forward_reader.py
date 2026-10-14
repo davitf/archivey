@@ -138,9 +138,10 @@ _DRAIN_CHUNK = 1 << 16
 _NO_END_BEFORE_EOF = sys.maxsize
 #: The most ciphertext kept for an encrypted member that may be a link: twice the
 #: target's cap, room for the encryption header, the AES code and a codec's framing.
-#: Not a limit on what is read: a longer member (deflate padded with empty blocks) is
-#: decrypted as the pass drains it instead, at the cost of one key derivation, so it
-#: bounds only the bytes held until the directory arrives.
+#: Not a limit on what is read: a longer sized member (deflate padded with empty
+#: blocks) is decrypted as the pass drains it instead under ``read_link_targets``, at
+#: the cost of one key derivation, so it bounds only the bytes held until the
+#: directory arrives.
 _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 #: The data a member read with several possible passwords keeps to confirm one on
 #: (``_PassData._confirm_password``): the compressed input a bounded confirm may take
@@ -660,7 +661,9 @@ class _PassData:
                     raise
                 raise failures.limit_failed(exc) from exc
             if self._deferred():
-                verdict = self._judge_deferred(decoded, aes, spool, whole, ran_out)
+                verdict = self._judge_deferred(
+                    decoded, body, view, spool, whole, ran_out
+                )
             else:
                 verdict = self._judge_sized(decoded, aes, ran_out)
         except EncryptionError:
@@ -725,17 +728,21 @@ class _PassData:
     def _judge_deferred(
         self,
         decoded: BinaryIO,
-        aes: WinZipAesInfo | None,
+        body: BinaryIO,
+        view: _SpoolView,
         spool: bytes,
         whole: bool,
         ran_out: Callable[[], bool],
     ) -> PasswordConfirmVerdict:
         """A bit-3 member's size and CRC follow its data, so only a member that ends
         inside the kept bytes can be confirmed: by the AES code when the stage ends
-        with the data, else by the descriptor's CRC, the one the walk found there (a
+        with the data, or after a codec's end by the descriptor in the kept bytes
+        that states the decoded size (and CRC, but for AE-2), which says where the
+        code is; else by the descriptor's CRC, the one the walk found there (a
         STORED member's scan, kept ciphertext) or, after a codec's end, one in the
         kept bytes that states the decoded CRC and size. Otherwise the codec's
         rejection is the one signal, as for a sized member past the budget."""
+        aes = cast("_ZipLocator", self.member._raw).aes
         crc = 0
         got = 0
         budget = PASSWORD_CONFIRM_PREFIX_BYTES
@@ -760,6 +767,27 @@ class _PassData:
         if aes is not None and whole:
             # The stage ends with the data, and the read that found the end checked
             # the code.
+            return PasswordConfirmVerdict.CONFIRMED
+        if aes is not None:
+            # An AE-2 member's descriptor stores no CRC: zero.
+            found = descriptor_by_crc(
+                spool,
+                crc=0 if self._ae2() else crc,
+                file_size=got,
+                base=0,
+                zip64=self.entry.zip64,
+                at_end=False,
+            )
+            if found is None:
+                return PasswordConfirmVerdict.INCONCLUSIVE
+            at, descriptor = found
+            assert isinstance(body, WinZipAesForwardStream)
+            try:
+                body.authenticate_end(
+                    descriptor.compressed_size, spool[view.consumed : at]
+                )
+            except CorruptionError:
+                return PasswordConfirmVerdict.REJECTED
             return PasswordConfirmVerdict.CONFIRMED
         if self._ae2() or got < PASSWORD_CONFIRM_MIN_VERIFIED_BYTES:
             # No CRC, or one over too few bytes to confirm.
@@ -1141,6 +1169,11 @@ class _SpoolView(ReadOnlyIOStream):
         self._data = data
         self._pos = 0
         self.ended = False
+
+    @property
+    def consumed(self) -> int:
+        """How many of the kept bytes the trial has read."""
+        return self._pos
 
     def read(self, n: int = -1, /) -> bytes:
         end = len(self._data) if n < 0 else self._pos + n
