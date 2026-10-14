@@ -137,8 +137,8 @@ each lands with nothing half-done reachable:
       ciphertext is kept the same way. 3b3d3: several candidates or a provider,
       confirmed on the first 1 MiB of the data, kept and replayed to the winner;
       several inconclusive candidates take the first (davi's choice, `design.md`), and
-      the pass does not decode an unread member whose ciphertext is over what it
-      keeps when that would ask a provider. Left for 3.4 (every fixture through a
+      an unread member whose ciphertext is over what the pass keeps is decoded
+      with a provider only under `read_link_targets`. Left for 3.4 (every fixture through a
       pipe): a sized member whose data decodes short of its local header's size
       reports the pass's own size-mismatch `CorruptionError` where the file read
       reports the verifier's `TruncatedError`, encrypted or not (both

@@ -310,10 +310,10 @@ or under a codec that accepts random input, where a wrong candidate passes the c
 check (1 in 256 under ZipCrypto, 1 in 65 536 under AES). A choice that may change: the
 pass could spool the whole ciphertext, walk every survivor to its end and serve the
 winner from the spool, once spool limits are designed. The pass decodes as it drains only
-an unread member whose ciphertext is over what it keeps for a link target; with a
-provider it does not, as that would ask the provider about a member that may not be a
-link, and its target is reported locked, even when a password the pass already holds
-would open it (a password list resolves the same target). A kept one is decrypted only once the directory
+an unread member whose ciphertext is over what it keeps for a link target. With a
+provider that may ask it about a member that turns out to be no link, so it does so only
+under `read_link_targets`, which allows asking for a target; with it
+off nothing reads a target on its own. A kept one is decrypted only once the directory
 makes it a link, provider or not, as from a file.
 
 A codec stream stops after its end without saying how far past it it read: its

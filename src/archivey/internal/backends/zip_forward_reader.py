@@ -950,8 +950,9 @@ class _PassData:
         only if the directory makes it a link (``_KeptCiphertext``): no key is derived
         for a member nobody asked for, unless its ciphertext is over
         ``_MAX_KEPT_CIPHERTEXT``, and then it is decoded here, its failure kept for
-        the target's read. Not with a password provider: that decode would ask it
-        about a member that may not be a link.
+        the target's read. With a password provider, only under
+        ``read_link_targets``, which allows asking it for a target: the member may
+        turn out to be no link, which only a padded codec stream makes this long.
 
         A bit-3 member is decoded to its end, which is the only way to find it from
         its decoded data, so there a failure ends the walk. An encrypted one is the
@@ -997,15 +998,16 @@ class _PassData:
                 and not skip
                 and unopened
                 and self._reader._passwords.has_provider()
+                and not self._reader._config.read_link_targets
             ):
-                # Decoding it here would ask the provider about a member nobody
-                # read, which may not be a link at all: its target is reported
-                # locked instead.
+                # Decoding it here may ask the provider, which only
+                # ``read_link_targets`` allows for a member nobody read: its target
+                # is reported locked instead.
                 self._failure = EncryptionError(
                     f"The pass did not ask the password provider for "
-                    f"{quoted(self.member.name)}: nobody read it, and its "
-                    f"ciphertext is over the {_MAX_KEPT_CIPHERTEXT} bytes the pass "
-                    "keeps for a symlink target"
+                    f"{quoted(self.member.name)}: nobody read it, its ciphertext "
+                    f"is over the {_MAX_KEPT_CIPHERTEXT} bytes the pass keeps for a "
+                    "symlink target, and read_link_targets is off"
                 )
                 skip = True
         if not skip:

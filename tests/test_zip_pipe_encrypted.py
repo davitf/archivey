@@ -942,11 +942,15 @@ def test_an_inconclusive_password_closed_early_is_reported_as_such() -> None:
         assert [c.check for c in _unverified(reader)] == ["confirm_budget_exhausted"]
 
 
-def test_the_pass_does_not_ask_a_provider_to_drain_a_long_ciphertext() -> None:
-    """A short-plaintext member whose ciphertext is over what the pass keeps would be
-    decoded as the pass drains it; with a provider its target is reported locked
-    instead of asking about a member that may not be a link. (A kept ciphertext is
-    decrypted once the directory makes it a link, which may ask, as from a file.)"""
+@pytest.mark.parametrize("read_link_targets", [True, False])
+def test_a_long_ciphertext_asks_a_provider_only_under_read_link_targets(
+    read_link_targets: bool,
+) -> None:
+    """A short-plaintext member whose ciphertext is over what the pass keeps is
+    decoded as the pass drains it. With a provider that may ask it, which
+    ``read_link_targets`` allows, as for any link target; with it off the target is
+    left unread instead. (A kept ciphertext is decrypted once the directory
+    makes it a link, which may ask, as from a file.)"""
     data = _with_plain_member(
         build_zipcrypto_zip(
             _PASSWORD,
@@ -963,7 +967,10 @@ def test_the_pass_does_not_ask_a_provider_to_drain_a_long_ciphertext() -> None:
         return _PASSWORD
 
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=provider
+        NonSeekableBytesIO(data),
+        streaming=True,
+        password=provider,
+        config=archivey.ArchiveyConfig(read_link_targets=read_link_targets),
     ) as reader:
         read = {
             member.name: stream.read()
@@ -977,9 +984,15 @@ def test_the_pass_does_not_ask_a_provider_to_drain_a_long_ciphertext() -> None:
             if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
         ]
     assert read == {"plain.txt": b"plain"}
-    assert asked == []
-    assert report.members[0].link_target is None
-    assert reasons == ["password_required"]
+    if read_link_targets:
+        assert len(asked) == 1
+        assert report.members[0].link_target == "target.txt"
+        assert reasons == []
+    else:
+        # Nothing reads a target on its own, so nothing is reported either.
+        assert asked == []
+        assert report.members[0].link_target is None
+        assert reasons == []
 
 
 def _unverified(reader: archivey.ArchiveReader) -> list[EncryptedVerificationContext]:
