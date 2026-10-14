@@ -127,13 +127,17 @@ def _visible(member: ArchiveMember) -> dict[str, object]:
     return out
 
 
-def _seekable_view(data: bytes) -> tuple[list[dict[str, object]], dict[int, bytes]]:
+def _seekable_view(
+    data: bytes, *, read: bool = True
+) -> tuple[list[dict[str, object]], dict[int, bytes]]:
+    """The members a file read lists, and each file's contents unless ``read`` is
+    false: for a crafted archive whose member data overlaps its own records."""
     with archivey.open_archive(io.BytesIO(data)) as reader:
         members = reader.members()
         contents = {
             m._member_id: reader.read(m)  # type: ignore[misc]
             for m in members
-            if m.is_file
+            if m.is_file and read
         }
         return [_visible(m) for m in members], contents
 
@@ -971,8 +975,19 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     # in bytes the bound dropped.
     record_dropped = _with_zip64_extensible(plain, keep + 5000)
     assert [m["name"] for m in _seekable_view(record_dropped)[0]] == ["a.txt", "b.txt"]
-    for data, what in ((far, "central directory"), (record_dropped, "ZIP64 end")):
-        with pytest.raises(ResourceLimitError, match=f"ZIP {what}.*listing limits"):
+    # A record signature right before the locator, in the extensible data: the
+    # file read's fallback for prepended data takes only a whole record that fits
+    # the locator, so the record the locator names is still the one out of reach.
+    record_at = len(record_dropped) - 22 - 20 - 56
+    decoy = record_dropped[:record_at] + b"PK\x06\x06" + record_dropped[record_at + 4 :]
+    assert [m["name"] for m in _seekable_view(decoy)[0]] == ["a.txt", "b.txt"]
+    cases = (
+        (far, "ZIP central directory starts"),
+        (record_dropped, "ZIP64 end of central directory record starts"),
+        (decoy, "ZIP64 end of central directory record starts"),
+    )
+    for data, what in cases:
+        with pytest.raises(ResourceLimitError, match=f"^{what}.*listing limits"):
             with archivey.open_archive(
                 _pipe(data), streaming=True, config=config
             ) as reader:
@@ -980,14 +995,11 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
                     pass
 
 
-def test_a_zip64_end_record_among_the_members_data_is_refused() -> None:
-    """A locator naming a record the pass read past, inside a member's data: a file
-    read and stdlib list the archive by it; the pass cannot see it, and says so
-    rather than calling it missing."""
+def _zip64_record_in_member_data() -> bytes:
+    """One member whose data holds a directory listing it, then a ZIP64 end record
+    naming that directory; the archive ends with a locator naming the record."""
     name = b"x.txt"
     data_at = 30 + len(name)
-    # The member's data holds a directory listing the member, then a ZIP64 end
-    # record naming that directory; the archive ends with a locator naming the record.
     entry_size = 46 + len(name)
     member_size = entry_size + 56
     central = struct.pack(
@@ -1006,9 +1018,18 @@ def test_a_zip64_end_record_among_the_members_data_is_refused() -> None:
     ) + name  # fmt: skip
     locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, record_at, 1)
     eocd = struct.pack("<4sHHHHIIH", b"PK\x05\x06", 0, 0, 1, 1, entry_size, data_at, 0)
-    data = local + central + record + locator + eocd
+    return local + central + record + locator + eocd
+
+
+def test_a_zip64_end_record_among_the_members_data_is_refused() -> None:
+    """A locator naming a record the pass read past, inside a member's data: a file
+    read and stdlib list the archive by it; the pass cannot see it, and says so
+    rather than calling it missing."""
+    data = _zip64_record_in_member_data()
     assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["x.txt"]
-    assert [m["name"] for m in _seekable_view_listing(data)] == ["x.txt"]
+    # The member's data is the directory, so reading it is an overlap: compare the
+    # listing only.
+    assert [m["name"] for m in _seekable_view(data, read=False)[0]] == ["x.txt"]
     message = "ZIP64 end of central directory record.* inside the members' data"
     with pytest.raises(CorruptionError, match=message):
         with archivey.open_archive(_pipe(data), streaming=True) as reader:
@@ -1016,9 +1037,36 @@ def test_a_zip64_end_record_among_the_members_data_is_refused() -> None:
                 pass
 
 
-def _seekable_view_listing(data: bytes) -> list[dict[str, object]]:
-    with archivey.open_archive(io.BytesIO(data)) as reader:
-        return [_visible(m) for m in reader.members()]
+@pytest.mark.parametrize("field", ["disks", "disk_with_record"])
+def test_a_split_set_locator_is_refused_before_the_record_is_looked_for(
+    field: str,
+) -> None:
+    """The locator's disk fields are refused as a split set first, as from a file,
+    wherever the record it names is."""
+    data = bytearray(_zip64_record_in_member_data())
+    locator_at = data.rindex(b"PK\x06\x07")
+    if field == "disks":
+        struct.pack_into("<I", data, locator_at + 16, 2)
+    else:
+        struct.pack_into("<I", data, locator_at + 4, 7)
+    for source, streaming in (
+        (io.BytesIO(bytes(data)), False),
+        (_pipe(bytes(data)), True),
+    ):
+        with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
+            with archivey.open_archive(source, streaming=streaming) as reader:
+                for _ in reader.stream_members():
+                    pass
+
+
+def test_a_zip64_archive_behind_a_stub_lists_from_a_pipe() -> None:
+    """A self-extractor stub in front of a ZIP64 archive whose offsets omit it: the
+    locator names the record where it was before the stub, among the members' data,
+    and the record right before the locator is the one a file read takes."""
+    plain = _zip([("a.txt", b"one"), ("b.txt", b"two")])
+    data = b"MZ" + b"\x90" * 5000 + _with_zip64_extensible(plain, 0)
+    assert [m["name"] for m in _seekable_view(data)[0]] == ["a.txt", "b.txt"]
+    assert _piped_view(data) == _seekable_view(data)
 
 
 def test_a_header_offset_past_what_the_array_holds_is_a_missing_member() -> None:

@@ -42,7 +42,6 @@ diagnostic. Damage raises ``CorruptionError``, a stream that ends early
 
 from __future__ import annotations
 
-import struct
 import zlib
 from collections import deque
 from dataclasses import dataclass
@@ -69,14 +68,14 @@ from archivey.internal.backends.zip_parser import (
     STRONG_ENCRYPTED_DIRECTORY_MSG,
     ZIP64_EOCD_SIGNATURE,
     ZIP64_EOCD_SIZE,
-    ZIP64_LOCATOR_SIGNATURE,
-    ZIP64_LOCATOR_SIZE,
     EndRecord,
     LocalHeader,
     find_end_record,
     local_header_from,
     local_header_variable_length,
     locate_classic_record,
+    read_zip64_locator,
+    zip64_record_matches,
 )
 from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
@@ -1143,7 +1142,7 @@ class ForwardTail:
         # Any other failure is the record's own, in the file read's words.
         end = find_end_record(self.read_at, self.size)
         if end.cd_size and end.cd_start < self.start:
-            self._refuse_unseen("central directory", end.cd_start)
+            self._refuse_unseen("ZIP central directory", end.cd_start)
         return end
 
     def _refuse_unseen_zip64_record(self, eocd_offset: int) -> None:
@@ -1151,18 +1150,22 @@ class ForwardTail:
 
         ``find_end_record`` reads the record at the locator's offset, and falls back
         to one right before the locator when that offset holds none (data prepended
-        to the archive moved it). A record found right before the locator is read as
-        a file read reads it; otherwise one the locator names in unkept bytes is
-        unseen, not missing."""
-        locator_at = eocd_offset - ZIP64_LOCATOR_SIZE
-        locator = self.read_at(locator_at, ZIP64_LOCATOR_SIZE)
-        if locator[:4] != ZIP64_LOCATOR_SIGNATURE:
+        to the archive moved it). That fallback is taken here only when the file
+        read would take it whatever the unkept bytes hold: the record right before
+        the locator passes the parser's own checks (``zip64_record_matches``).
+        Otherwise the record the locator names is unseen, not missing. The
+        locator's own refusals come first, as from a file
+        (``read_zip64_locator``)."""
+        located = read_zip64_locator(self.read_at, eocd_offset)
+        if located is None:
             return
-        (record_at,) = struct.unpack_from("<Q", locator, 8)
+        locator_at, record_at = located
+        if record_at >= self.start:
+            return
         adjacent = locator_at - ZIP64_EOCD_SIZE
-        if record_at >= self.start or record_at > adjacent:
-            return
-        if adjacent >= self.start and self.read_at(adjacent, 4) == ZIP64_EOCD_SIGNATURE:
+        if adjacent >= self.start and zip64_record_matches(
+            self.read_at(adjacent, ZIP64_EOCD_SIZE), record_at, 0
+        ):
             return
         self._refuse_unseen("ZIP64 end of central directory record", record_at)
 
@@ -1172,7 +1175,7 @@ class ForwardTail:
         in bytes the bound dropped (``ResourceLimitError``)."""
         if offset >= self.members_end:
             raise ResourceLimitError(
-                f"ZIP {what} starts {self.size - offset} bytes before the end of the "
+                f"{what} starts {self.size - offset} bytes before the end of the "
                 "stream, more than a forward read holds within the listing limits"
             )
         raise CorruptionError(
