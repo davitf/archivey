@@ -842,10 +842,11 @@ class BaseArchiveReader(ArchiveReader):
         """A data pass has reached ``member``: read its link target before yielding it.
 
         A streaming pass resolves links when it ends, after the caller has had the
-        member. A reparse point whose data is not a link buffer is a file, and the
-        caller needs its stream now, so the target is read here, as the 7z pass does.
-        A random-access listing has read it already (the memo, or the damage flag,
-        makes this a no-op).
+        member. The read here serves two needs. In ZIP, a reparse point whose data is
+        not a link buffer is a file, and the caller needs its stream now (the 7z pass
+        does the same read). In every format that stores the target as data, a damaged
+        one must be reported before the link is handed out. A random-access listing
+        has read it already (the memo, or the damage flag, makes this a no-op).
 
         A damaged target is reported here rather than left to link finalization: a
         pass the caller leaves early, or one a later member stops, never finalizes,

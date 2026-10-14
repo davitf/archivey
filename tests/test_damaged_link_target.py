@@ -155,15 +155,18 @@ def _damaged_link_case(fmt: str, tmp_path: Path) -> tuple[bytes, str]:
         return _damaged_zip_symlink(), "link"
     if fmt == "7z":
         return _damaged_7z_symlink(tmp_path), "link"
-    return _damaged_rar4_symlink(), _RAR4_DAMAGED
+    if fmt == "rar4-solid":
+        return _damaged_rar4_symlink(), _RAR4_DAMAGED
+    raise AssertionError(fmt)
 
 
 # Each format's own pass: ZIP the base pass, 7z its folder pass, the solid RAR4 fixture
-# the ``unrar`` pass.
+# the solid RAR pass. That pass spawns ``unrar`` only on the first data read, and these
+# tests read none, so they need no RAR binary; ``7z`` builds the 7z fixture.
 _PASS_FORMATS = [
     pytest.param("zip", id="zip"),
     pytest.param("7z", id="7z", marks=requires_binary("7z")),
-    pytest.param("rar4-solid", id="rar4-solid", marks=requires_binary("unrar")),
+    pytest.param("rar4-solid", id="rar4-solid"),
 ]
 
 
@@ -205,6 +208,7 @@ def test_damaged_link_target_under_strict_policy_refuses_the_pass(
 def test_damaged_link_target_in_a_finished_pass_is_reported_once(
     tmp_path: Path, fmt: str
 ) -> None:
+    """Link finalization does not report again a link the pass already reported."""
     blob, _ = _damaged_link_case(fmt, tmp_path)
     with open_archive(io.BytesIO(blob), streaming=True) as ar:
         for _ in ar.stream_members():
@@ -253,13 +257,6 @@ def test_damaged_rar4_link_target_keeps_the_listing() -> None:
         assert ar.get("symlink_to_file1.txt").link_target == "file1.txt"
         with raises_corruption_not_truncation():
             ar.open(ar.get(_RAR4_DAMAGED))
-
-
-def test_damaged_rar4_link_target_in_a_streaming_pass() -> None:
-    with open_archive(io.BytesIO(_damaged_rar4_symlink()), streaming=True) as ar:
-        for _ in ar.stream_members():
-            pass
-        assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
 
 
 @requires_binary("unrar")  # file1.txt is RAR member data, which needs a data program
