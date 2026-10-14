@@ -188,18 +188,12 @@ in place, so it charges `max_members` twice: on the local headers as members are
 yielded, and on the directory's entries as it reads them, since a directory can list
 more entries than the stream held members. The entries wait for the end record, which
 says where their offsets count from, so their names, extra fields and comments are
-weighed against `max_metadata_bytes` as they arrive: past it an enforcing pass raises,
-and one that does not enforce the limits discards its listing and keeps only each
-entry's offset, so it holds about that much directory text, as the seekable streaming
-pass holds about that much listing. Its members then stay as their local headers made
-them. The seekable read weighs the members it builds rather than the raw entries, so a
-directory whose extra fields alone pass the cap is refused from a pipe only (DR-5a: a
-crafted shape). The fields the directory adds (a comment above all) are weighed again
-when the members are updated, and a pass that does not enforce the limits discards its
-listing there if they took it over.
-The links the directory made are read before the listing is dropped, because the pass
-cannot read them later, and a target that fails is reported there; the seekable pass
-leaves that report to its link finalization, which a discarded listing never reaches.
+weighed against `max_metadata_bytes` as they arrive, and past it the pass raises
+`ResourceLimitError`, as every pass does at a cap. The seekable read weighs the members
+it builds rather than the raw entries, so a directory whose extra fields alone pass the
+cap is refused from a pipe only (DR-5a: a crafted shape). The fields the directory adds
+(a comment above all) are weighed again when the members are updated, and the pass
+raises when it is published if they took it over.
 
 ### Trailing bytes
 

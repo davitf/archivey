@@ -685,8 +685,8 @@ def test_walk_moving_on_right_after_a_read_keeps_the_stream_position(
 def test_refused_listing_calls_beside_a_pass_keep_memory_within_the_caps(
     tmp_path: Path,
 ) -> None:
-    """``members()`` refused on every iteration pulls no further member each time,
-    so the listing stays bounded and the pass still discards it."""
+    """``members()`` refused on every iteration keeps the listing within the caps,
+    and the pass beside it still raises at the member that crosses one."""
     from archivey import ListingLimits, ResourceLimitError
     from tests.test_listing_limits import _tar_of_empty_members
 
@@ -694,13 +694,13 @@ def test_refused_listing_calls_beside_a_pass_keep_memory_within_the_caps(
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
     with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
         seen = 0
-        for _member, _stream in reader.stream_members():
-            seen += 1
-            with pytest.raises(ResourceLimitError):
-                reader.members()
-            assert len(reader._listed) <= 21  # type: ignore[attr-defined]
-        assert seen == 4_000
-        assert reader._listing_discarded  # type: ignore[attr-defined]
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            for _member, _stream in reader.stream_members():
+                seen += 1
+                with pytest.raises(ResourceLimitError):
+                    reader.members()
+                assert len(reader._listed) <= 20  # type: ignore[attr-defined]
+        assert seen == 20
 
 
 def test_listing_after_an_abandoned_pass_refuses_the_same_way_each_time(
@@ -722,52 +722,3 @@ def test_listing_after_an_abandoned_pass_refuses_the_same_way_each_time(
                 reader.members()
             messages.append(str(refused.value))
     assert len(set(messages)) == 1, messages
-
-
-@pytest.mark.parametrize(("mode", "suffix"), _TAR_MODES)
-def test_listing_call_during_the_first_pass_pull_does_not_discard_the_walk(
-    tmp_path: Path, mode: str, suffix: str
-) -> None:
-    """``members()`` that arrives while the pass is pulling its first member, and so
-    before the pass has marked the walk as handed out, still sees the mark once it gets
-    the walk lock: its over-cap refusal leaves the walk the pass is on alone."""
-    from archivey import ListingLimits, ResourceLimitError
-
-    path, files = _big_tar(tmp_path, mode, suffix)
-    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
-    with open_archive(path, config=cfg, concurrent_members=True) as reader:
-        abandoned: list[object] = []
-        real_abandon = reader._abandon_walk  # type: ignore[attr-defined]
-
-        def spy_abandon(exc: BaseException) -> None:
-            abandoned.append(exc)
-            real_abandon(exc)
-
-        reader._abandon_walk = spy_abandon  # type: ignore[attr-defined]
-        errors: list[BaseException] = []
-
-        def list_members() -> None:
-            try:
-                reader.members()
-            except ResourceLimitError as exc:
-                errors.append(exc)
-
-        listing = threading.Thread(target=list_members)
-        real_register = reader._register_member  # type: ignore[attr-defined]
-
-        def register_first(*args: object, **kwargs: object) -> None:
-            reader._register_member = real_register  # type: ignore[attr-defined]
-            listing.start()
-            # Long enough for the thread to reach the walk lock this pull holds.
-            listing.join(0.2)
-            real_register(*args, **kwargs)
-
-        reader._register_member = register_first  # type: ignore[attr-defined]
-        passed = {}
-        for member, stream in reader.stream_members():
-            assert stream is not None
-            passed[member.name] = stream.read()
-        listing.join(10)
-    assert passed == files
-    assert len(errors) == 1
-    assert abandoned == []

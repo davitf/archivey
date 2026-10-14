@@ -371,9 +371,7 @@ class UnlistedDataContext(_JsonSafeContext):
     without rewriting it, or a planted member) is dropped from the listing, as the
     seekable read never sees it. ``member_name`` and ``member_id`` are what the pass
     gave it before then; ``offset`` is where its local header starts and
-    ``compressed_size`` the bytes of data after it. When the listing was discarded,
-    the reader holds no member for the entry, and only ``offset`` is known: the name
-    is ``""``, and ``member_id`` and ``compressed_size`` are ``None``.
+    ``compressed_size`` the bytes of data after it.
     """
 
     kind: Literal["unlisted_data"] = "unlisted_data"

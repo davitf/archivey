@@ -495,40 +495,28 @@ substitute. ZIP, 7z, RAR and ISO apply `listing_limits.max_members` at parse
 (`format-zip`, `format-7z`, `format-rar`, `format-iso`); `None` disables that
 bound. Other formats that build an internal member table during `open_archive()`
 MAY still allocate up to their own parser ceilings before spine `ListingLimits`
-are evaluated on materialization (`members()` / extract-prep). Being indexed is
-not the same as applying `max_members` at parse.
+are evaluated as the reader lists members. Being indexed is not the same as
+applying `max_members` at parse.
 
-**Unguarded by design:** `stream_members()` and `for member in reader` MUST NOT
-enforce `ListingLimits`: they yield every member, however many there are. Their
-memory SHALL still be bounded by `ListingLimits`, not by the member count: the
-pass counts each member as usual, and once the totals cross a limit the reader
-stops keeping the listing. It then holds no member, name index or header
-record for the rest of the pass. From that point:
-
-- the pass keeps yielding every member, but a link it yields after that point
-  gets no `link_target_member`, and the pass publishes no listing at its end;
-  members yielded up to that point keep what they had, and last-entry-wins
-  `is_current` is stamped over them when the listing is discarded, so a
-  duplicate yielded later cannot mark one of them superseded;
-- `members_report()` raises the same `ResourceLimitError` as `members()` on
-  the same archive; `members_report_if_available()` returns
-  `None`, since nothing is cached. On a
-  random-access reader (TAR) so do `members()`, `get()`, `open()`,
-  `extract_all()` and another `stream_members()` pass, which would need the
-  members this pass did not keep. A streaming reader refuses a second pass
-  anyway.
-
-A random-access reader whose `stream_members()` lists the whole archive before
-the first yield (ZIP, directory, 7z, RAR) keeps that listing: its size follows an
-index the source already holds uncompressed (the directory tree), or a count
-checked at parse (ZIP, 7z, RAR). Callers that need a full resolved list use `members()` /
-`members_report()` and accept the caps; `ListingLimits.UNLIMITED` keeps the whole
-listing on every pass. `extract_all()` enforces the limits in both access modes,
-because it resolves hard links against the members it has listed and so keeps
-them. Formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO) fail at
-`open_archive` instead (ZIP, when its end record understates the count, as the
-directory walk passes the limit), so `stream_members()` / `streaming=True` are not an
-escape hatch there.
+**Every listing call enforces them:** `members()`, `members_report()`,
+`stream_members()`, `for member in reader` and `extract_all()` SHALL apply
+`ListingLimits` in both access modes, and SHALL raise the same
+`ResourceLimitError` on the same archive. A pass that lists as it goes (every
+streaming reader, and a random-access TAR) yields the members registered within
+the limits and raises at the member that crosses one, before yielding it and
+before parsing further headers; it publishes no listing, so
+`members_report_if_available()` returns `None` after it. A random-access reader
+that lists the whole archive before the first yield (ZIP, directory, 7z, RAR,
+ISO) raises before the first yield. On any random-access reader, TAR included,
+`for member in reader` lists the whole archive first, unlike `stream_members()`.
+On a random-access reader a later listing call walks again and raises the same
+error; so does `members_report_if_available()` on a reader with an upfront
+index (ZIP, 7z, RAR, ISO, single-file).
+An archive with more members than the limits allow is read only by raising
+them; `ListingLimits.UNLIMITED` streams any archive, and the reader then keeps
+every member until it closes. Formats that apply `max_members` at parse (ZIP,
+7z, RAR and ISO) fail at `open_archive` instead (ZIP, when its end record
+understates the count, as the directory walk passes the limit).
 
 #### Scenario: listing-limits matrix
 
@@ -539,11 +527,12 @@ escape hatch there.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes`, at `open_archive` on 7z and RAR, which weigh the names their headers hold at parse (`format-7z`, `format-rar`) |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (ZIP, 7z, RAR and ISO), which raise at `open_archive` (ZIP also as its directory is walked), 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared size) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR member whose extended headers and sparse map together weigh more than the whole `max_metadata_bytes` |
+| `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared size) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 | `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
-| `stream_members()` pass past a cap (either mode), then `members_report()` / `members()` | Pass yields every member and keeps memory bounded by the caps; each later listing call raises the `ResourceLimitError` `members()` raises; `members_report_if_available()` returns `None` |
-| Second `stream_members()` on a random-access TAR after such a pass | `ResourceLimitError` |
+| `stream_members()` on a streaming reader or a random-access TAR, past a cap | Yields the members within the caps, then raises `ResourceLimitError` at the member that crosses one, without parsing the headers after it; `members_report_if_available()` then returns `None` |
+| `stream_members()` on another random-access reader, or random-access `for member in reader`, past a cap | `ResourceLimitError` before the first yield |
+| `members()` / `members_report()` on a random-access reader after such a pass | The same `ResourceLimitError` |
 
 ### Requirement: Listing metadata-byte accounting
 
@@ -601,13 +590,12 @@ SHALL raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 A TAR extended header (PAX `x` / `g`, GNU long name or link name) is read whole by the
 parser before any member is registered, so its declared size SHALL be weighed first: one
-that declares more than is left of `max_metadata_bytes` in an enforcing listing, or more
-than the whole cap in any walk (`stream_members()` and `streaming=True` included), SHALL
-raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data. The
-headers ahead of one member form a chain the parser holds whole until the member is
-built, so each header of the chain, and the member's sparse map, SHALL be weighed
-against what the headers before it in the chain left, not against the member's whole
-share.
+that declares more than is left of `max_metadata_bytes`, in any walk (`stream_members()`
+and `streaming=True` included), SHALL raise `ResourceLimitError` naming
+`max_metadata_bytes` without reading its data. The headers ahead of one member form a
+chain the parser holds whole until the member is built, so each header of the chain, and
+the member's sparse map, SHALL be weighed against what the headers before it in the
+chain left, not against the member's whole share.
 
 #### Scenario: metadata accounting matrix
 

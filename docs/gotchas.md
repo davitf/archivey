@@ -47,11 +47,9 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   Unicode-normalisation twins collide on **every** OS, not just Windows.
   → [Names change on disk](extracting.md#names-change-on-disk)
 - **Don't `read()` a member from an untrusted archive without a size guard.**
-  `read()` is unbounded. `stream_members()` and `for member in reader` are
-  deliberately outside `ListingLimits` (they yield every member, and keep no
-  listing past a limit), except on ZIP, 7z, RAR and ISO, which still enforce
-  `max_members` at open (ZIP, as it reads the directory when the end record
-  understates the count). Chunk untrusted payloads.
+  `read()` is unbounded: `ListingLimits` cap the listing and `ExtractionLimits` cap
+  `extract_all()`, but nothing caps the bytes one `read()` returns. Chunk untrusted
+  payloads.
   → [Limits](extracting.md#limits)
 - **Don't recurse into nested archives without bounding it yourself.** The bomb
   tracker checks expansion for *individual* archives and is **not nesting-aware**, so

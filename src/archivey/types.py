@@ -1009,11 +1009,7 @@ class ArchiveMember:
           ``members_report_if_available()`` peek resolves no links, so its members
           read ``False`` until a later call or pass does. A random-access pass with no
           listing call first yields from a complete listing in some formats and walks
-          as it goes in others, so read the flag rather than assume. A pass past
-          ``ListingLimits`` stops keeping members: it stamps ``is_current`` over the
-          ones it kept, and stamps nothing from that point on, so a member yielded
-          later reads ``True`` with ``is_current`` as yielded and cannot supersede an
-          earlier one.
+          as it goes in others, so read the flag rather than assume.
         - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink)
           that nothing has read yet, which is the case under
           ``ArchiveyConfig.read_link_targets=False``. Reading it sets

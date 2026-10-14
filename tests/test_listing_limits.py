@@ -1,4 +1,4 @@
-"""Listing resource limits: materialization caps vs stream_members escape hatch."""
+"""Listing resource limits: every call that lists members enforces the caps."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import io
 import struct
 import subprocess
 import tarfile
-import tracemalloc
 import zipfile
 from pathlib import Path
 
@@ -25,7 +24,6 @@ from archivey.internal.listing_limits import (
 )
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
-from tests.memory_util import traced_peak
 from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
 
 
@@ -118,6 +116,9 @@ def test_zip_walk_charges_max_members_when_the_declared_count_lies() -> None:
     with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_members=3"):
             list(reader.stream_members())
+        # The peek walks the index again and is refused the same way.
+        with pytest.raises(ResourceLimitError, match="max_members=3"):
+            reader.members_report_if_available()
     with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_members=3"):
             reader.members()
@@ -143,16 +144,6 @@ def test_zip_members_before_the_limit_read_when_opened_first() -> None:
     with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
         assert reader.info.member_count is None
         with pytest.raises(ResourceLimitError, match="max_members=3"):
-            reader.members()
-
-
-def test_stream_members_unguarded_when_members_would_fail() -> None:
-    data = _tar_with_members([f"f{i}.txt" for i in range(5)])
-    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
-    with open_archive(io.BytesIO(data), config=cfg) as reader:
-        names = [m.name for m, _ in reader.stream_members()]
-        assert names == [f"f{i}.txt" for i in range(5)]
-        with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members()
 
 
@@ -186,7 +177,7 @@ def test_extract_all_runs_under_the_open_time_listing_limits(tmp_path: Path) -> 
 def test_tar_extract_all_enforces_listing_limits(
     tmp_path: Path, streaming: bool
 ) -> None:
-    """Scan-required backends must not bypass listing caps via unguarded stream_members.
+    """Scan-required backends enforce the listing caps in extraction's one pass.
 
     A streaming extraction enforces them too: it resolves hard links against the
     members already listed, so it keeps the listing, and only the caps bound it.
@@ -467,83 +458,88 @@ def _tar_of_empty_members(path: Path, count: int) -> Path:
     return path
 
 
+@pytest.mark.parametrize("via", ["stream_members", "iter"])
 @pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
-def test_unguarded_pass_memory_is_bounded_by_listing_limits(
-    tmp_path: Path, streaming: bool
+def test_pass_raises_at_the_member_that_crosses_the_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    via: str,
 ) -> None:
-    """An unguarded pass over an archive past the caps keeps no more than the caps.
+    """A pass that lists as it goes yields the members within the cap, then raises the
+    error ``members()`` raises on the same archive, without reading the rest.
 
-    ``stream_members()`` does not enforce ``ListingLimits``, so it still yields every
-    member. Before, the reader kept every member it had yielded (and tarfile every
-    header) until it closed, so memory grew with a member count the archive chooses:
-    about 1.3 KB per member, 1.2 GB for a 12 MB ``.tar.gz``.
+    Random-access ``for member in reader`` lists the whole archive first, so it raises
+    before the first yield.
     """
-    count = 4_000
-    tar_path = _tar_of_empty_members(tmp_path / "many.tar", count)
-    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
-    yielded: list[int] = []
-
-    def run_pass() -> None:
-        with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
-            n = 0
-            for _member, _stream in reader.stream_members():
-                n += 1
-            yielded.append(n)
-            # Measured with the reader still open: what it keeps, not what close frees.
-            retained.append(tracemalloc.get_traced_memory()[0])
-
-    retained: list[int] = []
-    run_pass()  # first-use costs (imports, caches) out of the measured run
-    retained.clear()
-    peak = traced_peak(run_pass)
-    assert yielded == [count, count]
-    # Keeping every member costs about 5 MB here; keeping none, well under 1 MB.
-    assert retained[0] < 1_000_000, retained
-    assert peak < 2_000_000, peak
-
-
-@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
-def test_listing_after_an_unguarded_pass_past_the_caps_raises(
-    tmp_path: Path, streaming: bool
-) -> None:
-    """The pass yields everything; the listing it could not keep is then refused with
-    the error ``members()`` raises on the same archive."""
-    tar_path = _tar_of_empty_members(tmp_path / "many.tar", 50)
+    tar_path = _tar_of_empty_members(tmp_path / "many.tar", 200)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
-        names = [m.name for m, _ in reader.stream_members()]
-        assert names == [f"f{i:06d}" for i in range(50)]
+        header_reads = _count_header_reads(monkeypatch)
+        names: list[str] = []
         with pytest.raises(ResourceLimitError, match="max_members"):
-            reader.members_report()
-        # The scan-free peek keeps its contract: nothing is cached, so no report.
+            if via == "iter":
+                for member in reader:
+                    names.append(member.name)
+            else:
+                for member, _stream in reader.stream_members():
+                    names.append(member.name)
+        lists_first = via == "iter" and not streaming
+        assert names == ([] if lists_first else [f"f{i:06d}" for i in range(5)])
+        assert len(header_reads) <= 6
         assert reader.members_report_if_available() is None
         if not streaming:
-            with pytest.raises(ResourceLimitError, match="max_members"):
-                reader.extract_all(tmp_path / "out")
-            assert not (tmp_path / "out" / "f000000").exists()
             with pytest.raises(ResourceLimitError, match="max_members"):
                 reader.members()
             with pytest.raises(ResourceLimitError, match="max_members"):
                 reader.get("f000000")
-            # A second pass would need the members this one did not keep.
+            # A second pass walks again and is refused at the same member.
             with pytest.raises(ResourceLimitError, match="max_members"):
-                next(iter(reader.stream_members()))
+                for _member, _stream in reader.stream_members():
+                    pass
 
 
-def test_members_report_after_an_interrupted_unguarded_pass_past_the_caps_raises(
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
+def test_stream_members_enforces_max_metadata_bytes(
+    tmp_path: Path, streaming: bool
+) -> None:
+    import tarfile
+
+    tar_path = tmp_path / "long.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.PAX_FORMAT) as tf:
+        for i in range(5):
+            tf.addfile(tarfile.TarInfo(name=f"{'n' * 300}_{i}"))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1000))
+    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            for _member, _stream in reader.stream_members():
+                pass
+
+
+def test_members_report_after_an_interrupted_pass_past_the_caps_raises(
     tmp_path: Path,
 ) -> None:
+    """A pass stopped before the cap leaves the rest to ``members_report()``, which
+    raises at the cap."""
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 50)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     with open_archive(tar_path, config=cfg, streaming=True) as reader:
-        for i, member in enumerate(reader):
-            if i == 10:
+        for i, _member in enumerate(reader):
+            if i == 2:
                 break
         with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members_report()
 
 
-def test_unguarded_pass_within_the_caps_keeps_the_listing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
+def test_unlimited_lifts_the_caps_for_a_pass(tmp_path: Path, streaming: bool) -> None:
+    tar_path = _tar_of_empty_members(tmp_path / "many.tar", 50)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
+    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
+        assert len([m for m, _ in reader.stream_members()]) == 50
+
+
+def test_pass_within_the_caps_keeps_the_listing(tmp_path: Path) -> None:
     tar_path = _tar_of_empty_members(tmp_path / "few.tar", 5)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     with open_archive(tar_path, config=cfg, streaming=True) as reader:
@@ -553,85 +549,25 @@ def test_unguarded_pass_within_the_caps_keeps_the_listing(tmp_path: Path) -> Non
         assert list(report.members) == yielded
 
 
-def _tar_of(path: Path, entries: list[tuple[str, str | None]]) -> Path:
-    """A tar of empty files, plus hard links where the entry names a link target."""
-    import tarfile
-
-    with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as tf:
-        for name, link in entries:
-            info = tarfile.TarInfo(name=name)
-            if link is not None:
-                info.type = tarfile.LNKTYPE
-                info.linkname = link
-            tf.addfile(info)
-    return path
-
-
-@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
-def test_discarded_pass_still_stamps_duplicates_listed_before_the_cap(
-    tmp_path: Path, streaming: bool
-) -> None:
-    """A duplicate name listed before the cap is still marked superseded by its later
-    copy in the prefix, not left at the default ``is_current=True``."""
-    names = ["dup", "f0", "dup", "f1", "f2", "f3", "z"]
-    tar_path = _tar_of(tmp_path / "dup.tar", [(n, None) for n in names])
-    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=4))
-    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
-        yielded = [m for m, _ in reader.stream_members()]
-    assert [(m.name, m.is_current) for m in yielded if m.name == "dup"] == [
-        ("dup", False),
-        ("dup", True),
-    ]
-
-
-@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
-def test_member_that_crosses_the_cap_still_resolves_its_link(
-    tmp_path: Path, streaming: bool
-) -> None:
-    """The listing is discarded after the crossing member, not before it."""
-    entries: list[tuple[str, str | None]] = [(f"f{i}", None) for i in range(5)]
-    entries.append(("link", "f0"))
-    tar_path = _tar_of(tmp_path / "link.tar", entries)
-    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
-    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
-        yielded = [m for m, _ in reader.stream_members()]
-    link = yielded[-1]
-    assert link.link_target == "f0"
-    assert link.link_target_member is yielded[0]
-
-
-def test_concurrent_pass_past_the_caps_goes_on_while_listing_calls_refuse(
+def test_concurrent_pass_and_members_beside_it_both_refuse_past_the_cap(
     tmp_path: Path,
 ) -> None:
-    """A CONCURRENT pass is unguarded, as any pass is: past the caps it keeps
-    yielding and discards its listing, and ``members()`` beside it refuses.
-
-    The refusal does not discard the walk the pass is on, and the pass keeps no more
-    than the caps.
-    """
-    count = 4_000
-    tar_path = _tar_of_empty_members(tmp_path / "many.tar", count)
+    """Under CONCURRENT, ``members()`` beside a pass refuses as it does alone, and the
+    pass still raises at the member that crosses the cap, past the members the
+    refusal walked."""
+    tar_path = _tar_of_empty_members(tmp_path / "many.tar", 4_000)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
-    retained: list[int] = []
-
-    def run_pass() -> None:
-        with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
-            seen = 0
+    with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
+        seen = 0
+        with pytest.raises(ResourceLimitError, match="max_members"):
             for _member, _stream in reader.stream_members():
                 seen += 1
                 if seen == 10:
                     with pytest.raises(ResourceLimitError, match="max_members"):
                         reader.members()
-            assert seen == count
-            with pytest.raises(ResourceLimitError, match="max_members"):
-                reader.members()
-            retained.append(tracemalloc.get_traced_memory()[0])
-
-    run_pass()
-    retained.clear()
-    peak = traced_peak(run_pass)
-    assert retained[0] < 1_000_000, retained
-    assert peak < 2_000_000, peak
+        assert seen == 20
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.members()
 
 
 # --- 7z and RAR weigh their stored names at parse ----------------------------------

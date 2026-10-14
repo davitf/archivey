@@ -904,13 +904,10 @@ class ZipForwardReader(ZipReader):
                 )
         self._pass_data: _PassData | None = None
         # Local header offset -> the member built from it, for the directory to
-        # update in place at the end. Emptied when the listing is discarded: those
-        # members then stay as their local headers made them.
+        # update in place at the end.
         self._by_offset: dict[int, ArchiveMember] = {}
         # Every local header offset the walk met, which the directory must account
-        # for. Kept when the listing is discarded, unlike the two maps beside it:
-        # without it every directory entry would look like one with no local header.
-        # ``max_members`` bounds its length, as it bounds the seekable read's offsets,
+        # for. ``max_members`` bounds its length, as it bounds the seekable read's offsets,
         # though a set costs some 60 bytes an offset against their array's 8, for a
         # lookup per directory entry.
         self._local_offsets: set[int] = set()
@@ -985,23 +982,14 @@ class ZipForwardReader(ZipReader):
         finally:
             self._pass_data = None
         captured = current.captured
-        if not self._listing_discarded:
-            assert member._member_id is not None
-            if captured is not None:
-                self._captured[member._member_id] = captured
-                self._listing_tracker.account_retained_bytes(
-                    len(captured), enforce=False
-                )
-            elif (why := current.uncaptured) is not None:
-                self._uncaptured[member._member_id] = why
-                if isinstance(why, _KeptCiphertext):
-                    self._listing_tracker.account_retained_bytes(
-                        len(why), enforce=False
-                    )
-        if self._listing_discarded:
-            self._by_offset.clear()
-            self._captured.clear()
-            self._uncaptured.clear()
+        assert member._member_id is not None
+        if captured is not None:
+            self._captured[member._member_id] = captured
+            self._listing_tracker.account_retained_bytes(len(captured), enforce=False)
+        elif (why := current.uncaptured) is not None:
+            self._uncaptured[member._member_id] = why
+            if isinstance(why, _KeptCiphertext):
+                self._listing_tracker.account_retained_bytes(len(why), enforce=False)
 
     def _local_member(self, entry: LocalEntry, index: int) -> ArchiveMember:
         """The member as its local header describes it, until the directory arrives.
@@ -1105,28 +1093,18 @@ class ZipForwardReader(ZipReader):
         limits = self._config.listing_limits
         max_members = limits.max_members
         max_meta = limits.max_metadata_bytes
-        # Every entry's offset as stored, in directory order, and the entries
-        # themselves while their text is within max_metadata_bytes. A discarded
-        # listing has no member left to update, so it keeps none.
+        # Every entry's offset as stored, in directory order, and the entries.
         stored_offsets = array("Q")
-        entries: list[CentralEntry] | None = None if self._listing_discarded else []
+        entries: list[CentralEntry] = []
         held = 0
-        # The held text passed max_metadata_bytes: the listing is discarded once the
-        # directory has said which copy of a name is current.
-        discard = False
         with self._translated_errors():
             for central in walker.directory():
                 if max_members is not None and len(stored_offsets) >= max_members:
                     raise _max_members_error(max_members)
                 stored_offsets.append(central.header_offset)
-                if entries is None:
-                    continue
                 held += len(central.name) + len(central.extra) + len(central.comment)
                 if max_meta is not None and held > max_meta:
-                    entries = None
-                    discard = True
                     self._charge_held_directory(held)
-                    continue
                 entries.append(central)
             end = walker.end
             assert end is not None
@@ -1136,10 +1114,8 @@ class ZipForwardReader(ZipReader):
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
         matched: set[int] = set()
         order: list[ArchiveMember] = []
-        # Entries pointing where no local header was, when their text was not kept
-        # to build a member from, and entries pointing at a local header an earlier
-        # entry already took (by position in the directory).
-        unmatched: list[int] = []
+        # Entries pointing at a local header an earlier entry already took (by
+        # position in the directory).
         shared: list[int] = []
         failed: list[tuple[int, ArchiveMember, CorruptionError]] = []
         # Listed and missing members in the directory's order, for is_current.
@@ -1148,25 +1124,18 @@ class ZipForwardReader(ZipReader):
         for position, stored in enumerate(stored_offsets):
             offset = stored + end.base
             if offset not in local_offsets:
-                if entries is None:
-                    unmatched.append(position)
-                else:
-                    missing = self._missing_member(entries[position], len(failed))
-                    failed.append((position, missing, _missing_error(missing, offset)))
-                    placed.append(missing)
-                    any_missing = True
+                missing = self._missing_member(entries[position], len(failed))
+                failed.append((position, missing, _missing_error(missing, offset)))
+                placed.append(missing)
+                any_missing = True
                 continue
             if offset in matched:
                 shared.append(position)
                 continue
             matched.add(offset)
-            member = by_offset.get(offset)
-            if member is None:
-                continue
+            member = by_offset[offset]
             order.append(member)
             placed.append(member)
-            if entries is None:
-                continue
             central = entries[position]
             local_name = cast("_ZipLocator", member._raw).name
             if central.name != local_name:
@@ -1191,17 +1160,7 @@ class ZipForwardReader(ZipReader):
             # The stamp over the listed members alone (``_end_walk``) leaves a member
             # made not current here as it is.
             _apply_last_entry_wins_is_current(placed)
-        if discard:
-            # The unlisted members leave first, so the order covers what is listed,
-            # and the discard stamps is_current by it; after it no member is named.
-            self._drop_listed([by_offset[o] for o in unlisted if o in by_offset])
-            self._directory_order = order
-            self._discard_listing()
-            by_offset.clear()
-            self._captured.clear()
-            self._uncaptured.clear()
-        elif not self._listing_discarded:
-            self._directory_order = order
+        self._directory_order = order
         self._failed_at_end = [(member, error) for _, member, error in failed]
         # Only a link's bytes are read again, for its target.
         links = {
@@ -1220,7 +1179,6 @@ class ZipForwardReader(ZipReader):
             if member_id in links
         }
         self._report_unlisted(unlisted)
-        self._keep_updated_listing_within_limits(updates)
         self._report_directory_findings(end, len(stored_offsets))
         found = first_nonzero_offset(walker.source)
         if found is not None:
@@ -1228,16 +1186,6 @@ class ZipForwardReader(ZipReader):
         self._by_offset = {}
         self._local_offsets = set()
         self._descriptors = {}
-        if unmatched:
-            # No member to fail: the entry's text was not kept.
-            first = unmatched[0]
-            raise CorruptionError(
-                f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
-                f"points to offset {stored_offsets[first] + end.base}, where the stream "
-                f"held no local header ({len(unmatched)} such entries)",
-                archive_name=self._archive_name,
-                source_format=ArchiveFormat.ZIP,
-            )
         if shared:
             first = shared[0]
             raise CorruptionError(
@@ -1272,8 +1220,7 @@ class ZipForwardReader(ZipReader):
         appended to the archive without rewriting its directory, or a member planted
         between two others. Data outside any member is a warning (DR-3). The report is
         the signal: the object the pass yielded keeps its fields (``is_current``
-        among them), and only leaves the listing. A discarded listing kept no member
-        to drop, so only the offset is reported.
+        among them), and only leaves the listing.
 
         A dropped member's metadata stays charged to the listing limits: the pass
         held it while it walked, as it holds any member, and refunding it would let
@@ -1321,21 +1268,14 @@ class ZipForwardReader(ZipReader):
     def _listed_in_index_order(self) -> list[ArchiveMember]:
         """The kept members in the directory's order, once it has been read.
 
-        The walk's order before then, and after a discard: ``_listed`` is empty then
-        and the recorded order names members it no longer holds, which is what the
-        length check catches (``_discard_listing`` stamps the prefix through here
-        before emptying it)."""
+        The walk's order before then."""
         order = self._directory_order
-        if order is None or len(order) != len(self._listed):
+        if order is None:
             return self._listed
         return order
 
-    def _directory_entry_label(
-        self, entries: list[CentralEntry] | None, position: int
-    ) -> str:
-        """The entry's name when its text was kept, else its position."""
-        if entries is None:
-            return f"#{position}"
+    def _directory_entry_label(self, entries: list[CentralEntry], position: int) -> str:
+        """The entry's name, quoted."""
         return quoted(self._decode_member_name(entries[position]).text)
 
     def _charge_held_directory(self, held: int) -> None:
@@ -1344,47 +1284,10 @@ class ZipForwardReader(ZipReader):
         The seekable read builds a member from each entry as it reads it and weighs
         that; a forward pass must hold the entries until the end record, and the held
         text is what it weighs instead. It is charged to the listing, which it would
-        have become: an enforcing pass raises here, and one that does not enforce the
-        limits discards its listing once the entries' offsets are matched
-        (``_read_directory``), as ``_keep_updated_listing_within_limits`` does, so the
-        members it yielded stay as their local headers made them, but for
-        ``is_current``, which follows the directory's order. The links among them get
-        no target: that needs each entry's text (DR-5a; the seekable pass reports
-        nothing either once it discards).
+        have become, so the pass raises ``ResourceLimitError`` here.
         """
-        self._listing_tracker.account_retained_bytes(
-            held, enforce=self._progressive_enforce_listing_limits
-        )
-
-    def _keep_updated_listing_within_limits(
-        self, updates: list[tuple[ArchiveMember, CentralEntry]]
-    ) -> None:
-        """Discard the listing when what the directory added took it over the limits,
-        in a pass that does not enforce them (``_keep_listing_within_limits``).
-
-        The base checks after each member it yields, and the directory arrives after the
-        last one, so nothing else would. The links the directory made get their
-        targets first, as the end of the pass would give them (``_finalize_links``):
-        a discarded listing is never finalized, and the pass cannot come back for those
-        bytes. A target that fails is reported here; the seekable pass leaves that
-        report to finalization, so after its discard it reports nothing (DR-5a).
-        """
-        if self._progressive_enforce_listing_limits or not self._listing_over_limits():
-            return
-        if self._config.read_link_targets:
-            for member, _ in updates:
-                if (
-                    member.type is MemberType.SYMLINK
-                    and member.link_target is None
-                    and not member._link_target_resolved
-                ):
-                    try:
-                        self._resolve_link_target(member)
-                    except CorruptionError as exc:
-                        self._report_damaged_link_target(member, exc)
-        self._discard_listing()
-        self._captured.clear()
-        self._uncaptured.clear()
+        self._listing_tracker.account_retained_bytes(held)
+        raise AssertionError("held directory text over the cap passed the tracker")
 
     def _update_from_directory(
         self, member: ArchiveMember, central: CentralEntry
@@ -1412,7 +1315,6 @@ class ZipForwardReader(ZipReader):
             member.type is MemberType.SYMLINK
             and member.link_target is None
             and not member._link_target_resolved
-            and not self._listing_discarded
         ):
             member._link_target_unread = True
 
@@ -1422,8 +1324,7 @@ class ZipForwardReader(ZipReader):
             listed.remove(member)
             if not listed:
                 del self._listed_by_name[old_name]
-        if not self._listing_discarded:
-            self._index_member_name(member)
+        self._index_member_name(member)
 
     def _report_directory_findings(self, end: EndRecord, read: int) -> None:
         """The end record's disagreements with the directory.

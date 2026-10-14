@@ -11,7 +11,6 @@ from __future__ import annotations
 import dataclasses
 import io
 import struct
-import warnings
 import zipfile
 import zlib
 from collections.abc import Iterator
@@ -440,57 +439,6 @@ def test_a_directory_size_the_entries_do_not_fill_is_reported(
     assert found == [("central_directory", kind)]
 
 
-def _overfilled_with_link(target: bytes, *, damaged: bool = False) -> bytes:
-    """A link first, then 20 members whose long names and directory comments take the
-    listing past 100 000 bytes, while the directory's own text stays under it (the
-    listing weighs each name twice, as text and as raw bytes)."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        link = zipfile.ZipInfo("link")
-        link.create_system = 3
-        link.external_attr = 0o120777 << 16
-        zf.writestr(link, target)
-        for i in range(20):
-            info = zipfile.ZipInfo(f"{i}-" + "n" * 1900 + ".txt")
-            info.comment = b"c" * 2000
-            zf.writestr(info, b"x")
-    data = buf.getvalue()
-    return _corrupt_data(data, zipfile.ZIP_DEFLATED) if damaged else data
-
-
-_OVER_100K = archivey.ArchiveyConfig(
-    listing_limits=ListingLimits(max_metadata_bytes=100_000)
-)
-
-
-def test_a_stream_members_pass_discards_a_listing_the_directory_overfills() -> None:
-    """The directory's comments take the listing over the limit after the last
-    member; the pass keeps nothing then, as from a file, and the link it made still
-    gets its target."""
-    data = _overfilled_with_link(b"0.txt")
-    with archivey.open_archive(
-        _pipe(data), streaming=True, config=_OVER_100K
-    ) as reader:
-        yielded = [m for m, _ in reader.stream_members()]
-        assert reader._listing_discarded
-        assert reader._listed == []
-    assert (yielded[0].type, yielded[0].link_target) == (MemberType.SYMLINK, "0.txt")
-
-
-def test_a_damaged_link_target_is_reported_before_the_discard() -> None:
-    """The pass reads the link before it drops the listing, so a damaged target is
-    reported; the seekable pass reports it only from link finalization, which a
-    discarded listing never reaches (``design.md``, the ``max_members`` paragraph)."""
-    data = _overfilled_with_link(b"payload bytes " * 100, damaged=True)
-    with archivey.open_archive(
-        _pipe(data), streaming=True, config=_OVER_100K
-    ) as reader:
-        for _ in reader.stream_members():
-            pass
-        assert reader._listing_discarded
-        assert _link_target_reasons(reader) == ["target_data_damaged"]
-
-
 def _commented(count: int, comment_len: int) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -507,8 +455,8 @@ def test_directory_text_is_held_only_up_to_max_metadata_bytes(
 ) -> None:
     """The entries wait for the end record, which says where their offsets count
     from; their text is weighed as they arrive, so the pass holds about
-    ``max_metadata_bytes`` of it, not the whole directory. Past it the pass
-    discards its listing, as the seekable streaming pass does on the same archive."""
+    ``max_metadata_bytes`` of it, not the whole directory, and raises past it, as
+    the seekable streaming pass raises on the same archive."""
     data = _commented(40, 6000)
     held: list[int] = []
     original = ZipForwardReader._charge_held_directory
@@ -523,29 +471,18 @@ def test_directory_text_is_held_only_up_to_max_metadata_bytes(
     )
     opened = _pipe(data) if source == "pipe" else io.BytesIO(data)
     with archivey.open_archive(opened, streaming=True, config=config) as reader:
-        yielded = [m for m, _ in reader.stream_members()]
-        assert len(yielded) == 40
-        assert reader._listing_discarded
+        yielded = []
         with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            reader.members_report()
+            for member, _ in reader.stream_members():
+                yielded.append(member)
     if source == "pipe":
+        # The local headers hold no comment, so every member is yielded first.
+        assert len(yielded) == 40
         assert len(held) == 1
         assert 30_000 < held[0] <= 30_000 + 6100
-        # The members stay as their local headers made them.
-        assert yielded[-1].comment is None
     else:
+        assert len(yielded) < 40
         assert held == []
-
-
-def test_directory_entries_past_the_held_text_are_still_matched() -> None:
-    data = _drop_local_member(_commented(10, 6000), b"9.txt")
-    config = archivey.ArchiveyConfig(
-        listing_limits=ListingLimits(max_metadata_bytes=20_000)
-    )
-    with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
-        with pytest.raises(CorruptionError, match="entry #9 points to offset"):
-            for _ in reader.stream_members():
-                pass
 
 
 def test_a_name_that_differs_between_the_two_headers_is_refused() -> None:
@@ -902,45 +839,6 @@ def test_a_descriptor_the_directory_contradicts_fails_at_the_end_of_the_pass() -
     assert [c.member_name for c in _unlisted(report)] == ["inner"]
 
 
-def test_an_unlisted_entry_of_a_discarded_listing_is_reported_by_offset() -> None:
-    """A directory whose text overfills ``max_metadata_bytes`` leaves the pass no
-    member to drop or name, so the report carries the offset alone."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("planted.txt", b"not listed")
-        for i in range(20):
-            info = zipfile.ZipInfo(f"{i}.txt")
-            info.comment = b"c" * 2000
-            zf.writestr(info, b"x")
-    data = bytearray(buf.getvalue())
-    # Remove planted.txt's directory entry, the first, and fix the end record.
-    cd = data.index(b"PK\x01\x02")
-    name_len, extra_len, comment_len = struct.unpack_from("<HHH", data, cd + 28)
-    entry_len = 46 + name_len + extra_len + comment_len
-    del data[cd : cd + entry_len]
-    eocd = data.rindex(b"PK\x05\x06")
-    count, _, size, offset = struct.unpack_from("<HHII", data, eocd + 8)
-    struct.pack_into(
-        "<HHII", data, eocd + 8, count - 1, count - 1, size - entry_len, offset
-    )
-    config = archivey.ArchiveyConfig(
-        listing_limits=ListingLimits(max_metadata_bytes=20_000)
-    )
-    with archivey.open_archive(
-        _pipe(bytes(data)), streaming=True, config=config
-    ) as reader:
-        for _ in reader.stream_members():
-            pass
-        assert reader._listing_discarded
-        retained = reader.diagnostics.retained
-    (context,) = [
-        d.context for d in retained if d.code is DiagnosticCode.ARCHIVE_UNLISTED_DATA
-    ]
-    assert isinstance(context, UnlistedDataContext)
-    assert (context.member_name, context.member_id, context.offset) == ("", None, 0)
-    assert context.compressed_size is None
-
-
 @pytest.mark.parametrize(
     "limit",
     [
@@ -948,39 +846,30 @@ def test_an_unlisted_entry_of_a_discarded_listing_is_reported_by_offset() -> Non
         pytest.param(20_000, id="held-text-overfills"),
     ],
 )
-def test_a_discarded_listing_stamps_the_current_copy_by_the_directory(
+def test_a_directory_that_takes_the_listing_over_the_limits_ends_the_pass(
     limit: int,
 ) -> None:
-    """When the directory pushes the listing over the limits, the discard stamps
-    ``is_current`` too, and in the directory's order as well: whether the members
-    the directory updated overfill it, or the directory's text overfills it while
-    it is held, before any member is updated."""
+    """The directory arrives after the last member, so the pass yields every member
+    and then raises ``ResourceLimitError``: whether the members the directory updates
+    overfill the listing, or the directory's text overfills it while it is held,
+    before any member is updated."""
     buf = io.BytesIO()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)  # zipfile: duplicate name
-        with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("dup.txt", b"first")
-            zf.writestr("dup.txt", b"second")
-            # Long names take the updated members over 100 000 bytes; short ones
-            # keep the walk under 20 000, which the held comments then pass.
-            stem = "n" * 1900 if limit == 100_000 else "n"
-            for i in range(20):
-                info = zipfile.ZipInfo(f"{i}-{stem}.txt")
-                info.comment = b"c" * 2000
-                zf.writestr(info, b"x")
-    data = bytearray(buf.getvalue())
-    # Swap the two dup.txt directory entries, which are the first two and the same
-    # length, so the directory lists the second copy first.
-    first = data.index(b"PK\x01\x02")
-    length = 46 + len("dup.txt")
-    one, two = data[first : first + length], data[first + length : first + 2 * length]
-    data[first : first + 2 * length] = two + one
+    with zipfile.ZipFile(buf, "w") as zf:
+        # Long names take the updated members over 100 000 bytes; short ones keep
+        # the walk under 20 000, which the held comments then pass.
+        stem = "n" * 1900 if limit == 100_000 else "n"
+        for i in range(20):
+            info = zipfile.ZipInfo(f"{i}-{stem}.txt")
+            info.comment = b"c" * 2000
+            zf.writestr(info, b"x")
     config = archivey.ArchiveyConfig(
         listing_limits=ListingLimits(max_metadata_bytes=limit)
     )
     with archivey.open_archive(
-        _pipe(bytes(data)), streaming=True, config=config
+        _pipe(buf.getvalue()), streaming=True, config=config
     ) as reader:
-        yielded = [m for m, _ in reader.stream_members()]
-        assert reader._listing_discarded
-    assert [(m.size, m.is_current) for m in yielded[:2]] == [(5, True), (6, False)]
+        yielded = []
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            for member, _ in reader.stream_members():
+                yielded.append(member)
+        assert len(yielded) == 20

@@ -1292,13 +1292,12 @@ class ExtractionCoordinator:
             listed=all_members if _DIRECTORY_LINKS else None,
         )
 
-        # Extract-prep: enforce ListingLimits. Indexed backends may already have been
-        # peeked via members_report_if_available(); scan-required backends (TAR,
-        # directory) would otherwise walk via unguarded stream_members() and never hit
-        # listing caps. The reader decides how: most list everything first; TAR and
-        # every streaming reader enforce the limits as members arrive in the one pass
-        # (_extraction_listing).
-        listing = reader._extraction_listing()
+        # Extract-prep: every pass enforces ListingLimits as it lists, so this only
+        # decides when the listing happens. Most random-access readers list everything
+        # first, so nothing is written from an archive over the limits; TAR and every
+        # streaming reader list as members arrive in the one pass
+        # (_list_before_extraction).
+        reader._list_before_extraction()
 
         # The pass is driven through the public stream_members(), which applies the
         # selection (skipped members never surface here — they are invisible to progress
@@ -1334,8 +1333,7 @@ class ExtractionCoordinator:
         )
 
         try:
-            with listing:
-                self._run_pass(reader, stream_selector, selected_total)
+            self._run_pass(reader, stream_selector, selected_total)
         except _AbortExtraction as abort:
             # An abort_on trigger fired: no report is returned, and output already
             # written for earlier members stays on disk (same as OnError.STOP). Nothing

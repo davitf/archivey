@@ -408,7 +408,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`, and to `extract_all()` in both access modes. `stream_members()` and `for member in reader` are intentionally unguarded, but their memory stays bounded by the limits: past them the reader stops keeping the listing, and listing calls afterwards raise `ResourceLimitError`. The exceptions are formats that already apply `max_members` at parse (ZIP, 7z, RAR and ISO): `open_archive` itself raises, or, for a ZIP whose end record understates the count, the walk of its directory. 7z and RAR also weigh the names and comments their headers hold against `max_metadata_bytes` at open. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR weighs its compressed RAR 1.5/2.x comments by their declared sizes, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply to every call that lists members, in both access modes: `members()`, `members_report()`, `stream_members()`, `for member in reader` and `extract_all()`. Formats that already apply `max_members` at parse (ZIP, 7z, RAR and ISO) raise in `open_archive` itself, or, for a ZIP whose end record understates the count, as its directory is walked. 7z and RAR also weigh the names and comments their headers hold against `max_metadata_bytes` at open. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR weighs its compressed RAR 1.5/2.x comments by their declared sizes, and TAR refuses a PAX or GNU long-name header larger than what is left of `max_metadata_bytes` before reading it. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -422,22 +422,21 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   Archivey never writes more of a member than the size the archive records for it, so
   where the archive records both a member's size and its compressed size, a member
   over the per-member ratio is refused before any of it is written.
-- **Listing materialization** — member count (default 262,144) and retained metadata
-  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `members_report()` /
-  extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction,
-  and any extraction from a streaming reader, does not list first: it checks the limits
-  as each member arrives in its one pass, so members before the one that crosses a cap
-  are already written when it raises. `stream_members()` and `for member in reader`
-  stay unguarded by design (past a cap the reader stops keeping the listing, so memory
-  stays bounded), except on ZIP, 7z, RAR and ISO where `max_members` is checked
-  at `open_archive` (on ZIP, as the directory is read when its end record understates
-  the count). Raise `listing_limits.max_members` to open a larger ZIP, 7z, RAR or
-  ISO. 7z and RAR also check `max_metadata_bytes` at `open_archive`, against the
-  names and comments their headers hold (RAR's compressed RAR 1.5/2.x comments by
-  their declared sizes, before decoding them). ISO checks it at `open_archive`
-  against the bytes of the directory records `pycdlib` parses, which are more than
-  the text a listing keeps; and ISO counts every directory record of one tree, so an
-  image right at a cap may need a slightly higher one.
+- **Listing** — member count (default 262,144) and retained metadata bytes (default
+  64 MiB) (`ListingLimits`) on `members()`, `members_report()`, `stream_members()`,
+  `for member in reader` and `extract_all()`. Trips raise `ResourceLimitError`. A TAR
+  extraction, and any extraction from a streaming reader, does not list first: it checks
+  the limits as each member arrives in its one pass, so members before the one that
+  crosses a cap are already written when it raises. A `stream_members()` pass that lists
+  as it goes yields the members before the one that crosses a cap, the same way. ZIP,
+  7z, RAR and ISO check `max_members` at `open_archive` (on ZIP, as the directory is
+  read when its end record understates the count). Raise `listing_limits.max_members`
+  to open a larger ZIP, 7z, RAR or ISO. 7z and RAR also check `max_metadata_bytes` at
+  `open_archive`, against the names and comments their headers hold (RAR's compressed
+  RAR 1.5/2.x comments by their declared sizes, before decoding them). ISO checks it at
+  `open_archive` against the bytes of the directory records `pycdlib` parses, which are
+  more than the text a listing keeps; and ISO counts every directory record of one
+  tree, so an image right at a cap may need a slightly higher one.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on

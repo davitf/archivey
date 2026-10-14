@@ -255,20 +255,20 @@ ExtractionLimits.UNLIMITED = ExtractionLimits(
 
 @dataclass(frozen=True)
 class ListingLimits:
-    """Caps for materializing a member list (``members`` / ``members_report`` / extract prep).
+    """Caps on the member listing a reader builds and keeps.
 
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
-    ``stream_members`` and ``for member in reader`` do not enforce these caps: they
-    yield every member, but stop keeping the listing once a cap is crossed, so their
-    memory stays bounded by it. ``extract_all`` enforces them in both access modes.
+    Every call that lists members enforces them, in both access modes: ``members()``,
+    ``members_report()``, ``stream_members()``, ``for member in reader`` and
+    ``extract_all``. Each raises :class:`~archivey.exceptions.ResourceLimitError` at
+    the member that crosses a cap.
     ZIP, 7z, RAR and ISO apply ``max_members`` at parse (ZIP at open, or as it reads
     the directory when the end record understates the count), 7z and RAR weigh the
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5/2.x comments by their declared sizes, before decoding them),
-    and ISO the directory records, path tables and UDF
-    descriptors ``pycdlib`` parses, so ``open_archive`` raises and none is an escape
-    hatch.
+    and ISO the directory records, path tables and UDF descriptors ``pycdlib``
+    parses, so ``open_archive`` raises.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``
@@ -277,7 +277,7 @@ class ListingLimits:
     refused for the UDF tree. ISO counts members per tree but weighs bytes as one sum
     for the whole image, every tree together.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than the whole ``max_metadata_bytes``, before reading it.
+    more than is left of ``max_metadata_bytes``, before reading it.
     """
 
     max_members: int | None = 262_144
