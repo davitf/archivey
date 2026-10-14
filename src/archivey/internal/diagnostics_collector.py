@@ -370,6 +370,9 @@ class DiagnosticCollector:
                         )
                     if emit_log.raised is not None and at in emit_log.raised:
                         again = emit_log.raised[at]
+                        # Raising an object adds the frames it passes to its traceback;
+                        # clear it, or each repeat makes the stored exception's longer.
+                        again.__traceback__ = None
                         if not self._hold(thread_id, again):
                             raise again
                     return replayed
