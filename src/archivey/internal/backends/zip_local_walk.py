@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from typing import BinaryIO, NoReturn
 
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -337,7 +338,12 @@ class MemberData(ReadOnlyIOStream):
         if self._settled:
             raise ValueError("settle() called twice")
         self._settled = True
-        descriptor = self._finish(used, crc=crc, file_size=file_size)
+        try:
+            descriptor = self._finish(used, crc=crc, file_size=file_size)
+        except ArchiveyError as exc:
+            # Where the data ends is unknown, so no next header can be found.
+            self._walk._member_failed(exc)
+            raise
         self._walk._member_settled()
         return descriptor
 
@@ -698,6 +704,8 @@ class LocalHeaderWalk:
         self._index = 0
         # The entry :meth:`next_entry` returned last, until its data is settled.
         self._unsettled: LocalEntry | None = None
+        #: What a member's ``settle`` raised: the walk cannot go past that member.
+        self._failure: ArchiveyError | None = None
         self._open: MemberData | None = None
         #: Stream offset of the first local header, once found.
         self.first_offset: int | None = None
@@ -721,10 +729,14 @@ class LocalHeaderWalk:
     def next_entry(self) -> LocalEntry | None:
         """The next local entry, or ``None`` once the directory or end records follow.
 
-        The previous member's data must have been settled. Raises ``TruncatedError``
+        The previous member's data must have been settled; if its ``settle`` raised,
+        this raises the same error, as the next header cannot be found. Raises
+        ``TruncatedError``
         when the stream ends where a header should be, ``CorruptionError`` for bytes
         that are no ZIP structure and lead to no directory.
         """
+        if self._failure is not None:
+            raise self._failure
         if self._unsettled is not None:
             raise ValueError("settle the previous member's data first")
         if not self._started:
@@ -877,6 +889,10 @@ class LocalHeaderWalk:
     def _member_settled(self) -> None:
         self._open = None
         self._unsettled = None
+
+    def _member_failed(self, exc: ArchiveyError) -> None:
+        self._member_settled()
+        self._failure = exc
 
     def _read_descriptor(
         self,

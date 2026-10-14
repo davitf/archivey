@@ -308,6 +308,29 @@ def test_a_stream_cut_after_the_codec_end_is_truncation() -> None:
         _read_all(raw)
 
 
+@pytest.mark.parametrize("signed", [True, False])
+def test_a_settle_that_fails_ends_the_walk_with_its_error(signed: bool) -> None:
+    """Where the data ends is unknown, so the walk cannot find the next header: it
+    raises what ``settle`` raised, not a misuse error."""
+    method = _METHODS["deflate"].values[0]
+    first = _member(b"first", method, _SMALL)
+    if signed:  # cut before the descriptor
+        raw = _streamed_zip([first], cut_after=0)
+        expected: type[Exception] = TruncatedError
+    else:  # a descriptor that does not match the data
+        first = _Member(
+            first.name, first.method, first.flags, first.data, first.packed, crc=1
+        )
+        raw = _streamed_zip([first, _stored(b"next", b"x")], signed=False)
+        expected = CorruptionError
+    walk = LocalHeaderWalk(_Pipe(raw))
+    with pytest.raises(expected) as settled:
+        _read_member(walk)
+    with pytest.raises(expected) as walked_on:
+        walk.next_entry()
+    assert walked_on.value is settled.value
+
+
 @requires("pyppmd")
 @pytest.mark.parametrize(
     "kwargs",

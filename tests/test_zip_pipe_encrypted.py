@@ -552,6 +552,31 @@ def test_a_bit3_codec_member_cut_inside_its_header_is_truncated(build) -> None: 
             stream.read()
 
 
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: _bit3(_aes_zip(vendor_version=1, method=8)),
+            id="aes-cut-in-its-code",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(lambda: _bit3_zipcrypto(zipfile.ZIP_DEFLATED), id="zipcrypto"),
+    ],
+)
+def test_a_bit3_codec_member_cut_after_its_codec_ends_the_pass_as_truncated(
+    build,  # noqa: ANN001
+) -> None:
+    """The codec ends; the code or the descriptor after it does not come. Going on
+    past the member raises the same truncation, as no next header can be found."""
+    data = build()
+    descriptor = data.index(b"PK\x07\x08")
+    cut = data[: descriptor - 4]
+    result = _pipe_read(cut, _PASSWORD)
+    kind, message = result["a.txt"]  # type: ignore[misc]
+    assert kind is TruncatedError
+    assert result[_WALK_ENDED] == (TruncatedError, message)
+
+
 @requires("cryptography")
 @pytest.mark.parametrize("vendor_version", [1, 2])
 def test_a_bit3_aes_member_past_the_kept_window_reads_as_from_a_file(

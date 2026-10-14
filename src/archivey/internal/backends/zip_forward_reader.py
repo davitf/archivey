@@ -37,6 +37,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_aes import (
+    _HMAC_LEN,
     FORWARD_READ,
     ZIP_WRONG_PASSWORD_MSG,
     WinZipAesForwardStream,
@@ -131,7 +132,7 @@ _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 #: codec's layers cannot have read further past the end than that, plus the code.
 #: About 4 MiB, held on top of the walk's own window over the same bytes, so a bit-3
 #: AES codec member costs twice ``_CODEC_RETAIN`` while it is read.
-_AES_HOLD_BACK = _CODEC_RETAIN + FORWARD_READ + 10
+_AES_HOLD_BACK = _CODEC_RETAIN + FORWARD_READ + _HMAC_LEN
 
 # A forward pass decides nothing by seeking back, and reads each member's data once.
 _ZIP_FORWARD_COST = CostReceipt(
@@ -300,6 +301,10 @@ class _PassData:
     def _deferred(self) -> bool:
         return self.entry.deferred
 
+    def _runs_on(self) -> bool:
+        """The data has no end of its own: only the codec finds it (bit 3)."""
+        return self._deferred() and self._method() != 0
+
     def _method(self) -> int:
         """The compression method, under WinZip AES the one its extra field names."""
         aes = cast("_ZipLocator", self.member._raw).aes
@@ -423,7 +428,7 @@ class _PassData:
             )
         raw = _CutShortWatch(self._data, self)
         # A bit-3 STORED member's data ends where its ciphertext does.
-        ends_with_data = not deferred or self._method() == 0
+        ends_with_data = not self._runs_on()
         stage: Callable[[bytes], BinaryIO]
         aes = loc.aes
         if header.method == 99:
@@ -829,10 +834,15 @@ class _CutShortWatch(ReadOnlyIOStream):
 
     def read(self, n: int = -1, /) -> bytes:
         try:
-            return self._data.read(n)
+            chunk = self._data.read(n)
         except TruncatedError:
             self._owner._cut_short = True
             raise
+        if not chunk and n != 0 and self._owner._runs_on():
+            # A bit-3 codec member's data runs on into what follows it, so its end
+            # is the stream's.
+            self._owner._cut_short = True
+        return chunk
 
 
 class _PassStream(ReadOnlyIOStream):
