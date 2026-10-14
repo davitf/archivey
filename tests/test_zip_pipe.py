@@ -917,7 +917,7 @@ def test_an_unlisted_entry_of_a_discarded_listing_is_reported_by_offset() -> Non
         for _ in reader.stream_members():
             pass
         assert reader._listing_discarded
-        retained = reader._diagnostics_collector.snapshot().retained
+        retained = reader.diagnostics.retained
     (context,) = [
         d.context for d in retained if d.code is DiagnosticCode.ARCHIVE_UNLISTED_DATA
     ]

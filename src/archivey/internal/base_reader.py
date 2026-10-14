@@ -1642,7 +1642,8 @@ class BaseArchiveReader(ArchiveReader):
         member, and the pass publishes nothing when it ends (``_finalize_pass_links``).
         Last-entry-wins is stamped over the kept prefix first, as ``_end_walk`` would
         stamp it, so a duplicate name in the prefix is superseded by a later copy in
-        the prefix; a copy the pass yields after the discard cannot supersede it.
+        the index's order (``_listed_in_index_order``); a copy the pass yields after
+        the discard cannot supersede it.
 
         A backend that keeps its own record of the walk extends this to drop it too.
         """
