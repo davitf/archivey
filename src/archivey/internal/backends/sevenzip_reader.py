@@ -1564,6 +1564,7 @@ class SevenZipReadBackend(ReadBackend):
     SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
+    NON_SEEKABLE_REASON = "its index is at the end of the file"
     OPTIONAL_DEPENDENCY = None
 
     def open_read(

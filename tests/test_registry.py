@@ -515,6 +515,48 @@ def test_the_read_once_refusal_does_not_depend_on_optional_packages(
         open_archive(_NonSeekable(bytes(64)), format=fmt, streaming=True)
 
 
+@pytest.mark.parametrize(
+    ("fmt", "reason"),
+    [
+        # RAR headers sit at the front; the header walk's seeks and unrar needing a
+        # file are what stop a pipe.
+        (ArchiveFormat.RAR, "the header walk seeks past each member's data"),
+        (ArchiveFormat.SEVEN_Z, "its index is at the end of the file"),
+        (ArchiveFormat.ZIP, "its member list is at the end of the file"),
+        (ArchiveFormat.ISO, "at absolute offsets in the image"),
+    ],
+    ids=["RAR", "7z", "ZIP", "ISO"],
+)
+def test_the_read_once_refusal_names_the_format_s_own_reason(
+    fmt: ArchiveFormat, reason: str
+) -> None:
+    """The refusal says why this format needs seek, not one reason for all of them."""
+    with pytest.raises(StreamNotSeekableError) as ei:
+        open_archive(_NonSeekable(bytes(64)), format=fmt, streaming=True)
+    assert reason in str(ei.value)
+    assert ei.value.source_format == fmt
+
+
+def test_a_backend_sets_its_own_reason_exactly_when_it_refuses_pipes() -> None:
+    """Every seek-only backend says why; no pipe-capable backend carries dead text.
+
+    Fails if any one of the four ``NON_SEEKABLE_REASON`` lines is deleted, or if a
+    backend that streams from a pipe sets one nobody reads.
+    """
+    assert _SEEK_ONLY_FORMATS, "the registry should still have seek-only formats"
+    registry = get_registry()
+    for fmt in list_known_formats():
+        backend_cls = registry.registered_reader(fmt)
+        if backend_cls is None or fmt.container is ContainerFormat.DIRECTORY:
+            continue
+        overrides = any(
+            "NON_SEEKABLE_REASON" in vars(klass)
+            for klass in backend_cls.__mro__
+            if klass is not ReadBackend
+        )
+        assert overrides is (fmt in _SEEK_ONLY_FORMATS), fmt
+
+
 def test_the_streaming_hint_still_follows_the_install_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
