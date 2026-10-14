@@ -414,11 +414,6 @@ class _PassData:
                     "ZIP compression method 99 without a valid WinZip AES (0x9901) "
                     "extra field"
                 )
-            if deferred:
-                raise refuse(
-                    "A WinZip AES member whose sizes are in a data descriptor cannot "
-                    "be read from a source that cannot seek yet"
-                )
 
             def stage(password: bytes) -> BinaryIO:
                 return open_winzip_aes_member(
@@ -621,7 +616,7 @@ class _PassData:
         deferred = self._deferred()
         if deferred:
             if encrypted and header.method != 0:
-                # Only the decrypted codec finds the end of this one (3b3d).
+                # Only the decrypted codec finds the end of this one.
                 raise UnsupportedFeatureError(
                     "An encrypted ZIP member whose sizes are in a data descriptor "
                     "cannot be read past from a source that cannot seek: only "

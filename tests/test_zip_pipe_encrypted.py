@@ -294,6 +294,44 @@ def test_a_real_bit3_stored_member_reads_and_a_bit3_deflated_one_is_refused() ->
             stream.read()
 
 
+@requires("cryptography")
+def test_a_bit3_aes_member_is_refused_from_a_pipe() -> None:
+    """Its scan would find the end on the ciphertext, but the authentication code
+    sits at that end: reading it waits for the hold-back a later stage adds."""
+    data = _bit3(_aes_zip(vendor_version=2, method=0))
+    assert _file_read(data, _PASSWORD) == {"a.txt": _TEXT}
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        passes = reader.stream_members()
+        _, stream = next(passes)
+        assert stream is not None
+        with pytest.raises(UnsupportedFeatureError, match="only decrypting"):
+            stream.read()
+        with pytest.raises(UnsupportedFeatureError, match="cannot be read past"):
+            next(passes)
+
+
+def _bit3(data: bytes) -> bytes:
+    """``data``'s one member written as a pipe writer would: bit 3, zero CRC and
+    sizes in the local header, a signed descriptor after the data."""
+    out = bytearray(data)
+    flags, crc, csize, usize, name_len, extra_len = struct.unpack_from(
+        "<H6xIIIHH", out, 6
+    )
+    struct.pack_into("<H", out, 6, flags | 0x8)
+    struct.pack_into("<III", out, 14, 0, 0, 0)
+    end_of_data = 30 + name_len + extra_len + csize
+    descriptor = struct.pack("<IIII", 0x08074B50, crc, csize, usize)
+    eocd = out.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", out, eocd + 16)
+    struct.pack_into("<H", out, cd_offset + 8, flags | 0x8)
+    out[end_of_data:end_of_data] = descriptor
+    eocd += len(descriptor)
+    struct.pack_into("<I", out, eocd + 16, cd_offset + len(descriptor))
+    return bytes(out)
+
+
 def test_a_password_that_only_passes_the_check_byte_fails_as_unverified() -> None:
     """``wrong896`` passes ``stored.txt``'s one-byte check (fixture README); only the
     CRC at the end shows it is wrong, and then it may be a wrong password or damage."""
