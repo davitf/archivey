@@ -342,8 +342,8 @@ class ReadBackend(ABC):
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     # Why a format with the flag above False cannot come from a non-seekable source,
     # as a clause for open_archive()'s StreamNotSeekableError. Formats differ: 7z's
-    # index is at the end, but RAR's headers are at the front and the blocker is that
-    # unrar reads a file on disk.
+    # index is at the end, but RAR's headers are at the front and its header walk and
+    # unrar are what need seeks.
     NON_SEEKABLE_REASON: str = "its index is not at the front of the stream"
     # Whether this backend's format has encryption a password could unlock. Checked
     # centrally by open_archive(): a password passed for a format that cannot use one is

@@ -2805,9 +2805,12 @@ class IsoReadBackend(ReadBackend):
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: pycdlib addresses the image by
     # absolute offsets (volume descriptors at 32 KiB), so even a forward-only pass
     # needs a seekable source.
-    NON_SEEKABLE_REASON = "reading an image jumps between places in it"
     # Same requirement the reader raises from, so the hint reported by listing /
     # format_availability and the one in the open() failure cannot diverge.
+    NON_SEEKABLE_REASON = (
+        "its volume descriptors and directory records are at absolute offsets in the "
+        "image"
+    )
     USES_ENCODING = True  # for Rock Ridge and plain names that are not valid UTF-8
     OPTIONAL_DEPENDENCY = _PYCDLIB_REQUIREMENT.name
     INSTALL_HINT = _PYCDLIB_REQUIREMENT.install_hint
