@@ -361,9 +361,9 @@ def test_unrepresentable_name_oserror_is_translated(
 # ---------------------------------------------------------------------------
 
 
-def test_strict_strips_execute_and_normalizes() -> None:
-    out = transform_strict(_member("f", mode=0o755))
-    assert out.mode == 0o644  # execute stripped, normalized
+def test_strict_keeps_execute_and_strips_group_other_write() -> None:
+    out = transform_strict(_member("f", mode=0o777))
+    assert out.mode == 0o755  # execute kept, group/other write stripped
     assert out.uid is None and out.gid is None
 
 
@@ -375,7 +375,7 @@ def test_strict_dir_normalized_to_755() -> None:
 def test_strict_strips_setuid() -> None:
     out = transform_strict(_member("f", mode=0o4755))
     assert out.mode & 0o7000 == 0
-    assert out.mode == 0o644
+    assert out.mode == 0o755
 
 
 def test_standard_preserves_execute() -> None:
@@ -398,6 +398,9 @@ def test_strict_mode_none_defaults() -> None:
         (0o660, 0o640),  # umask 007: group-shared, must not gain other-read
         (0o664, 0o644),
         (0o666, 0o644),
+        (0o755, 0o755),
+        (0o700, 0o700),
+        (0o744, 0o744),
         (0o604, 0o604),
         (0o000, 0o000),
     ],
@@ -647,7 +650,7 @@ def test_extract_zip_strict_normalizes_mode(tmp_path: Path) -> None:
     _write_zip(src, {"x.sh": b"#!/bin/sh"}, mode=0o777)
     dest = tmp_path / "out"
     open_and_extract(src, dest, policy=ExtractionPolicy.STRICT)
-    assert (dest / "x.sh").stat().st_mode & 0o777 == 0o644
+    assert (dest / "x.sh").stat().st_mode & 0o777 == 0o755
 
 
 @_posix_perms
@@ -721,7 +724,7 @@ def _tar_file_and_link(file_mode: int, link_mode: int) -> bytes:
 @_posix_perms
 @pytest.mark.parametrize(
     "policy,expected",
-    [(ExtractionPolicy.STRICT, 0o644), (ExtractionPolicy.STANDARD, 0o777)],
+    [(ExtractionPolicy.STRICT, 0o755), (ExtractionPolicy.STANDARD, 0o777)],
 )
 def test_materialized_hardlink_mode_is_capped_like_a_files(
     tmp_path: Path, policy: ExtractionPolicy, expected: int
@@ -753,7 +756,7 @@ def test_cross_device_hardlink_copy_mode_is_capped_under_strict(
     dest = tmp_path / "out"
     open_and_extract(io.BytesIO(_tar_file_and_link(0o600, 0o4777)), dest)
     assert (dest / "src.bin").stat().st_mode & 0o7777 == 0o600
-    assert (dest / "link.bin").stat().st_mode & 0o7777 == 0o644
+    assert (dest / "link.bin").stat().st_mode & 0o7777 == 0o755
 
 
 @_posix_perms

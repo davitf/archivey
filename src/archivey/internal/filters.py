@@ -433,7 +433,6 @@ def check_universal(
 # --- Policy permission transforms (applied to a transient copy) ---------------------
 
 _HIGH_BITS = 0o7000  # setuid | setgid | sticky
-_EXEC_BITS = 0o111
 
 
 def _carries_file_mode(member: ArchiveMember) -> bool:
@@ -442,11 +441,15 @@ def _carries_file_mode(member: ArchiveMember) -> bool:
 
 
 def transform_strict(member: ArchiveMember) -> ArchiveMember:
-    """STRICT: drop ownership, strip high/execute bits, cap files at 644, dirs at 755.
+    """STRICT: drop ownership, strip high bits and group/other write, dirs at 755.
 
-    A file's stored mode is *masked* with ``0o644``, never raised to it: ``0o660``
+    A file's stored mode is *masked* with ``0o755``, never raised to it: ``0o660``
     (``umask 007``, a group-shared file) becomes ``0o640``, not ``0o644``. The policy
     that distrusts the archive must not be the one that opens a file up to other users.
+    Execute bits the archive stored are kept, as GNU tar, unzip, 7-Zip, unar and
+    ``tarfile``'s ``data`` filter keep them: a script extracted from a release tarball
+    must still run. Only setuid, setgid and sticky are what make a stored mode
+    dangerous, and those are stripped.
 
     A hardlink's mode is treated as a file's: a link materialized as a copy (the source
     was not selected, or it sits on another device) is written with it.
@@ -464,7 +467,7 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
         if mode is None:
             new["mode"] = 0o644
         else:
-            new["mode"] = mode & ~_HIGH_BITS & ~_EXEC_BITS & 0o644
+            new["mode"] = mode & ~_HIGH_BITS & 0o755
     return member.replace(**new)
 
 
