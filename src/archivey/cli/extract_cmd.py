@@ -584,8 +584,19 @@ def maybe_hoist_single_root(
                 # aside so the entry can take its place.
                 side = _free_name(wrapper, is_dir=True)
                 wrapper.rename(side)
-                (side / child.name).rename(dest)
-                side.rmdir()
+                try:
+                    (side / child.name).rename(dest)
+                    try:
+                        side.rmdir()
+                    except BaseException:
+                        with contextlib.suppress(OSError):
+                            dest.rename(side / child.name)
+                        raise
+                except BaseException:
+                    # Leave the entry where the messages say it is: in the wrapper.
+                    with contextlib.suppress(OSError):
+                        side.rename(wrapper)
+                    raise
         else:
             # The wrapper took the first free name for the archive's stem, which can
             # be the free name a rename of the root would take (``foo`` exists, so

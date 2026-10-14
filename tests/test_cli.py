@@ -2037,6 +2037,42 @@ def test_hoist_single_file_named_like_wrapper(
     assert not (tmp_path / "src (1)").exists()
 
 
+@pytest.mark.parametrize("step", ["rename", "rmdir"])
+def test_hoist_single_file_named_like_wrapper_restores_wrapper_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    step: str,
+) -> None:
+    # The wrapper steps aside to ``src (1)`` so the file can take its name. When
+    # the move or the removal of ``src (1)`` fails, the wrapper is back under its
+    # own name, which is the name the failure lines give.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "src.tar", {"src": b"solo"})
+    real_rename, real_rmdir = Path.rename, Path.rmdir
+
+    def rename(self: Path, target: str | os.PathLike[str]) -> Path:
+        if step == "rename" and self.parent.name == "src (1)":
+            raise PermissionError("refused")
+        return real_rename(self, target)
+
+    def rmdir(self: Path) -> None:
+        if step == "rmdir" and self.name == "src (1)":
+            raise PermissionError("refused")
+        real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    assert main(["extract", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert _report_lines(err, "archivey: hoist failed: ") == [
+        "archivey: hoist failed: refused"
+    ]
+    assert _report_lines(err, "files left in ") == ["files left in src/"]
+    assert (tmp_path / "src" / "src").read_bytes() == b"solo"
+    assert not (tmp_path / "src (1)").exists()
+
+
 def _tar_with_locked_dirs(path: Path, names: list[str]) -> Path:
     """A tar whose directory members (a trailing ``/``) are stored ``0o555``."""
     with tarfile.open(path, "w") as tf:
