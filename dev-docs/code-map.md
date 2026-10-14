@@ -36,6 +36,7 @@ src/archivey/
     ├── backends/        one self-registering reader module per format
     ├── external/        format-agnostic external decompressor programs (unar)
     └── streams/         the codec and stream-plumbing layer
+        ├── codecs/      one module per codec, its decoder, and the shared codec base
         └── streamtools/ generic BinaryIO plumbing (slice, lock, share, count)
 ```
 

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.streams.codecs.base import RAW_DEFLATE_WBITS
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -141,8 +142,8 @@ def _resume_decompressor(resume: DeflateResume) -> zlib._Decompress:
     if not 0 <= resume.bit < 8 or len(resume.window) > WINDOW_SIZE:
         raise ValueError(f"not a DEFLATE resume point: {resume!r}")
     if resume.window:
-        return zlib.decompressobj(-15, zdict=resume.window)
-    return zlib.decompressobj(-15)
+        return zlib.decompressobj(RAW_DEFLATE_WBITS, zdict=resume.window)
+    return zlib.decompressobj(RAW_DEFLATE_WBITS)
 
 
 def _splice(bit: int, chunk: bytes) -> bytes:
@@ -238,7 +239,7 @@ def stream_end(
     stream's first end: a resume point can lie in a further stream that rapidgzip read
     on into.
     """
-    produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
+    produced, bit, decomp = 0, 0, zlib.decompressobj(RAW_DEFLATE_WBITS)
     if point is not None:
         resume = point.state
         # RapidgzipChildStream.resume_point gives only such points.

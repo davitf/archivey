@@ -7,7 +7,6 @@ from typing import BinaryIO
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.config import StreamConfig
@@ -90,9 +89,7 @@ class Lz4Codec(StreamCodec):
         if deps.lz4_block is not None and isinstance(exc, deps.lz4_block.LZ4BlockError):
             # A block of a legacy stream; it has no checksum to fail.
             return CorruptionError(f"Error reading lz4 stream: {exc!r}")
-        if isinstance(exc, EOFError):
-            return TruncatedError(f"lz4 stream is truncated: {exc!r}")
-        return None
+        return self._eof_truncation(exc, "lz4")
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("lz4")

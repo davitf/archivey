@@ -43,6 +43,7 @@ from archivey.internal.streams.codecs import (
     codec_requirement,
     open_codec_stream,
     resolve_codec,
+    stream_codec,
 )
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_decoder import (
@@ -2988,6 +2989,7 @@ def test_zlib_decompressor_stream_raises_typed_errors(wbits: int) -> None:
 @pytest.mark.parametrize(
     ("codec", "label"),
     [
+        (Codec.GZIP, "gzip"),
         (Codec.ZLIB, "zlib"),
         (Codec.DEFLATE, "deflate"),
         pytest.param(Codec.DEFLATE64, "deflate64", marks=requires("inflate64")),
@@ -3007,6 +3009,32 @@ def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
     with open_codec_stream(codec, source, config=_STDLIB_GZIP) as stream:
         with pytest.raises(TruncatedError, match=f"^{label} stream is truncated"):
             stream.read()
+
+
+@pytest.mark.parametrize(
+    ("codec", "label"),
+    [
+        (Codec.GZIP, "gzip"),
+        (Codec.BZIP2, "bzip2"),
+        (Codec.XZ, "LZMA/XZ"),
+        (Codec.ZLIB, "zlib"),
+        (Codec.DEFLATE, "deflate"),
+        (Codec.DEFLATE64, "deflate64"),
+        (Codec.ZSTD, "zstd"),
+        (Codec.LZ4, "lz4"),
+        (Codec.PPMD, "PPMd"),
+    ],
+)
+def test_a_translated_eof_names_its_format(codec: Codec, label: str) -> None:
+    """Every translator that maps a library's ``EOFError`` words it the same way.
+
+    A cut stream does not reach every one of these arms: the archivey decoders for XZ,
+    bzip2 and LZ4 raise their own ``TruncatedError`` first. The translator is called
+    directly instead, which needs no optional library.
+    """
+    translated = stream_codec(codec).translate(EOFError("cut"))
+    assert type(translated) is TruncatedError
+    assert str(translated) == f"{label} stream is truncated: EOFError('cut')"
 
 
 @requires("lz4")

@@ -14,10 +14,11 @@ from typing import BinaryIO
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    TruncatedError,
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs.base import (
+    GZIP_MAGIC,
+    GZIP_WBITS,
     Codec,
     CodecParams,
     CodecSource,
@@ -83,7 +84,7 @@ def _gzip_header_refused(source: CodecSource) -> bool:
     """
 
     def refused(view: BinaryIO) -> bool:
-        decoder = zlib.decompressobj(31)
+        decoder = zlib.decompressobj(GZIP_WBITS)
         while chunk := view.read(1 << 16):
             try:
                 if decoder.decompress(chunk, 1) or decoder.eof:
@@ -504,7 +505,7 @@ def gzip_has_additional_member(stream: BinaryIO) -> bool:
     it themselves (e.g. ``tell``/``seek`` around the call). Path-source callers typically
     open a fresh handle owned only for this scan.
     """
-    magic = b"\x1f\x8b\x08"
+    magic = GZIP_MAGIC + b"\x08"  # CM 8: deflate, the only method
     block = 1 << 20
     offset = 1  # of buf[0] in the stream
     budget = _MEMBER_PROBE_BUDGET
@@ -548,7 +549,7 @@ def _gzip_member_at(
     the standard-library engine then reports.
     """
     stream.seek(offset)
-    decoder = zlib.decompressobj(31)
+    decoder = zlib.decompressobj(GZIP_WBITS)
     fed = produced = 0
     try:
         while fed < _MEMBER_PROBE_INPUT:
@@ -580,7 +581,7 @@ _GZIP_HEADER_PEEK = 512
 class GzipCodec(_DeflateFamilyCodec):
     codec = Codec.GZIP
     stream_format = StreamFormat.GZIP
-    magic = (MagicSignature(0, b"\x1f\x8b", ArchiveFormat.GZ),)
+    magic = (MagicSignature(0, GZIP_MAGIC, ArchiveFormat.GZ),)
     # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
     # declares a pack size to clip it to and no AES pad follows its data.
     _bounds_source = False
@@ -657,9 +658,7 @@ class GzipCodec(_DeflateFamilyCodec):
             # and a failed CRC-32/ISIZE check a whole-stream one; a member header gzip
             # refuses as unsupported stays unsupported (:func:`gzip_error`).
             return gzip_error(exc)
-        if isinstance(exc, EOFError):
-            return TruncatedError(f"gzip stream is truncated: {exc!r}")
-        return None
+        return self._eof_truncation(exc, "gzip")
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface gzip's stored filename (FNAME) and mtime.
@@ -690,7 +689,7 @@ class GzipCodec(_DeflateFamilyCodec):
         A caller that wants a digest of a gzip's content computes one while reading.
         """
         header = ctx.peek_header(_GZIP_HEADER_PEEK)
-        if len(header) < 10 or header[:2] != b"\x1f\x8b":
+        if len(header) < 10 or not header.startswith(GZIP_MAGIC):
             return
         flg = header[3]
         mtime = int.from_bytes(header[4:8], "little")

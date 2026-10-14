@@ -8,7 +8,6 @@ from typing import BinaryIO
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.config import (
@@ -128,8 +127,8 @@ class PpmdCodec(StreamCodec):
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        if isinstance(exc, EOFError):
-            return TruncatedError(f"PPMd stream is truncated: {exc!r}")
+        if (eof := self._eof_truncation(exc, "PPMd")) is not None:
+            return eof
         if isinstance(exc, ValueError):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
         pyppmd = deps.pyppmd.loaded()
