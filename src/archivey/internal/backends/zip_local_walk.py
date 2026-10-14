@@ -120,7 +120,10 @@ _OPENS_STREAM = _AFTER_MEMBER
 # sizes, next signature.
 _DESCRIPTOR_LOOKAHEAD = 4 + 4 + 8 + 8 + 4
 # Each descriptor shape's length (signature or none, 4- or 8-byte sizes), longest
-# first: a scan that knows where one ends tries them from the earliest start.
+# first: a scan that knows where one ends tries them from the earliest start. The
+# order is policy: when two shapes fit, the member ends earlier, as a planted prefix
+# descriptor ends it (see ``_CodecData._find_descriptor``), and the directory check
+# at the end of the pass catches that.
 _DESCRIPTOR_LENGTHS = (24, 20, 16, 12)
 _DESCRIPTOR_LONGEST = _DESCRIPTOR_LENGTHS[0]
 # Forward reads are made in pieces of this size.
@@ -130,8 +133,9 @@ _READ_CHUNK = 1 << 16
 # to 1 MiB at once and a BufferedReader in front of it a little more.
 _CODEC_RETAIN = 4 << 20
 # The end record and its comment, the longest tail a stream can end with after the
-# directory: kept by the STORED scan to tell a descriptor without its signature (a
-# whole archive follows) from a stream cut inside the member.
+# directory: kept by the descriptor scan to tell a whole archive after the member
+# (no descriptor matched, a shape a forward read cannot split) from a stream cut
+# inside the member.
 _TAIL_KEEP = (1 << 16) + EOCD_SIZE
 
 
@@ -244,8 +248,11 @@ def match_descriptor(
     uncompressed size ``file_size`` when those are known, and a ZIP signature follows
     it, or the end of the input when ``at_end``. ``buffer`` must hold the
     longest shape and the signature after it (``_DESCRIPTOR_LOOKAHEAD`` bytes) unless
-    it ends there. ``signed_only`` drops the shapes without a signature: with no
-    CRC to match, only a signature tells a descriptor from data.
+    it ends there. ``signed_only`` drops the shapes without a signature, for a caller
+    with nothing else to place a candidate by: ``_CodecData._find_descriptor``,
+    searching kept bytes once the decoded CRC is no needle. A caller that knows a
+    ZIP signature ends the shape (``_ScannedData._find_end``) tries unsigned ones
+    too.
     """
     widths = (8, 4) if zip64 else (4, 8)
     for width in widths:

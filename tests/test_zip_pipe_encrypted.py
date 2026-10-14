@@ -849,7 +849,7 @@ def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> Non
 
 
 @pytest.mark.parametrize(
-    "build",
+    ("build", "target"),
     [
         pytest.param(
             lambda: _bit3(
@@ -857,10 +857,12 @@ def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> Non
                     b"target.txt", check_byte=0, compression=zipfile.ZIP_DEFLATED
                 )
             ),
+            "target.txt",
             id="zipcrypto",
         ),
         pytest.param(
             lambda: _bit3(_aes_zip_link()),
+            "target.txt",
             id="aes",
             marks=requires("cryptography"),
         ),
@@ -874,18 +876,24 @@ def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> Non
                     compression=zipfile.ZIP_DEFLATED,
                 )
             ),
+            None,
             id="zipcrypto-over-the-kept-ciphertext",
         ),
     ],
 )
 @pytest.mark.parametrize("password", [_PASSWORD, b"not the password", None])
-def test_a_bit3_codec_link_target_is_read_as_from_a_file(build, password) -> None:  # noqa: ANN001
+def test_a_bit3_codec_link_target_is_read_as_from_a_file(
+    build,  # noqa: ANN001
+    target: str | None,
+    password: bytes | None,
+) -> None:
     """The pass keeps its ciphertext, found by the scan, and decodes it once the
     directory says it is a link: the pipe gives what the file gives."""
     data = build()
-    assert _link_targets(data, password, pipe=True) == _link_targets(
-        data, password, pipe=False
-    )
+    targets = _link_targets(data, password, pipe=False)
+    if password == _PASSWORD:
+        assert targets[0] == ("link", archivey.MemberType.SYMLINK, target)
+    assert _link_targets(data, password, pipe=True) == targets
 
 
 def _zipcrypto_link(

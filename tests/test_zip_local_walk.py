@@ -619,23 +619,45 @@ def test_an_encrypted_stored_scan_matches_size_and_signature_only() -> None:
     assert second.header.name == b"deflated.txt"
 
 
+def _planted_signed(size: int) -> bytes:
+    """12-byte blocks: a descriptor signature, a wrong CRC, the block's own offset
+    as its compressed size. No ZIP header follows any, so none is a candidate: what
+    the scan planted before it looked for the header after a descriptor."""
+    return b"".join(
+        DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 4 + struct.pack("<L", offset)
+        for offset in range(0, size, 12)
+    )
+
+
+def _planted_followed(size: int) -> bytes:
+    """16-byte blocks: an unsigned descriptor (a wrong CRC, the block's own offset as
+    its compressed size) and a local header signature after it, so every block is a
+    candidate whose size fits and reaches the CRC. The prefix keeps block 0 from
+    being a valid descriptor for empty data."""
+    prefix = b"pfx!"
+    return prefix + b"".join(
+        struct.pack("<LLL", 0, offset, 0) + b"PK\x03\x04"
+        for offset in range(len(prefix), size, 16)
+    )
+
+
 @pytest.mark.parametrize("piece", [65536, 16])
+@pytest.mark.parametrize(
+    "plant", [_planted_signed, _planted_followed], ids=["signed", "followed"]
+)
 def test_planted_descriptor_signatures_cost_one_pass(
-    monkeypatch: pytest.MonkeyPatch, piece: int
+    monkeypatch: pytest.MonkeyPatch,
+    piece: int,
+    plant: Callable[[int], bytes],
 ) -> None:
     """A STORED member full of planted descriptors is scanned in linear time.
 
-    Each 12-byte block is a descriptor signature, a wrong CRC and the block's own
-    offset as its compressed size, so every candidate passes the size test and
-    reaches the CRC. Fails if the CRC is recomputed from the start of the buffer
-    for each candidate (quadratic bytes into ``zlib.crc32``). The 16-byte reads
-    also fail if a read re-runs the CRC over bytes an earlier read already
-    judged.
+    With ``_planted_followed`` every candidate passes the size test and reaches the
+    CRC. Fails if the CRC is recomputed from the start of the buffer for each
+    candidate (quadratic bytes into ``zlib.crc32``). The 16-byte reads also fail if
+    a read re-runs the CRC over bytes an earlier read already judged.
     """
-    payload = b"".join(
-        DATA_DESCRIPTOR_SIGNATURE + b"\x00" * 4 + struct.pack("<L", offset)
-        for offset in range(0, 1_200_000, 12)
-    )
+    payload = plant(1_200_000)
     out = _Unseekable()
     with zipfile.ZipFile(out, "w") as zf:
         with zf.open("x", "w") as member:
@@ -659,5 +681,7 @@ def test_planted_descriptor_signatures_cost_one_pass(
         got += chunk
     assert bytes(got) == payload
     assert data.settle() is not None
-    # Once while scanning, once over the bytes handed out.
-    assert fed <= 2 * len(payload)
+    # Once over the bytes handed out, and while scanning once over each candidate's
+    # bytes past the earliest start a shape can have: up to the 12 bytes from there
+    # to its own start, per candidate.
+    assert fed <= 3 * len(payload)

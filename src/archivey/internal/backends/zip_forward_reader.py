@@ -272,8 +272,8 @@ class _PassData:
         self._open_error: ArchiveyError | None = None
         #: An encrypted member's ciphertext, kept by ``drain`` for a link target.
         self._kept: _KeptCiphertext | None = None
-        #: ``drain`` read past an encrypted bit-3 STORED member too long to be a
-        #: link target without keeping it.
+        #: ``drain`` read past an encrypted bit-3 member too long to be a link
+        #: target without keeping it.
         self._too_long = False
         #: A bit-3 WinZip AES codec member's decrypt stage, which authenticates once
         #: the descriptor says where the data ended (``_finish``).
