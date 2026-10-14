@@ -8,7 +8,6 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     ResourceLimitError,
-    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.config import (
@@ -193,9 +192,7 @@ class ZstdCodec(StreamCodec):
                 # checksum"), over everything the frame decoded.
                 return _StreamChecksumError(f"Error reading zstd stream: {exc!r}")
             return CorruptionError(f"Error reading zstd stream: {exc!r}")
-        if isinstance(exc, EOFError):
-            return TruncatedError(f"zstd stream is truncated: {exc!r}")
-        return None
+        return self._eof_truncation(exc, "zstd")
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("zstd")

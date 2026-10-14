@@ -19,6 +19,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    truncated_message,
 )
 
 _INITIAL_CODE_WIDTH = 9
@@ -510,7 +511,7 @@ class UnixCompressDecoder(BaseDecoder):
         points.extend(self._points_for_units(units))
         if self._state.truncation is not None:
             self._pending_error = TruncatedError(
-                f"unix-compress (.Z) stream is truncated ({self._state.truncation})"
+                f"{truncated_message('unix-compress (.Z)')} ({self._state.truncation})"
             )
         return DecodeOut(data, points)
 
