@@ -497,6 +497,11 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # A pipe ZIP pass's member stream, over the codec stream the pass reads
         # once: forward-only, so nothing seeks it or asks it for a resume offset.
         zip_forward_reader._PassStream,
+        # The member's data under a pipe pass's decrypt stage: compressed offsets,
+        # read forward once.
+        zip_forward_reader._CutShortWatch,
+        # Kept ciphertext, read once from the start for a link target.
+        zip_forward_reader._KeptData,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
