@@ -379,10 +379,11 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
   what `open_archive` opens).
 - **When and where a call is made.** A call that works on one archive, or at one point in
-  a reader's life, works on every archive and at every point, or raises on all of them. A
-  call that raises only sometimes ships bugs that never showed during development, and a
-  reader opened with `concurrent_members=True` can be handed to several threads that each
-  do what they need (2026-10-13).
+  a reader's life, works on every archive and at every point, or raises on all of them.
+  That holds across threads too: a reader opened with `concurrent_members=True` can be
+  handed to several threads that each do what they need, whatever the others are doing.
+  A call that raised only sometimes would ship bugs that never showed during development
+  (2026-10-13).
 
 **Why.** "Consistency between formats is a core promise of the library" (PR 290).
 "Consistent behavior unless we have a good reason not to" (2026-10-07). A field
