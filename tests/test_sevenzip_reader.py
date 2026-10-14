@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import io
 import os
 import random
@@ -3076,91 +3075,3 @@ def test_real_7z_cli_created_slot_matches_its_host(tmp_path: Path) -> None:
         else:
             assert member.ctime is None
             assert member.created is not None
-
-
-_FILES_THAT_RUN_7Z = (
-    Path(__file__),
-    Path(__file__).with_name("test_audit2_sevenzip.py"),
-)
-_SUBPROCESS_RUNNERS = frozenset(
-    {
-        "run",
-        "Popen",
-        "call",
-        "check_call",
-        "check_output",
-        "getoutput",
-        "getstatusoutput",
-    }
-)
-
-
-def _process_calls_that_bypass_run_7z(path: Path) -> list[str]:
-    """Each process call in ``path`` that does not start a Python child.
-
-    The only direct process call these files may make is ``[sys.executable, ...]``.
-    A ``7z`` run must go through :func:`tests.conftest.run_7z`. The scan also refuses
-    ``from subprocess import ...``, because a bare ``run(...)`` would hide from it.
-    """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    found: list[tuple[int, str]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
-            found.append((node.lineno, "from subprocess import ..."))
-            continue
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-        ):
-            continue
-        module, name = node.func.value.id, node.func.attr
-        if not (
-            (module == "subprocess" and name in _SUBPROCESS_RUNNERS)
-            or (
-                module == "os"
-                and (name in {"system", "popen"} or name.startswith(("exec", "spawn")))
-            )
-        ):
-            continue
-        first = node.args[0] if node.args else None
-        if (
-            isinstance(first, ast.List)
-            and first.elts
-            and ast.unparse(first.elts[0]) == "sys.executable"
-        ):
-            continue
-        found.append((node.lineno, f"{ast.unparse(node.func)}(...)"))
-    return [f"{path.name}:{line}: {what}" for line, what in sorted(found)]
-
-
-def test_every_7z_cli_run_goes_through_the_bounded_helper() -> None:
-    """A ``7z`` run with no timeout once hung on a Windows CI leg.
-
-    The per-test timeout then killed the xdist worker and left no traceback.
-    :func:`tests.conftest.run_7z` sets a timeout and gives the child no stdin, so
-    every ``7z`` run in these files must use it.
-    """
-    bypasses = [
-        call
-        for path in _FILES_THAT_RUN_7Z
-        for call in _process_calls_that_bypass_run_7z(path)
-    ]
-    assert bypasses == [], "use tests.conftest.run_7z for:\n" + "\n".join(bypasses)
-
-
-def test_the_bypass_scan_finds_a_direct_7z_run(tmp_path: Path) -> None:
-    """The scan above must not pass because it cannot see a call."""
-    sample = tmp_path / "sample.py"
-    sample.write_text(
-        "import subprocess, sys\n"
-        "subprocess.run([sys.executable, '-c', 'pass'])\n"
-        "subprocess.run(['7z', 'a', 'x.7z'])\n"
-        "cmd = ['7z', 'l']\n"
-        "subprocess.Popen(cmd)\n",
-        encoding="utf-8",
-    )
-    assert _process_calls_that_bypass_run_7z(sample) == [
-        "sample.py:3: subprocess.run(...)",
-        "sample.py:5: subprocess.Popen(...)",
-    ]

@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Literal, overload
 
 import pytest
 
@@ -161,6 +161,30 @@ SEVEN_ZIP_CLI_TIMEOUT = 30.0
 """Seconds a ``7z`` command-line run may take before :func:`run_7z` stops it."""
 
 
+@overload
+def run_7z(
+    args: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = False,
+    text: Literal[False] = False,
+    input: bytes | None = None,
+    timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+@overload
+def run_7z(
+    args: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = False,
+    text: Literal[True],
+    input: str | None = None,
+    timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+) -> subprocess.CompletedProcess[str]: ...
+
+
 def run_7z(
     args: Sequence[str],
     *,
@@ -169,15 +193,17 @@ def run_7z(
     text: bool = False,
     input: bytes | str | None = None,
     timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
-) -> subprocess.CompletedProcess[Any]:
+) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
     """Run the ``7z`` CLI with ``args``, capture its output, and bound how long it runs.
 
-    Every test that shells out to ``7z`` goes through here. A run without a timeout
-    once hung on a Windows CI leg; the per-test timeout then killed the xdist
-    worker and left no traceback. With ``timeout`` the hang becomes a
-    ``subprocess.TimeoutExpired`` in the test that caused it. Stdin is
-    ``subprocess.DEVNULL`` unless ``input`` is given, so a prompt (for example a
-    password or overwrite question) gets end-of-file instead of waiting.
+    A test that shells out to ``7z`` goes through here;
+    ``tests/test_7z_cli_boundary.py`` enforces that and lists the files that still
+    run ``7z`` directly. A run without a timeout once hung on a Windows CI leg; the
+    per-test timeout then killed the xdist worker and left no traceback. With
+    ``timeout`` the hang becomes a ``subprocess.TimeoutExpired`` in the test that
+    caused it. Stdin is ``subprocess.DEVNULL`` unless ``input`` is given, so a prompt
+    (for example a password or overwrite question) gets end-of-file instead of
+    waiting.
     """
     return subprocess.run(
         ["7z", *args],
