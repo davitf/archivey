@@ -239,11 +239,9 @@ the decoder back and emit `STREAM_REWIND_REDECOMPRESSES`, as `members()` followe
 the walk; when another caller moves the walk on, that stream SHALL continue from a
 view of its own, with the same bytes. Link targets are resolved once: by the pass at
 its end, or by a `members()` call beside it, whichever comes first, through the
-materialization election. `ListingLimits` keep the rule every pass has: the pass is
-unguarded and stops keeping the listing past the caps. A `members()` call beside it
-raises `ResourceLimitError` one member past the cap without discarding the walk the
-pass is on; after the pass has discarded the listing, a second pass behind it raises
-the same error.
+materialization election. `ListingLimits` keep the rule every listing call has: the
+pass and a `members()` call beside it each raise `ResourceLimitError` at the member
+that crosses a cap.
 
 **Independence.** Each admitted call or pass opens its own streams, as concurrent
 random opens do; it SHALL NOT move another pass's position or read through another

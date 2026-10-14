@@ -9,6 +9,11 @@ from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.codecs.base import (
+    GZIP_MAGIC,
+    GZIP_WBITS,
+    RAW_DEFLATE_WBITS,
+)
 from archivey.internal.streams.codecs.deflate_resume import (
     DeflateResume,
     DeflateResumeDecoder,
@@ -26,9 +31,6 @@ from archivey.internal.streams.decompressor_stream import (
     zlib_error,
 )
 
-_GZIP_MAGIC = b"\x1f\x8b"
-_GZIP_WBITS = 16 + zlib.MAX_WBITS
-
 
 def _zlib_label(wbits: int) -> str:
     """The name of a ``wbits`` stream in messages: a positive ``wbits`` reads the zlib
@@ -39,7 +41,7 @@ def _zlib_label(wbits: int) -> str:
 class ZlibDecoder(BaseDecoder):
     """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``."""
 
-    def __init__(self, wbits: int = -15) -> None:
+    def __init__(self, wbits: int = RAW_DEFLATE_WBITS) -> None:
         self._wbits = wbits
         self._decomp = zlib.decompressobj(wbits)
         self._label = _zlib_label(wbits)
@@ -111,7 +113,7 @@ class GzipDecoder(BaseDecoder):
     """
 
     def __init__(self) -> None:
-        self._decomp = zlib.decompressobj(_GZIP_WBITS)
+        self._decomp = zlib.decompressobj(GZIP_WBITS)
         # Post-member bytes not yet resolved (NUL padding / next magic / junk).
         # Never store unconsumed_tail here — that lives on the decompressobj.
         self._retained = b""
@@ -155,8 +157,8 @@ class GzipDecoder(BaseDecoder):
             # A byte after NUL padding: the data ended at the padding.
             self._arm_trailing_junk(data)
             return b""
-        if data.startswith(_GZIP_MAGIC):
-            self._decomp = zlib.decompressobj(_GZIP_WBITS)
+        if data.startswith(GZIP_MAGIC):
+            self._decomp = zlib.decompressobj(GZIP_WBITS)
             self._between_members = False
             self._retained = b""
             return data
@@ -262,14 +264,14 @@ class GzipDecoder(BaseDecoder):
         if self._decomp.unconsumed_tail:
             return False
         # Full next-member prefix retained — drain without reading more.
-        if self._retained.startswith(_GZIP_MAGIC):
+        if self._retained.startswith(GZIP_MAGIC):
             return False
         return True
 
 
 def ZlibDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
-    wbits: int = -15,
+    wbits: int = RAW_DEFLATE_WBITS,
     *,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,

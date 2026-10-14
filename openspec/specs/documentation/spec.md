@@ -195,10 +195,8 @@ verifying. Format encyclopaedia, unsupported-feature lists, full policy tables, 
 `extracting.md`, `access-and-cost.md`) and MUST NOT be restated here.
 
 The page SHALL carry the user-mitigable threat-model residuals: nested-archive
-amplification (the bomb tracker is not nesting-aware), the unguarded paths
-(`stream_members()` and `for member in reader` outside `ListingLimits`, with
-memory still bounded by them, except where `max_members` is applied at parse;
-unbounded `read()`), the 7z
+amplification (the bomb tracker is not nesting-aware), the unguarded path
+(unbounded `read()`), the 7z
 header-encryption residual, and name-collision behaviour.
 
 #### Scenario: Gotchas inclusion matrix

@@ -18,6 +18,7 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveMember
 from tests.conftest import requires_binary
 from tests.streams_util import NonSeekableBytesIO
@@ -111,38 +112,22 @@ def test_a_streaming_zip_pass_settles_its_members_when_it_ends(tmp_path: Path) -
     assert [m.is_current for m, _ in seen] == [False, True, True]
 
 
-def test_a_pass_over_the_listing_limits_settles_what_it_stops_keeping(
+def test_a_pass_refused_by_the_listing_limits_settles_what_it_yielded(
     tmp_path: Path,
 ) -> None:
-    """A pass that crosses ``ListingLimits`` stops keeping members; none can change.
-
-    The kept prefix is stamped when the pass stops keeping it, and a member yielded
-    after that is never stamped, so both read true from then on.
-    """
+    """A streaming pass that raises at a cap cannot go on, so nothing changes the
+    members it yielded: they read true from then on."""
     data = _tar(_DUPLICATES)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
     with open_archive(
         NonSeekableBytesIO(data), streaming=True, config=config
     ) as reader:
-        seen = [(m, m.member_state_final) for m, _ in reader.stream_members()]
-    assert [final for _, final in seen] == [False, True, True]
-    assert [m.member_state_final for m, _ in seen] == [True, True, True]
-
-
-def test_a_duplicate_inside_the_kept_prefix_is_still_superseded() -> None:
-    """The pass stamps the members it kept before it stops keeping them."""
-    data = _tar([("a.txt", b"1"), ("a.txt", b"2"), ("b.txt", b"3"), ("c.txt", b"4")])
-    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
-    with open_archive(
-        NonSeekableBytesIO(data), streaming=True, config=config
-    ) as reader:
-        members = [m for m, _ in reader.stream_members()]
-    assert [(m.member_state_final, m.is_current) for m in members] == [
-        (True, False),
-        (True, True),
-        (True, True),
-        (True, True),
-    ]
+        seen = []
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            for member, _ in reader.stream_members():
+                seen.append((member, member.member_state_final))
+    assert [final for _, final in seen] == [False]
+    assert [m.member_state_final for m, _ in seen] == [True]
 
 
 @pytest.mark.parametrize("read_link_targets", [True, False])

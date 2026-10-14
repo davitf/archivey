@@ -1009,11 +1009,7 @@ class ArchiveMember:
           ``members_report_if_available()`` peek resolves no links, so its members
           read ``False`` until a later call or pass does. A random-access pass with no
           listing call first yields from a complete listing in some formats and walks
-          as it goes in others, so read the flag rather than assume. A pass past
-          ``ListingLimits`` stops keeping members: it stamps ``is_current`` over the
-          ones it kept, and stamps nothing from that point on, so a member yielded
-          later reads ``True`` with ``is_current`` as yielded and cannot supersede an
-          earlier one.
+          as it goes in others, so read the flag rather than assume.
         - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink)
           that nothing has read yet, which is the case under
           ``ArchiveyConfig.read_link_targets=False``. Reading it sets
@@ -1024,7 +1020,10 @@ class ArchiveMember:
 
         Everywhere else it is ``True``. Closing the reader makes it ``True`` for every
         member it listed, since a closed reader updates nothing. A copy made with
-        :meth:`replace` is never stamped, so only its unread link target can change.
+        :meth:`replace` is never stamped, so only its unread link target can change,
+        except the copy a streaming ``extract_all`` hands its ``filter``: it reads
+        ``False`` while the walk can still change the member it came from, and the
+        filter may then be called again for that member.
         Attached ``diagnostics`` are not fields and can still grow. Which fields change
         in practice is listed per format in the user docs.
         """
@@ -1060,7 +1059,8 @@ class ArchiveMember:
 
         No listing holds the copy, so nothing stamps ``is_current`` on it or resolves
         its links to members; its ``member_state_final`` waits only on an unread link
-        target, which reading the copy fills in place. Closing the reader cannot reach
+        target, which reading the copy fills in place (the copy ``extract_all`` hands
+        a filter is the exception: see ``member_state_final``). Closing the reader cannot reach
         a copy, so a copy whose target is never read keeps reading ``False``.
         """
         copy = replace(self, **kwargs)

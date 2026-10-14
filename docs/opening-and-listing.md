@@ -95,23 +95,20 @@ carry none ([details](formats.md#single-file-compressors)).
 
 Its other limitations:
 
-- **Listing limits on the pass.** On a streaming reader, `stream_members()` and
-  `for member in reader` are deliberately outside `ListingLimits`: they yield every
-  member. Past a limit the reader stops keeping the members it has yielded, so memory
-  stays bounded and a link yielded after that point has no `link_target_member`.
-  `members_report()` and `extract_all()` enforce the limits as `members()` does, so
-  after such a pass `members_report()` raises `ResourceLimitError`. 7z, RAR and ISO
-  check `max_members` when the archive is opened, and ZIP does too, or as it reads the
-  directory when the end record understates the count. See [Limits](extracting.md#limits).
+- **Listing limits on the pass.** `stream_members()` and `for member in reader`
+  enforce `ListingLimits` as `members()` does. The pass yields the members within the
+  limits, then raises `ResourceLimitError` at the member that crosses one. To stream
+  an archive with more members than the defaults allow, open it with a higher
+  `listing_limits.max_members`, or `ListingLimits.UNLIMITED`; the reader then keeps
+  every member until it closes. 7z, RAR and ISO check `max_members` when the archive
+  is opened, and ZIP does too, or as it reads the directory when the end record
+  understates the count. See [Limits](extracting.md#limits).
 - **Members can change until the pass ends.** The pass hands you each member before it
   has seen the rest of the archive. A later member with the same name makes an earlier
   one `is_current=False`, and links are resolved to their target members when the pass
   ends, so the member objects you already hold are updated then.
-  `member.member_state_final` is `False` until then and `True` after. A pass past
-  `ListingLimits` stops keeping members: it settles `is_current` for the ones it kept,
-  and stops stamping from that point, so a member yielded after it reads `True` with
-  `is_current` as yielded, and cannot supersede an earlier one. A ZIP, 7z or RAR 4
-  symlink whose target has not been read (`read_link_targets=False`) also reads
+  `member.member_state_final` is `False` until then and `True` after. A ZIP, 7z or
+  RAR 4 symlink whose target has not been read (`read_link_targets=False`) also reads
   `False`, in either mode, until `open()` or `extract_all()` reads it.
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption

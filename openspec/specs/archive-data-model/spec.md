@@ -374,10 +374,7 @@ format, in two cases:
   in every format. A `members_report_if_available()` peek resolves no links, so the
   members it returns read `False` until a later call or pass does. Whether a
   random-access pass yields before that point depends on whether the backend has
-  resolved the listing before the pass starts; the flag reports which. A pass that
-  goes past `ListingLimits` stops keeping members: it stamps last-entry-wins over the
-  members it kept, settles them, and stamps nothing from that point on, so a member
-  yielded after it reads `True` with `is_current` as yielded.
+  resolved the listing before the pass starts; the flag reports which.
 - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink) until the
   library has read that data, whatever the read found. Reading it sets `link_target`,
   and a reparse point whose data is not a link buffer becomes a `FILE`. `open()` and
@@ -400,7 +397,6 @@ fields that change in practice.
 | `members()`, `members_report()`, or `stream_members()` after either | Every member reads `True` |
 | Random-access `stream_members()` with no listing call first | 7z (walks as it goes): `False` when yielded, `True` after the pass. ZIP (listing resolved first): `True` when yielded |
 | Peek (`members_report_if_available()`), either access mode | `False` until a later call or pass resolves links to members, then `True` |
-| Streaming pass over the `ListingLimits` | Members kept before the limit read `True` from the point the pass stops keeping them, with `is_current` stamped over them; later ones read `True` when yielded, and none is stamped after that point |
 | Pass left early, then the reader closed | `True`: a closed reader updates nothing |
 | Copy made with `replace()` | `True`, unless it is a symlink whose data-stored target is unread: `False` until `open()` reads the target into the copy; one never read stays `False`, after the reader closes too |
 | TAR symlink, either `read_link_targets` | `True`: the header carries the target |

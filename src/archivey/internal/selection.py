@@ -75,6 +75,14 @@ class CollectionSelector:
                 self._matched.update(by_identity)
         return True
 
+    def would_select(self, member: ArchiveMember, names: Iterable[str]) -> bool:
+        """Whether a member under any of ``names`` (or ``member`` by identity) is
+        selected, recording nothing: for a member whose name can still change."""
+        if member._archive_id is not None and member._member_id is not None:
+            if (member._archive_id, member._member_id) in self._identities:
+                return True
+        return any(name in self._names for name in names)
+
     def unmatched(self) -> list[str | ArchiveMember]:
         """The entries that no member has matched so far, in the caller's order.
 

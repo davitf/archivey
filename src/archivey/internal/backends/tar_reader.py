@@ -493,10 +493,6 @@ class TarReader(BaseArchiveReader):
         self._codec = encoding if encoding is not None else "utf-8"
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
-        # Whether the walk's current pull enforces the listing limits (see
-        # _pull_member). True until a pull says otherwise: the first header is parsed
-        # at open, where only the whole cap can bind anyway.
-        self._listing_enforced = True
         # The one pass stream reading member data through the walk, if any; the walk
         # detaches it before its next pull (see _pull_member).
         self._walk_stream: _WalkHandoffStream | None = None
@@ -704,24 +700,20 @@ class TarReader(BaseArchiveReader):
     def _header_budget(self) -> Budget:
         """``(bytes left, cap)`` of ``max_metadata_bytes`` for the next member's headers.
 
-        A random-access walk the base is enforcing has what the listing has not yet
-        retained. A walk the base is not enforcing (``stream_members()``), and a
-        streaming walk, which never enforces the running total (threat-model O1),
-        still may not parse one member's headers larger than the whole cap. So may
-        not a walk already past the cap: the base refuses at the member that crosses
-        it.
+        Every walk enforces the running total, so the next member may use what the
+        listing has not yet retained. Every TAR accounting path enforces the cap, so
+        the total never exceeds it (only a link target read on request is weighed
+        without enforcing, and a TAR link's target is in its header).
         """
         cap = self._config.listing_limits.max_metadata_bytes
         if cap is None:
             return None
         counted = self._listing_tracker.metadata_bytes
-        if self._streaming or not self._listing_enforced or counted > cap:
-            return (cap, cap)
+        assert counted <= cap, (counted, cap)
         return (cap - counted, cap)
 
-    def _pull_member(self, *, enforce: bool) -> ArchiveMember | None:
-        """Pull as the base does, noting whether it enforces the listing limits, which
-        sets the budget for the next member's headers (:meth:`_header_budget`).
+    def _pull_member(self) -> ArchiveMember | None:
+        """Pull as the base does, after handing off a pass's stream.
 
         A pass may still be reading the member the walk is at through the walk. That
         stream moves to a view of its own first (:class:`_WalkHandoffStream`), so a
@@ -734,28 +726,23 @@ class TarReader(BaseArchiveReader):
             if live is not None:
                 self._walk_stream = None
                 live.detach()
-            self._listing_enforced = enforce
-            return super()._pull_member(enforce=enforce)
+            return super()._pull_member()
 
     def _register_member(
         self,
         idx: int,
         member: ArchiveMember,
-        *,
-        enforce_listing_limits: bool = False,
     ) -> None:
         """Register as the base does, then weigh a sparse member's retained map.
 
         The map can hold millions of entries from a few kilobytes of compressed
         archive, and it stays on the member's span for the life of the listing.
         """
-        super()._register_member(
-            idx, member, enforce_listing_limits=enforce_listing_limits
-        )
+        super()._register_member(idx, member)
         span = member._raw
         if isinstance(span, TarSpan) and span.sparse is not None:
             self._listing_tracker.account_retained_bytes(
-                len(span.sparse) * SPARSE_ENTRY_BYTES, enforce=enforce_listing_limits
+                len(span.sparse) * SPARSE_ENTRY_BYTES
             )
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -828,19 +815,18 @@ class TarReader(BaseArchiveReader):
             _ProgressivePassIterator(self), open_member=_open
         )
 
-    def _extraction_listing(self) -> AbstractContextManager[None]:
-        """Enforce ``ListingLimits`` as members arrive in the extraction's one pass.
+    def _list_before_extraction(self) -> None:
+        """List as members arrive in the extraction's one pass, not before it.
 
         The base lists the whole archive before an extraction, which on a compressed
         tar decodes the stream once for the headers and again for the data. Here the
         pass the extraction runs (:meth:`_iter_with_data_random_access`) registers each
-        member with the limits enforced, so ``ResourceLimitError`` is raised at the
-        member that crosses a cap, before it is written, as ``members()`` raises it. A
-        listing that is already complete is the base's case.
+        member with the limits enforced, as every pass does, so ``ResourceLimitError``
+        is raised at the member that crosses a cap, before it is written, as
+        ``members()`` raises it. A listing that is already complete is the base's case.
         """
         if self._walk_done:
-            return super()._extraction_listing()
-        return self._enforcing_listing_limits()
+            super()._list_before_extraction()
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS

@@ -308,6 +308,29 @@ def test_a_stream_cut_after_the_codec_end_is_truncation() -> None:
         _read_all(raw)
 
 
+@pytest.mark.parametrize("signed", [True, False])
+def test_a_settle_that_fails_ends_the_walk_with_its_error(signed: bool) -> None:
+    """Where the data ends is unknown, so the walk cannot find the next header: it
+    raises what ``settle`` raised, not a misuse error."""
+    method = _METHODS["deflate"].values[0]
+    first = _member(b"first", method, _SMALL)
+    if signed:  # cut before the descriptor
+        raw = _streamed_zip([first], cut_after=0)
+        expected: type[Exception] = TruncatedError
+    else:  # a descriptor that does not match the data
+        first = _Member(
+            first.name, first.method, first.flags, first.data, first.packed, crc=1
+        )
+        raw = _streamed_zip([first, _stored(b"next", b"x")], signed=False)
+        expected = CorruptionError
+    walk = LocalHeaderWalk(_Pipe(raw))
+    with pytest.raises(expected) as settled:
+        _read_member(walk)
+    with pytest.raises(expected) as walked_on:
+        walk.next_entry()
+    assert walked_on.value is settled.value
+
+
 @requires("pyppmd")
 @pytest.mark.parametrize(
     "kwargs",
@@ -415,3 +438,22 @@ def test_what_the_stream_read_past_a_large_member_is_put_back() -> None:
     assert data.consumed > len(members[0].packed)
     data.settle(crc=zlib.crc32(out), file_size=len(out))
     assert _read_member(walk) == (b"after", _SMALL, None)
+
+
+def test_settle_hands_over_the_data_it_read_past_what_was_handed_out() -> None:
+    """A caller whose reads stop short of the data's end (a decrypt stage that has
+    not reached the authentication code) gets the rest from ``passed_over``."""
+    method = _METHODS["deflate"].values[0]
+    member = _member(b"a", method, _SMALL)
+    walk = LocalHeaderWalk(_Pipe(_streamed_zip([member, _stored(b"next", b"x")])))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    assert data.passed_over == b""
+    handed = data.read(len(member.packed) - 3)
+    descriptor = data.settle(crc=zlib.crc32(_SMALL), file_size=len(_SMALL))
+    assert descriptor.compressed_size == len(member.packed)
+    assert handed + data.passed_over == member.packed
+    after = _read_member(walk)
+    assert after is not None
+    assert after[:2] == (b"next", b"x")

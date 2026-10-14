@@ -332,21 +332,16 @@ archive declares.
 
 **Mechanism.**
 - `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
-  `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
-  materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
-  raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
-  `stream_members()` and `for member in reader` are unguarded: they yield every member,
-  except on ZIP, 7z, RAR and ISO, which check `max_members` while parsing (7z and RAR
-  weigh their header names against `max_metadata_bytes` there too). Their memory
-  is still bounded by `ListingLimits`: a pass that lists as it goes (every streaming
-  reader, and TAR in both modes) counts members as usual and stops keeping them once the
-  totals cross a cap, in `base_reader.py` `_discard_listing`. On a `CONCURRENT` reader a
-  `members()` call beside such a pass raises `ResourceLimitError` one member past the
-  cap without discarding the walk the pass is on (`_drain_walk`). The TAR walker keeps
-  nothing behind the member list, so nothing else is held. After the discard, the
-  listing calls raise the same `ResourceLimitError` as `members()`. `extract_all()`
-  enforces the caps in both modes, because it resolves hard links against the members
-  it keeps. Unguarded bounds memory, not work: a forward-only TAR walk reads through
+  `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
+  reader's member walk, by every call that lists: `members()`, `members_report()`,
+  `stream_members()`, `for member in reader` and `extract_all()`, in both access modes.
+  Crossing a cap raises `ResourceLimitError` at the member that crosses it, before it
+  is listed; a TAR walk parses no header after it. `None` (`ListingLimits.UNLIMITED`)
+  disables it. ZIP, 7z, RAR and ISO also check `max_members` while parsing, at
+  `open_archive` (ZIP, as it walks the directory when the end record understates the
+  count; 7z and RAR weigh their header names against `max_metadata_bytes` there too).
+  The TAR walker keeps nothing behind the member list, so nothing else is
+  held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, for the bytes present rather than the size a header declares
   (a member declaring more than the archive holds raises `TruncatedError` at the first
   short read).
@@ -402,12 +397,12 @@ archive declares.
   budget before it reads them: an extended header (PAX `x` or `g`, GNU `L` or `K`) at
   its declared size, and a sparse map at 24 bytes per entry from its entry count before
   its entries are parsed, or block by block for an old GNU map's extension blocks. The
-  budget is what is left of `max_metadata_bytes` in a random-access listing that
-  enforces the cap, and the whole cap otherwise, streaming included. The headers ahead of
-  one member are one chain and draw on one budget. An over-limit tar then costs about
-  the cap plus one ordinary header. The PAX global records are held once per global
-  header, not once per member: members with none of their own share one read-only
-  snapshot. Each member is still charged for them, so the cap counts them as if copied.
+  budget is what is left of `max_metadata_bytes`, in every walk, streaming included. The
+  headers ahead of one member are one chain and draw on one budget. An over-limit tar
+  then costs about the cap plus one ordinary header. The PAX global records are held
+  once per global header, not once per member: members with none of their own share one
+  read-only snapshot. Each member is still charged for them, so the cap counts them as
+  if copied.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An
@@ -476,8 +471,8 @@ the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660 reco
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
-`test_stream_members_unguarded_when_members_would_fail`,
-`test_unguarded_pass_memory_is_bounded_by_listing_limits`);
+`test_stream_members_enforces_max_members`,
+`test_pass_raises_at_the_member_that_crosses_the_cap`);
 `tests/test_sevenzip_reader.py::test_num_unpack_streams_count_is_bounded`,
 `::test_num_unpack_streams_sum_across_folders_is_bounded`,
 `::test_member_scaled_counts_respect_max_members`,

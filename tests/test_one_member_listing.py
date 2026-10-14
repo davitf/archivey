@@ -527,8 +527,8 @@ def test_a_member_refused_by_the_limit_is_not_counted_again_by_a_pass(
 ) -> None:
     """The refused member was typed and checked before the limit fired.
 
-    A ``stream_members()`` pass does not enforce listing limits, so it walks again
-    over the member ``members()`` refused.
+    A ``stream_members()`` pass after the refusal walks again over the member
+    ``members()`` refused, and is refused at it too, without a second finding.
     """
     # TAR: ZIP, 7z, RAR and ISO apply max_members at open, so no pass gets this far.
     path = tmp_path / "t.tar"
@@ -541,10 +541,10 @@ def test_a_member_refused_by_the_limit_is_not_counted_again_by_a_pass(
     with open_archive(path, config=config) as reader:
         with pytest.raises(ResourceLimitError):
             reader.members()
-        passed = [member for member, _stream in reader.stream_members()]
-        assert len(passed) == 3
+        with pytest.raises(ResourceLimitError):
+            for _member, _stream in reader.stream_members():
+                pass
         assert reader.diagnostics.counts[_BIDI] == 1
-        assert [d.code for d in passed[2].diagnostics] == [_BIDI]
 
 
 def test_a_strict_policy_refuses_again_on_a_walk_walked_again(

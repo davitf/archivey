@@ -72,6 +72,7 @@ class DiagnosticCode(StrEnum):
     SCAN_ENTRY_VANISHED = "scan_entry_vanished"
     ARCHIVE_EOF_MARKER_MISSING = "archive_eof_marker_missing"
     ARCHIVE_TRAILING_DATA = "archive_trailing_data"
+    ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
@@ -122,6 +123,8 @@ DiagnosticCodeStr = Literal[
     "archive-eof-marker-missing",
     "archive_trailing_data",
     "archive-trailing-data",
+    "archive_unlisted_data",
+    "archive-unlisted-data",
     "member_timestamp_invalid",
     "member-timestamp-invalid",
     "member_header_record_skipped",
@@ -359,6 +362,28 @@ class ArchiveEofContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class UnlistedDataContext(_JsonSafeContext):
+    """A member's data that no entry of the archive's index points to.
+
+    A ZIP read from a source that cannot seek finds members by their local headers,
+    and learns only from the central directory, after the last one, which of them the
+    archive lists. A local entry the directory does not list (an update appended
+    without rewriting it, or a planted member) is dropped from the listing, as the
+    seekable read never sees it. ``member_name`` and ``member_id`` are what the pass
+    gave it before then; ``offset`` is where its local header starts and
+    ``compressed_size`` the bytes of data after it.
+    """
+
+    kind: Literal["unlisted_data"] = "unlisted_data"
+    archive_name: str | None = None
+    format: str = ""
+    member_name: str = ""
+    member_id: int | None = None
+    offset: int = 0
+    compressed_size: int | None = None
+
+
+@dataclass(frozen=True)
 class MemberTimestampContext(_JsonSafeContext):
     """A stored timestamp field was present but unusable / out of range.
 
@@ -568,6 +593,7 @@ DiagnosticContext = (
     | FormatConflictContext
     | ScanRaceContext
     | ArchiveEofContext
+    | UnlistedDataContext
     | MemberTimestampContext
     | MemberHeaderRecordContext
     | SymlinkTargetContext
@@ -598,6 +624,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.SCAN_ENTRY_VANISHED: "scan_race",
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
         DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
+        DiagnosticCode.ARCHIVE_UNLISTED_DATA: "unlisted_data",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
@@ -624,6 +651,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.SCAN_ENTRY_VANISHED,
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
+        DiagnosticCode.ARCHIVE_UNLISTED_DATA,
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
@@ -1034,6 +1062,7 @@ __all__ = [
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",
+    "UnlistedDataContext",
     "UnusedArgumentContext",
     "format_path_name",
     "raw_name_to_base64",
