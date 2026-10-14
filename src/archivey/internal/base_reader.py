@@ -1549,7 +1549,40 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_emits = {}
         if error is not None:
             self._stamp_error_context(error)
-        _apply_last_entry_wins_is_current(self._listed)
+        _apply_last_entry_wins_is_current(self._listed_in_index_order())
+
+    def _listed_in_index_order(self) -> list[ArchiveMember]:
+        """``_listed`` in the order the archive's index lists them, which decides which
+        of two same-name members is current.
+
+        The walk's order, unless a backend whose walk is not its index learns the
+        index's order only at the end (a ZIP read from a pipe walks its local headers,
+        and the central directory, read last, decides).
+        """
+        return self._listed
+
+    def _drop_listed(self, dropped: list[ArchiveMember]) -> None:
+        """Take members the walk has yielded out of the listing, at the end of the walk:
+        the backend has learned that the archive's index does not list them.
+
+        They keep their ids, so the ids of the listing have gaps where they were, and
+        nothing changes them from here (``member_state_final``). Not for a discarded
+        listing, which keeps no member to drop.
+
+        Safe for the cursors that read ``_listed`` by position only when the backend
+        calls it from the end of its walk under a forward pass: that pass's single
+        cursor is then past every member, and ``ReaderState.acquire_pass`` refuses a
+        second operation beside it, so no cursor stands behind a dropped member.
+        """
+        gone = {id(member) for member in dropped}
+        self._listed = [member for member in self._listed if id(member) not in gone]
+        for member in dropped:
+            listed = self._listed_by_name.get(member.name)
+            if listed is not None:
+                listed[:] = [m for m in listed if id(m) not in gone]
+                if not listed:
+                    del self._listed_by_name[member.name]
+        _settle_listing(dropped, links_too=True)
 
     def _abandon_walk(self, exc: BaseException) -> None:
         """A pull failed without terminal damage: discard the walk, or poison it."""
@@ -1609,11 +1642,12 @@ class BaseArchiveReader(ArchiveReader):
         member, and the pass publishes nothing when it ends (``_finalize_pass_links``).
         Last-entry-wins is stamped over the kept prefix first, as ``_end_walk`` would
         stamp it, so a duplicate name in the prefix is superseded by a later copy in
-        the prefix; a copy the pass yields after the discard cannot supersede it.
+        the index's order (``_listed_in_index_order``); a copy the pass yields after
+        the discard cannot supersede it.
 
         A backend that keeps its own record of the walk extends this to drop it too.
         """
-        _apply_last_entry_wins_is_current(self._listed)
+        _apply_last_entry_wins_is_current(self._listed_in_index_order())
         _settle_listing(self._listed)
         self._listing_discarded = True
         self._listed = []
