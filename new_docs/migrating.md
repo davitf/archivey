@@ -64,7 +64,9 @@ ones code using `ZipInfo` or `TarInfo` reads most map like this:
 | | `info.linkname` | `member.link_target` |
 
 A field the archive doesn't record is `None`, such as `compressed_size` for a member of a
-`.tar.gz`.
+`.tar.gz`. A directory's name ends with `/` in every format, so a directory tarfile lists as `docs`
+is `docs/` in archivey. `reader.get` returns `None` for a name that isn't there, where `getinfo` and
+`getmember` raise `KeyError`.
 
 `member.modified` is a `datetime` holding what the archive stores. A ZIP records local time with no
 time zone, which is why zipfile gives a plain tuple, so `modified` has no time zone either. A TAR
