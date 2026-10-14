@@ -589,6 +589,8 @@ def maybe_hoist_single_root(
                     try:
                         side.rmdir()
                     except BaseException:
+                        # The entry holds the wrapper's name now; it goes back inside
+                        # ``side`` first, so ``side`` can take that name again below.
                         with contextlib.suppress(OSError):
                             dest.rename(side / child.name)
                         raise
@@ -610,12 +612,12 @@ def maybe_hoist_single_root(
                 landed = _merge_move(
                     side / child.name, dest, overwrite, result, err, child.name, moved
                 )
+                side.rmdir()
             except BaseException:
                 # Leave the remainder where the messages say it is.
                 with contextlib.suppress(OSError):
                     side.rename(wrapper)
                 raise
-            side.rmdir()
             result.moves = _Moves.of(moved, wrapper)
             if landed is None:
                 # SKIP kept the operator's entry and discarded ours; ``skipped:``
