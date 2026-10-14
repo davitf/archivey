@@ -64,9 +64,8 @@ ones code using `ZipInfo` or `TarInfo` reads most map like this:
 | `info.date_time` | `info.mtime` | `info.creationtime` | `info.mtime` | `member.modified` |
 | `info.external_attr >> 16` | `info.mode` | | `info.mode` | `member.mode` |
 | `info.is_dir()` | `info.isdir()`, `info.isfile()`, `info.issym()` | `info.is_directory`, `info.is_file`, `info.is_symlink` | `info.is_dir()`, `info.is_file()`, `info.is_symlink()` | `member.is_dir`, `member.is_file`, `member.is_link` |
+| | | | `info.ctime` | `member.created` or `member.ctime` |
 | | `info.linkname` | | | `member.link_target` |
-
-py7zr's `creationtime` holds the time the file was last modified.
 
 zipfile doesn't recognize symbolic links: a ZIP entry that records one is a plain file to it, and
 `extractall` writes the target's path as the file's contents. Archivey reports it as a link, with
@@ -77,11 +76,19 @@ A field the archive doesn't record is `None`, such as `compressed_size` for a me
 is `docs/` in archivey. `reader.get` returns `None` for a name that isn't there, where `getinfo` and
 `getmember` raise `KeyError`.
 
-`member.modified` is a `datetime` holding what the archive stores. A ZIP records local time with no
-time zone, which is why zipfile gives a plain tuple, so `modified` has no time zone either. A TAR
-records UTC, which tarfile gives as a timestamp, and `modified` is then a UTC `datetime`.
-`member.modified_utc()` gives UTC for both, and treats a time with no zone as your local time unless
-you pass another zone.
+`member.modified` is a `datetime` with the time zone the archive records. Some ZIPs, such as those
+made by the `zip` command, carry a UTC time beside the old local one. zipfile ignores it, and
+archivey uses it, so `modified` is in UTC there. A ZIP without it, or a RAR 4 archive, records a
+local time with no zone, and `modified` has no zone either. TAR, 7z and RAR 5 archives record UTC:
+tarfile gives a number of seconds, and py7zr, rarfile and archivey give a UTC `datetime`. py7zr's
+`creationtime` holds this modification time. `member.modified_utc()` gives UTC for every format, and
+treats a time with no zone as your local time unless you pass another zone.
+
+RAR, 7z and ZIP archives have a slot for a creation time, and what goes in it depends on where the
+archive was made. Tools on Windows store when the file was created, and tools on Linux and macOS
+store when its metadata last changed, Unix's `ctime`. rarfile gives the slot as `ctime` whatever it
+holds. Archivey puts a creation time in `member.created` and a change time in `member.ctime`, so
+`created` never holds a change time.
 
 When an archive holds a name twice, zipfile, tarfile and archivey all list it twice, and reading by
 name gives the last copy. Going through the member list, `member.is_current` tells you which copy
