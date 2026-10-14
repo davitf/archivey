@@ -2860,11 +2860,9 @@ class ZipReadBackend(ReadBackend):
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )
     SFX_HIT_VALIDATOR = staticmethod(validate_zip_local_header)
-    # SUPPORTS_STREAMING_NON_SEEKABLE stays False until a pipe ZIP is read whole:
-    # `ZipForwardReader` lists and reads one, and extraction's end of the pass, the
-    # failures found there and encrypted members are still to come (the
-    # native-zip-reader change, stage 3b3).
-    NON_SEEKABLE_REASON = "its member list is at the end of the file"
+    # A pipe is read forward over the local headers (`ZipForwardReader`), and the
+    # members are updated from the central directory at the end of the pass.
+    SUPPORTS_STREAMING_NON_SEEKABLE = True
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
     USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 

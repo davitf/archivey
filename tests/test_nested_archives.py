@@ -12,7 +12,9 @@ source cannot seek (a ``stream_members()`` stream, or a member of a reader opene
 without ``seekable_members``) is opened ``streaming=True`` for a container, and
 without seek demand, as a caller would. The one outcome other than a full read that a
 case accepts is ``StreamNotSeekableError`` from a level whose source is forward-only:
-ZIP, 7z, RAR and ISO need to seek, and so does an accelerator set to ``ON``.
+7z, RAR and ISO need to seek, and so does an accelerator set to ``ON``. A forward-only
+ZIP opens under ``ON`` and refuses at its first DEFLATE member, which every ZIP level
+here has.
 
 Tiers:
 
@@ -94,7 +96,7 @@ STREAMS = ("gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br")
 FORMATS = CONTAINERS + STREAMS
 
 # Formats that cannot be read at all from a forward-only source.
-_NEEDS_SEEK = frozenset({"zip", "7z", "rar", "iso"})
+_NEEDS_SEEK = frozenset({"7z", "rar", "iso"})
 
 # Small, but past the 8 KiB and 64 KiB buffer and chunk sizes the stream layers use.
 LEAF = (
@@ -270,6 +272,13 @@ def _walk(
     if forward_only and _must_refuse_forward_only(fmt, config):
         with pytest.raises(StreamNotSeekableError):
             _open_level(source, fmt, seek=False, streaming=True, config=config)
+        return
+    if forward_only and fmt == "zip" and config.use_rapidgzip is AcceleratorMode.ON:
+        with archivey.open_archive(source, streaming=True, config=config) as reader:
+            with pytest.raises(StreamNotSeekableError, match="use_rapidgzip"):
+                for _member, stream in reader.stream_members():
+                    if stream is not None:
+                        stream.read()
         return
     opened = _open_level(source, fmt, seek=seek, streaming=forward_only, config=config)
     if fmt in STREAMS:

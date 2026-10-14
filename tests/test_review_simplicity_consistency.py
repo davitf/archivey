@@ -429,7 +429,7 @@ def test_usable_encoding_argument_is_not_recorded(key: str, tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("key", ["zip", "iso", "7z"])
+@pytest.mark.parametrize("key", ["iso", "7z"])
 def test_trailing_index_formats_refuse_a_pipe_loudly(key: str, tmp_path: Path) -> None:
     """F8 (guardrail): the refusal is one typed error with one message shape.
 
@@ -442,7 +442,7 @@ def test_trailing_index_formats_refuse_a_pipe_loudly(key: str, tmp_path: Path) -
         open_archive(_NonSeekable(data), streaming=True)
 
 
-@pytest.mark.parametrize("key", ["tar", "tar.gz"])
+@pytest.mark.parametrize("key", ["tar", "tar.gz", "zip"])
 def test_front_indexed_formats_accept_a_pipe(key: str, tmp_path: Path) -> None:
     """F8 (guardrail): the other side of the same rule."""
     path = _archive("basic", key, tmp_path)
