@@ -73,6 +73,33 @@ other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too
 writer that marks itself Unix while storing a birth time (libarchive on Windows) gets
 `ctime`, not `created`, rather than a risk of `st_ctime` in `created`.
 
+## Fields that change after a member is returned
+
+`ArchiveMember.member_state_final` is `False` while archivey can still update a member
+you hold ([Streaming for one pass](opening-and-listing.md#streaming-for-one-pass)).
+The fields that change in practice:
+
+| Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
+| --- | --- | --- |
+| ZIP | `is_current`, `link_target_member` | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| TAR | `is_current`, `link_target_member` | none: the header carries the target |
+| 7z | `is_current`, `link_target_member` | as ZIP |
+| RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
+| ISO | `is_current`, `link_target_member` | none: Rock Ridge carries the target |
+| Directory | `link_target_member` (names never repeat) | none: the target is read with the entry |
+| Single-file (`.gz`, `.xz`, …) | none in practice: one member, no links | none |
+
+`members()`, `members_report()` and `get()` return members that read `True`, unless
+they are unread symlinks. Members read `False` until a call like those, or the end of a
+pass, has resolved the listing's links. A `streaming=True` pass yields every member
+before that, in every format, including the two whose fields do not change in
+practice. A `members_report_if_available()` peek resolves no links, so its members
+read `False` until a later call or pass does. A random-access pass with no listing call
+before it may or may not yield before that point, depending on how the format is
+listed, so read the flag rather than assume. A pass past `ListingLimits` stops stamping
+members from that point: a member yielded after it reads `True` with `is_current` as
+yielded.
+
 ## ZIP
 
 - Archivey's own parser reads the **central directory** as members are listed; member
@@ -603,7 +630,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - A truncated image opens as long as its directories survive, and lists the sizes its
   records declare. A file the cut reaches reads the bytes that survive and then raises
   `TruncatedError`; files before the cut read normally. A file whose declared length
-  cannot be recovered lists with `size` set to `None`.
+  cannot be recovered lists with `size` set to `None`. A cut that reaches the volume
+  descriptors, path tables or directories makes `open_archive` raise `TruncatedError`.
+- An image with UDF does not open once it is truncated at all, even when the files
+  before the cut survive: `open_archive` raises `TruncatedError`, because the UDF anchor
+  that `pycdlib` reads is in the image's last block.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).

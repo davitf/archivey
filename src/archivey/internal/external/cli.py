@@ -310,9 +310,15 @@ def signal_exit_error(name: str, returncode: int) -> ReadError | ResourceLimitEr
 
     Not a verdict on the archive, which is why this never raises ``CorruptionError``
     or ``TruncatedError``: SIGKILL comes from outside (most often the out-of-memory
-    killer), and is reported as the ppmd and rapidgzip children report it. Any other
-    signal is a ``ReadError``, the crash signals included: ``unar`` 1.10.1 crashes on
-    some valid archives, so a crash of these programs does not condemn the data.
+    killer), and is a ``ResourceLimitError`` as in ``outside_death``
+    (``archivey.internal.streams.child_process``), which classifies the end of the ppmd
+    and rapidgzip decoder children. Any other signal is a ``ReadError``, the crash
+    signals included: ``unar`` 1.10.1 crashes on some valid archives, so a crash of
+    these programs does not condemn the data. That is where the two differ:
+    ``outside_death`` handles only ends that are not crashes, because a decoder
+    child's crash is a verdict on the data. Its messages also say "decoder" and "data"
+    where these say "program" and "archive". A change to the SIGKILL classification
+    belongs in both places.
     """
     how = describe_exit(returncode)
     if is_system_kill(returncode):

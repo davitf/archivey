@@ -65,7 +65,32 @@
       `docs/formats.md`.
 - [ ] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
 
-## 3. Streaming (PR 3)
+## 3. Streaming (PRs 3a, 3b, 3c)
+
+3a is the forward walk alone (3.1, 3.2's parser half, 3.3d); 3b the reader over a
+non-seekable source, in three PRs: 3b1 the codec half of 3.2, 3b2 the parts of 3.3e
+and 3.3f that need no ZIP pipe reader (3.3e1, 3.3f1), 3b3 the rest; 3c the seekable
+cases (3.0, 3.0a, 3.0b).
+
+3b3 is five PRs. `open_archive` keeps refusing a pipe for ZIP until the last one, so
+each lands with nothing half-done reachable:
+
+- 3b3a, the pipe reader (`zip_forward_reader.py`): members from local headers, data
+  checked against the header or descriptor as it is read, members updated in place
+  from the directory at the end of the pass; 3.3h, 3.3e2's reader half, 3.3f2's
+  listing half.
+- 3b3b, extraction's end of the pass: 3.3's modes, symlinks, `OTHER` removal and
+  names, 3.3a, 3.3f2.
+- 3b3c, the failures found at the end of the pass, in two PRs: 3b3c1 the reader's
+  half (the listing and `stream_members()` for 3.3b, 3.3c and 3.3i), 3b3c2 the
+  extraction's half (3.3g, and 3.3i's removal from disk).
+- 3b3d, encrypted members from a pipe, in three PRs: 3b3d1 one password, on a member
+  whose local header states its size or a bit-3 STORED ZipCrypto one (3.2b's first
+  half); 3b3d2 bit-3 encrypted codec members (ZipCrypto through `settle(crc=)`, and
+  3.2a for AES) and bit-3 STORED under AES; 3b3d3 several candidates (3.2b's second
+  half).
+- 3b3e, the gate (`SUPPORTS_STREAMING_NON_SEEKABLE`), every fixture through a pipe
+  (3.4), and the docs (3.3e2's docs half, 3.5, 3.5a).
 
 - [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
@@ -79,43 +104,128 @@
       a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
       (`CorruptionError` after the members before it); a sized member is seeked over
       (counted reads).
-- [ ] 3.1 `parse_local_header` / `parse_central_header` on bytes, shared by both walks;
-      `LocalHeaderWalk` over a forward reader; data descriptor parsing (signature
-      optional, 4- or 8-byte sizes).
-- [ ] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
+- [x] 3.1 Central and local headers parsed by the same code in both walks;
+      `LocalHeaderWalk` over a forward reader (`zip_local_walk.py`); data descriptor
+      parsing (signature optional, 4- or 8-byte sizes).
+- [x] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
       STORED + bit 3 descriptor scan; tests with stdlib `zipfile` writing to a pipe.
-- [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
+      3a: the walk's half (sized data, the scan, `settle(used)` putting back what a
+      codec's layers read past its end), tested in `test_zip_local_walk.py`. 3b1: the
+      codec half, `settle(crc=)` finding a codec member's descriptor by its decoded
+      CRC, and PPMd8 with `CodecParams.input_runs_on`; tests for DEFLATE, Deflate64,
+      bzip2, LZMA with EOS, PPMd and Zstandard, signed and unsigned, in
+      `test_zip_walk_codec_end.py`.
+- [ ] 3.2b Encrypted members from a pipe (3b3a refuses them when read): one password,
+      and several candidates, whose bounded confirm reads a prefix the pass keeps
+      (`archive-reading`'s "Confirm candidates" requirement); a bit-3 STORED member
+      under ZipCrypto or AES ends by the scan without a key, so a skip needs none.
+      3b3d1: one password, taken on its cheap check as from a file (the CRC or HMAC
+      at the end is the test; a ZipCrypto integrity failure says the password may be
+      wrong; `ENCRYPTED_MEMBER_UNVERIFIED` for a stream closed before the read that
+      finds the end); a short member nobody read keeps its ciphertext, decrypted
+      only once the directory makes it a link (no key derived for a member nobody
+      asked for), and an encrypted member's failed read is kept for its target's
+      read (`test_zip_pipe_encrypted.py`). Several candidates, or a provider, are
+      refused when read until 3b3d3, and the pass must not call a provider for a
+      member nobody asked for (3b3d3 must still pass a bit-3 codec member nobody
+      asked for, which needs its key). 3b3d2: a bit-3 STORED member nobody read
+      keeps its ciphertext as a sized one does, its scan's descriptor with it, so
+      its link target reads as from a file; a bit-3 codec member is decrypted and
+      decoded to find its end, read or not, and without the key the walk ends there
+      with the member's error. Left for 3.4 (every fixture through a pipe): a sized member whose data
+      decodes short of its local header's size reports the pass's own
+      size-mismatch `CorruptionError` where the file read reports the verifier's
+      `TruncatedError`, encrypted or not (both `CorruptionError` under DR-4; a
+      ZipCrypto member shows neither, as the password-or-damage error). Data past
+      the declared size already gives the file read's error.
+- [x] 3.2a WinZip AES on a bit-3 codec member: the authentication code follows the
+      codec's input, so the AES stage authenticates the ciphertext as it goes, holding
+      back the bytes past the codec's end until `settle` says where the data ended
+      (test: an AE-1 and an AE-2 deflated member from a pipe, and a wrong code).
+      3b3d2: `WinZipAesForwardStream` (also bit-3 STORED under AES, which ends with
+      its source and holds back the code alone); `MemberData.passed_over` hands it
+      the data the descriptor search read past its last read.
+- [x] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
       applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
-      and reported; a missing one is handled per 3.3g.
-- [ ] 3.3a A retyped member goes through the filter and the policy checks again before
+      and reported; a missing one is handled per 3.3g. 3b3b: extraction keeps what it
+      wrote each member of a pass that can still change as
+      (`_REVISES_YIELDED_MEMBERS`), and at the end of the pass handles a member whose
+      type or name changed again from the start (taking back what was written; a file
+      that moved is written again from its bytes on disk) and applies metadata the
+      directory added, unless the filter set that field
+      (`ExtractionCoordinator._settle_revised_members`, `test_zip_pipe_extract.py`,
+      which also extracts the corpus both ways). 3b3b also selects again at the end:
+      `members=` and `filter=` are applied to what each member became, a list matches
+      every spelling a member can end with during the pass, a member taken only at
+      the end fails with `ExtractionError` when its bytes have gone by, and an entry
+      the caller had where the pass wrote is kept aside until the end
+      (`design.md`, "The selection is made again"). 3b3c: 3.3i and 3.3g.
+- [x] 3.3a A retyped member goes through the filter and the policy checks again before
       its link is made; refused, its file is removed (test: a pipe ZIP whose directory
       types `payload` as a symlink to `../../etc/passwd` is refused from a pipe and from
       a file).
-- [ ] 3.3b A size or CRC from a data descriptor that differs from the central entry is
+- [x] 3.3b A size or CRC from a data descriptor that differs from the central entry is
       detected; its outcome is 3.3g's (test: a STORED bit-3 member that embeds a
-      descriptor for a prefix of itself, read from a pipe and seekably).
-- [ ] 3.3c `is_current` from the directory order; same-name members in reverse order are
+      descriptor for a prefix of itself, read from a pipe and seekably). 3b3c1: the
+      reader's half (`ZipForwardReader._failed_at_end`; `stream_members()` raises at
+      the end of the pass),
+      `test_a_descriptor_the_directory_contradicts_fails_at_the_end_of_the_pass`.
+      3b3c2: extraction (`_settle_failures_at_end`).
+- [x] 3.3c `is_current` from the directory order; same-name members in reverse order are
       detected at the end of the pass, with 3.3g's outcome (fixture with the two orders
-      reversed).
-- [ ] 3.3d A stream that starts neither with a local header nor an end record: scan
+      reversed). 3b3c1: `is_current` (`_listed_in_index_order`),
+      `test_the_later_copy_in_the_directory_is_current`; ids and listing order stay
+      the file's. 3b3c2: extraction; results stay in the order the pass met them.
+- [x] 3.3d A stream that starts neither with a local header nor an end record: scan
       within `SFX_MAX` with `validate_zip_local_header`; nothing found is
       `CorruptionError` (tests for both).
-- [ ] 3.3e Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
-      caller sees in a forward pass"; `ArchiveMember.member_state_final` (question D)
-      in every format: false for a pipe ZIP member until the directory, for any member
-      of a forward-only pass (TAR too) until the pass ends, and for a data-stored link
-      target until it is read (a test for each).
-- [ ] 3.3f A reparse-flagged member whose data is not a reparse buffer is typed when
+- [x] 3.3e1 `ArchiveMember.member_state_final` (question D) in every format: false
+      for any member of a forward pass (TAR too) until the walk ends, and for a symlink
+      whose target is stored as data until it is read (ZIP, 7z, RAR 4), with a test
+      for each; `archive-data-model`, `docs/opening-and-listing.md`, `docs/formats.md`
+      and the TAR, 7z, RAR and ZIP handbook pages.
+- [x] 3.3e2 Forward-pass `ArchiveInfo` and cost receipt as in `design.md` §"What the
+      caller sees in a forward pass"; `member_state_final` false for a pipe ZIP member
+      until the directory has been read (test). 3b3a: the pipe reader still charges
+      `max_members` as it walks, so a `ListingLimits` discard comes only from another
+      limit, and it ends the updates: members after a discard, and the kept prefix,
+      are never updated from the directory, so neither needs `_link_target_unread`
+      (each is a `FILE` or `DIRECTORY` from its local header, and stays one).
+- [ ] 3.3e3 The ZIP row of the `docs/formats.md` table gains the directory's fields
+      (3b3e, with the gate).
+- [x] 3.3f1 A reparse-flagged member whose data is not a reparse buffer is typed when
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
-      (read-ahead stream); from a pipe it stays a file (tests in both modes, red
-      first).
-- [ ] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
+      (a seekable ZIP needs no read-ahead: the pass reads the target, then opens the
+      member); tests in both modes, red first.
+- [x] 3.3f2 From a pipe such a member stays a file (test). 3b3a: the listing half,
+      `test_a_reparse_member_whose_data_is_no_link_stays_a_file`; extraction (3b3b), the
+      test of the same name in `test_zip_pipe_extract.py`.
+- [x] 3.3g End-of-pass outcomes exactly as `design.md` §"Failures found at the end of
       the pass" states them, under `OnError.CONTINUE` and `STOP`, for 3.3b, 3.3c and a
       directory entry with no local entry. Each test checks every affected result and
       what is at the path afterwards (the reversed pair: `M1` `FAILED`, `M2`
       `SUPERSEDED`, the path empty); `stream_members()` raises for 3.3b and the missing
-      entry, not for 3.3c.
-- [ ] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
+      entry, not for 3.3c. A member whose local header and directory entry store
+      different names (3b3a raises after the pass) gets the same treatment: the file
+      written under the local name is taken back and the member fails, as the
+      seekable extraction fails it when it reads the local header. 3b3c2:
+      `ExtractionCoordinator._settle_failures_at_end`, the tests after "Failures
+      found at the end of the pass" in `test_zip_pipe_extract.py`; a directory entry
+      with no local entry is built from the directory (`_missing_member`) and gets a
+      `FAILED` result when selected; a current copy that needs no bytes (an empty
+      file, a folder) is written at the end. Recorded divergence: a member whose data
+      fails as the pass writes it stops an `on_error="stop"` run, though the
+      directory may then not list it.
+- [x] 3.3i A local entry no directory entry points to: dropped from the listing and,
+      when extracting, from disk, and reported (`ARCHIVE_UNLISTED_DATA`, the
+      maintainer's pick 2026-10-13, with `UnlistedDataContext`). 3b3c1: the listing
+      half (`_drop_listed`); 3b3c2: extraction takes back what it wrote, as for a
+      member the selection drops at the end. Directory entries past the size the end record declares
+      stay listed, with `DirectorySizeMismatch` reported: the seekable read takes the
+      directory as the declared size *before* the end record, not after the first
+      entry, so with a wrong size its offsets are shifted too, and no forward rule
+      matches what it lists.
+- [x] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).
 - [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
@@ -127,7 +237,25 @@
       `member_state_final` (and `safe-extraction` if the filter re-run needs a
       sentence); `docs/access-and-cost.md`, `docs/formats.md`; handbook §1, §2.2, §5,
       §6; `dev-docs/formats/tar.md`, `7z.md` and `rar.md` for which fields
-      `member_state_final` covers there.
+      `member_state_final` covers there. From 3b1: `archive-reading`'s
+      "`None` SHALL decode every member in-process" (a bit-3 PPMd member from a pipe
+      is refused under `None`), and the same field in `new_docs/security.md`,
+      `docs/extracting.md` (limits table and the PPMd paragraph); in
+      `dev-docs/threat-model.md`, the residual that junk between a bit-3 codec
+      member's end and its descriptor is refused from a file (DR-3) and accepted
+      from a pipe (DR-5a, `design.md` §"Where a member's data ends"). From 3b3b: the
+      selection made again at the end of the pass (`design.md`, "The selection is
+      made again") in `docs/extracting.md` (member selection, and beside the other
+      "a filter can see such a member twice" cases), the `MemberSelector`
+      requirement in `archive-reading`; the bomb-limit and `abort_on` divergences in
+      `docs/extracting.md` (beside the limits table), `new_docs/security.md` and
+      `docs/errors-and-diagnostics.md`; and the `members_done` divergence wherever
+      `on_progress` is described (`new_docs/extracting.md`). From 3b3c: the failures
+      found at the end of the pass (`design.md`, same heading) and the
+      `on_error="stop"` divergence in `docs/extracting.md` and the `safe-extraction`
+      `OnError` requirement; `ARCHIVE_UNLISTED_DATA` in `docs/formats.md` (ZIP) and
+      `new_docs/errors-and-diagnostics.md`; `format-zip` for `is_current` from the
+      directory order from a pipe.
 - [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):

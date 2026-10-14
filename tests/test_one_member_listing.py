@@ -308,11 +308,16 @@ def test_streaming_extract_all_supersedes_a_zip_duplicate(tmp_path: Path) -> Non
         assert (dest / "a.txt").read_bytes() == b"last"
 
 
+@pytest.mark.parametrize("link_first", [False, True], ids=["file-first", "link-first"])
 def test_a_pass_abandoned_after_a_peek_finalizes_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_first: bool
 ) -> None:
-    """The peek drains the walk; the pass still finalizes only on its own cursor."""
-    path = _zip(tmp_path, [("a.txt", b"one", False), ("link", b"a.txt", True)])
+    """The peek drains the walk; the pass still finalizes only on its own cursor.
+
+    The pass reads a symlink's target as it passes it, so only a link it already
+    yielded has been read."""
+    entries = [("a.txt", b"one", False), ("link", b"a.txt", True)]
+    path = _zip(tmp_path, entries[::-1] if link_first else entries)
     reads: list[str] = []
     cls = type(_base(open_archive(path)))
     original = cls._ensure_link_target
@@ -327,9 +332,9 @@ def test_a_pass_abandoned_after_a_peek_finalizes_nothing(
             assert reader.members_report_if_available() is not None
             break
         assert _base(reader)._materialized is None
-        assert reads == []
+        assert reads == (["link"] if link_first else [])
         # The same pass, finished, does finalize.
-        (_, link) = complete_listing(reader)
+        link = next(m for m in complete_listing(reader) if m.name == "link")
         assert link.link_target == "a.txt"
         assert reads == ["link"]
 

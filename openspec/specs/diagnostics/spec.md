@@ -34,7 +34,9 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | --- | --- |
 | `MEMBER_NAME_NORMALIZED` | `NameNormalizationContext`: `kind="name_normalization"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `presented_name`, `normalized_name` |
 | `MEMBER_NAME_ENCODING_INFERRED` | `NameEncodingContext`: `kind="name_encoding"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `inferred_encoding`, `declared_encoding` |
-| `MEMBER_NAME_BIDI_CONTROL` | `MemberNameControlsContext`: `kind="member_name_controls"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `controls`, `field` (`"name"` or `"link_target"`: which text carries the controls; emitted once per member for each) |
+| `MEMBER_NAME_BIDI_CONTROL` | `MemberNameControlsContext`: `kind="member_name_controls"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `controls`, `field` (`"name"` or `"link_target"`: which text carries the controls; emitted once per member for each), `category="bidi"` |
+| `MEMBER_NAME_ZERO_WIDTH_CHARACTER` | `MemberNameControlsContext` as for `MEMBER_NAME_BIDI_CONTROL`, with `category="zero_width"`: `controls` lists the occurrences of U+200B, U+2060 and U+FEFF |
+| `MEMBER_NAME_INVISIBLE_CHARACTER` | `MemberNameControlsContext` as for `MEMBER_NAME_BIDI_CONTROL`, with `category="invisible"`: `controls` lists the other characters of Unicode category Cf that are not bidi controls (for example U+00AD, U+200C, U+200D, the tag characters) |
 | `FORMAT_EXTENSION_CONFLICT` | `FormatConflictContext`: `kind="format_conflict"`, `source_name`, `extension`, `extension_format`, `detected_format` |
 | `EXPLICIT_FORMAT_LISTED_EMPTY` | `UnconfirmedFormatContext`: `kind="unconfirmed_format"`, `archive_name`, `format`, `chosen_by="argument"`, `detected_format` |
 | `EXTENSION_FORMAT_UNCONFIRMED` | `UnconfirmedFormatContext`: `kind="unconfirmed_format"`, `archive_name`, `format`, `chosen_by="extension"`, `detected_format=None` |
@@ -46,6 +48,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `SCAN_ENTRY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="entry"` |
 | `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","central_directory"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
 | `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
+| `ARCHIVE_UNLISTED_DATA` | `UnlistedDataContext`: `kind="unlisted_data"`, `archive_name`, `format`, `member_name`, `member_id` (the name and id the pass gave the entry before dropping it), `offset` (of its local header), `compressed_size` |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field` ∈ `{"modified","accessed","created","ctime"}` (the `ArchiveMember` attribute the value would have filled, in every format), `source`, `value_repr` |
 | `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
@@ -150,6 +153,7 @@ returned bytes, since nothing unchecked was delivered.
 | Non-zero byte within 1 MiB past a RAR volume's end-of-archive block | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="rar"`, once per volume |
 | Non-zero byte within 1 MiB past an ISO image's volume space and listed partitions | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="iso"` |
 | Non-zero byte past a ZIP end record and its declared comment | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="zip"` |
+| A ZIP read from a pipe holds a local entry its central directory does not list | `ARCHIVE_UNLISTED_DATA` naming the entry; the entry is dropped from the listing, as the seekable read never sees it |
 | Non-zero bytes after a single-file codec's stream | `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` and the codec name as `format` |
 | Probe-only single-file read raises, uncorroborated `GUESS` | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
 | Probe-only single-file read raises, uncorroborated **`PROBABLE`** (compressed-first Brotli) | `PROBE_FORMAT_UNCONFIRMED` too — **changed**; confidence is not the trigger |
@@ -390,6 +394,9 @@ No unused future codes reserved.
 | --- | --- |
 | Advisory path that formerly logged only | Emits one of the initial codes through the central path |
 | Member name containing a bidi formatting control | `MEMBER_NAME_BIDI_CONTROL` on the aggregate, not only a `logger.warning` |
+| Member name containing a zero-width space, so `invoice.pdf` and `invoice<U+200B>.pdf` extract side by side | `MEMBER_NAME_ZERO_WIDTH_CHARACTER` naming U+200B; `STRICT` raises it, the default policy extracts both |
+| Member name containing a zero-width joiner, as in an emoji sequence | `MEMBER_NAME_INVISIBLE_CHARACTER` naming U+200D; `STRICT` does not raise it |
+| Member name containing a bidi control, a zero-width space and a zero-width joiner | One diagnostic of each of the three codes, each naming only its own characters; no character is reported under two codes |
 | Proposed code restating a `CostReceipt` fact already returned at open time | Refused by the admission clause |
 | Proposed code for a per-member outcome of an operation that returns a per-item report | Refused by the placement clause; the fact belongs in the result |
 | A caller wants to be stopped by a fact that placement moved into a return value | A named opt-in on the owning capability, not a retained code |
@@ -496,7 +503,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA` |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER` |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -518,7 +525,11 @@ already failed with a typed error, so `STRICT` would have nothing further to sto
 and `MEMBER_SPECIAL_FILE_HAS_DATA` because a documented writer option produces the
 shape it reports (Info-ZIP's `zip -FI` stores a named pipe's content under the FIFO
 mode) and every official extractor writes the bytes out, so the member is well-formed
-and `STRICT` refusing it would hide data rather than damage.
+and `STRICT` refusing it would hide data rather than damage; and
+`MEMBER_NAME_INVISIBLE_CHARACTER` because a zero-width joiner is part of ordinary emoji
+sequences and a non-joiner of Persian and Indic spelling, so `STRICT` would refuse
+archives of legitimately named files. Its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is
+**in** the set: U+200B, U+2060 and U+FEFF have no use inside a filename.
 (The emit keeps that typed error through `escalate_as` when a policy does resolve the
 code to RAISE, so the exclusion is not what protects it.)
 `EXTENSION_FORMAT_UNCONFIRMED`, its sibling, is **in** the set because it also fires

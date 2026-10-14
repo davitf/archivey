@@ -671,10 +671,12 @@ def test_a_format_without_stubs_refuses_a_start_offset(tmp_path: Path) -> None:
 
 
 def test_sfx_max_is_one_shared_bound() -> None:
-    """RAR, 7z and detection bind to the same constant, not three drifting copies."""
-    from archivey.internal.backends import rar_parser
+    """RAR, 7z, the forward ZIP walk and detection bind to the same constant, not
+    drifting copies."""
+    from archivey.internal.backends import rar_parser, zip_local_walk
 
     assert rar_parser.SFX_MAX is SFX_MAX
+    assert zip_local_walk.SFX_MAX is SFX_MAX
 
 
 # --- detection: executable cues ---------------------------------------------------------

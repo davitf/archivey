@@ -11,7 +11,7 @@ import hmac
 import os
 import struct
 import zlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from archivey.internal.backends.zip_aes import WinZipAesInfo, derive_winzip_aes_keys
 
@@ -45,6 +45,7 @@ def build_aes_zip(
     tamper_hmac: bool = False,
     unix_mode: int | None = None,
     compressed_tail: bytes = b"",
+    encode: Callable[[bytes], bytes] | None = None,
 ) -> bytes:
     """Build a WinZip AES ZIP from ``(name, payload)`` members.
 
@@ -53,10 +54,11 @@ def build_aes_zip(
     (``0o120777`` makes them symlinks). ``compressed_tail`` is appended to each
     member's compressed data before encryption, inside the member. AE-2
     (``vendor_version=2``) stores CRC 0 in the headers; AE-1 stores the plaintext CRC.
+    ``encode`` compresses each payload for a ``method`` this builder cannot write.
     """
     if not members:
         raise ValueError("build_aes_zip requires at least one member")
-    if method not in (0, 8):
+    if encode is None and method not in (0, 8):
         raise ValueError(f"unsupported underlying method {method}")
 
     aes = WinZipAesInfo(vendor_version, strength, method)
@@ -64,7 +66,9 @@ def build_aes_zip(
     central = bytearray()
 
     for index, (name, payload) in enumerate(members):
-        if method == 0:
+        if encode is not None:
+            compressed = encode(payload)
+        elif method == 0:
             compressed = payload
         else:
             compressed = zlib.compress(payload)[2:-4]  # raw deflate

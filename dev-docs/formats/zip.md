@@ -338,6 +338,12 @@ in `archivey.internal.windows_reparse`, and in `BaseArchiveReader` the capped re
 (`_link_target_from_data`), the settle of a reparse point stored with no data
 (`_settle_empty_reparse_point`) and the report when encryption blocks the read. Each
 backend supplies only which members are reparse points and what type one reverts to.
+A pass (`stream_members()`) under `read_link_targets` reads each symlink's data when it
+reaches the member, before yielding it, so a reparse point whose data is not a link
+buffer is yielded as a file with its content; a streaming pass used to decide only when
+it ended, after yielding the member as a link with no stream. Under
+`read_link_targets=False` such a link reads `member_state_final=False` until its data
+is read.
 
 Two things follow, both measured against archives built on a Windows runner
 (`tests/fixtures/external/README.md` §`junction/`, and `tests/test_windows_reparse.py`):
@@ -450,10 +456,12 @@ since `use_rapidgzip` covers raw deflate.
 corrupt.** An LZMA member's properties byte with `lc + lp` over 4 (7-Zip accepts up to
 12 and writes it with `-mm=LZMA:lc=8`; liblzma stops at 4) raises
 `UnsupportedFeatureError` through `decode_lzma_filter_properties`, the check the 7z
-pipeline uses for the same byte. A PPMd member's restore method 2 is
-`UnsupportedFeatureError` and 3 to 15 `CorruptionError`, as 7-Zip reports "Unsupported
-Method" and "Data Error". Under ZipCrypto those settings are decrypted with a key one
-byte vouched for, so both stay `CorruptionError` there and count as the candidate failing.
+pipeline uses for the same byte; properties it cannot read at all (a byte past 224, a
+blob of the wrong length) are `CorruptionError` from the same function. A PPMd member's
+restore method 2 is `UnsupportedFeatureError` and 3 to 15 `CorruptionError`, as 7-Zip
+reports "Unsupported Method" and "Data Error". Each of these errors names the member.
+Under ZipCrypto those settings are decrypted with a key one byte vouched for, so both
+stay `CorruptionError` there and count as the candidate failing.
 
 A member's compressed data is one stream of its codec and nothing else, as 7-Zip,
 Info-ZIP and `zipfile` read it: each codec ends the member at its stream's end (an LZMA

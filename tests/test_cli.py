@@ -348,7 +348,10 @@ def test_include_flag_rejected(sample_zip: Path) -> None:
 
 
 def test_exclude_filter(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["list", str(sample_zip), "*.py", "--exclude", "*_test.py"]) == EXIT_OK
+    assert (
+        main(["list", str(sample_zip), "**/*.py", "--exclude", "**/*_test.py"])
+        == EXIT_OK
+    )
     out = capsys.readouterr().out
     assert "b/c.py" in out
     assert "d_test.py" not in out

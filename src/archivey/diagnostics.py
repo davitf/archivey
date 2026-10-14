@@ -59,6 +59,8 @@ class DiagnosticCode(StrEnum):
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
     MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
     MEMBER_NAME_BIDI_CONTROL = "member_name_bidi_control"
+    MEMBER_NAME_ZERO_WIDTH_CHARACTER = "member_name_zero_width_character"
+    MEMBER_NAME_INVISIBLE_CHARACTER = "member_name_invisible_character"
     FORMAT_EXTENSION_CONFLICT = "format_extension_conflict"
     EXPLICIT_FORMAT_LISTED_EMPTY = "explicit_format_listed_empty"
     EXTENSION_FORMAT_UNCONFIRMED = "extension_format_unconfirmed"
@@ -70,6 +72,7 @@ class DiagnosticCode(StrEnum):
     SCAN_ENTRY_VANISHED = "scan_entry_vanished"
     ARCHIVE_EOF_MARKER_MISSING = "archive_eof_marker_missing"
     ARCHIVE_TRAILING_DATA = "archive_trailing_data"
+    ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
@@ -94,6 +97,10 @@ DiagnosticCodeStr = Literal[
     "member-name-encoding-inferred",
     "member_name_bidi_control",
     "member-name-bidi-control",
+    "member_name_zero_width_character",
+    "member-name-zero-width-character",
+    "member_name_invisible_character",
+    "member-name-invisible-character",
     "format_extension_conflict",
     "format-extension-conflict",
     "explicit_format_listed_empty",
@@ -116,6 +123,8 @@ DiagnosticCodeStr = Literal[
     "archive-eof-marker-missing",
     "archive_trailing_data",
     "archive-trailing-data",
+    "archive_unlisted_data",
+    "archive-unlisted-data",
     "member_timestamp_invalid",
     "member-timestamp-invalid",
     "member_header_record_skipped",
@@ -175,12 +184,26 @@ class NameEncodingContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class MemberNameControlsContext(_JsonSafeContext):
-    """Member name or link target carries Unicode bidi formatting controls.
+    """Member name or link target carries Unicode format characters a reader cannot see.
+
+    ``category`` says which set they come from, and so which code reports them:
+
+    - ``"bidi"`` (``MEMBER_NAME_BIDI_CONTROL``): bidi formatting controls. A caller can
+      tell an *override* (U+202A–202E, U+2066–2069 — the `…gnp.exe` disguise) from a
+      *directional mark* (U+061C, U+200E, U+200F, which occur in legitimate Arabic and
+      Hebrew filenames) from ``controls``.
+    - ``"zero_width"`` (``MEMBER_NAME_ZERO_WIDTH_CHARACTER``): zero-width space U+200B,
+      word joiner U+2060 and BOM U+FEFF. They have no use inside a filename and make
+      two names that display the same compare different (``invoice.pdf`` beside
+      ``invoice<U+200B>.pdf``).
+    - ``"invisible"`` (``MEMBER_NAME_INVISIBLE_CHARACTER``): every other character of
+      Unicode category Cf, for example zero-width joiner U+200D, non-joiner U+200C,
+      soft hyphen U+00AD and the tag characters. These are legitimate in some names:
+      ZWJ joins emoji sequences, ZWNJ is part of Persian and Indic spelling, and tag
+      characters spell subdivision flags.
 
     ``controls`` is the comma-joined ``U+XXXX`` spellings in the order they occur, so a
-    caller can tell an *override* (U+202A–202E, U+2066–2069 — the `…gnp.exe` disguise)
-    from a *directional mark* (U+061C, U+200E, U+200F, which occur in legitimate Arabic
-    and Hebrew filenames) without re-scanning the text.
+    caller can decide without re-scanning the text.
 
     ``field`` says which text carries them: ``"name"``, the member's name, or
     ``"link_target"``, the target a link member stores. ``member_name`` and
@@ -194,6 +217,7 @@ class MemberNameControlsContext(_JsonSafeContext):
     raw_name_base64: str | None = None
     controls: str = ""
     field: Literal["name", "link_target"] = "name"
+    category: Literal["bidi", "zero_width", "invisible"] = "bidi"
 
 
 @dataclass(frozen=True)
@@ -305,7 +329,11 @@ class ArchiveEofContext(_JsonSafeContext):
       directory entry's name, extra field or comment length runs past the directory
       size the end record gives, and that field is cut short. ``expected_bytes`` is
       that directory size and ``observed_bytes`` where the entry would end, both
-      counted from the directory's start; ``observed_kind`` is ``"nonzero"``.
+      counted from the directory's start; ``observed_kind`` is ``"nonzero"``. Read
+      from a source that cannot seek, where the entries come before the end record
+      that sizes them, the same marker reports entries that fill more
+      (``"nonzero"``) or fewer (``"short"``) bytes than that size: ``expected_bytes``
+      is the size and ``observed_bytes`` the bytes the entries fill.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
       archive's end within the first MiB past it, so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
@@ -331,6 +359,28 @@ class ArchiveEofContext(_JsonSafeContext):
     expected_bytes: int = 0
     observed_bytes: int = 0
     observed_kind: Literal["absent", "short", "nonzero"] = "absent"
+
+
+@dataclass(frozen=True)
+class UnlistedDataContext(_JsonSafeContext):
+    """A member's data that no entry of the archive's index points to.
+
+    A ZIP read from a source that cannot seek finds members by their local headers,
+    and learns only from the central directory, after the last one, which of them the
+    archive lists. A local entry the directory does not list (an update appended
+    without rewriting it, or a planted member) is dropped from the listing, as the
+    seekable read never sees it. ``member_name`` and ``member_id`` are what the pass
+    gave it before then; ``offset`` is where its local header starts and
+    ``compressed_size`` the bytes of data after it.
+    """
+
+    kind: Literal["unlisted_data"] = "unlisted_data"
+    archive_name: str | None = None
+    format: str = ""
+    member_name: str = ""
+    member_id: int | None = None
+    offset: int = 0
+    compressed_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -543,6 +593,7 @@ DiagnosticContext = (
     | FormatConflictContext
     | ScanRaceContext
     | ArchiveEofContext
+    | UnlistedDataContext
     | MemberTimestampContext
     | MemberHeaderRecordContext
     | SymlinkTargetContext
@@ -560,6 +611,8 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_NAME_NORMALIZED: "name_normalization",
         DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: "name_encoding",
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL: "member_name_controls",
+        DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER: "member_name_controls",
+        DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER: "member_name_controls",
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT: "format_conflict",
         DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: "unconfirmed_format",
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: "unconfirmed_format",
@@ -571,6 +624,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.SCAN_ENTRY_VANISHED: "scan_race",
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
         DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
+        DiagnosticCode.ARCHIVE_UNLISTED_DATA: "unlisted_data",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
@@ -590,12 +644,14 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_NAME_NORMALIZED,
         DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
         DiagnosticCode.SCAN_DIRECTORY_VANISHED,
         DiagnosticCode.SCAN_ENTRY_VANISHED,
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
+        DiagnosticCode.ARCHIVE_UNLISTED_DATA,
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
@@ -606,7 +662,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nine codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Ten codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -636,6 +692,11 @@ and the reasons are part of the contract rather than an oversight:
 - ``MEMBER_SPECIAL_FILE_HAS_DATA`` — a documented writer option (Info-ZIP ``zip -FI``)
   produces the shape, and the member's bytes are delivered and checked like any file's,
   so nothing is hidden; ``STRICT`` would refuse an ordinary archive (DR-25).
+- ``MEMBER_NAME_INVISIBLE_CHARACTER`` — zero-width joiners are part of ordinary emoji
+  sequences, non-joiners of Persian and Indic spelling, and tag characters of
+  subdivision flags. ``STRICT`` would refuse an archive of legitimately named files.
+  Its sibling ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` is **in** the set: U+200B, U+2060
+  and U+FEFF have no use inside a filename.
 """
 
 
@@ -649,6 +710,18 @@ and the reasons are part of the contract rather than an oversight:
 _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]] = (
     MappingProxyType(
         {
+            DiagnosticCode.MEMBER_NAME_BIDI_CONTROL: (
+                "category",
+                frozenset({"bidi"}),
+            ),
+            DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER: (
+                "category",
+                frozenset({"zero_width"}),
+            ),
+            DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER: (
+                "category",
+                frozenset({"invisible"}),
+            ),
             DiagnosticCode.SCAN_DIRECTORY_VANISHED: (
                 "entry_kind",
                 frozenset({"directory"}),
@@ -699,9 +772,9 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
     """Reject unregistered or mismatched code→context pairings.
 
     Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. Codes that
-    share a kind (``scan_race``, ``unused_argument``, ``unconfirmed_format``,
-    ``archive_eof``) are told apart by one context field, and every one of them is
-    checked against the value its code requires.
+    share a kind (``member_name_controls``, ``scan_race``, ``unused_argument``,
+    ``unconfirmed_format``, ``archive_eof``) are told apart by one context field, and
+    every one of them is checked against the value its code requires.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
@@ -989,6 +1062,7 @@ __all__ = [
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",
+    "UnlistedDataContext",
     "UnusedArgumentContext",
     "format_path_name",
     "raw_name_to_base64",

@@ -199,7 +199,18 @@ class ForwardArchiveReader(ABC):
         it is a non-seekable source: ``open_archive()`` accepts it only with
         ``streaming=True`` and only for TAR and single-file compressors. For a member
         you need to seek, nested archives included, use :meth:`~ArchiveReader.open` under
-        ``seekable_members=True``."""
+        ``seekable_members=True``.
+
+        On a default reader the pass owns the reader while it runs:
+        :meth:`~ArchiveReader.open`, :meth:`~ArchiveReader.read`,
+        :meth:`~ArchiveReader.get`, :meth:`~ArchiveReader.members`,
+        :meth:`members_report`, iteration and another pass raise
+        ``ArchiveyUsageError`` inside the loop. On a reader opened with
+        ``concurrent_members=True`` they all work, from the loop body or from
+        another thread, on every format, so the answer does not depend on the
+        format. They share the pass's walk of the archive's headers, and a call that
+        needs members the pass has not reached yet reads ahead for it.
+        :meth:`extract_all` still raises beside a pass."""
         ...
 
     @abstractmethod

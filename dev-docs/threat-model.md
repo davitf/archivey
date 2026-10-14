@@ -269,12 +269,35 @@ bytes. The outcome is the same on every platform. ADR
   link-count limit is written as a copy (`_link_refused_here`), counted toward
   `max_extracted_bytes` and the archive-wide `max_ratio` (see
   [Extraction bombs](#extraction-bombs)).
+- On Windows each filesystem call the extraction code (`internal/extraction.py`,
+  `internal/link_watch.py`, `resolve_or_raise_on_loop`) makes under the destination or a
+  dry run's scratch copy takes a path of 200 characters or more in the extended `\\?\`
+  form (`internal/long_paths.py`), so a path past `MAX_PATH` is written without
+  `LongPathsEnabled`. `test_filesystem_calls_take_the_long_path_form` holds the inventory
+  of those calls. The CLI's own walks after a run (the hoist) take plain paths. The
+  prefix is stripped from what comes back (`os.path.realpath`, `os.readlink`, `OSError`
+  file names), so results, errors and the path-safety comparisons use the plain path.
+  `resolve_or_raise_on_loop` resolves a long path through the extended form, so a
+  symlink deep in the tree is followed by the checks as it is by the write; without
+  that the checks would fall back to a lexical path there while the write followed the
+  link.
+- On Windows a symlink is created as a directory link when its target is a directory or
+  the archive's listing shows one (`_link_to_directory`); a link whose kind turns out
+  wrong is remade at the end of the run (`_settle_link_kinds`), only when it is still
+  the link this run made. The target and its escape check do not change.
+- A member whose destination holds an entry with no claim of its own, but which is the
+  same file (`st_dev`, `st_ino`) as one this run claimed, collides with that claim
+  (`_alias_claim`): an 8.3 short name on Windows. Under `TRUSTED` it stays a file
+  already there.
 - Bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069) in a name or link
   target are rejected under `STRICT` and `STANDARD` (`_reject_bidi_override`); directional
   marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,
   only the name read back later (ADR
   [0017](decisions/0017-bidi-override-rejection-is-policy-keyed.md)). Listing always
-  presents the stored name with `MEMBER_NAME_BIDI_CONTROL`.
+  presents the stored name with `MEMBER_NAME_BIDI_CONTROL`. Other invisible format
+  characters (Unicode Cf) are never rejected: U+200B, U+2060 and U+FEFF get
+  `MEMBER_NAME_ZERO_WIDTH_CHARACTER` (raised under the `STRICT` diagnostic policy), the
+  rest (joiners, soft hyphen, tags) get `MEMBER_NAME_INVISIBLE_CHARACTER`.
 
 `TRUSTED` keys collisions on the exact path and writes faithful bytes; the local OS
 decides.
@@ -293,7 +316,8 @@ percent spelling; it can be added without breaking anything.
 `test_unrepresentable_name_oserror_is_translated`, and the `test_bidi_*` tests.
 `tests/test_cross_os_extraction.py` covers the separator rewrite, the Win32 character
 escapes, the further device names, the typed Windows errors, symlink targets on Windows,
-read-only entries and the link-count copy; the re-check after a rewrite is
+read-only entries, the link-count copy, long paths, directory symlinks and 8.3 short
+names; the re-check after a rewrite is
 `::test_rewritten_name_is_checked_where_it_is_written`.
 
 ### Resource use is bounded
@@ -315,7 +339,8 @@ archive declares.
   is listed; a TAR walk parses no header after it. `None` (`ListingLimits.UNLIMITED`)
   disables it. ZIP, 7z, RAR and ISO also check `max_members` while parsing, at
   `open_archive` (ZIP, as it walks the directory when the end record understates the
-  count). The TAR walker keeps nothing behind the member list, so nothing else is
+  count; 7z and RAR weigh their header names against `max_metadata_bytes` there too).
+  The TAR walker keeps nothing behind the member list, so nothing else is
   held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, for the bytes present rather than the size a header declares
   (a member declaring more than the archive holds raises `TruncatedError` at the first
@@ -651,7 +676,11 @@ the pass, and declined rather than refused when the cap has no room.
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
-(262,144). A non-seekable
+(262,144). Where a member records its size and compressed size, `check_recorded_size()`
+applies the per-member ratio to them before the member is decoded, since a member
+stream never yields past its recorded size; the measured checks still run on every
+chunk. The archive-wide ratio is not checked from recorded sizes: an unverified size
+must not stop the whole run. A non-seekable
 caller stream's `size` attribute counts as unknown size: nothing can check it, and an
 inflated claim used as the static denominator would also switch off the live ratio
 (`BaseArchiveReader._trusted_source_size`). The global guards
@@ -686,7 +715,15 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_live_ratio_default_floor`, `::test_piped_blank_start_passes_like_a_file`,
 `::test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator`,
 `::test_forged_member_declaration_is_refused_only_after_the_decode`,
-`::test_link_limit_copies_count_toward_the_archive_wide_ratio`;
+`::test_link_limit_copies_count_toward_the_archive_wide_ratio`,
+`::test_recorded_size_refuses_a_member_before_its_data`,
+`::test_recorded_size_leaves_the_archive_wide_ratio_to_count`,
+`::test_zip_bomb_member_is_refused_before_any_byte_is_written`,
+`::test_7z_and_rar_bomb_members_are_refused_before_any_byte_is_written`,
+`::test_orphan_hardlink_source_is_refused_from_its_recorded_size`,
+`::test_recorded_size_check_runs_on_a_dry_run`,
+`::test_recorded_size_check_skips_members_the_run_does_not_decode`,
+`::test_forged_recorded_size_fails_only_its_member`;
 `tests/test_cross_os_extraction.py::test_link_limit_copies_trip_the_archive_wide_ratio`.
 
 #### RAR reads by glob-named member
@@ -982,14 +1019,21 @@ trust boundary. `unar`'s password is [visible to other users](#the-unar-password
 **Property.** On a reader declaring `MemberStreams.CONCURRENT`, after random-access
 materialization, concurrent `open()` and independent use of different member streams is
 data-race-free without the GIL. Otherwise a second overlapping open raises
-`ArchiveyUsageError`, so accidental sharing fails fast. Iteration, extraction,
-`stream_members()` and close are single-owner. Stream leases defer backend teardown
-until the last stream closes, because an accelerator must close before it is finalized
+`ArchiveyUsageError`, so accidental sharing fails fast. On a `CONCURRENT` reader,
+random-access calls and further `stream_members()` passes also run beside a
+`stream_members()` pass: they share the reader's one member walk, each at its own
+position, and every pull, cursor step and link finalization holds the walk lock
+(`base_reader.py` `_walk_lock`). A TAR pass stream reading through the walk moves to a
+view of its own before the walk moves on for another caller (`_WalkHandoffStream`).
+Extraction and close stay single-owner, as does everything on a reader without
+`CONCURRENT`. Stream leases defer backend teardown until the last stream closes, because
+an accelerator must close before it is finalized
 ([`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §6).
 
 **Tests.** The required `free-threaded-concurrency` job (Linux CPython 3.13t,
-`.github/workflows/ci.yml`); optional backends are not claimed until a job runs them.
+`.github/workflows/ci.yml`), which runs `tests/test_concurrent_pass_workers.py` among
+the rest; optional backends are not claimed until a job runs them.
 Scope: [`docs/support-matrix.md`](../docs/support-matrix.md); design:
 [`investigations/parallel-reader.md`](investigations/parallel-reader.md) §4.
 

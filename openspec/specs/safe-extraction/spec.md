@@ -262,6 +262,18 @@ refuses to create a symlink with `winerror` 1314 (`ERROR_PRIVILEGE_NOT_HELD`) wh
 process lacks the privilege; that SHALL be a typed `ExtractionError` as well, with its own
 message naming the missing privilege.
 
+**Paths past `MAX_PATH`.** Win32 refuses a path of 260 characters or more unless the
+machine enables long paths, and reports it as a missing path. On Windows, extraction SHALL
+pass each path under the destination that is that long to the filesystem in the extended
+form (`\\?\C:\...`, `\\?\UNC\server\share\...`), so a deep member is written as it is
+on POSIX. The extended form SHALL NOT appear in results, errors, diagnostics or CLI
+output: they name the path as the caller would write it. The path-safety checks SHALL
+resolve a long path through the extended form and compare the result without the
+prefix, so a symlink deep in the tree is followed as for a short path. A path that a
+call still takes without the prefix and that fails as missing (`winerror` 3) while being
+at least `MAX_PATH` long SHALL be typed as too long, like `winerror` 206; a component
+longer than the filesystem allows stays the typed error above.
+
 `EINVAL` is deliberately not auto-translated: it is a broad errno that can arise from
 unrelated syscalls during extraction. The Windows codes are matched on `winerror`, not
 on the errno CPython maps them to (`EINVAL`, `ENOENT`).
@@ -783,6 +795,40 @@ under `OnError.CONTINUE`; global guards remain always-stop.
 | `compressed_size is None` or `0` | Per-member ratio skipped; cumulative/global guards still apply |
 | `ExtractionLimits(max_ratio=100)` | Members over 100:1 trip this guard |
 
+### Requirement: A recorded size decides the per-member ratio before decoding
+
+A member stream never yields more than the member's recorded `size` (a byte past it
+is `CorruptionError`), so a recorded size bounds the member's output. When a FILE
+member is about to be decoded (`BombTracker.check_recorded_size()`, called at the
+start of every FILE write, after the selector, the filter, the policy checks and the
+overwrite policy have accepted it), the system SHALL refuse it with the per-member
+`ResourceLimitError` when its `size` exceeds both `ratio_activation_threshold` and
+`max_ratio * compressed_size` (only when both are known and `compressed_size` is
+greater than zero). The refusal is member-scoped, as the measured per-member check's
+is, and the member has no temp file and adds no bytes to any counter. When the orphan pass
+writes an excluded hard-link source's content at a link's path, the source's sizes are
+the ones checked.
+
+For a member that delivers its whole recorded `size`, this is the verdict the measured
+check would reach after decoding past the threshold. A member whose data stops short
+of its recorded `size` is refused here as over the ratio, where the measured check
+might not trip and the read would fail as damaged instead; either way only that member
+fails.
+
+The archive-wide ratios SHALL NOT be checked from recorded sizes. A recorded size is
+unverified until the member is decoded, and refusing the archive-wide (always-stop)
+ratio on it would stop the run on one damaged member and lose the intact members after
+it. The measured archive-wide checks stop at the chunk that crosses the limit, so an
+earlier check would save little. Members without a recorded `size` or
+`compressed_size` are left to the measured checks, which still run on every chunk.
+
+#### Scenario: recorded-size ratio matrix
+
+| Case | Expected |
+| --- | --- |
+| Member whose recorded sizes are over the per-member ratio after the threshold | Per-member `ResourceLimitError` before any byte of it is written; under `OnError.CONTINUE` the rest are extracted |
+| Member whose recorded sizes overstate its data | Only that member fails, whichever error names it |
+
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
 The system SHALL apply `ExtractionLimits` bomb guards only during
@@ -927,8 +973,9 @@ other causes, rather than presenting `""`.
 
 What the archive records is the condition, not whether this read produced a target.
 An unset `link_target` has two other causes, and in both the archive carries a target
-this read could not produce: **not resolved yet** — a ZIP or 7z link read in streaming
-mode carries its target in the member's data, which that mode has already passed — and
+this read could not produce: **not resolved yet** — a ZIP, 7z or RAR 4 link carries its
+target in the member's data, which a streaming pass under `read_link_targets=False`, or
+a RAR pass, has already passed when it reads the target — and
 **resolved but out of reach**, where the reader looked and the bytes were compressed,
 split across volumes or encrypted. Recording either `LINK_TARGET_UNAVAILABLE` would
 report success while dropping a member the archive describes in full, so both SHALL
@@ -940,20 +987,22 @@ member whose absent target the header already states. Where a reader can tell fr
 metadata alone that the archive records no target — a reparse point a writer stored no
 data for is the case that exists — it SHALL settle that while typing the member, not in
 a lookup that reads data. Otherwise the two paragraphs above disagree in a streaming
-pass, whose lookup runs at EOF: the member the first one names would take the second
-one's per-member failure, and the library default would abort the archive on exactly
-the entry this outcome was added for.
+pass whose lookup runs late (at EOF, or only when extraction reads the link): the
+member the first one names would take the second one's per-member failure, and the
+library default would abort the archive on exactly the entry this outcome was added
+for.
 
 That is also the bound on the read modes. `LINK_TARGET_UNAVAILABLE` holds in a
 streaming pass exactly for the members a reader settles from metadata; where the
 archive's omission is legible only in the member's *data* — a reparse buffer that names
 nothing, bytes that are not a link buffer at all, a RAR3/4 link carrying none — a
-streaming pass does not learn it until EOF, by which time the member has already been
-written or not. Those SHALL take the per-member failure that an unresolved target
+streaming pass that reads targets late (a RAR pass, or any pass under
+`read_link_targets=False`) does not learn it until the member has already been written
+or not. Those SHALL take the per-member failure that an unresolved target
 takes, and the library default aborts the archive there. Settling them in a streaming
 pass would mean holding a reparse point's data until the member is written, which is a
-different guarantee and is not required here. One pass does learn it at the member: a 7z
-pass under `read_link_targets=True` reads a reparse-flagged member's data as it reaches
+different guarantee and is not required here. ZIP and 7z passes do learn it at the
+member: under `read_link_targets=True` each reads a reparse-flagged member's data as it reaches
 it, so a member whose bytes are not a link buffer is a file by the time extraction sees
 it, and is written as one. A directory-shaped entry is the exception: it stays a link
 with no target (`archive-reading`, "Link targets stored as member data are read only
@@ -1230,6 +1279,9 @@ data as Python `tarfile` may do on symlink-unsupported platforms.
 | SYMLINK target member is excluded by selector/filter and resolved target stays in `dest` | Symlink is created and may dangle; target data is not copied |
 | SYMLINK target appears later or outside the archive but stays in `dest` | Symlink is created as stored; no target materialization |
 | `os.symlink` unsupported raises `OSError`/`NotImplementedError` | `STOP` raises; `CONTINUE` records `FAILED`; no copy fallback |
+| On Windows, a SYMLINK whose target is a directory when the link is created, or that the archive's listing shows is a directory (a directory member, or a name other members are inside) | Created as a directory link (`target_is_directory=True`) |
+| On Windows, a SYMLINK whose target is not known when the link is created (a later member with no listing up front, as in a TAR or a streaming pass) | Created as a file link; at the end of the run, a link still in place whose target is then a directory is remade as a directory link, and a directory link whose target is not a directory is remade as a file link |
+| On POSIX | One kind of link; no flag and no end-of-run pass |
 
 ### Requirement: Live archive-wide decompression ratio for unknown-size streams
 
@@ -1285,7 +1337,12 @@ rules compose with — and never bypass — the non-bypassable path-safety const
 a `casefold(NFC(path))` key per written destination and treat a second member resolving to
 the same key as an existing destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
-directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. The key
+directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. A
+member whose destination holds an entry that no member of this run claimed by key, but that
+is the same file (`st_dev`, `st_ino`) as a file this run claimed, collides with that member
+as a case variant does: on Windows this is an 8.3 short name (`LONGFI~1.TXT` after
+`longfilename.txt`) on a volume that makes them. This does not apply under `TRUSTED`, and
+not on a filesystem that reports inode 0. The key
 and the location are fixed when the earlier member is written, and a collision SHALL be
 resolved at that location, so repointing `s` later does not move it. Such a collision
 SHALL apply `OverwritePolicy` deliberately and record the outcome on both members'
@@ -1375,6 +1432,7 @@ rewritten name then collides and is renamed).
 | Case | `STRICT` / `STANDARD` | `TRUSTED` |
 | --- | --- | --- |
 | `README` and `readme` in one archive | Second is a collision event on all platforms; `OverwritePolicy` applied; `requested_path` recorded | Local OS behavior (both extract on a case-sensitive FS) |
+| `longfilename.txt`, then `LONGFI~1.TXT`, on a Windows volume with 8.3 names | Second is a collision event with the first (same file identity); under `REPLACE` the first is revised to `OVERWRITTEN` | Local OS behavior (the second meets a file already there) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
 | Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful | Written if the OS allows |

@@ -16,7 +16,6 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
-    StreamNotSeekableError,
     TruncatedError,
 )
 from archivey.internal.config import (
@@ -51,6 +50,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _open_rapidgzip,
     _refuse_forward_only_accelerator,
     _StdlibSeekContract,
+    _translate_rapidgzip_shared,
     _warn_child_fallback,
 )
 from archivey.internal.streams.codecs.stdlib_takeover import (
@@ -895,13 +895,6 @@ class Bzip2Codec(StreamCodec):
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
-        if isinstance(exc, RuntimeError) and text in (
-            "std::exception",
-            "Unknown exception",
-        ):
-            return CorruptionError(
-                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
-            )
         if "[BZip2 block" in text:
             # Corrupt block data or block header (e.g. "[BZip2 block header] Invalid Huffman
             # coding group count"); surfaced as ValueError or RuntimeError depending on where.
@@ -922,16 +915,13 @@ class Bzip2Codec(StreamCodec):
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
-        if isinstance(exc, ValueError) and "has no valid fileno" in text:
-            return StreamNotSeekableError(
-                "the rapidgzip bzip2 accelerator does not support non-seekable streams"
-            )
-        if isinstance(exc, io.UnsupportedOperation) and (
-            "seek" in text or "tell" in text
-        ):
-            return StreamNotSeekableError(
-                "the rapidgzip bzip2 accelerator does not support non-seekable streams"
-            )
+        shared = _translate_rapidgzip_shared(
+            exc,
+            "bzip2 stream (rapidgzip bzip2)",
+            "the rapidgzip bzip2 accelerator",
+        )
+        if shared is not None:
+            return shared
         if isinstance(exc, RuntimeError) and reported_by_child(exc):
             # Any other RuntimeError the decoder raised, as for the DEFLATE family
             # (_translate_rapidgzip): its data errors are not a stable list, and the

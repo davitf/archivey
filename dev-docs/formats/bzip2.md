@@ -206,9 +206,9 @@ Otherwise a 7z AES stage's padding after the end marker reaches the decoder, whi
 
 **Errors through the accelerator.** Its messages carry no exception type archivey can
 match on, so `Bzip2Codec._translate_accelerator` matches the text. "Calculated CRC",
-"[BZip2 block", "Huffman", "magic", "bit string", "bad optional access" and a bare
-`std::exception` or "Unknown exception" are `CorruptionError`; each was seen on a corrupt
-file. A non-seekable source is `StreamNotSeekableError`.
+"[BZip2 block", "Huffman", "magic", "bit string", "bad optional access", and any
+message that contains `std::exception` or "Unknown exception" are `CorruptionError`; each
+was seen on a corrupt file. A non-seekable source is `StreamNotSeekableError`.
 
 **The standard library takes over on a data error.** A cut stream is one of those errors:
 under the accelerator every cut in the truncation sweep came back as

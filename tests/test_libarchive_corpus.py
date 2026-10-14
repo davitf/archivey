@@ -46,6 +46,7 @@ import io
 import os
 import re
 import shutil
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -54,6 +55,7 @@ import pytest
 from archivey import FormatDetectionError, MemberType, detect_format, open_archive
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, requires
+from tests.sample_archives import publish_cached
 
 _ENV = "ARCHIVEY_LIBARCHIVE_TEST_FILES"
 _CACHE_SUBDIR = "libarchive-corpus"
@@ -290,16 +292,22 @@ def _decode_uu(source: Path, dest: Path) -> None:
                     raise ValueError(f"uu decode failed on {source.name}") from exc
     if not started:
         raise ValueError(f"no uu begin line in {source.name}")
-    dest.write_bytes(out.getvalue())
+    # Publish through a temp file so a parallel worker never reads a half-written dest.
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".decoding-")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(out.getvalue())
+        publish_cached(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _safe_decode_uu(source: Path, dest: Path) -> bool:
     try:
         _decode_uu(source, dest)
     except (OSError, ValueError, binascii.Error):
-        if dest.exists():
-            dest.unlink(missing_ok=True)
-        return False
+        return False  # dest is only ever written whole, so there is nothing to clean up
     return True
 
 

@@ -45,7 +45,7 @@ from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildError,
     PpmdChildReportedError,
     PpmdChildStartError,
-    child_decoding_available,
+    ppmd_child_unavailable_reason,
 )
 from archivey.internal.streams.codecs.ppmd_worker import OPEN, REPLY
 from tests.conftest import requires
@@ -257,14 +257,18 @@ def test_without_a_child_process_a_large_member_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A frozen app cannot start a child: past the limit, ``ResourceLimitError``."""
-    monkeypatch.setattr(ppmd_decoder, "child_decoding_available", lambda: False)
+    monkeypatch.setattr(
+        ppmd_decoder, "ppmd_child_unavailable_reason", lambda: "no child here"
+    )
     packed = _encode_ppmd7(_ZERO_RUN)
     params = _params(7, len(packed), len(_ZERO_RUN))
     with open_codec_stream(
         Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
     ) as stream:
-        with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input"):
+        with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input") as e:
             stream.read(10)
+        # The refusal names why no child can start.
+        assert "(no child here)" in str(e.value)
         # The refusal sticks: a second read says the same, never a stray error.
         with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input"):
             stream.read(10)
@@ -278,7 +282,9 @@ def test_a_member_past_the_limit_is_refused_even_when_one_read_carries_it_whole(
     One large ``read(n)`` hands the decoder the whole pack in a single feed. It is still
     past the limit, so without a child process it is refused rather than decoded here.
     """
-    monkeypatch.setattr(ppmd_decoder, "child_decoding_available", lambda: False)
+    monkeypatch.setattr(
+        ppmd_decoder, "ppmd_child_unavailable_reason", lambda: "no child here"
+    )
     packed = _encode_ppmd7(_ZERO_RUN)
     assert 1024 < len(packed) < 1 << 20  # past the limit, inside one 1 MiB feed
     params = _params(7, len(packed), len(_ZERO_RUN))
@@ -628,7 +634,7 @@ def test_without_sys_executable_a_large_member_is_refused(
 ) -> None:
     """An embedded interpreter may not know its path: no child, a clean refusal."""
     monkeypatch.setattr(sys, "executable", None)
-    assert not child_decoding_available()
+    assert ppmd_child_unavailable_reason() is not None
     with pytest.raises(PpmdChildStartError, match="sys.executable"):
         PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
     packed = _encode_ppmd7(_ZERO_RUN)
@@ -636,7 +642,7 @@ def test_without_sys_executable_a_large_member_is_refused(
     with open_codec_stream(
         Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
     ) as stream:
-        with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input"):
+        with pytest.raises(ResourceLimitError, match="sys.executable is not set"):
             stream.read(10)
 
 

@@ -32,7 +32,7 @@ class EndRecord:
     base: int                 # added to every stored offset (stub before the archive)
     comment: bytes            # cut at end of file
     comment_declared: int     # the stored length, for the "comment cut short" finding
-    trailing: int             # bytes after the record and its declared comment (seekable only)
+    trailing: int | None      # bytes after the record and its declared comment; None from a forward walk
 
 ReadAt = Callable[[int, int], bytes]   # read_at(offset, n); the caller owns handle and lock
 
@@ -184,7 +184,16 @@ of formats that apply `max_members` while parsing (7z, RAR and ISO, `archive-rea
 a stage 3 spec edit). A seekable source under `streaming=True` walks the directory
 first, so the walk charges it there. A forward pass has no offset array (it reads data
 in order), but it keeps every member it yielded until the end of the pass to update it
-in place, so it charges `max_members` as members are yielded.
+in place, so it charges `max_members` twice: on the local headers as members are
+yielded, and on the directory's entries as it reads them, since a directory can list
+more entries than the stream held members. The entries wait for the end record, which
+says where their offsets count from, so their names, extra fields and comments are
+weighed against `max_metadata_bytes` as they arrive, and past it the pass raises
+`ResourceLimitError`, as every pass does at a cap. The seekable read weighs the members
+it builds rather than the raw entries, so a directory whose extra fields alone pass the
+cap is refused from a pipe only (DR-5a: a crafted shape). The fields the directory adds
+(a comment above all) are weighed again when the members are updated, and the pass
+raises when it is published if they took it over.
 
 ### Trailing bytes
 
@@ -221,26 +230,41 @@ for `streaming=True` on a non-seekable source, which ZIP refuses today. ZIP then
 
 ### Parser support
 
-The fixed-header parsing is shared by both walks; only where the bytes come from
-differs. `parse_central_header(buf, pos)` and `parse_local_header(buf, pos)` work on
-bytes. `CentralDirectoryWalk` feeds them from `read_at`. The forward walk takes the
+The forward walk is `internal/backends/zip_local_walk.py`, beside `zip_parser.py`. It
+parses each central header with the parser's own `_unpack_central` and `_central_entry`,
+and each local header with the same struct `read_local_header` uses. It takes the
 source as a `BinaryIO` that it only reads, never seeks, and counts the bytes it has
 consumed, which is the offset every local entry is matched by. That is the shape
-`TarWalker` uses for a forward-only stream; there is no new reader type.
+`TarWalker` uses for a forward-only stream. Bytes a member's reader took past the
+member's end are put back in front of the stream (`ForwardSource.unread`).
 
 ```python
 class LocalEntry:                 # what one local header says, plus where it was
-    offset: int                   # bytes consumed before its signature
-    header: LocalHeader           # incl. ZIP64 extra applied to the sizes
-    sizes_known: bool             # False under bit 3: the data descriptor has them
+    index: int                    # position in file order
+    offset: int                   # stream offset of its signature
+    header: LocalHeader           # data_start a stream offset; ZIP64 extra applied
+    zip64: bool                   # a ZIP64 extra field: 8-byte descriptor sizes
+    deferred: bool                # bit 3: the data descriptor has the CRC and sizes
 
 class LocalHeaderWalk:
-    def __init__(self, stream: BinaryIO) -> None: ...
-    def __iter__(self) -> Iterator[LocalEntry]: ...   # the caller consumes each body
-    def finish_member(self, consumed: int, crc: int) -> DataDescriptor | None: ...
-    def central_directory(self) -> Iterator[CentralEntry]: ...  # after the last member
+    def __init__(self, stream: BinaryIO, *, offset=0, find_start=True) -> None: ...
+    def next_entry(self) -> LocalEntry | None: ...    # None once the directory follows
+    def member_data(self, entry, *, encrypted=False) -> MemberData: ...
+    def directory(self) -> Iterator[CentralEntry]: ... # after the last member
     end: EndRecord | None           # set once the end record has been read
+    gap: tuple[int, int] | None     # bytes read past before the directory
+
+class MemberData(BinaryIO):         # the member's compressed bytes, read forward
+    consumed: int                   # bytes handed out
+    def settle(self, used=None, *, crc=None, file_size=None) -> DataDescriptor | None: ...
 ```
+
+`settle` reads past the data the caller left and the data descriptor. For a member only
+its codec can end, the caller passes the decoded data's `crc`, and the walk finds the
+descriptor among the bytes it kept (§"Where a member's data ends"). A caller whose codec
+counts its input (DEFLATE) may pass that count as `used` instead. Either way the bytes
+the caller's layers read past the descriptor are put back. A central entry's offset is
+the stored one (`base` 0) until the end record gives the stub offset.
 
 The walk stops at the first `PK\x01\x02`, `PK\x06\x06` or `PK\x05\x06` after a member;
 the directory is then read forward from the same stream with the same entry parser.
@@ -254,6 +278,7 @@ the directory is then read forward from the same stream with the same entry pars
 | Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for `PK\x07\x08` followed by a CRC and a compressed size that match the bytes since the data start, and then by a local header, central header or end record signature. libarchive reads it the same way. A descriptor without its signature cannot be found this way: `UnsupportedFeatureError` |
 | Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext. The descriptor's CRC covers the plaintext, so the scan matches on the compressed size and the signature after it only; the CRC (ZipCrypto, AE-1) or the HMAC (AES) then checks the plaintext as for any member |
 | Bit 3, LZMA without the EOS bit, PPMd without an end mark | No way to find the end: `UnsupportedFeatureError` in this mode, naming the reason. A seekable source reads it |
+| Bit 3, encrypted, any method but STORED | Only the decrypted codec finds the end, so the walk needs the key even to skip the member: it decrypts and decodes it whether or not the caller reads it, and a missing or wrong password ends the walk there with the error the member's read gives. The descriptor is found by the decoded CRC (zero under AE-2). Under WinZip AES the code follows the ciphertext, so the stage keeps the last bytes it read out of the HMAC until the descriptor says where the data ended (the walk's put-back window and one read more), and the bytes the descriptor search read past the stage's last read complete it |
 
 The STORED scan can be fooled on purpose: a member that carries, inside its own data, a
 descriptor for a prefix of itself followed by a local header signature ends early, and
@@ -262,6 +287,32 @@ from a data descriptor and differs from the central entry is a failure of that m
 the end of the pass (§"Failures found at the end of the pass"). This is not question A,
 which is about two headers that state the same field differently; here the local header
 stated no size at all.
+
+A codec stream stops after its end without saying how far past it it read: its
+decoder takes input in chunks of up to 1 MiB, and Deflate64 and PPMd cannot say how much
+of the last one they used. So the codec half does not count bytes. The reader decodes
+until the codec stream ends (a `refuse_input_after_end` stream raises
+`DataAfterEndError` at the first byte after the end, which here means "the member is
+over": the descriptor itself is input after the codec's end on every valid member),
+then the walk looks for the descriptor in the last 4 MiB it handed out: the
+four bytes of the decoded data's CRC, with a compressed size equal to their own
+position and a ZIP signature after them. A signed descriptor whose CRC differs (the
+data is damaged) is found by its signature and size, and the reader reports the CRC
+mismatch; an unsigned one cannot be told from the data then, and the walk stops with
+`CorruptionError`.
+
+Because the descriptor dates the end from its own position, bytes between the codec's
+end and the descriptor count into its compressed size. DR-3's check that nothing
+follows the codec's end, which a sized member gets, is not available for these members:
+a member with junk there fails from a file and reads from a pipe. Only a crafted
+archive has that shape, so DR-5a lets the two reads differ.
+
+PPMd holds its input until the whole member is in, and hands it to pyppmd whole: fed in
+pieces, pyppmd can crash the process on corrupt input. A bit-3 PPMd member has no size
+to wait for, and holding until the source ends would hold the rest of the archive, so it
+is fed in pieces and always in a child process; `max_ppmd_in_process_input=None`, which
+rules children out, refuses it with `ResourceLimitError`. pyppmd stops at the end mark
+and reports what it did not use (measured, in-process and in the child).
 
 ### What only the central directory says
 
@@ -278,15 +329,22 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 - `stream_members()` yields each member with what its local header gives (name, flags,
   method, sizes, times from the local extra fields). `mode`, `create_system` and
   `comment` are `None` until the directory has been read, not guessed. The type cannot
-  be `None`: it is `FILE` or `DIRECTORY` from the name until then. Then the members
-  already yielded are updated in place (`ArchiveMember` is mutable, ADR 0007), before
-  the pass ends. Each such member has `member_state_final` false until then (question
-  D), so a caller sees the gap on the member before reading anything (DR-8).
+  be `None`: it is `FILE` or `DIRECTORY` from the name until then. A name ending in
+  `\` is a `DIRECTORY` until then, because a DOS or Windows writer marks its folders
+  that way, and a folder written as a file would stop every member inside it from being
+  written. A Unix host makes it a file: an empty one is written at the end of the pass,
+  and one with data fails there, its bytes passed (only a crafted archive has one).
+  Then the members already yielded are updated in place (`ArchiveMember` is mutable,
+  ADR 0007), before the pass ends. Each such member has `member_state_final` false
+  until then (question D), so a caller sees the gap on the member before reading
+  anything (DR-8).
 - Extraction writes each member as it arrives, then at the end of the pass applies
   modes, turns a member the directory types as a symlink into a link (its target is the
   data just written, at most the link-target cap), and removes what it wrote for a
-  member the directory types `OTHER`. It only touches what it created (DR-18). This is
-  the same end-of-pass step that already resolves links in a streaming pass.
+  member the directory types `OTHER`. A member the directory renames (a DOS host makes
+  `\` a separator) is written again under its name, from the bytes already on disk.
+  It only touches what it created (DR-18). This is the same end-of-pass step that
+  already resolves links in a streaming pass.
 - A member whose type the directory changes goes through the caller's `filter` and the
   extraction policy's checks **again**, on the updated member (name, type, link
   target), before the link is made, exactly as `extract_all` already calls the filter
@@ -296,6 +354,48 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   escapes the destination is therefore refused from a pipe as from a file. Links are
   made only after the last member has been written, so no member is ever written
   through one.
+- The selection is made again too, on what each member became. A `members=` list is
+  matched during the pass against every name a member can end with (with `\` as a
+  separator or not, with or without a folder's trailing `/`), so the data of any
+  member it may select is written while the stream holds it; at the end the list
+  selects for good, and what it no longer takes is removed with no result, and
+  nothing is recorded as matched before then. A member a `members=` predicate or the
+  filter left out during the pass is asked about again at the end; if it is taken
+  then, it is written when it needs no bytes the stream has passed (a link, whose
+  target the reader kept, a folder or an empty file) and fails otherwise. That
+  failure is the one place a forward pass cannot match the seekable one: a filter
+  that selects by a name only the directory gives (a DOS name, `docs/` against a
+  stored `docs\r.txt`) sees the stored name during the pass on POSIX (on Windows
+  it already sees `docs/r.txt`). The member fails with `ExtractionError`, as a
+  hard link whose source a forward pass has passed does: the archive is sound. A
+  `members=` predicate is called twice for every member, and the filter twice for
+  one it left out; both read `member_state_final` as `False` on the first call, so
+  either can tell the two apart. A member first handled at the end of the pass is
+  reported to `on_progress` then. A member the pass writes is reported when it is
+  written, so progress moves while the stream is read; one the end of the pass then
+  leaves out was reported all the same, and from a pipe `members_done` can count a
+  member the report does not hold. Holding every tick until the directory is read
+  would leave a pipe extraction with no member progress at all until its end.
+- What the pass writes before the end of it decides must be undone without loss. An
+  entry the caller had at a destination the pass replaces (`overwrite="replace"`) is
+  moved aside and put back at the end of the run unless the member still lands there
+  (on Windows a read-only entry is not moved, so the member fails as it does from a
+  file). A run that stops before the end of the pass (`abort_on`, `on_error="stop"`, a
+  limit) never learns which members it keeps, so a write over a caller's entry is
+  taken back and the entry returns; the members it wrote elsewhere stay, as a stopped
+  run's do. One that stops while the end of the pass settles keeps what it settled.
+  Two effects outlive the take-back. `abort_on` fires before a write begins, which for
+  such a member is before the end decides, so a run can stop for a member that would
+  not have been selected; deferring it would mean writing the member it exists to
+  stop. And the bomb limits: what the pass writes is on disk while the pass runs, so
+  it is counted then and given back when it is taken back. A member the selection
+  takes only provisionally (a Unix `x\y` that a list naming `x/y` may take) can
+  therefore stop a run under `max_entries` or `max_extracted_bytes` that the same
+  bytes from a file complete. Not counting it would let an archive write unbounded
+  data the run then deletes.
+  So does `on_error="stop"`: a member whose data fails as the pass writes it stops
+  the run, though the directory may then not list it (an unlisted local entry, which
+  random access never reads).
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
   member) is removed from disk and reported: data outside any member is a warning
@@ -317,13 +417,20 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   recovers the offsets; the forward walk has no end record to recover them from until
   the end.
 - Bytes between the last member and the directory (an APK signing block, for one) are
-  read past to the directory signature. The end record, read last, confirms where the
-  directory started; the seekable read skips the same bytes without reading them.
+  read past to the first directory or end-record signature. The end record, read last,
+  confirms where the directory started; the seekable read skips the same bytes without
+  reading them. Two cases a forward read cannot take, where the seekable read can: a gap
+  holding `PK\x01\x02` or `PK\x05\x06` (the skip stops there, and the bytes after it
+  are no directory), and a gap after a last member with bit 3 set (a descriptor counts
+  only when a ZIP signature follows it, which is what stops a planted one inside STORED
+  data). Recognising an APK signing block by its own size fields would cover both;
+  it is not done.
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
-  Writers put both in the same order; when they differ, member ids follow the
-  directory once it has been read, and so does `is_current`: of two members with the
-  same name, the current one is the later in the directory, in both modes. A streaming
+  Writers put both in the same order; when they differ, `is_current` follows the
+  directory once it has been read: of two members with the same name, the current one
+  is the later in the directory, in both modes. Member ids and the order of the listing
+  stay those of the file: the pass handed the ids out as it went. A streaming
   extraction writes copies in file order, so when the directory order of two same-name
   members is the reverse of their file order, the file on disk holds the copy the
   directory supersedes. That is a failure of the current member at the end of the pass
@@ -333,11 +440,13 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 
 ### Failures found at the end of the pass
 
-Three things are known only once the directory has been read: a size or CRC from a data
+Four things are known only once the directory has been read: a size or CRC from a data
 descriptor that differs from the central entry, two same-name members whose directory
-order reverses their file order, and a directory entry with no local entry. Each is a
-member-scoped failure of the member it names, handled as `safe-extraction` handles any
-other (the `OnError` requirement):
+order reverses their file order, a directory entry with no local entry, and a member
+whose directory entry and local header store different names (question A, case 3: the
+seekable read refuses it when it reads the local header, and a forward pass has both
+names only now). Each is a member-scoped failure of the member it names, handled as
+`safe-extraction` handles any other (the `OnError` requirement):
 
 - In `extract_all`, the end of the pass settles every member the directory changes
   (its `is_current`, type or sizes), and every path such a member was written to:
@@ -345,8 +454,17 @@ other (the `OnError` requirement):
     archive gives it, revised in place as the `OVERWRITTEN` rows revise a result. Where
     that result needs bytes the stream has already passed (the member is now current
     but its data was not written, or its data failed the descriptor check), it becomes
-    `FAILED` with `CorruptionError` instead. A directory entry with no local entry never
-    had a result, so one is added, `FAILED`. Results stay in member-processing order.
+    `FAILED` with `CorruptionError` instead. For a member now current, the overwrite
+    policy decides first, as in random access, and the member fails only where the
+    write reads the data that is not there: under `overwrite="skip"` over an existing
+    entry it is `NOT_OVERWRITTEN`, and under `"error"` it carries the collision's
+    `ExtractionError`. A refusal by the filter or a policy check, which random access
+    makes on every copy, stands on a member now not current. A directory entry with no
+    local entry never had a result, so one is added: it is handled as any member, and
+    the overwrite policy decides first, so it is `FAILED` where the write reads its
+    data. Its name counts for which copy is current, as in the seekable listing, so a
+    listed copy it follows is not current and is taken back. Results stay in
+    member-processing order.
   - **The path.** After the revisions, an entry this run wrote stays only if the member
     whose result names it is `EXTRACTED`. Any other entry archivey wrote there is
     removed (DR-18), and the path is left empty: the bytes the seekable extraction
@@ -354,21 +472,31 @@ other (the `OnError` requirement):
   - For the reversed pair (file order `M1`, `M2`; the directory makes `M1` current):
     during the pass `M1` was `SUPERSEDED` and `M2` `EXTRACTED` at the path. At the end
     `M2` becomes `SUPERSEDED` (non-current, never written in seekable mode), `M1`
-    becomes `FAILED`, and `M2`'s entry is removed. For a descriptor mismatch the member
+    becomes `FAILED` (unless the overwrite policy would not write it, as above), and
+    `M2`'s entry is removed. For a descriptor mismatch the member
     is `FAILED` and its entry removed.
   - Under `OnError.CONTINUE` the report completes. Under `OnError.STOP` the first such
     failure raises `CorruptionError` naming the member, at the end of the pass, which is
     the earliest point it is known; the revisions and removals above are made first.
-- In `stream_members()`, which has no results and no `OnError`, the descriptor mismatch
-  and the missing local entry raise `CorruptionError` from the iterator at the end of
-  the pass. The reversed pair raises nothing: the members are updated in place and
-  `member_state_final` said they might be. Nothing is on disk to settle.
+- In `stream_members()`, which has no results and no `OnError`, the descriptor mismatch,
+  the missing local entry and the differing names raise `CorruptionError` from the
+  iterator at the end of the pass. The reversed pair raises nothing: the members are
+  updated in place and `member_state_final` said they might be. Nothing is on disk to
+  settle.
 
 The first two make a streaming extraction fail a member that the seekable extraction of
-the same archive writes. That is the only place the two access modes differ on disk.
-Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
-a little; matching them would mean buffering every member until the directory arrives
-(ADR 0010).
+the same archive writes (the seekable read refuses a member whose two names differ, as
+the pass does). That is the only place the two access modes differ on disk. Both shapes
+come only from crafted or hand-edited archives, which DR-5a allows to differ a little;
+matching them would mean buffering every member until the directory arrives (ADR
+0010).
+
+One more thing is known only once the directory has been read, and is not a member
+failure. A directory entry pointing at a local header an earlier entry already took ends
+the pass with its own `CorruptionError`: the seekable read lists both, and a forward
+pass reads that data once, for one member. A directory whose entries fill a different
+size than the end record declares is a warning (`ARCHIVE_EOF_MARKER_MISSING`, marker
+`central_directory`), and every entry stays listed.
 
 ### What the caller sees in a forward pass
 
@@ -509,10 +637,14 @@ One PR each, in order; every PR goes through the review label.
    superseded by a new ADR; format-zip spec, the `diagnostics` spec row and the
    `ArchiveEofContext` docstring for `"zeros_to_eof"`, `docs/gotchas.md` (trailing data
    and the open-pipe note), handbook §2.2, §5 and §6 updated.
-3. **Streaming.** The forward local-header walk and the end-of-pass reconciliation,
-   for non-seekable sources (seekable ones read the directory first, question C), and
-   for a seekable source whose end record the tail search does not find
-   (§"A seekable source whose end record is not in the tail"). `stream_members()` and
+3. **Streaming**, in three PRs: 3a the forward walk in the parser layer
+   (`zip_local_walk.py`, no reader change); 3b the reader over a non-seekable source and
+   the end-of-pass reconciliation; 3c a seekable source under `streaming=True` and the
+   fallback when the tail search finds no end record. Together: the forward
+   local-header walk and the end-of-pass reconciliation, for non-seekable sources
+   (seekable ones read the directory first, question C), and for a seekable source
+   whose end record the tail search does not find (§"A seekable source whose end
+   record is not in the tail"). `stream_members()` and
    `extract_all()` over a pipe, tested against the same archives read seekably: the
    files on disk must match. This stage changes a public declaration: ZIP's
    `SUPPORTS_STREAMING_NON_SEEKABLE` becomes true, so `required_source` for ZIP moves
@@ -591,8 +723,8 @@ non-seekable sources only.
 
 **D. How a caller sees that a forward pass fills some fields only at the end.**
 Answered (davi, 2026-10-10): a per-member field saying the member's state will not
-change again, working name `member_state_final` (davi chose an explicit name over
-`is_final`, which reads like `is_current` and `is_dir`; the stage 3 PR settles it).
+change again, named `member_state_final` (davi chose an explicit name over
+`is_final`, which reads like `is_current` and `is_dir`, and kept it on 2026-10-13).
 The cost receipt was rejected: it describes what listing and reading cost, not whether
 a member's fields are settled. The field is not ZIP-specific. It is false wherever
 archivey can still update a member in place: a ZIP member yielded in a forward pass
@@ -603,8 +735,9 @@ target has been read (`read_link_targets=False`, or a listing from the index alo
 is true everywhere else, so a caller checks it on each member before reading anything.
 Its documented meaning is "any field of this member may still change"; each format's
 handbook page and `docs/formats.md` name which fields that is in practice (for a ZIP
-forward pass: type, mode, host, comment, `is_current`; for a data-stored link: the
-target).
+forward pass, any field the directory builds: above all type, name, where a DOS host
+makes `\` a separator, mode, host, comment, times from the directory's extra fields,
+and `is_current`; for a data-stored link: the target).
 
 ## Out of scope
 

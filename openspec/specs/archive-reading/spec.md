@@ -524,10 +524,10 @@ understates the count, as the directory walk passes the limit).
 | --- | --- |
 | Default config, archive with ≤262_144 members and metadata under 64 MiB | `members()` / `members_report()` succeed |
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`, `format-iso`); no full cache published |
-| Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
+| Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes`, at `open_archive` on 7z and RAR, which weigh the names their headers hold at parse (`format-7z`, `format-rar`) |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
+| `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared size) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 | `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
 | `stream_members()` on a streaming reader or a random-access TAR, past a cap | Yields the members within the caps, then raises `ResourceLimitError` at the member that crosses one, without parsing the headers after it; `members_report_if_available()` then returns `None` |
@@ -566,6 +566,18 @@ bound. The case that exists is RAR 1.5/2.x compressed old-style comments, each d
 by a separate `unrar` process: `format-rar` sums their declared unpacked sizes at
 `open_archive` and refuses the archive before decoding any. That check is separate
 from the running total above; the decoded comments are weighed again at registration.
+
+A format whose parser builds the whole member table before any member is registered
+(7z and RAR) SHALL also weigh the text that table holds against `max_metadata_bytes`
+at parse, so that `open_archive` raises before the table is kept, as it does for
+`max_members`: each stored name (as `name` and as `raw_name`), a RAR5 link target
+held in the header, and the member and archive comments. The parse weight SHALL use
+the rules above on the stored values: the stored name stands for the normalized
+`name`, and a raw name not yet encoded counts one byte per character for UTF-8, two
+for UTF-16, never more than its encoded size. An archive whose names normalization
+leaves unchanged therefore opens under any cap its listing fits; the RAR compressed
+comments count by declared size, as above. Registration still weighs every member as
+usual.
 
 A TAR sparse member's map is retained on `_raw` (the member's data is read through it),
 and the archive sizes it: a few kilobytes of compressed PAX sparse 1.0 map hold millions
@@ -749,7 +761,10 @@ directed to `stream_members()` by `reader.cost.access_cost` and by the `open()` 
 
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another
-iteration/data pass, unrelated extraction, or reader close. An `extract_all()`
+iteration/data pass, unrelated extraction, or reader close. On a reader opened with
+`concurrent_members=True`, random `open()` / `read()` / `get()` / `members()`,
+iteration and further `stream_members()` passes MAY run beside it, on every format
+(`reader-concurrency`, "Random-access calls beside a `stream_members()` pass"). An `extract_all()`
 owner MAY invoke it as a child pass and MAY read/close the yielded child stream.
 Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and leave the
 active pass/stream valid. (Unlike random `open()`, whose independently owned
@@ -775,7 +790,7 @@ makes `close()` raise (maintainer's ruling, 2026-10-10).
 | `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened, except data-stored symlink targets when `read_link_targets=True`; original mutable members |
 | Fully read stream, then inspect member | Late-bound fields (e.g. size/CRC) visible on same object |
 | Advance after one yield | Prior stream closed/invalidated first |
-| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
+| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable. Under `concurrent_members=True`: admitted |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
 | `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
 | `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |
@@ -1446,16 +1461,17 @@ that point SHALL carry its final value.
 Completing the member walk SHALL NOT by itself finalize a streaming pass. The pass
 finalizes when its own consumer passes the last member. A peek that drains the walk
 followed by an abandoned pass SHALL run no link finalization: it resolves no links and
-publishes no complete report. On backends that read link targets only at finalization
-(ZIP, ISO), such a pass reads no link data. A 7z pass reads a link member's data as it
-passes that member, so an abandoned 7z pass may already have read link data for the
-members it passed.
+publishes no complete report. A ZIP or 7z pass under `read_link_targets` reads a
+symlink's data as it passes that member, so that a reparse point whose data is not a
+link buffer is yielded as a file with its content; an abandoned pass may already have
+read link data for the members it passed. ISO targets are in the headers, so an ISO
+pass reads no link data.
 
 #### Scenario: pass finalization matrix
 
 | Case | Expected |
 | --- | --- |
-| Streaming ZIP: peek inside the `stream_members()` loop, then `break` | No complete report published; no link-target reads |
+| Streaming ZIP: peek inside the `stream_members()` loop, then `break` | No complete report published; link targets read only for symlinks the pass already yielded |
 
 ### Requirement: Link targets stored as member data are read only when configured
 
@@ -1507,13 +1523,13 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   it opens the member for its content. A streaming pass has already passed that
   content, so it SHALL fail the member under `OnError`; it SHALL NOT report it as a
   link with no target.
-- Exception to the bullet above: a 7z `stream_members()` pass under
+- Exception to the bullet above: a ZIP or 7z `stream_members()` pass under
   `read_link_targets=True` reads a reparse-flagged member's data when it reaches the
   member, in either access mode, so the pass has read that data before extraction sees
   the member. When that data is no reparse buffer, the pass SHALL re-type the member
   there, as above, and yield it with a stream of its whole content. It SHALL NOT yield
-  it as a link with no stream and re-type it after: the folder decoder cannot go back,
-  so that content would be lost with no error. `extract_all` over such a pass
+  it as a link with no stream and re-type it after: a streaming pass, or a 7z folder
+  decoder, cannot go back, so that content would be lost with no error. `extract_all` over such a pass
   therefore writes the member as a file in both access modes.
 
 #### Scenario: link-target setting matrix
@@ -1531,6 +1547,7 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | ZIP symlink, `read_link_targets=False`, password supplied, `reader.open("link")` | The target is read, then the link is followed |
 | Streaming `extract_all()` over a ZIP symlink, default config | The target is read before the link is written; the link is extracted |
 | ZIP member flagged as a reparse point whose data is no reparse buffer, `read_link_targets=False`, `extract_all()` | The filter sees it as a link, then again as a file; random access writes its content; a streaming pass fails it under `OnError` |
+| ZIP member flagged as a reparse point whose data is no reparse buffer, default config, `stream_members()` in either access mode | Yielded as `FILE` with a stream of all its content |
 | 7z member flagged as a reparse point whose data is no reparse buffer, default config, `stream_members()` in either access mode | Yielded as `FILE` with a stream of all its content; the next member in the folder reads correctly |
 | Same 7z archive, default config, streaming `extract_all()` | Written as a file |
 | Same 7z archive, `read_link_targets=False`, `stream_members()` | Yielded as `SYMLINK` with no stream, as `members()` lists it; not re-typed later |

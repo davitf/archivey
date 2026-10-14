@@ -415,9 +415,13 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             # the frontier stays. A verifier below answers for itself (it may have read
             # them through), and ``_digest_lost`` asks it first.
             self._note_position()
-        elif n != 0:
-            # EOF: the inner stream has run its end-of-stream check (and a mismatch
-            # would have raised above).
+        if n < 0 or (not data and n != 0):
+            # EOF, seen or read through (``read(-1)`` returns at it). This assumes the
+            # inner has run its end-of-stream check by then, and a mismatch would have
+            # raised above: true of a stream whose ``read(-1)`` reads on to its empty
+            # read (a ZIP pass's member stream, whose check runs there), and of one
+            # that checks on reaching its size. As for ``_note_position``, check a new
+            # wrap target against it.
             if not self._digest_lost():
                 self._reached = True
         return data

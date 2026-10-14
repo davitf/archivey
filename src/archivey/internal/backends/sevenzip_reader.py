@@ -27,6 +27,7 @@ from __future__ import annotations
 import io
 import re
 import stat
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
@@ -87,6 +88,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.listing_limits import check_metadata_bytes, text_bytes
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
@@ -268,6 +270,7 @@ HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 # Omitting max_members on the archive-level entry point means the ListingLimits
 # default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+_DEFAULT_MAX_METADATA_BYTES = ListingLimits().max_metadata_bytes
 
 
 def load_sevenzip_archive(
@@ -278,11 +281,13 @@ def load_sevenzip_archive(
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
+    max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
     The one open flow: :class:`SevenZipReader` and the fuzz harnesses both call it.
-    ``fp`` starts at the signature header.
+    ``fp`` starts at the signature header. ``max_members`` and ``max_metadata_bytes``
+    are the reader's ``ListingLimits``; both hold at open (``None`` disables one).
     """
     signature = read_signature_and_next_header(fp)
     if not signature.header_data:
@@ -304,11 +309,38 @@ def load_sevenzip_archive(
             max_members=max_members,
         )
     assert isinstance(block, PlainHeader)
+    _check_header_metadata(block, max_metadata_bytes)
     return materialize_archive(
         signature,
         block,
         is_header_encrypted=header_encrypted,
         encoded_streams_end=encoded_streams_end,
+    )
+
+
+def _check_header_metadata(header: PlainHeader, max_metadata_bytes: int | None) -> None:
+    """Hold the names and comment a parsed header keeps to ``max_metadata_bytes``.
+
+    Checked once the header has parsed, plain or decoded, so a refused archive fails
+    at open, as ``max_members`` does, instead of when its members are registered. A
+    wrong-password decode never reaches here: the candidate loop has already judged
+    it. Each stored name is weighed by registration's weights, as ``name`` and as
+    ``raw_name`` (two bytes per character, which under-weighs a character outside
+    the BMP: it is two UTF-16 units). Registration weighs the normalized name, which
+    can be shorter (``a/./b`` lists as ``a/b``), so such a name weighs a little more
+    here. The header has its own bound, ``MAX_NEXT_HEADER_SIZE`` (64 MiB, stored or
+    decoded); that is a fixed parser limit, not this budget, so it does not follow
+    the caller's setting.
+    """
+    if max_metadata_bytes is None:
+        return
+    total = text_bytes(header.comment)
+    for record in header.files:
+        total += text_bytes(record.filename) + 2 * len(record.filename)
+    check_metadata_bytes(
+        max_metadata_bytes,
+        total,
+        detail=f"7z header names and comment hold {total} bytes",
     )
 
 
@@ -463,6 +495,7 @@ class SevenZipReader(BaseArchiveReader):
     """Reads 7z archives using the native parser and shared codec streams."""
 
     _MEMBER_LIST_UPFRONT = True
+    _LINK_TARGETS_IN_DATA = True
 
     def __init__(
         self,
@@ -508,8 +541,14 @@ class SevenZipReader(BaseArchiveReader):
         self._link_data: dict[int, bytes | ArchiveyError] = {}
         # The link member a data pass is on, and how to open it from that pass's own
         # folder decode. Valid only until the pass moves on; ``extract_all`` reads an
-        # accepted link through it (``_link_data_stream``).
-        self._pass_link: tuple[ArchiveMember, Callable[[], ArchiveStream]] | None = None
+        # accepted link through it (``_link_data_stream``). The thread is the one that
+        # ran the pass step, the only one that may read through that decoder. One slot
+        # for every pass: on a CONCURRENT reader several passes can run, and another
+        # pass's step clears or replaces this offer. A cancelled offer costs one decode
+        # of the folder, never wrong bytes (the member and thread checks refuse it).
+        self._pass_link: (
+            tuple[ArchiveMember, Callable[[], ArchiveStream], threading.Thread] | None
+        ) = None
         # A member's or coder's compressed data is the codec's whole input, so a
         # byte its codec leaves unread is refused (``StreamConfig.refuse_input_after_end``).
         self._stream_config = stream_config_from_archivey(
@@ -561,6 +600,7 @@ class SevenZipReader(BaseArchiveReader):
             stream_config=self._stream_config,
             collector=self._diagnostics_collector,
             max_members=self._config.listing_limits.max_members,
+            max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
         )
 
     def _report_trailing_data(self) -> None:
@@ -784,7 +824,7 @@ class SevenZipReader(BaseArchiveReader):
             and not member._link_target_resolved
         ):
             return self._capture_link_data(member, opener, in_pass=True)
-        self._pass_link = (member, opener)
+        self._pass_link = (member, opener, threading.current_thread())
         return None
 
     def _capture_link_data(
@@ -896,6 +936,10 @@ class SevenZipReader(BaseArchiveReader):
         pass sitting on this member, through its own decoder; then a direct open, which
         decodes the folder from its start (``open()`` following a link, a listing of
         one link).
+
+        The pass's decoder is offered only on the thread that ran the pass step. A
+        ``CONCURRENT`` reader admits ``open()`` beside a ``stream_members()`` pass from
+        any thread, and a call from another thread must not move the pass's decoder.
         """
         member_id = member._member_id
         kept = self._link_data.pop(member_id, None) if member_id is not None else None
@@ -904,7 +948,11 @@ class SevenZipReader(BaseArchiveReader):
         if kept is not None:
             return io.BytesIO(kept)
         pass_link = self._pass_link
-        if pass_link is not None and pass_link[0] is member:
+        if (
+            pass_link is not None
+            and pass_link[0] is member
+            and pass_link[2] is threading.current_thread()
+        ):
             return pass_link[1]()
         return self._open_member(member)
 

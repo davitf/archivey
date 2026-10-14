@@ -1,0 +1,991 @@
+"""Encrypted ZIP members read from a source that cannot seek, with one password.
+
+The pass decrypts a member whose local header states its size, a bit-3 STORED one
+(its end is found on the ciphertext) and a bit-3 codec one (only the decrypted codec
+finds its end, so the pass needs the key to go past it). Each read must give what
+the seekable read gives: the same bytes, or the same kind of error.
+"""
+
+from __future__ import annotations
+
+import io
+import random
+import struct
+import zipfile
+import zlib
+from pathlib import Path
+
+import pytest
+
+import archivey
+from archivey.diagnostics import DiagnosticCode, EncryptedVerificationContext
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    EncryptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
+from archivey.internal.backends.zip_reader import ZipReadBackend
+from tests.conftest import requires
+from tests.streams_util import NonSeekableBytesIO
+from tests.zipcrypto import (
+    build_stored_zipcrypto_zip,
+    build_zipcrypto_zip,
+    corrupt_zipcrypto_payload,
+)
+
+_COLLISION = (
+    Path(__file__).parent / "fixtures" / "zipcrypto" / "check_byte_collision.zip"
+)
+_PASSWORD = b"secret"
+_TEXT = b"the quick brown fox jumps over the lazy dog\n" * 40
+
+
+@pytest.fixture(autouse=True)
+def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
+
+
+def _aes_zip(**kwargs: object) -> bytes:
+    from tests.zip_aes_fixture import build_aes_zip
+
+    return build_aes_zip([(b"a.txt", _TEXT)], password=_PASSWORD, **kwargs)  # type: ignore[arg-type]
+
+
+def _with_plain_member(data: bytes) -> bytes:
+    """``data`` with an unencrypted ``plain.txt`` after its members, so a test can
+    see that the pass goes on past the encrypted one."""
+    with zipfile.ZipFile(io.BytesIO(data)) as src:
+        entries = src.infolist()
+    eocd = data.rindex(b"PK\x05\x06")
+    cd_size, cd_offset = struct.unpack_from("<II", data, eocd + 12)
+    body = data[:cd_offset]
+    directory = data[cd_offset : cd_offset + cd_size]
+    name = b"plain.txt"
+    payload = b"plain"
+    crc = zlib.crc32(payload)
+    local = (
+        struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50,
+            20,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(name),
+            0,
+        )
+        + name
+        + payload
+    )
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            len(body),
+        )
+        + name
+    )
+    count = len(entries) + 1
+    directory += central
+    end = struct.pack(
+        "<IHHHHIIH",
+        0x06054B50,
+        0,
+        0,
+        count,
+        count,
+        len(directory),
+        len(body) + len(local),
+        0,
+    )
+    return body + local + directory + end
+
+
+def _bit3_stored_zipcrypto(
+    data: bytes, *, dos_time: int = 0x5A3C, stored: bytes | None = None
+) -> bytes:
+    """One STORED ZipCrypto member written as a pipe writer would: bit 3, zero sizes
+    and CRC in the local header, a descriptor after the data. The check byte is then
+    the DOS time's high byte. ``stored`` replaces the encrypted data."""
+    from tests.zipcrypto import _encrypt
+
+    name = b"a.txt"
+    crc = zlib.crc32(data)
+    enc = (
+        _encrypt(_PASSWORD, (dos_time >> 8) & 0xFF, data) if stored is None else stored
+    )
+    flags = 0x1 | 0x8
+    local = (
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, flags, 0, dos_time, 0, 0, 0, 0, len(name), 0
+        )
+        + name
+        + enc
+        + struct.pack("<IIII", 0x08074B50, crc, len(enc), len(data))
+    )
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            flags,
+            0,
+            dos_time,
+            0,
+            crc,
+            len(enc),
+            len(data),
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+    )
+    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(local), 0)
+    return local + central + end
+
+
+def _shorter_than_its_header() -> bytes:
+    """Four bytes of data with a matching descriptor: whole, and too short to hold
+    a ZipCrypto header."""
+    return _bit3_stored_zipcrypto(b"", stored=b"\x01\x02\x03\x04")
+
+
+def _bit3_aes_stored_of_length(length: int) -> bytes:
+    """A bit-3 STORED AES-256 member whose data is ``length`` bytes and a matching
+    descriptor: whole, and too short for its salt, verifier and code."""
+    name = b"a.txt"
+    extra = struct.pack("<HHH2sBH", 0x9901, 7, 2, b"AE", 3, 0)
+    stored = bytes(range(1, length + 1))
+    flags = 0x1 | 0x8
+    local = (
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 51, flags, 99, 0, 0, 0, 0, 0, len(name), 7 + 4
+        )
+        + name
+        + extra
+        + stored
+        + struct.pack("<IIII", 0x08074B50, 0, len(stored), 0)
+    )
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            51,
+            51,
+            flags,
+            99,
+            0,
+            0,
+            0,
+            len(stored),
+            0,
+            len(name),
+            7 + 4,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+        + extra
+    )
+    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(local), 0)
+    return local + central + end
+
+
+def _aes_shorter_than_its_header() -> bytes:
+    return _bit3_aes_stored_of_length(4)
+
+
+def _aes_shorter_than_its_code() -> bytes:
+    """Past the salt and the verifier, short of the code: refused before the
+    password is checked, as from a file."""
+    return _bit3_aes_stored_of_length(20)
+
+
+#: Whole members too short for their encryption: refused for that under a password.
+_TOO_SHORT = (
+    _shorter_than_its_header,
+    _aes_shorter_than_its_header,
+    _aes_shorter_than_its_code,
+)
+
+
+def _bit3_zipcrypto(compression: int) -> bytes:
+    return _bit3(
+        build_zipcrypto_zip(
+            _PASSWORD, b"a.txt", _TEXT, compression=compression, check_byte=0
+        )
+    )
+
+
+#: Past several of the decrypt stage's 64 KiB reads, and compressible only in part.
+_LONG = random.Random(5).randbytes(100_000) + _TEXT * 100
+
+
+def _deflate64(data: bytes) -> bytes:
+    import inflate64
+
+    deflater = inflate64.Deflater()
+    return deflater.deflate(data) + deflater.flush()
+
+
+def _ppmd(data: bytes) -> bytes:
+    """ZIP method 98: the order and memory word, then PPMd8 with its end mark."""
+    import pyppmd
+
+    order, mem_mb = 6, 16
+    encoder = pyppmd.Ppmd8Encoder(order, mem_mb << 20, 0)
+    word = (order - 1) | ((mem_mb - 1) << 4)
+    return struct.pack("<H", word) + encoder.encode(data) + encoder.flush(True)
+
+
+def _aes_precompressed(method: int, encode, *, vendor_version: int) -> bytes:  # noqa: ANN001
+    from tests.zip_aes_fixture import build_aes_zip
+
+    return build_aes_zip(
+        [(b"a.txt", _LONG)],
+        password=_PASSWORD,
+        method=method,
+        encode=encode,
+        vendor_version=vendor_version,
+    )
+
+
+def _zipcrypto_precompressed(method: int, encode, *, bit3: bool) -> bytes:  # noqa: ANN001
+    """``_LONG`` under ZipCrypto, compressed with a codec stdlib cannot write: the two
+    whose decoders cannot say how much of their last input they used."""
+    data = build_zipcrypto_zip(
+        _PASSWORD,
+        b"a.txt",
+        _LONG,
+        compression=method,
+        compressed=encode(_LONG),
+        check_byte=0 if bit3 else None,
+    )
+    return _bit3(data) if bit3 else data
+
+
+def _ends_the_walk(data: bytes) -> bool:
+    """Whether the first member is a bit-3 codec member: from a pipe, only its key
+    finds where its data ends, so a read that fails ends the walk there."""
+    from archivey.internal.backends.zip_aes import parse_winzip_aes_extra
+
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        info = archive.infolist()[0]
+    method = info.compress_type
+    if method == 99:
+        aes = parse_winzip_aes_extra(info.extra)
+        assert aes is not None
+        method = aes.actual_method
+    return bool(info.flag_bits & 0x8) and method != zipfile.ZIP_STORED
+
+
+def _fixtures() -> list[pytest.ParameterSet]:
+    zc = build_zipcrypto_zip
+    return [
+        pytest.param(
+            lambda: zc(_PASSWORD, b"a.txt", _TEXT, compression=zipfile.ZIP_STORED),
+            id="zipcrypto-stored",
+        ),
+        pytest.param(lambda: zc(_PASSWORD, b"a.txt", _TEXT), id="zipcrypto-deflate"),
+        pytest.param(
+            lambda: zc(_PASSWORD, b"a.txt", _TEXT, compression=zipfile.ZIP_BZIP2),
+            id="zipcrypto-bzip2",
+        ),
+        pytest.param(
+            lambda: zc(_PASSWORD, b"a.txt", _TEXT, compression=zipfile.ZIP_LZMA),
+            id="zipcrypto-lzma",
+        ),
+        pytest.param(lambda: _bit3_stored_zipcrypto(_TEXT), id="zipcrypto-bit3-stored"),
+        pytest.param(
+            lambda: _bit3_stored_zipcrypto(b""), id="zipcrypto-bit3-stored-empty"
+        ),
+        pytest.param(
+            _shorter_than_its_header, id="zipcrypto-bit3-shorter-than-its-header"
+        ),
+        pytest.param(
+            lambda: _bit3_zipcrypto(zipfile.ZIP_DEFLATED), id="zipcrypto-bit3-deflate"
+        ),
+        pytest.param(
+            lambda: _bit3_zipcrypto(zipfile.ZIP_BZIP2), id="zipcrypto-bit3-bzip2"
+        ),
+        pytest.param(
+            lambda: _bit3_zipcrypto(zipfile.ZIP_LZMA), id="zipcrypto-bit3-lzma"
+        ),
+        *(
+            pytest.param(
+                lambda method=method, encode=encode, bit3=bit3: (
+                    _zipcrypto_precompressed(method, encode, bit3=bit3)
+                ),
+                id=f"zipcrypto-{'bit3-' if bit3 else ''}{name}",
+                marks=requires(package),
+            )
+            for name, method, encode, package in (
+                ("deflate64", 9, _deflate64, "inflate64"),
+                ("ppmd", 98, _ppmd, "pyppmd"),
+            )
+            for bit3 in (False, True)
+        ),
+        *(
+            pytest.param(
+                lambda method=method, encode=encode, version=version: _bit3(
+                    _aes_precompressed(method, encode, vendor_version=version)
+                ),
+                id=f"aes-ae{version}-bit3-{name}",
+                marks=[requires("cryptography"), requires(package)],
+            )
+            for name, method, encode, package in (
+                ("deflate64", 9, _deflate64, "inflate64"),
+                ("ppmd", 98, _ppmd, "pyppmd"),
+            )
+            for version in (1, 2)
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip(vendor_version=1, method=0)),
+            id="aes-ae1-bit3-stored",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip(vendor_version=2, method=0)),
+            id="aes-ae2-bit3-stored",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip(vendor_version=1, method=8)),
+            id="aes-ae1-bit3-deflate",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip(vendor_version=2, method=8)),
+            id="aes-ae2-bit3-deflate",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            _aes_shorter_than_its_header,
+            id="aes-bit3-shorter-than-its-header",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            _aes_shorter_than_its_code,
+            id="aes-bit3-shorter-than-its-code",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _aes_zip(vendor_version=1, method=0),
+            id="aes-ae1-stored",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _aes_zip(vendor_version=1, method=8),
+            id="aes-ae1-deflate",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _aes_zip(vendor_version=2, method=8),
+            id="aes-ae2-deflate",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            # The overrun's message is the pipe's own copy of the file read's.
+            lambda: _declared_size(_aes_zip(method=0), 10),
+            id="aes-data-past-its-declared-size",
+            marks=requires("cryptography"),
+        ),
+    ]
+
+
+def _file_read(data: bytes, password: object) -> dict[str, object]:
+    out: dict[str, object] = {}
+    with archivey.open_archive(io.BytesIO(data), password=password) as reader:  # type: ignore[arg-type]
+        for member in reader.members():
+            try:
+                out[member.name] = reader.read(member)
+            except ArchiveyError as exc:
+                out[member.name] = (type(exc), str(exc))
+    return out
+
+
+#: The key under ``_pipe_read``'s result for what ended the walk early.
+_WALK_ENDED = "<walk ended>"
+
+
+def _pipe_read(data: bytes, password: object) -> dict[str, object]:
+    out: dict[str, object] = {}
+    with archivey.open_archive(
+        NonSeekableBytesIO(data),
+        streaming=True,
+        password=password,  # type: ignore[arg-type]
+    ) as reader:
+        try:
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                try:
+                    out[member.name] = stream.read()
+                except ArchiveyError as exc:
+                    out[member.name] = (type(exc), str(exc))
+        except ArchiveyError as exc:
+            out[_WALK_ENDED] = (type(exc), str(exc))
+    return out
+
+
+@pytest.mark.parametrize("build", _fixtures())
+def test_a_pipe_decrypts_as_the_file_read_does(build) -> None:  # noqa: ANN001
+    data = _with_plain_member(build())
+    expected = _file_read(data, _PASSWORD)
+    assert expected["plain.txt"] == b"plain"
+    assert _pipe_read(data, _PASSWORD) == expected
+    assert _pipe_read(data, _PASSWORD.decode()) == expected
+
+
+@pytest.mark.parametrize("build", _fixtures())
+def test_a_wrong_or_missing_password_fails_as_from_a_file(build) -> None:  # noqa: ANN001
+    data = _with_plain_member(build())
+    for password in (b"not the password", None):
+        expected = _file_read(data, password)
+        kind, _ = expected["a.txt"]  # type: ignore[misc]
+        # A member too short for its encryption is refused for that under a
+        # password, from a file too; with none, the missing password refuses it
+        # first, as for the rest.
+        if build in _TOO_SHORT and password is not None:
+            assert kind is CorruptionError
+        else:
+            assert issubclass(kind, EncryptionError)
+        if _ends_the_walk(data):
+            # Without the key the pass cannot find the next header: it ends there,
+            # with the error the member's read gave.
+            expected = {"a.txt": expected["a.txt"], _WALK_ENDED: expected["a.txt"]}
+        assert _pipe_read(data, password) == expected
+
+
+def test_real_bit3_members_read_as_from_a_file() -> None:
+    """Info-ZIP writes a stored and a deflated member, each with a descriptor."""
+    data = _COLLISION.read_bytes()
+    expected = _file_read(data, _PASSWORD)
+    assert set(expected) == {"stored.txt", "deflated.txt"}
+    assert _pipe_read(data, _PASSWORD) == expected
+
+
+def test_damage_in_an_unread_bit3_codec_member_ends_the_pass_as_its_read_fails() -> (
+    None
+):
+    """Only the check byte vouched for the password, so the integrity failure that
+    ends the pass may be a wrong password, and says so, as the member's read does."""
+    data = _with_plain_member(
+        _bit3(
+            corrupt_zipcrypto_payload(
+                build_zipcrypto_zip(_PASSWORD, b"a.txt", _TEXT, check_byte=0)
+            )
+        )
+    )
+    kind, message = _file_read(data, _PASSWORD)["a.txt"]  # type: ignore[misc]
+    assert kind is EncryptionError
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        with pytest.raises(EncryptionError) as ended:
+            for _ in reader.stream_members(lambda m: m.name == "plain.txt"):
+                pass
+    assert str(ended.value) == message
+
+
+@pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_an_unread_bit3_member_is_passed_with_its_password(compression: int) -> None:
+    data = _with_plain_member(_bit3_zipcrypto(compression))
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        names = [member.name for member, _ in reader.stream_members()]
+    assert names == ["a.txt", "plain.txt"]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda: _bit3_zipcrypto(zipfile.ZIP_DEFLATED), id="zipcrypto"),
+        pytest.param(
+            lambda: _bit3(_aes_zip(method=8)),
+            id="aes",
+            marks=requires("cryptography"),
+        ),
+    ],
+)
+def test_a_bit3_codec_member_cut_inside_its_header_is_truncated(build) -> None:  # noqa: ANN001
+    data = build()
+    name_len, extra_len = struct.unpack_from("<HH", data, 26)
+    cut = data[: 30 + name_len + extra_len + 5]
+    with archivey.open_archive(
+        NonSeekableBytesIO(cut), streaming=True, password=_PASSWORD
+    ) as reader:
+        passes = reader.stream_members()
+        _, stream = next(passes)
+        assert stream is not None
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: _bit3(_aes_zip(vendor_version=1, method=8)),
+            id="aes-cut-in-its-code",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(lambda: _bit3_zipcrypto(zipfile.ZIP_DEFLATED), id="zipcrypto"),
+    ],
+)
+def test_a_bit3_codec_member_cut_after_its_codec_ends_the_pass_as_truncated(
+    build,  # noqa: ANN001
+) -> None:
+    """The codec ends; the code or the descriptor after it does not come. Going on
+    past the member raises the same truncation, as no next header can be found."""
+    data = build()
+    descriptor = data.index(b"PK\x07\x08")
+    cut = data[: descriptor - 4]
+    result = _pipe_read(cut, _PASSWORD)
+    kind, message = result["a.txt"]  # type: ignore[misc]
+    assert kind is TruncatedError
+    assert result[_WALK_ENDED] == (TruncatedError, message)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("vendor_version", [1, 2])
+def test_a_bit3_aes_member_past_the_kept_window_reads_as_from_a_file(
+    vendor_version: int,
+) -> None:
+    """Over ``_CODEC_RETAIN`` of incompressible data: the code is checked over the
+    whole ciphertext, though the walk keeps only the end of it."""
+    from tests.zip_aes_fixture import build_aes_zip
+
+    payload = random.Random(0).randbytes(5 << 20)
+    data = _bit3(
+        build_aes_zip(
+            [(b"a.txt", payload)],
+            password=_PASSWORD,
+            method=8,
+            vendor_version=vendor_version,
+        )
+    )
+    expected = _file_read(data, _PASSWORD)
+    assert expected == {"a.txt": payload}
+    assert _pipe_read(data, _PASSWORD) == expected
+
+
+def _bit3(data: bytes) -> bytes:
+    """``data``'s one member written as a pipe writer would: bit 3, zero CRC and
+    sizes in the local header, a signed descriptor after the data."""
+    out = bytearray(data)
+    flags, crc, csize, usize, name_len, extra_len = struct.unpack_from(
+        "<H6xIIIHH", out, 6
+    )
+    struct.pack_into("<H", out, 6, flags | 0x8)
+    struct.pack_into("<III", out, 14, 0, 0, 0)
+    end_of_data = 30 + name_len + extra_len + csize
+    descriptor = struct.pack("<IIII", 0x08074B50, crc, csize, usize)
+    eocd = out.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", out, eocd + 16)
+    struct.pack_into("<H", out, cd_offset + 8, flags | 0x8)
+    out[end_of_data:end_of_data] = descriptor
+    eocd += len(descriptor)
+    struct.pack_into("<I", out, eocd + 16, cd_offset + len(descriptor))
+    return bytes(out)
+
+
+def test_a_password_that_only_passes_the_check_byte_fails_as_unverified() -> None:
+    """``wrong896`` passes ``stored.txt``'s one-byte check (fixture README); only the
+    CRC at the end shows it is wrong, and then it may be a wrong password or damage."""
+    data = _COLLISION.read_bytes()
+    with archivey.open_archive(io.BytesIO(data), password="wrong896") as reader:
+        with pytest.raises(EncryptionError) as from_file:
+            reader.read(next(m for m in reader.members() if m.name == "stored.txt"))
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password="wrong896"
+    ) as reader:
+        passes = reader.stream_members()
+        _, stream = next(passes)
+        assert stream is not None
+        with pytest.raises(EncryptionError) as from_pipe:
+            stream.read()
+    assert str(from_pipe.value) == str(from_file.value)
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_damage_under_a_zipcrypto_password_fails_as_from_a_file(method: int) -> None:
+    data = corrupt_zipcrypto_payload(
+        build_zipcrypto_zip(_PASSWORD, b"a.txt", _TEXT, compression=method)
+    )
+    expected = _file_read(data, _PASSWORD)
+    assert expected["a.txt"][0] is EncryptionError  # type: ignore[index]
+    assert _pipe_read(data, _PASSWORD) == expected
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda data: data, id="sized"),
+        pytest.param(_bit3, id="bit3"),
+    ],
+)
+@pytest.mark.parametrize("method", [0, 8])
+def test_a_tampered_aes_hmac_fails_as_from_a_file(build, method: int) -> None:  # noqa: ANN001
+    data = _with_plain_member(
+        build(_aes_zip(vendor_version=2, method=method, tamper_hmac=True))
+    )
+    expected = _file_read(data, _PASSWORD)
+    assert expected["a.txt"][0] is CorruptionError  # type: ignore[index]
+    assert _pipe_read(data, _PASSWORD) == expected
+
+
+def test_several_passwords_are_refused_for_now() -> None:
+    data = build_stored_zipcrypto_zip([(_PASSWORD, b"a.txt", _TEXT)])
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=["other", "secret"]
+    ) as reader:
+        passes = reader.stream_members()
+        _, stream = next(passes)
+        assert stream is not None
+        with pytest.raises(UnsupportedFeatureError, match="give one password"):
+            stream.read()
+
+
+def _unverified(reader: archivey.ArchiveReader) -> list[EncryptedVerificationContext]:
+    return [
+        d.context  # type: ignore[misc]
+        for d in reader.diagnostics.retained
+        if d.code is DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED
+    ]
+
+
+@pytest.mark.parametrize("read_all", [True, False])
+def test_a_partial_read_is_reported_as_unverified(read_all: bool) -> None:
+    data = _with_plain_member(
+        build_zipcrypto_zip(_PASSWORD, b"a.txt", _TEXT, compression=zipfile.ZIP_STORED)
+    )
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            if member.name == "a.txt":
+                with stream:
+                    if read_all:
+                        assert stream.read() == _TEXT
+                    else:
+                        # Even all of its bytes: the CRC runs on the read that finds
+                        # the end.
+                        assert stream.read(len(_TEXT)) == _TEXT
+        contexts = _unverified(reader)
+    if read_all:
+        assert contexts == []
+    else:
+        (context,) = contexts
+        assert context.member_name == "a.txt"
+        assert context.check == "weak_open_check"
+        assert context.reason == "partial_read"
+
+
+def _link_targets(data: bytes, password: object, *, pipe: bool) -> list[object]:
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=pipe, password=password) as reader:  # type: ignore[arg-type]
+        members = reader.members_report().members
+        reasons = [
+            getattr(d.context, "reason", None)
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        return [(m.name, m.type, m.link_target) for m in members] + reasons
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: build_zipcrypto_zip(
+                _PASSWORD, b"link", b"target.txt", unix_mode=0o120777
+            ),
+            id="zipcrypto",
+        ),
+        pytest.param(
+            lambda: build_zipcrypto_zip(
+                _PASSWORD,
+                b"link",
+                b"target.txt",
+                compression=zipfile.ZIP_DEFLATED,
+                unix_mode=0o120777,
+                compressed=_padded_deflate(b"target.txt"),
+            ),
+            id="zipcrypto-deflate-padded-past-the-kept-ciphertext",
+        ),
+        pytest.param(
+            lambda: _aes_zip_link(),
+            id="aes",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _declared_size(_aes_zip_link(b"x" * 5000, method=0), 10),
+            id="aes-data-past-its-declared-size",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _declared_size(
+                build_zipcrypto_zip(
+                    _PASSWORD,
+                    b"link",
+                    b"x" * 4098,
+                    compression=zipfile.ZIP_STORED,
+                    unix_mode=0o120777,
+                ),
+                4096,
+            ),
+            id="zipcrypto-data-past-its-declared-size",
+        ),
+        pytest.param(
+            lambda: _bit3(_zipcrypto_link(b"target.txt", check_byte=0)),
+            id="zipcrypto-bit3-stored",
+        ),
+        pytest.param(
+            # Kept, and too long once decrypted.
+            lambda: _bit3(_zipcrypto_link(b"x" * 5000, check_byte=0)),
+            id="zipcrypto-bit3-stored-over-the-target-cap",
+        ),
+        pytest.param(
+            # Over the ciphertext the pass keeps: passed without a key.
+            lambda: _bit3(_zipcrypto_link(b"x" * 9000, check_byte=0)),
+            id="zipcrypto-bit3-stored-over-the-kept-ciphertext",
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip_link(method=0)),
+            id="aes-bit3-stored",
+            marks=requires("cryptography"),
+        ),
+    ],
+)
+@pytest.mark.parametrize("password", [_PASSWORD, b"not the password", None])
+def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> None:  # noqa: ANN001
+    """The pass keeps a short member's ciphertext and decrypts it for the target
+    once the directory says it is a link, or decrypts it as it drains when the
+    stored data is larger than the ciphertext it keeps; either way without the
+    caller asking, and the pipe gives what the file gives. Data past a declared
+    size under the target cap is damage, not an over-long target."""
+    data = build()
+    assert _link_targets(data, password, pipe=True) == _link_targets(
+        data, password, pipe=False
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: _bit3(
+                _zipcrypto_link(
+                    b"target.txt", check_byte=0, compression=zipfile.ZIP_DEFLATED
+                )
+            ),
+            id="zipcrypto",
+        ),
+        pytest.param(
+            lambda: _bit3(_aes_zip_link()),
+            id="aes",
+            marks=requires("cryptography"),
+        ),
+    ],
+)
+def test_a_bit3_codec_link_target_is_read_as_from_a_file(build) -> None:  # noqa: ANN001
+    """The pass decodes it to find its end, so its target is what it read."""
+    data = build()
+    targets = _link_targets(data, _PASSWORD, pipe=False)
+    assert targets[0] == ("link", archivey.MemberType.SYMLINK, "target.txt")
+    assert _link_targets(data, _PASSWORD, pipe=True) == targets
+
+
+def _zipcrypto_link(
+    target: bytes,
+    *,
+    check_byte: int | None = None,
+    compression: int = zipfile.ZIP_STORED,
+) -> bytes:
+    return build_zipcrypto_zip(
+        _PASSWORD,
+        b"link",
+        target,
+        compression=compression,
+        unix_mode=0o120777,
+        check_byte=check_byte,
+    )
+
+
+def _aes_zip_link(target: bytes = b"target.txt", *, method: int = 8) -> bytes:
+    from tests.zip_aes_fixture import build_aes_zip
+
+    return build_aes_zip(
+        [(b"link", target)], password=_PASSWORD, method=method, unix_mode=0o120777
+    )
+
+
+def _declared_size(data: bytes, size: int) -> bytes:
+    """``data``'s one member with ``size`` as its uncompressed size in both headers."""
+    out = bytearray(data)
+    struct.pack_into("<I", out, 22, size)
+    # The directory's offset from the end record: the ciphertext may hold the
+    # central header's signature by chance.
+    eocd = data.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
+    struct.pack_into("<I", out, cd_offset + 24, size)
+    return bytes(out)
+
+
+def _method_6_link() -> bytes:
+    """A ZipCrypto symlink whose method says Implode in both headers: the password
+    is right, and the codec is refused once the stage is built."""
+    data = bytearray(
+        build_zipcrypto_zip(
+            _PASSWORD,
+            b"link",
+            b"target.txt",
+            compression=zipfile.ZIP_STORED,
+            unix_mode=0o120777,
+        )
+    )
+    struct.pack_into("<H", data, 8, 6)
+    struct.pack_into("<H", data, data.index(b"PK\x01\x02") + 10, 6)
+    return bytes(data)
+
+
+def _counted_decrypts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    from archivey.internal.backends import zip_forward_reader
+
+    calls: list[str] = []
+    original = zip_forward_reader._PassData._decrypted
+
+    def counted(self, loc):  # noqa: ANN001, ANN202
+        calls.append(self.member.name)
+        return original(self, loc)
+
+    monkeypatch.setattr(zip_forward_reader._PassData, "_decrypted", counted)
+    return calls
+
+
+def test_a_link_whose_codec_is_refused_says_so_as_from_a_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _method_6_link()
+    calls = _counted_decrypts(monkeypatch)
+    with pytest.raises(UnsupportedFeatureError) as from_file:
+        _link_targets(data, _PASSWORD, pipe=False)
+    with pytest.raises(UnsupportedFeatureError) as from_pipe:
+        _link_targets(data, _PASSWORD, pipe=True)
+    assert str(from_pipe.value) == str(from_file.value)
+    assert calls == ["link"]
+
+
+def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stage read the encryption header; a second open would read the next
+    twelve bytes as one. The caller's error stands, for the link target too."""
+    data = _method_6_link()
+    calls = _counted_decrypts(monkeypatch)
+    with archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader:
+        with pytest.raises(UnsupportedFeatureError) as from_file:
+            reader.read(reader.members()[0])
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        passes = reader.stream_members()
+        _, stream = next(passes)
+        assert stream is not None
+        for _ in range(2):
+            with pytest.raises(UnsupportedFeatureError) as from_pipe:
+                stream.read()
+            assert str(from_pipe.value) == str(from_file.value)
+        # The directory makes it a link, and its target raises what the read did,
+        # as the file's listing does.
+        with pytest.raises(UnsupportedFeatureError) as at_end:
+            next(passes)
+        assert str(at_end.value) == str(from_file.value)
+    assert calls == ["link"]
+
+
+@requires("cryptography")
+def test_no_key_is_derived_for_a_member_nobody_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short members are kept as ciphertext in case the directory makes them links;
+    only a link's is decrypted, as a file read only reads a link's target."""
+    from tests.zip_aes_fixture import build_aes_zip
+
+    data = build_aes_zip(
+        [(f"m{i}.txt".encode(), b"x") for i in range(20)], password=_PASSWORD
+    )
+    calls = _counted_decrypts(monkeypatch)
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        assert len(reader.members_report().members) == 20
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda: _bit3_zipcrypto(zipfile.ZIP_STORED), id="zipcrypto"),
+        pytest.param(
+            lambda: _bit3(_aes_zip(method=0)),
+            id="aes",
+            marks=requires("cryptography"),
+        ),
+    ],
+)
+def test_no_key_is_derived_for_a_bit3_stored_member_nobody_reads(
+    build,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its scan finds the end on the ciphertext."""
+    data = _with_plain_member(build())
+    calls = _counted_decrypts(monkeypatch)
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+    assert calls == []
+
+
+def _padded_deflate(data: bytes) -> bytes:
+    """``data`` as raw deflate after 1700 empty stored blocks: a valid member whose
+    stored length (8.5 KB) is out of all proportion to its 10 bytes."""
+    body = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return b"\x00\x00\x00\xff\xff" * 1700 + body.compress(data) + body.flush()

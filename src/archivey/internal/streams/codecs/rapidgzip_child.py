@@ -35,7 +35,6 @@ import builtins
 import io
 import os
 import subprocess
-import sys
 import tempfile
 import weakref
 from pathlib import Path
@@ -53,10 +52,11 @@ from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
     is_crash,
-    is_system_kill,
+    outside_death,
     python_argv,
     reap,
     spawn,
+    unavailable_reason,
 )
 from archivey.internal.streams.codecs.deflate_resume import WINDOW_SIZE, DeflateResume
 from archivey.internal.streams.codecs.rapidgzip_worker import (
@@ -172,27 +172,9 @@ def _start_error(reason: str) -> RapidgzipChildStartError:
 
 def rapidgzip_child_unavailable_reason() -> str | None:
     """Why no Python child process can be started to run the worker script, or ``None``
-    when one can.
-
-    A frozen application (PyInstaller and the like) has no Python interpreter at
-    ``sys.executable``, an embedded interpreter may not know its own path, and a
-    zip-imported archivey has no worker file on disk.
+    when one can (see :func:`~archivey.internal.streams.child_process.unavailable_reason`).
     """
-    if getattr(sys, "frozen", False):
-        return (
-            "this is a frozen application, with no Python interpreter to run the "
-            "rapidgzip decoder process"
-        )
-    if not sys.executable:
-        return (
-            "sys.executable is not set, so the rapidgzip decoder process cannot start"
-        )
-    if not _WORKER.is_file():
-        return (
-            f"the rapidgzip worker script {_WORKER.name} is not a file on disk "
-            "(archivey imported from a zip archive?), so the decoder process cannot start"
-        )
-    return None
+    return unavailable_reason(_WORKER, "rapidgzip")
 
 
 _FROM_CHILD = "_archivey_reported_by_rapidgzip_child"
@@ -639,20 +621,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 f"Error reading {label} stream: the rapidgzip decoder process crashed "
                 f"on it ({how}{reason})"
             )
-        elif is_system_kill(returncode):
-            cls = ResourceLimitError
-            message = (
-                f"the rapidgzip decoder process for this {label} stream was killed "
-                f"({how}). SIGKILL comes from outside the decoder, most often the "
-                "system's out-of-memory killer, so the data may be valid; read it "
-                "again with more memory available."
-            )
         else:
-            cls = ReadError
-            message = (
-                f"the rapidgzip decoder process for this {label} stream ended "
-                f"unexpectedly ({how}). The decoder did not crash, so the data may "
-                "be valid; try reading it again."
+            # Not a crash on the data: something outside the decoder ended the child.
+            cls, message = outside_death(
+                returncode,
+                f"the rapidgzip decoder process for this {label} stream ended ({how})",
             )
         self._death = (cls, message)
         self._crashed = caused_by_source is None and (

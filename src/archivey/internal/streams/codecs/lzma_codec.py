@@ -12,6 +12,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -19,11 +20,9 @@ from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
     check_decoder_memory,
-    exceeds_decoder_memory,
     probe_lzma_dictionary,
 )
-from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import RewindWarning
+from archivey.internal.streams.archive_stream import ExceptionTranslator, RewindWarning
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
@@ -38,6 +37,7 @@ from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
 from archivey.internal.streams.codecs.xz_decoder import (
     XzDecompressorStream,
     lzma_error_to_archivey,
+    new_capped_decompressor,
     open_xz_head,
 )
 from archivey.internal.streams.decompressor_stream import (
@@ -46,11 +46,6 @@ from archivey.internal.streams.decompressor_stream import (
     Decoder,
     DecompressorStream,
     SeekPoint,
-)
-from archivey.internal.streams.streamtools import (
-    ReadOnlyIOStream,
-    is_seekable,
-    read_exact,
 )
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import (
@@ -67,15 +62,26 @@ _ALONE_HEADER_SIZE = 13
 _ALONE_UNKNOWN_SIZE = (1 << 64) - 1
 
 
+def _translate_lzma(
+    exc: Exception, limits: DecoderLimits | None = None
+) -> ArchiveyError | None:
+    if isinstance(exc, lzma.LZMAError):
+        return lzma_error_to_archivey(exc, "Error reading LZMA/XZ stream", limits)
+    if isinstance(exc, EOFError):
+        return TruncatedError(f"LZMA/XZ stream is truncated: {exc!r}")
+    return None
+
+
 class _LzmaErrorCodec(StreamCodec):
     """Shared LZMA/XZ error taxonomy for the lzma-family codecs (xz, lzip, raw LZMA)."""
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        if isinstance(exc, lzma.LZMAError):
-            return lzma_error_to_archivey(exc, "Error reading LZMA/XZ stream")
-        if isinstance(exc, EOFError):
-            return TruncatedError(f"LZMA/XZ stream is truncated: {exc!r}")
-        return None
+        return _translate_lzma(exc)
+
+    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+        # The limits the stream's decompressors are built with, so a memlimit refusal
+        # names the cap (``.lzma``: ``new_capped_decompressor``).
+        return functools.partial(_translate_lzma, limits=config.decoder_limits)
 
 
 class _SizedLzmaCodec(_LzmaErrorCodec):
@@ -139,14 +145,28 @@ class LzipCodec(_SizedLzmaCodec):
         member.hashes = hashes
 
 
+# liblzma's ``LZMA_LCLP_MAX``: the largest lc + lp its LZMA1 decoder takes.
+_LIBLZMA_LCLP_MAX = 4
+
+
+def _split_lzma_props(props: int) -> tuple[int, int, int] | None:
+    """The ``(lc, lp, pb)`` an LZMA1 properties byte encodes, or ``None`` out of range.
+
+    The byte is (pb * 5 + lp) * 9 + lc with lc <= 8, lp <= 4, pb <= 4: 225 of the 256
+    values are in range.
+    """
+    if props >= 9 * 5 * 5:
+        return None
+    return props % 9, props // 9 % 5, props // 45
+
+
 def _alone_props_plausible(props: int) -> bool:
     """Whether ``props`` encodes a valid Alone ``(lc, lp, pb)`` triple.
 
-    The format's range, props = (pb * 5 + lp) * 9 + lc with lc <= 8, lp <= 4, pb <= 4:
-    225 of the 256 values. Detection admits all of them, since a header grammar accepts
-    the format's full legal range and the decode decides.
+    Detection admits all 225 values in the format's range, since a header grammar
+    accepts the format's full legal range and the decode decides.
     """
-    return props <= (4 * 5 + 4) * 9 + 8
+    return _split_lzma_props(props) is not None
 
 
 def _alone_props_liblzma_decodes(props: int) -> bool:
@@ -155,9 +175,8 @@ def _alone_props_liblzma_decodes(props: int) -> bool:
     liblzma also requires lc + lp <= 4 (``LZMA_LCLP_MAX``). The next-stream check uses
     this, because a header liblzma refuses there fails the whole read.
     """
-    lc = props % 9
-    lp = props // 9 % 5
-    return _alone_props_plausible(props) and lc + lp <= 4
+    split = _split_lzma_props(props)
+    return split is not None and split[0] + split[1] <= _LIBLZMA_LCLP_MAX
 
 
 def _alone_header_plausible(prefix: bytes) -> bool:
@@ -229,39 +248,7 @@ def _alone_payload_has_zero_run(prefix: bytes) -> bool:
     return bytes(_ALONE_ZERO_RUN) in window
 
 
-def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
-    """Read an Alone stream's 13-byte header without consuming it from ``source``.
-
-    ``lzma.LZMAFile`` takes no ``memlimit``, so the dictionary size has to be read
-    before it is built. Returns the source to decode from, which is ``source``
-    itself unless it could neither seek nor peek, in which case it is wrapped in an
-    :class:`~archivey.internal.source.ArchiveSource` that replays the header — nothing
-    is lost, since such a source could not have been rewound anyway.
-
-    A path source is read twice, once here for the header and once by ``LZMAFile``,
-    so the checked header and the decoded one come from two opens of the file. That
-    is the same concurrent-open shape the single-file reader uses for every path
-    source; whoever can swap the file between the two can as easily swap in a whole
-    archive whose declared dictionary is under the cap.
-    """
-    if isinstance(source, (str, os.PathLike)):
-        with open(os.fspath(source), "rb") as f:
-            return source, read_exact(f, _ALONE_HEADER_SIZE)
-    if isinstance(source, ArchiveSource) and not source.seekable():
-        return source, source.peek(_ALONE_HEADER_SIZE)
-    if is_seekable(source):
-        pos = source.tell()
-        try:
-            return source, read_exact(source, _ALONE_HEADER_SIZE)
-        finally:
-            source.seek(pos)
-    # Non-seekable, so its length is never a fact and nothing here clamps: this only
-    # replays the header.
-    replay = ArchiveSource.for_stream(source)
-    return replay, replay.peek(_ALONE_HEADER_SIZE)
-
-
-def _starts_alone_stream(data: bytes, *, limits: DecoderLimits) -> bool | None:
+def _starts_alone_stream(data: bytes) -> bool | None:
     """Whether the bytes after an Alone stream start another one, as ``lzma`` reads it.
 
     ``lzma.LZMAFile`` reads a second Alone stream after the first, so a concatenated
@@ -271,49 +258,11 @@ def _starts_alone_stream(data: bytes, *, limits: DecoderLimits) -> bool | None:
     junk fail one of the two and are trailing data; junk that passes both (about one
     random tail in 870) is decoded as a stream and fails the read with
     ``CorruptionError``. A stream whose dictionary is over ``max_decoder_memory`` is
-    refused as the first one is, rather than read as trailing data.
+    refused by its decoder, as the first one is (``new_capped_decompressor``).
     """
     if len(data) <= _ALONE_HEADER_SIZE:
         return None
-    if not _alone_props_liblzma_decodes(data[0]) or data[_ALONE_HEADER_SIZE] != 0:
-        return False
-    check_decoder_memory(
-        int.from_bytes(data[1:5], "little"),
-        limits=limits,
-        what="LZMA Alone dictionary size",
-    )
-    return True
-
-
-class _RefusedAloneStream(ReadOnlyIOStream):
-    """What ``.lzma`` opens as when its dictionary is over the cap: every read refuses.
-
-    The refusal is raised on read rather than on open, where xz and lzip raise theirs
-    and where ``LZMAFile`` would have raised a corrupt header. It matters because
-    ``.lzma`` has no magic: detection claims it by content probe alone, and a
-    probe-only claim's read errors are stamped ``format_unconfirmed``
-    (``error-handling``). The single-file reader opens a codec stream eagerly at
-    ``open_archive``, before that provenance is attached, so a refusal raised on open
-    would reach the caller unstamped — telling them to raise the cap for a file the
-    probe may have misread, measured on an OLE header whose bytes 1-4 read as 2.7 GiB.
-    Nothing is decoded, so no decoder is ever built.
-    """
-
-    def __init__(self, declared: int, limits: DecoderLimits) -> None:
-        super().__init__()
-        self._declared = declared
-        self._limits = limits
-
-    def read(self, n: int = -1, /) -> bytes:
-        check_decoder_memory(
-            self._declared, limits=self._limits, what="LZMA Alone dictionary size"
-        )
-        raise AssertionError("unreachable: the declared size is over the cap")
-
-    # Not seekable, and ``seek``/``tell`` are ``RawIOBase``'s raising defaults: a
-    # stream with no data has no position or size to report, and answering 0 would
-    # let a caller that sizes a member with ``seek(0, SEEK_END)`` read it as empty
-    # without ever meeting the refusal.
+    return _alone_props_liblzma_decodes(data[0]) and data[_ALONE_HEADER_SIZE] == 0
 
 
 class _ClampedAloneDecompressor:
@@ -358,10 +307,21 @@ class _ClampedAloneDecompressor:
 
 
 def _new_alone_decompressor(
-    read_bound: int | None,
+    read_bound: int | None, limits: DecoderLimits
 ) -> lzma.LZMADecompressor | _ClampedAloneDecompressor:
+    """A decompressor for one Alone stream.
+
+    The dictionary its header declares is refused over ``max_decoder_memory`` by
+    liblzma's ``memlimit``, on the first ``decompress`` call, so on read. That timing
+    matters: ``.lzma`` has no magic, detection claims it by content probe alone, and a
+    probe-only claim's read errors are stamped ``format_unconfirmed``
+    (``error-handling``). The single-file reader opens a codec stream eagerly at
+    ``open_archive``, before that provenance is attached, so a refusal raised on open
+    would reach the caller unstamped, telling them to raise the cap for a file the
+    probe may have misread. A probe (``read_bound``) clamps the dictionary instead.
+    """
     if read_bound is None:
-        return lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+        return new_capped_decompressor(limits, lzma.FORMAT_ALONE)
     return _ClampedAloneDecompressor(read_bound)
 
 
@@ -375,19 +335,15 @@ class LzmaAloneCodec(_LzmaErrorCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        source, header = _peek_alone_header(source)
-        # A shorter header is left for liblzma to call truncated.
-        if len(header) == _ALONE_HEADER_SIZE:
-            declared = int.from_bytes(header[1:5], "little")
-            if exceeds_decoder_memory(declared, config.decoder_limits):
-                return _RefusedAloneStream(declared, config.decoder_limits)
         # A rewind re-decompresses from the start; the outer ArchiveStream warns (see
         # rewind_warning).
         return FramedDecompressorStream(
             source,
-            functools.partial(_new_alone_decompressor, config.probe_read_bound),
+            functools.partial(
+                _new_alone_decompressor, config.probe_read_bound, config.decoder_limits
+            ),
             codec_name="lzma",
-            magic=functools.partial(_starts_alone_stream, limits=config.decoder_limits),
+            magic=_starts_alone_stream,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
         )
@@ -450,9 +406,6 @@ if _raw_decode_filter_properties is None:  # pragma: no cover
     )
 _decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
 
-# liblzma's ``LZMA_LCLP_MAX``: the largest lc + lp its LZMA1 decoder takes.
-_LIBLZMA_LCLP_MAX = 4
-
 
 def decode_lzma_filter_properties(filter_id: int, props: bytes, *, what: str) -> dict:
     """liblzma filter dict for a raw LZMA1/LZMA2 property blob.
@@ -460,20 +413,21 @@ def decode_lzma_filter_properties(filter_id: int, props: bytes, *, what: str) ->
     7-Zip accepts LZMA1 ``lc + lp`` up to 12 (``-mm=LZMA:lc=8`` writes it, in 7z and in
     ZIP method 14); liblzma decodes at most 4. Such a properties byte is well formed,
     so it raises ``UnsupportedFeatureError`` naming ``what`` (the container's coder).
-    Any other blob liblzma refuses propagates as liblzma's own error, for the caller
-    to report as corruption in its own terms.
+    Any other blob liblzma refuses is malformed: ``CorruptionError`` naming ``what``.
+    The caller adds its archive context.
     """
     try:
         return _decode_filter_properties(filter_id, props)
     except (lzma.LZMAError, ValueError) as exc:
-        if filter_id == lzma.FILTER_LZMA1 and len(props) == 5 and props[0] < 9 * 5 * 5:
-            lc, lp = props[0] % 9, props[0] // 9 % 5
+        split = _split_lzma_props(props[0]) if len(props) == 5 else None
+        if filter_id == lzma.FILTER_LZMA1 and split is not None:
+            lc, lp, _pb = split
             if lc + lp > _LIBLZMA_LCLP_MAX:
                 raise UnsupportedFeatureError(
                     f"{what} with lc={lc}, lp={lp} is not supported: "
                     f"liblzma decodes lc + lp up to {_LIBLZMA_LCLP_MAX}"
                 ) from exc
-        raise
+        raise CorruptionError(f"Malformed {what} properties") from exc
 
 
 class _RawLzmaCodec(_LzmaErrorCodec):

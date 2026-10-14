@@ -192,6 +192,10 @@ class ExtractionLimits:
     :attr:`live_ratio_activation_threshold`. The archive-wide check also
     counts the copies written when a file runs out of hard-link slots (1024 names on
     NTFS), since the archive's declared link count drives them.
+
+    A member's output never passes the size the archive records for it. Where both
+    sizes are recorded, a member over the per-member ratio is refused before any of it
+    is written.
     """
 
     ratio_activation_threshold: int = 5 * 2**20
@@ -260,10 +264,11 @@ class ListingLimits:
     ``extract_all``. Each raises :class:`~archivey.exceptions.ResourceLimitError` at
     the member that crosses a cap.
     ZIP, 7z, RAR and ISO apply ``max_members`` at parse (ZIP at open, or as it reads
-    the directory when the end record understates the count), RAR weighs its comments
-    against ``max_metadata_bytes`` (the declared sizes of compressed RAR 1.5/2.x
-    comments before decoding them), and ISO the directory records, path tables and UDF
-    descriptors ``pycdlib`` parses, so ``open_archive`` raises.
+    the directory when the end record understates the count), 7z and RAR weigh the
+    names and comments their headers hold against ``max_metadata_bytes`` (RAR's
+    compressed RAR 1.5/2.x comments by their declared sizes, before decoding them),
+    and ISO the directory records, path tables and UDF descriptors ``pycdlib``
+    parses, so ``open_archive`` raises.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``
@@ -366,7 +371,11 @@ class DecoderLimits:
     when the reader is.
 
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
-    one. Where an archive declares the size, exceeding a guard raises
+    one, with one exception: ``None`` on ``max_ppmd_in_process_input`` refuses
+    a ZIP PPMd member whose sizes follow its data, read from a stream that cannot
+    seek, since such a member decodes only in a child process.
+
+    Where an archive declares the size, exceeding a guard raises
     :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
     which is the only place it can be raised in this process: the process has no
     recourse once the request is in the allocator's hands. The rapidgzip child is
@@ -431,10 +440,10 @@ class DecoderLimits:
             ``-md=1536m``), so declaring more than 2 GiB takes a member over
             2 GiB *and* an explicit ``-md`` above 2g. lzip's field cannot say
             more than 512 MiB. The same number serves both codecs because it
-            answers the same question, and xz is checked through liblzma's own
-            memory limit, which also counts about 64 KiB of the decoder's
-            overhead; a 128 KiB allowance keeps a dictionary exactly at the
-            cap readable there as on every other path.
+            answers the same question, and xz and ``.lzma`` are checked through
+            liblzma's own memory limit, which also counts about 64 KiB of the
+            decoder's overhead; a 128 KiB allowance keeps a dictionary exactly
+            at the cap readable there as on every other path.
 
             What the default is *not* is a promise about the machine. The cap
             bounds what an archive may ask for; whether an allocation succeeds
@@ -508,6 +517,11 @@ class DecoderLimits:
             member, so it always runs in-process. ``None`` decodes every member
             in-process and never starts a child process, at a memory cost that
             grows with the member.
+
+            A ZIP member read from a stream that cannot seek, its sizes stored
+            after its data, has no size to hold it to: it is fed to pyppmd in
+            pieces, always in a child process, whatever its size. With ``None``
+            such a member raises :class:`~archivey.exceptions.ResourceLimitError`.
     """
 
     max_decoder_memory: int | None = 2 * 2**30

@@ -103,6 +103,13 @@ Its other limitations:
   every member until it closes. 7z, RAR and ISO check `max_members` when the archive
   is opened, and ZIP does too, or as it reads the directory when the end record
   understates the count. See [Limits](extracting.md#limits).
+- **Members can change until the pass ends.** The pass hands you each member before it
+  has seen the rest of the archive. A later member with the same name makes an earlier
+  one `is_current=False`, and links are resolved to their target members when the pass
+  ends, so the member objects you already hold are updated then.
+  `member.member_state_final` is `False` until then and `True` after. A ZIP, 7z or
+  RAR 4 symlink whose target has not been read (`read_link_targets=False`) also reads
+  `False`, in either mode, until `open()` or `extract_all()` reads it.
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).
@@ -437,7 +444,9 @@ the last entry, which is the live one.
 `ExtractionStatus.SUPERSEDED` (distinct from `NOT_OVERWRITTEN`, which is about files
 already on disk, and from `OVERWRITTEN`, which is a member that *was* written this run
 and then had its destination taken by a later one), so what lands on disk matches a
-fresh write. A streaming TAR has no index to say which entry is last. It writes the
+fresh write. A streaming pass has no complete listing to say which entry is last, so
+each member reads `is_current=True` until the pass ends; `member_state_final` says
+whether that can still change. A streaming `extract_all()` writes the
 earlier entry, then takes it back when the later one arrives, so a progress callback
 sees it written and the report ends with it `SUPERSEDED`.
 
@@ -452,6 +461,16 @@ Names match exactly, and a directory's name ends in `/`. Select the directory `d
 `members=["docs/"]`; `members=["docs"]` selects nothing, and its diagnostic names
 `docs/`. `members=["docs/"]` selects the directory entry only, not the files inside it.
 `reader.get()` and `reader.open()` also need the exact stored name.
+
+To select by pattern, `archivey.paths` has two functions; pick the one whose rules you
+want. `match_glob` uses glob rules: `members=match_glob("docs/**")` selects `docs/` and
+everything under it, because `*` stays inside one folder and `**` matches any depth.
+Pass `with_contents=True` to have a matching folder bring its contents, as the CLI does.
+`match_tar_glob` uses `tar`'s rules, where `*` also matches `/` and `docs` selects the
+folder and everything in it. So `"*.md"` selects top-level `.md` files with
+`match_glob`, and `.md` files at any depth with `match_tar_glob`. Import them with
+`from archivey.paths import match_glob, match_tar_glob` (see the
+[front-end helpers](api.md#front-end-helpers)).
 
 A name that matches nothing is not an error, but it is not silent either. Each such entry
 gets a `MEMBER_SELECTOR_UNMATCHED` diagnostic once every member has been offered to the
