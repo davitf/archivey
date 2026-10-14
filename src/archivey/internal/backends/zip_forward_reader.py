@@ -508,6 +508,11 @@ class _PassData:
         if self.done:
             return b""
         decoded = self._open_decoded()
+        declared = None if self._deferred() else self.entry.header.file_size
+        if declared is not None:
+            # Nothing past the declared size and one byte is decoded: that byte is
+            # the overrun, refused as the file read refuses it.
+            n = max(1, min(n, declared + 1 - self._size))
         try:
             chunk = decoded.read(n)
         except DataAfterEndError:
@@ -515,6 +520,10 @@ class _PassData:
                 raise
             # The codec ended and its input goes on: the descriptor is next.
             chunk = b""
+        if declared is not None and self._size + len(chunk) > declared:
+            raise CorruptionError(
+                f"Decompressed content exceeds its declared size of {declared} bytes."
+            )
         if chunk:
             self._crc = zlib.crc32(chunk, self._crc)
             self._size += len(chunk)

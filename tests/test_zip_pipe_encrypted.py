@@ -168,6 +168,12 @@ def _bit3_stored_zipcrypto(
     return local + central + end
 
 
+def _shorter_than_its_header() -> bytes:
+    """Four bytes of data with a matching descriptor: whole, and too short to hold
+    a ZipCrypto header."""
+    return _bit3_stored_zipcrypto(b"", stored=b"\x01\x02\x03\x04")
+
+
 def _fixtures() -> list[pytest.ParameterSet]:
     zc = build_zipcrypto_zip
     return [
@@ -189,8 +195,7 @@ def _fixtures() -> list[pytest.ParameterSet]:
             lambda: _bit3_stored_zipcrypto(b""), id="zipcrypto-bit3-stored-empty"
         ),
         pytest.param(
-            lambda: _bit3_stored_zipcrypto(b"", stored=b"\x01\x02\x03\x04"),
-            id="zipcrypto-bit3-shorter-than-its-header",
+            _shorter_than_its_header, id="zipcrypto-bit3-shorter-than-its-header"
         ),
         pytest.param(
             lambda: _aes_zip(vendor_version=1, method=0),
@@ -247,18 +252,15 @@ def test_a_pipe_decrypts_as_the_file_read_does(build) -> None:  # noqa: ANN001
 
 
 @pytest.mark.parametrize("build", _fixtures())
-def test_a_wrong_or_missing_password_fails_as_from_a_file(
-    build,  # noqa: ANN001
-    request: pytest.FixtureRequest,
-) -> None:
+def test_a_wrong_or_missing_password_fails_as_from_a_file(build) -> None:  # noqa: ANN001
     data = _with_plain_member(build())
-    # The member shorter than its encryption header is refused for that, whatever
-    # the password, from a file too.
-    short = "zipcrypto-bit3-shorter-than-its-header" in request.node.name
     for password in (b"not the password", None):
         expected = _file_read(data, password)
         kind, _ = expected["a.txt"]  # type: ignore[misc]
-        if short and password is not None:
+        # The member shorter than its encryption header is refused for that under a
+        # password, from a file too; with none, the missing password refuses it
+        # first, as for the rest.
+        if build is _shorter_than_its_header and password is not None:
             assert kind is CorruptionError
         else:
             assert issubclass(kind, EncryptionError)
@@ -407,24 +409,53 @@ def _link_targets(data: bytes, password: object, *, pipe: bool) -> list[object]:
             id="aes",
             marks=requires("cryptography"),
         ),
+        pytest.param(
+            lambda: _declared_size(_aes_zip_link(b"x" * 5000, method=0), 10),
+            id="aes-data-past-its-declared-size",
+            marks=requires("cryptography"),
+        ),
+        pytest.param(
+            lambda: _declared_size(
+                build_zipcrypto_zip(
+                    _PASSWORD,
+                    b"link",
+                    b"x" * 4098,
+                    compression=zipfile.ZIP_STORED,
+                    unix_mode=0o120777,
+                ),
+                4096,
+            ),
+            id="zipcrypto-data-past-its-declared-size",
+        ),
     ],
 )
 @pytest.mark.parametrize("password", [_PASSWORD, b"not the password", None])
 def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> None:  # noqa: ANN001
     """The pass keeps a short member's ciphertext and decrypts it for the target
-    once the directory says it is a link, without the caller asking."""
+    once the directory says it is a link, or decrypts it as it drains when the
+    stored data is larger than the ciphertext it keeps; either way without the
+    caller asking, and the pipe gives what the file gives. Data past a declared
+    size under the target cap is damage, not an over-long target."""
     data = build()
     assert _link_targets(data, password, pipe=True) == _link_targets(
         data, password, pipe=False
     )
 
 
-def _aes_zip_link() -> bytes:
+def _aes_zip_link(target: bytes = b"target.txt", *, method: int = 8) -> bytes:
     from tests.zip_aes_fixture import build_aes_zip
 
     return build_aes_zip(
-        [(b"link", b"target.txt")], password=_PASSWORD, unix_mode=0o120777
+        [(b"link", target)], password=_PASSWORD, method=method, unix_mode=0o120777
     )
+
+
+def _declared_size(data: bytes, size: int) -> bytes:
+    """``data``'s one member with ``size`` as its uncompressed size in both headers."""
+    out = bytearray(data)
+    struct.pack_into("<I", out, 22, size)
+    struct.pack_into("<I", out, out.index(b"PK\x01\x02") + 24, size)
+    return bytes(out)
 
 
 def _method_6_link() -> bytes:
