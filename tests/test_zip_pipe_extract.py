@@ -900,3 +900,35 @@ def test_a_reversed_pair_under_skip_matches_the_seekable_results(
             (True, "not_overwritten"),
         ]
     )
+
+
+def _failing_filter(member: ArchiveMember) -> ArchiveMember:
+    raise ExtractionError("refused by the test", member_name=member.name)
+
+
+@pytest.mark.parametrize(
+    ("options", "status"),
+    [
+        pytest.param({}, "blocked", id="blocked"),
+        pytest.param({"filter": _failing_filter}, "failed", id="filter-fails"),
+    ],
+)
+def test_a_reversed_pair_refused_before_the_write_matches_the_seekable_results(
+    tmp_path: Path, options: dict[str, object], status: str
+) -> None:
+    """A refusal made before the write stands on a copy the directory makes not
+    current: random access runs the filter and the policy checks on every copy."""
+    hand = _Hand()
+    hand.local(b"../dup.txt", b"first")
+    hand.local(b"../dup.txt", b"second")
+    data = hand.directory(1, 0)
+    outcomes = {}
+    for piped in (True, False):
+        dest = tmp_path / ("pipe" if piped else "file")
+        source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=piped) as reader:
+            report = reader.extract_all(dest, on_error=OnError.CONTINUE, **options)  # type: ignore[arg-type]
+        outcomes[piped] = sorted(
+            (r.member.is_current, r.status.value) for r in report.results
+        )
+    assert outcomes[True] == outcomes[False] == [(False, status), (True, status)]

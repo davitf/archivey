@@ -460,8 +460,14 @@ names only now). Each is a member-scoped failure of the member it names, handled
     archive gives it, revised in place as the `OVERWRITTEN` rows revise a result. Where
     that result needs bytes the stream has already passed (the member is now current
     but its data was not written, or its data failed the descriptor check), it becomes
-    `FAILED` with `CorruptionError` instead. A directory entry with no local entry never
-    had a result, so one is added, `FAILED`. Results stay in member-processing order.
+    `FAILED` with `CorruptionError` instead. For a member now current, the overwrite
+    policy decides first, as in random access, and the member fails only where the
+    write reads the data that is not there: under `overwrite="skip"` over an existing
+    entry it is `NOT_OVERWRITTEN`, and under `"error"` it carries the collision's
+    `ExtractionError`. A refusal by the filter or a policy check, which random access
+    makes on every copy, stands on a member now not current. A directory entry with no
+    local entry never had a result, so one is added, `FAILED`. Results stay in
+    member-processing order.
   - **The path.** After the revisions, an entry this run wrote stays only if the member
     whose result names it is `EXTRACTED`. Any other entry archivey wrote there is
     removed (DR-18), and the path is left empty: the bytes the seekable extraction
@@ -469,7 +475,8 @@ names only now). Each is a member-scoped failure of the member it names, handled
   - For the reversed pair (file order `M1`, `M2`; the directory makes `M1` current):
     during the pass `M1` was `SUPERSEDED` and `M2` `EXTRACTED` at the path. At the end
     `M2` becomes `SUPERSEDED` (non-current, never written in seekable mode), `M1`
-    becomes `FAILED`, and `M2`'s entry is removed. For a descriptor mismatch the member
+    becomes `FAILED` (unless the overwrite policy would not write it, as above), and
+    `M2`'s entry is removed. For a descriptor mismatch the member
     is `FAILED` and its entry removed.
   - Under `OnError.CONTINUE` the report completes. Under `OnError.STOP` the first such
     failure raises `CorruptionError` naming the member, at the end of the pass, which is

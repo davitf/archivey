@@ -1560,9 +1560,10 @@ class ExtractionCoordinator:
             listing_damage[0] is error for _, error in reader._failed_at_end
         ):
             # The walk raised for a member the settlement above has dealt with: its
-            # result carries the failure, or it has none because the selection or the
-            # filter left it out, or because it is not current, as a seekable read leaves
-            # it out and never reads its data.
+            # result carries the failure; or it has none because the selection or the
+            # filter left it out; or it is not current; or its result carries what the
+            # filter or a policy check decided before its data was read. In each of the
+            # last three a seekable read never reads its data either.
             listing_damage.clear()
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
@@ -1777,7 +1778,9 @@ class ExtractionCoordinator:
         index, for the run to stop on once all of them are made.
 
         - A member the walk made not current is taken back, if the pass wrote it, and
-          ``SUPERSEDED`` whatever the pass made of it: random access never tries it.
+          ``SUPERSEDED`` whatever its write came to: random access never writes it. A
+          refusal from the filter or the policy checks, made before any write (no
+          ``requested_path``), stands, as random access runs them on every copy.
         - A member the walk fails (``_failed_at_end``: its data is not what the index
           describes) is taken back and ``FAILED`` with the walk's error, if it is
           current.
@@ -1797,9 +1800,14 @@ class ExtractionCoordinator:
         failures: list[tuple[int, ArchiveyError]] = []
         for index in indices:
             result = state.results[index]
+            refused_before_write = (
+                result.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+                and result.requested_path is None
+            )
             if (
                 index not in state.dropped
                 and result.status is not ExtractionStatus.SUPERSEDED
+                and not refused_before_write
                 and not result.member.is_current
             ):
                 self._current = _MemberState()
