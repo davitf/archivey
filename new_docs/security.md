@@ -55,7 +55,8 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   password-hashing work, not time. Raising an exception from `on_progress` stops an extraction, but
   the callback only runs between chunks of written data, so a decompressor that's slow to produce
   the next chunk can't be interrupted. If you need a hard time limit, run archivey in a process you
-  can stop.
+  can stop. Archivey's exceptions can be pickled, so an error raised in that process comes back
+  with its details.
 - **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
