@@ -165,8 +165,6 @@ what took several exception types before:
 | Wrong password | `RuntimeError` | | `LZMAError` | `BadRarFile` | `EncryptionError` |
 | No member with that name | `KeyError` | `KeyError` | `KeyError` | `NoRarEntry` | `KeyError` |
 
-A missing name raises `KeyError`, and it isn't an `ArchiveyError`, because the mistake is in the
-calling code, not the archive. Code that ran `7z` or `unrar` and checked the exit code gets these
-exceptions instead, and a wrong password raises rather than waiting at a prompt. [Errors and
-diagnostics](errors-and-diagnostics.md) explains each exception, and the warnings archivey reports
-without raising.
+A missing name raises `KeyError`, which isn't an `ArchiveyError`, because the mistake is in the
+calling code, not the archive. [Errors and diagnostics](errors-and-diagnostics.md) explains each
+exception, and the warnings archivey reports without raising.
