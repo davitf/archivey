@@ -33,7 +33,7 @@ import uuid
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, BinaryIO, assert_never
+from typing import TYPE_CHECKING, BinaryIO, assert_never, cast
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
@@ -81,6 +81,8 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
+
     from archivey.internal.base_reader import BaseArchiveReader
     from archivey.internal.streams.archive_stream import ArchiveStream
 
@@ -340,6 +342,28 @@ class _AbortExtraction(Exception):
     def __init__(self, error: ArchiveyError) -> None:
         super().__init__(str(error))
         self.error = error
+
+
+class _PassedData(io.RawIOBase):
+    """Stands in for a member's data that a forward pass has already passed: reading
+    it raises ``error``. The write runs up to its first read, so the overwrite policy
+    decides as it would with the data there (a member it would not write does not
+    fail)."""
+
+    def __init__(self, error: ArchiveyError) -> None:
+        super().__init__()
+        self._error = error
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        raise self._error
+
+
+def _passed_data(error: ArchiveyError) -> BinaryIO:
+    """A ``_PassedData`` that raises ``error``, as the member stream it stands in for."""
+    return cast("BinaryIO", _PassedData(error))
 
 
 class _AlwaysStopResourceLimitError(ResourceLimitError):
@@ -1535,7 +1559,10 @@ class ExtractionCoordinator:
         if listing_damage and any(
             listing_damage[0] is error for _, error in reader._failed_at_end
         ):
-            # The walk raised for a member it fails: that member's result says so.
+            # The walk raised for a member the settlement above has dealt with: its
+            # result carries the failure, or it has none because the selection or the
+            # filter left it out, or because it is not current, as a seekable read leaves
+            # it out and never reads its data.
             listing_damage.clear()
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
@@ -1709,7 +1736,7 @@ class ExtractionCoordinator:
         # the folder is empty by the time its turn comes.
         for index in sorted(revisable, reverse=True):
             member = state.results[index].member
-            if id(member) in reader._dropped_listed or (
+            if member._member_id in reader._dropped_listed or (
                 selector is not None and not selector(member)
             ):
                 del revisable[index]
@@ -1736,27 +1763,30 @@ class ExtractionCoordinator:
                 self._redo_revised_member(index)
             elif written is not None:
                 self._reapply_revised_metadata(index, before, written)
-        return self._settle_failures_at_end(list(revisable), selector)
+        return self._settle_failures_at_end(list(revisable), selector, members_done)
 
     def _settle_failures_at_end(
         self,
         indices: list[int],
         selector: Callable[[ArchiveMember], bool] | None,
+        members_done: int,
     ) -> list[tuple[int, ArchiveyError]]:
         """Give the results at ``indices`` the outcome random access would, for what
         only the end of the walk finds (``design.md`` of the native ZIP reader,
         "Failures found at the end of the pass"), and return the failures, by result
         index, for the run to stop on once all of them are made.
 
-        - A member the walk made not current, which the pass wrote, is taken back and
-          ``SUPERSEDED``: random access never writes it.
+        - A member the walk made not current is taken back, if the pass wrote it, and
+          ``SUPERSEDED`` whatever the pass made of it: random access never tries it.
         - A member the walk fails (``_failed_at_end``: its data is not what the index
           describes) is taken back and ``FAILED`` with the walk's error, if it is
           current.
         - A member the walk made current after the pass superseded it is handled
           again; its bytes were not written, so it fails unless it needs none.
         - A member the walk fails that it never yielded (an index entry with no data
-          in the stream) gets a ``FAILED`` result, if it is selected.
+          in the stream) gets a ``FAILED`` result, if it is selected
+          (``_settle_missing_member``), and is reported to ``on_progress`` then, as
+          ``members_done`` past the pass's count.
 
         Whatever was at the path stays only if a member's result there is
         ``EXTRACTED``: the bytes random access would write there have gone by.
@@ -1769,7 +1799,7 @@ class ExtractionCoordinator:
             result = state.results[index]
             if (
                 index not in state.dropped
-                and result.status is ExtractionStatus.EXTRACTED
+                and result.status is not ExtractionStatus.SUPERSEDED
                 and not result.member.is_current
             ):
                 self._current = _MemberState()
@@ -1800,28 +1830,12 @@ class ExtractionCoordinator:
                 continue
             if selector is not None and not selector(member):
                 continue
-            self._current = _MemberState()
-            try:
-                transformed, _, _ = self._transform(member)
-            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-                raise
-            except (ArchiveyError, OSError) as exc:
-                found, status = self._classify(exc, member.name)
-                index = self._append_result(
-                    ExtractionResult(member, None, status, found)
-                )
-                if (
-                    isinstance(found, ArchiveyError)
-                    and status is ExtractionStatus.FAILED
-                ):
-                    failures.append((index, found))
-                continue
-            if transformed is None:
-                continue
-            index = self._append_result(
-                ExtractionResult(member, None, ExtractionStatus.FAILED, error)
-            )
-            failures.append((index, error))
+            members_done += 1
+            self._settle_missing_member(member, error, failures)
+            self._report_progress(member, members_done, 0)
+        if self._stops_on_failure():
+            # The run raises the first and drops the report: no line has a reader.
+            return failures
         for index, error in failures:
             logger.warning(
                 "Skipping %s %r: %s",
@@ -1830,6 +1844,49 @@ class ExtractionCoordinator:
                 error,
             )
         return failures
+
+    def _settle_missing_member(
+        self,
+        member: ArchiveMember,
+        error: ArchiveyError,
+        failures: list[tuple[int, ArchiveyError]],
+    ) -> None:
+        """Give ``member``, which the index lists and the stream never held, the
+        result random access gives it: the filter and the policy checks run as for any
+        member, and one they let through fails with ``error``, its data being absent.
+        A ``FAILED`` result is appended to ``failures`` for the caller to stop on; any
+        other outcome stops or is logged here, as the pass does."""
+        current = self._current = _MemberState()
+        try:
+            transformed, presented_name, rewrites = self._transform(member)
+        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
+            raise
+        except (ArchiveyError, OSError) as exc:
+            spelled_from = current.spelled_from
+            if isinstance(exc, ArchiveyError) and spelled_from is not None:
+                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
+            found, status = self._classify(exc, member.name)
+            index = self._append_result(ExtractionResult(member, None, status, found))
+            if isinstance(found, ArchiveyError) and status is ExtractionStatus.FAILED:
+                failures.append((index, found))
+            else:
+                self._stop_or_log(
+                    exc, found, status, kind=member.type.value, name=member.name
+                )
+            return
+        if transformed is None:
+            return
+        index = self._append_result(
+            ExtractionResult(
+                member,
+                None,
+                ExtractionStatus.FAILED,
+                error,
+                presented_name=presented_name,
+                rewrites=rewrites,
+            )
+        )
+        failures.append((index, error))
 
     def _fail_at_end(self, index: int, error: ArchiveyError) -> None:
         """Take back what result ``index`` wrote, and record it ``FAILED``."""
@@ -2043,7 +2100,9 @@ class ExtractionCoordinator:
         so a refusal leaves nothing at its path. A file whose name changed is written
         again from the bytes already on disk; a link's target comes from its data,
         which the reader kept. A member that now needs bytes the stream has passed,
-        and that were not written, fails, unless it has none (an empty file). That is
+        and that were not written, fails when the write reads them (``_PassedData``),
+        unless it has none (an empty file): the overwrite policy decides first, as it
+        does in random access, so a member it would not write does not fail. That is
         also how a member the pass left out (a held place) is handled: its bytes were
         not written, so it can be a link, a directory or an empty file, and fails
         otherwise. Results other than ``EXTRACTED`` and ``BLOCKED`` stand: nothing was
@@ -2089,18 +2148,22 @@ class ExtractionCoordinator:
                     elif member.size == 0:
                         held = io.BytesIO()
                     elif damaged:
-                        raise CorruptionError(
-                            f"The data of {quoted(member.name)} was passed before "
-                            "the archive's directory made it the current copy of its "
-                            "name, and was not written",
-                            member_name=member.name,
+                        held = _passed_data(
+                            CorruptionError(
+                                f"The data of {quoted(member.name)} was passed before "
+                                "the archive's directory made it the current copy of "
+                                "its name, and was not written",
+                                member_name=member.name,
+                            )
                         )
                     else:
-                        raise ExtractionError(
-                            f"The data of {quoted(member.name)} was passed before "
-                            "the archive's directory changed the member, and was "
-                            "not written",
-                            member_name=member.name,
+                        held = _passed_data(
+                            ExtractionError(
+                                f"The data of {quoted(member.name)} was passed before "
+                                "the archive's directory changed the member, and was "
+                                "not written",
+                                member_name=member.name,
+                            )
                         )
                 if not member.is_anti:
                     state.tracker.start_member(member)

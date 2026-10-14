@@ -540,9 +540,9 @@ class BaseArchiveReader(ArchiveReader):
         # crosses ``ListingLimits``: from then on the walk keeps nothing, so memory
         # stays bounded by the caps (see ``_discard_listing``).
         self._listed: list[ArchiveMember] = []
-        # ``id()`` of each member the walk yielded and ``_drop_listed`` then took out of
-        # the listing; extraction takes back what it wrote for them.
-        self._dropped_listed: set[int] = set()
+        # The member id of each member the walk yielded and ``_drop_listed`` then took
+        # out of the listing; extraction takes back what it wrote for them.
+        self._dropped_listed: set[int | None] = set()
         # Members the end of a revising walk fails (``_REVISES_YIELDED_MEMBERS``), in
         # the index's order, with why: the walk's error is the first of them, and
         # extraction gives each its result.
@@ -1582,7 +1582,7 @@ class BaseArchiveReader(ArchiveReader):
         second operation beside it, so no cursor stands behind a dropped member.
         """
         gone = {id(member) for member in dropped}
-        self._dropped_listed |= gone
+        self._dropped_listed.update(member._member_id for member in dropped)
         self._listed = [member for member in self._listed if id(member) not in gone]
         for member in dropped:
             listed = self._listed_by_name.get(member.name)

@@ -23,15 +23,23 @@ import pytest
 
 import archivey
 from archivey.config import ExtractionLimits
-from archivey.exceptions import ArchiveyError, CorruptionError, ExtractionError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ExtractionError,
+    FilterRejectionError,
+)
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.extraction import BombTracker
 from archivey.types import (
+    AbortOn,
     ArchiveMember,
     ExtractionPolicy,
     ExtractionStatus,
     MemberType,
+    NameRewrite,
     OnError,
+    OverwritePolicy,
 )
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
 from tests.streams_util import NonSeekableBytesIO
@@ -754,17 +762,24 @@ def test_a_contradicted_descriptor_under_stop_raises(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["after.txt"]
 
 
-def test_a_directory_entry_with_no_local_entry_gets_a_failed_result(
-    tmp_path: Path,
-) -> None:
+def _missing_entry(name: bytes = b"b.txt") -> bytes:
+    """``a.txt`` and ``b.txt``, with ``b.txt``'s directory entry pointing past the
+    stream's last local header, and named ``name`` (five bytes) there."""
     hand = _Hand()
     hand.local(b"a.txt", b"one")
     hand.local(b"b.txt", b"two")
     data = bytearray(hand.directory(0, 1))
-    # b.txt's directory entry points past the stream's last local header.
     cd = data.rindex(b"PK\x01\x02")
     struct.pack_into("<I", data, cd + 42, 999_999)
-    report = _piped_report(bytes(data), tmp_path, on_error=OnError.CONTINUE)
+    assert len(name) == 5
+    data[cd + 46 : cd + 51] = name
+    return bytes(data)
+
+
+def test_a_directory_entry_with_no_local_entry_gets_a_failed_result(
+    tmp_path: Path,
+) -> None:
+    report = _piped_report(_missing_entry(), tmp_path, on_error=OnError.CONTINUE)
     assert _outcomes(report) == [
         ("a.txt", ExtractionStatus.EXTRACTED, None),
         ("b.txt", ExtractionStatus.FAILED, CorruptionError),
@@ -786,3 +801,102 @@ def test_a_name_the_two_headers_disagree_on_fails_the_member(tmp_path: Path) -> 
         ("b.txt", ExtractionStatus.FAILED, CorruptionError),
     ]
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+
+
+def test_a_directory_entry_with_no_local_entry_under_stop_raises(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with pytest.raises(CorruptionError) as raised:
+        _piped_report(_missing_entry(), tmp_path, on_error=OnError.STOP)
+    assert raised.value.member_name == "b.txt"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+    # The raise is the record: no "Skipping" line beside it.
+    assert not [r for r in caplog.records if "Skipping" in r.getMessage()]
+
+
+def test_a_directory_entry_with_no_local_entry_is_reported_to_on_progress(
+    tmp_path: Path,
+) -> None:
+    seen: list[archivey.ExtractionProgress] = []
+    report = _piped_report(
+        _missing_entry(), tmp_path, on_error=OnError.CONTINUE, on_progress=seen.append
+    )
+    failed = report.results[-1].member
+    assert report.results[-1].status is ExtractionStatus.FAILED
+    assert seen[-1].member is failed
+    # One past the pass's count, which already took in the unlisted local copy.
+    assert seen[-1].members_done == seen[-2].members_done + 1
+
+
+def test_a_directory_entry_with_no_local_entry_can_be_blocked(tmp_path: Path) -> None:
+    """The policy checks run on it as on any member, and AbortOn applies."""
+    report = _piped_report(_missing_entry(b"../.."), tmp_path / "a")
+    assert _outcomes(report)[-1][:2] == ("../..", ExtractionStatus.BLOCKED)
+    with pytest.raises(FilterRejectionError):
+        _piped_report(
+            _missing_entry(b"../.."),
+            tmp_path / "b",
+            abort_on={AbortOn.BLOCKED_MEMBER},
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="'?' is no name character on Windows")
+def test_a_directory_entry_with_no_local_entry_records_its_rewrite(
+    tmp_path: Path,
+) -> None:
+    report = _piped_report(
+        _missing_entry(b"a?.tx"),
+        tmp_path,
+        on_error=OnError.CONTINUE,
+        policy=ExtractionPolicy.STANDARD,
+    )
+    result = report.results[-1]
+    assert result.status is ExtractionStatus.FAILED
+    assert result.presented_name is not None
+    assert NameRewrite.PORTABLE_NAME in result.rewrites
+
+
+def test_a_name_the_two_headers_disagree_on_under_stop_raises(tmp_path: Path) -> None:
+    hand = _Hand()
+    hand.local(b"a.txt", b"one")
+    hand.local(b"b.txt", b"two")
+    data = bytearray(hand.directory(0, 1))
+    cd = data.rindex(b"PK\x01\x02")
+    data[cd + 46 : cd + 51] = b"z.txt"
+    with pytest.raises(CorruptionError, match="differ") as raised:
+        _piped_report(bytes(data), tmp_path, on_error=OnError.STOP)
+    # The name the pass yielded it under, which the report would carry.
+    assert raised.value.member_name == "b.txt"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+
+
+def test_a_reversed_pair_under_skip_matches_the_seekable_results(
+    tmp_path: Path,
+) -> None:
+    """Neither copy is written over the caller's file, so neither needs the bytes the
+    pass has gone by: each copy gets the result random access gives it."""
+    data = _reversed_pair()
+    outcomes = {}
+    for piped in (True, False):
+        dest = tmp_path / ("pipe" if piped else "file")
+        dest.mkdir()
+        (dest / "dup.txt").write_bytes(b"caller's")
+        source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=piped) as reader:
+            report = reader.extract_all(
+                dest, overwrite=OverwritePolicy.SKIP, on_error=OnError.CONTINUE
+            )
+        outcomes[piped] = sorted(
+            (r.member._member_id is not None and r.member.is_current, r.status.value)
+            for r in report.results
+            if r.member.name == "dup.txt"
+        )
+        assert (dest / "dup.txt").read_bytes() == b"caller's"
+    assert (
+        outcomes[True]
+        == outcomes[False]
+        == [
+            (False, "superseded"),
+            (True, "not_overwritten"),
+        ]
+    )

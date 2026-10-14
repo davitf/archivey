@@ -181,10 +181,13 @@ def _missing_error(member: ArchiveMember, offset: int) -> CorruptionError:
     )
 
 
-def _renamed_error(local_name: bytes, central: CentralEntry) -> CorruptionError:
+def _renamed_error(
+    local_name: bytes, central: CentralEntry, member_name: str
+) -> CorruptionError:
     return CorruptionError(
         f"File name in directory {quoted(_stored_text(central.name))} and header "
         f"{quoted(_stored_text(local_name))} differ.",
+        member_name=member_name,
         source_format=ArchiveFormat.ZIP,
     )
 
@@ -768,7 +771,9 @@ class ZipForwardReader(ZipReader):
             if central.name != local_name:
                 # The seekable read refuses this member when it reads its local
                 # header; a forward pass has both copies only now.
-                failed.append((position, member, _renamed_error(local_name, central)))
+                failed.append(
+                    (position, member, _renamed_error(local_name, central, member.name))
+                )
                 continue
             updates.append((member, central))
             descriptor = self._descriptors.get(offset)
