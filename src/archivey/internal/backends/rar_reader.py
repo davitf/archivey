@@ -3038,6 +3038,9 @@ class RarReader(BaseArchiveReader):
             return solid
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
+            # Read straight from the archive (RAR3/4 stores the target as plain
+            # member data), not through the pipe, so its offsets do not move.
+            self._read_pass_link_target(member)
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_copy():
@@ -3560,9 +3563,9 @@ class RarReader(BaseArchiveReader):
                 view.close()
             # The header's data CRC32 covers these bytes, and the header CRC does not,
             # so past the size check above this is the only check a damaged target
-            # meets. Held to it as ZIP and 7z hold theirs: a mismatch raises, and link
-            # finalization lists the link targetless (`_report_damaged_link_target`)
-            # while open/extract re-raise.
+            # meets. Held to it as ZIP and 7z hold theirs: a mismatch raises, and the
+            # listing, or a pass when it reaches the link, lists the link targetless
+            # (`_report_damaged_link_target`) while open/extract re-raise.
             # A short read is caught by the same comparison. Encrypted members never
             # reach here, so the CRC is never a RAR5 key-tweaked one.
             if raw.crc32 is not None and zlib.crc32(data) != raw.crc32:

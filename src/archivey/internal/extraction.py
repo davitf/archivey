@@ -2365,12 +2365,12 @@ class ExtractionCoordinator:
         reader = self._state.reader
         if reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
-            # read yet: `read_link_targets=False`, or a RAR pass, whose own read comes
-            # only at EOF (ZIP and 7z passes read it when they reach the member). The
-            # selector and the filter have now both accepted it, with
-            # `link_target=None`, so reading it here is the read the caller asked for
-            # (`archive-reading`, "Link targets stored as member data are read only
-            # when configured").
+            # read yet (`read_link_targets=False`), or one whose read failed and was
+            # reported as damaged, which leaves it unresolved: this read raises the
+            # fault again and fails the member. The selector and the filter have now
+            # both accepted it, with `link_target=None`, so reading it here is the
+            # read the caller asked for (`archive-reading`, "Link targets stored as
+            # member data are read only when configured").
             reader._read_link_target_on_request(original)
             if original.type is not MemberType.SYMLINK:
                 # The data showed the member is not a link: a reparse-flagged member

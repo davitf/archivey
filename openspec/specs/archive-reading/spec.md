@@ -1576,7 +1576,13 @@ message naming the fault. The member SHALL NOT be memoized as resolved: opening 
 following it, or extracting it SHALL read the target again and raise the fault itself,
 and extraction SHALL record that link as a per-member failure. `SYMLINK_TARGET_UNAVAILABLE`
 is in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the archive.
-This holds in random access and at the end of a streaming pass alike.
+This holds in random access and at the end of a streaming pass alike. A
+`stream_members()` pass reads the target when it reaches the link, in every format that
+stores it as data (ZIP, 7z, RAR3/4 solid or not; in ZIP and 7z the same read also
+re-types a reparse point before handing it out). It SHALL report the damage there, before it yields the link, and link finalization SHALL
+NOT report it again. A pass the caller leaves early, or one a later
+member stops, therefore still reports every damaged target it read, and
+`DiagnosticPolicy.STRICT` refuses the pass at that link.
 
 #### Scenario: damaged link target matrix
 
@@ -1586,6 +1592,10 @@ This holds in random access and at the end of a streaming pass alike.
 | Same, `open()` on the link | `CorruptionError` |
 | Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `CorruptionError`; other members extract |
 | Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
+| ZIP, 7z or solid RAR3/4 damaged symlink, `stream_members()` in either access mode, left at the link | `SYMLINK_TARGET_UNAVAILABLE`, `reason="target_data_damaged"`, once |
+| Same, `DiagnosticPolicy.STRICT` | The pass raises `DiagnosticRaisedError` before it yields the link |
+| Same, the pass run to the end | Reported once |
+| ZIP, streaming `extract_all(on_error=CONTINUE)` | Link `FAILED` with `CorruptionError`; reported once |
 | WinZip AES symlink with a failing HMAC, one password or several | Listed targetless with `reason="target_data_damaged"` |
 | 7z symlink whose data fails its CRC | Listed targetless with `reason="target_data_damaged"` |
 | ZIP symlink whose data outruns its declared size | Listed targetless; the message names the declared size |
