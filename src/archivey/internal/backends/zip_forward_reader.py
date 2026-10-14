@@ -71,6 +71,8 @@ from archivey.internal.backends.zip_reader import (
     _ZIP_KEYED_SETTINGS_METHODS,
     _ZIP_MASK_COMPRESSED_PATCHED_DATA,
     _ZIP_MASK_LZMA_EOS_MARKER,
+    _ZIP_MASK_USE_DATA_DESCRIPTOR,
+    _ZIP_MASK_UTF8,
     _ZIP_REJECTING_METHODS,
     ZipReader,
     _bound_offset,
@@ -221,6 +223,54 @@ def _contradicts(descriptor: tuple[int, int, int], central: CentralEntry) -> boo
         crc != central.crc
         or compressed_size != central.compressed_size
         or file_size not in (central.file_size, central.file_size & 0xFFFF_FFFF)
+    )
+
+
+def _header_disagreements(
+    local: _ZipLocator, central: CentralEntry, *, crc_used: bool
+) -> list[str]:
+    """The fields a member's local header (its pass-time ``_raw``) and ``central``
+    disagree on, out of those that decide what a read yields.
+
+    The pass reads a member's data as its local header describes it; a file read reads
+    it as the directory does. The CRC and sizes count only when the local header holds
+    them (no bit 3): a data descriptor's are checked by :func:`_contradicts`. The CRC
+    counts only when a read checks it (``crc_used``: not WinZip AE-2). The method does
+    not count: the data the pass decoded matched the CRC and size the directory gives,
+    so it is the data the directory describes, whichever codec produced it.
+    """
+    flags, crc = local.flags, local.crc
+    compressed_size, file_size = local.compressed_size, local.file_size
+    differ = []
+    encrypted = _is_encrypted_entry(flags, local.method)
+    if encrypted != _is_encrypted_entry(central.flags, central.method):
+        differ.append(
+            "encrypted in the local header, not in the directory"
+            if encrypted
+            else "encrypted in the directory, not in the local header"
+        )
+    if not flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
+        if crc_used and crc != central.crc:
+            differ.append(f"CRC-32 {crc:08x} against {central.crc:08x}")
+        if compressed_size != central.compressed_size:
+            differ.append(
+                f"{compressed_size} bytes stored against {central.compressed_size}"
+            )
+        if file_size != central.file_size:
+            differ.append(f"{file_size} bytes against {central.file_size}")
+    return differ
+
+
+def _header_error(member: ArchiveMember, differ: list[str]) -> CorruptionError:
+    # Which side of an "X against Y" pair is the local header's.
+    order = ", local first" if any(" against " in item for item in differ) else ""
+    return CorruptionError(
+        f"ZIP member {quoted(member.name)}: its local header and its central "
+        f"directory entry disagree ({', '.join(differ)}{order}); the data the "
+        "stream held for it was read as the local header describes it, and a read "
+        "that follows the directory reads it differently",
+        member_name=member.name,
+        source_format=ArchiveFormat.ZIP,
     )
 
 
@@ -624,9 +674,13 @@ class _PassData:
         # The data ended inside the kept bytes: they are all of it.
         whole = self._ends_in(spool, raw)
         failures = _CandidateFailures()
+        survivors = 0
 
         def probe(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
-            return password, self._probe(loc, spool, whole, password, failures)
+            nonlocal survivors
+            verdict = self._probe(loc, spool, whole, password, failures)
+            survivors += 1
+            return password, verdict
 
         password, verdict = reader._finish_password_attempt(
             member,
@@ -636,7 +690,14 @@ class _PassData:
             limit_holder=failures.limits,
         )
         confirmed = verdict is PasswordConfirmVerdict.CONFIRMED
-        self._unconfirmed = loc.aes is None and not confirmed
+        # As the file read: a lone survivor over a codec is the only key the data can
+        # be under, so a failure further in is the codec's or the CRC's to report. A
+        # STORED member's CRC is its only test, so its failure stays ambiguous, as
+        # does the failure of the first of several survivors, which may be the wrong
+        # one.
+        self._unconfirmed = (
+            loc.aes is None and not confirmed and (survivors > 1 or self._method() == 0)
+        )
         self._check = None if confirmed else "confirm_budget_exhausted"
         self._replay = _Replay(spool, raw)
         return decode(self._stage(loc, self._replay, password))
@@ -676,6 +737,7 @@ class _PassData:
         # below can mistake a damaged header for garbage.
         body = self._stage(loc, view, password, probe=True, ends_with_data=whole)
         decoded: BinaryIO | None = None
+        ended_early: TruncatedError | None = None
         try:
             try:
                 decoded = self._decode(loc, body, keyed=keyed, note_limit=False)
@@ -689,6 +751,17 @@ class _PassData:
                 )
             else:
                 verdict = self._judge_sized(decoded, aes, ran_out)
+                if verdict is PasswordConfirmVerdict.REJECTED and aes is not None:
+                    # As the file read says it: a WinZip AES member's data ending
+                    # before its declared size is the damage the one-password path
+                    # reports as TruncatedError.
+                    got = decoded.tell()
+                    size = self.entry.header.file_size
+                    if got < size and not decoded.read(1):
+                        ended_early = TruncatedError(
+                            f"Decompressed content ended after {got} of {size} "
+                            "expected bytes."
+                        )
         except EncryptionError:
             raise
         except ArchiveyError as exc:
@@ -707,7 +780,7 @@ class _PassData:
             else:
                 body.close()
         if verdict is PasswordConfirmVerdict.REJECTED:
-            raise failures.failed(None)
+            raise failures.failed(ended_early)
         return verdict
 
     def _judge_sized(
@@ -964,11 +1037,17 @@ class _PassData:
         )
         # A failed AES code comes first: the data is not what was written.
         if error is None and not size_ok:
-            where = "data descriptor" if self._deferred() else "local header"
-            error = CorruptionError(
-                f"ZIP member {quoted(member.name)} decoded to {self._size} bytes; "
-                f"its {where} says {file_size}"
-            )
+            # In the words a read through the size check gives (streams/verify.py).
+            if self._size < file_size:
+                error = TruncatedError(
+                    f"Decompressed content ended after {self._size} of "
+                    f"{file_size} expected bytes."
+                )
+            else:
+                error = CorruptionError(
+                    "Decompressed content exceeds its declared size of "
+                    f"{file_size} bytes."
+                )
         elif error is None and crc != self._crc and not self._ae2():
             error = CorruptionError(
                 f"CRC-32 mismatch in ZIP member {quoted(member.name)}: stored "
@@ -1421,7 +1500,18 @@ class ZipForwardReader(ZipReader):
         """
         header = entry.header
         central = _central_from_local(entry)
-        decoded_name = self._decode_member_name(central)
+        try:
+            decoded_name = self._decode_member_name(central)
+        except CorruptionError:
+            if not central.flags & _ZIP_MASK_UTF8:
+                raise
+            # A name the UTF-8 flag mislabels is the directory's to refuse: a file
+            # read refuses this member when its local name differs from the central
+            # one, and the whole listing only when the central name is the bad one.
+            # Read as unflagged, the member goes on to that check at the end.
+            decoded_name = self._decode_member_name(
+                replace(central, flags=central.flags & ~_ZIP_MASK_UTF8)
+            )
         stored_as_directory = decoded_name.text.endswith(("/", "\\"))
         member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
         name = normalize_member_name(
@@ -1504,9 +1594,10 @@ class ZipForwardReader(ZipReader):
         A local entry no directory entry points to is dropped from the listing and
         reported (``ARCHIVE_UNLISTED_DATA``). Of two members with the same name, the
         later in the directory is current (``_listed_in_index_order``). A member whose
-        data descriptor the directory contradicts, or whose local header names it
-        differently, fails (``_failed_at_end``): the pass raises for the first, after
-        a directory entry with no local entry and two entries for one local entry.
+        data descriptor or local header the directory contradicts, or whose local
+        header names it differently, fails (``_failed_at_end``): the pass raises for
+        the first, after a directory entry with no local entry and two entries for one
+        local entry.
         """
         limits = self._config.listing_limits
         max_members = limits.max_members
@@ -1575,8 +1666,16 @@ class ZipForwardReader(ZipReader):
                 )
                 continue
             updates.append((member, central))
+            # ``_raw`` still holds the local header's fields: the directory replaces
+            # it only in ``_update_from_directory``, after this loop.
+            local = cast("_ZipLocator", member._raw)
+            differ = _header_disagreements(
+                local, central, crc_used=local.aes is None or not local.aes.is_ae2
+            )
             descriptor = self._descriptors.get(offset)
-            if descriptor is not None and _contradicts(descriptor, central):
+            if differ:
+                failed.append((position, member, _header_error(member, differ)))
+            elif descriptor is not None and _contradicts(descriptor, central):
                 failed.append(
                     (position, member, _descriptor_error(member, descriptor, central))
                 )

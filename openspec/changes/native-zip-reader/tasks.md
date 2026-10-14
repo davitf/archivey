@@ -252,7 +252,13 @@ each lands with nothing half-done reachable:
       reader, its gap skip and `DirectorySizeMismatch` are gone. A digital signature
       record before the end records is now refused as the file read (and stdlib)
       refuses it (`dev-docs/formats/zip.md` §5).
-- [ ] 3.4b A member's data checked against its directory entry at the end of the pass.
+- [x] 3.4b A member's data checked against its directory entry at the end of the pass:
+      the local header's CRC, sizes and encryption flag against the central entry's; a
+      short decode is `TruncatedError` in the verifier's words; a mislabelled UTF-8
+      local name fails its member instead of the pass; a lone surviving ZipCrypto
+      password over a codec leaves later damage to the codec; a short WinZip AES member
+      is `TruncatedError` under several passwords
+      (`tests/test_zip_pipe_directory_checks.py`).
 - [ ] 3.4c A Windows reparse buffer longer than the link cap kept as far as it declares.
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
       and `access-mode-and-cost` specs, `archive-reading` (ZIP applies `max_members` at

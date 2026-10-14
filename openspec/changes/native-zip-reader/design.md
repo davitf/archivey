@@ -299,7 +299,11 @@ found there, or after a codec's end by a descriptor in them that states the deco
 and size. The file read walks each candidate that is still inconclusive to the member's
 end to tell them apart; the data goes by once here, so the first of them wins and its
 CRC or code at the end is the test, failing as one unconfirmed password does (davi
-2026-10-14, "First survivor"). It only matters for a member over the kept bytes, stored
+2026-10-14, "First survivor"). A lone survivor over a codec is the only key the data can
+be under, so a failure past the kept bytes is the codec's or the CRC's, as from a file;
+a STORED member's stays ambiguous, as the file read's CRC pass leaves it. A WinZip AES
+member whose data ends before its declared size is `TruncatedError` whichever candidate
+read it, as from a file. It only matters for a member over the kept bytes, stored
 or under a codec that accepts random input, where a wrong candidate passes the cheap
 check (1 in 256 under ZipCrypto, 1 in 65 536 under AES). A choice that may change: the
 pass could spool the whole ciphertext, walk every survivor to its end and serve the
@@ -478,13 +482,21 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 
 ### Failures found at the end of the pass
 
-Four things are known only once the directory has been read: a size or CRC from a data
-descriptor that differs from the central entry, two same-name members whose directory
+Five things are known only once the directory has been read: a size or CRC from a data
+descriptor that differs from the central entry, a local header the central entry
+contradicts in its CRC, sizes or encryption flag, two same-name members whose directory
 order reverses their file order, a directory entry with no local entry, and a member
 whose directory entry and local header store different names (question A, case 3: the
 seekable read refuses it when it reads the local header, and a forward pass has both
-names only now). Each is a member-scoped failure of the member it names, handled as
-`safe-extraction` handles any other (the `OnError` requirement):
+names only now). The pass reads and checks a member's data as its local header describes
+it, and the file read as the directory does, so where the two headers differ the file
+read reads other data or fails the member. The method does not count, nor the CRC of a
+WinZip AE-2 member, which no read checks: data that matched the CRC and size the
+directory gives is the data it describes, whichever codec decoded it. A local name that
+is not UTF-8 under the UTF-8 flag is read as unflagged for the pass, and the name check
+fails the member, as the file read fails it. Each is a member-scoped failure of the
+member it names, handled as `safe-extraction` handles any other (the `OnError`
+requirement):
 
 - In `extract_all`, the end of the pass settles every member the directory changes
   (its `is_current`, type or sizes), and every path such a member was written to:
@@ -517,17 +529,18 @@ names only now). Each is a member-scoped failure of the member it names, handled
     failure raises `CorruptionError` naming the member, at the end of the pass, which is
     the earliest point it is known; the revisions and removals above are made first.
 - In `stream_members()`, which has no results and no `OnError`, the descriptor mismatch,
-  the missing local entry and the differing names raise `CorruptionError` from the
-  iterator at the end of the pass. The reversed pair raises nothing: the members are
-  updated in place and `member_state_final` said they might be. Nothing is on disk to
-  settle.
+  the contradicted local header, the missing local entry and the differing names raise
+  `CorruptionError` from the iterator at the end of the pass. The reversed pair raises
+  nothing: the members are updated in place and `member_state_final` said they might be.
+  Nothing is on disk to settle.
 
-The first two make a streaming extraction fail a member that the seekable extraction of
-the same archive writes (the seekable read refuses a member whose two names differ, as
-the pass does). That is the only place the two access modes differ on disk. Both shapes
-come only from crafted or hand-edited archives, which DR-5a allows to differ a little;
-matching them would mean buffering every member until the directory arrives (ADR
-0010).
+The descriptor mismatch and the reversed pair make a streaming extraction fail a member
+that the seekable extraction of the same archive writes, and the contradicted local
+header one that it writes differently or fails too. Those three are the only places the
+two access modes differ on disk; a member whose two names differ fails in both, as the
+seekable read refuses it too. All three come only from crafted or hand-edited archives,
+which DR-5a allows to differ a little; matching them would mean buffering every member
+until the directory arrives (ADR 0010).
 
 One more thing is known only once the directory has been read, and is not a member
 failure. A directory entry pointing at a local header an earlier entry already took ends
