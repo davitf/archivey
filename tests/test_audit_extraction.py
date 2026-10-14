@@ -208,20 +208,20 @@ def test_member_under_an_earlier_file_member_names_the_file(
     assert by_name["e"].status is ExtractionStatus.EXTRACTED
 
 
-def test_member_under_a_preexisting_file_stays_a_filesystem_error(
+def test_member_under_a_preexisting_file_meets_the_overwrite_policy(
     tmp_path: Path,
 ) -> None:
-    # The run did not write `d`: that is the destination's state, not the archive's,
-    # and a genuine filesystem error propagates unchanged.
+    # The run did not write `d`: the caller did. `d/f` implies a directory `d`, and
+    # that meets OverwritePolicy as an explicit `d/` entry would. The default ERROR
+    # fails the member with an ExtractionError, not the FileExistsError of `mkdir`.
     archive = tmp_path / "a.tar"
     _build_tar(archive, [("d/f", "file", b"y")])
     out = tmp_path / "out"
     out.mkdir()
     (out / "d").write_bytes(b"mine")
 
-    with pytest.raises(OSError) as info:
+    with pytest.raises(archivey.ExtractionError, match="Destination already exists"):
         open_and_extract(archive, out)
-    assert not isinstance(info.value, archivey.ArchiveyError)
     assert (out / "d").read_bytes() == b"mine"
 
 
