@@ -379,6 +379,10 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
                 "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
             )
 
+    def readall(self) -> bytes:
+        # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.
+        return self.read(-1)
+
     def authenticate_end(self, data_len: int, passed_over: bytes) -> None:
         """Authenticate a ``hold_back`` stream once the data's end is known.
 

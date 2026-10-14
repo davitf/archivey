@@ -1064,6 +1064,8 @@ def test_forward_stream_authenticates_once_told_where_the_data_ends(
     stage.read(1 << 10)  # on into the code and past it, as a codec's layers read ahead
     with pytest.raises(ValueError, match="read it in pieces"):
         stage.read()
+    with pytest.raises(ValueError, match="read it in pieces"):
+        stage.readall()
     data_len = 18 + len(cipher) + 10
     if tamper:
         with pytest.raises(CorruptionError, match="HMAC mismatch"):
