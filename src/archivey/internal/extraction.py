@@ -1559,11 +1559,12 @@ class ExtractionCoordinator:
         if listing_damage and any(
             listing_damage[0] is error for _, error in reader._failed_at_end
         ):
-            # The walk raised for a member the settlement above has dealt with: its
-            # result carries the failure; or it has none because the selection or the
-            # filter left it out; or it is not current; or its result carries what the
-            # filter or a policy check decided before its data was read. In each of the
-            # last three a seekable read never reads its data either.
+            # The walk raised for a member the settlement above has dealt with. Its
+            # result carries the failure, unless a seekable read of the same bytes would
+            # not have read the member's data either: the selection or the filter left
+            # it out, the directory makes it not current, or its result carries an
+            # outcome decided before any of its data was read (by the filter, a policy
+            # check or the overwrite policy). Then nothing reports it, as from a file.
             listing_damage.clear()
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
