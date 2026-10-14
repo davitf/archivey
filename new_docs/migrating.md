@@ -21,7 +21,7 @@ write, and it stops an archive that expands past its limits.
 | Extract everything | `zf.extractall(d)`, `tf.extractall(d)` | `z.extractall(d)`, `rf.extractall(d)` | `reader.extract_all(d)` | [Unsafe members are refused, and policies and filters choose what's written](#extracting) |
 | Unpack any supported format | `shutil.unpack_archive(p, d)` | | `open_archive(p)`, then `reader.extract_all(d)` | [More formats, and a report of what was written](#extracting) |
 | Decompress a single file | `gzip.open(p)`, `bz2.open(p)`, `lzma.open(p)` | | `archivey.open_stream(p)` | [One call for every compression format](opening.md#single-compressed-files) |
-| Identify the format | the file's extension | | `archivey.detect_format(p)` | [Reads the contents](opening.md#format) |
+| Identify the format | `zipfile.is_zipfile(p)`, `tarfile.is_tarfile(p)` | | `archivey.detect_format(p)` | [Names the format, among all those archivey reads](opening.md#format) |
 
 ## Opening an archive
 
@@ -37,8 +37,9 @@ supplies them ([Passwords](opening.md#passwords)). zipfile takes one per read or
 reads WinZip AES. py7zr takes the password when opening, like archivey, and rarfile takes it per
 read or through `setpassword`.
 
-Like rarfile, archivey needs a program for the data in a RAR archive: RARLAB's `unrar` or `rar`, or
-`unar` when neither is installed. rarfile can also use `7z` or `bsdtar`, and archivey can't.
+Like rarfile, archivey reads files stored without compression in a RAR archive on its own, and needs
+a program for compressed ones: RARLAB's `unrar` or `rar`, or `unar` when neither is installed.
+rarfile can also use `7z` or `bsdtar`, and archivey can't.
 
 Three options to `open_archive` allow ways of reading that are off by default:
 
