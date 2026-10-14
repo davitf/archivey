@@ -7,6 +7,8 @@ Some sentences describe behaviour that another PR brings, so they aren't true of
 merges. Check each before the switch, and empty this list:
 
 - `security.md`, the listing limits on `stream_members()` (PR 773).
+- Every ZIP claim in the tree, once the native ZIP reader is complete: reading from a pipe,
+  damaged or missing end records, and bytes after the archive are all expected to change.
 
 Pages linked from these but not written yet: `install.md` and `api.md`. No check looks at
 links in this tree, so a broken one goes unnoticed.
