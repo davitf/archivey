@@ -319,10 +319,12 @@ def _merge_move(
 ) -> Path | None:
     """Move ``src`` to ``dest`` with the same per-file semantics as extracting
     directly into ``dest``'s parent: directories merge, file/symlink collisions
-    resolve by the overwrite policy. Pre-existing files are never deleted — the
-    only removal is our own just-extracted copy under SKIP, which a direct
-    extraction would never have written. Symlinks are moved as links and never
-    descended into (on either side). A collision the policy cannot resolve
+    resolve by the overwrite policy. Per policy: RENAME moves ours to a free
+    name; REPLACE replaces the operator's file with ours, the one deletion of the
+    operator's data, and only a file over a file; SKIP discards our own
+    just-extracted copy when it is not a directory; ERROR resolves nothing. No
+    directory of the operator's is ever removed. Symlinks are moved as links and
+    never descended into (on either side). A collision the policy cannot resolve
     (:func:`_policy_resolves`) raises :class:`_HoistConflict`; the caller checks the
     whole merge with :func:`_first_clash` before calling this, so that happens only
     when the cwd changed in between.
@@ -374,8 +376,9 @@ def _merge_move(
             raise
         return dest
     if not _policy_resolves(overwrite, src_is_dir=src_is_dir, dest_is_dir=dest_is_dir):
-        # ``--overwrite error``, or a dir-vs-file shape that ``replace`` and ``skip``
-        # cannot resolve without deleting the operator's data. The hoist checked the
+        # A collision the policy cannot resolve without deleting the operator's data:
+        # any under ``error``, a directory on either side under ``replace``, our
+        # directory under ``skip`` (:func:`_policy_resolves`). The hoist checked the
         # whole merge first (:func:`_first_clash`), so this is reached only when the
         # cwd changed after that check. Stop; the caller keeps the remainder under
         # the wrapper and exits nonzero.
@@ -394,12 +397,15 @@ def _merge_move(
         os.replace(src, dest)  # replaces exactly the file being extracted
         moved[name] = (dest, False)
         return dest
-    # SKIP of a file: the operator's entry is kept.
-    src.unlink()
-    moved[name] = (dest, True)
-    result.skipped += 1
-    print(f"skipped: {escape_path(dest)}", file=err)
-    return None
+    if overwrite is OverwritePolicy.SKIP and not src_is_dir:
+        # The operator's entry is kept; ours is discarded.
+        src.unlink()
+        moved[name] = (dest, True)
+        result.skipped += 1
+        print(f"skipped: {escape_path(dest)}", file=err)
+        return None
+    # A policy no branch above handles: stop rather than discard anything.
+    raise _HoistConflict(dest)
 
 
 def _policy_resolves(
@@ -639,9 +645,11 @@ def maybe_hoist_single_root(
     merge into existing ones and per-file collisions follow the overwrite policy
     (:func:`_merge_move`). The hoist is a convenience, not a promise: when the merge
     would meet a collision the policy cannot resolve without deleting the operator's
-    data (``--overwrite error``, or a directory against a file under ``replace`` or
-    ``skip``), nothing is moved, a ``kept in`` line names the first such path, and the
-    run still succeeds with the content in the wrapper. When the sole root shares the wrapper's own name
+    data, nothing is moved, a ``kept in`` line names the first such path, and the run
+    still succeeds with the content in the wrapper. Such a collision is any collision
+    under ``error``, one with a directory on either side under ``replace``, and one
+    where our entry is a directory and the operator's is not under ``skip``
+    (:func:`_policy_resolves`). When the sole root shares the wrapper's own name
     (``src.tar.gz`` containing ``src/``), the child is flattened in place — the
     wrapper *becomes* the root, so no collision logic applies to it.
     """
@@ -831,7 +839,14 @@ def predict_hoist(
     )
     dest = wrapper.parent / name
     entries = report._dry_run_entries
-    if reason is None and dest != wrapper and entries is not None:
+    # ``lexists`` first: with nothing at ``dest`` there is no merge, so the entries
+    # are not indexed.
+    if (
+        reason is None
+        and dest != wrapper
+        and entries is not None
+        and os.path.lexists(dest)
+    ):
         try:
             clash = _first_clash(
                 name, is_dir, dest, overwrite, _recorded_listing(entries)

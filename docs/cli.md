@@ -107,9 +107,10 @@ encrypted members fail as if no password had been given.
   else after the move. It also skips the move when part of the entry could not be
   listed, since it may hold such a link. And it skips the move when an entry already
   there collides in a way `--overwrite` cannot settle without deleting it: any
-  collision under `--overwrite error`, or a folder against a file under `skip` or
-  `replace`. Then nothing is moved and the run still succeeds. It prints a line saying
-  why the files stayed in the wrapper.
+  collision under `--overwrite error`; under `replace`, any collision that has a folder
+  on either side; under `skip`, a folder from the archive against a file already
+  there. Then nothing is moved and the run still succeeds. It prints a line saying why
+  the files stayed in the wrapper.
 - `test` exits `1` when its summary reports members as not tested, or digests as not
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip

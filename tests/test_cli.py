@@ -2364,6 +2364,26 @@ def test_hoist_never_deletes_colliding_tree_under_replace(
     assert (tmp_path / "bundle" / "root" / "clash").read_bytes() == b"ARCHIVE"
 
 
+def test_hoist_discards_our_file_over_the_operators_directory_under_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``skip`` resolves our file against the operator's directory by discarding our
+    copy, so the hoist goes ahead: the opposite direction to ``replace`` above."""
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / "bundle.tar", {"root/clash": b"ARCHIVE", "root/new.txt": b"NEW"}
+    )
+    (tmp_path / "root" / "clash").mkdir(parents=True)
+    (tmp_path / "root" / "clash" / "precious.txt").write_bytes(b"MINE")
+    assert main(["extract", str(archive), "--overwrite", "skip"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "skipped: ") == ["skipped: root/clash"]
+    assert _report_lines(err, "kept in ") == []
+    assert (tmp_path / "root" / "clash" / "precious.txt").read_bytes() == b"MINE"
+    assert (tmp_path / "root" / "new.txt").read_bytes() == b"NEW"
+    assert not (tmp_path / "bundle").exists()
+
+
 def test_cli_logging_leaves_no_global_state(sample_zip: Path) -> None:
     # The D4 handler must be scoped to one invocation: a leaked handler or
     # propagate=False blinds caplog-based library tests (pytest 8.3 floor).

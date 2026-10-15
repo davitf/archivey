@@ -172,26 +172,29 @@ inside the entry (`pkg/bin/a -> ../lib/a.so`) means the same thing after the mov
 does not block it. In each of these cases a line says the content was kept in the
 wrapper and why. When it runs, the hoist SHALL produce the same final layout as
 extracting directly into the cwd: directories merge into existing directories, and
-per-file collisions resolve by the overwrite policy (`rename` derives the library's
-`name (N)` spelling; `replace` replaces only the individual files being extracted;
-`skip` keeps the existing file). The hoist MUST NOT delete pre-existing files or
-directories under any policy. The hoist is a convenience, not a guarantee: with no
-`-d`, the operator accepts wherever the content lands. Before it moves anything, the
-hoist SHALL check the whole merge for a collision the policy cannot resolve without
-deleting data (`error`, or a dir-vs-file shape under `replace`/`skip`). When it finds
-one, it SHALL move nothing, print `kept in <wrapper>/: <path> already exists` naming the
-first such path, and leave the whole root in the wrapper; the run counts as successful
-(exit `0`) and the closing summary names the wrapper. So a direct extraction's
-`replace` of a file by a directory, which deletes the operator's file, is not
-reproduced: the hoist keeps the root instead. atool's `aunpack` keeps the content in its
-`Unpack-NNNN/` directory the same way. A collision that appears after that check (the
-cwd changed during the move) SHALL stop the hoist, leave the unmoved remainder under
-the wrapper (or under the wrapper's aside name `<wrapper> (N)/` when the wrapper's name
-could not be taken back), and exit nonzero; a filesystem error during the move does the
-same. When the container got the plain stem name, a sole root
-sharing the wrapper's own name (`src.tar.gz` containing `src/`) SHALL be flattened in
-place, not treated as a collision, and the wrapper SHALL then take that root's mode and
-times. When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
+per-file collisions resolve by the overwrite policy. The hoist is a convenience, not a
+guarantee: with no `-d`, the operator accepts wherever the content lands. Before it
+moves anything, the hoist SHALL check the whole merge for a collision the policy
+cannot resolve without deleting the operator's data. Per policy: `rename` resolves
+every collision, writing the archive's entry under the library's `name (N)` spelling;
+`replace` resolves only the archive's file against the operator's file, and replaces
+that one file; `skip` resolves every collision where the archive's entry is not a
+directory, and discards the archive's copy; `error` resolves none. The hoist MUST NOT
+delete anything else the operator had, and MUST NOT remove a directory of the
+operator's under any policy. When the check finds a collision the policy does not resolve, the hoist SHALL move nothing,
+print `kept in <wrapper>/: <path> already exists` naming the first such path, and
+leave the whole root in the wrapper; the run counts as successful (exit `0`) and the
+closing summary names the wrapper. So a direct extraction's `replace` of a file by a
+directory, which deletes the operator's file, is not reproduced: the hoist keeps the
+root instead. atool's `aunpack` keeps the content in its `Unpack-NNNN/` directory the
+same way. A collision that appears after that check (the cwd changed during the move)
+SHALL stop the hoist, leave the unmoved remainder under the wrapper (or under the
+wrapper's aside name `<wrapper> (N)/` when the wrapper's name could not be taken
+back), and exit nonzero; a filesystem error during the move does the same.
+When the container got the plain stem name, a sole root sharing the wrapper's own name
+(`src.tar.gz` containing `src/`) SHALL be flattened in place, not treated as a
+collision, and the wrapper SHALL then take that root's mode and times.
+When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
 the sole root no longer shares its name, and the hoist merges the root into the existing
 `./<archive-stem>/` under the overwrite policy like any other root. A directory stored
 without owner write permission (`0o555`) SHALL still be moved: the hoist gives it owner
@@ -540,11 +543,12 @@ without touching any public name. `extract --dry-run` also reads three private f
 `ExtractionReport._dry_run_entries`: the entries the dry run left at the top of its
 scratch copy of the destination, the symlinks in that copy, and every entry in it. A
 dry run writes nothing the CLI could look at instead, and renaming any of these fields
-breaks the dry run's hoist line and summary. Apart from those three fields, the CLI SHALL NOT read a private attribute of a library object, and SHALL NOT
-decide anything from a library exception's message: `extract` tells a re-root from a
-portable rewrite by `ExtractionResult.rewrites`, and `test` tells a link the archive
-left without a target by `ArchiveMember.link_target_unrecorded`, and an error about
-where a link points by its type (`LinkTargetNotFoundError`) or its marker
+breaks the dry run's hoist line and summary. Apart from those three fields, the CLI
+SHALL NOT read a private attribute of a library object, and SHALL NOT decide anything
+from a library exception's message: `extract` tells a re-root from a portable rewrite
+by `ExtractionResult.rewrites`, and `test` tells a link the archive left without a
+target by `ArchiveMember.link_target_unrecorded`, and an error about where a link
+points by its type (`LinkTargetNotFoundError`) or its marker
 (`ArchiveyUsageError.refused_member_type`). Argparse's own attributes and messages are
 not the library's, and the CLI's parser reads both.
 
