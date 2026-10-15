@@ -78,6 +78,7 @@ from archivey.internal.backends.rar_parser import (
     RarEncryptionInfo,
     RarKdfCache,
     RarMemberInfo,
+    RarOwner,
     _check_rar5_password,
     _Rar3Comment,
     _rar5_redirect_target,
@@ -1138,6 +1139,10 @@ _SERVICE_PAYLOAD_LOST = {
     "CMT": "the archive comment",
     "QO": "the quick-open index",
 }
+
+
+# A member with no owner record: all four owner fields ``None``.
+_NO_OWNER = RarOwner(None, None, None, None)
 
 
 class RarReader(BaseArchiveReader):
@@ -2677,6 +2682,7 @@ class RarReader(BaseArchiveReader):
             elif host_os == _RAR_HOST_OS_WIN32:
                 windows_attrs = info.mode & 0xFFFFFFFF
 
+        owner = info.owner if info.owner is not None else _NO_OWNER
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -2688,10 +2694,10 @@ class RarReader(BaseArchiveReader):
             created=_rar_created(info),
             ctime=_rar_ctime(info),
             mode=mode,
-            uid=info.owner.uid if info.owner else None,
-            gid=info.owner.gid if info.owner else None,
-            uname=info.owner.uname if info.owner else None,
-            gname=info.owner.gname if info.owner else None,
+            uid=owner.uid,
+            gid=owner.gid,
+            uname=owner.uname,
+            gname=owner.gname,
             compression=_compression_for(info),
             # Fails closed: a member whose header stopped before the encryption
             # record could be ruled out is presented as encrypted. Answering

@@ -488,7 +488,8 @@ holds `st_ctime`. RAR5 Blake2sp-only members SHALL store the
 digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
 
 A RAR5 owner record (`rar -ow`) SHALL fill `uname`, `gname`, `uid` and `gid`, each
-only when the record's flags announce it; with no owner record all four SHALL be
+only when the record's flags announce it. A RAR 1.5-4 `UOW` service header SHALL fill
+`uname` and `gname` of the file it follows. With no owner record all four SHALL be
 `None`. A record too short for what its flags announce SHALL be dropped like any
 other malformed optional record (`MEMBER_HEADER_RECORD_SKIPPED`).
 
@@ -524,6 +525,7 @@ member type.
 | RAR4 symlink (target stored as data) | `"crc32"` present, equal to the target string's CRC32 |
 | RAR5 `-ow` member whose owner has names | `uname` / `gname` set; `uid` / `gid` `None` |
 | RAR5 `-ow` member whose ids have no names | `uid` / `gid` set; `uname` / `gname` `None` |
+| RAR4 `-ow` member (`UOW` header after it) | `uname` / `gname` set; `uid` / `gid` `None` |
 
 ### Requirement: Handle RAR5 redirect link types natively
 

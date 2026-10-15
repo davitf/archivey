@@ -249,6 +249,8 @@ _RAR5_MHEXTRA_LOCATOR = 1
 _RAR5_MHEXTRA_LOCATOR_QLIST = 0x01
 _RAR5_QO_NAME = "QO"
 _RAR5_CMT_NAME = "CMT"
+# RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``).
+_RAR3_UOW_NAME = "UOW"
 # Stored QO is copies of FILE headers (~50–200 B each; measured 55 B/member on
 # `rar a -m0 -qo+`, RAR 7.00). 16 MiB covers roughly 300k members — below the
 # 1 048 576 parser ceiling, so a very large archive silently falls back to the
@@ -975,13 +977,16 @@ def header_metadata_bytes(member: RarMemberInfo) -> int:
     registration weighs the normalized one, which can be shorter (``a/./b`` lists as
     ``a/b``), so a name normalization shortens weighs a little more here. A RAR5 name
     has no stored bytes of its own, and its length stands for its UTF-8 bytes, which
-    are at least that many. The comment counts per :func:`comment_metadata_bytes`.
+    are at least that many. The RAR5 owner record's user and group names count as
+    ``uname`` and ``gname`` do. The comment counts per :func:`comment_metadata_bytes`.
     """
     filename = member.filename
     raw = member.orig_filename
     total = text_bytes(filename) + (len(raw) if raw is not None else len(filename))
     if member.file_redir is not None:
         total += text_bytes(_rar5_redirect_target(member.file_redir))
+    if member.owner is not None:
+        total += text_bytes(member.owner.uname) + text_bytes(member.owner.gname)
     return total + comment_metadata_bytes(member.comment)
 
 
@@ -2451,6 +2456,17 @@ def _parse_rar3(
                     max_metadata_bytes=max_metadata_bytes,
                 ):
                     needs_next_volume = True
+            elif block_type == _RAR3_SUB and member.owner is not None and members:
+                # ``rar -ow`` writes a UOW header right after the file it describes.
+                # The file was weighed when it was appended, so the names are here.
+                members[-1].owner = member.owner
+                if max_metadata_bytes is not None:
+                    _charge_metadata(
+                        members,
+                        text_bytes(member.owner.uname) + text_bytes(member.owner.gname),
+                        max_metadata_bytes,
+                        count=len(members),
+                    )
             elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
@@ -2580,6 +2596,7 @@ def _parse_rar3_file_header(
         file_size |= h2 << 32
 
     name, pos = _load_bytes(hdata, name_size, pos)
+    name_end = pos
     orig_filename: bytes | None
     unicode_name: str | None = None
     utf8_over_encoding = False
@@ -2678,7 +2695,26 @@ def _parse_rar3_file_header(
         else _RAR3_DICT_BASE << ((flags & _RAR3_DICT_MASK) >> _RAR3_DICT_SHIFT),
         rar3_salt=rar3_salt,
     )
+    if is_service and filename == _RAR3_UOW_NAME:
+        # A service header's own data follows the name, ahead of any salt, and runs
+        # to the header's end (``unrar`` ``ReadHeader15``).
+        sub_end = header_size - (8 if flags & _RAR3_FILE_SALT else 0)
+        member.owner = _parse_rar3_uow(hdata[name_end:sub_end])
     return member, crc_pos
+
+
+def _parse_rar3_uow(data: bytes) -> RarOwner:
+    """The owner a RAR 1.5-4 ``UOW`` service header records: the user name up to a
+    NUL, then the group name to the end (``unrar`` ``ExtractUnixOwner30``). RAR 3-6
+    stores names only. Names decode as RAR5's owner names do.
+    """
+    user, _, group = data.partition(b"\0")
+    return RarOwner(
+        user.decode("utf8", "surrogateescape") or None,
+        group.decode("utf8", "surrogateescape") or None,
+        None,
+        None,
+    )
 
 
 # Ten digits hold any 32-bit number; a longer run is not treated as a version.
