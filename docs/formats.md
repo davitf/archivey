@@ -184,6 +184,8 @@ yielded.
   directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.STRICT`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- Owner ids: Info-ZIP `zip` on Unix records `uid` / `gid`, read as unzip 6.00 reads
+  them; `uname` / `gname` stay `None`, and Windows writers store no owner.
 - An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as
   `MemberType.OTHER`, so extraction skips it. One that stores data is a `FILE` (`zip -FI`
   writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in

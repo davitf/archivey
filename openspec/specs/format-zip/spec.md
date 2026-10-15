@@ -220,7 +220,8 @@ password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").
 
 `stream_members()` SHALL yield each member with what its local header gives: `mode`,
-`create_system` and `comment` are `None`, the type is `FILE` or `DIRECTORY` from the
+`create_system` and `comment` are `None`, `uid` and `gid` are `None` even when the
+local extra field carries them, the type is `FILE` or `DIRECTORY` from the
 name (a name ending in `\` is a `DIRECTORY`), and `member_state_final` is `False`
 (`archive-data-model`). Once the directory has been read, before the pass ends, each
 member SHALL be updated in place from its directory entry, matched by offset, as the

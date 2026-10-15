@@ -378,8 +378,8 @@ format, in two cases:
   from a non-seekable source is one such pass with more to change: its central
   directory follows the last member, so until the pass has read it any field the
   directory gives can still change (type, the name where a DOS host makes `\` a
-  separator, `mode`, `create_system`, `comment`, times from the directory's extra
-  fields, and `is_current`; `format-zip`).
+  separator, `mode`, `create_system`, `comment`, `uid` and `gid`, times from the
+  directory's extra fields, and `is_current`; `format-zip`).
 - A symlink whose target is stored as member data (ZIP, 7z, a RAR 4 symlink) until the
   library has read that data, whatever the read found. Reading it sets `link_target`,
   and a reparse point whose data is not a link buffer becomes a `FILE`. `open()` and
@@ -407,7 +407,7 @@ fields that change in practice.
 | TAR symlink, either `read_link_targets` | `True`: the header carries the target |
 | ZIP symlink under `read_link_targets=False` | `False` until `open()` or `extract_all()` reads its target, then `True` |
 | ZIP symlink under the default | `True` once listed |
-| ZIP from a non-seekable source, `streaming=True`, `stream_members()` | Each member reads `False` when yielded, with `mode`, `create_system` and `comment` `None`; after the pass every member reads `True`, with the directory's fields |
+| ZIP from a non-seekable source, `streaming=True`, `stream_members()` | Each member reads `False` when yielded, with `mode`, `create_system`, `comment`, `uid` and `gid` `None`; after the pass every member reads `True`, with the directory's fields |
 
 ### Requirement: Member diagnostics attach under the shared budget
 

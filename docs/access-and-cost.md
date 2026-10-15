@@ -227,8 +227,8 @@ file to fake seekability. Use `streaming=True` for pipes and sockets — it work
 A ZIP's central directory is at the end, after every member, so a ZIP read from a pipe
 is found by its local headers instead: the receipt is `REQUIRES_SCANNING`, `DIRECT`,
 `FORWARD_ONLY`. The fields only the directory holds (the type of a symlink, `mode`, the
-host, comments, which of two same-named members is current) are filled in when the pass
-reaches the directory, and each member reads `member_state_final=False` until then.
+owner ids, the host, comments, which of two same-named members is current) are filled
+in when the pass reaches the directory, and each member reads `member_state_final=False` until then.
 `info.member_count` and `members_report_if_available()` are `None` until then.
 `use_rapidgzip=ON` cannot decode a ZIP member from a pipe: it raises
 `StreamNotSeekableError` at the first DEFLATE member.
