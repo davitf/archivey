@@ -185,6 +185,7 @@ class ArchiveStream(ReadOnlyIOStream):
         verifier: MemberVerifier | None = None,
         member_name: str | None = None,
         repeat_verdict: bool = True,
+        fill_size: bool = False,
     ) -> None:
         super().__init__()
         # Named in the closed-source error and returned by ``name``; ``None`` for a
@@ -237,6 +238,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 member=verify_member,
                 archive_name=archive_name,
                 digest_transforms=digest_transforms,
+                fill_size=fill_size,
             )
         if not lazy:
             self._ensure_open()

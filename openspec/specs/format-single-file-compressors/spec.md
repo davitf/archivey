@@ -95,7 +95,7 @@ format-specific reliability limits:
 
 | Codec | `member.size` behavior |
 | --- | --- |
-| GZ | Always `None`; stored ISIZE is modulo 2^32 and may be wrong |
+| GZ | `None` until full decompression; stored ISIZE is modulo 2^32 and covers only the last gzip member, so it goes in `extra["gzip.isize"]`, never in `size` |
 | BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` has no size trailer (best-effort truncation via nonzero leftover bits) |
 | XZ, ZST | Header size when encoder wrote it; otherwise `None` |
 | LZ4 | Frame content-size field when present; otherwise `None` |
@@ -137,16 +137,26 @@ than it declares is refused with `TruncatedError` only after its payload is deco
 and a TAR member stream answers `SEEK_END` from the same declared length, so no seek
 could learn more. For a nested archive, `max_extracted_bytes` is the bound that holds.
 
-When a decoder learns the true uncompressed size after EOF, the member MAY be
-updated to that byte count.
+A member whose `size` is `None` after listing SHALL take its size from the first read
+that goes from the start of the member to its end with no seek and that the decoder
+finishes without error: `size` becomes the number of bytes that read returned, set in
+place on the reader's member object (the one `members()` and `get()` return). A read
+that stops early, raises, or follows a seek SHALL leave `size` as it is, because a seek
+can resume from an index point whose earlier blocks were never decoded or checked; a
+seek to position 0 starts a qualifying read again. Until the size is filled in, or the
+reader closes, `member_state_final` SHALL be `False` (`archive-data-model`). A copy made
+with `replace()` is never filled. A size the format records SHALL NOT be replaced.
 
 #### Scenario: size matrix
 
 | Case | Expected |
 | --- | --- |
-| `.gz` opened | Single member size is `None` |
+| `.gz` opened | Single member size is `None`; `member_state_final` is `False` |
 | `.bz2` before full decompression | Size is `None` |
-| `.bz2` fully read to EOF | Size may update to actual uncompressed byte count |
+| `.gz` / `.bz2` / `.zz` / `.br` / `.Z` read from the start to EOF with no seek | `size` is the byte count read; `member_state_final` is `True` |
+| Same, read that stops short of EOF, raises (`TruncatedError`), or follows a seek other than to 0 | `size` stays `None` |
+| Same, `streaming=True` pass over a pipe, stream read to EOF | `size` is the byte count read |
+| Same, reader closed with the member never read in full | `size` is `None`; `member_state_final` is `True` |
 | `.lz` opened from a seekable source, not a member stream | Size is available from the trailer |
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None`; no decode pass is forced |
@@ -157,7 +167,7 @@ updated to that byte count.
 | `.gz` from a member stream that advertises its length, seekable or not | `compressed_size` is that length; no seek to the end |
 | `.gz` from a member stream with no advertised length | `compressed_size` is `None`; no seek to the end |
 | Alone stream with known header size | `member.size` equals that size |
-| Alone stream with unknown-size marker | Size is `None` until EOF may update it |
+| Alone stream with unknown-size marker | Size is `None` until a full read fills it |
 | Truncated `.Z` with nonzero leftover bits | Available bytes delivered; next `read()` raises `TruncatedError` |
 
 ### Requirement: Surface gzip stored metadata without trusting it as the name
@@ -170,12 +180,24 @@ disagree with the container filename. A configuration option MAY prefer the
 gzip-stored name for `member.name`. Other single-file compressors SHALL not set
 these fields from header data because they carry no embedded filename.
 
+The system SHALL surface the gzip trailer's ISIZE field as `member.extra["gzip.isize"]`
+(an `int`) when the source's end can be reached cheaply, under the same rule as the
+xz index and lzip trailer: a seekable source that is not another archive's member
+stream, at least 18 bytes long. The value is the last four bytes of the file, read
+little-endian. It is the uncompressed size modulo 2^32 only for a file of one gzip
+member with nothing after it; a file of several members (bgzip ends with an empty
+one) or with trailing bytes stores something else, and nothing short of reading the
+whole file tells these apart. It SHALL therefore never fill `member.size`.
+
 #### Scenario: gzip metadata matrix
 
 | Case | Expected |
 | --- | --- |
 | `.gz` with `FNAME="report.csv"` opened from `archive.gz` | `extra["gzip.original_filename"] == "report.csv"`; `raw_name` holds undecoded bytes; default `name == "archive"` |
 | `.gz` without `FNAME` | No gzip original filename extra; name is derived from source filename |
+| `.gz` of one member from a path or `BytesIO` | `extra["gzip.isize"]` is the uncompressed size modulo 2^32; `size` is `None` |
+| `.gz` of two members | `extra["gzip.isize"]` is the last member's ISIZE; a full read fills `size` with the whole length |
+| `.gz` from a pipe or another archive's member stream | No `gzip.isize` |
 | `.xz` / `.zst` / `.lz4` / `.lz` / `.bz2` | No gzip filename fields are set |
 
 ### Requirement: Get per-codec metadata from codec descriptors

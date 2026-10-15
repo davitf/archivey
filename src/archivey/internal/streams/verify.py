@@ -191,8 +191,12 @@ class MemberVerifier:
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
         digest_transforms: _DigestTransforms | None = None,
+        fill_size: bool = False,
     ) -> None:
         self._expected_size = expected_size
+        # Set ``member.size`` once a read from the start, with no seek, finds the end
+        # (``_note_end_seen``). Needs ``member`` and no declared size.
+        self._fill_member = member if fill_size and expected_size is None else None
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
         self._digest_transforms: dict[str, Callable[[bytes], bytes]] = {}
@@ -253,6 +257,9 @@ class MemberVerifier:
         # (``_pos`` already holds it) and where the inner was left. ``None`` when no
         # read-through is due.
         self._read_through_due: tuple[int, int] | None = None
+        # No seek has moved the position since the start or the last rewind to 0. Only
+        # such a read is the decoder's whole pass, the one its own checks cover.
+        self._unseeked = True
 
     def _rearm(self) -> None:
         """Put every check back to its state before the first read.
@@ -272,6 +279,24 @@ class MemberVerifier:
         self._abandoned = False
         self._end_seen = None
         self._read_through_due = None
+        self._unseeked = True
+
+    def _note_end_seen(self) -> None:
+        """Record that a read at the read frontier found the end of a size-unknown member.
+
+        With ``fill_size``, the member's ``size`` becomes that position when the read
+        went from the start to the end with no seek: the decoder made its whole pass
+        and its own end checks passed, since an error raises before the empty read
+        that brings us here. After any seek it stays ``None``, as a seek can resume
+        from an index point whose earlier blocks were never decoded.
+        """
+        self._end_seen = self._pos
+        member = self._fill_member
+        if member is None or not self._unseeked or self._hashed_to != self._pos:
+            return
+        if member.size is None:
+            member.size = self._pos
+        member._size_unread = False
 
     @property
     def enabled(self) -> bool:
@@ -438,7 +463,7 @@ class MemberVerifier:
             and self._end_seen is None
             and self._pos == self._furthest_read_pos
         ):
-            self._end_seen = self._pos
+            self._note_end_seen()
         if (
             expected_size is not None
             and self._furthest_read_pos < expected_size <= self._pos
@@ -500,7 +525,7 @@ class MemberVerifier:
             and self._end_seen is None
             and self._pos == self._furthest_read_pos
         ):
-            self._end_seen = self._pos
+            self._note_end_seen()
         try:
             self._check_digests_if_complete()
         except BaseException:
@@ -689,6 +714,7 @@ class MemberVerifier:
                 left_at = due[1] if due is not None else self._pos
                 self._read_through_due = (target, left_at)
                 self._pos = target
+                self._unseeked = False
                 if planned is not None:
                     raise planned
                 return target
@@ -739,7 +765,7 @@ class MemberVerifier:
                 piece = inner.read(min(_SIZED_DRAIN_CHUNK, target - self._pos))
                 if not piece:
                     if self._pos == self._furthest_read_pos:
-                        self._end_seen = self._pos
+                        self._note_end_seen()
                     break
                 self._record_read(piece)
         except BaseException:
@@ -766,6 +792,9 @@ class MemberVerifier:
         if result == 0:
             self._rearm()
             return
+        if result != self._pos or self._pos != self._furthest_read_pos:
+            # A seek to where the read already is (``seek(tell())``) moves nothing.
+            self._unseeked = False
         self._pos = result
 
     def finish_on_close(self, inner: BinaryIO) -> None:
@@ -831,10 +860,16 @@ def build_member_verifier(
     member: ArchiveMember | None = None,
     archive_name: str | None = None,
     digest_transforms: _DigestTransforms | None = None,
+    fill_size: bool = False,
 ) -> MemberVerifier | None:
-    """Return a :class:`MemberVerifier` when there is something to check, else ``None``."""
+    """Return a :class:`MemberVerifier` when there is something to check, else ``None``.
+
+    ``fill_size`` with a ``member`` and no ``expected_size`` is something to do: the
+    verifier sets ``member.size`` when a read with no seek reaches the end.
+    """
     hashes = expected if expected is not None else {}
-    if not hashes and expected_size is None:
+    fills = fill_size and member is not None and expected_size is None
+    if not hashes and expected_size is None and not fills:
         return None
     return MemberVerifier(
         hashes,
@@ -843,6 +878,7 @@ def build_member_verifier(
         member=member,
         archive_name=archive_name,
         digest_transforms=digest_transforms,
+        fill_size=fills,
     )
 
 

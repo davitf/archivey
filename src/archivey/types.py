@@ -596,6 +596,13 @@ class MemberExtra(dict[str, object]):
     * ``tar.devmajor`` (``int``)
     * ``tar.devminor`` (``int``)
     * ``gzip.original_filename`` (``str``)
+    * ``gzip.isize`` (``int``) — the gzip trailer's ISIZE field: the last four
+      bytes of the file, read only when its end is cheap to reach (not from a
+      pipe or another archive's member). For a file of one gzip member with
+      nothing after it, this is the uncompressed size modulo 2**32. It is not the
+      size for a file of several members (it covers only the last; a bgzip file
+      ends with an empty member and reads 0) or with bytes after the last one.
+      ``size`` stays ``None`` until a full read fills it in.
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
@@ -649,6 +656,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["tar.devminor"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["gzip.original_filename"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["gzip.isize"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload
@@ -731,7 +740,12 @@ class ArchiveMember:
       WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
 
     size: int | None = None
-    """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""
+    """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry).
+
+    A single-file member (``.gz``, ``.bz2``, …) whose format records no size gets
+    one from a read: a read from the start to the end, with no seek, that the
+    decoder finishes without error sets it to the bytes it returned. Until then
+    ``member_state_final`` is ``False``."""
 
     compressed_size: int | None = None
     """Compressed size in bytes, or ``None`` if unknown."""
@@ -888,6 +902,11 @@ class ArchiveMember:
     Reading it can set ``link_target`` and, for a Windows reparse point whose data is
     not a link buffer, change ``type``. Cleared once the backend has looked, found or
     not. Read it through :attr:`member_state_final`. Not part of the public contract."""
+    _size_unread: bool = field(default=False, repr=False, compare=False)
+    """Set while ``size`` is ``None`` and a full read of the member would fill it in.
+
+    Cleared once a read from the start reaches the end, and when the reader closes.
+    Read it through :attr:`member_state_final`. Not part of the public contract."""
     _link_target_absent: bool = field(default=False, repr=False, compare=False)
     """Set when the archive itself records no target for this link.
 
@@ -1024,6 +1043,9 @@ class ArchiveMember:
           buffer becomes a ``FILE``. :meth:`~archivey.ArchiveReader.open` and
           :meth:`~archivey.ForwardArchiveReader.extract_all` read it when they reach
           the link, on the member they are given, a copy included.
+        - A single-file member (``.gz``, ``.bz2``, …) whose ``size`` is ``None``,
+          until a read from the start to the end with no seek fills it in. A read
+          that seeks, stops early or fails leaves it ``False``.
 
         Everywhere else it is ``True``. Closing the reader makes it ``True`` for every
         member it listed, since a closed reader updates nothing. A copy made with
@@ -1034,7 +1056,9 @@ class ArchiveMember:
         Attached ``diagnostics`` are not fields and can still grow. Which fields change
         in practice is listed per format in the user docs.
         """
-        return not (self._listing_pending or self._link_target_unread)
+        return not (
+            self._listing_pending or self._link_target_unread or self._size_unread
+        )
 
     @property
     def link_target_unrecorded(self) -> bool:
@@ -1068,10 +1092,12 @@ class ArchiveMember:
         its links to members; its ``member_state_final`` waits only on an unread link
         target, which reading the copy fills in place (the copy ``extract_all`` hands
         a filter is the exception: see ``member_state_final``). Closing the reader cannot reach
-        a copy, so a copy whose target is never read keeps reading ``False``.
+        a copy, so a copy whose target is never read keeps reading ``False``. A read
+        fills a late ``size`` into the reader's own member, never into a copy.
         """
         copy = replace(self, **kwargs)
         copy._listing_pending = False
+        copy._size_unread = False
         return copy
 
 

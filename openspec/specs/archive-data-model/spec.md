@@ -363,7 +363,7 @@ point-in-time snapshots.
 
 `ArchiveMember.member_state_final` SHALL be `False` while the library can still update
 the member in place, and `True` from the point it cannot. It SHALL be `False`, in every
-format, in two cases:
+format, in these cases:
 
 - A member of a listing whose links have not been resolved yet, in either access mode.
   The listing is complete, and its members settled, when a call that resolves links to
@@ -384,6 +384,8 @@ format, in two cases:
   library has read that data, whatever the read found. Reading it sets `link_target`,
   and a reparse point whose data is not a link buffer becomes a `FILE`. `open()` and
   `extract_all()` read it on the member object they are given, a copy included.
+- A single-file member whose `size` is `None` after listing, until a read from the
+  start to the end with no seek fills it in (`format-single-file-compressors`).
 
 It SHALL be `True` everywhere else. A walk that fails and cannot be resumed settles the
 members it handed out, and closing the reader settles every member it listed. A copy
@@ -407,6 +409,8 @@ fields that change in practice.
 | TAR symlink, either `read_link_targets` | `True`: the header carries the target |
 | ZIP symlink under `read_link_targets=False` | `False` until `open()` or `extract_all()` reads its target, then `True` |
 | ZIP symlink under the default | `True` once listed |
+| `.gz` / `.bz2` after `members()` | `False` until a read from the start to EOF with no seek sets `size`, then `True`; `True` after the reader closes |
+| `.xz` with a readable index, after `members()` | `True`: the index records the size |
 | ZIP from a non-seekable source, `streaming=True`, `stream_members()` | Each member reads `False` when yielded, with `mode`, `create_system`, `comment`, `uid` and `gid` `None`; after the pass every member reads `True`, with the directory's fields |
 
 ### Requirement: Member diagnostics attach under the shared budget

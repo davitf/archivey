@@ -238,12 +238,14 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
 def _settle_listing(members: list[ArchiveMember], *, links_too: bool = False) -> None:
     """The walk will not update ``members`` again (``member_state_final``).
 
-    ``links_too``: nor will anything read their unread link targets (the reader closed).
+    ``links_too``: nor will anything read their unread link targets or fill their
+    unread size (the reader closed).
     """
     for member in members:
         member._listing_pending = False
         if links_too:
             member._link_target_unread = False
+            member._size_unread = False
 
 
 @dataclass(frozen=True)
@@ -1004,6 +1006,7 @@ class BaseArchiveReader(ArchiveReader):
         | None = None,
         verify_member: ArchiveMember | None = None,
         rewind_warning: RewindWarning | None = None,
+        fill_size: bool = False,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -1033,6 +1036,11 @@ class BaseArchiveReader(ArchiveReader):
         length verification into the returned ``ArchiveStream`` (no separate
         ``VerifyingStream`` layer). A never-opened lazy handle skips verify on
         close, so solid unread members stay cheap.
+
+        Pass ``fill_size=True`` with ``verify_member`` and no ``expected_size`` to set
+        ``verify_member.size`` once a read from the start, with no seek, reaches the
+        end cleanly (``MemberVerifier``): the late size of a member whose format
+        records none.
         """
         if (inner is None) == (open_fn is None):
             raise TypeError("exactly one of inner or open_fn is required")
@@ -1067,6 +1075,7 @@ class BaseArchiveReader(ArchiveReader):
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
                 member_name=member_name,
+                fill_size=fill_size,
             )
 
         assert inner is not None
@@ -1091,6 +1100,7 @@ class BaseArchiveReader(ArchiveReader):
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
             member_name=member_name,
+            fill_size=fill_size,
         )
 
     @abstractmethod

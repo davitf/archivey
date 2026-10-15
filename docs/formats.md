@@ -87,7 +87,7 @@ The fields that change in practice:
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
 | ISO | `is_current`, `link_target_member` | none: Rock Ridge carries the target |
 | Directory | `link_target_member` (names never repeat) | none: the target is read with the entry |
-| Single-file (`.gz`, `.xz`, …) | none in practice: one member, no links | none |
+| Single-file (`.gz`, `.xz`, …) | `size`, when the format records none: a full read fills it in, and the flag stays `False` until then ([below](#single-file-compressors)) | none |
 
 `members()`, `members_report()` and `get()` return members that read `True`, unless
 they are unread symlinks. Members read `False` until a call like those, or the end of a
@@ -709,6 +709,19 @@ yielded.
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
+- **`size` arrives with the first full read** when listing left it `None`: always for
+  `.gz`, `.bz2`, `.zz`, `.br` and `.Z`, and for the others when their size field is
+  absent or out of reach (an `.xz` from a pipe). A
+  read from the start to the end with no seek, which the decoder finishes without
+  error, sets `member.size` on the member `members()` returned. A read that stops
+  early, raises or seeks (other than back to 0) leaves it `None`, as does a copy made
+  with `replace()`. `member_state_final` reads `False` until the size is filled in or
+  the reader closes.
+- `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is
+  cheap to reach (a path or an in-memory stream; not a pipe or another archive's
+  member). It is the size modulo 2^32 only for a file of one gzip member with nothing
+  after it. A file of several members stores the last member's size there (a bgzip
+  file stores 0), so it never becomes `member.size`.
 - `.gz` has **no** `member.hashes` entry, before or after a read. The trailer CRC-32
   covers the whole member only when the file holds one gzip member, and proving that
   at open would mean reading the whole compressed file. The decoder still checks every

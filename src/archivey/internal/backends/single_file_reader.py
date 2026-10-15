@@ -276,6 +276,9 @@ class SingleFileReader(BaseArchiveReader):
         # decompressed size); the reader stays codec-agnostic and just supplies the
         # source-reading hooks the extractor may need (the base method is a no-op).
         self._stream_codec.extract_metadata(self._metadata_context(), member)
+        # A size the format does not record comes from the first clean full read
+        # (``_open_codec_stream``); ``member_state_final`` waits for it.
+        member._size_unread = member.size is None
         return member
 
     # --- metadata helpers ----------------------------------------------------------------
@@ -285,7 +288,28 @@ class SingleFileReader(BaseArchiveReader):
             peek_header=self._peek_header,
             probe_decompressed_size=self._probe_decompressed_size,
             probe_lzip_index=self._probe_lzip_index,
+            peek_trailer=self._peek_trailer,
         )
+
+    def _peek_trailer(self, length: int) -> bytes | None:
+        """The last ``length`` bytes of the compressed source, or ``None``.
+
+        ``None`` for a source shorter than ``length`` and wherever
+        :meth:`_try_on_seekable_source` declines: a pipe, a member stream whose seek
+        may re-decode, a read that fails.
+        """
+
+        def tail(f: BinaryIO) -> bytes | None:
+            # One seek: a file shorter than ``length`` refuses it (``OSError``, which
+            # the caller turns into ``None``) or clamps it to 0 and reads short.
+            try:
+                f.seek(-length, io.SEEK_END)
+            except ValueError:
+                return None
+            data = f.read(length)
+            return data if len(data) == length else None
+
+        return self._try_on_seekable_source(tail)
 
     def _peek_header(self, length: int) -> bytes:
         """The first ``length`` bytes of the compressed source, read once and cached.
@@ -535,8 +559,18 @@ class SingleFileReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
         )
         # Wrap so the handle carries the reader's diagnostic collector/operation id.
-        # (open_codec_stream already returns an ArchiveStream; nesting is fine.)
-        return self._wrap_member_stream(raw, member_name, size=self._member.size)
+        # (open_codec_stream already returns an ArchiveStream; nesting is fine.) A
+        # member with no recorded size takes the length of the first read from the
+        # start to the end with no seek; the open-time probe is no such read.
+        member = self._member
+        fill = attribute_member and member.size is None
+        return self._wrap_member_stream(
+            raw,
+            member_name,
+            size=member.size,
+            verify_member=member if fill else None,
+            fill_size=fill,
+        )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         if self._seekable:

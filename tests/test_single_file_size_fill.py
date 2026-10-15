@@ -1,0 +1,222 @@
+"""A single-file member's late ``size``, and the gzip trailer in ``extra``.
+
+Most single-file formats record no size. The member's ``size`` is ``None`` until a
+read from the start to the end, with no seek, that the decoder finishes cleanly;
+that read sets it to the bytes it returned. ``member_state_final`` reads ``False``
+until then (spec ``format-single-file-compressors``, "Report member size with codec
+caveats"; ``archive-data-model``, "ArchiveMember says whether its fields can still
+change").
+"""
+
+from __future__ import annotations
+
+import bz2
+import gzip
+import io
+import lzma
+import zlib
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from archivey import open_archive
+from archivey.exceptions import TruncatedError
+from tests.conftest import requires
+from tests.streams_util import NonSeekableBytesIO, make_unix_compress
+
+PAYLOAD = b"0123456789abcdef" * 4096 + b"tail"
+
+
+def _brotli(data: bytes) -> bytes:
+    import brotli
+
+    return brotli.compress(data)
+
+
+_NO_SIZE_CODECS: list[tuple[str, Callable[[bytes], bytes]]] = [
+    ("gz", gzip.compress),
+    ("bz2", bz2.compress),
+    ("zz", zlib.compress),
+    ("Z", make_unix_compress),
+]
+
+
+def _write(tmp_path: Path, suffix: str, compress: Callable[[bytes], bytes]) -> Path:
+    path = tmp_path / f"data.txt.{suffix}"
+    path.write_bytes(compress(PAYLOAD))
+    return path
+
+
+@pytest.mark.parametrize(("suffix", "compress"), _NO_SIZE_CODECS)
+def test_full_read_fills_size(
+    tmp_path: Path, suffix: str, compress: Callable[[bytes], bytes]
+) -> None:
+    path = _write(tmp_path, suffix, compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        assert member.size is None
+        assert not member.member_state_final
+        with reader.open(member) as stream:
+            assert stream.read() == PAYLOAD
+        assert member.size == len(PAYLOAD)
+        assert member.member_state_final
+        # get() returns the same member object: the listing shows the size too.
+        assert reader.get(member.name).size == len(PAYLOAD)
+
+
+@requires("brotli")
+def test_full_read_fills_brotli_size(tmp_path: Path) -> None:
+    path = _write(tmp_path, "br", _brotli)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        assert member.size is None
+        with reader.open(member) as stream:
+            assert stream.read() == PAYLOAD
+        assert member.size == len(PAYLOAD)
+
+
+def test_chunked_read_to_empty_fills_size(tmp_path: Path) -> None:
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            while stream.read(1000):
+                pass
+        assert member.size == len(PAYLOAD)
+
+
+def test_partial_read_leaves_size_unknown(tmp_path: Path) -> None:
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            # Exactly the payload's length, but no read has seen the end yet.
+            assert len(stream.read(len(PAYLOAD))) == len(PAYLOAD)
+        assert member.size is None
+        assert not member.member_state_final
+
+
+def test_read_after_a_seek_leaves_size_unknown(tmp_path: Path) -> None:
+    """A seek may resume from an index point, so the decoder's own checks did not
+    cover the whole member. Only a rewind to 0 starts a qualifying read again."""
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            stream.read(100)
+            stream.seek(5000)
+            stream.read()
+            assert member.size is None
+            stream.seek(0)
+            assert stream.read() == PAYLOAD
+        assert member.size == len(PAYLOAD)
+
+
+def test_seek_to_the_current_position_still_fills(tmp_path: Path) -> None:
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            stream.read(100)
+            stream.seek(stream.tell())
+            stream.read()
+        assert member.size == len(PAYLOAD)
+
+
+def test_truncated_read_leaves_size_unknown(tmp_path: Path) -> None:
+    path = tmp_path / "data.txt.gz"
+    path.write_bytes(gzip.compress(PAYLOAD)[:-20])
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream, pytest.raises(TruncatedError):
+            stream.read()
+        assert member.size is None
+        assert not member.member_state_final
+
+
+def test_reader_close_settles_the_member(tmp_path: Path) -> None:
+    path = _write(tmp_path, "bz2", bz2.compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        assert not member.member_state_final
+    assert member.size is None
+    assert member.member_state_final
+
+
+def test_recorded_size_is_final_from_the_listing(tmp_path: Path) -> None:
+    path = _write(tmp_path, "xz", lzma.compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        assert member.size == len(PAYLOAD)
+        assert member.member_state_final
+
+
+def test_a_copy_is_not_filled(tmp_path: Path) -> None:
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        copy = member.replace(name="renamed")
+        assert copy.member_state_final
+        with reader.open(copy) as stream:
+            stream.read()
+        assert copy.size is None
+        assert member.size == len(PAYLOAD)
+
+
+def test_streaming_pass_from_a_pipe_fills_size() -> None:
+    source = NonSeekableBytesIO(bz2.compress(PAYLOAD))
+    with open_archive(source, streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            assert member.size is None
+            assert stream is not None
+            assert stream.read() == PAYLOAD
+            assert member.size == len(PAYLOAD)
+        assert member.member_state_final
+
+
+def test_extract_all_fills_size(tmp_path: Path) -> None:
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        reader.extract_all(tmp_path / "out")
+        assert member.size == len(PAYLOAD)
+
+
+# --- gzip.isize --------------------------------------------------------------------
+
+
+def test_gzip_isize_from_a_file(tmp_path: Path) -> None:
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        assert member.extra["gzip.isize"] == len(PAYLOAD)
+        assert member.size is None
+
+
+def test_gzip_isize_is_the_size_modulo_2_32(tmp_path: Path) -> None:
+    # A real 4 GiB file is too slow to build here: patch the trailer of a small one.
+    data = bytearray(gzip.compress(PAYLOAD))
+    data[-4:] = ((len(PAYLOAD) + (1 << 32)) & 0xFFFF_FFFF).to_bytes(4, "little")
+    with open_archive(io.BytesIO(bytes(data))) as reader:
+        assert reader.members()[0].extra["gzip.isize"] == len(PAYLOAD)
+
+
+def test_gzip_isize_covers_only_the_last_member(tmp_path: Path) -> None:
+    """Several members: the trailer holds the last one's size, not the file's. The
+    full read still fills the whole size."""
+    path = tmp_path / "data.txt.gz"
+    path.write_bytes(gzip.compress(PAYLOAD) + gzip.compress(b"last"))
+    with open_archive(path) as reader:
+        member = reader.members()[0]
+        assert member.extra["gzip.isize"] == 4
+        with reader.open(member) as stream:
+            stream.read()
+        assert member.size == len(PAYLOAD) + 4
+
+
+def test_gzip_isize_not_read_from_a_pipe() -> None:
+    source = NonSeekableBytesIO(gzip.compress(PAYLOAD))
+    with open_archive(source, streaming=True) as reader:
+        member = next(iter(reader))
+        assert "gzip.isize" not in member.extra
