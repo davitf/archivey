@@ -259,7 +259,10 @@ each lands with nothing half-done reachable:
       password over a codec leaves later damage to the codec; a short WinZip AES member
       is `TruncatedError` under several passwords
       (`tests/test_zip_pipe_directory_checks.py`).
-- [ ] 3.4c A Windows reparse buffer longer than the link cap kept as far as it declares.
+- [x] 3.4c A Windows reparse buffer longer than the link cap kept as far as it declares,
+      read or not (an unread encrypted one excepted), and a folder written for a member
+      the directory makes a link taken back with the parents made for it
+      (`tests/test_zip_pipe_reparse.py`).
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
       and `access-mode-and-cost` specs, `archive-reading` (ZIP applies `max_members` at
       parse) and the `ListingLimits` docstring in `config.py`, `archive-data-model` for
