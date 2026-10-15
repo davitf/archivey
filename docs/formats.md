@@ -143,7 +143,8 @@ yielded.
   it, but only when a local header with the member's name is at the corrected offset;
   the member's CRC-32 is still checked. Each correction emits `ARCHIVE_OFFSET_WRAPPED`,
   which `DiagnosticPolicy.STRICT` refuses. A single member over 4 GiB in such an
-  archive is not read: its sizes are cut too.
+  archive is not read, and neither are the members after it: its sizes are cut too,
+  so the offsets after it cannot be corrected.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or

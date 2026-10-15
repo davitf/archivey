@@ -129,7 +129,9 @@ def _layout(
         else:
             size, crc = len(data), zlib.crc32(data)
         flags = 0 if isinstance(data, _Zeros) else _BIT3
-        local = (0, 0, 0) if flags else (crc, size, size)
+        # A size past 4 GiB is stored modulo 2³² as well, as the writer stores it.
+        stored = size % _WRAP
+        local = (0, 0, 0) if flags else (crc, stored, stored)
         header = struct.pack(
             "<4s2B4HL2L2H",
             b"PK\x03\x04",
@@ -166,8 +168,8 @@ def _layout(
                 _DOS_TIME,
                 _DOS_DATE,
                 crc,
-                size,
-                size,
+                stored,
+                stored,
                 len(stored_name),
                 0,
                 0,
@@ -279,6 +281,38 @@ def test_a_header_with_another_name_keeps_the_stored_offset() -> None:
             reader.read(members[1])
         assert reader.read(members[2]) == b"sea " * 5
         assert [c.member_name for c in _wraps(reader)] == ["c.txt", ""]
+
+
+def test_a_header_with_another_name_fails_a_pipe_at_the_directory() -> None:
+    # The pass met b.txt's local header, but no directory entry points at it, and the
+    # entry renamed x.txt points at no local header: the pass fails at the directory,
+    # as it does for any entry without a local header.
+    layout = _layout(_PAST_4_GIB, central_names={"b.txt": "x.txt"})
+    source = _ForwardOnly(layout.segments, layout.size)
+    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+        with pytest.raises(CorruptionError, match="held no local header"):
+            for _member, _stream in reader.stream_members():
+                pass
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert DiagnosticCode.ARCHIVE_UNLISTED_DATA in codes
+
+
+def test_members_after_one_over_4_gib_keep_their_stored_offsets() -> None:
+    # The large member's sizes are stored modulo 2³² too, so its end falls 2³² short
+    # and the offset after it is not below it: out of scope, and the member after it
+    # fails to read. The directory's offset is still corrected.
+    huge = _Zeros((1 << 32) + (1 << 29), 0)
+    layout = _layout([("a.txt", b"ay"), ("huge.bin", huge), ("c.txt", b"sea")])
+    with _open(layout) as reader:
+        members = reader.members()
+        assert [m.name for m in members] == ["a.txt", "huge.bin", "c.txt"]
+        assert reader.read(members[0]) == b"ay"
+        with pytest.raises(CorruptionError, match="Bad magic number for file header"):
+            reader.read(members[2])
+        wraps = _wraps(reader)
+    assert [(c.record, c.corrected_offset) for c in wraps] == [
+        ("central_directory", layout.cd_offset)
+    ]
 
 
 def test_a_directory_out_of_file_order_below_4_gib_is_not_corrected() -> None:

@@ -619,18 +619,20 @@ class CentralDirectoryWalk:
     ``ditto -c -k``) writes a classic ZIP past 4 GiB and stores every offset modulo
     2³². With ``local_name_at`` (the stored name of the local header at an absolute
     offset, ``None`` when there is none) and a classic end record, the walk undoes
-    that wrap. The members lie in directory order, so an entry whose offset falls below
-    the end of an entry before it (its offset, the fixed local header and its
-    compressed size; the furthest such end) gets 2³² added until it does not. The directory's own offset wraps the same
-    way, and then ``base`` holds a multiple of 2³²: the walk takes ``base`` modulo
-    2³² instead. Each correction is kept only when a local header with the entry's
-    name starts at the corrected offset, before the directory (for the directory's
-    offset, the first entry's header at its offset with the smaller ``base``).
-    Otherwise the entry keeps the stored offset, as without the correction, and its
-    read fails as it did. A kept correction is in
+    that wrap. The members lie in directory order, so an entry whose offset falls
+    below the end of an entry before it (its offset, the fixed local header and its
+    compressed size; the furthest such end) gets 2³² added until it does not. The
+    directory's own offset wraps the same way, and then ``base`` holds a multiple of
+    2³²: the walk takes ``base`` modulo 2³² instead. Each correction is kept only when
+    a local header with the entry's name starts at the corrected offset, before the
+    directory (for the directory's offset, the first entry's header at its offset with
+    the smaller ``base``). Otherwise the entry keeps the stored offset, as without the
+    correction, and its read fails as it did. A kept correction is in
     :attr:`CentralEntry.offset_correction`, or in :attr:`findings` for the directory.
-    An offset from a ZIP64 extra field is never corrected. Sizes past 4 GiB wrap
-    too, and they are not corrected: nothing in the archive says by how much.
+    An offset from a ZIP64 extra field is never corrected. Sizes past 4 GiB wrap too,
+    and they are not corrected: nothing in the archive says by how much. Such a member
+    then ends a multiple of 2³² short, so the members after it are not corrected
+    either.
     """
 
     def __init__(
@@ -719,6 +721,10 @@ class CentralDirectoryWalk:
                 self.findings.append(EntryOverrun(index, field, entry_end, cd_size))
 
             entry = _central_entry(fields, name, extra, comment, index=index, base=base)
+            # An offset deferred to a ZIP64 extra field is not corrected. The first
+            # entry always gets the one try at ``base``: an offset that needs ZIP64
+            # puts the directory past 4 GiB, which saturates the end record's own
+            # offset field, and such an end record is ZIP64 (no correction at all).
             if name_at_offset is not None and fields[18] != _U32_MAX:
                 offset = entry.header_offset
                 if wrapped_base is not None:
@@ -739,6 +745,7 @@ class CentralDirectoryWalk:
                         entry.header_offset = corrected
                         entry.offset_correction = corrected - offset
                         entry.stored_offset = fields[18]
+            if name_at_offset is not None:
                 member_end = (
                     entry.header_offset + LOCAL_HEADER_SIZE + entry.compressed_size
                 )

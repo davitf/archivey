@@ -577,7 +577,9 @@ SHALL NOT be corrected. Each kept correction SHALL emit `ARCHIVE_OFFSET_WRAPPED`
 `OffsetWrapContext`: one per member (`record="local_header"`), and one for the
 directory (`record="central_directory"`, no member). The member's CRC-32 SHALL be
 checked as for any member. A member whose own sizes pass 4 GiB is out of scope: its
-sizes wrap too, and nothing in the archive says by how much.
+sizes wrap too, and nothing in the archive says by how much. Its end then falls a
+multiple of 2³² short, so the members after it keep their stored offsets and their
+reads fail too.
 
 #### Scenario: offsets wrapped past 4 GiB
 
@@ -585,7 +587,8 @@ sizes wrap too, and nothing in the archive says by how much.
 | --- | --- |
 | A member of 2³² − 16 bytes, then two short members and the directory past 4 GiB, every offset stored modulo 2³² | Three members listed; the two short ones read with matching CRCs; `ARCHIVE_OFFSET_WRAPPED` twice with `record="local_header"`, then once with `record="central_directory"` |
 | Every member below 4 GiB, the last one ending past it, so only the directory's offset wraps | Members listed and read; one `ARCHIVE_OFFSET_WRAPPED` with `record="central_directory"` |
-| The first case with the directory naming one short member differently from its local header | That member keeps its stored offset and its read raises `CorruptionError`; the other is corrected |
+| The first case with the directory naming one short member differently from its local header | From a file: that member keeps its stored offset and its read raises `CorruptionError`; the other is corrected. From a pipe: the directory entry points at no local header the pass met, so the pass raises `CorruptionError` at the directory, as for any such entry, and reports the unmatched local header as `ARCHIVE_UNLISTED_DATA` |
+| A member of 2³² + 2²⁹ bytes, sizes and offsets stored modulo 2³², then a short member | Both listed and the directory's offset corrected; the short member after the large one keeps its stored offset and its read raises `CorruptionError` (out of scope, see above) |
 | A ZIP under 4 GiB whose directory lists members out of file order | No correction and no extra read: every corrected offset would be past the directory |
 | The first case under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` for `ARCHIVE_OFFSET_WRAPPED` |
 
