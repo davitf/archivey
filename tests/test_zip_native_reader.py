@@ -311,6 +311,45 @@ def test_an_entry_over_no_header_leaves_a_later_overlap_as_it_was(
     assert outcomes == [15, "corrupt", 15, "overlap", 15]
 
 
+def _with_zip64_offset(entry: bytes, offset: int) -> bytes:
+    """``entry`` stating its local header at ``offset`` through a ZIP64 extra field."""
+    out = bytearray(entry)
+    (name_len, extra_len) = struct.unpack_from("<HH", out, 28)
+    assert extra_len == 0
+    struct.pack_into("<H", out, 30, 12)
+    struct.pack_into("<I", out, 42, 0xFFFF_FFFF)
+    at = 46 + name_len
+    return bytes(out[:at] + struct.pack("<HHQ", 1, 8, offset) + out[at:])
+
+
+@pytest.mark.parametrize("offset", [1 << 45, (1 << 64) - 1], ids=["2^45", "2^64-1"])
+@pytest.mark.parametrize("damaged", [False, True], ids=["whole", "damaged"])
+def test_an_offset_no_file_can_seek_to_is_corruption(
+    offset: int, damaged: bool, tmp_path: object
+) -> None:
+    """A directory entry whose ZIP64 field puts its local header beyond what a file
+    on disk can seek to: the listing goes on, damaged directory or not, and that
+    entry's read raises ``CorruptionError``, never the seek's ``OSError``."""
+    from pathlib import Path
+
+    data = _zip()
+    a, b, c = _central_entries(data)
+    far = _with_zip64_offset(a, offset)
+    path = Path(str(tmp_path)) / "far.zip"
+    path.write_bytes(_with_directory(data, [a, far, b, _damaged(c) if damaged else c]))
+    with open_archive(path) as reader:
+        report = reader.members_report()
+        names = [m.name for m in report.members]
+        assert names == ["a.txt", "a.txt", "b.txt", "c.txt"]
+        if damaged:
+            assert type(report.error) is CorruptionError
+        else:
+            assert report.error is None
+        with raises_corruption_not_truncation(match="Absurd local-header offset"):
+            reader.read(report.members[1])
+        assert reader.read(report.members[2]) == b"b.txtb.txtb.txt"
+
+
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
     """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
     that is not, optionally pointing at ``header_offset``, and whose third directory

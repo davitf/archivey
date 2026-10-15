@@ -1649,8 +1649,13 @@ class ZipReader(BaseArchiveReader):
         return _PastDamage(walked, offsets, bounds, positions, cut)
 
     def _holds_local_header(self, offset: int) -> bool:
-        """Whether a local header's signature starts at ``offset``."""
-        return offset >= 0 and self._read_at(offset, 4) == LOCAL_HEADER_SIGNATURE
+        """Whether a local header's signature starts at ``offset``. Every local header
+        comes before the directory, so an offset at or past it is not read: a source
+        on disk cannot seek to every offset a directory entry can state."""
+        return (
+            0 <= offset < self._end.cd_start
+            and self._read_at(offset, 4) == LOCAL_HEADER_SIGNATURE
+        )
 
     def _drop_local_walk(self) -> None:
         """Free the walk over the local headers: the directory was walked whole, so
@@ -1965,7 +1970,9 @@ class ZipReader(BaseArchiveReader):
                 decoded = raw_name.decode("utf-8")
             except UnicodeDecodeError as exc:
                 # The flag says UTF-8 and the bytes are not: refused (format-zip spec).
-                # The entries before it are listed, then this raises.
+                # The entries before it are listed, then this raises. The index pass
+                # stops at the same entry (``_index_pass``); a new refusal here needs
+                # the same stop there, or the two give different overlap bounds.
                 raise CorruptionError(
                     f"Could not decode a ZIP member name: {exc!r}"
                 ) from exc
@@ -2434,6 +2441,10 @@ class ZipReader(BaseArchiveReader):
         from the central directory's, and a payload that runs into the next local
         header or the directory: the overlap guard.
         """
+        if loc.header_offset > self._end.eocd_offset:
+            # Past the end record, where no local header can start; not sought, since a
+            # source on disk cannot seek to every offset a directory entry can state.
+            raise CorruptionError(f"Absurd local-header offset: {loc.header_offset}")
         try:
             header = read_local_header(self._read_at, loc.header_offset)
         except TruncatedError as exc:
