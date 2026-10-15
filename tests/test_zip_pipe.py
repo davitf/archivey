@@ -582,10 +582,14 @@ def test_max_members_is_charged_under_streaming(source: str) -> None:
                 pass
 
 
+@pytest.mark.parametrize("junk", [b"junk", b"\x01" * (1 << 20)], ids=["short", "long"])
 @pytest.mark.parametrize("comment", [b"", b"thirteen byte"])
-def test_bytes_after_the_end_record_are_reported_as_from_a_file(comment: bytes) -> None:
-    """The report names where the junk starts after the record and its comment."""
-    data = _zip([("a.txt", b"one")], comment=comment) + b"\x00\x00junk"
+def test_bytes_after_the_end_record_are_reported_as_from_a_file(
+    comment: bytes, junk: bytes
+) -> None:
+    """The report names where the junk starts after the record and its comment, also
+    behind more junk than the end-record search reads."""
+    data = _zip([("a.txt", b"one")], comment=comment) + b"\x00\x00" + junk
 
     def trailing(source: object, streaming: bool) -> list[object]:
         with archivey.open_archive(source, streaming=streaming) as reader:  # type: ignore[arg-type]
@@ -952,27 +956,51 @@ def _with_zip64_extensible(data: bytes, extensible: int) -> bytes:
     return data[:eocd] + record + locator + data[eocd:]
 
 
+def _with_bytes_before_directory(data: bytes, gap: int) -> bytes:
+    """``data`` with ``gap`` bytes between its last member and its directory, the end
+    record's directory offset moved past them: what no listing limit counts."""
+    eocd = data.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
+    out = bytearray(data[:cd_offset] + b"\x01" * gap + data[cd_offset:])
+    struct.pack_into("<I", out, eocd + gap + 16, cd_offset + gap)
+    return bytes(out)
+
+
 def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> None:
     """The pass keeps what a directory within the listing limits takes, plus room for
-    the records after it; a directory that starts before that is out of reach."""
+    the records after it, at both ends of what follows the members: a directory right
+    after them is read however much follows it, and one further from both ends is
+    out of reach."""
     limits = ListingLimits(max_members=2, max_metadata_bytes=200_000)
     config = archivey.ArchiveyConfig(listing_limits=limits)
     plain = _zip([("a.txt", b"one"), ("b.txt", b"two")])
-    # What the pass keeps: two 46-byte headers, the text the limit allows, and four
-    # end-record search windows. After the members come the directory (102 bytes),
-    # the ZIP64 end record (56 and its extensible data), its locator (20) and the end
-    # record (22): 200 bytes and the extensible data.
+    # What the pass keeps at each end: two 46-byte headers, the text the limit
+    # allows, and four end-record search windows. After the directory (102 bytes)
+    # come the ZIP64 end record (56 and its extensible data), its locator (20) and
+    # the end record (22): 200 bytes and the extensible data.
     keep = 2 * 46 + 200_000 + 4 * 65_558
-    inside = _with_zip64_extensible(plain, keep - 200 - 100)
     far = _with_zip64_extensible(plain, keep - 200 + 100)
-    for data in (inside, far):
+    # The same, with bytes between the members and the directory: the directory and
+    # the ZIP64 end record after it are past what the pass keeps after the members.
+    out_of_reach = _with_zip64_extensible(
+        _with_bytes_before_directory(plain, keep + 1000), keep - 200 + 100
+    )
+    for data in (far, out_of_reach):
         assert [m["name"] for m in _seekable_view(data)[0]] == ["a.txt", "b.txt"]
-    with archivey.open_archive(_pipe(inside), streaming=True, config=config) as reader:
-        assert [m.name for m, _ in reader.stream_members()] == ["a.txt", "b.txt"]
-        assert [m.name for m in reader.members_report().members] == ["a.txt", "b.txt"]
-    # The ZIP64 end record itself before what the pass keeps: the locator names it
-    # in bytes the bound dropped.
-    record_dropped = _with_zip64_extensible(plain, keep + 5000)
+    # And with more junk after the end record than the pass keeps at the end.
+    junk_after = plain + b"\x01" * (2 * keep)
+    for data in (far, junk_after):
+        with archivey.open_archive(
+            _pipe(data), streaming=True, config=config
+        ) as reader:
+            assert [m.name for m, _ in reader.stream_members()] == ["a.txt", "b.txt"]
+            listed = reader.members_report().members
+            assert [m.name for m in listed] == ["a.txt", "b.txt"]
+    # The ZIP64 end record itself out of reach: the locator names it in bytes the
+    # bound dropped.
+    record_dropped = _with_zip64_extensible(
+        _with_bytes_before_directory(plain, keep + 1000), keep + 5000
+    )
     assert [m["name"] for m in _seekable_view(record_dropped)[0]] == ["a.txt", "b.txt"]
     # A record signature right before the locator, in the extensible data: the
     # file read's fallback for prepended data takes only a whole record that fits
@@ -990,7 +1018,7 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     whole = record_dropped[:adjacent] + whole_record + record_dropped[adjacent + 56 :]
     assert [m["name"] for m in _seekable_view(whole)[0]] == ["a.txt", "b.txt"]
     cases = (
-        (far, "ZIP central directory starts"),
+        (out_of_reach, "ZIP central directory starts"),
         (record_dropped, "ZIP64 end of central directory record starts"),
         (decoy, "ZIP64 end of central directory record starts"),
         (whole, "ZIP64 end of central directory record starts"),

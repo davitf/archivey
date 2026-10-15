@@ -468,9 +468,11 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   listing limits: each entry's 46-byte header and its text, plus four end-record
   search windows (`_tail_bound` in `zip_forward_reader.py` says what each is for).
   While reading it holds that plus one 64 KiB chunk, and joining the kept chunks at
-  the end holds them twice for that moment. Past the bound it keeps the last bytes,
-  where the end record is, and a directory or ZIP64 end record that starts before
-  them is `ResourceLimitError`. End records that place the directory or the ZIP64 end
+  the end holds them twice for that moment. Past the bound it keeps as many bytes at
+  each end of what follows the members: the first hold a directory right after them,
+  read by stepping over it to the end record when more than the search window follows
+  the archive, and the last hold one that ends the stream. A directory or ZIP64 end
+  record further from both is `ResourceLimitError`. End records that place the directory or the ZIP64 end
   record among the members' data, which the pass has read past, are
   `CorruptionError`; a file read would read them there. A ZIP64 end record right
   before its locator that passes the file read's checks, shifted from where the

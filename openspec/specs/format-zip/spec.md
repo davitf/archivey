@@ -453,9 +453,12 @@ SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="zip"`,
 offset of that byte past the end. It is a warning by default and raises under
 `DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes
 inside the declared comment are the comment, whatever they hold. The end record is
-searched for in the last 65 558 bytes of the file, so a tail longer than that hides it
-and the archive is not opened; a stub before the archive moves nothing. 7-Zip 23.01
-warns on any tail; Info-ZIP `unzip` says nothing.
+searched for in the last 65 558 bytes of the file. When a longer tail hides it, the
+reader SHALL walk the local headers from the start, without decoding any member, to
+where the members end, and step over the directory, a digital signature record and the
+ZIP64 end records there to the end record, which is then read as one the search found;
+a read from a pipe steps over the same records after its pass. A stub before the
+archive moves nothing. 7-Zip 23.01 warns on any tail; Info-ZIP `unzip` says nothing.
 
 #### Scenario: ZIP trailing bytes
 
@@ -466,6 +469,8 @@ warns on any tail; Info-ZIP `unzip` says nothing.
 | 0, 100 or 60 000 zero bytes then `JUNK` after the end record or its comment | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0, 100 or 60 000; members list and read |
 | A 1000-byte stub before the archive, 7 zero bytes and `JUNK` after it | `observed_bytes` 7 |
 | `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
+| 1 MiB of non-zero bytes after the end record, from a file or a pipe | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0; members list and read |
+| The same with the directory gone | `CorruptionError` at open: no end record |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 

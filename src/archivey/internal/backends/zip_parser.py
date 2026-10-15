@@ -8,7 +8,8 @@ Layout this parser assumes::
     [ ZIP64 end record · ZIP64 locator ]?                 # PK\\x06\\x06, PK\\x06\\x07
     [ end of central directory record · comment ]         # PK\\x05\\x06
 
-Call graph: :func:`find_end_record` (from the tail) → :class:`CentralDirectoryWalk`
+Call graph: :func:`find_end_record` (from the tail, or past the directory after the
+members) → :class:`CentralDirectoryWalk`
 (forward over the directory, one :class:`CentralEntry` at a time) →
 :func:`read_local_header` (per member, when its data is wanted).
 
@@ -53,6 +54,8 @@ EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
 ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"
 CENTRAL_HEADER_SIGNATURE = b"PK\x01\x02"
+# APPNOTE §4.3.13: after the directory's last header, before any ZIP64 end record.
+DIGITAL_SIGNATURE_SIGNATURE = b"PK\x05\x05"
 # Archive extra data record: written in front of a central directory that PKWARE
 # Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
 ARCHIVE_EXTRA_DATA_SIGNATURE = b"PK\x06\x08"
@@ -134,7 +137,12 @@ class EndRecord:
         return self.cd_offset + self.base
 
 
-def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
+def find_end_record(
+    read_at: ReadAt,
+    file_size: int,
+    *,
+    members_end: Callable[[], int | None] | None = None,
+) -> EndRecord:
     """Locate and read the end record, and the ZIP64 records when there are some.
 
     The search is stdlib's older one: a comment-less record ending at end of file, then
@@ -143,11 +151,21 @@ def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord:
     any. A decoy signature earlier in the file, in the comment or in the record's own
     fields therefore cannot make the two disagree.
 
+    When the search finds none (more trailing bytes than the window holds),
+    ``members_end`` is called for where the members end, which the caller knows from a
+    walk over the local headers (``None`` when the walk found no end), and the record
+    is found by stepping over the directory from there
+    (:func:`locate_record_after_directory`).
+
     Raises ``UnsupportedFeatureError`` for a record that names another disk (a spanned
     set) and for an encrypted central directory (PKWARE Strong Encryption), and
     ``CorruptionError`` when no record is found or the records contradict each other.
     """
     found = locate_classic_record(read_at, file_size)
+    if found is None and members_end is not None:
+        directory_at = members_end()
+        if directory_at is not None:
+            found = locate_record_after_directory(read_at, file_size, directory_at)
     if found is None:
         raise CorruptionError(
             "truncated or corrupt ZIP (no end of central directory record found)"
@@ -219,6 +237,70 @@ def locate_classic_record(
     (comment_declared,) = struct.unpack_from("<H", record, 20)
     comment = window[idx + EOCD_SIZE : idx + EOCD_SIZE + comment_declared]
     return window_start + idx, record, comment
+
+
+def locate_record_after_directory(
+    read_at: ReadAt, file_size: int, directory_at: int
+) -> tuple[int, bytes, bytes] | None:
+    """``(offset, record, comment)`` of the classic end record that follows the
+    directory starting at ``directory_at``, or ``None``.
+
+    Steps over what may lie between the members and the end record, in the order
+    APPNOTE §4.3.6 gives: the directory's headers, a digital signature record, a ZIP64
+    end record and its locator. Each step reads a length field, so only the records'
+    fixed parts are read, not searched. ``None`` when anything else comes first, a
+    record comes out of that order, or the file ends before the end record.
+    """
+    order = (
+        CENTRAL_HEADER_SIGNATURE,
+        DIGITAL_SIGNATURE_SIGNATURE,
+        ZIP64_EOCD_SIGNATURE,
+        ZIP64_LOCATOR_SIGNATURE,
+        EOCD_SIGNATURE,
+    )
+    buffer = b""
+    buffer_at = 0
+
+    def fixed(pos: int, n: int) -> bytes:
+        # The directory is read forward in pieces, not one read per header.
+        nonlocal buffer, buffer_at
+        if not buffer_at <= pos <= pos + n <= buffer_at + len(buffer):
+            buffer_at = pos
+            buffer = read_at(pos, max(n, min(_WALK_CHUNK, file_size - pos)))
+        return buffer[pos - buffer_at : pos - buffer_at + n]
+
+    pos = directory_at
+    stage = 0
+    while pos + 4 <= file_size:
+        sig = fixed(pos, 4)
+        if sig not in order or order.index(sig) < stage:
+            return None
+        stage = order.index(sig)
+        if sig == CENTRAL_HEADER_SIGNATURE:
+            header = fixed(pos, CENTRAL_HEADER_SIZE)
+            if len(header) != CENTRAL_HEADER_SIZE:
+                return None
+            name_len, extra_len, comment_len = struct.unpack_from("<3H", header, 28)
+            pos += CENTRAL_HEADER_SIZE + name_len + extra_len + comment_len
+        elif sig == DIGITAL_SIGNATURE_SIGNATURE:
+            header = fixed(pos, 6)
+            if len(header) != 6:
+                return None
+            pos += 6 + struct.unpack_from("<H", header, 4)[0]
+        elif sig == ZIP64_EOCD_SIGNATURE:
+            header = fixed(pos, 12)
+            if len(header) != 12:
+                return None
+            pos += 12 + struct.unpack_from("<Q", header, 4)[0]
+        elif sig == ZIP64_LOCATOR_SIGNATURE:
+            pos += ZIP64_LOCATOR_SIZE
+        else:
+            record = read_at(pos, EOCD_SIZE)
+            if len(record) != EOCD_SIZE:
+                return None
+            (comment_declared,) = struct.unpack_from("<H", record, 20)
+            return pos, record, read_at(pos + EOCD_SIZE, comment_declared)
+    return None
 
 
 def read_zip64_locator(read_at: ReadAt, eocd_offset: int) -> tuple[int, int] | None:

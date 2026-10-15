@@ -94,6 +94,7 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
     validate_zip_local_header,
 )
+from archivey.internal.backends.zip_local_walk import LocalHeaderWalk
 from archivey.internal.backends.zip_parser import (
     CENTRAL_HEADER_SIZE,
     EOCD_SIZE,
@@ -1006,7 +1007,9 @@ class ZipReader(BaseArchiveReader):
         self._fp = handle
         file_size = handle.seek(0, io.SEEK_END)
         try:
-            self._end: EndRecord = find_end_record(self._read_at, file_size)
+            self._end: EndRecord = find_end_record(
+                self._read_at, file_size, members_end=self._walk_past_members
+            )
         except ArchiveyError as exc:
             if isinstance(exc, CorruptionError):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
@@ -1024,6 +1027,29 @@ class ZipReader(BaseArchiveReader):
         self._member_count: int | None = None
         self._count_known = False
         self._report_trailing_data()
+
+    def _walk_past_members(self) -> int | None:
+        """Where the members end, found by walking their local headers from the start:
+        for an end record the tail search does not find, behind more trailing bytes
+        than its window holds. ``None`` when the walk does not get past the members.
+
+        The walk is the one a read from a pipe makes, with no data decoded: a member
+        whose local header states its size is seeked over, and a bit-3 member's data
+        is scanned for its descriptor. Run once, at open, before anything else reads
+        the handle.
+        """
+        with self._lock:
+            fp = self._fp
+            if fp is None:
+                raise _closed_archive_error()
+            fp.seek(0)
+            walk = LocalHeaderWalk(fp)
+            try:
+                while (entry := walk.next_entry()) is not None:
+                    walk.skip_member(entry)
+            except ArchiveyError:
+                return None
+            return walk.source.offset
 
     def _read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes at absolute ``offset``, under the reader's lock.
