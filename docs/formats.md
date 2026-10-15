@@ -196,7 +196,8 @@ yielded.
   writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in
   both cases `extra["special_file_type"]` names the stored kind. The mode is read only
   when "version made by" says Unix.
-- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
+- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8 when the stored bytes
+  are valid UTF-8 (otherwise see the wrongly-set flag below). For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise uses the
   `encoding=` you passed to `open_archive`, or without one a configurable legacy encoding
@@ -204,9 +205,10 @@ yielded.
   inferred for an unflagged name, a `member_name_encoding_inferred` diagnostic records it.
   So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
   Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
-  name. Comments decode the same way: a member comment follows its name's flag, and the
-  archive comment, which has no flag, decodes as an unflagged name. A byte the chosen
-  encoding does not define stays in the comment as a surrogate escape, as in a name. One
+  name. Comments decode the same way: a member comment follows its name's flag (a flag
+  the name's bytes refute counts as unset for the comment too), and the archive
+  comment, which has no flag, decodes as an unflagged name. A byte the chosen encoding
+  does not define stays in the comment as a surrogate escape, as in a name. One
   signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
   the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A

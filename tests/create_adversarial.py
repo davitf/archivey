@@ -217,14 +217,12 @@ def _tar_splice(base: bytes, token: bytes, replacement: bytes) -> bytes:
 # --- corpus manifest --------------------------------------------------------------
 
 
-OpenOutcome = Literal["success", "corruption"]
 ExtractOutcome = Literal[
     "success",
     "path_traversal",
     "symlink_escape",
     "filesystem_name_refusal",
     "deceptive_name",
-    "not_reached",
 ]
 
 
@@ -240,7 +238,6 @@ class Adversarial:
     expected_link_target: str | None = None
     expected_comment: str | None = None
     utf8_flag: bool = False
-    open_outcome: OpenOutcome = "success"
     extract_outcome: ExtractOutcome = "success"
     warning_text: str | None = None
 
@@ -258,16 +255,11 @@ def _zip_name_case(
     key: str,
     *,
     utf8: bool,
-    open_outcome: OpenOutcome = "success",
     extract_outcome: ExtractOutcome = "success",
     warning_text: str | None = None,
 ) -> Adversarial:
     raw = _padded(_HOSTILE[key], len(_NAME))
-    decoded = (
-        raw.decode("utf-8" if utf8 and _is_utf8(raw) else "cp437")
-        if open_outcome == "success"
-        else None
-    )
+    decoded = raw.decode("utf-8" if utf8 and _is_utf8(raw) else "cp437")
     return Adversarial(
         id=case_id,
         fmt="zip",
@@ -277,9 +269,8 @@ def _zip_name_case(
         field="name",
         stored_name=raw,
         expected_name=decoded,
-        expected_raw_name=raw if decoded is not None else None,
+        expected_raw_name=raw,
         utf8_flag=utf8,
-        open_outcome=open_outcome,
         extract_outcome=extract_outcome,
         warning_text=warning_text,
     )

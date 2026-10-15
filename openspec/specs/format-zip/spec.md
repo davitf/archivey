@@ -253,7 +253,8 @@ data's end; a bit-3 LZMA member without the end-of-stream marker is refused wher
 read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
 its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
-makes is raised by a file read before anything is written and by the pass after every member is written, the files staying on disk.
+makes is raised by a file read before anything is written and by the pass after every
+member is written, the files staying on disk.
 
 #### Scenario: non-seekable read matrix
 
@@ -766,12 +767,6 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
   `MEMBER_NAME_ENCODING_INFERRED` records the codec used with
   `declared_encoding="utf-8"`; `DiagnosticPolicy.STRICT` refuses the archive
 
-#### Scenario: A flagged name that is not UTF-8
-
-- **WHEN** bit 11 is set and the stored name is not valid UTF-8
-- **THEN** the listing raises `CorruptionError` at that entry, after the members before
-  it
-
 #### Scenario: Unicode Path extra field
 
 | Case | Expected |
@@ -786,17 +781,24 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 ### Requirement: Decode ZIP comments as unflagged names are decoded
 
 APPNOTE puts a member comment under the same bit 11 as its name, and gives the archive
-comment no flag. A member comment whose bit 11 is clear, and the archive comment, SHALL
-decode as an unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
+comment no flag. A member comment whose bit 11 is clear or set over a name that is not
+valid UTF-8 (a flag the name's bytes refute), and the archive comment, SHALL decode as an
+unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
 `encoding=`, else `zip_unflagged_fallback_encoding` (default cp437). The `encoding=` and
 fallback steps SHALL be the ones a name uses. A byte the chosen codec leaves undefined
-SHALL survive as a lone surrogate, as it does in a name. A member comment whose bit 11 is
-set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and SHALL
-ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
+SHALL survive as a lone surrogate, as it does in a name. Any other member comment whose
+bit 11 is set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and
+SHALL ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
 `MEMBER_NAME_ENCODING_INFERRED`.
 
 #### Scenario: A flagged member comment ignores `encoding=`
 
-- **WHEN** a member with bit 11 set has a comment whose bytes are not valid UTF-8, and
-  the archive is opened with `encoding="cp1251"`
+- **WHEN** a member with bit 11 set and a valid UTF-8 name has a comment whose bytes are
+  not valid UTF-8, and the archive is opened with `encoding="cp1251"`
 - **THEN** the comment is the cp437 reading of the bytes, not the cp1251 one
+
+#### Scenario: A flag the name refutes does not cover the comment
+
+- **WHEN** a member with bit 11 set has the name `caf\xe9.txt` and the comment
+  `caf\xe9ine`, and the archive is opened with `encoding="cp1252"`
+- **THEN** the name is `café.txt` and the comment `caféine`, both decoded as unflagged

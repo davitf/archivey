@@ -396,7 +396,7 @@ differs from Python's `zipfile`
 without the flag.
 
 Comments follow the same rule. A ZIP member comment decodes as its name would (the
-UTF-8 flag covers both), and the archive comment, which has no flag, decodes as a name
+UTF-8 flag covers both, and a flag the name's bytes refute counts for neither), and the archive comment, which has no flag, decodes as a name
 without one. A RAR 1.5-4 comment decodes as UTF-8 when it is valid, otherwise with your
 `encoding=`, and otherwise as windows-1252. In both formats a byte the chosen encoding
 does not define becomes a surrogate escape, as in a name, so a comment can raise

@@ -1009,9 +1009,9 @@ class _DecodedName(NamedTuple):
     """The header's bytes, when the Unicode Path field named the entry instead."""
     inferred_encoding: str | None
     """The codec a sniff chose over the default, for the diagnostic."""
-    flag_overridden: bool
-    """The UTF-8 flag is set and the bytes are not UTF-8, so the name was decoded as
-    an unflagged one with ``inferred_encoding``."""
+    declared_encoding: str | None
+    """``"utf-8"`` when the UTF-8 flag is set over bytes that are not UTF-8, so the
+    name and its comment decode as unflagged ones; ``None`` otherwise."""
     unicode_extra_fault: str | None
     """Why a malformed Unicode Path field was dropped, for the diagnostic."""
 
@@ -1973,7 +1973,7 @@ class ZipReader(BaseArchiveReader):
                     raw_name=raw_name,
                     alternate_raw_name=None,
                     inferred_encoding=codec,
-                    flag_overridden=True,
+                    declared_encoding="utf-8",
                     unicode_extra_fault=None,
                 )
         else:
@@ -2016,7 +2016,7 @@ class ZipReader(BaseArchiveReader):
             raw_name=raw_name,
             alternate_raw_name=alternate_raw_name,
             inferred_encoding=inferred_encoding,
-            flag_overridden=False,
+            declared_encoding=None,
             unicode_extra_fault=unicode_extra_fault,
         )
 
@@ -2172,23 +2172,25 @@ class ZipReader(BaseArchiveReader):
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         if entry.comment:
-            # APPNOTE puts the member comment under the name's UTF-8 flag.
+            # APPNOTE puts the member comment under the name's UTF-8 flag, so a flag
+            # the name's bytes refute is not trusted for the comment either.
             member.comment = (
                 _decode_with_fallback(entry.comment)
                 if entry.flags & _ZIP_MASK_UTF8
+                and decoded_name.declared_encoding is None
                 else self._decode_unflagged_comment(entry.comment)
             )
         member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
         inferred_encoding = decoded_name.inferred_encoding
-        if decoded_name.flag_overridden:
-            assert inferred_encoding is not None
+        declared_encoding = decoded_name.declared_encoding
+        if inferred_encoding is not None and declared_encoding is not None:
             self._emit_name_encoding_inferred(
                 member,
                 index,
                 inferred_encoding=inferred_encoding,
-                passed_over="utf-8",
+                passed_over=declared_encoding,
                 message=(
                     f"ZIP member name decoded as {inferred_encoding!r}: its UTF-8 flag "
                     f"is set but the name is not valid UTF-8: {quoted(member.name)}"

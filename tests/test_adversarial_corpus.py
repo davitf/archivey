@@ -20,7 +20,6 @@ from archivey.exceptions import (
     FilterRejectionError,
 )
 from tests import create_adversarial as gen
-from tests.corruption_util import raises_corruption_not_truncation
 from tests.create_adversarial import (
     Adversarial,
     adversarial_archives,
@@ -114,14 +113,6 @@ def test_adversarial_open_list_read_semantics(
     blob: bytes,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    if entry.open_outcome == "corruption":
-        # The open reads only the end record; the listing raises at the entry.
-        with open_archive(io.BytesIO(blob)) as archive:
-            with raises_corruption_not_truncation() as caught:
-                archive.members()
-        assert isinstance(caught.value.__cause__, UnicodeDecodeError)
-        return
-
     with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
         with open_archive(io.BytesIO(blob)) as archive:
             members = archive.members()
@@ -191,11 +182,7 @@ _REFUSAL_MESSAGE = {
 }
 
 
-@pytest.mark.parametrize(
-    ("entry", "blob"),
-    [case for case in _CASES if case[0].open_outcome == "success"],
-    ids=[entry.id for entry, _ in _CASES if entry.open_outcome == "success"],
-)
+@pytest.mark.parametrize(("entry", "blob"), _CASES, ids=_IDS)
 def test_adversarial_extract_has_exact_outcome(
     entry: Adversarial, blob: bytes, tmp_path: Path
 ) -> None:
