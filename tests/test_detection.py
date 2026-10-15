@@ -1630,9 +1630,9 @@ def test_empty_listing_rescan_detects_under_the_config_budget(
     assert probe.on_diagnostic is None
 
 
-def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> None:
-    """Under ``STRICT`` the rescan's own findings neither reach the caller nor raise
-    inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
+def test_empty_listing_rescan_stays_internal(tmp_path: Path) -> None:
+    """Under a policy that raises on the conflict, the rescan's own findings neither
+    reach the caller nor raise inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
     empty archive and nothing else, because detection does identify it as ZIP."""
     from archivey import open_archive
     from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticPolicy
@@ -1644,7 +1644,10 @@ def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> Non
     path.write_bytes(buf.getvalue())
     seen: list[Diagnostic] = []
     config = ArchiveyConfig(
-        diagnostic_policy=DiagnosticPolicy.STRICT, on_diagnostic=seen.append
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on=frozenset({DiagnosticCode.FORMAT_EXTENSION_CONFLICT})
+        ),
+        on_diagnostic=seen.append,
     )
     with open_archive(path, format=ArchiveFormat.ZIP, config=config) as reader:
         assert list(reader) == []
