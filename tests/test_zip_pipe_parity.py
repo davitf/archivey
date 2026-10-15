@@ -452,9 +452,10 @@ def _with_zip64_records(data: bytes, *, saturated: bool, damage: str) -> bytes:
     locator names an offset past itself), ``"into-members"`` (it names offset 5),
     ``"lone-locator"`` (no record, the locator naming offset 5, so the directory ends
     at the locator) or ``"no-directory"`` (``"record"`` with the classic record's
-    directory size one byte long, so no place it names starts at a central header
-    and the classic record cannot stand in). ``saturated`` puts the ZIP64 sentinel in the count, size and
-    offset fields of the classic record, so only the ZIP64 record holds them."""
+    directory size one byte longer than the directory, so no place it names starts at
+    a central header and the classic record cannot stand in). ``saturated`` puts the
+    ZIP64 sentinel in the count, size and offset fields of the classic record, so only
+    the ZIP64 record holds them."""
     eocd = data.rindex(b"PK\x05\x06")
     _sig, _disk, _cd_disk, _here, entries, cd_size, cd_offset, _comment = struct.unpack(
         "<4s4H2LH", data[eocd : eocd + 22]
@@ -530,9 +531,9 @@ def test_damaged_end_records_read_from_a_file_as_from_a_pipe(
     data: bytes, raised: str | None, tmp_path: Path
 ) -> None:
     """A classic end record that needs none of the ZIP64 fields stands in for them,
-    reported; end records that cannot be used (a saturated classic record, a
-    directory before the file's start) list the members the local headers hold, then
-    raise. Either way the two reads list, read and write alike."""
+    reported; end records that cannot be used (a saturated classic record, no place
+    that fits the directory's end, a directory before the file's start) list the
+    members the local headers hold, then raise. Either way the two reads list, read and write alike."""
     from_file = _report(data, piped=False)
     assert from_file == _report(data, piped=True)
     assert isinstance(from_file, tuple)

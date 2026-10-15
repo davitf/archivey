@@ -590,11 +590,11 @@ Some writers add ZIP64 end records whether a value needs them or not, so a class
 record often holds every value itself. When the ZIP64 record a locator announces cannot
 be used (missing, not matching the locator, or named past the locator) and no classic
 field holds the ZIP64 sentinel, both reads use the classic record and report
-`ARCHIVE_EOF_MARKER_MISSING` (marker `zip64_end_of_central_directory`,
-`observed_kind` `"absent"`, `observed_bytes` the locator's offset); `STRICT` refuses it. Without a
-ZIP64 record the directory's end is not known from the records, so the parser takes the
-first place, of where the locator names the record, right before the locator and the
-locator itself, that sits `cd_size` bytes after a central header.
+`ARCHIVE_EOF_MARKER_MISSING` (marker `zip64_end_of_central_directory`, `observed_kind`
+`"absent"`, `observed_bytes` the locator's offset); `STRICT` refuses it. Without a ZIP64
+record the directory's end is not known from the records, so the parser takes the first
+place, of where the locator names the record, right before the locator and the locator
+itself, that sits `cd_size` bytes after a central header.
 
 When a classic field holds the sentinel, or no place fits, the end records cannot be
 used, and the parser raises as before. The file read then walks the local headers and
@@ -604,8 +604,10 @@ before the start of the file is read the same way. A locator naming an offset am
 the members' data, which the pass has passed, reads the same on both sides: with the
 classic record standing in, the pass takes it as the file read does, which differs
 only when crafted member data holds a ZIP64 record that matches the locator; with a
-saturated classic record, both raise, the pass in its own words. A locator naming
-another disk is still a split set.
+saturated classic record, both raise, the pass in its own words. A locator naming bytes
+the pass's listing limits dropped stays a `ResourceLimitError` from a pipe, where a file
+read lets the classic record stand in: higher limits keep those bytes, and the pass then
+reads what the file read reads. A locator naming another disk is still a split set.
 
 ### What the caller sees in a forward pass
 

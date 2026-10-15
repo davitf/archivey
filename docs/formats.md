@@ -133,9 +133,9 @@ yielded.
   gone (a download cut short) lists the members its local headers hold, without the
   mode, host or comment only the directory has, then raises `TruncatedError` (or
   `CorruptionError` when other bytes stand where the directory should be). Damaged
-  ZIP64 end records are read past when the end record holds every value itself
-  (`ARCHIVE_EOF_MARKER_MISSING`); when it does not, the members the local headers
-  hold are listed, then `CorruptionError` is raised.
+  ZIP64 end records are read past when the end record holds every value itself and
+  the directory's end can be placed (`ARCHIVE_EOF_MARKER_MISSING`); otherwise the
+  members the local headers hold are listed, then `CorruptionError` is raised.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or

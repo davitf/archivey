@@ -538,7 +538,10 @@ central header: where the locator names the record, right before the locator, at
 locator. When a classic field holds the sentinel, or no such place exists, a file read
 SHALL list the members the local headers hold and then raise the end records' error,
 as a read from a pipe does (Requirement: List a ZIP whose end record is missing). A
-locator naming another disk SHALL stay refused as a split set.
+read from a pipe whose listing limits dropped the bytes the locator names SHALL raise
+`ResourceLimitError` instead of using the classic record: higher limits keep those
+bytes, and the pass then reads what a file read reads. A locator naming another disk
+SHALL stay refused as a split set.
 
 #### Scenario: damaged ZIP64 end records
 
@@ -548,7 +551,8 @@ locator naming another disk SHALL stay refused as a split set.
 | The locator names an offset past itself, classic fields unsaturated | The same |
 | The locator names an offset among the members' data, classic fields unsaturated | The same; the pass's message says it passed those bytes |
 | A locator with no ZIP64 record, naming an offset among the members' data; the directory ends at the locator; classic fields unsaturated | The same |
-| The ZIP64 record's signature damaged and the classic directory size one byte long, so no place fits a directory; classic fields unsaturated | Three members as their local headers say, then `CorruptionError`, from a file and a pipe alike |
+| The ZIP64 record's signature damaged and the classic directory size one byte longer than the directory, so no place fits a directory; classic fields unsaturated | Three members as their local headers say, then `CorruptionError`, from a file and a pipe alike |
+| A locator naming an offset in bytes a pipe's listing limits dropped, classic fields unsaturated | Members listed from a file with `ARCHIVE_EOF_MARKER_MISSING`; `ResourceLimitError` from a pipe |
 | Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
 | A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
 
