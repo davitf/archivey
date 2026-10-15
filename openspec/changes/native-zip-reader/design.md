@@ -655,8 +655,9 @@ A walk that meets more local headers than `max_members` stops there and the arch
 opens. The listing then raises the limit as when the directory's entries cross it:
 a streaming pass, from a file as from a pipe, yields the members before it first, and
 a random-access listing lists none, since there only damage keeps the members before
-it. The listing is the walk's, not an upfront index, so `members_report_if_available()`
-returns `None` until a pass publishes a report, as for a pipe read.
+it. After that streaming pass `members_report_if_available()` returns `None`, as for a
+pipe read; it is the general rule for a streaming pass that raised a limit, which a
+whole ZIP crossing the limit in its directory follows too.
 
 ## What the parser removes
 

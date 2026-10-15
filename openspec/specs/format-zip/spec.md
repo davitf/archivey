@@ -490,8 +490,8 @@ that meets more local headers than `max_members` SHALL stop there and the archiv
 SHALL open; the listing then raises `ResourceLimitError` as when the directory's
 entries cross the limit: a streaming pass, from a file as from a pipe, yields the
 members before it first, and a random-access listing lists none.
-`members_report_if_available()` SHALL return `None` for a ZIP listed from its local
-headers, as for a pipe read, until a pass has published a report.
+After that streaming pass, `members_report_if_available()` SHALL return `None`, as for
+a pipe read.
 
 Two shapes read differently from a pipe, which decodes each member as it passes:
 

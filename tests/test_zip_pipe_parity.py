@@ -25,9 +25,11 @@ import pytest
 
 import archivey
 from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.cost import ListingCost
 from archivey.exceptions import (
     ArchiveyError,
     ResourceLimitError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.types import HashAlgorithm, OnError
@@ -429,3 +431,31 @@ def test_a_zip_with_no_end_record_streams_to_the_limit_from_a_file_as_from_a_pip
     yielded, _error, report = from_file
     assert [name for name, _ in yielded] == ["m0.txt", "m1.txt"]
     assert report is None
+
+
+def test_a_whole_zip_streamed_past_its_directory_limit_has_no_report_to_peek() -> None:
+    """The same rule one case over: a seekable ZIP whose directory crosses
+    ``max_members`` yields the members before it, then raises, and the peek returns
+    ``None`` as from a pipe. Its end record declares one entry, so the open does not
+    refuse the count before the directory is walked."""
+    data = bytearray(_members_zip(pipe=False))
+    end = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, end + 8, 1, 1)
+    data = bytes(data)
+    for seekable in (True, False):
+        yielded, _error, report = _stream_past_the_limit(data, seekable=seekable)
+        assert [name for name, _ in yielded] == ["m0.txt", "m1.txt"]
+        assert report is None
+
+
+def test_a_zip_with_no_end_record_peeks_its_listing_as_an_index() -> None:
+    """Random access, its listing is an index (``listing_cost=INDEXED``): the peek
+    returns the members and the walk's error, as ``members_report()`` does."""
+    data = _members_zip(pipe=False)
+    data = data[: data.index(b"PK\x01\x02")]
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        assert reader.info.cost.listing_cost is ListingCost.INDEXED
+        peeked = reader.members_report_if_available()
+        assert peeked is not None
+        assert [m.name for m in peeked.members] == ["m0.txt", "m1.txt", "m2.txt"]
+        assert isinstance(peeked.error, TruncatedError)

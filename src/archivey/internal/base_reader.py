@@ -2882,13 +2882,19 @@ class BaseArchiveReader(ArchiveReader):
 
         On an upfront index this drains the reader's one member walk, which reads no
         member data. A walk that ends in terminal archive damage is returned as the
-        incomplete report (prefix plus ``error``), not raised.
+        incomplete report (prefix plus ``error``), not raised. After a streaming pass
+        stopped by a listing limit, ``None``, as on a reader with no index.
         """
         self._state.require_open("members_report_if_available()")
         published = self._published_within_limits()
         if published is not None:
             return published.report
-        if not self._MEMBER_LIST_UPFRONT:
+        if not self._MEMBER_LIST_UPFRONT or isinstance(
+            self._walk_failure, ResourceLimitError
+        ):
+            # A streaming pass stopped by a listing limit handed out a prefix it
+            # cannot walk again, so there is no report without a scan, as on a
+            # reader with no index. Any other failure still raises the poison.
             return None
         self._ensure_walked()
         materialized = self._materialized

@@ -206,6 +206,7 @@ report to a caller MUST NOT change the complete-or-raise behaviour of `members()
 | `members_report_if_available()` twice on an upfront index | Same member objects both times |
 | ZIP symlink held from a peek, then `members()` | `members()` returns that same object, now with its link fields set |
 | Upfront index whose listing ends in terminal damage | Incomplete report (prefix plus `error`); `members()` still raises |
+| Streaming pass that raised a listing limit, upfront index or not | `None`, as from a pipe: the pass handed out its prefix and cannot be walked again |
 
 ### Requirement: Access mode × method behaviour summary
 
