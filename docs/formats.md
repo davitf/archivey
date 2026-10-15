@@ -143,10 +143,12 @@ yielded.
   members before it, but only when a local header with the member's name is at the
   corrected offset; the member's CRC-32 is still checked. Each correction emits
   `ARCHIVE_OFFSET_WRAPPED`, which `DiagnosticPolicy.STRICT` does not raise on, since
-  macOS writes such archives by default. A single member over 4 GiB in such an
-  archive raises when read, at its cut size. When it is over 4 GiB even compressed,
-  the members after it are not read either, because their offsets cannot be
-  corrected past it.
+  macOS writes such archives by default. A single member over 4 GiB has its sizes
+  cut too. Archivey corrects them for entries carrying Archive Utility's marks, with
+  `MEMBER_SIZE_WRAPPED`: the compressed size from where the data really ends, and the
+  size from it where deflate's ratio leaves one value. Where it leaves several, `size`
+  is `None` and `extra["size_mod_2_32"]` holds the stored value until a read to the
+  end, checked against it and the CRC-32, fills in `size`.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or

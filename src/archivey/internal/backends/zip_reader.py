@@ -70,6 +70,7 @@ from archivey.diagnostics import (
     DigestContext,
     MemberHeaderRecordContext,
     OffsetWrapContext,
+    SizeWrapContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -109,6 +110,7 @@ from archivey.internal.backends.zip_parser import (
     EOCD_SIZE,
     MAX_DATA_OFFSET,
     NO_END_RECORD_MSG,
+    OFFSET_WRAP,
     ZIP64_LOCATOR_SIZE,
     CentralDirectoryWalk,
     CentralEntry,
@@ -117,10 +119,12 @@ from archivey.internal.backends.zip_parser import (
     EndRecord,
     EntryCountMismatch,
     WalkFinding,
+    local_data_start_at,
     local_name_at,
     locate_end_record,
     read_end_record,
     read_local_header,
+    written_by_archive_utility,
 )
 from archivey.internal.backends.zipcrypto import (
     ZIPCRYPTO_HEADER_LEN,
@@ -182,6 +186,7 @@ from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_ALTERNATE_RAW_NAME,
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SIZE_MOD_2_32,
     EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
@@ -894,6 +899,67 @@ class _ZipLocator:
     #: For an entry flagged as a Windows reparse point, the type it reverts to when
     #: its data is not a link buffer (:func:`_reparse_fallback_type`).
     reparse_fallback: MemberType | None
+    #: For a member whose size is unknown until a read (:func:`_wrapped_size`): the
+    #: stored size and the bounds its real size lies in. ``None`` otherwise.
+    size_unknown: _UnknownSize | None = None
+
+
+#: Deflate's largest expansion: a 258-byte match costs at least two bits.
+_DEFLATE_MAX_RATIO = 1032
+#: ZIP compression methods macOS Archive Utility writes: stored and deflated.
+_ARCHIVE_UTILITY_METHODS = frozenset({0, 8})
+
+
+class _UnknownSize(NamedTuple):
+    """What a read checks a member's length against when the archive stores its size
+    modulo 2³² alone (:func:`_wrapped_size`)."""
+
+    stored: int
+    low: int
+    high: int
+
+    def check(self, length: int) -> None:
+        """Refuse a length the stored size or deflate's ratio rules out.
+
+        ``low`` is not checked: it holds for the encoders that write these archives,
+        not for every valid stream (empty stored blocks pad one without bound), and
+        the data that decoded is checked by its CRC-32.
+        """
+        if length % OFFSET_WRAP != self.stored or length > self.high:
+            raise CorruptionError(
+                f"Decompressed content ended after {length} bytes, which the stored "
+                f"size of {self.stored} modulo 2**32 and the compressed size rule out."
+            )
+
+
+def _wrapped_size(entry: CentralEntry) -> tuple[int | None, _UnknownSize | None]:
+    """The size of a member of a macOS Archive Utility ZIP, whose sizes past 4 GiB the
+    archive stores modulo 2³², and its bounds when that leaves it unknown.
+
+    The real size is the stored one plus a multiple of 2³². A stored member's is its
+    compressed size, which the walk measured from the layout. A deflated member's lies
+    between bounds deflate sets on the compressed size: at most 1032 times it (a
+    258-byte match takes two bits at the least), and at least seven eighths of it, as
+    coding every byte as a literal takes nine bits at most. One multiple in those
+    bounds is the size. Several leave it unknown: ``None``, with the bounds a read
+    checks the length against. None at all (a damaged entry) keeps the stored size,
+    and the read fails on it as before.
+    """
+    stored = entry.file_size
+    compressed = entry.compressed_size
+    if entry.method == 0:
+        low = high = compressed
+    else:
+        low = max(0, compressed * 7 // 8 - 64)
+        high = compressed * _DEFLATE_MAX_RATIO
+    first = stored
+    if low > stored:
+        first += (low - stored + OFFSET_WRAP - 1) // OFFSET_WRAP * OFFSET_WRAP
+    if first > high:
+        return stored, None
+    if first + OFFSET_WRAP <= high:
+        return None, _UnknownSize(stored, low, high)
+    return first, None
 
 
 def _stored_text(name: bytes) -> str:
@@ -1751,6 +1817,7 @@ class ZipReader(BaseArchiveReader):
             read_at,
             self._end,
             local_name_at=lambda offset: local_name_at(read_at, offset),
+            local_data_start_at=lambda offset: local_data_start_at(read_at, offset),
         )
 
     def _emit_walk_finding(
@@ -1861,6 +1928,43 @@ class ZipReader(BaseArchiveReader):
                 record="local_header",
                 stored_offset=stored,
                 corrected_offset=corrected,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
+
+    def _emit_size_wrapped(
+        self, member: ArchiveMember, entry: CentralEntry, index: int
+    ) -> None:
+        """``MEMBER_SIZE_WRAPPED`` for a member of a macOS Archive Utility ZIP whose
+        compressed size the walk measured, or whose size :func:`_wrapped_size` moved or
+        left unknown."""
+        stored_compressed = entry.compressed_size - entry.compressed_size_correction
+        size = member.size
+        if size is None:
+            outcome = (
+                f"its size is the stored {entry.file_size} plus an unknown multiple "
+                "of 2**32 until a read counts it"
+            )
+        else:
+            outcome = f"it holds {entry.compressed_size} bytes and decodes to {size}"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_SIZE_WRAPPED,
+            message=(
+                f"ZIP member {quoted(member.name)} stores {stored_compressed} bytes "
+                f"decoding to {entry.file_size}, but {outcome}: the archive was "
+                "written past 4 GiB without ZIP64."
+            ),
+            context=SizeWrapContext(
+                archive_name=self._archive_name,
+                format="zip",
+                member_name=member.name,
+                member_id=index,
+                stored_compressed_size=stored_compressed,
+                compressed_size=entry.compressed_size,
+                stored_size=entry.file_size,
+                size=size,
             ),
             member=member,
             attach_to_member=True,
@@ -2193,12 +2297,26 @@ class ZipReader(BaseArchiveReader):
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
             extra["zip.aes_actual_method"] = aes_info.actual_method
+        size: int | None = entry.file_size
+        size_unknown: _UnknownSize | None = None
+        size_wrapped = False
+        if (
+            entry.method in _ARCHIVE_UTILITY_METHODS
+            and not self._end.zip64
+            and written_by_archive_utility(entry)
+        ):
+            size, size_unknown = _wrapped_size(entry)
+            size_wrapped = size != entry.file_size or bool(
+                entry.compressed_size_correction
+            )
+            if size_unknown is not None:
+                extra[EXTRA_SIZE_MOD_2_32] = entry.file_size
         # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
         member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
-            size=entry.file_size,
+            size=size,
             compressed_size=entry.compressed_size,
             compression=compression,
             hashes=hashes,
@@ -2209,7 +2327,7 @@ class ZipReader(BaseArchiveReader):
                 index=index,
                 header_offset=entry.header_offset,
                 compressed_size=entry.compressed_size,
-                file_size=entry.file_size,
+                file_size=entry.file_size if size is None else size,
                 crc=entry.crc,
                 flags=entry.flags,
                 method=method,
@@ -2218,6 +2336,7 @@ class ZipReader(BaseArchiveReader):
                 aes=aes_info,
                 strong_encryption=_uses_strong_encryption(entry.flags, entry.extra),
                 reparse_fallback=reparse_fallback,
+                size_unknown=size_unknown,
             ),
         )
         if modified is not None:
@@ -2340,6 +2459,8 @@ class ZipReader(BaseArchiveReader):
         )
         if entry.offset_correction:
             self._emit_offset_wrapped(member, entry, index)
+        if size_wrapped:
+            self._emit_size_wrapped(member, entry, index)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; read() delivers them.
@@ -2781,6 +2902,12 @@ class ZipReader(BaseArchiveReader):
         hashes = member.hashes
         size = member.size
         if hashes or size is not None:
+            loc = member._raw
+            unknown = (
+                loc.size_unknown
+                if size is None and isinstance(loc, _ZipLocator)
+                else None
+            )
             return self._wrap_member_stream(
                 decoded,
                 member.name,
@@ -2788,6 +2915,10 @@ class ZipReader(BaseArchiveReader):
                 expected_hashes=hashes,
                 expected_size=size,
                 verify_member=member,
+                # A size the archive leaves unknown: the length is checked against
+                # what it stores, and filled in once the CRC-32 matches.
+                end_check=None if unknown is None else unknown.check,
+                fill_size=unknown is not None,
             )
         # Listed members always carry a size; only a caller's own copy rebuilt with
         # ``replace(size=None, hashes={})`` gets here, and is then not verified.

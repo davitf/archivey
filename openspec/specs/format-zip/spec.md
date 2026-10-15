@@ -583,11 +583,11 @@ met. An offset from a ZIP64 extra field, and any offset under a ZIP64 end record
 SHALL NOT be corrected. Each kept correction SHALL emit `ARCHIVE_OFFSET_WRAPPED` with
 `OffsetWrapContext`: one per member (`record="local_header"`), and one for the
 directory (`record="central_directory"`, no member). The member's CRC-32 SHALL be
-checked as for any member. A member whose own sizes pass 4 GiB is out of scope: its
-sizes wrap too, and nothing in the archive says by how much, so its read SHALL raise
-at the declared size. When its compressed size wraps, its end falls a multiple of 2³²
-short, so the members after it keep their stored offsets and their reads fail too;
-when only its uncompressed size wraps, the members after it read.
+checked as for any member. A member whose own sizes pass 4 GiB wraps its sizes too;
+the next requirement corrects them for the entries that writer marks. Without those
+marks its read raises at the declared size, and when its compressed size wraps, its end
+falls a multiple of 2³² short, so the members after it keep their stored offsets and
+their reads fail too.
 
 #### Scenario: offsets wrapped past 4 GiB
 
@@ -596,9 +596,57 @@ when only its uncompressed size wraps, the members after it read.
 | A member of 2³² − 16 bytes, then two short members and the directory past 4 GiB, every offset stored modulo 2³² | Three members listed; the two short ones read with matching CRCs; `ARCHIVE_OFFSET_WRAPPED` twice with `record="local_header"`, then once with `record="central_directory"` |
 | Every member below 4 GiB, the last one ending past it, so only the directory's offset wraps | Members listed and read; one `ARCHIVE_OFFSET_WRAPPED` with `record="central_directory"` |
 | The first case with the directory naming one short member differently from its local header | From a file: that member keeps its stored offset and its read raises `CorruptionError`; the other is corrected. From a pipe: the directory entry points at no local header the pass met, so the pass raises `CorruptionError` at the directory, as for any such entry, and reports the unmatched local header as `ARCHIVE_UNLISTED_DATA` |
-| A member of 2³² + 2²⁹ bytes, sizes and offsets stored modulo 2³², then a short member | Both listed and the directory's offset corrected; the short member after the large one keeps its stored offset and its read raises `CorruptionError` (out of scope, see above) |
+| A member of 2³² + 2²⁹ bytes, sizes and offsets stored modulo 2³², then a short member, without Archive Utility's marks | Both listed and the directory's offset corrected; the short member after the large one keeps its stored offset and its read raises `CorruptionError` |
 | A ZIP under 4 GiB whose directory lists members out of file order | No correction and no extra read: every corrected offset would be past the directory |
 | The first case under `DiagnosticPolicy.STRICT` | Reads as above; the `ARCHIVE_OFFSET_WRAPPED` diagnostics are recorded, not raised |
+
+### Requirement: Read members past 4 GiB of a macOS Archive Utility ZIP
+
+The same writer stores a member's sizes modulo 2³² as well. An entry carries its marks
+when its version made by is `0x0315` (Unix, 2.1), general-purpose bit 3 is set, and its
+central extra field is one old Info-ZIP Unix (`UX`, `0x5855`) field and nothing else.
+Anyone can copy the marks, so they SHALL only gate the corrections below, each
+checked against the archive's own bytes; under a ZIP64 end record nothing is corrected.
+
+- **Compressed size.** When the directory starts past 4 GiB, the walk SHALL hold back
+  each marked entry until it has corrected the next entry's offset, and SHALL measure
+  the marked entry's data from its local header's data start to the next entry's
+  local header, or to the directory for the last entry, less the 16-byte signed data
+  descriptor. When that length exceeds the stored compressed size by a positive
+  multiple of 2³², the entry SHALL take it. The entry after a marked one SHALL look
+  for its local header at its stored offset plus each multiple of 2³² in turn, from the
+  first not below the end of the members before it, and keep the first whose name
+  matches: one more local header read per member in such an archive. A read from a
+  pipe measures from the local headers its pass met.
+- **Size, stored members.** The size SHALL be the compressed size when the two agree
+  modulo 2³².
+- **Size, deflated members.** The size SHALL be the stored size plus the multiple of
+  2³² that falls between seven eighths of the compressed size, less 64 bytes (coding
+  every byte as a literal takes nine bits at most) and 1032 times it (a 258-byte match
+  takes two bits at the least). One such value SHALL be the member's size. Several
+  SHALL leave `size` as `None`, with `extra["size_mod_2_32"]` holding the stored size.
+  None (a damaged entry) SHALL keep the stored size, and the read fails on it.
+- A member whose sizes were corrected or left unknown SHALL emit `MEMBER_SIZE_WRAPPED`
+  with `SizeWrapContext` (advisory, as `ARCHIVE_OFFSET_WRAPPED`).
+- **Reading a member of unknown size.** A read from a file SHALL decode the member
+  with no declared size, under the usual limits. Once a read reaches the end, the
+  length SHALL be refused with `CorruptionError` unless it equals the stored size
+  modulo 2³² and is at most 1032 times the compressed size, then the CRC-32 SHALL be
+  checked, and only then SHALL `member.size` take the length. A pipe pass that decoded
+  the member to its end with the directory's CRC-32 SHALL keep the size it counted
+  when the directory leaves it unknown.
+
+#### Scenario: members past 4 GiB with Archive Utility's marks
+
+| Archive (a sparse layout; every entry marked) | Expected |
+| --- | --- |
+| A short member, a stored member of 2³² + 2²⁹ zero bytes, a short member | From a file and a pipe: the large member's size and compressed size are 2³² + 2²⁹, the members after it read, one `MEMBER_SIZE_WRAPPED` and the offset corrections |
+| The same without the `UX` fields | The stored sizes stay and the last member's read fails, as in the previous requirement |
+| A deflated member of 2³² + 100 zero bytes, about 4 MiB compressed | `size` is 2³² + 100 at listing; `DiagnosticPolicy.STRICT` lists it |
+| The same stream padded with empty stored blocks to about 10 MB | `size` is `None` and `extra["size_mod_2_32"]` 100; a read to the end yields 2³² + 100 bytes and fills in `size` |
+| A padded stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
+| A padded stream with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |
+| A small deflated member | Untouched: no diagnostic, no `size_mod_2_32` |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 

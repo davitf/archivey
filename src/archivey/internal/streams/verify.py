@@ -191,8 +191,16 @@ class MemberVerifier:
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
         digest_transforms: _DigestTransforms | None = None,
+        end_check: Callable[[int], None] | None = None,
+        fill_size: bool = False,
     ) -> None:
         self._expected_size = expected_size
+        # With no declared size: called with the member's length before the digest
+        # verdict, to refuse a length the archive rules out (it raises).
+        self._end_check = end_check
+        # With no declared size: give ``member.size`` the length once the digests
+        # matched over the whole member.
+        self._fill_member = member if fill_size and expected_size is None else None
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
         self._digest_transforms: dict[str, Callable[[bytes], bytes]] = {}
@@ -404,7 +412,12 @@ class MemberVerifier:
         if end is None or self._hashed_to < end:
             return
         self._digest_checked = True
+        if self._expected_size is None and self._end_check is not None:
+            self._end_check(end)
         self._verify_digests()
+        fill = self._fill_member
+        if fill is not None and fill.size is None:
+            fill.size = end
 
     def _conclude(self, inner: BinaryIO) -> None:
         """Run end-of-stream checks once (read path only — never called from close).
@@ -831,6 +844,8 @@ def build_member_verifier(
     member: ArchiveMember | None = None,
     archive_name: str | None = None,
     digest_transforms: _DigestTransforms | None = None,
+    end_check: Callable[[int], None] | None = None,
+    fill_size: bool = False,
 ) -> MemberVerifier | None:
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``."""
     hashes = expected if expected is not None else {}
@@ -843,6 +858,8 @@ def build_member_verifier(
         member=member,
         archive_name=archive_name,
         digest_transforms=digest_transforms,
+        end_check=end_check,
+        fill_size=fill_size,
     )
 
 

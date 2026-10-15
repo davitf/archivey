@@ -84,6 +84,7 @@ class DiagnosticCode(StrEnum):
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
     ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
+    MEMBER_SIZE_WRAPPED = "member_size_wrapped"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -148,6 +149,8 @@ DiagnosticCodeStr = Literal[
     "member-directory-data-ignored",
     "archive_offset_wrapped",
     "archive-offset-wrapped",
+    "member_size_wrapped",
+    "member-size-wrapped",
 ]
 
 
@@ -625,6 +628,42 @@ class OffsetWrapContext(_JsonSafeContext):
     corrected_offset: int = 0
 
 
+@dataclass(frozen=True)
+class SizeWrapContext(_JsonSafeContext):
+    """A ZIP member's stored sizes are its real sizes modulo 2³², because the writer
+    stored 32-bit fields for a member past 4 GiB without ZIP64.
+
+    macOS Archive Utility (Finder's Compress, ``ditto -c -k``) writes such ZIPs. The
+    reader corrects sizes only for an entry that carries that writer's fields (version
+    made by Unix 2.1, a data descriptor, only the ``0x5855`` extra field) in an archive
+    with no ZIP64 records:
+
+    - The compressed size is measured from the layout: the member's data and data
+      descriptor end where the next local header starts, or the central directory,
+      and that end must be past the stored size's by a multiple of 2³².
+    - A stored member's size is its compressed size. A deflated member's size is the
+      stored value plus the multiple of 2³² that deflate's ratio bounds allow (at most
+      1032 to 1, and incompressible data shrinks by little). When the bounds allow
+      several, the size is unknown until a read: ``size`` is ``None`` here and on the
+      member, and ``extra["size_mod_2_32"]`` holds the stored value. A read that
+      reaches the end checks the length against both, then the CRC-32, and only then
+      fills in ``member.size``.
+
+    ``stored_*`` are the values in the archive; ``compressed_size`` and ``size`` the
+    ones the member carries.
+    """
+
+    kind: Literal["size_wrap"] = "size_wrap"
+    archive_name: str | None = None
+    format: str = ""
+    member_name: str = ""
+    member_id: int | None = None
+    stored_compressed_size: int = 0
+    compressed_size: int = 0
+    stored_size: int = 0
+    size: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -647,6 +686,7 @@ DiagnosticContext = (
     | SelectorUnmatchedContext
     | SpecialFileDataContext
     | OffsetWrapContext
+    | SizeWrapContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -679,6 +719,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
+        DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
     }
 )
 
@@ -705,7 +746,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twelve codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Thirteen codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -747,6 +788,9 @@ and the reasons are part of the contract rather than an oversight:
   past 4 GiB this way by default and reads it back, and a correction is kept only when
   a local header with the member's name is there, with the CRC-32 still checked.
   ``STRICT`` would refuse an ordinary Mac archive.
+- ``MEMBER_SIZE_WRAPPED`` — the same Mac archives, with a member past 4 GiB. A size is
+  corrected only where the layout or deflate's bounds force it, and an unknown one is
+  ``None``, with the length and CRC-32 checked on a read.
 """
 
 
@@ -1117,6 +1161,7 @@ __all__ = [
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",
+    "SizeWrapContext",
     "SpecialFileDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",

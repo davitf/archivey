@@ -823,24 +823,66 @@ before it gets 2³² added until it is not. The wrapped directory offset shows u
 local header with the entry's name at the corrected offset, so a ZIP under 4 GiB
 whose directory is out of file order is untouched (the corrected offset would be past
 the directory, and nothing is read there). `ARCHIVE_OFFSET_WRAPPED` records each one.
-A real archive of 5 GiB of random files from `ditto -c -k --sequesterRsrc`
-reads with every member's CRC matching (the maintainer, on macOS, 2026-10-15).
 
-A member over 4 GiB in such an archive stays unread: its sizes wrap too. When its
-compressed size wraps, its end falls a multiple of 2³² short, so the members after it
-are not corrected and fail as well; when only its uncompressed size wraps, as below,
-the members after it read. The same test with a 10 GB text file listed it as 1 410 065 408 bytes (10¹⁰ mod
-2³²) and reading it raised at that declared size, so nothing wrong is delivered on a
-full read; the next member read, so the file had compressed below 4 GiB and only its
-uncompressed size wrapped. No field holds the real size. The directory, local header
-and data descriptor are 32 bits, the `0x5855` extra holds times and ids, deflate does
-not record its length, and the `__MACOSX/._name` sidecar is AppleDouble (Finder info,
-extended attributes, resource fork, but not the data fork's length). The planned fix,
-agreed 2026-10-15: under the producer markers above, decode past the declared size in
-2³² steps and accept only on the stream's end and a matching CRC-32. A member whose
-deflate ratio bound (about 1032:1, and incompressible data barely shrinks) leaves
-several possible sizes lists `size=None` with the stored remainder in an extra, and
-gets its size once a full read has counted it.
+**A member over 4 GiB from macOS.** The same writer stores a member's sizes modulo 2³²
+too, in the directory and the data descriptor alike. davi's tests on macOS (2026-10-15):
+a Finder archive of five 1 GiB random files reads with the offset corrections; a
+10 000 000 000-byte text file lists as 1 410 065 408 (10¹⁰ mod 2³²) and its read stopped
+at that size with "Decompressed content exceeds its declared size". The archive records
+the real size nowhere: the directory, the local header and the descriptor hold 32 bits,
+the `UX` field (`0x5855`) holds only times and, in the local copy, owner ids, deflate
+does not record its length, and the `__MACOSX/._name` sidecar is AppleDouble (Finder
+info, extended attributes, resource fork; no data length).
+
+- **The fingerprint** (`written_by_archive_utility` in `zip_parser.py`): version made by
+  `0x0315` (Unix, 2.1), bit 3 set (Archive Utility writes 16-byte descriptors with their
+  signature), and the central extra field is exactly one `UX` field. The reader also
+  requires a classic end record, since the writer never writes ZIP64. The `__MACOSX`
+  sidecars usually appear too, but are not required. Anyone can copy these fields, so
+  the fingerprint only decides whether to try the corrections below. Each is checked
+  against the archive's own bytes, and the CRC-32 is still checked on a read.
+- **Compressed size, from the layout.** Only in a directory past 4 GiB can a compressed
+  size have wrapped. There `CentralDirectoryWalk` holds each marked entry back until it
+  has the next entry's offset, then measures the data from the local header's data
+  start to the next local header (or the directory, for the last entry) less the
+  16-byte descriptor. A length past the stored size by a positive multiple of 2³² is
+  taken. The entry after a marked one looks for its header at its stored offset plus
+  each multiple of 2³² in turn (from the first not below the members before it) and
+  keeps the first with its name: one more local-header read per member, only in a
+  marked archive past 4 GiB. A pipe has the data starts of the `UX` local headers its
+  pass met, and measures the same way.
+- **Size, stored members:** the compressed size, when the two agree modulo 2³².
+- **Size, deflated members: deflate's ratio bounds.** The real size is the stored size
+  plus some multiple of 2³², and the compressed size bounds it. From above: a
+  258-byte match takes at least one bit of literal/length code and one of distance
+  code, so a byte of deflate decodes to at most 1032 bytes. From below: coding every
+  byte as a fixed-Huffman literal takes nine bits, so the size is at least seven
+  eighths of the compressed size; the reader takes seven eighths less 64 bytes. The
+  lower bound holds for real encoders (zlib's `deflateBound` is far tighter), not for
+  every valid stream: empty stored blocks pad one without bound. So it only picks a
+  candidate, and a read never refuses a length on it. The upper bound is a property of
+  deflate itself, and the read checks it.
+  - **One multiple fits:** that is the size. Every member under about 4 MB compressed
+    falls here (1032 × 4.16 MB < 4 GiB), which is most members of a typical archive,
+    and so does a highly compressible member over 4 GiB whose stream is under about
+    8 MB.
+  - **Several fit:** the size is unknown. `size` is `None`, `extra["size_mod_2_32"]`
+    holds the stored value, and `MEMBER_SIZE_WRAPPED` carries `size=None`. A file read
+    decodes with no declared size (limits and the expansion ratio stay on). When a read
+    reaches the end, the length must equal the stored value modulo 2³² and be at most
+    1032 times the compressed size, then the CRC-32 must match, and only then does
+    `member.size` take the length (`MemberVerifier`'s `end_check` / `fill_size`;
+    `ArchiveMember` is mutable for late-bound fields, as digests are). A pipe pass that
+    decoded the member to its end with the directory's CRC-32 keeps the size it
+    counted. davi chose this (option A, 2026-10-15) over decoding such members while
+    listing, which would read a whole archive of videos to list it.
+  - **None fits:** a damaged entry. The stored size stays and the read fails on it.
+- Every member whose sizes were corrected or left unknown gets one `MEMBER_SIZE_WRAPPED`
+  (`SizeWrapContext`: stored and corrected compressed size and size), advisory for the
+  same reason as `ARCHIVE_OFFSET_WRAPPED`. A member that needed no change reports
+  nothing, so an ordinary Mac archive under 4 GiB costs nothing and says nothing.
+- Archive Utility writes only stored and deflated members; another method under the
+  fingerprint keeps its stored sizes.
 
 ## 4. Threat surface
 
@@ -891,7 +933,8 @@ ours.
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a forward seek in a STORED ZipCrypto member, no CRC checks it, and a wrong password that passed the check byte goes unnoticed | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order. A seek back keeps it, and so does a compressed member's forward seek, whose skipped bytes the verifier reads and hashes (ADR 0014, since 2026-10-10). A STORED member's forward seek jumps, so a read past it gives the CRC up and returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
-| A ZIP over 4 GiB written without ZIP64 (macOS Archive Utility) reads, with an `ARCHIVE_OFFSET_WRAPPED` per corrected offset (advisory: macOS writes and reads them by default, so `STRICT` reads them too); a member over 4 GiB in it does not, nor do the members after it when its compressed size passes 4 GiB | **format** | The writer stores offsets modulo 2³². The walk adds 2³² to an offset below the furthest end of the members before it and keeps it only when a local header with the member's name is there (§3). Sizes wrap too, and nothing says by how much, so a member over 4 GiB stays out, and with it the offsets after it when its compressed size wraps. A real 10 GB member that compressed below 4 GiB raised at its declared size and the next member read (§3); the size fix is follow-up work |
+| A ZIP over 4 GiB written without ZIP64 (macOS Archive Utility) reads, with an `ARCHIVE_OFFSET_WRAPPED` per corrected offset (advisory: macOS writes and reads them by default, so `STRICT` reads them too) | **format** | The writer stores offsets modulo 2³². The walk adds 2³² to an offset below the furthest end of the members before it and keeps it only when a local header with the member's name is there (§3) |
+| A large deflated member of a macOS ZIP can list with `size=None` until it is read | **format** | Archive Utility stores sizes modulo 2³² and records the real size nowhere. Deflate's ratio settles it for most members; where it leaves several values, `extra["size_mod_2_32"]` holds the stored one and a read to the end fills `size` in after the length and CRC-32 checks (§3). Members without the writer's fingerprint keep their stored sizes |
 | A ZIP with a digital signature record (`PK\x05\x05`, APPNOTE 4.3.13) between its directory and its end record is refused with `CorruptionError` ("Bad magic number") | **archivey** | The end record's directory size and offset do not count the record, so its bytes shift where the directory is taken to start, the way prepended data does. stdlib `zipfile` refuses it the same way, and a read from a pipe matches the file read. Few writers produce the record; reading past it is not planned |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
@@ -925,6 +968,8 @@ ours.
 | Owner ids read as unzip 6.00 reads the four fields | DR-6, the format's official tool. Measured with `unzip -X` 6.00 (the Ubuntu 24.04 package) as root on crafted local headers, 36 field orders, "none" meaning the file stayed owned by root: each `0x7875` or `0x7855` decides afresh (the last one wins, a damaged or unknown-version one leaves none, a `0x7855` after a `0x7875` is ignored, a PKWARE field before either is discarded); `0x000d` and `0x5855` count only with neither present, the last one with ids winning and a short one changing nothing; new Unix ids of 1 or 3 bytes leave the file root-owned. The madler/unzip source keeps PKWARE ids under a later short `0x7855` or `0x7875`; the released 6.00 does not, and 6.00 is what users run. The difference is one mask in `ef_scan_for_izux`: 6.00 (Debian's 6.0-28 source) has `flags &= 0x0ff`, which clears `EB_UX2_VALID` (`1 << 8`), where the mirror has `flags &= ~0x0ff`. For 3-byte ids 6.00 does not decline: `read_ux3_value` has no case for 3, returns true without writing, and unzip chowns to an uninitialised `z_uidgid`, which happened to read 0. Archivey reports `id_size` instead; do not "fix" it into a chown to 0. A damaged deciding field is reported as `MEMBER_HEADER_RECORD_SKIPPED`, the Unicode Path rule below; an unknown version is silent, as for that field | A fixed ranking where the highest field present decides (wrong for half the orders); falling through to the next readable field; dropping damage silently |
 | A forward pass yields no owner; the directory's is applied at the end of the pass, as the mode is | Extraction applies an owner as it writes each member, and a `chown` cannot be taken back when the directory gives another owner or none (a `0x7855` the local header alone carries, or any field a writer leaves out of the directory). Waiting for the directory holds the file read's owner on disk under `TRUSTED` as root by construction, not by trusting which fields a writer copies | Yielding the local header's ids and replacing them at the end of the pass; reading only the tags a directory usually also carries (`0x7875`, `0x000d`), which rests on what writers do |
 | A malformed Unicode Path field drops the field, not the archive, on every Python version | The RAR5 extra-record ruling ([`rar.md`](rar.md) §6): an optional record that cannot be parsed costs that record, reported as `MEMBER_HEADER_RECORD_SKIPPED`, and the name it would have given is absent, so the header's bytes name the member. Stdlib 3.12+ refused the archive over two of the shapes and warned outside the diagnostics system over the third, while 3.11 and 7-Zip open it; the native parser reads the field itself, so every version agrees | Keeping stdlib's refusal on 3.12+; silencing the warning with `warnings.catch_warnings`, which changes process-wide state and is not thread-safe; dropping the field silently |
+| An unknown size past 4 GiB in a macOS ZIP is `None` with `extra["size_mod_2_32"]`, filled in after a verified full read (davi, 2026-10-15, project thread: option A; the extra's name is his proposal) | Nothing reported is wrong, and the unknowns are limited to large deflated members of Mac archives; the fingerprint keeps other writers' sizes as stored. Deflate's ratio leaves one value for most members, so most sizes stay exact | Decoding such members while listing (exact sizes, but listing an archive of videos reads all of it); listing the stored remainder with a diagnostic (a wrong number) |
+| The lower deflate bound picks a size but never refuses a read | Seven eighths of the compressed size holds for real encoders, not for every valid deflate stream (empty stored blocks pad one without bound); the CRC-32 checks the data that decoded. The upper bound, 1032 to 1, is deflate's own and is checked | Refusing lengths below the lower bound, which would refuse valid data a file read and a pipe would disagree on |
 | `ARCHIVE_OFFSET_WRAPPED` is advisory, outside `ARCHIVE_INTEGRITY_CODES` (davi, 2026-10-15, project thread) | macOS Archive Utility writes a ZIP past 4 GiB this way by default and reads it back, so `STRICT` would refuse an ordinary Mac archive; a correction is kept only when a local header with the member's name is there, and the CRC-32 is still checked, the `MEMBER_SPECIAL_FILE_HAS_DATA` pattern (DR-25). Reopen if a writer other than macOS is found producing wrapped offsets that a correction misreads | The integrity set, under DR-3 (the stored offsets misdescribe where good data sits) |
 | Read a member whose central and local headers disagree on the name, or whose central CRC is 0 while the local CRC is right; keep refusing one whose two headers both understate the size (davi, 2026-10-10) | The first two are found in real archives (another code page or `\` against `/` in the local name; every Adobe AIR package), `unzip` reads both, and archivey takes every field from the central directory, so the local name decides nothing; the data is still checked against the local CRC. The third is refused because the declared size is the bound that stops decoding (DR-9a). Both reads carry a new diagnostic and strict refuses them. Reopen if a real writer produces the third shape at scale. Lands with the native ZIP reader | Refusing all three, which loses archives `unzip` reads; reading the third, which drops the size bound |
 | Two stored names that decode to the same name stay ordinary duplicates (davi, 2026-10-10) | Once each name decodes on its own, `c3 a9` (valid UTF-8) and `82` (cp437) can both become `é.txt`. The later member supersedes the earlier like any duplicate (`is_current=False`, `SUPERSEDED` on extraction) and the two `raw_name`s differ, so nothing is lost and no new public name is needed. Reopen if a real archive shows a collision a user needs both copies of | A dedicated diagnostic or a renaming rule |

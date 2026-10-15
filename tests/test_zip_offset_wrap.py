@@ -19,7 +19,12 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import ArchiveyConfig
-from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy, OffsetWrapContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticPolicy,
+    OffsetWrapContext,
+    SizeWrapContext,
+)
 from archivey.exceptions import CorruptionError
 from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
@@ -371,3 +376,316 @@ def test_a_pipe_corrects_the_same_offsets() -> None:
         ("local_header", "c.txt"),
         ("central_directory", ""),
     ]
+
+
+# -- members over 4 GiB in a macOS Archive Utility ZIP ---------------------------------
+#
+# Archive Utility stores sizes modulo 2³² as well. Its entries carry version made by
+# Unix 2.1, a data descriptor and the old Info-ZIP ``UX`` extra field alone, and the
+# reader corrects sizes only for such entries.
+
+
+@dataclass(frozen=True)
+class _Deflated:
+    """A deflated member: its raw deflate ``stream``, decoding to ``size`` bytes."""
+
+    stream: bytes
+    size: int
+    crc: int
+
+
+def _zeros_deflated(size: int, *, padding: int = 0) -> bytes:
+    """A raw deflate stream of ``size`` zero bytes, built from one compressed MiB
+    repeated, with ``padding`` empty stored blocks before its last block."""
+    mib = zlib.compressobj(9, zlib.DEFLATED, -15)
+    # A full flush ends byte-aligned with no history, so the piece repeats.
+    piece = mib.compress(bytes(1 << 20)) + mib.flush(zlib.Z_FULL_FLUSH)
+    tail = zlib.compressobj(9, zlib.DEFLATED, -15)
+    last = tail.compress(bytes(size % (1 << 20))) + tail.flush()
+    empty_stored_block = b"\x00\x00\x00\xff\xff"
+    return piece * (size >> 20) + empty_stored_block * padding + last
+
+
+# 2³² + 2²⁹ zero bytes, stored, with its CRC-32 fixed here as ``_BIG``'s is.
+_HUGE_STORED = _Zeros((1 << 32) + (1 << 29), 0xE90177C6)
+
+# 2³² + 100 zero bytes. The CRC-32 is fixed here because computing it takes a second.
+_HUGE_ZEROS_SIZE = (1 << 32) + 100
+_HUGE_ZEROS_CRC = 0xA92A4CE5
+
+_UX_CENTRAL = b"UX" + struct.pack("<H2L", 8, 0, 0)
+_UX_LOCAL = b"UX" + struct.pack("<H2L2H", 12, 0, 0, 501, 20)
+
+
+def _mac_layout(
+    members: Sequence[tuple[str, bytes | _Zeros | _Deflated]], *, mac: bool = True
+) -> _Layout:
+    """A ZIP of ``members`` as macOS Archive Utility writes it, every size and offset
+    stored modulo 2³²: bytes and ``_Zeros`` stored, ``_Deflated`` deflated.
+
+    ``mac=False`` leaves out the ``UX`` extra fields, so no entry carries the writer's
+    fields.
+    """
+    segments: list[tuple[int, bytes]] = []
+    central: list[bytes] = []
+    offsets: list[int] = []
+    pos = 0
+    local_extra = _UX_LOCAL if mac else b""
+    central_extra = _UX_CENTRAL if mac else b""
+    for name, data in members:
+        raw = name.encode()
+        if isinstance(data, _Zeros):
+            method, size, crc, payload, compressed = (
+                0,
+                data.size,
+                data.crc,
+                None,
+                data.size,
+            )
+        elif isinstance(data, _Deflated):
+            method, size, crc = 8, data.size, data.crc
+            payload, compressed = data.stream, len(data.stream)
+        else:
+            method, size, crc = 0, len(data), zlib.crc32(data)
+            payload, compressed = data, len(data)
+        stored_size, stored_compressed = size % _WRAP, compressed % _WRAP
+        header = struct.pack(
+            "<4s2B4HL2L2H",
+            b"PK\x03\x04",
+            20,
+            0,
+            _BIT3,
+            method,
+            _DOS_TIME,
+            _DOS_DATE,
+            0,
+            0,
+            0,
+            len(raw),
+            len(local_extra),
+        )
+        offsets.append(pos)
+        segments.append((pos, header + raw + local_extra))
+        pos += len(header) + len(raw) + len(local_extra)
+        if payload is not None:
+            segments.append((pos, payload))
+        pos += compressed
+        descriptor = struct.pack(
+            "<4s3L", b"PK\x07\x08", crc, stored_compressed, stored_size
+        )
+        segments.append((pos, descriptor))
+        pos += len(descriptor)
+        central.append(
+            struct.pack(
+                "<4s4B4HL2L5H2L",
+                b"PK\x01\x02",
+                _MADE_BY & 0xFF,
+                _MADE_BY >> 8,
+                20,
+                0,
+                _BIT3,
+                method,
+                _DOS_TIME,
+                _DOS_DATE,
+                crc,
+                stored_compressed,
+                stored_size,
+                len(raw),
+                len(central_extra),
+                0,
+                0,
+                0,
+                0o100644 << 16,
+                offsets[-1] % _WRAP,
+            )
+            + raw
+            + central_extra
+        )
+    directory = b"".join(central)
+    cd_offset = pos
+    end = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        len(central),
+        len(central),
+        len(directory),
+        cd_offset % _WRAP,
+        0,
+    )
+    segments.append((pos, directory + end))
+    return _Layout(segments, pos + len(directory) + len(end), offsets, cd_offset)
+
+
+def _size_wraps(reader) -> list[SizeWrapContext]:
+    found = [
+        d.context
+        for d in reader.diagnostics.retained
+        if d.code is DiagnosticCode.MEMBER_SIZE_WRAPPED
+    ]
+    assert all(isinstance(c, SizeWrapContext) for c in found)
+    return found  # type: ignore[return-value]
+
+
+def _count(stream) -> int:
+    total = 0
+    while chunk := stream.read(1 << 20):
+        total += len(chunk)
+    return total
+
+
+def test_a_mac_stored_member_over_4_gib_gets_its_sizes_from_the_layout() -> None:
+    # The member's data runs 2³² past its stored compressed size, up to the next local
+    # header, so both its sizes take 2³² and the members after it are found.
+    huge = _HUGE_STORED
+    layout = _mac_layout([("a.txt", b"ay"), ("huge.bin", huge), ("c.txt", b"sea")])
+    with _open(layout) as reader:
+        members = reader.members()
+        assert [m.name for m in members] == ["a.txt", "huge.bin", "c.txt"]
+        assert (members[1].size, members[1].compressed_size) == (huge.size, huge.size)
+        assert "size_mod_2_32" not in members[1].extra
+        assert reader.read(members[0]) == b"ay"
+        assert reader.read(members[2]) == b"sea"
+        sizes = _size_wraps(reader)
+        wraps = _wraps(reader)
+    assert [
+        (c.member_name, c.stored_compressed_size, c.compressed_size, c.stored_size)
+        for c in sizes
+    ] == [("huge.bin", 1 << 29, huge.size, 1 << 29)]
+    assert sizes[0].size == huge.size
+    assert [(c.record, c.member_name) for c in wraps] == [
+        ("local_header", "c.txt"),
+        ("central_directory", ""),
+    ]
+
+
+def test_without_the_mac_fields_a_member_over_4_gib_keeps_its_stored_sizes() -> None:
+    huge = _HUGE_STORED
+    layout = _mac_layout(
+        [("a.txt", b"ay"), ("huge.bin", huge), ("c.txt", b"sea")], mac=False
+    )
+    with _open(layout) as reader:
+        members = reader.members()
+        assert members[1].size == 1 << 29
+        assert _size_wraps(reader) == []
+        with pytest.raises(CorruptionError):
+            reader.read(members[2])
+
+
+def test_deflate_ratio_settles_a_mac_member_size_past_4_gib() -> None:
+    # 4 MiB of deflate cannot decode to 2³² bytes more than 2³² + 100: one value fits.
+    stream = _zeros_deflated(_HUGE_ZEROS_SIZE)
+    assert len(stream) * 1032 < 2 * _WRAP
+    member = _Deflated(stream, _HUGE_ZEROS_SIZE, _HUGE_ZEROS_CRC)
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with _open(_mac_layout([("zeros.bin", member)]), config=config) as reader:
+        (listed,) = reader.members()
+        assert listed.size == _HUGE_ZEROS_SIZE
+        assert listed.compressed_size == len(stream)
+        (wrap,) = _size_wraps(reader)
+    assert (wrap.stored_size, wrap.size) == (100, _HUGE_ZEROS_SIZE)
+    assert wrap.stored_compressed_size == wrap.compressed_size == len(stream)
+
+
+def test_a_small_mac_member_is_untouched() -> None:
+    data = b"hello " * 1000
+    stream = zlib.compressobj(9, zlib.DEFLATED, -15)
+    deflated = _Deflated(
+        stream.compress(data) + stream.flush(), len(data), zlib.crc32(data)
+    )
+    with _open(_mac_layout([("a.txt", deflated), ("b.txt", b"bee")])) as reader:
+        members = reader.members()
+        assert [m.size for m in members] == [len(data), 3]
+        assert reader.read(members[0]) == data
+        assert all("size_mod_2_32" not in m.extra for m in members)
+        assert _size_wraps(reader) == []
+        assert _wraps(reader) == []
+
+
+def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
+    # Padding with empty stored blocks makes the stream long enough that both 2³² + 100
+    # and 2³³ + 100 fit deflate's ratio, so the listing cannot tell. This test decodes
+    # 4 GiB of zeros.
+    stream = _zeros_deflated(_HUGE_ZEROS_SIZE, padding=2_000_000)
+    member = _Deflated(stream, _HUGE_ZEROS_SIZE, _HUGE_ZEROS_CRC)
+    with _open(_mac_layout([("zeros.bin", member), ("b.txt", b"bee")])) as reader:
+        listed, after = reader.members()
+        assert listed.size is None
+        assert listed.extra["size_mod_2_32"] == 100
+        assert listed.compressed_size == len(stream)
+        (wrap,) = _size_wraps(reader)
+        assert (wrap.member_name, wrap.stored_size, wrap.size) == (
+            "zeros.bin",
+            100,
+            None,
+        )
+        with reader.open(listed) as data:
+            assert _count(data) == _HUGE_ZEROS_SIZE
+        assert listed.size == _HUGE_ZEROS_SIZE
+        assert reader.read(after) == b"bee"
+
+
+def test_a_length_the_stored_size_rules_out_is_refused() -> None:
+    # The stream decodes to 101 bytes against a stored 100, padded so that the size
+    # is unknown: the read checks the length modulo 2³² and refuses it.
+    data = bytes(101)
+    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
+    member = _Deflated(stream, 100, zlib.crc32(data))
+    with _open(_mac_layout([("short.bin", member)])) as reader:
+        (listed,) = reader.members()
+        assert listed.size is None
+        with pytest.raises(CorruptionError, match="rule out"):
+            reader.read(listed)
+        assert listed.size is None
+
+
+def test_a_crc_mismatch_leaves_the_size_unknown() -> None:
+    data = bytes(100)
+    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
+    member = _Deflated(stream, 100, zlib.crc32(data) ^ 1)
+    with _open(_mac_layout([("bad.bin", member)])) as reader:
+        (listed,) = reader.members()
+        assert listed.size is None
+        with pytest.raises(CorruptionError):
+            reader.read(listed)
+        assert listed.size is None
+
+
+def test_a_pipe_reads_a_mac_stored_member_over_4_gib() -> None:
+    # The pass streams past the 4.5 GiB member, searching it for its descriptor.
+    huge = _HUGE_STORED
+    layout = _mac_layout([("a.txt", b"ay"), ("huge.bin", huge), ("c.txt", b"sea")])
+    source = _ForwardOnly(layout.segments, layout.size)
+    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+        got = [
+            (member, None if member.name == "huge.bin" else stream.read())
+            for member, stream in reader.stream_members()
+        ]
+        sizes = _size_wraps(reader)
+    assert [(m.name, data) for m, data in got] == [
+        ("a.txt", b"ay"),
+        ("huge.bin", None),
+        ("c.txt", b"sea"),
+    ]
+    assert (got[1][0].size, got[1][0].compressed_size) == (huge.size, huge.size)
+    assert [(c.member_name, c.size) for c in sizes] == [("huge.bin", huge.size)]
+
+
+def test_a_pipe_keeps_the_size_it_counted() -> None:
+    # The directory leaves the size unknown; the pass decoded the member to its end
+    # with a matching CRC-32, so the member keeps the count, as a file read fills it in.
+    data = bytes(100)
+    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
+    layout = _mac_layout([("p.bin", _Deflated(stream, 100, zlib.crc32(data)))])
+    source = _ForwardOnly(layout.segments, layout.size)
+    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+        ((member, read),) = [
+            (member, stream.read()) for member, stream in reader.stream_members()
+        ]
+    assert read == data
+    assert member.size == 100
+    assert member.extra["size_mod_2_32"] == 100

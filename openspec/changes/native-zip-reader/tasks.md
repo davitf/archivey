@@ -346,6 +346,10 @@ each lands with nothing half-done reachable:
 - [x] 6.2 Test with a small archive whose stored offsets are reduced by 2³².
 - [x] 6.3 Format-zip spec, handbook §3 and §5, `docs/formats.md`; close the `IDEAS.md`
       item.
+- [x] 6.4 A member over 4 GiB under Archive Utility's fingerprint: compressed size from
+      the layout, size from deflate's ratio bounds or unknown until a verified read
+      (`MEMBER_SIZE_WRAPPED`, `extra["size_mod_2_32"]`); from a file and a pipe.
+      The new names go to the maintainer before merging.
 
 ## 7. Shrink and Implode (deferred until after 0.2.0, maintainer 2026-10-13)
 
