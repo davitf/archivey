@@ -125,17 +125,17 @@ yielded.
   that disagrees with the central directory, a local header the directory contradicts,
   or two same-named members whose directory order reverses their file order make the
   member fail at the end of the pass (`CorruptionError`), where a read from a file
-  writes it. An archive the directory refuses as a whole (a name flagged UTF-8 that is
-  not) is refused from a file before anything is written, and from a pipe after every
-  member has been written; those files stay.
-- **A damaged central directory lists the members before the damage**, then raises
-  `CorruptionError`; `members_report()` gives you both. An archive whose end record is
-  gone (a download cut short) lists the members its local headers hold, without the
-  mode, host or comment only the directory has, then raises `TruncatedError` (or
-  `CorruptionError` when other bytes stand where the directory should be). Damaged
-  ZIP64 end records are read past when the end record holds every value itself and
-  the directory's end can be placed (`ARCHIVE_EOF_MARKER_MISSING`); otherwise the
-  members the local headers hold are listed, then `CorruptionError` is raised.
+  writes it.
+- **A damaged central directory lists the members before the damage**, and the members
+  the local headers hold after it (without the mode, host or comment only the directory
+  has), then raises `CorruptionError`; `members_report()` gives you both. An archive
+  whose end record is gone (a download cut short) lists the members its local headers
+  hold, without the mode, host or comment only the directory has, then raises
+  `TruncatedError` (or `CorruptionError` when other bytes stand where the directory
+  should be). Damaged ZIP64 end records are read past when the end record holds every
+  value itself and the directory's end can be placed (`ARCHIVE_EOF_MARKER_MISSING`);
+  otherwise the members the local headers hold are listed, then `CorruptionError` is
+  raised.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or
@@ -213,10 +213,10 @@ yielded.
   malformed field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped
   with a `member_header_record_skipped` diagnostic. The archive opens on every Python
   version; `zipfile` on its own refuses it from Python 3.12.
-- **A wrongly-set UTF-8 flag stops the listing at that name.** When general-purpose
-  bit 11 claims UTF-8 but the stored bytes are not, the listing raises
-  `CorruptionError` at that entry, after the members before it. Rare, and it fails
-  loudly.
+- **A wrongly-set UTF-8 flag is damage at that name.** When general-purpose bit 11
+  claims UTF-8 but the stored bytes are not, the listing raises `CorruptionError` at
+  that entry, after the members before it and the members the local headers hold past
+  it, as for a damaged directory. Rare, and it fails loudly.
 - **ZipCrypto** checks a password against one byte, so a wrong one passes about one
   time in 256. Its data then fails the CRC or the decompressor, and Archivey raises
   `EncryptionError` saying the password may be wrong or the member corrupt, since a

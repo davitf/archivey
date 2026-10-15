@@ -196,15 +196,26 @@ wrong field: the walk charges the entries really there, and the mismatch is repo
 below. Both walks stop at the same entry, at the limit as at damage, and the members
 before the stop read with the overlap bounds of the entries before it.
 
-**A damaged directory lists up to the damage.** An entry with a wrong signature, or
-whose 46-byte fixed header the directory cuts short, raises `CorruptionError` after the
-members before it, as a cut TAR or RAR does (DR-2): `members_report()` carries both,
-iteration and `extract_all()` deliver those members and then raise, and `member_count`
-is `None`. A name, extra field or comment that runs past the directory's end can only be
-the last entry's, so it lists and is reported with the end-record checks below.
-A local header that the file cuts short means the directory pointed at the wrong place
-(the directory follows every local header), so it is `CorruptionError` too, never
-`TruncatedError`.
+**A damaged directory lists up to the damage, then the local headers past it.** An entry
+with a wrong signature, or whose 46-byte fixed header the directory cuts short, raises
+`CorruptionError` after the members before it, as a cut TAR or RAR does (DR-2), and
+after the members the local headers hold past it: the headers are walked once, as for a
+ZIP with no end record, and a member the directory already listed (by offset) is not
+listed again. Those keep what their local header holds and nothing the directory alone
+has (mode, host, comment), as a read from a pipe lists them, so the two reads write the
+same files (davi, 2026-10-14). `members_report()` carries both, iteration and
+`extract_all()` deliver those members and then raise, and `member_count` is `None`. The
+overlap guard keeps one bound per listed member: a directory entry before the damage
+that points at no local header bounds nothing, and one over a real header the walk
+stepped over (inside another member's stated data) still bounds its neighbours, so two
+entries over it stay an overlap. A walk over the local headers that meets a listing
+limit raises the limit instead. One that cannot get past a member's data lists that
+member, whose read fails, never as `TruncatedError` (the end record follows it), and the
+listing still raises the damage; the pass meets that error first and raises it. A name,
+extra field or comment that runs past the directory's end can only be the last entry's,
+so it lists and is reported with the end-record checks below. A local header that the
+file cuts short means the directory pointed at the wrong place (the directory follows
+every local header), so it is `CorruptionError` too, never `TruncatedError`.
 
 **"Version needed to extract" decides nothing.** Stdlib refused an archive whose entry
 said it needed more than 6.3; 7-Zip 23.01 reads such a stored member and Info-ZIP
@@ -265,8 +276,8 @@ was passed, else with `ArchiveyConfig.zip_unflagged_fallback_encoding` (default 
 which decodes every byte, so no `UnicodeDecodeError` escapes). Both decode with
 `surrogateescape`. The parser hands the reader the stored bytes, so nothing is decoded
 twice. A flagged name that is not valid UTF-8 raises `CorruptionError` at its entry,
-after the members before it (stage 4 of the change decodes it as an unflagged name
-instead). This departs from stdlib's `metadata_encoding` and from
+after the members before it and the members the local headers hold past it (stage 4 of
+the change decodes it as an unflagged name instead). This departs from stdlib's `metadata_encoding` and from
 `unzip -O`, which apply the codec to every unflagged name: a valid UTF-8 name wins over
 `encoding=` in every format (design rules, ruled 2026-10-07), so a legacy `encoding=` fixes
 the legacy names in a mixed archive without garbling its UTF-8 ones.
@@ -534,12 +545,12 @@ directory's refusals the file read is to drop:
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
-- An archive-wide refusal from the directory (a name flagged UTF-8 that is not valid
-  UTF-8) comes before anything is written from a file, and after every member is
-  written from a pipe: the files stay, and the same error is raised. The pass keeps
-  them, and the file read is to stop refusing instead (davi, 2026-10-14): it will
-  decode an invalid UTF-8-flagged name as unflagged, and walk the local headers past
-  a damaged directory.
+- A damaged directory, and a name flagged UTF-8 that is not valid UTF-8 (damage at its
+  entry), list the directory's entries before the damage and the local headers' past
+  it in both reads, then raise; the two write the same files. The pass applies the
+  directory to the members it describes before the damage and keeps the rest as their
+  local headers say, without reporting them as unlisted. Task 4.1 is to decode an
+  invalid UTF-8-flagged name as unflagged instead.
 - Damaged ZIP64 end records no longer refuse the archive in either read. When no
   field of the classic end record holds the ZIP64 sentinel and the directory's end can
   be placed, the classic record is used and `ARCHIVE_EOF_MARKER_MISSING` (marker
@@ -839,10 +850,10 @@ ours.
 | --- | --- | --- |
 | A ZIP from a pipe opens only with `streaming=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
 | From a pipe, a few crafted shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
-| One member name whose UTF-8 flag lies stops the listing at that entry | **archivey** | Flagged names decode strictly, so the listing raises `CorruptionError` there, after the members before it (until the native reader's first stage the whole archive was unlistable). Stage 4 of the `native-zip-reader` OpenSpec change decodes such a name as an unflagged one instead |
+| One member name whose UTF-8 flag lies is damage at that entry | **archivey** | Flagged names decode strictly, so the directory's part of the listing ends there: the members before it and the members the local headers hold past it are listed, then `CorruptionError` (§2.2; until the native reader's first stage the whole archive was unlistable). Stage 4 of the `native-zip-reader` OpenSpec change decodes such a name as an unflagged one instead |
 | A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
-| An archive cut before its end record lists its members without mode, host or comment, then raises | **format** | Those fields live only in the directory. With no end record in the tail, the reader walks the local headers, lists what they hold as a pipe read does before its directory, then raises the walk's error (`TruncatedError` for a cut). A damaged *directory* lists the entries before the damage, then raises (§2.2) |
+| An archive cut before its end record lists its members without mode, host or comment, then raises | **format** | Those fields live only in the directory. With no end record in the tail, the reader walks the local headers, lists what they hold as a pipe read does before its directory, then raises the walk's error (`TruncatedError` for a cut). A damaged *directory* lists the entries before the damage and the local headers' past it, then raises (§2.2) |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a forward seek in a STORED ZipCrypto member, no CRC checks it, and a wrong password that passed the check byte goes unnoticed | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order. A seek back keeps it, and so does a compressed member's forward seek, whose skipped bytes the verifier reads and hashes (ADR 0014, since 2026-10-10). A STORED member's forward seek jumps, so a read past it gives the CRC up and returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
@@ -926,7 +937,7 @@ move.
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
 | Overlapping-entry bomb; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_entries_sharing_one_local_header_read_only_once` |
-| A damaged directory lists up to the damage; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when an open comes first; a listed member keeps no extra field | `tests/test_zip_native_reader.py` |
+| A damaged directory lists up to the damage, then the local headers past it; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when an open comes first; a listed member keeps no extra field | `tests/test_zip_native_reader.py` |
 | `max_members` refused at open from the declared count, charged by the walk when the count lies | `tests/test_listing_limits.py::test_zip_applies_max_members_at_open`, `::test_zip_walk_charges_max_members_when_the_declared_count_lies` |
 | The parser against stdlib on every fixture, ZIP64, stubs, disk fields | `tests/test_zip_parser.py` |
 | A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is refused | `tests/test_surplus_input.py`, `tests/test_audit2_zip.py::test_bytes_after_a_deflate_members_stream_are_corrupt`, `::test_bzip2_member_with_a_second_stream_is_corrupt` |
