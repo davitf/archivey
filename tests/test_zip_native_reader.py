@@ -224,6 +224,93 @@ def test_a_local_header_past_the_end_lists_nothing_more_past_a_damaged_directory
         assert "Bad magic number" in str(report.error)
 
 
+def _central_entries(data: bytes) -> list[bytes]:
+    """Each central directory entry's bytes, in order."""
+    eocd = data.rindex(b"PK\x05\x06")
+    starts = _central_headers(data)
+    return [data[at:end] for at, end in zip(starts, [*starts[1:], eocd], strict=True)]
+
+
+def _with_directory(data: bytes, entries: list[bytes]) -> bytes:
+    """``data`` with its central directory replaced by ``entries``."""
+    cd_offset = _central_headers(data)[0]
+    eocd = data.rindex(b"PK\x05\x06")
+    directory = b"".join(entries)
+    end = bytearray(data[eocd:])
+    struct.pack_into(
+        "<HHII", end, 8, len(entries), len(entries), len(directory), cd_offset
+    )
+    return data[:cd_offset] + directory + bytes(end)
+
+
+def _damaged(entry: bytes) -> bytes:
+    return b"XXXX" + entry[4:]
+
+
+def _overlap_outcomes(data: bytes, *, streaming: bool) -> list[object]:
+    """Each member's read: its length, or whether it was refused as an overlap."""
+    outcomes: list[object] = []
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        if streaming:
+            with raises_corruption_not_truncation(match="Bad magic number"):
+                for _member, stream in reader.stream_members():
+                    assert stream is not None
+                    try:
+                        outcomes.append(len(stream.read()))
+                    except CorruptionError as exc:
+                        outcomes.append(_refusal(exc))
+            return outcomes
+        for member in reader.members_report().members:
+            try:
+                outcomes.append(len(reader.read(member)))
+            except CorruptionError as exc:
+                outcomes.append(_refusal(exc))
+    return outcomes
+
+
+def _refusal(exc: CorruptionError) -> str:
+    return "overlap" if "Overlapped entries" in str(exc) else "corrupt"
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name")
+@pytest.mark.parametrize("streaming", [False, True], ids=["listed", "streamed"])
+def test_two_entries_over_a_header_the_walk_steps_over_stay_an_overlap(
+    streaming: bool,
+) -> None:
+    """A local header that states more data than it has makes the walk past a
+    damaged directory step over the next member's header. That header is still
+    real, so of two entries over it the second is refused, as without damage."""
+    data = bytearray(_zip())
+    second = bytes(data).index(b"PK\x03\x04", 4)
+    third = bytes(data).index(b"PK\x03\x04", second + 4)
+    struct.pack_into("<I", data, 18, third - 30 - len("a.txt"))  # a.txt's local size
+    a, b, c = _central_entries(bytes(data))
+    data = bytearray(_with_directory(bytes(data), [a, b, b, _damaged(c)]))
+    assert _overlap_outcomes(bytes(data), streaming=streaming) == [
+        15,
+        15,
+        "overlap",
+        15,
+    ]
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name")
+@pytest.mark.parametrize("streaming", [False, True], ids=["listed", "streamed"])
+def test_an_entry_over_no_header_leaves_a_later_overlap_as_it_was(
+    streaming: bool,
+) -> None:
+    """A directory entry over no local header ahead of two entries over one header:
+    the first of the two reads and the second is refused, past a damaged directory
+    as without one."""
+    data = _zip()
+    a, b, c = _central_entries(data)
+    nowhere = bytearray(a)
+    struct.pack_into("<I", nowhere, 42, 20)
+    damaged = _with_directory(data, [a, bytes(nowhere), b, b, _damaged(c)])
+    outcomes = _overlap_outcomes(damaged, streaming=streaming)
+    assert outcomes == [15, "corrupt", 15, "overlap", 15]
+
+
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
     """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
     that is not, optionally pointing at ``header_offset``, and whose third directory

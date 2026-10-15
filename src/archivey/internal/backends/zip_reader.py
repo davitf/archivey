@@ -91,6 +91,7 @@ from archivey.internal.backends.zip_aes import (
     parse_winzip_aes_extra,
 )
 from archivey.internal.backends.zip_detect import (
+    LOCAL_HEADER_SIGNATURE,
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
     validate_zip_local_header,
@@ -915,8 +916,8 @@ class _PastDamage:
     walked: _WalkedMembers
     #: The directory's offsets, then those of the members past the damage.
     offsets: array[int]
-    #: The overlap guard's offsets: ``offsets`` without the directory's that point at
-    #: no local header the walk found.
+    #: The overlap guard's offsets, one per member as ``offsets`` is: -1, which bounds
+    #: nothing, for a directory entry that points at no local header.
     bounds: array[int]
     #: Each member past the damage's position in ``walked``.
     positions: list[int]
@@ -939,11 +940,11 @@ class _DataBounds:
     out; no member past the stop opens. The bound only loosens for a listed member
     whose next header is past the stop: its data may then run over entries that never
     open, so no byte still reads as two members' data. A walk that stops at damage
-    gives the offsets of the local headers a walk over them found
-    (``ZipReader._past_damage``): every member that listing hands out bar one whose
-    directory entry points at no local header, which reads nothing. The listing and
-    the index pass stop at different entries there (the index pass builds no member),
-    and those offsets are the same for both.
+    gives those offsets and then the ones the local headers hold past it
+    (``ZipReader._past_damage``), one per member that listing hands out, but -1 for a
+    directory entry that points at no local header: it reads nothing, and bounds
+    nothing. The index pass stops at the entry the listing stops at, so the two
+    give the same bounds.
     """
 
     __slots__ = ("_cd_start", "_first_at", "_sorted")
@@ -970,6 +971,14 @@ class _DataBounds:
         ordered = self._sorted
         above = bisect_right(ordered, offset)
         return ordered[above] if above < len(ordered) else self._cd_start
+
+
+def _is_utf8(raw: bytes) -> bool:
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def _max_members_error(
@@ -1606,9 +1615,8 @@ class ZipReader(BaseArchiveReader):
         (``_local_walk``); a member the directory already listed, by offset, is not
         listed again. ``offsets`` holds the directory's offsets, then the new ones in
         file order, so a member's id is its position there and the overlap guard
-        bounds every member listed (``_DataBounds``). Built for each caller from its
-        own ``listed``: the index pass builds no member, so it reads past an entry
-        whose member cannot be built, where the listing stops.
+        bounds every member listed (``_DataBounds``). The listing and the index pass
+        stop at the same entry, so both build the same members past the damage.
         """
         with self._past_damage_lock:
             walked = self._local_walk
@@ -1617,7 +1625,17 @@ class ZipReader(BaseArchiveReader):
         seen = set(listed)
         found = set(walked.offsets)
         offsets = array("q", listed)
-        bounds = array("q", (offset for offset in listed if offset in found))
+        # The walk steps over each member's data by the size its own local header
+        # states, so a real header it did not reach (inside another member's data,
+        # or past where it stopped) is read for: it keeps bounding its neighbours,
+        # and two entries over it stay an overlap.
+        bounds = array(
+            "q",
+            (
+                offset if offset in found or self._holds_local_header(offset) else -1
+                for offset in listed
+            ),
+        )
         positions: list[int] = []
         cut: int | None = None
         for position, offset in enumerate(walked.offsets):
@@ -1629,6 +1647,10 @@ class ZipReader(BaseArchiveReader):
             offsets.append(offset)
             bounds.append(offset)
         return _PastDamage(walked, offsets, bounds, positions, cut)
+
+    def _holds_local_header(self, offset: int) -> bool:
+        """Whether a local header's signature starts at ``offset``."""
+        return offset >= 0 and self._read_at(offset, 4) == LOCAL_HEADER_SIGNATURE
 
     def _drop_local_walk(self) -> None:
         """Free the walk over the local headers: the directory was walked whole, so
@@ -1832,6 +1854,11 @@ class ZipReader(BaseArchiveReader):
                 if max_members is not None and entry.index >= max_members:
                     # The listing raises the limit itself, at the same entry.
                     break
+                if entry.flags & _ZIP_MASK_UTF8 and not _is_utf8(entry.name):
+                    # The listing cannot build this entry's member and stops at it as
+                    # damage (``_decode_member_name``); so does this pass, so both
+                    # list the same members past it (``_past_damage``).
+                    raise CorruptionError("ZIP member name flagged UTF-8 is not")
                 offsets.append(_bound_offset(entry.header_offset))
             else:
                 self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)

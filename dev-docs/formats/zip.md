@@ -205,16 +205,17 @@ listed again. Those keep what their local header holds and nothing the directory
 has (mode, host, comment), as a read from a pipe lists them, so the two reads write the
 same files (davi, 2026-10-14). `members_report()` carries both, iteration and
 `extract_all()` deliver those members and then raise, and `member_count` is `None`. The
-overlap guard's bounds are the offsets of the local headers the walk found, so a
-directory entry before the damage that points at none bounds nothing, whichever walk
-meets the damage first. A walk over the local headers that meets a listing limit raises
-the limit instead. One that cannot get past a member's data lists that member, whose
-read fails, never as `TruncatedError` (the end record follows it), and the listing still
-raises the damage; the pass meets that error first and raises it. A name, extra field or
-comment that runs past the directory's end can only be the last entry's, so it lists and
-is reported with the end-record checks below. A local header that the file cuts short
-means the directory pointed at the wrong place (the directory follows every local
-header), so it is `CorruptionError` too, never `TruncatedError`.
+overlap guard keeps one bound per listed member: a directory entry before the damage
+that points at no local header bounds nothing, and one over a real header the walk
+stepped over (inside another member's stated data) still bounds its neighbours, so two
+entries over it stay an overlap. A walk over the local headers that meets a listing
+limit raises the limit instead. One that cannot get past a member's data lists that
+member, whose read fails, never as `TruncatedError` (the end record follows it), and the
+listing still raises the damage; the pass meets that error first and raises it. A name,
+extra field or comment that runs past the directory's end can only be the last entry's,
+so it lists and is reported with the end-record checks below. A local header that the
+file cuts short means the directory pointed at the wrong place (the directory follows
+every local header), so it is `CorruptionError` too, never `TruncatedError`.
 
 **"Version needed to extract" decides nothing.** Stdlib refused an archive whose entry
 said it needed more than 6.3; 7-Zip 23.01 reads such a stored member and Info-ZIP
