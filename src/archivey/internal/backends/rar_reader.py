@@ -79,12 +79,12 @@ from archivey.internal.backends.rar_parser import (
     RarKdfCache,
     RarMemberInfo,
     _check_rar5_password,
-    _decode_comment_text,
     _Rar3Comment,
     _rar5_redirect_target,
     comment_metadata_bytes,
     convert_blake2sp_to_mac,
     convert_crc_to_mac,
+    decode_rar3_cmt_text,
     header_metadata_bytes,
     mark_missing_next_volume,
     parse_rar_archive,
@@ -2564,13 +2564,16 @@ class RarReader(BaseArchiveReader):
         header attaches its comment to the member before it (``_parse_rar3``), and a
         split member's parts merge after each volume weighed its own list.
 
-        Each compressed comment expands to up to 64 KiB, and ``max_members`` alone
-        lets one archive carry a million of them. The header declares every
-        ``unpacked_size`` up front, so the total is checked before anything is
-        decoded, and a refused archive spawns no ``unrar`` at all. The declared size
-        is a real bound on the decode, not a trusted attacker number:
-        ``decompress_rar3_blob`` reads at most ``unpacked_size + 1`` bytes from
-        ``unrar`` and discards a result of any other length.
+        Each compressed comment expands to up to 64 KiB (256 KiB for a RAR 2.9-4
+        ``CMT`` header), and ``max_members`` alone lets one archive carry a million
+        of them. The header declares every ``unpacked_size`` up front, so the total
+        is checked before anything is decoded, and a refused archive spawns no
+        ``unrar`` at all. The declared size is a real bound on the decode, not a
+        trusted attacker number: ``decompress_rar3_blob`` reads at most
+        ``unpacked_size + 1`` bytes from ``unrar`` and discards a result of any other
+        length. A comment whose packed bytes are more than its declared size counts
+        those instead, since the listing holds them until the decode
+        (``comment_metadata_bytes``).
 
         This bounds comment **bytes**, not the number of ``unrar`` spawns: comments
         that each declare a few bytes still cost one process apiece. Decoding every
@@ -2591,7 +2594,11 @@ class RarReader(BaseArchiveReader):
         )
 
     def _resolve_rar3_comment(self, comment: str | _Rar3Comment | None) -> str | None:
-        """Return a parsed old-style comment, dropping unavailable/invalid payloads."""
+        """Return a decoded compressed comment, dropping unavailable/invalid payloads.
+
+        The comment is a RAR 1.5-2.x COMMENT subblock or a compressed RAR 2.9-4
+        ``CMT`` SERVICE header (:class:`_Rar3Comment`).
+        """
         if not isinstance(comment, _Rar3Comment):
             return comment
         if self._decompressor is RarDecompressor.NONE:
@@ -2620,9 +2627,16 @@ class RarReader(BaseArchiveReader):
             # An undecodable comment degrades to None rather than sinking the
             # listing.
             return None
-        if unpacked is None or zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
+        if unpacked is None:
             return None
-        return _decode_comment_text(unpacked, encoding=self._encoding)
+        if comment.crc32 is not None:
+            if zlib.crc32(unpacked) != comment.crc32:
+                return None
+        elif zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
+            return None
+        return decode_rar3_cmt_text(
+            unpacked, utf16=comment.utf16, encoding=self._encoding
+        )
 
     def _to_member(self, info: RarMemberInfo, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration

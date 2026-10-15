@@ -26,7 +26,7 @@ RAR **member data** also needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH
 The per-format detail lives on [Formats and extras](formats.md); the short version
 is that every format except RAR is a pip install away, and RAR **member data** needs
 RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free` or `7z`.
-Listing and metadata work without it, except a compressed comment in a RAR 1.5 / 2.x
+Listing and metadata work without it, except a compressed comment in a RAR 1.5-4
 archive, which is then `None`. When no RARLAB program is found, archivey uses `unar`
 1.10 or later instead if it is installed. `unar` reads fewer RAR archives and takes the
 password on its command line, where other local users can see it; set
