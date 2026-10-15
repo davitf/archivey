@@ -10,9 +10,12 @@ import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
 from typing import (
+    IO,
     TYPE_CHECKING,
     Any,
+    AnyStr,
     BinaryIO,
+    Generic,
     NamedTuple,
     NoReturn,
     TextIO,
@@ -116,7 +119,8 @@ def _inject_default_list(argv: list[str]) -> list[str]:
             # Everything after ``--`` is a positional, so no verb can follow it: the
             # default verb goes ahead of the separator (``list -- -weird.zip``).
             return argv[:i] + ["list"] + argv[i:]
-        # Bare "-" is the reserved stdin positional, not an option (F6).
+        # Bare "-" is the stdin positional (read by cat, reserved for the other
+        # verbs), not an option (F6).
         if tok.startswith("-") and tok != "-":
             key = tok.split("=", 1)[0]
             # Only the main parser's own options (today just ``--password``): before
@@ -761,8 +765,14 @@ def main(
     )
     out_stream = cast(TextIO, _DeadPipeWriter(escaping))
     err_stream = cast(TextIO, _DeadPipeWriter(err if err is not None else sys.stderr))
+    # The OSError messages _parse_and_dispatch already printed: a write that failed
+    # inside the verb leaves its bytes buffered, so the final flush below fails again
+    # on them with the same error, which needs no second line.
+    reported: list[str] = []
     try:
-        exit_code = _parse_and_dispatch(argv, out=out_stream, err=err_stream)
+        exit_code = _parse_and_dispatch(
+            argv, out=out_stream, err=err_stream, reported=reported
+        )
         # Flush here, not at interpreter exit, so a reader that closed the pipe
         # after the last write is still a broken pipe handled below. Without out=
         # and err=, these are the process streams, so this also flushes argparse's
@@ -784,7 +794,9 @@ def main(
         # The final flush failed for another reason (a full disk, a quota, a
         # network share that went away). _parse_and_dispatch handles the same
         # error the same way when a write inside the verb raises it.
-        _report_quietly(escape_member_name(_format_os_error(exc)), err_stream)
+        message = escape_member_name(_format_os_error(exc))
+        if message not in reported:
+            _report_quietly(message, err_stream)
         # The output that failed to flush is still buffered; without this, the
         # interpreter's exit flush fails on it again and exits 120.
         _silence_dead_streams()
@@ -805,8 +817,18 @@ def _report_quietly(message: str, err: TextIO) -> None:
         pass
 
 
-def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO) -> int:
-    """Parse ``argv`` and run the verb; ``BrokenPipeError`` is left to ``main``."""
+def _parse_and_dispatch(
+    argv: Sequence[str] | None,
+    *,
+    out: TextIO,
+    err: TextIO,
+    reported: list[str] | None = None,
+) -> int:
+    """Parse ``argv`` and run the verb; ``BrokenPipeError`` is left to ``main``.
+
+    Each OSError message printed here is appended to ``reported``, so ``main`` does
+    not print it again when its final flush fails the same way.
+    """
     raw = list(sys.argv[1:] if argv is None else argv)
 
     if not raw:
@@ -855,7 +877,10 @@ def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO)
         # would print to the closed pipe and return 1. main() turns it into 141.
         raise
     except OSError as exc:
-        print(escape_member_name(_format_os_error(exc)), file=err)
+        message = escape_member_name(_format_os_error(exc))
+        print(message, file=err)
+        if reported is not None:
+            reported.append(message)
         return EXIT_FAIL
     except KeyboardInterrupt:
         print("interrupted", file=err)
@@ -917,8 +942,11 @@ def _as_broken_pipe(exc: OSError) -> BrokenPipeError:
     return BrokenPipeError(errno.EPIPE, exc.strerror or "Broken pipe")
 
 
-class _DeadPipeWriter:
+class _DeadPipeWriter(Generic[AnyStr]):
     """An output stream whose closed-pipe errors are all ``BrokenPipeError``.
+
+    Wraps the text streams and, for ``cat``, stdout's byte buffer, so it passes the
+    data through unchanged whatever its type.
 
     On Windows a write to a pipe whose reader has gone can raise ``OSError(EINVAL)``
     instead (see ``_is_dead_pipe``). Translating it at the stream keeps the match
@@ -927,12 +955,12 @@ class _DeadPipeWriter:
     still reported as the error it is.
     """
 
-    def __init__(self, stream: TextIO) -> None:
+    def __init__(self, stream: IO[AnyStr]) -> None:
         self._stream = stream
 
-    def write(self, text: str) -> int:
+    def write(self, data: AnyStr) -> int:
         try:
-            return self._stream.write(text)
+            return self._stream.write(data)
         except OSError as exc:
             if _is_dead_pipe(exc):
                 raise _as_broken_pipe(exc) from exc

@@ -19,8 +19,8 @@ filters and optional I/O instrumentation; CLI-only deps stay out of core.
 ### Requirement: archivey command with list, test, and extract subcommands
 
 The system SHALL provide an `archivey` command whose verbs are **subcommands**:
-each verb is a bare word (never dash-prefixed) with a single-letter bare-word
-alias. When no verb is present the verb SHALL default to `list`. Verb dispatch
+each verb is a bare word (never dash-prefixed), and a verb that has an alias
+uses a single-letter bare word for it. When no verb is present the verb SHALL default to `list`. Verb dispatch
 SHALL be **known-verb-wins**: if the first positional token is a registered verb
 or alias (including reserved verbs `hash` / `create` / `convert`), the
 system SHALL dispatch that verb; otherwise it SHALL treat the token as an
@@ -532,11 +532,12 @@ entries have no body of their own and SHALL be skipped; under `-v` each written 
 name SHALL go to stderr, and each skipped one as `skip NAME`. A pass reads forward
 only, so a link's target, an earlier member, is not read again for it.
 
-`ARCHIVE` `-` SHALL read the archive from stdin in streaming mode. A format that needs
-to seek SHALL be refused with the read-once message, naming the source as `stdin`.
+`ARCHIVE` `-` SHALL read the archive from stdin in streaming mode. When stdin is a pipe,
+a format that needs to seek SHALL be refused with the read-once message, naming the
+source as `stdin`; a redirect from a regular file can seek, so every format reads.
 
 Bytes reach stdout as they are decoded, so a member that fails its read or its digest
-check has already written part or all of its bytes. The system SHALL then print the
+check may already have written part or all of its bytes. The system SHALL then print the
 error on stderr, naming the member, stop without writing later members, and exit `1`,
 as `zcat` does. When the archive has a free index, the patterns SHALL be judged before
 any byte is written, so a selection that matches nothing exits `1` with nothing on
@@ -552,20 +553,16 @@ patterns, `--exclude` or `--track-io` SHALL be a usage error.
 
 A stdout the reader closed SHALL exit `141`, as for the other verbs.
 
-#### Scenario: cat
+#### Scenario: cat refusals
+
+The worked cases (selection, `-v`, stdin, `--outer` output) are in
+`tests/test_cli_cat.py`; the refusals and their exit codes are the contract.
 
 | Case | Expected |
 | --- | --- |
-| `archivey cat a.tar.xz` | Every file member's bytes, in archive order; exit `0` |
-| `archivey cat a.zip '**/*.log'` | Only the selected members' bytes |
 | `archivey cat a.zip nomatch` | Warning names the pattern; nothing on stdout; exit `1` |
-| `archivey cat a.tar.xz -v` | Member names, and `skip NAME` for directories and links, on stderr |
-| `curl … \| archivey cat - '*.txt'` (tar.*) | Reads the archive from stdin in one pass |
-| `archivey cat - < a.rar` from a pipe | Exit `1`; read-once message naming `stdin` and `rar` |
+| `curl …/a.rar \| archivey cat -` | Exit `1`; read-once message naming `stdin` and `rar` |
 | `archivey cat bad-crc.gz` | Error naming the member on stderr; exit `1` |
-| `archivey cat a.tar.zst --outer` | The tar bytes, unchanged |
-| `curl … \| archivey cat - --outer \| tar t` | Decompresses whatever compressor the stream uses |
-| `archivey cat notes.gz` and `archivey cat notes.gz --outer` | The same bytes |
 | `archivey cat a.zip --outer` | Exit `1`; message names `zip` and says to leave out `--outer` |
 | `archivey cat a.tar.xz --outer a.txt` | Usage error, exit `2` |
 | `archivey cat big.gz \| head -c 5` | Exit `141` |

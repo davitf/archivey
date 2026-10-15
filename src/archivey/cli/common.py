@@ -25,7 +25,7 @@ from archivey.terminal import display_path
 
 
 def reject_stdin_token(archive: str) -> None:
-    """Fail fast when ``-`` is used: the token is reserved, not supported.
+    """Fail fast when ``-`` is used: the token is reserved for every verb but ``cat``.
 
     A pipe on stdin is still readable through its path, ``/dev/stdin``, which
     :func:`is_read_once` treats as any other pipe, so the message names that path.

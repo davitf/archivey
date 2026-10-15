@@ -85,11 +85,12 @@ so one command decompresses whatever arrives:
 curl -s URL | archivey cat - --outer | tar t
 ```
 
-From stdin, the archive is read in one forward pass, with the same format limits as an
-archive piped to the other verbs (see the notes below).
+From a pipe, the archive is read in one forward pass, with the same format limits as an
+archive piped to the other verbs (see the notes below). A redirect from a regular file
+(`archivey cat - < a.zip`) can seek, so every format reads.
 
-The bytes reach stdout as they are decoded, so a member whose checksum fails has already
-been written when the failure is found. `cat` then prints the error, stops, and exits
+The bytes reach stdout as they are decoded, so some or all of a member whose checksum
+fails may already have been written when the failure is found. `cat` then prints the error, stops, and exits
 `1`, as `zcat` does. Check the exit code before you trust the output.
 
 ### Passwords

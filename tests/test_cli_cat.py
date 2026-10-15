@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import io
 import lzma
@@ -22,6 +23,8 @@ from archivey.cli.exit_codes import (
 from archivey.cli.main import main
 
 _MEMBERS = {"a.txt": b"hello\n", "b.log": b"world\n", "d/c.log": b"deep\n"}
+# Every byte value: the members reach stdout as bytes, never through the text layer.
+_BINARY = bytes(range(256))
 
 
 def _tar_bytes() -> bytes:
@@ -145,10 +148,30 @@ def test_cat_verbose_names_members_on_stderr(tar_xz: Path) -> None:
     run = _Run(["cat", str(tar_xz), "-v"])
     assert run.code == EXIT_OK
     assert run.stdout == b"hello\nworld\ndeep\n"
-    lines = run.stderr.splitlines()
-    assert "a.txt" in lines
-    assert "skip d/" in lines or "skip d" in lines
-    assert "skip link.txt" in lines
+    assert run.stderr.splitlines() == [
+        "skip d/",
+        "a.txt",
+        "b.log",
+        "d/c.log",
+        "skip link.txt",
+    ]
+
+
+def test_cat_writes_member_bytes_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "bin.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("all.bin", _BINARY)
+    run = _Run(["cat", str(path)])
+    assert run.code == EXIT_OK, run.stderr
+    assert run.stdout == _BINARY
+
+
+def test_cat_outer_writes_bytes_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "all.bin.gz"
+    path.write_bytes(gzip.compress(_BINARY))
+    run = _Run(["cat", str(path), "--outer"])
+    assert run.code == EXIT_OK, run.stderr
+    assert run.stdout == _BINARY
 
 
 def test_cat_reads_an_archive_from_stdin(tar_xz: Path) -> None:
@@ -162,6 +185,19 @@ def test_cat_from_stdin_names_stdin_when_the_format_must_seek() -> None:
     run = _Run(["cat", "-"], stdin=rar.read_bytes())
     assert run.code == EXIT_FAIL
     assert "stdin: the rar format cannot be read from a pipe" in run.stderr
+
+
+def test_cat_without_a_standard_input_says_so(tar_xz: Path) -> None:
+    saved = sys.stdin
+    sys.stdin = None  # type: ignore[assignment]  # as CPython leaves it for a closed fd 0
+    try:
+        err = io.StringIO()
+        out = io.TextIOWrapper(io.BytesIO())
+        assert main(["cat", "-"], out=out, err=err) == EXIT_USAGE
+    finally:
+        sys.stdin = saved
+    assert "no standard input to read the archive from" in err.getvalue()
+    assert "/dev/stdin" not in err.getvalue()
 
 
 def test_the_stdin_token_stays_reserved_for_the_other_verbs(tar_xz: Path) -> None:
@@ -209,6 +245,16 @@ def test_cat_outer_on_a_container_says_to_leave_the_flag_out(
     assert "open_archive" not in run.stderr
 
 
+def test_cat_outer_names_a_missing_path_like_the_other_verbs(tmp_path: Path) -> None:
+    missing = tmp_path / "nope.gz"
+    outer = _Run(["cat", str(missing), "--outer"])
+    members = _Run(["cat", str(missing)])
+    assert outer.code == members.code == EXIT_FAIL
+    assert "cannot open" in outer.stderr
+    assert "no such file or directory" in outer.stderr
+    assert outer.stderr == members.stderr
+
+
 def test_cat_outer_on_a_directory_is_a_usage_error(tmp_path: Path) -> None:
     run = _Run(["cat", str(tmp_path), "--outer"])
     assert run.code == EXIT_USAGE
@@ -226,6 +272,24 @@ def test_cat_needs_a_binary_stdout(sample_zip: Path) -> None:
     err = io.StringIO()
     assert main(["cat", str(sample_zip)], out=io.StringIO(), err=err) == EXIT_USAGE
     assert "binary standard output" in err.getvalue()
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+@pytest.mark.parametrize("outer", [False, True])
+def test_cat_blames_a_failed_stdout_write_on_the_output(
+    tar_xz: Path, outer: bool
+) -> None:
+    out = open("/dev/full", "w")  # noqa: SIM115  # closing it fails too
+    err = io.StringIO()
+    argv = ["cat", str(tar_xz), *(["--outer"] if outer else [])]
+    try:
+        assert main(argv, out=out, err=err) == EXIT_FAIL
+    finally:
+        with contextlib.suppress(OSError):
+            out.close()
+    lines = err.getvalue().splitlines()
+    # One line, from main(): no member is named for the output's failure.
+    assert lines == ["archivey: No space left on device"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipe semantics")

@@ -17,6 +17,7 @@ source with ``streaming=False``) → normalize stream origin →
 
 from __future__ import annotations
 
+import errno
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -839,7 +840,11 @@ def open_stream(
                 f"use open_archive() to read a directory tree"
             )
         if not path.exists():
-            raise FileNotFoundError(f"Compressed stream not found: {path}")
+            # errno and filename set, as open() sets them, so callers that format
+            # OSError by its fields (the CLI does) report it like any missing path.
+            raise FileNotFoundError(
+                errno.ENOENT, "Compressed stream not found", str(path)
+            )
         # A FIFO or device path is a non-seekable source with no path, read once
         # through the source, exactly as open_archive reads it.
         codec_input = ArchiveSource.for_path(path)
@@ -962,8 +967,8 @@ def _resolve_stream_format(
         # Detection found a container, not a compressed stream: to open_stream that is
         # the same answer as finding nothing it can open.
         raise FormatDetectionError(
-            f"Detected {detected.format!r}, which is not a single-file compressed "
-            "stream. Use open_archive for archive containers.",
+            "Not a single-file compressed stream. Use open_archive for archive "
+            "containers.",
             source_format=detected.format,
         )
     return outer

@@ -7,7 +7,7 @@ import sys
 from contextlib import closing
 from typing import BinaryIO, TextIO
 
-from archivey import ContainerFormat, open_stream
+from archivey import open_stream
 from archivey.cli.common import closable, open_for_cli, reject_stdin_token
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
@@ -19,12 +19,28 @@ from archivey.cli.format import (
 )
 from archivey.cli.password import resolve_password
 from archivey.config import ArchiveyConfig, PasswordInput
-from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    FormatDetectionError,
+)
 from archivey.terminal import display_path
 
 # Bytes copied per read: large enough that the copy costs little per call, small
 # enough that one chunk held in memory does not matter.
-_CHUNK = 1024 * 1024
+_CHUNK = 1 << 20
+
+
+class _SinkWriteError(Exception):
+    """A write to stdout failed: the output's fault, not the member's.
+
+    Carries the ``OSError`` past the member-error arm in :func:`_cat_members`, which
+    re-raises it for ``main()`` to report as it reports any other output error.
+    """
+
+    def __init__(self, error: OSError) -> None:
+        super().__init__(error)
+        self.error = error
 
 
 def run_cat(
@@ -43,11 +59,16 @@ def run_cat(
 ) -> int:
     """Write member contents, or with ``outer`` the decompressed stream, to ``sink``.
 
-    ``archive`` ``-`` reads from ``stdin``. Bytes reach ``sink`` as they are read, so a
-    digest mismatch is found after the member's bytes were written: the run then exits
-    ``1`` with the error on ``err``, as ``zcat`` does.
+    ``archive`` ``-`` reads from ``stdin``. Bytes reach ``sink`` as they are read, so
+    some or all of a member's bytes may already have been written when a digest
+    mismatch is found: the run then exits ``1`` with the error on ``err``, as ``zcat``
+    does.
     """
     err = err if err is not None else sys.stderr
+    if archive == "-" and stdin is None:
+        # fd 0 closed or detached: the other verbs' "pass /dev/stdin" hint would not
+        # help, since there is no standard input behind that path either.
+        raise CliError("no standard input to read the archive from", code=EXIT_USAGE)
     if outer:
         if patterns or exclude:
             raise CliError(
@@ -90,15 +111,20 @@ def _cat_outer(
         source = archive
         shown = display_path(archive)
         if os.path.isdir(archive):
+            # The library refuses a directory too (caught below), but its message
+            # points at open_archive(); this one names the CLI's view of it.
             raise CliError(
                 f"--outer: {shown} is a directory, which has no compression layer",
                 code=EXIT_USAGE,
             )
     try:
         stream = open_stream(source, config=config)
+    except ArchiveyUsageError as exc:
+        # Not an ArchiveyError, so main() would not catch it: a usage exit instead.
+        raise CliError(f"--outer: {exc}", code=EXIT_USAGE) from exc
     except FormatDetectionError as exc:
         fmt = exc.source_format
-        if fmt is None or fmt.container is ContainerFormat.RAW_STREAM:
+        if fmt is None:
             raise
         # Detection found a container (ZIP, 7z, a plain tar): the library's message
         # names open_archive, which a CLI user reaches by leaving the flag out.
@@ -106,8 +132,11 @@ def _cat_outer(
             f"--outer: {shown} is a {format_format_label(fmt)} archive, which has no "
             "compression layer to remove; leave out --outer to write its members"
         ) from exc
-    with stream:
-        _copy(stream, sink)
+    try:
+        with stream:
+            _copy(stream, sink)
+    except _SinkWriteError as exc:
+        raise exc.error from None
     return EXIT_OK
 
 
@@ -126,7 +155,6 @@ def _cat_members(
 ) -> int:
     pwd: PasswordInput = resolve_password(password)
     selection = MemberSelection(patterns, exclude)
-    pass_ended = True
     with open_for_cli(
         archive,
         password=pwd,
@@ -158,9 +186,10 @@ def _cat_members(
                 try:
                     with stream:
                         _copy(stream, sink)
-                except BrokenPipeError:
-                    # stdout's reader left: main() exits 141 for it.
-                    raise
+                except _SinkWriteError as exc:
+                    # stdout failed (a closed pipe, a full disk): main() reports it,
+                    # and exits 141 for a closed pipe.
+                    raise exc.error from None
                 except (ArchiveyError, OSError) as exc:
                     # The concatenated output is already wrong past this point, so
                     # stop rather than go on writing the next members after it.
@@ -169,16 +198,20 @@ def _cat_members(
                         f"{format_error_detail(exc)}",
                         file=err,
                     )
-                    pass_ended = False
-                    break
-        if not pass_ended:
-            return EXIT_FAIL
+                    return EXIT_FAIL
         if not selection.settled and selection.report(err=err):
             return EXIT_FAIL
     return EXIT_OK
 
 
 def _copy(stream: BinaryIO, sink: BinaryIO) -> None:
+    # Not shutil.copyfileobj: a failed write must be told apart from a failed read.
     while chunk := stream.read(_CHUNK):
-        sink.write(chunk)
-    sink.flush()
+        try:
+            sink.write(chunk)
+        except OSError as exc:
+            raise _SinkWriteError(exc) from exc
+    try:
+        sink.flush()
+    except OSError as exc:
+        raise _SinkWriteError(exc) from exc
