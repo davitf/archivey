@@ -144,8 +144,9 @@ yielded.
   corrected offset; the member's CRC-32 is still checked. Each correction emits
   `ARCHIVE_OFFSET_WRAPPED`, which `DiagnosticPolicy.STRICT` does not raise on, since
   macOS writes such archives by default. A single member over 4 GiB in such an
-  archive is not read, and neither are the members after it: its sizes are cut too,
-  so the offsets after it cannot be corrected.
+  archive raises when read, at its cut size. When it is over 4 GiB even compressed,
+  the members after it are not read either, because their offsets cannot be
+  corrected past it.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or

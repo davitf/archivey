@@ -585,9 +585,10 @@ SHALL NOT be corrected. Each kept correction SHALL emit `ARCHIVE_OFFSET_WRAPPED`
 `OffsetWrapContext`: one per member (`record="local_header"`), and one for the
 directory (`record="central_directory"`, no member). The member's CRC-32 SHALL be
 checked as for any member. A member whose own sizes pass 4 GiB is out of scope: its
-sizes wrap too, and nothing in the archive says by how much. Its end then falls a
-multiple of 2³² short, so the members after it keep their stored offsets and their
-reads fail too.
+sizes wrap too, and nothing in the archive says by how much, so its read SHALL raise
+at the declared size. When its compressed size wraps, its end falls a multiple of 2³²
+short, so the members after it keep their stored offsets and their reads fail too;
+when only its uncompressed size wraps, the members after it read.
 
 #### Scenario: offsets wrapped past 4 GiB
 

@@ -630,9 +630,9 @@ class CentralDirectoryWalk:
     correction, and its read fails as it did. A kept correction is in
     :attr:`CentralEntry.offset_correction`, or in :attr:`findings` for the directory.
     An offset from a ZIP64 extra field is never corrected. Sizes past 4 GiB wrap too,
-    and they are not corrected: nothing in the archive says by how much. Such a member
-    then ends a multiple of 2³² short, so the members after it are not corrected
-    either.
+    and they are not corrected: nothing in the archive says by how much. A member whose
+    compressed size wraps then ends a multiple of 2³² short, so the members after it are
+    not corrected either; one whose uncompressed size alone wraps leaves them alone.
     """
 
     def __init__(
