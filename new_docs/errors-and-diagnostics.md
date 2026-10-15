@@ -27,7 +27,7 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 | `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
 | `ResourceLimitError` | The archive went over one of the [limits](security.md#hardening) |
 
-The [reference](api.md#archivey.ArchiveyError) lists the rest, such as `ReadError`, the parent of
+The [reference][archivey.ArchiveyError] lists the rest, such as `ReadError`, the parent of
 the first two.
 
 Damage can look like something else, and then the exception names what it looks like. In an
@@ -165,7 +165,7 @@ members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes th
 Each diagnostic is also logged as a warning on a logger under `archivey`, such as
 `archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each. To
 handle them as they happen instead, pass a function as `on_diagnostic=` in
-`archivey.ArchiveyConfig`. Archivey calls it with each [`Diagnostic`](api.md#archivey.Diagnostic) as
+`archivey.ArchiveyConfig`. Archivey calls it with each [`Diagnostic`][archivey.Diagnostic] as
 it's recorded, the same record the summaries keep. An exception it raises stops the operation and
 reaches your code.
 
@@ -178,9 +178,8 @@ config = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STR
 With `DiagnosticPolicy.STRICT`, the diagnostics that say the archive itself is unusual, such as a
 name that displays as a different one, raise `DiagnosticRaisedError` from the call that found them.
 The ones about your own arguments, such as an unused password, and a few others, such as an empty
-archive, are only recorded as before. The [reference](api.md#archivey.DiagnosticPolicy) lists which
-codes raise. `DiagnosticPolicy.PEDANTIC` raises on every code, including codes a later release
-adds.
+archive, are only recorded as before. The [reference][archivey.ARCHIVE_INTEGRITY_CODES] lists which
+codes raise. `DiagnosticPolicy.PEDANTIC` raises on every code, including codes a later release adds.
 
 ```python
 config = archivey.ArchiveyConfig(
@@ -195,4 +194,4 @@ kept, but `counts` still counts it. A code in `raise_on` raises. Every other cod
 before. To change a preset, build a policy from the same set: `STRICT` is
 `DiagnosticPolicy(raise_on=archivey.ARCHIVE_INTEGRITY_CODES)`, so
 `raise_on=archivey.ARCHIVE_INTEGRITY_CODES - {archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA}` is
-`STRICT` without that one code. The [reference](api.md#archivey.DiagnosticCode) lists every code.
+`STRICT` without that one code. The [reference][archivey.DiagnosticCode] lists every code.
