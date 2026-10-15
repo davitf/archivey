@@ -109,8 +109,8 @@ no member replaces the destination itself.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
 
-**Residual.** A local process racing the destination (out of scope, §1). A hard kill can leave `.archivey-tmp-*`
-files, which are safe to delete.
+**Residual.** A local process racing the destination (out of scope, §1). A hard kill, or a removal the filesystem
+refuses (logged), can leave `.archivey-tmp-*` files, which are safe to delete.
 
 **Tests.** `tests/test_extraction.py`: `test_check_universal_rejects_traversal`,
 `test_check_universal_rejects_root_named_file`,

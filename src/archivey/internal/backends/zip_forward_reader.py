@@ -1214,7 +1214,7 @@ class _PassData:
             deferred
             and encrypted
             and self._decoded is None
-            and self._reader._walker.can_scan_member_data(self._data)
+            and self._reader._walker.scan_starts_at_data_start(self._data)
         ):
             # A decrypt stage that failed to open (no password, or none passed its
             # check) read only the data's first bytes, which the scan puts back: the

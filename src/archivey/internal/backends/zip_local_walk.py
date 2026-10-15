@@ -542,8 +542,8 @@ class _CodecData(MemberData):
         available here, and such a member reads from a pipe where it fails from a
         file. A crafted shape only, so DR-5a lets the two reads differ. As with the
         stored scan, a planted descriptor for a prefix ends the member early, and the
-        walk reads on from inside its data; comparing the descriptor with the central
-        entry at the end of the pass (task 3.3b) is what will catch it.
+        walk reads on from inside its data; the central entry's size and CRC catch it
+        at the end of the pass.
         """
         handed = self._kept_len  # where the bytes handed out end in ``buffer``
         base = self.consumed - handed
@@ -961,8 +961,8 @@ class LocalHeaderWalk:
         self._open = data
         return data
 
-    def can_scan_member_data(self, data: MemberData) -> bool:
-        """Whether :meth:`scan_member_data` takes ``data`` and starts its scan at the
+    def scan_starts_at_data_start(self, data: MemberData) -> bool:
+        """Whether :meth:`scan_member_data` would start its scan of ``data`` at the
         data's start: every byte read from it so far is still kept."""
         return (
             data is self._open
@@ -978,7 +978,7 @@ class LocalHeaderWalk:
         whose read failed, so the walk goes past it without decoding it. The bytes
         still kept of what a read took (the last :data:`_CODEC_RETAIN`) are put back
         and the ones before them counted, so the scan starts where the kept bytes
-        do: at the data's start when :meth:`can_scan_member_data`. A descriptor
+        do: at the data's start when :meth:`scan_starts_at_data_start`. A descriptor
         before that point is not found, which takes a codec that read more than
         :data:`_CODEC_RETAIN` past its data's end: the scan then runs to the end of
         the stream and raises. ``data`` is done with, and the returned reader is the

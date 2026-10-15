@@ -92,10 +92,11 @@ if TYPE_CHECKING:
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
 # Prefix of the temp files atomic FILE writes stage in the destination directory
-# (mkstemp appends a random suffix). Python-level failures always unlink them, but a
-# hard kill (SIGKILL, power loss) cannot: leftover ``.archivey-tmp-*`` files in an
-# extraction destination are archivey's and are safe to delete. Documented in
-# docs/safe-extraction.md; keep the value and that doc in sync.
+# (mkstemp appends a random suffix). Python-level failures unlink them; a removal the
+# filesystem refuses (logged) or a hard kill (SIGKILL, power loss) can leave one:
+# leftover ``.archivey-tmp-*`` files in an extraction destination are archivey's and
+# are safe to delete. Documented in docs/extracting.md; keep the value and that doc in
+# sync.
 _TMP_PREFIX = ".archivey-tmp-"
 
 # The fields ``_apply_metadata`` puts on disk.
@@ -4443,8 +4444,18 @@ class ExtractionCoordinator:
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
-            with contextlib.suppress(OSError):
+            try:
                 os.unlink(long_path(tmp))
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self._rebase_os_error(exc)
+                logger.warning(
+                    "Could not remove %r, staged for %r: %s",
+                    str(self._shown(tmp)),
+                    member.name,
+                    exc,
+                )
             raise
 
     @staticmethod

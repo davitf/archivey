@@ -36,6 +36,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.zip_forward_reader import ZipForwardReader
 from archivey.types import ArchiveMember, MemberType
 from tests.sample_archives import (
@@ -1236,6 +1237,9 @@ def test_the_walk_scans_past_a_failed_decode_longer_than_what_it_keeps() -> None
     of what a read took: the scan starts at the kept bytes, and the next member
     still reads as from a file."""
     data = _late_decode_failure_zip(12_000_000)
+    stored = zipfile.ZipFile(io.BytesIO(data)).getinfo("a.bin").compress_size
+    # Past the window: the kept bytes plus the newest read.
+    assert stored > zip_local_walk._CODEC_RETAIN + zip_local_walk._READ_CHUNK
     seen = _pipe_reads(data)
     assert seen["a.bin"] is CorruptionError
     assert seen["b.txt"] == b"after"
