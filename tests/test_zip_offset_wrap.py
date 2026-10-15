@@ -3,8 +3,8 @@
 Such a writer stores every offset modulo 2³², the end record's directory offset too.
 The archives here are laid out past 4 GiB without 4 GiB of storage: a sparse,
 seekable stream holds the headers and short members at their real offsets and reads
-zeros everywhere else, and the one large member is stored zeros. Nothing reads that
-member except the pipe test, which streams past it.
+zeros everywhere else, and the large members are stored zeros. Nothing reads them
+except the two pipe tests, which stream past them.
 """
 
 from __future__ import annotations

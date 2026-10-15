@@ -725,27 +725,29 @@ class CentralDirectoryWalk:
             # entry always gets the one try at ``base``: an offset that needs ZIP64
             # puts the directory past 4 GiB, which saturates the end record's own
             # offset field, and such an end record is ZIP64 (no correction at all).
-            if name_at_offset is not None and fields[18] != _U32_MAX:
-                offset = entry.header_offset
-                if wrapped_base is not None:
-                    shift = base - wrapped_base
-                    if self._header_named(offset - shift, name):
-                        base = wrapped_base
-                        entry.header_offset = offset - shift
-                        self.findings.append(
-                            DirectoryOffsetWrapped(end.cd_offset, end.cd_offset + shift)
-                        )
-                elif offset < previous_end:
-                    # The fewest 2³² steps that reach ``previous_end``, counted rather
-                    # than stepped: a ZIP64 extra field can declare a compressed size
-                    # near 2⁶⁴.
-                    steps = (previous_end - offset + _U32_MAX) >> 32
-                    corrected = offset + (steps << 32)
-                    if self._header_named(corrected, name):
-                        entry.header_offset = corrected
-                        entry.offset_correction = corrected - offset
-                        entry.stored_offset = fields[18]
             if name_at_offset is not None:
+                if fields[18] != _U32_MAX:
+                    offset = entry.header_offset
+                    if wrapped_base is not None:
+                        shift = base - wrapped_base
+                        if self._header_named(offset - shift, name):
+                            base = wrapped_base
+                            entry.header_offset = offset - shift
+                            self.findings.append(
+                                DirectoryOffsetWrapped(
+                                    end.cd_offset, end.cd_offset + shift
+                                )
+                            )
+                    elif offset < previous_end:
+                        # The fewest 2³² steps that reach ``previous_end``,
+                        # counted rather than stepped: a ZIP64 extra field can
+                        # declare a compressed size near 2⁶⁴.
+                        steps = (previous_end - offset + _U32_MAX) >> 32
+                        corrected = offset + (steps << 32)
+                        if self._header_named(corrected, name):
+                            entry.header_offset = corrected
+                            entry.offset_correction = corrected - offset
+                            entry.stored_offset = fields[18]
                 member_end = (
                     entry.header_offset + LOCAL_HEADER_SIZE + entry.compressed_size
                 )
