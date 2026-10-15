@@ -7,12 +7,15 @@ caused it.
 
 The scan reads every ``.py`` file under ``tests/`` and reports each process call
 (``subprocess.run`` and the other runners, ``os.system``, ``os.popen``, ``os.exec*``,
-``os.spawn*``) whose program is the literal ``"7z"``, or whose program it cannot read
-as a string literal (a variable, a call, a starred list). Calls that start
+``os.spawn*``) whose program is a literal naming the 7-Zip CLI, or whose program it
+cannot read as a string literal (a variable, a call, a starred list). A literal names
+the 7-Zip CLI when its file name without suffix is ``7z``, ``7zz`` or ``7za``, so
+``/usr/bin/7z``, ``7z.exe`` and Homebrew's ``7zz`` count. Calls that start
 ``sys.executable`` or another literal program (``rar``, ``xz``, ``git``) are not
 reported: the rule is about ``7z``, and reporting every such call would list 56
-files, most of which never run ``7z``. Calls inside a function named ``run_7z`` are
-the helper itself and are not reported. The scan also reports ``import subprocess as X``,
+files, most of which never run ``7z``. The body of ``run_7z`` in ``tests/conftest.py``
+is the helper itself and is not reported; a function of that name anywhere else is
+scanned like any other code. The scan also reports ``import subprocess as X``,
 ``import os as X`` and a ``from subprocess``/``from os`` import of a runner name,
 because a call through those names hides from the scan.
 
@@ -23,17 +26,21 @@ cannot name, which may not be ``7z``; their count still stops a new ``7z`` call 
 hiding among them.
 
 Mutations it was checked against: adding ``subprocess.run(["7z", "l", str(driver)])``
-to a test in ``tests/test_sevenzip_reader.py`` fails it, and so does adding a third
-direct ``7z`` call to ``tests/test_zip.py``, which is on the list with two.
+to a test in ``tests/test_sevenzip_reader.py`` fails it. So does each of these, added
+to ``tests/test_zip.py`` (on the list with two): a third direct ``["7z", ...]`` call;
+a ``def run_7z`` wrapper that calls ``subprocess.run(["7z", *args])``; and a
+``subprocess.run(["7zz", ...])`` call.
 """
 
 from __future__ import annotations
 
 import ast
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 _TESTS = Path(__file__).resolve().parent
+_HELPER_HOME = _TESTS / "conftest.py"
 _HELPER = "run_7z"
+_SEVEN_ZIP_PROGRAMS = frozenset({"7z", "7zz", "7za"})
 _SUBPROCESS_RUNNERS = frozenset(
     {
         "run",
@@ -111,12 +118,19 @@ def _program(arg: ast.expr | None) -> str | None:
     return None
 
 
+def _may_run_7z(program: str | None) -> bool:
+    """Whether a call that starts ``program`` runs, or may run, the 7-Zip CLI."""
+    if program is None:
+        return True
+    return PureWindowsPath(program).stem.lower() in _SEVEN_ZIP_PROGRAMS
+
+
 def _calls_that_bypass_run_7z(path: Path) -> list[str]:
     """Each place in ``path`` that runs ``7z``, or may run it, without the helper."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     in_helper = {
         id(node)
-        for func in ast.walk(tree)
+        for func in (tree.body if path.resolve() == _HELPER_HOME else ())
         if isinstance(func, ast.FunctionDef) and func.name == _HELPER
         for node in ast.walk(func)
     }
@@ -140,7 +154,7 @@ def _calls_that_bypass_run_7z(path: Path) -> list[str]:
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and _is_runner(node.func.value.id, node.func.attr)
-            and _program(node.args[0] if node.args else None) in {"7z", None}
+            and _may_run_7z(_program(node.args[0] if node.args else None))
         ):
             found.append((node.lineno, f"{ast.unparse(node.func)}(...)"))
     return [f"{line}: {what}" for line, what in sorted(found)]
@@ -159,14 +173,20 @@ def test_7z_cli_runs_go_through_the_bounded_helper() -> None:
     }
     gone = sorted(_UNCONVERTED.keys() - found.keys())
     assert not wrong and not gone, (
-        "run the 7z CLI through tests.conftest.run_7z; when you convert calls, lower "
-        f"or remove the file's count in _UNCONVERTED.\nCount differs: {wrong}\n"
-        f"No longer reported: {gone}"
+        "A reported call that runs 7z must go through tests.conftest.run_7z. A "
+        "reported call that starts another program the scan cannot name (a "
+        "variable, a call) is allowed: add its file to _UNCONVERTED or raise the "
+        "file's count. When you convert calls, lower or remove the count.\n"
+        f"Count differs: {wrong}\nNo longer reported: {gone}"
     )
 
 
 def test_the_scan_finds_each_way_to_bypass_the_helper(tmp_path: Path) -> None:
-    """The scan above must not pass because it cannot see a call."""
+    """The scan above must not pass because it cannot see a call.
+
+    The sample is not ``tests/conftest.py``, so the call inside its ``run_7z`` is
+    reported.
+    """
     sample = tmp_path / "sample.py"
     sample.write_text(
         "import os, subprocess, sys\n"
@@ -181,7 +201,10 @@ def test_the_scan_finds_each_way_to_bypass_the_helper(tmp_path: Path) -> None:
         "subprocess.Popen(cmd)\n"
         "os.system('7z t x.7z')\n"
         "def run_7z(args):\n"
-        "    return subprocess.run(['7z', *args])\n",
+        "    return subprocess.run(['7z', *args])\n"
+        "subprocess.run(['/usr/local/bin/7zz', 'l'])\n"
+        "subprocess.run(['7z.exe', 'l'])\n"
+        "subprocess.run(['7zip-notes', 'l'])\n",
         encoding="utf-8",
     )
     assert _calls_that_bypass_run_7z(sample) == [
@@ -191,4 +214,7 @@ def test_the_scan_finds_each_way_to_bypass_the_helper(tmp_path: Path) -> None:
         "8: subprocess.check_output(...)",
         "10: subprocess.Popen(...)",
         "11: os.system(...)",
+        "13: subprocess.run(...)",
+        "14: subprocess.run(...)",
+        "15: subprocess.run(...)",
     ]
