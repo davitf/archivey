@@ -22,7 +22,6 @@ from archivey import ExtractionStatus
 from archivey.config import ListingLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.backends.zip_forward_reader import _MAX_REPARSE_PREFIX
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
@@ -36,11 +35,6 @@ from tests.test_windows_reparse import _reparse_buffer
 from tests.zipcrypto import build_zipcrypto_zip
 
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 def _zip(entries: list[tuple[str, int, bytes]]) -> bytes:

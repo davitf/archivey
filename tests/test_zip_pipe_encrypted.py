@@ -30,7 +30,6 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_descriptors import without_descriptor_signatures
@@ -44,11 +43,6 @@ _COLLISION = (
 )
 _PASSWORD = b"secret"
 _TEXT = b"the quick brown fox jumps over the lazy dog\n" * 40
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 def _aes_zip(**kwargs: object) -> bytes:

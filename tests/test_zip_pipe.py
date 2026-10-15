@@ -36,7 +36,6 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_forward_reader import ZipForwardReader
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.types import ArchiveMember, MemberType
 from tests.sample_archives import (
     CORPUS,
@@ -45,11 +44,6 @@ from tests.sample_archives import (
     skip_unless_runnable,
 )
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 class _Writer(io.RawIOBase):

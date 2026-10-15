@@ -21,16 +21,10 @@ import archivey
 from archivey.exceptions import CorruptionError, EncryptionError, TruncatedError
 from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_aes_fixture import build_aes_zip
 from tests.zipcrypto import build_zipcrypto_zip
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 def _zip(

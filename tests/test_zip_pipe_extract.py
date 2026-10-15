@@ -29,7 +29,6 @@ from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
 )
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.extraction import BombTracker
 from archivey.types import (
     AbortOn,
@@ -50,11 +49,6 @@ needs_symlinks = pytest.mark.skipif(
 )
 # Also where a backslash in a name is no separator.
 posix_modes = pytest.mark.skipif(os.name == "nt", reason="needs POSIX")
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 def _entry(name: str, *, mode: int | None = None, host: int = 3) -> zipfile.ZipInfo:
