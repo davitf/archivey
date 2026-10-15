@@ -319,7 +319,7 @@ halts with `DiagnosticRaisedError`.
 | Written by Info-ZIP `zip` on Unix (extra field `0x7875`) | `uid` and `gid` are the file's owner ids; `uname` and `gname` are `None` |
 | Owner field in the local header only, read from a pipe | The pass yields `uid` and `gid` `None`, as a file read lists them, and `TRUSTED` as root leaves the same owner on disk from both |
 | `0x000d` with ids, then a `0x7855` of 2 bytes | `uid` and `gid` `None`, `MEMBER_HEADER_RECORD_SKIPPED` for the `0x7855`, as unzip 6.00 gives no owner |
-| Deciding owner field cut short, too short for its ids, or with an id size other than 2, 4 or 8 bytes | `uid` and `gid` `None`; `MEMBER_HEADER_RECORD_SKIPPED` with `record="unix_owner"` and `record_id` the tag |
+| Deciding owner field cut short, too short for its ids, a `0x7855` neither empty nor exactly 4 bytes, or a `0x7875` with an id size other than 2, 4 or 8 bytes | `uid` and `gid` `None`; `MEMBER_HEADER_RECORD_SKIPPED` with `record="unix_owner"` and `record_id` the tag |
 | `flag_bits & 0x1`, or method 99 with bit 0 clear | `member.is_encrypted is True` |
 | Unix-origin entry named `a\` | `FILE` named `a\` on every host OS |
 | DOS-origin entry named `a\` | `DIRECTORY` named `a/` on every host OS; any data it declares is not reachable (no `open()`, extraction writes an empty directory) and `size` still reports it |

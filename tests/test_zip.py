@@ -21,6 +21,7 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveMember,
     ArchiveyConfig,
     CompressionAlgorithm,
     DiagnosticCode,
@@ -908,6 +909,38 @@ def test_pass_yields_no_owner_until_the_directory(
         during = [(m.uid, m.gid) for m, _ in ar.stream_members()]
     assert during == [(None, None)]
     assert _owner_seen(data) == (owner, owner)
+
+
+@pytest.mark.parametrize("piped", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(("data", "owner"), _LOCAL_ONLY_OWNERS)
+def test_trusted_applies_the_directory_owner_from_a_pipe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    data: bytes,
+    owner: tuple[int | None, int | None],
+    piped: bool,
+) -> None:
+    # Runs without root: it records what extraction hands to the metadata step, the
+    # one that chowns as root. From a pipe the write carries no owner and the end of
+    # the pass carries the directory's, so the last owner applied is a file read's.
+    from archivey.internal.extraction import ExtractionCoordinator
+
+    applied: list[tuple[int | None, int | None]] = []
+    original = ExtractionCoordinator._apply_metadata
+
+    def record(
+        self: ExtractionCoordinator, path: Path | int, member: ArchiveMember
+    ) -> None:
+        applied.append((member.uid, member.gid))
+        original(self, path, member)
+
+    monkeypatch.setattr(ExtractionCoordinator, "_apply_metadata", record)
+    source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+    with open_archive(source, streaming=piped) as ar:
+        ar.extract_all(tmp_path / "out", policy=ExtractionPolicy.TRUSTED)
+    if piped:
+        assert applied[0] == (None, None)
+    assert applied[-1] == owner
 
 
 @pytest.mark.skipif(
