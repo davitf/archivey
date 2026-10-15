@@ -96,7 +96,13 @@ class RarDecompressor(Enum):
       local users can see it while it runs. See ``docs/formats.md``.
     - ``AUTO`` — ``unrar`` when a usable one is on ``PATH``, otherwise ``unar``. The
       choice is made once per opened archive, when it is opened, and holds for every
-      read of it: a read that ``unar`` refuses is not retried with ``unrar``. With
+      read of it: a read that ``unar`` refuses is not retried with ``unrar``. One
+      exception goes the other way: a member whose name ``unrar`` cannot be given, or
+      whose glob name also matches earlier members
+      (``rar_allow_glob_member_concatenation``), is read with ``unar`` when an
+      accepted one is installed, because ``unar`` selects members by index. That
+      applies only to a member that needs no password and that ``unar`` reads
+      correctly; otherwise the ``unrar`` refusal stands. With
       neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
       This is the default. On a machine with ``unar`` and no RARLAB program, it means
       a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
@@ -666,6 +672,9 @@ class ArchiveyConfig:
     reported (:class:`ExtractionLimits` does not cover ``open()`` or ``read()``); on a
     solid archive those bytes are already inside ``AccessCost.SOLID``. Set ``True`` to
     read it anyway. A glob name that matches no other member is unaffected either way.
+    Under ``rar_decompressor=AUTO``, an installed ``unar`` reads such a member by index
+    instead of the refusal (see :class:`RarDecompressor`), so this flag matters only
+    when ``unrar`` must read it.
     """
 
     rar_decompressor: RarDecompressor = RarDecompressor.AUTO

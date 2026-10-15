@@ -813,6 +813,18 @@ def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
     )
 
 
+class _UnrarCannotAddress(Exception):
+    """``unrar`` cannot address a member by name; ``error`` is the refusal to raise.
+
+    Raised by :meth:`RarReader._unrar_spawner_by_name` so that a read under ``AUTO``
+    can hand the member to ``unar``, which names entries by index, before it raises.
+    """
+
+    def __init__(self, error: UnsupportedFeatureError) -> None:
+        super().__init__(error)
+        self.error = error
+
+
 @dataclass(slots=True)
 class _UnrarNames:
     """Every payload member's name as ``unrar`` reads it, to size an ``-n`` skip.
@@ -1210,6 +1222,13 @@ class RarReader(BaseArchiveReader):
         # unar is handed. The directory is removed on close.
         self._unar_dir: Path | None = None
         self._unar_path: Path | None = None
+        # The unar policy and dictionary costs for members unrar cannot address,
+        # built on the first such read under AUTO (:meth:`_unar_for_unaddressable`).
+        # ``False`` once no accepted unar was found.
+        self._unar_fallback: (
+            tuple[UnarRarPolicy, dict[int, _DictionaryCost]] | Literal[False] | None
+        ) = None
+        self._unar_fallback_lock = threading.Lock()
         # Guards the check-then-write in ``_ensure_archive_path``: two concurrent
         # compressed opens used to both see ``None`` and both copy, and close
         # only removed the winner.
@@ -2298,6 +2317,74 @@ class RarReader(BaseArchiveReader):
             raise
         return path
 
+    def _unar_path_refusal(self) -> str | None:
+        """Why ``unar`` cannot be handed this archive, or ``None`` when it can.
+
+        Decided from the volume set alone, so it is the same for every member.
+        """
+        if self._volume_set_size() > 1 and (
+            self._volume0_parse_origin or self._archive.sfx_offset
+        ):
+            return (
+                "unar does not find a RAR after a prefix, and a prefixed multi-volume "
+                "set is not copied for it. Set ArchiveyConfig.rar_decompressor to "
+                "'unrar' to read it with RARLAB unrar."
+            )
+        if (
+            self._archive.old_volume_naming
+            and self._volume_set_size() > _UNAR_MAX_OLD_STYLE_VOLUMES
+        ):
+            return (
+                f"unar reads at most {_UNAR_MAX_OLD_STYLE_VOLUMES} volumes of an "
+                "old-style (.rar, .r00 ...) set and reports the rest as a damaged "
+                "member. Set ArchiveyConfig.rar_decompressor to 'unrar' to read it "
+                "with RARLAB unrar."
+            )
+        return None
+
+    def _unar_for_unaddressable(
+        self, raw: RarMemberInfo
+    ) -> tuple[UnarRarPolicy, dict[int, _DictionaryCost]] | None:
+        """The ``unar`` policy and dictionary costs for a member ``unrar`` cannot name.
+
+        ``unar`` names entries by index, so a stored name ``unrar`` cannot be given, or
+        a glob name that also matches earlier members, costs it nothing. ``AUTO``
+        therefore reads such a member with an accepted ``unar`` when one is installed,
+        where it would otherwise refuse it. ``None`` keeps the ``unrar`` refusal: the
+        caller chose ``unrar`` explicitly, no accepted ``unar`` was found, ``unar``
+        refuses the member or the archive too, or the member needs a password, which
+        ``unar`` takes on its command line, where other local users can see it.
+        """
+        if (
+            self._config.rar_decompressor is not RarDecompressor.AUTO
+            or self._decompressor is not RarDecompressor.UNRAR
+            or raw.is_encrypted
+            or self._archive.has_header_encryption
+            or self._unar_path_refusal() is not None
+        ):
+            return None
+        # Its own lock: the open path that asks may already hold _materialize_lock.
+        with self._unar_fallback_lock:
+            if self._unar_fallback is None:
+                try:
+                    find_unar(purpose=UNAR_PURPOSE)
+                except PackageNotInstalledError:
+                    self._unar_fallback = False
+                else:
+                    costs = {
+                        id(member): _DictionaryCost(count, count, declarer)
+                        for member, (count, declarer) in zip(
+                            self._members,
+                            unar_dictionary_costs(self._archive),
+                            strict=True,
+                        )
+                    }
+                    self._unar_fallback = (UnarRarPolicy(self._archive), costs)
+            fallback = self._unar_fallback
+        if fallback is False or fallback[0].member_refusal(raw) is not None:
+            return None
+        return fallback
+
     def _unar_archive_path(self, member: ArchiveMember | None) -> Path:
         """A path ``unar`` can open, in a directory that holds this archive alone.
 
@@ -2327,26 +2414,9 @@ class RarReader(BaseArchiveReader):
         copying under its sibling name, and ``unrar`` reads that set in place.
         """
         start = self._origin + self._archive.sfx_offset
-        if self._volume_set_size() > 1 and (
-            self._volume0_parse_origin or self._archive.sfx_offset
-        ):
-            raise self._unar_refused(
-                member,
-                "unar does not find a RAR after a prefix, and a prefixed multi-volume "
-                "set is not copied for it. Set ArchiveyConfig.rar_decompressor to "
-                "'unrar' to read it with RARLAB unrar.",
-            )
-        if (
-            self._archive.old_volume_naming
-            and self._volume_set_size() > _UNAR_MAX_OLD_STYLE_VOLUMES
-        ):
-            raise self._unar_refused(
-                member,
-                f"unar reads at most {_UNAR_MAX_OLD_STYLE_VOLUMES} volumes of an "
-                "old-style (.rar, .r00 ...) set and reports the rest as a damaged "
-                "member. Set ArchiveyConfig.rar_decompressor to 'unrar' to read it "
-                "with RARLAB unrar.",
-            )
+        refusal = self._unar_path_refusal()
+        if refusal is not None:
+            raise self._unar_refused(member, refusal)
         if self._unar_path is not None:
             return self._unar_path
         if start == 0 and self._stream_volume_items:
@@ -3822,7 +3892,11 @@ class RarReader(BaseArchiveReader):
         )
 
     def _check_dictionary_memory(
-        self, member: ArchiveMember, cost: _DictionaryCost
+        self,
+        member: ArchiveMember,
+        cost: _DictionaryCost,
+        *,
+        program: str | None = None,
     ) -> None:
         """Refuse a read whose decompressor would allocate over ``max_decoder_memory``.
 
@@ -3836,7 +3910,8 @@ class RarReader(BaseArchiveReader):
         capped below it, so a caller can find both numbers. A declarer that shares the
         read member's name is named by its archive index instead.
         """
-        program = "unar" if self._unar_policy is not None else "unrar"
+        if program is None:
+            program = "unar" if self._unar_policy is not None else "unrar"
         counted_from = None
         if cost.declarer >= 0:
             source = self._members[cost.declarer]
@@ -3945,7 +4020,16 @@ class RarReader(BaseArchiveReader):
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
-        spawner = self._unrar_spawner(member, raw)
+        try:
+            spawner = self._unrar_spawner_by_name(member, raw)
+        except _UnrarCannotAddress as refusal:
+            fallback = self._unar_for_unaddressable(raw)
+            if fallback is None:
+                raise refusal.error from None
+            policy, costs = fallback
+            return self._open_member_with_unar(
+                member, raw, policy, dictionary_cost=costs[id(member)]
+            )
         # Picked before anything is copied for ``unrar``: a RAR5 PswCheck rejects a
         # wrong candidate without spooling a stream source to disk. A RAR3/4 candidate
         # list is judged by running ``unrar``, so that one does copy.
@@ -3967,6 +4051,18 @@ class RarReader(BaseArchiveReader):
         The spawner takes the password and whether the member has a digest archivey
         checks itself, and copies a stream source to disk on its first call.
         """
+        try:
+            return self._unrar_spawner_by_name(member, raw)
+        except _UnrarCannotAddress as refusal:
+            raise refusal.error from None
+
+    def _unrar_spawner_by_name(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> Callable[[str | None, bool], BinaryIO]:
+        """:meth:`_unrar_spawner`, with the refusals about naming the member raised as
+        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, or an include
+        mask that also matches earlier members (``rar_allow_glob_member_concatenation``).
+        """
         # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
         # built from the name as unrar reads it, which is not always the presented
@@ -3984,13 +4080,15 @@ class RarReader(BaseArchiveReader):
             surrogates_as_wildcards=raw.rar3_unicode_name is not None,
         )
         if isinstance(mask, UnrarNameRefusal):
-            raise self._unrar_name_refused(member, mask.reason)
+            raise _UnrarCannotAddress(self._unrar_name_refused(member, mask.reason))
         if isinstance(mask, UnrarMaskRefusal):
-            raise UnsupportedFeatureError(
-                mask.reason,
-                archive_name=self._archive_name,
-                member_name=member.name,
-                source_format=ArchiveFormat.RAR,
+            raise _UnrarCannotAddress(
+                UnsupportedFeatureError(
+                    mask.reason,
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                )
             )
         if not isinstance(mask, UnrarMask):
             assert_never(mask)
@@ -4057,11 +4155,13 @@ class RarReader(BaseArchiveReader):
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True to "
                     "read it anyway."
                 )
-            raise UnsupportedFeatureError(
-                message,
-                archive_name=self._archive_name,
-                member_name=member.name,
-                source_format=ArchiveFormat.RAR,
+            raise _UnrarCannotAddress(
+                UnsupportedFeatureError(
+                    message,
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                )
             )
 
         # Counts the other members the mask selects too (a duplicate name is enough),
@@ -4221,7 +4321,12 @@ class RarReader(BaseArchiveReader):
         )
 
     def _open_member_with_unar(
-        self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
+        self,
+        member: ArchiveMember,
+        raw: RarMemberInfo,
+        policy: UnarRarPolicy,
+        *,
+        dictionary_cost: _DictionaryCost | None = None,
     ) -> ArchiveStream:
         """Serve one member from ``unar -i <index>``.
 
@@ -4232,27 +4337,51 @@ class RarReader(BaseArchiveReader):
         spawned.
         """
         return self._open_spawned_member(
-            member, self._unar_member_spawner(member, raw, policy)
+            member,
+            self._unar_member_spawner(
+                member, raw, policy, dictionary_cost=dictionary_cost
+            ),
         )
 
     def _unar_member_spawner(
-        self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
+        self,
+        member: ArchiveMember,
+        raw: RarMemberInfo,
+        policy: UnarRarPolicy,
+        *,
+        dictionary_cost: _DictionaryCost | None = None,
     ) -> Callable[[], BinaryIO]:
         """Check what ``unar -i <index>`` needs for this member; return its spawner."""
-        spawn = self._unar_spawner(member, raw, policy)
+        spawn = self._unar_spawner(member, raw, policy, dictionary_cost=dictionary_cost)
         # Picked the way the ``unrar`` path picks it, before anything is copied: a
         # RAR5 PswCheck rejects a wrong candidate here, without spawning ``unar``.
         data_password = self._unar_password(member, self._member_data_password(member))
         return lambda: spawn(data_password)
 
     def _unar_spawner(
-        self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
+        self,
+        member: ArchiveMember,
+        raw: RarMemberInfo,
+        policy: UnarRarPolicy,
+        *,
+        dictionary_cost: _DictionaryCost | None = None,
     ) -> Callable[[str | None], BinaryIO]:
-        """The refusals and dictionary check for ``unar -i <index>``; a spawner by password."""
+        """The refusals and dictionary check for ``unar -i <index>``; a spawner by password.
+
+        ``dictionary_cost`` is given for a member read with ``unar`` while ``unrar``
+        is this reader's program (:meth:`_unar_for_unaddressable`), whose
+        :attr:`_dictionary_costs` follow ``unrar``'s rule.
+        """
         refusal = policy.member_refusal(raw)
         if refusal is not None:
             raise self._unar_refused(member, refusal)
-        self._check_dictionary_memory(member, self._dictionary_costs[id(member)])
+        self._check_dictionary_memory(
+            member,
+            self._dictionary_costs[id(member)]
+            if dictionary_cost is None
+            else dictionary_cost,
+            program="unar",
+        )
         # ``unar`` answers a wrong password with no output and exit 0.
         empty_means_wrong_password = (
             raw.is_encrypted and _member_stream_size(member) > 0

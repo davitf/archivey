@@ -1077,6 +1077,30 @@ refused.
 | A name with no `*` or `?`, even one shared with an earlier member | Not refused in either configuration |
 | POSIX: `hi` U+D800 `.txt` after `hiX.txt`, default config | `UnsupportedFeatureError` naming the flag; with the flag, the member's own bytes |
 
+### Requirement: Under auto, read a member unrar cannot name with unar
+
+`unar` selects members by index, so a name `unrar` cannot be given, or a glob name
+whose mask also matches earlier members, costs it nothing. When
+`ArchiveyConfig.rar_decompressor` is `auto` and resolved to `unrar`, a read that the
+two requirements above would refuse SHALL instead be served by `unar -i <index>`, when
+all of these hold: an accepted `unar` is installed (the same check `auto` uses), the
+member is not encrypted and the archive has no encrypted headers (`unar` takes the
+password on its command line), and `unar` itself would not refuse the member or the
+archive (`Read RAR member data with unar`). Otherwise the `unrar` refusal SHALL be
+raised unchanged. The dictionary memory check SHALL use `unar`'s rule for that read.
+Every other member SHALL still be read with `unrar`. With `rar_decompressor='unrar'`
+the refusals SHALL stand.
+
+#### Scenario: auto routes unnameable members to unar
+
+| Case | Expected |
+| --- | --- |
+| `a*.txt` with an earlier `subdir/aY.txt`, non-solid, `auto`, accepted `unar` installed | The member's own bytes, read with `unar`; other members read with `unrar` |
+| `d*/x.txt` (glob in a directory component), `auto`, accepted `unar` installed | The member's own bytes, read with `unar` |
+| The same reads with no accepted `unar` | The `unrar` refusals, unchanged |
+| The same reads with `rar_decompressor='unrar'` | The `unrar` refusals, unchanged |
+| RAR5 solid archive with data after a directory (`unar` refuses it) | The `unrar` refusal, unchanged |
+
 ### Requirement: Read RAR member data with unar
 
 When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
