@@ -38,13 +38,12 @@ Each idea carries a status:
   `tests/test_audit_backup_scan.py` does.
 - **List a ZIP whose central directory is lost, and read spanned ZIP sets.** *Needs
   design.* The native ZIP reader (the `native-zip-reader` OpenSpec change) already
-  lists a damaged central directory up to the damage and the local headers past it, and
-  treats a wrong UTF-8 flag on one name as that damage. It reads a ZIP from a pipe or
-  socket by walking the local headers forward; its later stages, planned for 0.2.0, walk
-  them when the end record is not in the file's tail (which lists a ZIP cut before its
-  directory), and decode a wrongly flagged name as an unflagged one. Its parser's
-  per-entry disk number is what reading spanned `.z01`…`.zip` sets would follow (by
-  resolving each (disk, offset) pair). See [`formats/zip.md`](formats/zip.md) §5.
+  lists a damaged central directory up to the damage and the local headers past it. It
+  reads a ZIP from a pipe or socket by walking the local headers forward, and walks them
+  when the end record is not in the file's tail (which lists a ZIP cut before its
+  directory). Its parser's per-entry disk number is what reading spanned
+  `.z01`…`.zip` sets would follow (by resolving each (disk, offset) pair). See
+  [`formats/zip.md`](formats/zip.md) §5.
 - **Read raw CD sector images (`.bin`).** *Open idea.* 0.2.0 recognizes a raw image and
   refuses it (`iso_reader.refuse_raw_sector_image`). Mode 1 and Mode 2 Form 1 images
   strip to a byte-identical `.iso`, so a slicing stream that skips the sector headers

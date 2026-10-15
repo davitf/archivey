@@ -202,10 +202,11 @@ if TYPE_CHECKING:
 
     from archivey.internal.streams.streamtools import ReadableStream
 
-# Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
-# default, which maps every byte and therefore never fails). An unflagged comment goes
-# through `_decode_unflagged_comment`, which shares the `encoding=` / fallback step
-# (`_decode_unflagged_legacy`) with the unflagged-name sniff.
+# Decoding of a comment under a set UTF-8 flag its name's bytes do not refute: UTF-8,
+# else cp437 (the ZIP appnote default, which maps every byte and therefore never fails).
+# An unflagged comment, and one whose name was decoded as unflagged because the bytes
+# refute the flag, go through `_decode_unflagged_comment`, which shares the `encoding=`
+# / fallback step (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
@@ -973,14 +974,6 @@ class _DataBounds:
         return ordered[above] if above < len(ordered) else self._cd_start
 
 
-def _is_utf8(raw: bytes) -> bool:
-    try:
-        raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
 def _max_members_error(
     max_members: int, counted: str = "ZIP central directory holds"
 ) -> ResourceLimitError:
@@ -1016,7 +1009,12 @@ class _DecodedName(NamedTuple):
     alternate_raw_name: bytes | None
     """The header's bytes, when the Unicode Path field named the entry instead."""
     inferred_encoding: str | None
-    """The codec a sniff chose over the default, for the diagnostic."""
+    """The codec that produced ``text`` when it is not the one the name would
+    otherwise have had (a sniff's choice over the default, or the codec used for a
+    name whose UTF-8 flag the bytes refute), for the diagnostic."""
+    declared_encoding: str | None
+    """``"utf-8"`` when the UTF-8 flag is set over bytes that are not UTF-8, so the
+    name and its comment decode as unflagged ones; ``None`` otherwise."""
     unicode_extra_fault: str | None
     """Why a malformed Unicode Path field was dropped, for the diagnostic."""
 
@@ -1577,9 +1575,6 @@ class ZipReader(BaseArchiveReader):
                 index = entry.index
                 if max_members is not None and index >= max_members:
                     raise _max_members_error(max_members)
-                # Built before its offset is kept: an entry whose fields cannot be
-                # read (a name flagged UTF-8 that is not) is damage, and its member
-                # is listed from its local header past it (``_past_damage``).
                 member = self._to_member(entry, index)
                 offsets.append(_bound_offset(entry.header_offset))
                 last = entry
@@ -1859,11 +1854,6 @@ class ZipReader(BaseArchiveReader):
                 if max_members is not None and entry.index >= max_members:
                     # The listing raises the limit itself, at the same entry.
                     break
-                if entry.flags & _ZIP_MASK_UTF8 and not _is_utf8(entry.name):
-                    # The listing cannot build this entry's member and stops at it as
-                    # damage (``_decode_member_name``); so does this pass, so both
-                    # list the same members past it (``_past_damage``).
-                    raise CorruptionError("ZIP member name flagged UTF-8 is not")
                 offsets.append(_bound_offset(entry.header_offset))
             else:
                 self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
@@ -1907,25 +1897,30 @@ class ZipReader(BaseArchiveReader):
         try:
             utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
-            return self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
+            text, codec = self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
+            # The caller's encoding= is not an inference, nor is the cp437 default.
+            return text, None if codec in (self._encoding, "cp437") else codec
         if utf8_decoded == cp437_decoded:
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
 
     def _decode_unflagged_legacy(
         self, raw: bytes, cp437_decoded: Callable[[], str]
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str]:
         """Decode unflagged bytes that are not valid UTF-8: the caller's ``encoding=``,
         else the configured legacy fallback (default cp437).
 
         ``cp437_decoded`` is called only when the cp437 reading is the answer. Returns
-        ``(text, fallback)`` where ``fallback`` is a configured fallback other than
-        cp437 that was used, else ``None``. A byte the chosen codec does not define
-        survives as a lone surrogate.
+        ``(text, codec)``: ``codec`` is the caller's ``encoding=``, the configured
+        fallback or ``"cp437"``, whichever decoded ``text``. A byte the chosen codec
+        does not define survives as a lone surrogate.
         """
         if self._encoding is not None:
             try:
-                return raw.decode(self._encoding, errors="surrogateescape"), None
+                return (
+                    raw.decode(self._encoding, errors="surrogateescape"),
+                    self._encoding,
+                )
             except UnicodeError:
                 # A codec that refuses the surrogateescape handler outright
                 # (``idna``): fall through to the configured fallback.
@@ -1936,17 +1931,18 @@ class ZipReader(BaseArchiveReader):
             "437",
             "ibm437",
         }:
-            return cp437_decoded(), None
+            return cp437_decoded(), "cp437"
         try:
             return raw.decode(fallback, errors="surrogateescape"), fallback
         except (LookupError, UnicodeError):
             # An unknown fallback encoding name, or a codec that refuses the
             # surrogateescape handler outright (``idna``): keep the cp437 decode
             # rather than fail.
-            return cp437_decoded(), None
+            return cp437_decoded(), "cp437"
 
     def _decode_unflagged_comment(self, raw: bytes) -> str:
-        """Decode a comment with no UTF-8 flag the way an unflagged name is decoded.
+        """Decode a comment with no UTF-8 flag, or one whose name's bytes refute the flag,
+        the way an unflagged name is decoded.
 
         A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
         As for a name, ASCII skips the sniff (UTF-8 and cp437 agree on it), and the
@@ -1968,14 +1964,22 @@ class ZipReader(BaseArchiveReader):
         if is_utf8_flagged:
             try:
                 decoded = raw_name.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                # The flag says UTF-8 and the bytes are not: refused (format-zip spec).
-                # The entries before it are listed, then this raises. The index pass
-                # stops at the same entry (``_index_pass``); a new refusal here needs
-                # the same stop there, or the two give different overlap bounds.
-                raise CorruptionError(
-                    f"Could not decode a ZIP member name: {exc!r}"
-                ) from exc
+            except UnicodeDecodeError:
+                # The flag says UTF-8 and the bytes are not (a code-page name under a
+                # wrong flag): decoded the way an unflagged name that is not UTF-8 is,
+                # and reported (format-zip spec). The Unicode Path field stays unread,
+                # as for any flagged name.
+                text, codec = self._decode_unflagged_legacy(
+                    raw_name, lambda: raw_name.decode("cp437")
+                )
+                return _DecodedName(
+                    text=text,
+                    raw_name=raw_name,
+                    alternate_raw_name=None,
+                    inferred_encoding=codec,
+                    declared_encoding="utf-8",
+                    unicode_extra_fault=None,
+                )
         else:
             decoded = raw_name.decode("cp437")
         name_source = decoded
@@ -2004,8 +2008,9 @@ class ZipReader(BaseArchiveReader):
         # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
         # so cp437 would yield mojibake. With no authoritative signal (flag clear and no
         # Unicode Path field), prefer UTF-8 when the stored bytes are valid UTF-8, else
-        # the caller's encoding= or a configurable legacy fallback. A set flag is honored
-        # as-is. ASCII bytes decode identically under UTF-8 and cp437 — skip the sniff.
+        # the caller's encoding= or a configurable legacy fallback. A set flag over valid
+        # UTF-8 is honored as-is (one the bytes refute returned above). ASCII bytes
+        # decode identically under UTF-8 and cp437 — skip the sniff.
         inferred_encoding: str | None = None
         if not is_utf8_flagged and unicode_name is None and not raw_name.isascii():
             name_source, inferred_encoding = self._sniff_unflagged_name(
@@ -2016,6 +2021,7 @@ class ZipReader(BaseArchiveReader):
             raw_name=raw_name,
             alternate_raw_name=alternate_raw_name,
             inferred_encoding=inferred_encoding,
+            declared_encoding=None,
             unicode_extra_fault=unicode_extra_fault,
         )
 
@@ -2171,17 +2177,31 @@ class ZipReader(BaseArchiveReader):
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         if entry.comment:
-            # APPNOTE puts the member comment under the name's UTF-8 flag.
+            # APPNOTE puts the member comment under the name's UTF-8 flag, so a flag
+            # the name's bytes refute is not trusted for the comment either.
             member.comment = (
                 _decode_with_fallback(entry.comment)
                 if entry.flags & _ZIP_MASK_UTF8
+                and decoded_name.declared_encoding is None
                 else self._decode_unflagged_comment(entry.comment)
             )
         member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
         inferred_encoding = decoded_name.inferred_encoding
-        if inferred_encoding is not None:
+        declared_encoding = decoded_name.declared_encoding
+        if inferred_encoding is not None and declared_encoding is not None:
+            self._emit_name_encoding_inferred(
+                member,
+                index,
+                inferred_encoding=inferred_encoding,
+                passed_over=declared_encoding,
+                message=(
+                    f"ZIP member name decoded as {inferred_encoding!r}: its UTF-8 flag "
+                    f"is set but the name is not valid UTF-8: {quoted(member.name)}"
+                ),
+            )
+        elif inferred_encoding is not None:
             # The codec the name would otherwise have had: for a UTF-8 reading, the
             # caller's encoding= or the configured fallback; for a configured fallback,
             # the cp437 APPNOTE default.
@@ -2328,18 +2348,7 @@ class ZipReader(BaseArchiveReader):
         """
         header = entry.header
         central = _central_from_local(entry)
-        try:
-            decoded_name = self._decode_member_name(central)
-        except CorruptionError:
-            if not central.flags & _ZIP_MASK_UTF8:
-                raise
-            # A name the UTF-8 flag mislabels is the directory's to refuse: a file
-            # read refuses this member when its local name differs from the central
-            # one, and the whole listing only when the central name is the bad one.
-            # Read as unflagged, the member goes on to that check at the end.
-            decoded_name = self._decode_member_name(
-                replace(central, flags=central.flags & ~_ZIP_MASK_UTF8)
-            )
+        decoded_name = self._decode_member_name(central)
         stored_as_directory = decoded_name.text.endswith(("/", "\\"))
         member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
         name = normalize_member_name(

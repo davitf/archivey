@@ -2049,8 +2049,9 @@ def test_backslash_kept_literal_for_unix_entry() -> None:
 _EXTERNAL_DIR = Path(__file__).parent / "fixtures" / "external"
 
 
-def _stored_zip(name_bytes: bytes, *, utf8_flag: bool) -> bytes:
-    """A minimal single-entry (stored, empty) ZIP with a raw name and chosen UTF-8 flag."""
+def _stored_zip(name_bytes: bytes, *, utf8_flag: bool, comment: bytes = b"") -> bytes:
+    """A minimal single-entry (stored, empty) ZIP with a raw name and chosen UTF-8 flag,
+    and an optional member comment."""
     flags = 0x800 if utf8_flag else 0
     n = len(name_bytes)
     lfh = (
@@ -2072,13 +2073,14 @@ def _stored_zip(name_bytes: bytes, *, utf8_flag: bool) -> bytes:
             0,
             n,
             0,
-            0,
+            len(comment),
             0,
             0,
             0,
             0,
         )
         + name_bytes
+        + comment
     )
     eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cdh), len(lfh), 0)
     return lfh + cdh + eocd
@@ -2209,6 +2211,101 @@ def test_explicit_encoding_does_not_decode_valid_utf8() -> None:
     assert diag.context.declared_encoding == "latin-1"
     assert "'latin-1'" in diag.message
     assert "cp437" not in diag.message
+
+
+@pytest.mark.parametrize(
+    ("encoding", "name", "codec"),
+    [
+        pytest.param(None, "cafΘ.txt", "cp437", id="cp437-default"),
+        pytest.param("cp1252", "café.txt", "cp1252", id="caller-encoding"),
+    ],
+)
+@pytest.mark.parametrize("streaming", [False, True], ids=["file", "pipe"])
+def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
+    tmp_path: Path, encoding: str | None, name: str, codec: str, streaming: bool
+) -> None:
+    # e9 alone is not UTF-8. The flag is read as a mistake: the name decodes the way an
+    # unflagged one that is not UTF-8 does, and the report names the codec used and
+    # the UTF-8 the flag declared. The comment under the same flag follows the name.
+    raw = b"caf\xe9.txt"
+    data = _stored_zip(raw, utf8_flag=True, comment=b"caf\xe9ine")
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with open_archive(source, encoding=encoding, streaming=streaming) as ar:
+        ar.extract_all(tmp_path)
+        report = ar.members_report_if_available()
+        assert report is not None
+        (member,) = report.members
+    assert member.name == name
+    assert member.comment == name.removesuffix(".txt") + "ine"
+    assert member.raw_name == raw
+    assert [p.name for p in tmp_path.iterdir()] == [name]
+    (diag,) = member.diagnostics
+    assert diag.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+    assert diag.context.inferred_encoding == codec
+    assert diag.context.declared_encoding == "utf-8"
+    assert "UTF-8 flag is set" in diag.message
+
+
+def test_strict_refuses_a_name_flagged_utf8_that_is_not() -> None:
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError, match="UTF-8 flag is set"):
+        with open_archive(
+            io.BytesIO(_stored_zip(b"caf\xe9.txt", utf8_flag=True)), config=strict
+        ) as ar:
+            ar.members()
+
+
+def test_two_stored_names_that_decode_alike_are_duplicates(tmp_path: Path) -> None:
+    # c3 a9 (UTF-8, unflagged, so sniffed) and 82 (cp437) both decode to "é.txt". The
+    # later member supersedes the earlier one like any duplicate; raw_name tells
+    # them apart.
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("XX.txt", b"first")
+        z.writestr("Y.txt", b"second")
+    data = buffer.getvalue()
+    for placeholder, raw in ((b"XX.txt", b"\xc3\xa9.txt"), (b"Y.txt", b"\x82.txt")):
+        assert data.count(placeholder) == 2
+        data = data.replace(placeholder, raw)
+    with open_archive(io.BytesIO(data)) as ar:
+        first, second = ar.members()
+        ar.extract_all(tmp_path)
+    assert (first.name, second.name) == ("é.txt", "é.txt")
+    assert (first.raw_name, second.raw_name) == (b"\xc3\xa9.txt", b"\x82.txt")
+    assert (first.is_current, second.is_current) == (False, True)
+    assert (tmp_path / "é.txt").read_bytes() == b"second"
+
+
+@pytest.mark.parametrize(
+    ("encoding", "e_acute"), [(None, b"\x82"), ("cp1252", b"\xe9")]
+)
+def test_a_flag_overridden_name_collides_as_a_duplicate(
+    tmp_path: Path, encoding: str | None, e_acute: bytes
+) -> None:
+    # c3 a9 is valid UTF-8 and sniffed; the second name is flagged UTF-8 and is not, so
+    # it decodes as unflagged, to "é" in the codec used. Only the flagged member is
+    # reported for the flag, and it supersedes the earlier one like any duplicate.
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("XX.txt", b"first")
+        z.writestr("Y.txt", b"second")
+    data = bytearray(buffer.getvalue().replace(b"XX.txt", b"\xc3\xa9.txt"))
+    for signature, flags_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        header = data.index(signature, data.index(signature) + 1)
+        (flags,) = struct.unpack_from("<H", data, header + flags_at)
+        struct.pack_into("<H", data, header + flags_at, flags | 0x800)
+    data = bytes(data).replace(b"Y.txt", e_acute + b".txt")
+    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+        first, second = ar.members()
+        ar.extract_all(tmp_path)
+    assert (first.name, second.name) == ("é.txt", "é.txt")
+    assert (first.raw_name, second.raw_name) == (b"\xc3\xa9.txt", e_acute + b".txt")
+    assert (first.is_current, second.is_current) == (False, True)
+    assert (tmp_path / "é.txt").read_bytes() == b"second"
+    assert [d.context.declared_encoding for d in second.diagnostics] == ["utf-8"]
+    assert [d.context.declared_encoding for d in first.diagnostics] == [
+        encoding or "cp437"
+    ]
 
 
 def test_utf8_inference_names_the_configured_fallback() -> None:

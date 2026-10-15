@@ -196,7 +196,8 @@ yielded.
   writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in
   both cases `extra["special_file_type"]` names the stored kind. The mode is read only
   when "version made by" says Unix.
-- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
+- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8 when the stored bytes
+  are valid UTF-8 (otherwise see the wrongly-set flag below). For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise uses the
   `encoding=` you passed to `open_archive`, or without one a configurable legacy encoding
@@ -204,19 +205,22 @@ yielded.
   inferred for an unflagged name, a `member_name_encoding_inferred` diagnostic records it.
   So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
   Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
-  name. Comments decode the same way: a member comment follows its name's flag, and the
-  archive comment, which has no flag, decodes as an unflagged name. A byte the chosen
-  encoding does not define stays in the comment as a surrogate escape, as in a name. One
+  name. Comments decode the same way: a member comment follows its name's flag (a flag
+  the name's bytes refute counts as unset for the comment too), and the archive
+  comment, which has no flag, decodes as an unflagged name. A byte the chosen encoding
+  does not define stays in the comment as a surrogate escape, as in a name. One
   signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
   the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A
   malformed field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped
   with a `member_header_record_skipped` diagnostic. The archive opens on every Python
   version; `zipfile` on its own refuses it from Python 3.12.
-- **A wrongly-set UTF-8 flag is damage at that name.** When general-purpose bit 11
-  claims UTF-8 but the stored bytes are not, the listing raises `CorruptionError` at
-  that entry, after the members before it and the members the local headers hold past
-  it, as for a damaged directory. Rare, and it fails loudly.
+- **A wrongly-set UTF-8 flag is ignored.** When general-purpose bit 11 claims UTF-8
+  but the stored bytes are not valid UTF-8, the flag cannot be right, so the name
+  decodes as an unflagged name that is not UTF-8 does: with your `encoding=`, else
+  `zip_unflagged_fallback_encoding`. A `member_name_encoding_inferred` diagnostic
+  names the encoding used, with `declared_encoding="utf-8"`, and
+  `DiagnosticPolicy.STRICT` refuses the archive. `raw_name` keeps the stored bytes.
 - **ZipCrypto** checks a password against one byte, so a wrong one passes about one
   time in 256. Its data then fails the CRC or the decompressor, and Archivey raises
   `EncryptionError` saying the password may be wrong or the member corrupt, since a

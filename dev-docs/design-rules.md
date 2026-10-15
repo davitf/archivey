@@ -885,9 +885,10 @@ accelerator usefulness". Only a `unar` that passes the RAR5 probe is used
 **Rule.** If a fix would mean replacing a component that is already planned for
 replacement, record the limitation where users will find it and fix it in the rewrite.
 
-**Rulings.** A ZIP name with the UTF-8 flag but invalid UTF-8 keeps refusing the archive
+**Rulings.** A ZIP name with the UTF-8 flag but invalid UTF-8 kept refusing the archive
 until the zipfile replacement (2026-10-06). The replacement, the native ZIP reader, moved
-into 0.2.0 on 2026-10-10 (davi); its names stage ends the refusal.
+into 0.2.0 on 2026-10-10 (davi); its names stage ended the refusal: such a name decodes
+as an unflagged one, with a diagnostic.
 
 ### DR-21a. Don't ship what can't be tested
 
