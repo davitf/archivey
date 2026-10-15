@@ -675,9 +675,12 @@ def maybe_hoist_single_root(
     still succeeds with the content in the wrapper. Such a collision is any collision
     under ``error``, one with a directory on either side under ``replace``, and one
     where our entry is a directory and the operator's is not under ``skip``
-    (:func:`_policy_resolves`). When the sole root shares the wrapper's own name
-    (``src.tar.gz`` containing ``src/``), the child is flattened in place — the
-    wrapper *becomes* the root, so no collision logic applies to it.
+    (:func:`_policy_resolves`). A destination that is the wrapper itself (``FILE`` in
+    ``file/`` on a case-insensitive filesystem) is not a collision, because the
+    wrapper moves aside before the merge. When the sole root shares the wrapper's own
+    name, spelled the same (``src.tar.gz`` containing ``src/``), the child is
+    flattened in place — the wrapper *becomes* the root, so no collision logic
+    applies to it. A root whose name differs only in case is merged like any other.
     """
     if wrapper == Path(".") or wrapper.is_symlink() or not wrapper.is_dir():
         return _HoistResult(wrapper)

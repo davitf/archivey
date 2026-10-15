@@ -4544,11 +4544,14 @@ def test_hoist_moves_a_root_named_like_the_wrapper_but_for_case(
     overwrite: str,
     dry_run: bool,
 ) -> None:
-    # file.tar holding the file "FILE": the wrapper is file/, and the root keeps its
-    # own spelling, as a direct extraction writes it. On a case-insensitive filesystem
-    # ./FILE is the wrapper itself, which is no collision with the operator's data.
-    # Runs everywhere; it can fail on macOS (the clash check) and Windows (paths
-    # compare equal across case), not on Linux, where the names differ.
+    # file.tar holding the file "FILE" and plain.tar holding the directory "PLAIN/":
+    # the wrapper is file/ or plain/, and the root keeps its own spelling, as a
+    # direct extraction writes it. On a case-insensitive filesystem ./FILE is the
+    # wrapper itself, which is no collision with the operator's data. Runs
+    # everywhere. macOS can fail it through the clash check. Windows can fail it
+    # through the clash check too, and through the in-place test, where paths
+    # compare equal across case (PLAIN/ then lands at ./plain/). Linux cannot,
+    # because the names differ.
     monkeypatch.chdir(tmp_path)
     archive = _tar(tmp_path / f"{stem}.tar", {member: b"x"})
     args = ["x", "--overwrite", overwrite, str(archive)]
