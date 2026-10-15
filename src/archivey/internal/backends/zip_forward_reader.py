@@ -335,10 +335,12 @@ def _tail_bound(limits: ListingLimits) -> int | None:
     what may follow it: the end record with its comment and any bytes after them
     (the window the record is searched in), a digital signature record, a ZIP64 end
     record's extensible data, and one more for bytes between the last member and the
-    directory. Past it the pass keeps that many bytes at each end of what follows the
-    members: the first, for a directory right after them however much follows the
-    archive, and the last, for one that ends the stream. A directory or ZIP64 end
-    record further from both is a ``ResourceLimitError``. ``None`` when a limit is
+    directory. Past it the pass keeps the last that many bytes, for an archive that
+    ends the stream, and, when a directory or end record follows the members right
+    away, the first that many too, for one followed by other bytes. A directory or
+    ZIP64 end record further from both is a ``ResourceLimitError``. At the default
+    limits the bound is about 76 MiB, so a pass holds up to about 152 MiB here, and
+    a copy of the kept tail for a moment when it joins it. ``None`` when a limit is
     off.
     """
     if limits.max_members is None or limits.max_metadata_bytes is None:

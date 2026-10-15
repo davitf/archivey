@@ -24,16 +24,18 @@ import zipfile
 import pytest
 
 from archivey import open_archive
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
+    ResourceLimitError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_parser
 from archivey.types import ArchiveFormat
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
 
 _NAMES = ("a.txt", "b.txt", "c.txt")
 
@@ -304,6 +306,27 @@ def test_the_walk_seeks_over_a_member_whose_header_states_its_size() -> None:
     with open_archive(source, format=ArchiveFormat.ZIP) as reader:
         assert [m.name for m in reader.members()] == ["big.bin"]
     assert source.bytes_read < len(payload) // 2
+
+
+def test_the_walk_charges_each_local_header_against_max_members() -> None:
+    config = ArchiveyConfig(
+        listing_limits=ListingLimits(max_members=2, max_metadata_bytes=1024)
+    )
+    source = _CountingBytesIO(_bit3_zip(zipfile.ZIP_DEFLATED) + _PAST_WINDOW)
+    with pytest.raises(ResourceLimitError, match="max_members=2.*local headers"):
+        open_archive(source, format=ArchiveFormat.ZIP, config=config)
+    # The third header is refused before its data or the tail is read.
+    assert source.bytes_read < len(_PAST_WINDOW) // 4
+
+
+def test_an_encrypted_bit3_stored_member_is_walked_past_without_its_password() -> None:
+    """Its descriptor's CRC covers the plaintext, so the scan matches its size only."""
+    data = _bit3_stored_zipcrypto(b"secret contents" * 50)
+    with open_archive(
+        io.BytesIO(data + _PAST_WINDOW), format=ArchiveFormat.ZIP, password=_PASSWORD
+    ) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"secret contents" * 50
 
 
 def test_a_directory_missing_past_the_search_window_fails_at_open() -> None:

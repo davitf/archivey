@@ -841,7 +841,10 @@ def _max_members_error(
     )
 
 
-#: Also the receipt for a seekable source read through its directory.
+#: Also the receipt for a seekable source read through its directory. An end record
+#: behind more trailing bytes than its search reads is found by a walk over every local
+#: header at open, reading the data of each bit-3 member (``_walk_past_members``); the
+#: listing stays ``INDEXED``, as RAR's does with its header walk at open.
 _ZIP_COST = CostReceipt(
     listing_cost=ListingCost.INDEXED,
     access_cost=AccessCost.DIRECT,
@@ -1035,21 +1038,35 @@ class ZipReader(BaseArchiveReader):
 
         The walk is the one a read from a pipe makes, with no data decoded: a member
         whose local header states its size is seeked over, and a bit-3 member's data
-        is scanned for its descriptor. Run once, at open, before anything else reads
-        the handle.
+        is scanned for its descriptor, so the walk reads at most the source once, as a
+        pipe read does. Each local header is charged against ``max_members`` before
+        its data is passed, as the pipe read charges it. Run once, at open, before
+        anything else reads the handle.
         """
+        max_members = self._config.listing_limits.max_members
         with self._lock:
             fp = self._fp
             if fp is None:
                 raise _closed_archive_error()
             fp.seek(0)
             walk = LocalHeaderWalk(fp)
-            try:
-                while (entry := walk.next_entry()) is not None:
+            count = 0
+            while True:
+                try:
+                    entry = walk.next_entry()
+                except ArchiveyError:
+                    return None
+                if entry is None:
+                    return walk.source.offset
+                if max_members is not None and count >= max_members:
+                    raise _max_members_error(
+                        max_members, "ZIP file's local headers name"
+                    )
+                count += 1
+                try:
                     walk.skip_member(entry)
-            except ArchiveyError:
-                return None
-            return walk.source.offset
+                except ArchiveyError:
+                    return None
 
     def _read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes at absolute ``offset``, under the reader's lock.

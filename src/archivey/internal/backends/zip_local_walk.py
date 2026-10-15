@@ -70,6 +70,7 @@ from archivey.internal.backends.zip_parser import (
     STRONG_ENCRYPTED_DIRECTORY_MSG,
     ZIP64_EOCD_SIGNATURE,
     ZIP64_EOCD_SIZE,
+    ZIP64_LOCATOR_SIGNATURE,
     EndRecord,
     LocalHeader,
     find_end_record,
@@ -86,6 +87,7 @@ from archivey.internal.streams.streamtools.binaryio import read_exact
 
 DATA_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
 
+_FLAG_ENCRYPTED = 0x01
 _FLAG_DATA_DESCRIPTOR = 0x08
 _METHOD_STORED = 0
 _ZIP64_EXTRA_TAG = 0x0001
@@ -108,6 +110,16 @@ _AFTER_MEMBER = frozenset(
 # of an archive with no entries, or the record PKWARE Strong Encryption writes in front
 # of an encrypted directory. Anything else is no ZIP structure.
 _DIRECTORY_STARTS = _AFTER_MEMBER - {LOCAL_HEADER_SIGNATURE}
+# What the end record is stepped to from, right after the members
+# (``locate_record_after_directory``).
+_STEPPED_OVER = frozenset(
+    {
+        CENTRAL_HEADER_SIGNATURE,
+        ZIP64_EOCD_SIGNATURE,
+        ZIP64_LOCATOR_SIGNATURE,
+        EOCD_SIGNATURE,
+    }
+)
 # What may open a stream without a stub in front: the same set as after a member.
 _OPENS_STREAM = _AFTER_MEMBER
 # The longest data descriptor, plus the signature after it: signature, CRC, two 8-byte
@@ -980,7 +992,8 @@ class LocalHeaderWalk:
         """Move past ``entry``'s data and data descriptor without decoding it: a bit-3
         codec member's end is found by the descriptor scan
         (:meth:`scan_member_data`), as for one nobody read."""
-        data = self.member_data(entry, encrypted=bool(entry.header.flags & 1))
+        encrypted = bool(entry.header.flags & _FLAG_ENCRYPTED)
+        data = self.member_data(entry, encrypted=encrypted)
         if isinstance(data, _CodecData):
             data = self.scan_member_data(data)
         data.settle()
@@ -1082,22 +1095,30 @@ class LocalHeaderWalk:
         with the seekable read's own code (``find_end_record``,
         ``CentralDirectoryWalk``) and lists what that read lists, except where
         :meth:`ForwardTail.end_record` refuses a record in bytes not kept. ``keep``
-        bounds what is held: past it the first ``keep`` bytes and the last ``keep``
-        stay, which is where the directory and the end records are, whether the
-        archive ends the stream or bytes follow it; ``None`` keeps everything. While
-        the stream is read the chunks held come to at most twice ``keep`` plus one
-        chunk; joining them at the end holds them and their copy for that moment.
+        bounds what is held: past it the last ``keep`` bytes stay, where the end
+        records of an archive that ends the stream are, and, when a directory or end
+        record follows the members right away, the first ``keep`` too, where those
+        are when other bytes follow the archive; ``None`` keeps everything. While the
+        stream is read the chunks held come to at most twice ``keep`` plus one chunk;
+        joining them at the end holds them and their copy for that moment.
         """
         if self._unsettled is not None:
             raise ValueError("settle the previous member's data first")
         members_end = self.source.offset
         head = bytearray()
+        head_cap = keep
         chunks: deque[bytes] = deque()
         held = 0
         dropped = 0
         while chunk := self.source.read(_READ_CHUNK):
-            if keep is not None and len(head) < keep:
-                head += chunk[: keep - len(head)]
+            if head_cap is not None and len(head) < head_cap:
+                head += chunk[: head_cap - len(head)]
+                # Past the first four bytes, the head is kept only for a directory or
+                # end record right after the members, the one place the end record is
+                # stepped to from: other bytes there cost a long stream nothing more.
+                if len(head) >= 4 and bytes(head[:4]) not in _STEPPED_OVER:
+                    head_cap = 4
+                    del head[4:]
             chunks.append(chunk)
             held += len(chunk)
             # A whole chunk goes once the ones after it hold ``keep`` bytes.
@@ -1196,9 +1217,10 @@ class ForwardTail:
         is refused, and so is a ZIP64 end record there; either in bytes the bound
         dropped is a ``ResourceLimitError``.
 
-        A missing end record is described from the bytes after the members while all
-        of them are kept: the first four say whether the stream was cut inside the
-        directory, the directory is encrypted, or no ZIP structure follows at all.
+        A missing end record is described from the first four bytes after the
+        members: they say whether the stream was cut inside the directory (only while
+        every byte after it is kept), the directory is encrypted, or no ZIP structure
+        follows at all.
         Every other fault is ``find_end_record``'s, in the file read's words.
         """
         found = locate_classic_record(self.read_at, self.size)
@@ -1208,11 +1230,13 @@ class ForwardTail:
             found = locate_record_after_directory(
                 self.read_at, self.size, self.members_end
             )
-        if found is None and not self.dropped:
-            # No end record at all: what follows the members says why. Only while
-            # every byte after the members is kept, so the first four are theirs.
-            head = self.data[:4]
-            if head == CENTRAL_HEADER_SIGNATURE:
+        if found is None:
+            # No end record at all: what follows the members says why. The head or
+            # the tail holds their first four bytes.
+            head = self.read_at(self.members_end, 4)
+            # A directory that is all the stream holds was cut short; with bytes
+            # dropped after it, whatever follows it is unknown.
+            if head == CENTRAL_HEADER_SIGNATURE and not self.dropped:
                 raise TruncatedError(
                     "ZIP stream ends inside the central directory, before the end of "
                     "central directory record"

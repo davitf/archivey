@@ -54,8 +54,6 @@ EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
 ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"
 CENTRAL_HEADER_SIGNATURE = b"PK\x01\x02"
-# APPNOTE §4.3.13: after the directory's last header, before any ZIP64 end record.
-DIGITAL_SIGNATURE_SIGNATURE = b"PK\x05\x05"
 # Archive extra data record: written in front of a central directory that PKWARE
 # Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
 ARCHIVE_EXTRA_DATA_SIGNATURE = b"PK\x06\x08"
@@ -246,14 +244,15 @@ def locate_record_after_directory(
     directory starting at ``directory_at``, or ``None``.
 
     Steps over what may lie between the members and the end record, in the order
-    APPNOTE §4.3.6 gives: the directory's headers, a digital signature record, a ZIP64
-    end record and its locator. Each step reads a length field, so only the records'
-    fixed parts are read, not searched. ``None`` when anything else comes first, a
-    record comes out of that order, or the file ends before the end record.
+    APPNOTE §4.3.6 gives: the directory's headers, a ZIP64 end record and its
+    locator. Each step reads a length field, so only the records' fixed parts are
+    read, not searched. ``None`` when anything else comes first, a record comes out of
+    that order, or the file ends before the end record. A digital signature record
+    (``PK\\x05\\x05``) is not stepped over: the directory walk does not read past
+    one either, wherever the end record is found.
     """
     order = (
         CENTRAL_HEADER_SIGNATURE,
-        DIGITAL_SIGNATURE_SIGNATURE,
         ZIP64_EOCD_SIGNATURE,
         ZIP64_LOCATOR_SIGNATURE,
         EOCD_SIGNATURE,
@@ -282,11 +281,6 @@ def locate_record_after_directory(
                 return None
             name_len, extra_len, comment_len = struct.unpack_from("<3H", header, 28)
             pos += CENTRAL_HEADER_SIZE + name_len + extra_len + comment_len
-        elif sig == DIGITAL_SIGNATURE_SIGNATURE:
-            header = fixed(pos, 6)
-            if len(header) != 6:
-                return None
-            pos += 6 + struct.unpack_from("<H", header, 4)[0]
         elif sig == ZIP64_EOCD_SIGNATURE:
             header = fixed(pos, 12)
             if len(header) != 12:

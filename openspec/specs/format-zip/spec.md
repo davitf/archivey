@@ -451,14 +451,15 @@ plus the comment length that record declares. At open, a non-zero byte after tha
 SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="zip"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
 offset of that byte past the end. It is a warning by default and raises under
-`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes
-inside the declared comment are the comment, whatever they hold. The end record is
-searched for in the last 65 558 bytes of the file. When a longer tail hides it, the
-reader SHALL walk the local headers from the start, without decoding any member, to
-where the members end, and step over the directory, a digital signature record and the
-ZIP64 end records there to the end record, which is then read as one the search found;
-a read from a pipe steps over the same records after its pass. A stub before the
-archive moves nothing. 7-Zip 23.01 warns on any tail; Info-ZIP `unzip` says nothing.
+`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes inside
+the declared comment are the comment, whatever they hold. The end record is searched for
+in the last 65 558 bytes of the file. When a longer tail hides it, the reader SHALL walk
+the local headers from the start, without decoding any member, to where the members end,
+and step over the directory and the ZIP64 end records there to the end record, which is
+then read as one the search found. Each local header the walk meets SHALL count toward
+`max_members` before its data is passed. A read from a pipe steps over the same records
+after its pass. A stub before the archive moves nothing. 7-Zip 23.01 warns on any tail;
+Info-ZIP `unzip` says nothing.
 
 #### Scenario: ZIP trailing bytes
 

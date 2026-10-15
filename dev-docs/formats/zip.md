@@ -76,8 +76,9 @@ whatever they look like. A tail longer than the search window hides the end reco
 the search; the reader then walks the local headers from the start (the pipe's walk,
 seeking over sized members and scanning bit-3 ones for their descriptor, decoding
 nothing) and steps over the directory and the records after it to the end record
-(`locate_record_after_directory`). A pipe steps over them after its pass, from the
-bytes it keeps right after the members.
+(`locate_record_after_directory`). That open costs up to one read of the file, and each
+local header counts toward `max_members`, as on a pipe. A pipe steps over the records
+after its pass, from the bytes it keeps right after the members.
 
 **Members are independent.** Each member has its own LFH and its own compressed byte range,
 with no cross-member state. So reaching any member is a seek rather than a walk (`DIRECT`),

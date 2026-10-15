@@ -439,22 +439,19 @@ def test_no_end_record_is_corruption() -> None:
 
 
 def _with_records_before_the_end(data: bytes) -> tuple[bytes, int]:
-    """``data`` with a digital signature record, a ZIP64 end record carrying 7 bytes of
-    extensible data and its locator between the directory and the end record, then
-    junk past the search window; and where the directory starts."""
+    """``data`` with a ZIP64 end record carrying 7 bytes of extensible data and its
+    locator between the directory and the end record, then junk past the search
+    window; and where the directory starts."""
     eocd = data.rindex(b"PK\x05\x06")
     entries, cd_size, cd_offset = struct.unpack_from("<HII", data, eocd + 10)
-    signature = b"PK\x05\x05" + struct.pack("<H", 3) + b"sig"
-    record_at = cd_offset + cd_size + len(signature)
+    record_at = cd_offset + cd_size
     record = struct.pack(
         "<4sQHHIIQQQQ", b"PK\x06\x06", 44 + 7, 45, 45, 0, 0, entries, entries,
-        cd_size + len(signature), cd_offset,
+        cd_size, cd_offset,
     ) + bytes(7)  # fmt: skip
     locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, record_at, 1)
-    body = data[:eocd] + signature + record + locator + data[eocd:]
-    body = bytearray(body)
-    struct.pack_into("<I", body, len(body) - 22 + 12, cd_size + len(signature))
-    return bytes(body) + b"\x01" * (1 << 17), cd_offset
+    body = data[:eocd] + record + locator + data[eocd:]
+    return body + b"\x01" * (1 << 17), cd_offset
 
 
 def test_the_end_record_past_the_window_is_found_after_the_directory() -> None:
@@ -465,6 +462,24 @@ def test_the_end_record_past_the_window_is_found_after_the_directory() -> None:
     assert end.zip64 and end.entries_declared == 1 and end.base == 0
     assert end.cd_start == directory_at
     assert end.trailing == 1 << 17
+    # And the reader lists and reads it.
+    with open_archive(io.BytesIO(data)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"hello"
+
+
+def test_a_digital_signature_record_is_not_stepped_over() -> None:
+    data, directory_at = _with_records_before_the_end(_zip({"a.txt": b"hello"}))
+    record = data.index(b"PK\x06\x06")
+    signed = (
+        data[:record] + b"PK\x05\x05" + struct.pack("<H", 3) + b"sig" + data[record:]
+    )
+    assert (
+        zip_parser.locate_record_after_directory(
+            _read_at(signed), len(signed), directory_at
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
