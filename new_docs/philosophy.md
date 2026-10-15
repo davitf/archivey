@@ -2,12 +2,12 @@
 
 ## What archivey is for
 
-Archivey reads archives. It opens ZIP, TAR (plain or compressed), 7z, RAR and ISO files, and
-single compressed files such as `.gz` or `.xz`, through one interface, so code that lists or
+Archivey reads archives. It opens ZIP, TAR (plain or compressed), 7z, RAR and ISO files, as well
+as single compressed files such as `.gz` or `.xz`, all through one interface. Code that lists or
 reads a ZIP works unchanged on a 7z. It's built for working with an archive's contents from your
-code: listing members, reading one into memory, or going through all of them in one pass, without
-writing anything to disk first. It can also extract to disk, with checks that stop a hostile
-archive from writing outside the folder you chose. It doesn't write archives yet.
+code: you can list the members, read one into memory, or go through all of them in one pass,
+without writing anything to disk first. It can also extract to disk, with checks that stop a
+hostile archive from writing outside the folder you chose. It doesn't write archives yet.
 
 Each member carries every field its format records: times, permissions, owner, link targets,
 comments, stored checksums, and the format's own extras. When formats record the same thing,
