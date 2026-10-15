@@ -1,5 +1,10 @@
 # Philosophy
 
+Python can already open archives, but each format has its own library, its own API and its own
+gotchas. Archivey aims to put them all behind one interface that behaves the same way for every
+format, does what you'd expect, and helps you avoid footguns. Simple tasks stay simple, but the data
+and options are there if you need more control.
+
 ## What archivey is for
 
 Archivey reads archives. It opens ZIP, TAR (plain or compressed), 7z, RAR and ISO files, as well as
