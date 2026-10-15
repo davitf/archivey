@@ -202,10 +202,11 @@ if TYPE_CHECKING:
 
     from archivey.internal.streams.streamtools import ReadableStream
 
-# Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
-# default, which maps every byte and therefore never fails). An unflagged comment goes
-# through `_decode_unflagged_comment`, which shares the `encoding=` / fallback step
-# (`_decode_unflagged_legacy`) with the unflagged-name sniff.
+# Decoding of a comment under a set UTF-8 flag its name's bytes do not refute: UTF-8,
+# else cp437 (the ZIP appnote default, which maps every byte and therefore never fails).
+# An unflagged comment, and one whose name was decoded as unflagged because the bytes
+# refute the flag, go through `_decode_unflagged_comment`, which shares the `encoding=`
+# / fallback step (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
