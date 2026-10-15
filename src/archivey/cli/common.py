@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import stat
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TextIO
+from typing import BinaryIO, TextIO, TypeVar
 
 from archivey import open_archive
 from archivey.cli.errors import CliError
@@ -70,33 +70,40 @@ def open_for_cli(
     password: PasswordInput = None,
     track_io: bool = False,
     config: ArchiveyConfig | None = None,
+    stdin: BinaryIO | None = None,
     err: TextIO | None = None,
 ) -> Iterator[ForwardArchiveReader]:
     """Open an archive, optionally wrapping the call in measurement for ``--track-io``.
 
     A path that can be read only once (see :func:`is_read_once`) opens in streaming
     mode: the user cannot choose the mode, so the CLI chooses the one that can work.
-    Each verb then reads the archive in one forward pass.
+    Each verb then reads the archive in one forward pass. A verb that reads ``-`` from
+    stdin passes the stream as ``stdin``, which opens in streaming mode as well; for
+    every other verb ``-`` is refused.
     """
-    reject_stdin_token(str(archive))
+    source: str | Path | BinaryIO
+    if archive == "-" and stdin is not None:
+        source, streaming = stdin, True
+    else:
+        reject_stdin_token(str(archive))
+        source, streaming = archive, is_read_once(archive)
     err = err if err is not None else sys.stderr
-    streaming = is_read_once(archive)
     if track_io:
         with enable_measurement():
             with _open(
-                archive, password=password, streaming=streaming, config=config
+                source, password=password, streaming=streaming, config=config
             ) as reader:
                 yield reader
                 _report_track_io(reader, err)
     else:
         with _open(
-            archive, password=password, streaming=streaming, config=config
+            source, password=password, streaming=streaming, config=config
         ) as reader:
             yield reader
 
 
 def _open(
-    archive: str | Path,
+    archive: str | Path | BinaryIO,
     *,
     password: PasswordInput,
     streaming: bool,
@@ -107,7 +114,8 @@ def _open(
             archive, password=password, streaming=streaming, config=config
         )
     except StreamNotSeekableError as exc:
-        message = read_once_refusal(archive, exc, streaming=streaming)
+        shown = archive if isinstance(archive, (str, Path)) else "stdin"
+        message = read_once_refusal(shown, exc, streaming=streaming)
         if message is None:
             raise
         raise CliError(message) from exc
@@ -176,3 +184,16 @@ def _report_track_io(reader: ForwardArchiveReader, err: TextIO) -> None:
         f" source_seek_count={stats.source_seek_count}",
         file=err,
     )
+
+
+_T = TypeVar("_T")
+
+
+def closable(items: Iterator[_T]) -> Generator[_T, None, None]:
+    """``items`` as a generator, so ``contextlib.closing`` can end it.
+
+    ``stream_members()`` is typed as a plain ``Iterator``, which has no ``close()``.
+    Closing this generator closes ``items`` too: ``yield from`` passes ``close()`` on
+    to the iterator it delegates to.
+    """
+    yield from items

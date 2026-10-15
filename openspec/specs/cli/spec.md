@@ -22,7 +22,7 @@ The system SHALL provide an `archivey` command whose verbs are **subcommands**:
 each verb is a bare word (never dash-prefixed) with a single-letter bare-word
 alias. When no verb is present the verb SHALL default to `list`. Verb dispatch
 SHALL be **known-verb-wins**: if the first positional token is a registered verb
-or alias (including reserved verbs `hash` / `create` / `convert` / `cat`), the
+or alias (including reserved verbs `hash` / `create` / `convert`), the
 system SHALL dispatch that verb; otherwise it SHALL treat the token as an
 archive path and run `list`. Every token after a `--` separator is a
 positional, so a verb-shaped word there is an archive path: with no verb before
@@ -251,7 +251,7 @@ other processed statuses are omitted from that line).
 | `archivey x <archive>` where `x` is also a file in the cwd | Dispatches `extract` (a bare verb word is a verb) |
 | `archivey ./x`, `archivey dir/x`, `archivey /abs/x` where the basename is a verb word | Lists that file (a path-qualified token is a path, never a verb) |
 | `archivey create <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
-| `archivey cat <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
+| `archivey cat <archive>` | Writes the file members' contents to stdout (see the `cat` requirement); does not fall through to `list` |
 | `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
 | `archivey list <archive>` with recoverable prefix + terminal archive error | Prints recovered members on stdout; stderr names the error; exit `1` |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
@@ -419,17 +419,15 @@ not-implemented message so callers cannot assume best-effort reads.
 
 The system SHALL NOT reuse a verb letter that commonly means create/compress for
 integrity checking (in particular `c` MUST NOT mean "check"; leave it for a
-future `create`). Help text MAY mention `hash`, `create`, `convert`, and `cat`
-as forthcoming without implementing them. `cat` SHALL be reserved now so a later
-member-to-stdout verb does not silently change the meaning of
-`archivey cat` for a same-named archive file.
+future `create`). Help text MAY mention `hash`, `create` and `convert` as
+forthcoming without implementing them.
 
 #### Scenario: flag hygiene
 
 | Case | Expected |
 | --- | --- |
 | `t` | Means `test` (integrity), not create |
-| Unknown verb `hash` / `create` / `convert` / `cat` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
+| Unknown verb `hash` / `create` / `convert` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
 
 ### Requirement: exit codes are argparse-aligned with a policy-refusal code
 
@@ -493,7 +491,7 @@ opens as a regular file does.
 
 A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
 pipe, so an archive piped on stdin is read through this requirement. The `-` token is
-separate and stays reserved (below).
+separate: `cat` reads it from stdin, and every other verb refuses it (below).
 
 #### Scenario: read-once paths
 
@@ -506,10 +504,11 @@ separate and stays reserved (below).
 | `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first |
 | `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
 
-### Requirement: the stdin token `-` is reserved, not supported in v1
+### Requirement: the stdin token `-` is reserved outside `cat`
 
-The system SHALL treat `-` as a reserved token meaning "read archive from stdin"
-and SHALL fail fast with a clear "not supported yet" message rather than opening a
+For every verb except `cat`, which reads the archive from stdin when given `-` (see the
+`cat` requirement), the system SHALL treat `-` as a reserved token meaning "read archive
+from stdin" and SHALL fail fast with a clear "not supported yet" message rather than opening a
 filesystem entry literally named `-`. Outside Windows, the message SHALL name
 `/dev/stdin`, through which a piped archive is read as a read-once path (above). On
 Windows, which has no `/dev/stdin`, the message SHALL tell the user to copy the archive
@@ -521,6 +520,55 @@ to a regular file instead.
 | --- | --- |
 | `archivey list -` | Non-zero exit; message says the `-` token is not supported yet and names `/dev/stdin` (on Windows: says to copy the archive to a regular file) |
 | `archivey extract -` | Same |
+| `archivey cat -` | Reads the archive from stdin (see the `cat` requirement) |
+
+### Requirement: cat writes member contents, or the decompressed outer stream, to stdout
+
+`archivey cat ARCHIVE [pattern...] [--exclude PATTERN]` SHALL write the contents of the
+selected file members to stdout as raw bytes, one after another in archive order, in a
+single forward pass, as `unzip -p`, `tar -xO` and `unar -o -` do. Patterns SHALL select
+members as they do for `list`, `test` and `extract`. Directories, links and other
+entries have no body of their own and SHALL be skipped; under `-v` each written member's
+name SHALL go to stderr, and each skipped one as `skip NAME`. A pass reads forward
+only, so a link's target, an earlier member, is not read again for it.
+
+`ARCHIVE` `-` SHALL read the archive from stdin in streaming mode. A format that needs
+to seek SHALL be refused with the read-once message, naming the source as `stdin`.
+
+Bytes reach stdout as they are decoded, so a member that fails its read or its digest
+check has already written part or all of its bytes. The system SHALL then print the
+error on stderr, naming the member, stop without writing later members, and exit `1`,
+as `zcat` does. When the archive has a free index, the patterns SHALL be judged before
+any byte is written, so a selection that matches nothing exits `1` with nothing on
+stdout; otherwise they are judged after the pass, as for `test`.
+
+`--outer` SHALL write the source with only its compression layer removed: the tar
+inside a `.tar.gz`, the file inside a `.gz`, as `zcat` or `zstdcat` would, detected
+by content whatever the file is named. For a single compressed file both modes write
+the same bytes. `--outer` on a container with no compression layer (ZIP, 7z, RAR, ISO,
+an uncompressed tar) SHALL exit `1` with a message that names the format and says to
+leave out `--outer`; on a directory it SHALL be a usage error. `--outer` with member
+patterns, `--exclude` or `--track-io` SHALL be a usage error.
+
+A stdout the reader closed SHALL exit `141`, as for the other verbs.
+
+#### Scenario: cat
+
+| Case | Expected |
+| --- | --- |
+| `archivey cat a.tar.xz` | Every file member's bytes, in archive order; exit `0` |
+| `archivey cat a.zip '**/*.log'` | Only the selected members' bytes |
+| `archivey cat a.zip nomatch` | Warning names the pattern; nothing on stdout; exit `1` |
+| `archivey cat a.tar.xz -v` | Member names, and `skip NAME` for directories and links, on stderr |
+| `curl … \| archivey cat - '*.txt'` (tar.*) | Reads the archive from stdin in one pass |
+| `archivey cat - < a.zip` from a pipe | Exit `1`; read-once message naming `stdin` and `zip` |
+| `archivey cat bad-crc.gz` | Error naming the member on stderr; exit `1` |
+| `archivey cat a.tar.zst --outer` | The tar bytes, unchanged |
+| `curl … \| archivey cat - --outer \| tar t` | Decompresses whatever compressor the stream uses |
+| `archivey cat notes.gz` and `archivey cat notes.gz --outer` | The same bytes |
+| `archivey cat a.zip --outer` | Exit `1`; message names `zip` and says to leave out `--outer` |
+| `archivey cat a.tar.xz --outer a.txt` | Usage error, exit `2` |
+| `archivey cat big.gz \| head -c 5` | Exit `141` |
 
 ### Requirement: an empty path argument is a usage error
 

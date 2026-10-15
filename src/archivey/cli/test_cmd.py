@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Generator, Iterator
 from contextlib import closing
-from typing import TextIO, TypeVar, cast
+from typing import TextIO, cast
 
 from archivey import ArchiveReader, ExtractionProgress
-from archivey.cli.common import open_for_cli
+from archivey.cli.common import closable, open_for_cli
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
@@ -99,7 +98,7 @@ def run_test(
             # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
             # pass for ``reader.close()`` or the garbage collector to end while the
             # error travels up to ``main()``.
-            with closing(_closable(reader.stream_members(pred))) as it:
+            with closing(closable(reader.stream_members(pred))) as it:
                 while True:
                     try:
                         member, stream = next(it)
@@ -263,19 +262,6 @@ def _same_fault(exc: BaseException, reported: BaseException) -> bool:
             reported.source_format,
         )
     return str(exc) == str(reported)
-
-
-_T = TypeVar("_T")
-
-
-def _closable(items: Iterator[_T]) -> Generator[_T, None, None]:
-    """``items`` as a generator, so ``contextlib.closing`` can end it.
-
-    ``stream_members()`` is typed as a plain ``Iterator``, which has no ``close()``.
-    Closing this generator closes ``items`` too: ``yield from`` passes ``close()`` on
-    to the iterator it delegates to.
-    """
-    yield from items
 
 
 def _link_needs_verification(member: ArchiveMember) -> bool:

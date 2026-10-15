@@ -963,6 +963,7 @@ def _resolve_stream_format(
         # the same answer as finding nothing it can open.
         raise FormatDetectionError(
             f"Detected {detected.format!r}, which is not a single-file compressed "
-            "stream. Use open_archive for archive containers."
+            "stream. Use open_archive for archive containers.",
+            source_format=detected.format,
         )
     return outer

@@ -9,7 +9,16 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TextIO, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    NamedTuple,
+    NoReturn,
+    TextIO,
+    TypedDict,
+    cast,
+)
 
 import archivey
 from archivey import (
@@ -22,6 +31,7 @@ from archivey import (
     format_availability,
     list_known_formats,
 )
+from archivey.cli.cat_cmd import run_cat
 from archivey.cli.choices import cli_choices
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import (
@@ -53,6 +63,15 @@ examples:
   archivey x archive.zip                extract safely (into ./archive/ if needed)
   archivey x archive.zip -d out '*.py'  extract *.py into out/
   archivey t archive.zip                verify integrity
+  archivey cat archive.zip notes.txt    write a member's contents to stdout
+"""
+
+_CAT_EPILOG = """\
+examples:
+  archivey cat archive.zip notes.txt    write one member's contents to stdout
+  archivey cat archive.tar.zst '*.log'  write every top-level .log, in archive order
+  archivey cat data.tar.zst --outer     decompress only: write the tar bytes
+  curl -s URL | archivey cat - --outer | tar t
 """
 
 _EXTRACT_EPILOG = """\
@@ -376,6 +395,31 @@ def _run_info(args: argparse.Namespace, common: _Common) -> int:
     return run_info(**common)
 
 
+def _run_cat(args: argparse.Namespace, common: _Common) -> int:
+    out = common["out"]
+    buffer = getattr(out, "buffer", None)
+    if buffer is None:
+        # An in-process caller's text-only stream (a StringIO): no bytes can go there.
+        raise CliError("cat needs a binary standard output", code=EXIT_USAGE)
+    # Nothing is written to the text layer first, but flush it anyway so its bytes
+    # could never land after the binary ones.
+    out.flush()
+    stdin = getattr(sys.stdin, "buffer", None)
+    return run_cat(
+        archive=common["archive"],
+        password=common["password"],
+        track_io=common["track_io"],
+        verbose=common["verbose"],
+        config=common["config"],
+        err=common["err"],
+        **_selection(args),
+        outer=bool(args.outer),
+        # The same closed-pipe translation as the text streams (see _DeadPipeWriter).
+        sink=cast(BinaryIO, _DeadPipeWriter(buffer)),
+        stdin=stdin,
+    )
+
+
 def _refuse_reserved(args: argparse.Namespace, common: _Common) -> NoReturn:
     raise CliError(args._reserved_message, code=EXIT_USAGE)
 
@@ -410,7 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Inspect, verify, and safely extract archives. "
             "Bare invocation defaults to list. "
-            "Forthcoming: hash, create, convert, cat."
+            "Forthcoming: hash, create, convert."
         ),
         epilog=_TOP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -538,11 +582,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_info.add_argument("archive", help="archive path")
 
+    p_cat = _add_verb(
+        sub,
+        "cat",
+        common_sub=common_sub,
+        run=_run_cat,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_CAT_EPILOG,
+        help="write member contents to stdout",
+    )
+    p_cat.add_argument("archive", help="archive path, or - to read it from stdin")
+    p_cat.add_argument(
+        "--outer",
+        action="store_true",
+        help=(
+            "remove only the compression layer and write the stream inside "
+            "unchanged (the tar of a .tar.gz, the file of a .gz)"
+        ),
+    )
+    _add_filter_args(p_cat)
+
     for name, hint in (
         ("hash", "hash emission is not implemented yet"),
         ("create", "archive creation is not implemented yet"),
         ("convert", "archive conversion is not implemented yet"),
-        ("cat", "member streaming to stdout is not implemented yet"),
     ):
         p = _add_verb(
             sub,
