@@ -17,6 +17,7 @@ import io
 import struct
 import time
 import zipfile
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -24,7 +25,7 @@ import pytest
 
 import archivey
 from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
-from archivey.types import OnError
+from archivey.types import HashAlgorithm, OnError
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
 from tests.streams_util import NonSeekableBytesIO
@@ -329,31 +330,37 @@ def test_a_zip_with_no_end_record_lists_from_a_file_as_from_a_pipe(
     assert tree and _tree(tmp_path / "pipe", since=started) == tree
 
 
-def _descriptor_stating_size(size: int) -> bytes:
-    """One bit-3 deflated member with 8-byte descriptor sizes, its descriptor stating
-    an uncompressed size of ``size``, cut inside the directory after it."""
+def _lying_descriptor(field: str, value: int) -> bytes:
+    """One bit-3 deflated member with 8-byte descriptor sizes, its descriptor's
+    ``field`` (``"size"`` or ``"crc"``) set to ``value``, cut inside the directory."""
     out = NonSeekableSink()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
         with zf.open("a.txt", "w", force_zip64=True) as member:
             member.write(b"hello world")
     data = bytearray(out.getvalue())
     at = data.index(b"PK\x07\x08")
-    struct.pack_into("<Q", data, at + 16, size)
+    if field == "size":
+        struct.pack_into("<Q", data, at + 16, value)
+    else:
+        struct.pack_into("<L", data, at + 4, value)
     return bytes(data[: data.index(b"PK\x01\x02") + 30])
 
 
-@pytest.mark.parametrize("size", [2**62, 2**64 - 1])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("size", 2**62), ("size", 2**64 - 1), ("crc", 0xDEADBEEF)],
+)
 def test_a_descriptor_a_file_read_cannot_check_is_listed_as_it_states(
-    size: int,
+    field: str, value: int, tmp_path: Path
 ) -> None:
     """The file read decodes nothing at open, so it lists a deflated bit-3 member's
-    size as its descriptor states it, as it lists a directory's; the pipe read
-    measures it while decoding. Both refuse the data, and both raise the cut."""
-    data = _descriptor_stating_size(size)
+    size and CRC32 as its descriptor states them, as it lists a directory's; the pipe
+    read lists the size it measured, and the CRC32 only when its data matched it.
+    Both refuse the data, raise the same cut, and write nothing."""
+    data = _lying_descriptor(field, value)
     with archivey.open_archive(io.BytesIO(data)) as reader:
         report = reader.members_report()
         (member,) = report.members
-        assert member.size == size
         with pytest.raises(ArchiveyError):
             reader.read(member)
     with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
@@ -363,6 +370,29 @@ def test_a_descriptor_a_file_read_cannot_check_is_listed_as_it_states(
                 with pytest.raises(ArchiveyError):
                     stream.read()
         piped = reader.members_report()
-    assert [m.size for m in piped.members] == [11]
+    (from_pipe,) = piped.members
+    stated_crc = value if field == "crc" else zlib.crc32(b"hello world")
+    assert (member.size, member.hashes) == (
+        value if field == "size" else 11,
+        {HashAlgorithm.CRC32: struct.pack(">I", stated_crc)},
+    )
+    # The pipe lists the CRC32 only where the data it decoded matched it.
+    assert (from_pipe.size, from_pipe.hashes) == (
+        11,
+        {} if field == "crc" else member.hashes,
+    )
+    # Every other public field, and what each reports, is the same.
+    file_view, pipe_view = _visible(member), _visible(from_pipe)
+    for view in (file_view, pipe_view):
+        del view["size"], view["hashes"]
+    assert file_view == pipe_view
     assert type(piped.error) is type(report.error)
     assert str(piped.error) == str(report.error)
+    started = time.time() - 1
+    for side in ("file", "pipe"):
+        assert isinstance(
+            _extracted(data, tmp_path / side, piped=side == "pipe", password=None),
+            (type, list),
+        )
+        (tmp_path / side).mkdir(exist_ok=True)
+        assert _tree(tmp_path / side, since=started) == {}

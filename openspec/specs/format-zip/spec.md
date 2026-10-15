@@ -486,15 +486,23 @@ sizes from its data descriptor, and a read checks the data against them. A membe
 data the file cuts, or whose descriptor the walk does not find, SHALL be listed last,
 and reading it SHALL raise the walk's error. `ArchiveInfo.member_count` SHALL be
 `None`. With no member before the walk's error, `open_archive` SHALL raise it. A walk
-that meets more local headers than `max_members` SHALL stop there; the listing then
-raises `ResourceLimitError`, as when the directory's entries cross the limit.
+that meets more local headers than `max_members` SHALL stop there and the archive
+SHALL open; the listing then raises `ResourceLimitError` with nothing listed, as when
+the directory's entries cross the limit (only damage keeps the members before it; a
+pipe read, which streams, yields them first).
 
-Two shapes read differently from a pipe, which decodes each member as it passes: a
-deflated or encrypted bit-3 member whose descriptor states a size or CRC its data does
-not have is listed from a file as the descriptor states it (the file read decodes
-nothing at open, as it does not check a directory's sizes either) and from a pipe with
-the size it measured; and junk after a bit-3 member makes the two raise in different
-words. Both list the same members, refuse the same data and write the same files.
+Two shapes read differently from a pipe, which decodes each member as it passes:
+
+- A deflated or encrypted bit-3 member whose descriptor states a size or CRC its data
+  does not have. The file read decodes nothing at open, as it does not check a
+  directory's sizes either, so it lists the member's size and CRC32 as the descriptor
+  states them; the pipe read lists the size it measured, and no CRC32 when its data did
+  not match the descriptor's. Both refuse the member's data, in different words: from
+  a file by the size, digest or declared ratio check, from a pipe at the end of its
+  data.
+- Junk after a bit-3 member: the two raise in different words.
+
+Both write the same files.
 
 #### Scenario: ZIP with no end record
 
@@ -508,7 +516,7 @@ words. Both list the same members, refuse the same data and write the same files
 | `JUNK` after a whole directory, where the end record should be | Three members, then `CorruptionError` naming the bytes after the central directory |
 | Cut inside the first local header | `TruncatedError` at open |
 | Any of these with bit-3 members | The same members, each with its descriptor's CRC and sizes; a pipe read lists and extracts the same |
-| A deflated bit-3 member whose descriptor states an uncompressed size of 2^62 or 2^64 − 1, cut inside the directory | Listed with that size; its read fails; from a pipe it is listed with the 11 bytes it holds; both raise the same `TruncatedError` |
+| A deflated bit-3 member whose descriptor states an uncompressed size of 2^62 or 2^64 − 1, or a wrong CRC, cut inside the directory | Listed with that size and CRC32; its read and its extraction fail; from a pipe it is listed with the 11 bytes it holds, without the wrong CRC32, and its read fails; both listings raise the same `TruncatedError`; nothing is written |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 

@@ -636,18 +636,25 @@ arrives (§"What only the central directory says"): no mode, `create_system` or
 comment, and a bit-3 member's CRC and sizes from its descriptor, which a read checks
 the data against. No directory comes, so they are final: `member_state_final` is true.
 A deflated or encrypted bit-3 member's descriptor is not checked at open (the walk
-decodes nothing), so a descriptor that lies is listed as it states, as a directory
-entry would be, and its read fails; a pipe read lists the size it measured. Junk after
-a bit-3 member makes the two reads raise in different words: the pipe decodes the
-member and looks for a descriptor with its CRC, the file read for one followed by a ZIP
-signature. A walk that meets more local headers than `max_members` stops there, and
-the listing raises the limit, as when the directory's entries cross it.
+decodes nothing), so a descriptor that lies is listed with the size and CRC32 it
+states, as a directory entry would be, and its read and extraction fail by the size,
+digest or declared ratio check; a pipe read lists the size it measured, and no CRC32
+when the data does not match the descriptor's, and fails the member at the end of its
+data, in other words. Junk after a bit-3 member
+makes the two reads raise in different words: the pipe decodes the member and looks
+for a descriptor with its CRC, the file read for one followed by a ZIP signature.
+
 `members()` is complete-or-raise; `members_report()` returns the members found and the
 error; `__iter__` yields them, then raises; `extract_all` writes them, then raises. This
 is the `partial-members-and-errors` model TAR already uses. The listing limits charge
 each member as it arrives, and the walk charges `max_members` on each local header.
 `member_count` is `None`. The fallback runs only when the tail search fails, so a
 normal archive pays nothing for it.
+
+A walk that meets more local headers than `max_members` stops there and the archive
+opens. The listing then raises the limit with nothing listed, as when the directory's
+entries cross it: only damage keeps the members before it, where a pipe read, which
+streams, yields them first.
 
 ## What the parser removes
 

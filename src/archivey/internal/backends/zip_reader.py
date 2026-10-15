@@ -1177,7 +1177,9 @@ class ZipReader(BaseArchiveReader):
         is scanned for its descriptor, so the walk reads at most the source once, as a
         pipe read does. Each local header is charged against ``max_members`` before
         its data is passed, as the pipe read charges it: past the limit the walk
-        stops there, and the listing raises the limit after the members before it.
+        stops there and the archive opens; the listing then raises the limit with
+        nothing listed, since only damage keeps the members before it
+        (``_materialize_members``), where a pipe read yields them first.
         Run once, at open, after the tail search and before anything is listed.
 
         What the walk found is kept in ``_salvage`` (offsets and descriptors, and
