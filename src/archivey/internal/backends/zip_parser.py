@@ -135,6 +135,11 @@ class EndRecord:
         return self.cd_offset + self.base
 
 
+NO_END_RECORD_MSG = (
+    "truncated or corrupt ZIP (no end of central directory record found)"
+)
+
+
 def find_end_record(
     read_at: ReadAt,
     file_size: int,
@@ -153,21 +158,41 @@ def find_end_record(
     ``members_end`` is called for where the members end, which the caller knows from a
     walk over the local headers (``None`` when the walk found no end), and the record
     is found by stepping over the directory from there
-    (:func:`locate_record_after_directory`).
+    (:func:`step_over_directory`).
 
     Raises ``UnsupportedFeatureError`` for a record that names another disk (a spanned
     set) and for an encrypted central directory (PKWARE Strong Encryption), and
     ``CorruptionError`` when no record is found or the records contradict each other.
+    The two halves are :func:`locate_end_record` and :func:`read_end_record`.
     """
+    found, _stopped = locate_end_record(read_at, file_size, members_end=members_end)
+    if found is None:
+        raise CorruptionError(NO_END_RECORD_MSG)
+    return read_end_record(read_at, file_size, found)
+
+
+def locate_end_record(
+    read_at: ReadAt,
+    file_size: int,
+    *,
+    members_end: Callable[[], int | None] | None = None,
+) -> tuple[tuple[int, bytes, bytes] | None, int | None]:
+    """``(offset, record, comment)`` of the end record :func:`find_end_record`
+    reads, or ``None`` when neither the search nor the step finds one; and where the
+    step over the directory stopped (:func:`step_over_directory`), ``None`` when no
+    step ran."""
     found = locate_classic_record(read_at, file_size)
     if found is None and members_end is not None:
         directory_at = members_end()
         if directory_at is not None:
-            found = locate_record_after_directory(read_at, file_size, directory_at)
-    if found is None:
-        raise CorruptionError(
-            "truncated or corrupt ZIP (no end of central directory record found)"
-        )
+            return step_over_directory(read_at, file_size, directory_at)
+    return found, None
+
+
+def read_end_record(
+    read_at: ReadAt, file_size: int, found: tuple[int, bytes, bytes]
+) -> EndRecord:
+    """The end record :func:`locate_end_record` found, with the ZIP64 records."""
     eocd_offset, record, comment = found
     (
         _sig,
@@ -235,15 +260,6 @@ def locate_classic_record(
     (comment_declared,) = struct.unpack_from("<H", record, 20)
     comment = window[idx + EOCD_SIZE : idx + EOCD_SIZE + comment_declared]
     return window_start + idx, record, comment
-
-
-def locate_record_after_directory(
-    read_at: ReadAt, file_size: int, directory_at: int
-) -> tuple[int, bytes, bytes] | None:
-    """``(offset, record, comment)`` of the classic end record that follows the
-    directory starting at ``directory_at``, or ``None``: the first half of
-    :func:`step_over_directory`."""
-    return step_over_directory(read_at, file_size, directory_at)[0]
 
 
 def step_over_directory(
@@ -772,13 +788,15 @@ class LocalHeader:
     data_start: int
 
 
-def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader:
+def read_local_header(
+    read_at: ReadAt, header_offset: int, *, zip64_sizes: bool = False
+) -> LocalHeader:
     """Parse the local header at absolute ``header_offset``.
 
     Reads the fixed 30 bytes, then the name and extra field. Name and extra lengths are
     uint16, so 65 535 is legal and they need no cap of their own; offsets past
     :data:`MAX_DATA_OFFSET` are refused. The caller decides what a disagreement with the
-    central directory means.
+    central directory means. ``zip64_sizes`` is :func:`local_header_from`'s.
     """
     if not 0 <= header_offset <= MAX_DATA_OFFSET:
         raise CorruptionError(f"Absurd local-header offset: {header_offset}")
@@ -796,7 +814,7 @@ def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader:
     data_start = header_offset + LOCAL_HEADER_SIZE + variable_len
     if data_start > MAX_DATA_OFFSET:
         raise CorruptionError(f"Absurd local-header data offset: {data_start}")
-    return local_header_from(fixed, variable, data_start)
+    return local_header_from(fixed, variable, data_start, zip64_sizes=zip64_sizes)
 
 
 def local_header_variable_length(fixed: bytes) -> int:

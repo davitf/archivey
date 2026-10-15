@@ -346,7 +346,10 @@ archive declares.
   `max_metadata_bytes` as it arrives (`zip_forward_reader.py`). A ZIP file whose end
   record sits behind more trailing bytes than the end-record search reads is walked
   the same way at `open_archive`, which charges `max_members` on each local header
-  before passing its data (`ZipReader._walk_past_members`).
+  before passing its data (`ZipReader._walk_past_members`). When no end record
+  follows, the walk keeps each member's offset and descriptor fields (some 32 bytes a
+  member) and the listing rebuilds each member from its local header, so the members'
+  text is charged as they are listed, as from any directory.
   The TAR walker keeps nothing behind the member list, so nothing else is
   held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, for the bytes present rather than the size a header declares

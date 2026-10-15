@@ -130,7 +130,9 @@ yielded.
   and from a pipe after every member has been written; those files stay.
 - **A damaged central directory lists the members before the damage**, then raises
   `CorruptionError`; `members_report()` gives you both. An archive whose end record is
-  gone (cut short, or followed by more than 64 KiB) still fails at open.
+  gone (a download cut short) lists the members its local headers hold, without the
+  mode, host or comment only the directory has, then raises `TruncatedError` (or
+  `CorruptionError` when other bytes stand where the directory should be).
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or

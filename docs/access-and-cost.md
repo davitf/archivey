@@ -78,7 +78,8 @@ the members end, then steps over the directory to the end record. It seeks over 
 member whose local header states its size and reads through one that leaves its size
 to a data descriptor (bit 3, as a writer to a pipe sets it), so that open costs up to
 one read of the file. Each local header counts toward `max_members`. `listing_cost`
-stays `INDEXED`, as for RAR.
+stays `INDEXED`, as for RAR. The same walk lists the members of an archive whose
+directory is gone, from their local headers.
 
 ## Solid archives: prefer one forward pass
 

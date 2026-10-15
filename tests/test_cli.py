@@ -33,10 +33,9 @@ from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
 from archivey.diagnostics import DiagnosticSummary
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires_binary
-from tests.corruption_util import raises_corruption_not_truncation
 
 
 def _zip(path: Path, entries: dict[str, bytes]) -> Path:
@@ -526,7 +525,8 @@ def test_info_prints_identity_once_when_the_open_fails(
 ) -> None:
     """A recognised format that fails to open still gets its identity lines, once."""
     bad = tmp_path / "bad.zip"
-    bad.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
+    # Cut inside the first local header: no member to list.
+    bad.write_bytes(b"PK\x03\x04" + b"\x00" * 20)
     assert main(["info", str(bad)]) != EXIT_OK
     captured = capsys.readouterr()
     assert captured.out.count("path:") == 1
@@ -2605,7 +2605,7 @@ def test_truncated_zip_message_is_prose_not_repr(tmp_path: Path) -> None:
         archive.writestr("a.txt", "hello")
     path = tmp_path / "truncated.zip"
     path.write_bytes(buf.getvalue()[:20])
-    with raises_corruption_not_truncation() as caught:
+    with pytest.raises(TruncatedError) as caught:
         open_archive(path)
     msg = str(caught.value)
     assert "BadZipFile" not in msg
@@ -3983,7 +3983,8 @@ def test_info_open_failure_is_not_escaped_twice(
 ) -> None:
     """An archivey exception has escaped its own message; ``info`` must not redo it."""
     bad = tmp_path / f"{_SPOOF_PORTABLE_ROOT}.zip"
-    bad.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
+    # Cut inside the first local header: no member to list.
+    bad.write_bytes(b"PK\x03\x04" + b"\x00" * 20)
     assert main(["info", str(bad)]) != EXIT_OK
     err = capsys.readouterr().err
     open_lines = _report_lines(err, "open:")

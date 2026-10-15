@@ -475,9 +475,7 @@ def test_a_digital_signature_record_is_not_stepped_over() -> None:
         data[:record] + b"PK\x05\x05" + struct.pack("<H", 3) + b"sig" + data[record:]
     )
     assert (
-        zip_parser.locate_record_after_directory(
-            _read_at(signed), len(signed), directory_at
-        )
+        zip_parser.step_over_directory(_read_at(signed), len(signed), directory_at)[0]
         is None
     )
 
@@ -505,13 +503,9 @@ def test_records_out_of_order_after_the_directory_are_not_stepped_over() -> None
         data[:record] + data[locator : locator + 20] + data[record:locator]
         + data[locator + 20 :]
     )  # fmt: skip
-    assert zip_parser.locate_record_after_directory(
-        _read_at(data), len(data), directory_at
-    )
+    assert zip_parser.step_over_directory(_read_at(data), len(data), directory_at)[0]
     assert (
-        zip_parser.locate_record_after_directory(
-            _read_at(swapped), len(swapped), directory_at
-        )
+        zip_parser.step_over_directory(_read_at(swapped), len(swapped), directory_at)[0]
         is None
     )
 

@@ -76,7 +76,7 @@ whatever they look like. A tail longer than the search window hides the end reco
 the search; the reader then walks the local headers from the start (the pipe's walk,
 seeking over sized members and scanning bit-3 ones for their descriptor, decoding
 nothing) and steps over the directory and the records after it to the end record
-(`locate_record_after_directory`). That open costs up to one read of the file, and each
+(`step_over_directory`). That open costs up to one read of the file, and each
 local header counts toward `max_members`, as on a pipe. A pipe steps over the records
 after its pass, from the bytes it keeps right after the members.
 
@@ -177,11 +177,13 @@ Two things are ZIP-specific rather than general in the shared detector:
 
 archivey's own parser (`internal/backends/zip_parser.py`, ADR
 [0020](../decisions/0020-native-zip-reader.md)) finds the end record at open and walks
-the central directory (the CDH run) as members are listed; nothing else is read at
-open but the trailing-data scan. Each listed member keeps a small locator
-(`_ZipLocator`: offsets, sizes, CRC, flags, method, and what its open needs), not the
-directory entry, so an entry's extra field is not kept alive. `reader.get()` and name
-lookup are satisfied from the listing with no further archive I/O.
+the central directory (the CDH run) as members are listed. Open reads nothing else but
+the trailing-data scan, unless the tail search finds no end record: then open walks the
+local headers from the start (§1, and the "no end record" row below). Each listed member
+keeps a small locator (`_ZipLocator`: offsets, sizes, CRC, flags, method, and what its
+open needs), not the directory entry, so an entry's extra field is not kept alive.
+`reader.get()` and name lookup are satisfied from the listing with no further archive
+I/O.
 
 The walk records each entry's local-header offset for the overlap guard (§4) and counts
 the entries for `member_count`. A member opened before the listing has finished (a
@@ -830,7 +832,7 @@ ours.
 | One member name whose UTF-8 flag lies stops the listing at that entry | **archivey** | Flagged names decode strictly, so the listing raises `CorruptionError` there, after the members before it (until the native reader's first stage the whole archive was unlistable). Stage 4 of the `native-zip-reader` OpenSpec change decodes such a name as an unflagged one instead |
 | A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
-| An archive cut before its end record, or followed by more than 64 KiB, fails at open — nothing is salvaged | **archivey** | Without an end record in the tail there is no directory to walk. A damaged *directory* lists the entries before the damage, then raises (§2.2). Stage 3 of the `native-zip-reader` OpenSpec change walks the local headers forward when the end record is not in the tail |
+| An archive cut before its end record lists its members without mode, host or comment, then raises | **format** | Those fields live only in the directory. With no end record in the tail, the reader walks the local headers, lists what they hold as a pipe read does before its directory, then raises the walk's error (`TruncatedError` for a cut). A damaged *directory* lists the entries before the damage, then raises (§2.2) |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a forward seek in a STORED ZipCrypto member, no CRC checks it, and a wrong password that passed the check byte goes unnoticed | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order. A seek back keeps it, and so does a compressed member's forward seek, whose skipped bytes the verifier reads and hashes (ADR 0014, since 2026-10-10). A STORED member's forward seek jumps, so a read past it gives the CRC up and returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |

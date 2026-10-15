@@ -73,10 +73,12 @@ from archivey.internal.backends.zip_parser import (
     ZIP64_LOCATOR_SIGNATURE,
     EndRecord,
     LocalHeader,
+    ReadAt,
     find_end_record,
     local_header_from,
     local_header_variable_length,
     locate_classic_record,
+    read_local_header,
     read_zip64_locator,
     step_over_directory,
     zip64_record_matches,
@@ -865,14 +867,14 @@ class LocalHeaderWalk:
             )
         if len(sig) < 4:
             raise TruncatedError(
-                f"ZIP stream ends {len(sig)} bytes {self._where()}, before the "
+                f"ZIP stream ends {len(sig)} bytes {self.where()}, before the "
                 "central directory"
             )
         # The directory, the end records, or bytes that are neither: what follows
         # the members is read whole by ``read_rest`` and parsed as a file's is.
         return None
 
-    def _where(self) -> str:
+    def where(self) -> str:
         """Where the walk is, for a message: after which member, if any."""
         if self._index == 0:
             return "before the first local header"
@@ -988,15 +990,16 @@ class LocalHeaderWalk:
         self._open = data
         return data
 
-    def skip_member(self, entry: LocalEntry) -> None:
+    def skip_member(self, entry: LocalEntry) -> DataDescriptor | None:
         """Move past ``entry``'s data and data descriptor without decoding it: a bit-3
         codec member's end is found by the descriptor scan
-        (:meth:`scan_member_data`), as for one nobody read."""
+        (:meth:`scan_member_data`), as for one nobody read. Returns the data
+        descriptor of a bit-3 member, ``None`` for any other."""
         encrypted = bool(entry.header.flags & _FLAG_ENCRYPTED)
         data = self.member_data(entry, encrypted=encrypted)
         if isinstance(data, _CodecData):
             data = self.scan_member_data(data)
-        data.settle()
+        return data.settle()
 
     def scan_starts_at_data_start(self, data: MemberData) -> bool:
         """Whether :meth:`scan_member_data` would start its scan of ``data`` at the
@@ -1138,7 +1141,7 @@ class LocalHeaderWalk:
         data = b"".join(chunks)
         chunks.clear()
         return ForwardTail(
-            after=self._where(),
+            after=self.where(),
             members_start=(
                 members_end if self.first_offset is None else self.first_offset
             ),
@@ -1148,6 +1151,60 @@ class LocalHeaderWalk:
             # Only needed when the tail does not reach back to the members.
             head=bytes(head) if dropped else b"",
         )
+
+
+def missing_end_record_error(
+    read_at: ReadAt,
+    members_end: int,
+    after: str,
+    stopped: int,
+    *,
+    whole: bool,
+) -> ArchiveyError | None:
+    """Why no end record follows the members, from the first four bytes after them
+    (at stream offset ``members_end``, ``after`` the walk's last member) and those
+    where the step over the directory stopped (``stopped``, ``step_over_directory``).
+
+    The stream ends inside the directory (only when ``whole``: every byte after the
+    members was seen), bytes that are no ZIP record follow the directory, the
+    directory is encrypted, or no ZIP structure follows the members at all. ``None``
+    for bytes that start an end record: the end records' own fault, in the parser's
+    words.
+    """
+    head = read_at(members_end, 4)
+    if head == CENTRAL_HEADER_SIGNATURE:
+        rest = read_at(stopped, 4)
+        if len(rest) == 4 and rest not in _STEPPED_OVER:
+            return CorruptionError(
+                f"bytes at stream offset {stopped} after the central directory are "
+                "not a ZIP record, and no end of central directory record follows "
+                "them"
+            )
+        if whole:
+            return TruncatedError(
+                "ZIP stream ends inside the central directory, before the end of "
+                "central directory record"
+            )
+    if head == ARCHIVE_EXTRA_DATA_SIGNATURE:
+        return UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
+    if head not in _DIRECTORY_STARTS:
+        return CorruptionError(
+            f"bytes at stream offset {members_end} {after} are not a ZIP header, and "
+            "no end of central directory record follows them"
+        )
+    return None
+
+
+def local_entry_at(read_at: ReadAt, index: int, offset: int) -> LocalEntry:
+    """The local entry at stream ``offset`` as the walk reads it, sizes from a ZIP64
+    extra field included: for a file read listing the members a walk found."""
+    header = read_local_header(read_at, offset, zip64_sizes=True)
+    return LocalEntry(
+        index=index,
+        offset=offset,
+        header=header,
+        zip64=_has_zip64_extra(header.extra),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1223,10 +1280,9 @@ class ForwardTail:
         Behind more bytes than the search window, the end record is stepped to from
         the directory right after the members while the step stays in the kept
         bytes; a step that runs past them is a ``ResourceLimitError``. A missing end
-        record is described from the first four bytes after the members: they say
-        whether the stream was cut inside the directory (only while every byte after
-        it is kept), the directory is encrypted, or no ZIP structure follows at all.
-        Every other fault is ``find_end_record``'s, in the file read's words.
+        record is described by :func:`missing_end_record_error`, as a file read
+        describes it. Every other fault is ``find_end_record``'s, in the file read's
+        words.
         """
         found = locate_classic_record(self.read_at, self.size)
         if found is None:
@@ -1243,25 +1299,19 @@ class ForwardTail:
                     f"{len(self.head)} bytes after the members that a forward read "
                     "holds within the listing limits"
                 )
-        if found is None:
-            # No end record at all: what follows the members says why. The head or
-            # the tail holds their first four bytes.
-            head = self.read_at(self.members_end, 4)
-            # A directory that is all the stream holds was cut short; with bytes
-            # dropped after it, whatever follows it is unknown.
-            if head == CENTRAL_HEADER_SIGNATURE and not self.dropped:
-                raise TruncatedError(
-                    "ZIP stream ends inside the central directory, before the end of "
-                    "central directory record"
+            if found is None:
+                # No end record at all. The head or the tail holds the first four
+                # bytes after the members. With bytes dropped after a directory,
+                # whatever follows it is unknown.
+                error = missing_end_record_error(
+                    self.read_at,
+                    self.members_end,
+                    self.after,
+                    stopped,
+                    whole=not self.dropped,
                 )
-            if head == ARCHIVE_EXTRA_DATA_SIGNATURE:
-                raise UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
-            if head not in _DIRECTORY_STARTS:
-                raise CorruptionError(
-                    f"bytes at stream offset {self.members_end} {self.after} are not "
-                    "a ZIP header, and no end of central directory record follows "
-                    "them"
-                )
+                if error is not None:
+                    raise error
         if found is not None:
             self._refuse_unseen_zip64_record(found[0])
         # Any other failure is the record's own, in the file read's words.
@@ -1328,5 +1378,7 @@ __all__ = [
     "LocalEntry",
     "LocalHeaderWalk",
     "MemberData",
+    "local_entry_at",
     "match_descriptor",
+    "missing_end_record_error",
 ]

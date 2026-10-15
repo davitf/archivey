@@ -25,15 +25,17 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.cost import ListingCost
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     ResourceLimitError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_parser
-from archivey.types import ArchiveFormat
+from archivey.types import ArchiveFormat, HashAlgorithm
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
 
@@ -313,10 +315,12 @@ def test_the_walk_charges_each_local_header_against_max_members() -> None:
         listing_limits=ListingLimits(max_members=2, max_metadata_bytes=1024)
     )
     source = _CountingBytesIO(_bit3_zip(zipfile.ZIP_DEFLATED) + _PAST_WINDOW)
-    with pytest.raises(ResourceLimitError, match="max_members=2.*local headers"):
-        open_archive(source, format=ArchiveFormat.ZIP, config=config)
-    # The third header is refused before its data or the tail is read.
-    assert source.bytes_read < len(_PAST_WINDOW) // 4
+    with open_archive(source, format=ArchiveFormat.ZIP, config=config) as reader:
+        # The third header is refused before its data or the tail is read.
+        assert source.bytes_read < len(_PAST_WINDOW) // 4
+        # The listing raises the limit, as when the directory's entries cross it.
+        with pytest.raises(ResourceLimitError, match="max_members=2.*local headers"):
+            reader.members()
 
 
 def test_an_encrypted_bit3_stored_member_is_walked_past_without_its_password() -> None:
@@ -329,11 +333,130 @@ def test_an_encrypted_bit3_stored_member_is_walked_past_without_its_password() -
         assert reader.read(member) == b"secret contents" * 50
 
 
-def test_a_directory_missing_past_the_search_window_fails_at_open() -> None:
+# --- A ZIP with no end record lists its members, then raises -----------------------
+#
+# File and pipe reads are compared shape by shape in test_zip_pipe_parity.py; these
+# pin what the file read does with what it lists.
+
+
+def test_a_zip_with_no_end_record_peeks_its_listing_as_an_index() -> None:
+    """Random access, its listing is an index (``listing_cost=INDEXED``): the peek
+    returns the members and the walk's error, as ``members_report()`` does."""
+    data = _zip()
+    cut = data[: data.index(b"PK\x01\x02")]
+    with open_archive(io.BytesIO(cut), format=ArchiveFormat.ZIP) as reader:
+        assert reader.info.cost.listing_cost is ListingCost.INDEXED
+        peeked = reader.members_report_if_available()
+        assert peeked is not None
+        assert [m.name for m in peeked.members] == list(_NAMES)
+        assert isinstance(peeked.error, TruncatedError)
+
+
+def test_a_zip_cut_before_its_directory_lists_its_members_then_raises() -> None:
+    data = _zip()
+    cut = data[: data.index(b"PK\x01\x02")]
+    with open_archive(io.BytesIO(cut), format=ArchiveFormat.ZIP) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == list(_NAMES)
+        assert isinstance(report.error, TruncatedError)
+        assert "ends after 3 members, before the central directory" in str(report.error)
+        # Each member reads, its CRC checked, within the overlap guard's bounds from
+        # the walk's offsets.
+        assert reader.read(report.members[2]) == b"c.txtc.txtc.txt"
+        with pytest.raises(TruncatedError, match="before the central directory"):
+            reader.members()
+        assert reader.info.member_count is None
+        assert reader.info.comment is None
+
+
+def test_a_zip_cut_before_its_directory_extracts_its_members_then_raises(
+    tmp_path: object,
+) -> None:
+    from pathlib import Path
+
+    data = _zip()
+    dest = Path(str(tmp_path)) / "out"
+    with open_archive(io.BytesIO(data[: data.index(b"PK\x01\x02")])) as reader:
+        with pytest.raises(TruncatedError, match="before the central directory"):
+            reader.extract_all(dest)
+    assert sorted(p.name for p in dest.iterdir()) == list(_NAMES)
+
+
+def test_a_member_the_file_cuts_is_listed_and_its_read_raises_the_cut() -> None:
+    data = _zip()
+    third = data.index(b"PK\x03\x04", data.index(b"b.txt") + 1)
+    with open_archive(io.BytesIO(data[: third + 40])) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == list(_NAMES)
+        assert report.error is not None
+        assert report.error.member_name == "c.txt"
+        assert "inside member #2's data" in str(report.error)
+        assert reader.read(report.members[1]) == b"b.txtb.txtb.txt"
+        with pytest.raises(TruncatedError, match="inside member #2's data") as caught:
+            reader.read(report.members[2])
+        assert caught.value.member_name == "c.txt"
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_a_bit3_member_takes_its_crc_and_sizes_from_its_descriptor(
+    method: int,
+) -> None:
+    data = _bit3_zip(method)
+    cut = data[: data.index(b"PK\x01\x02")]
+    with open_archive(io.BytesIO(cut), format=ArchiveFormat.ZIP) as reader:
+        members = reader.members_report().members
+        whole = zipfile.ZipFile(io.BytesIO(data))
+        for member, info in zip(members, whole.infolist(), strict=True):
+            assert (member.size, member.compressed_size) == (
+                info.file_size,
+                info.compress_size,
+            )
+            assert member.hashes[HashAlgorithm.CRC32] == struct.pack(">I", info.CRC)
+            assert reader.read(member) == member.name.encode() * 3
+
+
+def test_a_bit3_member_s_read_is_checked_against_its_descriptor_crc() -> None:
+    data = bytearray(_bit3_zip(zipfile.ZIP_DEFLATED))
+    cut = data[: data.index(b"PK\x01\x02")]
+    # The first member's descriptor: signature, CRC, sizes. The scan, which decodes
+    # nothing, matches a deflated member's descriptor by its compressed size, so a
+    # wrong CRC is still found.
+    at = cut.index(b"PK\x07\x08") + 4
+    cut[at] ^= 0xFF
+    with open_archive(io.BytesIO(bytes(cut)), format=ArchiveFormat.ZIP) as reader:
+        first = reader.members_report().members[0]
+        with raises_corruption_not_truncation(match="crc32"):
+            reader.read(first)
+
+
+def test_a_zip_with_no_member_before_the_cut_fails_at_open() -> None:
+    with pytest.raises(TruncatedError, match="inside local header #0"):
+        open_archive(io.BytesIO(_zip()[:20]), format=ArchiveFormat.ZIP)
+
+
+def test_a_directory_missing_past_the_search_window_lists_then_raises() -> None:
     data = _zip()
     members_end = data.index(b"PK\x01\x02")
-    with pytest.raises(CorruptionError, match="no end of central directory"):
-        open_archive(io.BytesIO(data[:members_end] + _PAST_WINDOW), format="zip")
+    source = io.BytesIO(data[:members_end] + _PAST_WINDOW)
+    with open_archive(source, format=ArchiveFormat.ZIP) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == list(_NAMES)
+        assert isinstance(report.error, CorruptionError)
+        assert f"bytes at stream offset {members_end} after member #2 are not" in str(
+            report.error
+        )
+
+
+def test_junk_after_a_whole_directory_is_damage_not_a_cut() -> None:
+    data = _zip()
+    end = data.rindex(b"PK\x05\x06")
+    with open_archive(io.BytesIO(data[:end] + b"junk" * 8)) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == list(_NAMES)
+        assert type(report.error) is CorruptionError
+        assert f"bytes at stream offset {end} after the central directory" in str(
+            report.error
+        )
 
 
 # --- One walk for the listing, one index pass when an open comes first ---------------

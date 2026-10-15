@@ -478,7 +478,54 @@ Info-ZIP `unzip` says nothing.
 | A 1000-byte stub before the archive, 7 zero bytes and `JUNK` after it | `observed_bytes` 7 |
 | `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
 | 1 MiB of non-zero bytes after the end record, from a file or a pipe | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0; members list and read |
-| The same with the directory gone | `CorruptionError` at open: no end record |
+| The same with the directory gone | Members listed from their local headers, then `CorruptionError` (see the next requirement) |
+
+### Requirement: List a ZIP whose end record is missing
+
+When neither the search nor the step over the directory finds an end record, the
+reader SHALL list the members the local-header walk found and then raise the error the
+walk met, in the words a read from a pipe uses for the same bytes, as a cut TAR lists
+and raises: `members()` raises, `members_report()` returns the members with the error,
+iteration yields them and then raises, and `extract_all()` writes them and then raises.
+Each member SHALL be what its local header says, as a pipe read lists it before its
+directory: no `mode`, `create_system` or comment; a bit-3 member takes its CRC and
+sizes from its data descriptor, and a read checks the data against them. A member whose
+data the file cuts, or whose descriptor the walk does not find, SHALL be listed last,
+and reading it SHALL raise the walk's error. `ArchiveInfo.member_count` SHALL be
+`None`. With no member before the walk's error, `open_archive` SHALL raise it. A walk
+that meets more local headers than `max_members` SHALL stop there and the archive
+SHALL open; the listing then raises `ResourceLimitError` as when the directory's
+entries cross the limit: a streaming pass, from a file as from a pipe, yields the
+members before it first, and a random-access listing lists none.
+After that streaming pass, `members_report_if_available()` SHALL return `None`, as for
+a pipe read.
+
+Two shapes read differently from a pipe, which decodes each member as it passes:
+
+- A deflated or encrypted bit-3 member whose descriptor states a size or CRC its data
+  does not have. The file read decodes nothing at open, as it does not check a
+  directory's sizes either, so it lists the member's size and CRC32 as the descriptor
+  states them; the pipe read lists the size it measured, and no CRC32 when its data did
+  not match the descriptor's. Both refuse the member's data, in different words: from
+  a file by the size, digest or declared ratio check, from a pipe at the end of its
+  data.
+- Junk after a bit-3 member: the two raise in different words.
+
+Both write the same files.
+
+#### Scenario: ZIP with no end record
+
+| Archive, three members | Expected |
+| --- | --- |
+| Cut where the directory starts | Three members listed and read, then `TruncatedError` naming the end after 3 members |
+| Cut inside the directory, or right before the end record | Three members, then `TruncatedError`: the stream ends inside the central directory |
+| Cut inside the third member's data | Three members, then `TruncatedError` naming member #2, which its read raises too; the first two read |
+| Cut inside the second local header | One member, then `TruncatedError` naming local header #1 |
+| `JUNK` where the directory should start | Three members, then `CorruptionError`: the bytes after member #2 are not a ZIP header |
+| `JUNK` after a whole directory, where the end record should be | Three members, then `CorruptionError` naming the bytes after the central directory |
+| Cut inside the first local header | `TruncatedError` at open |
+| Any of these with bit-3 members | The same members, each with its descriptor's CRC and sizes; a pipe read lists and extracts the same, and for a cut raises in the same words (junk after a member raises in different words, as above) |
+| A deflated bit-3 member whose descriptor states an uncompressed size of 2^62 or 2^64 − 1, or a wrong CRC, cut inside the directory | Listed with that size and CRC32; its read and its extraction fail; from a pipe it is listed with the 11 bytes it holds, without the wrong CRC32, and its read fails; both listings raise the same `TruncatedError`; nothing is written |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 
@@ -507,7 +554,7 @@ fields and comments against `max_metadata_bytes` as they arrive, raising
 | Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
 | The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
 | Three entries from a non-seekable source, `streaming=True` | The first two members yielded, then `ResourceLimitError` at the third local header |
-| Three entries from a file, then 1 MiB of other bytes (the end record past the search window) | `ResourceLimitError` at open, at the third local header the walk meets, before its data is read |
+| Three entries from a file, then 1 MiB of other bytes (the end record past the search window) | Opens without reading the third member's data or the tail; the listing raises `ResourceLimitError`, as at the third directory entry |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 
