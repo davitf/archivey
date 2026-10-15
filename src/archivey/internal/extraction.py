@@ -3892,7 +3892,9 @@ class ExtractionCoordinator:
             return None
         dest_root = state.dest_root
         # The recheck asks a yes/no question; the reason is kept here, per link path,
-        # so a loop a later member closed is named as a loop.
+        # so a loop a later member closed is named as a loop. ``recheck`` reports a
+        # link as escaped only when this callback refused it, so every escaped link
+        # has an entry: indexed, so a broken invariant raises instead of mislabelling.
         problems: dict[Path, str] = {}
 
         def escapes(path: Path, target: str) -> bool:
@@ -3905,7 +3907,7 @@ class ExtractionCoordinator:
         removed = [
             (
                 link,
-                f"{problems.get(link.path, SYMLINK_ESCAPES)}: a later member changed "
+                f"{problems[link.path]}: a later member changed "
                 "a path it resolves through",
             )
             for link in outcome.escaped

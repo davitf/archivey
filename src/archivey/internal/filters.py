@@ -455,10 +455,11 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
     A file's stored mode is *masked* with ``0o755``, never raised to it: ``0o660``
     (``umask 007``, a group-shared file) becomes ``0o640``, not ``0o644``. The policy
     that distrusts the archive must not be the one that opens a file up to other users.
-    Execute bits the archive stored are kept, as GNU tar, unzip, 7-Zip, unar and
-    ``tarfile``'s ``data`` filter keep them: a script extracted from a release tarball
-    must still run. Setuid, setgid and sticky are stripped (the ``0o755`` mask clears
-    them). As in the ``data`` filter, a file whose owner has no execute bit loses the
+    When the owner has an execute bit, the stored execute bits are kept, as GNU tar,
+    unzip, 7-Zip, unar and ``tarfile``'s ``data`` filter keep them: a script extracted
+    from a release tarball must still run. Setuid, setgid and sticky are stripped
+    (both masks, ``0o755`` and ``0o644``, clear them). As in the ``data`` filter, and
+    unlike the other four tools, a file whose owner has no execute bit loses the
     group and other execute bits too, so ``0o011`` is written ``0o000``. The filter's
     other step, adding owner read and write, is left out: it would widen the mode.
 
