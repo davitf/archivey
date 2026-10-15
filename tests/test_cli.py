@@ -9,7 +9,7 @@ import stat
 import sys
 import tarfile
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
@@ -18,6 +18,7 @@ from archivey import (
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
+    MemberPass,
     OverwritePolicy,
     open_archive,
 )
@@ -36,6 +37,13 @@ from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires_binary
+
+
+def _as_pass(
+    fake: Callable[..., Generator[tuple[ArchiveMember, object], None, None]],
+) -> Callable[..., MemberPass]:
+    """A generator standing in for ``stream_members()``, returned the way it returns."""
+    return lambda self, members=None: MemberPass(fake(self, members))  # type: ignore[arg-type]
 
 
 def _zip(path: Path, entries: dict[str, bytes]) -> Path:
@@ -1444,7 +1452,7 @@ def test_test_open_failure_still_prints_summary(
         raise ReadError("simulated open failure")
         yield  # pragma: no cover — make this a generator
 
-    monkeypatch.setattr(BaseArchiveReader, "stream_members", _immediate)
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _as_pass(_immediate))
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "FAIL:" in err
@@ -1508,7 +1516,7 @@ def test_test_prints_a_different_pass_end_fault_without_counting_it(
             yield member, _Failing()
             raise ReadError("a different fault")
 
-    monkeypatch.setattr(BaseArchiveReader, "stream_members", _fail_then_end)
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _as_pass(_fail_then_end))
     assert main(["test", "--hide-progress", str(sample_zip)]) == EXIT_FAIL
     lines = capsys.readouterr().err.splitlines()
     assert len([ln for ln in lines if ln.startswith("FAIL")]) == 1
@@ -1536,7 +1544,7 @@ def test_test_early_abort_reports_not_tested(
             yielded = True
             yield item
 
-    monkeypatch.setattr(BaseArchiveReader, "stream_members", _one_then_die)
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _as_pass(_one_then_die))
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "1 OK, 1 failed, 1 not tested" in err
@@ -4372,7 +4380,7 @@ def test_test_verb_escapes_failure_detail(
             raise ArchiveyError(f"Error reading member: /out/{_SPOOF_ANSI}")
             yield  # pragma: no cover - unreachable, makes this a generator
 
-        return _gen()
+        return MemberPass(_gen())
 
     monkeypatch.setattr(
         "archivey.internal.base_reader.BaseArchiveReader.stream_members", boom
@@ -4910,7 +4918,7 @@ def test_test_early_stop_without_error_exits_fail(
             yield item
             return
 
-    monkeypatch.setattr(BaseArchiveReader, "stream_members", _one_then_stop)
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _as_pass(_one_then_stop))
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     assert "1 OK, 0 failed, 2 not tested" in capsys.readouterr().err
 

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
-from contextlib import closing
 from typing import BinaryIO, TextIO
 
 from archivey import open_stream
-from archivey.cli.common import closable, open_for_cli, reject_stdin_token
+from archivey.cli.common import open_for_cli, reject_stdin_token
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.filters import MemberSelection
@@ -170,9 +169,9 @@ def _cat_members(
             selection.settle_from(indexed, err=err)
             if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
-        # ``closing`` ends the pass here, whatever leaves the loop (a member error,
+        # The ``with`` ends the pass here, whatever leaves the loop (a member error,
         # a closed stdout), rather than leaving it suspended for ``reader.close()``.
-        with closing(closable(reader.stream_members(selection.predicate))) as it:
+        with reader.stream_members(selection.predicate) as it:
             for member, stream in it:
                 if stream is None:
                     # Directories, links and other entries have no body of their

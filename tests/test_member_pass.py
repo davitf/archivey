@@ -1,0 +1,69 @@
+"""``stream_members()`` returns a ``MemberPass``: an iterator that can be closed."""
+
+from __future__ import annotations
+
+import io
+import zipfile
+from collections.abc import Iterator
+
+import pytest
+
+from archivey import ArchiveyUsageError, MemberPass, open_archive
+
+
+def _zip() -> io.BytesIO:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"first")
+        zf.writestr("b.txt", b"second")
+    buf.seek(0)
+    return buf
+
+
+def test_a_pass_is_an_iterator_of_member_stream_pairs() -> None:
+    with open_archive(_zip()) as reader:
+        members = reader.stream_members()
+        assert isinstance(members, MemberPass)
+        assert isinstance(members, Iterator)
+        assert iter(members) is members
+        got = {m.name: s.read() for m, s in members if s is not None}
+    assert got == {"a.txt": b"first", "b.txt": b"second"}
+
+
+def test_a_paused_pass_blocks_the_reader_until_closed() -> None:
+    with open_archive(_zip()) as reader:
+        members = reader.stream_members()
+        member, stream = next(members)
+        with pytest.raises(ArchiveyUsageError, match="stream_members"):
+            reader.read("b.txt")
+        members.close()
+        assert stream is not None and stream.closed
+        assert reader.read("b.txt") == b"second"
+        with pytest.raises(StopIteration):
+            next(members)
+        members.close()  # closing again does nothing
+
+
+def test_with_block_ends_the_pass_when_the_body_raises() -> None:
+    with open_archive(_zip()) as reader:
+        with pytest.raises(RuntimeError, match="boom"):
+            with reader.stream_members() as members:
+                for _member, _stream in members:
+                    raise RuntimeError("boom")
+        assert reader.read("b.txt") == b"second"
+
+
+def test_closing_a_finished_pass_does_nothing() -> None:
+    with open_archive(_zip()) as reader:
+        with reader.stream_members() as members:
+            assert len(list(members)) == 2
+        members.close()
+        assert reader.read("a.txt") == b"first"
+
+
+def test_a_pass_closes_on_a_streaming_reader_too() -> None:
+    with open_archive(_zip(), streaming=True) as reader:
+        with reader.stream_members() as members:
+            member, stream = next(members)
+            assert member.name == "a.txt"
+        assert stream is not None and stream.closed

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Generator, Iterator
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Self
 
 from archivey.config import ExtractionLimits
@@ -44,6 +45,56 @@ MemberSelector = MemberSelectorArg
   to select;
 - ``None``, for all members.
 """
+
+
+class MemberPass(Iterator["tuple[ArchiveMember, ArchiveStream | None]"]):
+    """The pass :meth:`~ForwardArchiveReader.stream_members` returns: an iterator of
+    ``(member, stream)`` pairs that can also be closed, directly or by a ``with`` block.
+
+    Iterate it as any iterator. Closing it ends the pass early: the current member
+    stream is closed, and the reader accepts other calls again. Closing an ended pass
+    does nothing, and advancing a closed one ends the iteration.
+
+    A pass that runs to its end ends on its own, and so, on CPython, does one a
+    ``for`` loop leaves with ``break``. Close it yourself when the pass can outlive the
+    loop: when it is kept in a variable, when an exception leaves the loop (the
+    traceback keeps the pass alive while the error is handled), or on an interpreter
+    that does not free it at once, such as PyPy. While a paused pass is alive, a
+    default reader refuses its other calls::
+
+        with reader.stream_members() as members:
+            for member, stream in members:
+                if stream is not None:
+                    process(member, stream.read())
+    """
+
+    __slots__ = ("_pass",)
+
+    def __init__(
+        self, items: Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]
+    ) -> None:
+        self._pass = items
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> tuple[ArchiveMember, ArchiveStream | None]:
+        return next(self._pass)
+
+    def close(self) -> None:
+        """End the pass: close the current member stream and release the reader."""
+        self._pass.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
 
 
 class ForwardArchiveReader(ABC):
@@ -171,12 +222,15 @@ class ForwardArchiveReader(ABC):
     @abstractmethod
     def stream_members(
         self, members: MemberSelector = None, *, file_copy_streams: bool = True
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> MemberPass:
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
         ``members`` is an optional selector: a predicate, any iterable of names or
         members (read once, so a generator works), or ``None`` for all. The yielded
         stream is valid only until the iterator advances; it is ``None`` for non-file
         members.
+
+        The returned :class:`MemberPass` can be closed, or used in a ``with`` block, to
+        end the pass early; see there for when that matters.
 
         The pass enforces ``ListingLimits`` as ``members()`` does. A pass that lists
         as it goes (every streaming reader, and TAR) yields the members before the
@@ -262,9 +316,9 @@ class ForwardArchiveReader(ABC):
         no-op. The archive's own source is released after the last of them, never
         underneath a stream still reading through it.
 
-        A :meth:`stream_members` iterator (or a streaming reader's iteration) that is
-        still alive does not stop the close: the reader closes, and advancing that
-        iterator afterwards raises ``ArchiveyUsageError``.
+        A :class:`MemberPass` from :meth:`stream_members` (or a streaming reader's
+        iteration) that is still alive does not stop the close: the reader closes, and
+        advancing that pass afterwards raises ``ArchiveyUsageError``.
 
         Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
         ...

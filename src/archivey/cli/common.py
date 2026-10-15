@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import stat
 import sys
-from collections.abc import Generator, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, TextIO, TypeVar
+from typing import BinaryIO, TextIO
 
 from archivey import open_archive
 from archivey.cli.errors import CliError
@@ -184,16 +184,3 @@ def _report_track_io(reader: ForwardArchiveReader, err: TextIO) -> None:
         f" source_seek_count={stats.source_seek_count}",
         file=err,
     )
-
-
-_T = TypeVar("_T")
-
-
-def closable(items: Iterator[_T]) -> Generator[_T, None, None]:
-    """``items`` as a generator, so ``contextlib.closing`` can end it.
-
-    ``stream_members()`` is typed as a plain ``Iterator``, which has no ``close()``.
-    Closing this generator closes ``items`` too: ``yield from`` passes ``close()`` on
-    to the iterator it delegates to.
-    """
-    yield from items

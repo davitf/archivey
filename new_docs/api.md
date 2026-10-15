@@ -32,6 +32,7 @@ flags calls to them. The object is still an `ArchiveReader` at run time, and tho
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
+::: archivey.MemberPass
 ::: archivey.MemberSelector
 ::: archivey.MemberListReport
 

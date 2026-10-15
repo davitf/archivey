@@ -733,7 +733,7 @@ def stream_members(
     members: MemberSelector | None = None,
     *,
     file_copy_streams: bool = True,
-) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]: ...
+) -> MemberPass: ...
 ```
 
 Yields `(member, stream)` in archive order with bounded memory. Solid blocks
@@ -787,6 +787,23 @@ pipe released), then any other member stream still open is closed, and only then
 the archive torn down. Resuming that iterator SHALL raise `ArchiveyUsageError`. A
 pass that is executing (inside `next()`, e.g. a selector on another thread) still
 makes `close()` raise (maintainer's ruling, 2026-10-10).
+
+The returned `MemberPass` SHALL be an iterator of `(member, stream)` pairs that also has
+`close()` and works as a context manager whose exit calls `close()`. Closing it SHALL end
+the pass at once, as closing a generator does: the last yielded stream is closed and the
+reader accepts other calls again. Closing an ended or closed pass SHALL do nothing, and
+advancing a closed pass SHALL end the iteration. A plain `for` loop over it SHALL behave
+as before.
+
+#### Scenario: closing a pass
+
+| Case | Expected |
+| --- | --- |
+| `p = reader.stream_members(); next(p)`, then `reader.read(name)` | `ArchiveyUsageError` (the paused pass is active) |
+| The same after `p.close()` | The member's bytes |
+| `with reader.stream_members() as p:` with an exception raised in the body after one `next(p)` | The exception propagates; afterwards `reader.read(name)` works |
+| `next(p)` after `p.close()` | `StopIteration` |
+| `p.close()` twice, or on a pass that ran to its end | No error |
 
 #### Scenario: stream_members matrix
 
