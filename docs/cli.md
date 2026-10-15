@@ -85,8 +85,8 @@ so one command decompresses whatever arrives:
 curl -s URL | archivey cat - --outer | tar t
 ```
 
-From stdin, the archive is read in one forward pass, so it must be a TAR (also
-compressed) or a single compressed file; ZIP, 7z, RAR and ISO need a regular file.
+From stdin, the archive is read in one forward pass, with the same format limits as an
+archive piped to the other verbs (see the notes below).
 
 The bytes reach stdout as they are decoded, so a member whose checksum fails has already
 been written when the failure is found. `cat` then prints the error, stops, and exits

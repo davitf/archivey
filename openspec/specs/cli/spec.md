@@ -561,7 +561,7 @@ A stdout the reader closed SHALL exit `141`, as for the other verbs.
 | `archivey cat a.zip nomatch` | Warning names the pattern; nothing on stdout; exit `1` |
 | `archivey cat a.tar.xz -v` | Member names, and `skip NAME` for directories and links, on stderr |
 | `curl … \| archivey cat - '*.txt'` (tar.*) | Reads the archive from stdin in one pass |
-| `archivey cat - < a.zip` from a pipe | Exit `1`; read-once message naming `stdin` and `zip` |
+| `archivey cat - < a.rar` from a pipe | Exit `1`; read-once message naming `stdin` and `rar` |
 | `archivey cat bad-crc.gz` | Error naming the member on stderr; exit `1` |
 | `archivey cat a.tar.zst --outer` | The tar bytes, unchanged |
 | `curl … \| archivey cat - --outer \| tar t` | Decompresses whatever compressor the stream uses |

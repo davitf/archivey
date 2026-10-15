@@ -157,12 +157,11 @@ def test_cat_reads_an_archive_from_stdin(tar_xz: Path) -> None:
     assert run.stdout == b"world\ndeep\n"
 
 
-def test_cat_from_stdin_names_stdin_when_the_format_must_seek(
-    sample_zip: Path,
-) -> None:
-    run = _Run(["cat", "-"], stdin=sample_zip.read_bytes())
+def test_cat_from_stdin_names_stdin_when_the_format_must_seek() -> None:
+    rar = Path(__file__).parent / "fixtures" / "rar" / "wildcard_names__.rar"
+    run = _Run(["cat", "-"], stdin=rar.read_bytes())
     assert run.code == EXIT_FAIL
-    assert "stdin: the zip format cannot be read from a pipe" in run.stderr
+    assert "stdin: the rar format cannot be read from a pipe" in run.stderr
 
 
 def test_the_stdin_token_stays_reserved_for_the_other_verbs(tar_xz: Path) -> None:
