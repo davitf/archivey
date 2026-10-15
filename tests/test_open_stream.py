@@ -78,8 +78,11 @@ def test_open_stream_rejects_detected_container(tmp_path: Path) -> None:
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("a.txt", "hi")
-    with pytest.raises(FormatDetectionError, match="not a single-file"):
+    with pytest.raises(FormatDetectionError, match="Not a single-file") as info:
         open_stream(path)
+    # The format is named once, by the source_format attribute, not also in the prose.
+    assert str(info.value).count("ZIP") == 1
+    assert "ArchiveFormat" not in str(info.value)
 
 
 def test_open_stream_rejects_detected_plain_tar(tmp_path: Path) -> None:
@@ -92,7 +95,7 @@ def test_open_stream_rejects_detected_plain_tar(tmp_path: Path) -> None:
         info = tarfile.TarInfo("a.txt")
         info.size = 2
         tf.addfile(info, io.BytesIO(b"hi"))
-    with pytest.raises(FormatDetectionError, match="not a single-file"):
+    with pytest.raises(FormatDetectionError, match="Not a single-file"):
         open_stream(path)
 
 

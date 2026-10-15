@@ -305,7 +305,6 @@ def test_reserved_verbs(sample_zip: Path) -> None:
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
     assert main(["hash", str(sample_zip)]) == EXIT_USAGE
     assert main(["convert", str(sample_zip)]) == EXIT_USAGE
-    assert main(["cat", str(sample_zip)]) == EXIT_USAGE
 
 
 def test_salvage_reserved(sample_zip: Path) -> None:
@@ -4263,7 +4262,7 @@ def test_verb_option_hint_names_every_verb_that_takes_it(
     ) in capsys.readouterr().err
     assert main(["--exclude", "p", "a.zip"]) == EXIT_USAGE
     assert (
-        "(--exclude is an option of 'list', 'test', 'extract'; "
+        "(--exclude is an option of 'list', 'test', 'extract', 'cat'; "
         "it goes after one of those verbs)"
     ) in capsys.readouterr().err
 
