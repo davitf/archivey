@@ -84,6 +84,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
+    ExtraField,
     WinZipAesInfo,
     iter_extra_fields,
     open_winzip_aes_member,
@@ -699,75 +700,119 @@ def _zip_timestamps(
     return modified, accessed, ntfs_ctime, ut_ctime, issues
 
 
-# Extra fields that record a Unix owner, highest precedence first: Info-ZIP's "new
-# Unix" field (variable-width ids), its "Unix type 2" (16-bit ids, in local headers
-# only: the central copy is empty), PKWARE's Unix field, and Info-ZIP's old "Unix" field
-# (16-bit ids after two times, also local only).
+# Extra fields that record a Unix owner. unzip 6.00 ranks them in three levels: Info-ZIP's
+# "new Unix" field (variable-width ids), then its "Unix type 2" (16-bit ids), then
+# PKWARE's Unix field and Info-ZIP's old "Unix" field (16-bit ids after two times), of
+# which the later in the blob wins. The highest level present decides, readable or not.
 _OWNER_TAG_INFOZIP_NEW_UNIX = 0x7875
 _OWNER_TAG_INFOZIP_UNIX2 = 0x7855
 _OWNER_TAG_PKWARE_UNIX = 0x000D
 _OWNER_TAG_INFOZIP_OLD_UNIX = 0x5855
-_OWNER_TAGS = (
-    _OWNER_TAG_INFOZIP_NEW_UNIX,
-    _OWNER_TAG_INFOZIP_UNIX2,
-    _OWNER_TAG_PKWARE_UNIX,
-    _OWNER_TAG_INFOZIP_OLD_UNIX,
+#: The two tags a central directory entry carries ids in. The 16-bit Info-ZIP fields
+#: hold the ids in local headers only: their central copy is empty (``0x7855``) or the
+#: two times alone (``0x5855``).
+_ZIP_CENTRAL_OWNER_TAGS = frozenset(
+    (_OWNER_TAG_INFOZIP_NEW_UNIX, _OWNER_TAG_PKWARE_UNIX)
 )
-# The widest id the new Unix field may give: Info-ZIP writes 4 bytes, and unzip reads
-# at most a 64-bit value. A wider id is not read.
+_ALL_OWNER_TAGS = frozenset(
+    (
+        _OWNER_TAG_INFOZIP_NEW_UNIX,
+        _OWNER_TAG_INFOZIP_UNIX2,
+        _OWNER_TAG_PKWARE_UNIX,
+        _OWNER_TAG_INFOZIP_OLD_UNIX,
+    )
+)
+# The widest id the new Unix field may give: Info-ZIP writes 4 bytes, and unzip refuses
+# an id wider than its 64-bit value.
 _MAX_OWNER_ID_BYTES = 8
 
 
-def _zip_owner(extra: bytes) -> tuple[int, int] | None:
-    """Return ``(uid, gid)`` from the first extra field that records them, or ``None``.
+class _ZipOwner(NamedTuple):
+    """What a member's owner extra fields give.
 
-    The fields are tried in ``_OWNER_TAGS`` order, and the first copy of each tag
-    counts. A field too short for its ids, or a new Unix field of an unknown version or
-    an id wider than 8 bytes, is skipped, and the next field is tried. No ZIP field
-    records the owner's names, so ``uname`` and ``gname`` stay ``None``.
+    ``ids`` is ``(uid, gid)``, or ``None``. ``fault`` is ``(tag, reason)`` when the
+    deciding field is damaged; the reader drops it and reports that. A ``0x7875`` of a
+    version other than 1 is not damage, only a field this reader does not know: it
+    gives no ids and no fault.
+    """
+
+    ids: tuple[int, int] | None
+    fault: tuple[int, str] | None = None
+
+
+_NO_OWNER = _ZipOwner(None)
+
+
+def _zip_owner(extra: bytes, tags: frozenset[int] = _ALL_OWNER_TAGS) -> _ZipOwner:
+    """The owner ids ``extra`` records, read as unzip 6.00 reads them.
+
+    The highest level present decides (see ``_OWNER_TAG_INFOZIP_NEW_UNIX``), and when
+    its field cannot be read the member has no owner, as unzip gives it none: a damaged
+    field does not hand over to a lower one. A ``0x7855`` with no data or a ``0x5855``
+    with only its two times is the central directory's normal copy and counts as
+    absent. Only ``tags`` are looked at. No ZIP field records the owner's names.
     """
     if not extra:
-        return None
-    found: dict[int, bytes] = {}
+        return _NO_OWNER
+    new_unix: ExtraField | None = None
+    unix2: ExtraField | None = None
+    legacy: ExtraField | None = None
     for field in iter_extra_fields(extra):
-        if field.tag in _OWNER_TAGS and field.tag not in found:
-            found[field.tag] = field.data
-    for tag in _OWNER_TAGS:
-        data = found.get(tag)
-        if data is None:
+        tag = field.tag
+        if tag not in tags:
             continue
         if tag == _OWNER_TAG_INFOZIP_NEW_UNIX:
-            owner = _new_unix_owner(data)
+            if new_unix is None:
+                new_unix = field
         elif tag == _OWNER_TAG_INFOZIP_UNIX2:
-            owner = struct.unpack_from("<HH", data) if len(data) >= 4 else None
-        elif len(data) >= 12:
-            # PKWARE and the old Info-ZIP field: access and modification times first.
-            owner = struct.unpack_from("<HH", data, 8)
-        else:
-            owner = None
-        if owner is not None:
-            return owner[0], owner[1]
-    return None
+            if unix2 is None and field.data:
+                unix2 = field
+        elif tag != _OWNER_TAG_INFOZIP_OLD_UNIX or len(field.data) != 8:
+            legacy = field
+    if new_unix is not None:
+        return _new_unix_owner(new_unix)
+    deciding = unix2 if unix2 is not None else legacy
+    if deciding is None:
+        return _NO_OWNER
+    at = 0 if deciding is unix2 else 8
+    if not deciding.complete:
+        return _ZipOwner(None, (deciding.tag, "cut_short"))
+    if len(deciding.data) < at + 4:
+        return _ZipOwner(None, (deciding.tag, "too_short"))
+    uid, gid = struct.unpack_from("<HH", deciding.data, at)
+    return _ZipOwner((uid, gid))
 
 
-def _new_unix_owner(data: bytes) -> tuple[int, int] | None:
-    """``(uid, gid)`` from an Info-ZIP new Unix field (``0x7875``), or ``None``.
+def _new_unix_owner(field: ExtraField) -> _ZipOwner:
+    """The ids in an Info-ZIP new Unix field (``0x7875``).
 
     Layout: version (1), uid size, uid, gid size, gid, each id little-endian.
     """
-    if len(data) < 3 or data[0] != 1:
-        return None
+    data = field.data
+    tag = field.tag
+    if not field.complete:
+        return _ZipOwner(None, (tag, "cut_short"))
+    if not data:
+        return _ZipOwner(None, (tag, "too_short"))
+    if data[0] != 1:
+        return _NO_OWNER
+    if len(data) < 3:
+        return _ZipOwner(None, (tag, "too_short"))
     uid_size = data[1]
     gid_at = 2 + uid_size
-    if not 0 < uid_size <= _MAX_OWNER_ID_BYTES or gid_at >= len(data):
-        return None
+    if gid_at >= len(data):
+        return _ZipOwner(None, (tag, "too_short"))
     gid_size = data[gid_at]
     end = gid_at + 1 + gid_size
-    if not 0 < gid_size <= _MAX_OWNER_ID_BYTES or end > len(data):
-        return None
+    if end > len(data):
+        return _ZipOwner(None, (tag, "too_short"))
+    if not (
+        0 < uid_size <= _MAX_OWNER_ID_BYTES and 0 < gid_size <= _MAX_OWNER_ID_BYTES
+    ):
+        return _ZipOwner(None, (tag, "id_size"))
     uid = int.from_bytes(data[2:gid_at], "little")
     gid = int.from_bytes(data[gid_at + 1 : end], "little")
-    return uid, gid
+    return _ZipOwner((uid, gid))
 
 
 def _zip_created(
@@ -1657,8 +1702,8 @@ class ZipReader(BaseArchiveReader):
         if mode is not None:
             member.mode = mode
         owner = _zip_owner(entry.extra)
-        if owner is not None:
-            member.uid, member.gid = owner
+        if owner.ids is not None:
+            member.uid, member.gid = owner.ids
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         if entry.comment:
@@ -1707,6 +1752,27 @@ class ZipReader(BaseArchiveReader):
                     record="unicode_path",
                     record_id=_ZIP_EXTRA_UNICODE_PATH,
                     reason=unicode_extra_fault,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
+        if owner.fault is not None:
+            owner_tag, owner_fault = owner.fault
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"The Unix owner extra field (0x{owner_tag:04x}) of ZIP member "
+                    f"{quoted(member.name)} is malformed and was dropped "
+                    f"({owner_fault}); the member has no owner ids."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="unix_owner",
+                    record_id=owner_tag,
+                    reason=owner_fault,
                 ),
                 member=member,
                 attach_to_member=True,

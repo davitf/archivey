@@ -66,6 +66,7 @@ from archivey.internal.backends.zip_parser import (
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
     _UNCONFIRMED_PASSWORD_FAILURE,
+    _ZIP_CENTRAL_OWNER_TAGS,
     _ZIP_COMPRESSION_ALGOS,
     _ZIP_COMPRESSION_TUPLES,
     _ZIP_KEYED_SETTINGS_METHODS,
@@ -1730,9 +1731,10 @@ class ZipForwardReader(ZipReader):
             and not (aes_info is not None and aes_info.is_ae2)
             else {}
         )
-        # The local header's owner field may differ from the directory's (Info-ZIP's
-        # 16-bit field is in local headers only); the directory's replaces it at the end.
-        uid, gid = _zip_owner(header.extra) or (None, None)
+        # Only the owner fields the directory also carries, so the pass never yields
+        # an owner the directory takes back: extraction applies it as it writes the
+        # member, and nothing can undo a chown at the end of the pass.
+        uid, gid = _zip_owner(header.extra, _ZIP_CENTRAL_OWNER_TAGS).ids or (None, None)
         return ArchiveMember(
             type=member_type,
             name=name,

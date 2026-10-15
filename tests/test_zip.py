@@ -25,6 +25,7 @@ from archivey import (
     CompressionAlgorithm,
     DiagnosticCode,
     DiagnosticPolicy,
+    ExtractionPolicy,
     ExtractionStatus,
     MemberType,
     open_archive,
@@ -657,8 +658,19 @@ def _owner_seen(data: bytes) -> tuple[tuple[int | None, int | None], ...]:
 
 
 _NEW_UNIX_4 = struct.pack("<HHBBIBI", 0x7875, 11, 1, 4, 1234, 4, 5678)
+_UNIX2 = struct.pack("<HHHH", 0x7855, 4, 1234, 5678)
 
 
+def _pkware_unix(uid: int, gid: int) -> bytes:
+    return struct.pack("<HHIIHH", 0x000D, 12, 0, 0, uid, gid)
+
+
+def _old_unix(uid: int, gid: int) -> bytes:
+    return struct.pack("<HHIIHH", 0x5855, 12, 0, 0, uid, gid)
+
+
+# Each expected owner was checked against unzip 6.00 (`unzip -X` as root) on the same
+# extra blob in a local header, except where a case says it is central-only.
 @pytest.mark.parametrize(
     ("extra", "owner"),
     [
@@ -668,42 +680,28 @@ _NEW_UNIX_4 = struct.pack("<HHBBIBI", 0x7875, 11, 1, 4, 1234, 4, 5678)
             (1234, 2**40),
             id="new-unix-mixed-widths",
         ),
+        pytest.param(_pkware_unix(1234, 5678), (1234, 5678), id="pkware-unix"),
         pytest.param(
-            struct.pack("<HHHH", 0x7855, 4, 1234, 5678), (1234, 5678), id="unix-type-2"
+            _pkware_unix(1, 2) + _NEW_UNIX_4, (1234, 5678), id="new-unix-beats-pkware"
         ),
         pytest.param(
-            struct.pack("<HHIIHH", 0x000D, 12, 0, 0, 1234, 5678),
-            (1234, 5678),
-            id="pkware-unix",
-        ),
-        pytest.param(
-            struct.pack("<HHIIHH", 0x5855, 12, 0, 0, 1234, 5678),
-            (1234, 5678),
-            id="old-unix",
-        ),
-        pytest.param(
-            # PKWARE first in the blob, but Info-ZIP's new field takes precedence.
-            struct.pack("<HHIIHH", 0x000D, 12, 0, 0, 1, 2) + _NEW_UNIX_4,
-            (1234, 5678),
-            id="new-unix-beats-pkware",
-        ),
-        pytest.param(
-            # An unreadable new Unix field falls through to the next owner field.
-            struct.pack("<HHBBIBI", 0x7875, 11, 2, 4, 1, 4, 2)
-            + struct.pack("<HHHH", 0x7855, 4, 1234, 5678),
-            (1234, 5678),
-            id="unknown-version-falls-through",
-        ),
-        pytest.param(
-            struct.pack("<HHBB9sB", 0x7875, 12, 1, 9, b"\x01" * 9, 0),
+            # A new Unix field of another version is not one this reader knows, and
+            # it still decides: unzip gives no owner rather than the next field's.
+            struct.pack("<HHBBIBI", 0x7875, 11, 2, 4, 1, 4, 2) + _pkware_unix(3, 4),
             (None, None),
-            id="new-unix-id-too-wide",
+            id="unknown-version-decides",
         ),
         pytest.param(
-            struct.pack("<HHBBI", 0x7875, 6, 1, 4, 1234), (None, None), id="no-gid"
+            # The 16-bit Info-ZIP field's central copy is empty, and counts as absent.
+            struct.pack("<HH", 0x7855, 0) + _pkware_unix(1234, 5678),
+            (1234, 5678),
+            id="central-unix2-is-absent",
         ),
         pytest.param(
-            struct.pack("<HHIIH", 0x000D, 10, 0, 0, 1234), (None, None), id="short"
+            # The old Info-ZIP field's central copy holds the two times alone.
+            _pkware_unix(1234, 5678) + struct.pack("<HHII", 0x5855, 8, 0, 0),
+            (1234, 5678),
+            id="central-old-unix-is-absent",
         ),
         pytest.param(b"", (None, None), id="no-extra"),
     ],
@@ -711,28 +709,131 @@ _NEW_UNIX_4 = struct.pack("<HHBBIBI", 0x7875, 11, 1, 4, 1234, 4, 5678)
 def test_unix_owner_extra_fields(
     extra: bytes, owner: tuple[int | None, int | None]
 ) -> None:
-    # Info-ZIP's zip writes 0x7875 on Unix by default; the other fields come from older
-    # Info-ZIP versions and PKWARE. No ZIP field records owner names.
+    # Info-ZIP's zip writes 0x7875 on Unix by default; 0x000d comes from PKWARE. No
+    # ZIP field records owner names.
     data = _zip_with_extra(extra)
     assert _owner_seen(data) == (owner, owner)
     with open_archive(io.BytesIO(data)) as ar:
         member = ar.get("owned.txt")
         assert member.uname is None
         assert member.gname is None
+        assert member.diagnostics == ()
 
 
-def test_local_only_owner_is_replaced_by_the_directory() -> None:
-    # Info-ZIP's 16-bit field is in local headers only. The pipe pass gives the local
-    # header's owner while it walks, and the directory's (none here) once it has read
-    # it, so the end state matches a file read.
-    field = struct.pack("<HHHH", 0x7855, 4, 1234, 5678)
+@pytest.mark.parametrize(
+    ("extra", "owner"),
+    [
+        pytest.param(_UNIX2, (1234, 5678), id="unix-type-2"),
+        pytest.param(_old_unix(1234, 5678), (1234, 5678), id="old-unix"),
+        pytest.param(
+            _pkware_unix(1, 2) + _UNIX2, (1234, 5678), id="unix2-beats-pkware"
+        ),
+        pytest.param(
+            _UNIX2 + struct.pack("<HHBBIBI", 0x7875, 11, 1, 4, 11, 4, 12),
+            (11, 12),
+            id="new-unix-beats-unix2",
+        ),
+        pytest.param(
+            _pkware_unix(1, 2) + _old_unix(5, 6), (5, 6), id="pkware-then-old-unix"
+        ),
+        pytest.param(
+            _old_unix(5, 6) + _pkware_unix(1, 2), (1, 2), id="old-unix-then-pkware"
+        ),
+    ],
+)
+def test_local_only_owner_fields_are_read_from_a_writer_that_copies_them(
+    extra: bytes, owner: tuple[int, int]
+) -> None:
+    # A writer that copies the 16-bit Info-ZIP fields into the directory too gets them
+    # read there. The pipe pass does not read them from the local header (see
+    # test_local_only_owner_is_not_yielded_by_the_pass), so only the file read and the
+    # end of the pass are compared.
+    data = _zip_with_extra(extra)
+    with open_archive(io.BytesIO(data)) as ar:
+        assert (ar.get("owned.txt").uid, ar.get("owned.txt").gid) == owner
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        (final,) = [member for member, _ in ar.stream_members()]
+    assert (final.uid, final.gid) == owner
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        pytest.param(
+            struct.pack("<HHBBIB", 0x7875, 11, 1, 4, 1234, 4) + b"\x2e\x16",
+            "cut_short",
+            id="new-unix-cut-short",
+        ),
+        pytest.param(
+            struct.pack("<HHBBI", 0x7875, 6, 1, 4, 1234), "too_short", id="no-gid"
+        ),
+        pytest.param(
+            struct.pack("<HHBB9sBI", 0x7875, 16, 1, 9, b"\x01" * 9, 4, 2),
+            "id_size",
+            id="new-unix-id-too-wide",
+        ),
+        pytest.param(
+            struct.pack("<HHIIH", 0x000D, 10, 0, 0, 1234),
+            "too_short",
+            id="pkware-short",
+        ),
+        pytest.param(
+            # A damaged 16-bit field still outranks PKWARE's: unzip gives no owner.
+            struct.pack("<HHH", 0x7855, 2, 3) + _pkware_unix(1, 2),
+            "too_short",
+            id="unix2-short",
+        ),
+    ],
+)
+def test_damaged_owner_field_is_dropped_with_a_diagnostic(
+    field: bytes, reason: str
+) -> None:
     data = _zip_with_extra(field)
-    central_at = data.rindex(field)
-    data = data[:central_at] + struct.pack("<H", 0x1234) + data[central_at + 2 :]
+    with open_archive(io.BytesIO(data)) as ar:
+        member = ar.get("owned.txt")
+        assert (member.uid, member.gid) == (None, None)
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+    assert diagnostic.context.record == "unix_owner"
+    assert diagnostic.context.record_id == struct.unpack_from("<H", field)[0]
+    assert diagnostic.context.reason == reason
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(io.BytesIO(data), config=strict) as ar:
+            ar.members()
+
+
+def _local_only_owner_zip() -> bytes:
+    """A ZIP whose local header has a 16-bit Info-ZIP owner and whose directory has none."""
+    data = _zip_with_extra(_UNIX2)
+    central_at = data.rindex(_UNIX2)
+    return data[:central_at] + struct.pack("<H", 0x1234) + data[central_at + 2 :]
+
+
+def test_local_only_owner_is_not_yielded_by_the_pass() -> None:
+    # The pass reads only the owner fields a directory entry also carries, so it never
+    # yields an owner the directory would take back: extraction applies the owner as
+    # it writes the member, and a chown cannot be undone at the end of the pass.
+    data = _local_only_owner_zip()
     with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
         during = [(m.uid, m.gid) for m, _ in ar.stream_members()]
-    assert during == [(1234, 5678)]
+    assert during == [(None, None)]
     assert _owner_seen(data) == ((None, None), (None, None))
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="chown to another uid needs root",
+)
+@pytest.mark.parametrize("piped", [False, True], ids=["file", "pipe"])
+def test_trusted_as_root_owner_matches_from_a_pipe(tmp_path: Path, piped: bool) -> None:
+    data = _local_only_owner_zip()
+    source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+    dest = tmp_path / "out"
+    with open_archive(source, streaming=piped) as ar:
+        ar.extract_all(dest, policy=ExtractionPolicy.TRUSTED)
+    st = (dest / "owned.txt").stat()
+    assert (st.st_uid, st.st_gid) == (os.geteuid(), os.getegid())
 
 
 @requires_binary("zip")
