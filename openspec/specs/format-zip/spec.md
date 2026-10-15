@@ -505,8 +505,8 @@ SHALL behave as a file read: the same members, data, reports and files on disk.
 | Local name `Patag\x93nia.mp3`, directory `Patag\xf4nia.mp3` | Reads; the member's name from the directory; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="name"`) when its data is read |
 | Local name `crack\`, directory `crack/`, with or without declared data | A directory, `crack/`; no report |
 | Directory `crack/` declaring data, its CRC-32 0, the local CRC-32 right | `DIGEST_UNVERIFIABLE` and `MEMBER_DIRECTORY_DATA_IGNORED`, from a file and a pipe alike |
-| Directory CRC-32 0, local CRC-32 right | Listed with the local CRC-32 in `hashes`; reads; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="crc32"`) at listing |
-| Directory CRC-32 0, local CRC-32 wrong, or 0 in both | `CorruptionError` when read |
+| Central CRC-32 0, local CRC-32 right | Listed with the local CRC-32 in `hashes`; reads; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="crc32"`) at listing |
+| Central CRC-32 0, local CRC-32 wrong, or 0 in both | `CorruptionError` when read |
 | Either of the first and third under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` |
 | Both headers declare 3.5% less than the data decodes to | `CorruptionError` ("exceeds its declared size") |
 

@@ -934,7 +934,7 @@ def test_zipcrypto_stage_matches_stdlib() -> None:
 def test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc(
     piped: bool,
 ) -> None:
-    """Without bit 3 the ZipCrypto check byte is the CRC-32's high byte. A directory
+    """Without bit 3 the ZipCrypto check byte is the CRC-32's high byte. A central
     CRC-32 of 0 the local header's replaces gives the check byte too, so the right
     password is accepted."""
     blob = bytearray(build_zipcrypto_zip(RIGHT, NAME.encode(), DATA))

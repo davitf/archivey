@@ -1,7 +1,7 @@
 # What a scan of a real backup drive found
 
-**Status:** six defects reproduced with synthetic inputs and pinned as `xfail(strict=True)`
-in `tests/test_audit_backup_scan.py`. Three of them needed a maintainer decision
+**Status:** six defects reproduced with synthetic inputs and pinned by tests in
+`tests/test_audit_backup_scan.py`. Three of them needed a maintainer decision
 (§3.3-§3.5): two are now read with a diagnostic and the third stays refused.
 The other failures were checked against `unzip`, `unrar`, 7-Zip and `xz` on the original
 files (§5). The scan script's decoder-memory column is fixed (§2).
@@ -97,11 +97,11 @@ does not cover them.
 ### 3.3-3.5 ZIP: the two copies of a member's header disagree (decisions)
 
 A ZIP stores most of a member's header twice: in the central directory and in the local
-header before the data. Archivey reads everything from the central directory. In three
-cases below it refuses a member that `unzip` reads, because the two copies, or the
-declared size and the data, disagree. Each case needs a decision rather than a fix:
-each check also catches real corruption, and a header mismatch is a known spoofing shape
-for tools that trust the local header.
+header before the data. Archivey reads everything from the central directory. At scan
+time it refused a member that `unzip` reads in the three cases below, because the two
+copies, or the declared size and the data, disagree. Each case needed a decision rather
+than a fix: each check also catches real corruption, and a header mismatch is a known
+spoofing shape for tools that trust the local header.
 
 | | Disagreement | Seen | `unzip` | 7-Zip | Pinned by |
 | --- | --- | --- | --- | --- | --- |
@@ -109,8 +109,8 @@ for tools that trust the local header.
 | 3.4 | CRC: central 0, local right | 6 Adobe AIR packages, `META-INF/AIR/hash` | passes (checks the local CRC) | headers error | `test_zero_central_crc_with_a_right_local_crc_reads` |
 | 3.5 | Size: both headers about 3.5% under the decoded size; CRC matches the full output | 1 archive (two copies), 12 deflated MP3s | passes (ignores the size) | CRC errors | `test_understated_size_with_a_matching_crc_is_refused` |
 
-3.3 is refused by `ZipReader._local_data_region`, as stdlib `zipfile` does, and
-`dev-docs/formats/zip.md` documents the comparison. In 3.4 the AIR packager writes the
+At scan time 3.3 was refused by `ZipReader._local_data_region`, as stdlib `zipfile`
+refuses it. In 3.4 the AIR packager writes the
 hash file after its central entry was made. In 3.5 the declared size is the bound that
 stops a member from decoding past it, so honouring the CRC means decoding past the
 declared size first; the extraction limits (`max_ratio`, `max_extracted_bytes`) would

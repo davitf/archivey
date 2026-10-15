@@ -45,8 +45,8 @@ them.
 archivey takes every member field from the CDH and reads the LFH only to locate the data
 (§2.3). Two exceptions read the LFH for more. When the two copies of the name differ, as
 bytes, the member keeps the CDH's name and reports `MEMBER_LOCAL_HEADER_DIFFERS`; stdlib
-refused it. When the CDH stores CRC-32 0 for a file and the LFH a real value, the LFH's
-is the member's CRC-32, reported the same way (§5).
+refused it. When the CDH stores CRC-32 0 for a file or link that is not WinZip AE-2 and
+the LFH a real value, the LFH's is the member's CRC-32, reported the same way (§5).
 
 **The index is at the end.** The central directory is authoritative and is found by
 scanning backwards from the last bytes for the EOCD. So:
@@ -959,7 +959,7 @@ move.
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass; ZipCrypto over Zstd; ZipCrypto seeks; stage output equals stdlib's | `tests/test_zip_multipassword.py` |
 | The STORED CRC pass reads through the same validated local header as the open, so it never runs over a member the open refuses | `tests/test_zip_multipassword.py::test_stored_confirm_reads_through_the_validated_local_header` |
-| A local name that differs from the directory's, and a directory CRC-32 of 0 under a right local one, read with `MEMBER_LOCAL_HEADER_DIFFERS` from a file and a pipe, strict refusing; a wrong local CRC-32 and 0 in both still fail; both headers understating the size stays refused | `tests/test_audit_backup_scan.py::test_local_name_in_another_codepage_still_reads` and the tests after it, `tests/test_zip_pipe.py::test_a_name_that_differs_between_the_two_headers_takes_the_directory_name`, `tests/test_zip_pipe_extract.py::test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name`, `tests/test_zip_multipassword.py::test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc` |
+| A local name that differs from the directory's, and a central CRC-32 of 0 under a right local one, read with `MEMBER_LOCAL_HEADER_DIFFERS` from a file and a pipe, strict refusing; a wrong local CRC-32 and 0 in both still fail; both headers understating the size stays refused | `tests/test_audit_backup_scan.py::test_local_name_in_another_codepage_still_reads` and the tests after it, `tests/test_zip_pipe.py::test_a_name_that_differs_between_the_two_headers_takes_the_directory_name`, `tests/test_zip_pipe_extract.py::test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name`, `tests/test_zip_multipassword.py::test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc` |
 | WinZip AES seeks at every block phase and backward; the HMAC survives seeks, including over bytes a seek skipped and on a `read(n)` ending exactly at the end; a partial read after a seek has no verdict | `tests/test_zip_aes.py::test_aes_decrypt_stream_seeks_at_every_block_phase`, `::test_aes_decrypt_stream_seeks_keep_the_hmac`, `::test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac`, `::test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped`, `::test_aes_decrypt_stream_partial_read_after_seek_has_no_verdict`, `::test_aes_member_seeks`, `tests/test_member_stream_contract.py` (`zip-aes` rows) |
 | A tampered AE-2 DEFLATE member still raises under rapidgzip's own seeks (`AUTO` and `ON`, one password and two) | `tests/test_zip_aes.py::test_aes_hmac_survives_a_seekable_accelerator` |
 | A lone ZipCrypto password that passed the check byte: a partial read is reported unverified, a read to EOF and extraction are not; a forward seek on a compressed member raises the password-or-damage error, and a seek on a STORED one is reported as `seek` | `tests/test_encrypted_member_unverified.py`, `tests/test_zip_multipassword.py::test_single_colliding_password_fails_a_forward_seek`, `::test_single_colliding_password_stored_seek_reports_unverified` |
