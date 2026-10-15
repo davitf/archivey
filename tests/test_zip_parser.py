@@ -29,6 +29,7 @@ from archivey.internal.backends.zip_parser import (
     EntryOverrun,
     ReadAt,
     find_end_record,
+    local_name_at,
     read_local_header,
 )
 from tests.corruption_util import raises_corruption_not_truncation
@@ -242,6 +243,24 @@ def test_zip64_extra_field_supplies_a_deferred_offset() -> None:
     assert _assert_matches_zipfile(data)
     _end, entries, _walk = _parse(data)
     assert entries[1].header_offset == second_offset
+
+
+def test_a_huge_zip64_compressed_size_does_not_stall_the_offset_correction() -> None:
+    """A classic archive whose first entry declares a ZIP64 compressed size near 2⁶⁴:
+    the second entry's offset falls below that end, and the correction counts the 2³²
+    steps instead of taking them one at a time (about 2³² of them here)."""
+    plain = _zip({"a.txt": b"hello", "b.txt": b"world"})
+    extra = struct.pack("<HHQ", 0x0001, 8, (1 << 64) - 2)
+    data = _with_central_extra(plain, 0, extra, compressed_size=0xFFFF_FFFF)
+    read_at = _read_at(data)
+    end = find_end_record(read_at, len(data))
+    walk = CentralDirectoryWalk(
+        read_at, end, local_name_at=lambda offset: local_name_at(read_at, offset)
+    )
+    entries = list(walk)
+    assert entries[0].compressed_size == (1 << 64) - 2
+    assert [e.offset_correction for e in entries] == [0, 0]
+    assert entries[1].header_offset == plain.index(b"PK\x03\x04", 1)
 
 
 def test_zip64_extra_field_order_is_uncompressed_compressed_offset() -> None:

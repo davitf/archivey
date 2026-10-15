@@ -797,6 +797,23 @@ is a real sample; the CRC is verified on AE-1 and absent on AE-2 (§2.3).
 ZIP64 is not exotic. A central directory of 70 000 entries lists correctly, through the
 ZIP64 end record or, without one, as a classic count modulo 65 536 (§2.2).
 
+**macOS writes ZIPs past 4 GiB without ZIP64.** Archive Utility (Finder's Compress,
+`ditto -c -k`) keeps the classic records and stores every offset modulo 2³², the end
+record's offset of the directory included; the producer markers are version made by
+Unix 2.1, the old Info-ZIP `UX` extra field (`0x5855`) and data descriptors with
+signatures. A 4.9 GB backup in the scan had 261 of its 2 122 offsets off by exactly
+2³², and 7-Zip and stdlib cannot open it
+([`investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md)
+§4). One rule recovers every offset, and `CentralDirectoryWalk` applies it: the
+members lie in directory order, so an offset below the end of a member before it gets
+2³² added until it is not. The wrapped directory offset shows up as a stub length
+(`base`) 2³² too large, so the walk takes `base` modulo 2³². Each correction needs a
+local header with the entry's name at the corrected offset, so a ZIP under 4 GiB
+whose directory is out of file order is untouched (the corrected offset would be past
+the directory, and nothing is read there). `ARCHIVE_OFFSET_WRAPPED` records each one.
+A member over 4 GiB in such an archive stays unread: its sizes wrap too, and only a
+real archive from a current Mac would show what to do about them.
+
 ## 4. Threat surface
 
 ZIP-specific only. General extraction and name hazards are §2.4.
@@ -846,6 +863,7 @@ ours.
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a forward seek in a STORED ZipCrypto member, no CRC checks it, and a wrong password that passed the check byte goes unnoticed | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order. A seek back keeps it, and so does a compressed member's forward seek, whose skipped bytes the verifier reads and hashes (ADR 0014, since 2026-10-10). A STORED member's forward seek jumps, so a read past it gives the CRC up and returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
+| A ZIP over 4 GiB written without ZIP64 (macOS Archive Utility) reads, with an `ARCHIVE_OFFSET_WRAPPED` per corrected offset, which `STRICT` refuses; a member over 4 GiB in it does not | **format** | The writer stores offsets modulo 2³². The walk adds 2³² to an offset below the previous member's end and keeps it only when a local header with the member's name is there (§3). Sizes wrap too, and nothing says by how much, so a single member over 4 GiB stays out until a real archive settles it |
 | A ZIP with a digital signature record (`PK\x05\x05`, APPNOTE 4.3.13) between its directory and its end record is refused with `CorruptionError` ("Bad magic number") | **archivey** | The end record's directory size and offset do not count the record, so its bytes shift where the directory is taken to start, the way prepended data does. stdlib `zipfile` refuses it the same way, and a read from a pipe matches the file read. Few writers produce the record; reading past it is not planned |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
