@@ -39,6 +39,7 @@ from archivey.internal.streams import verify
 from archivey.types import HashAlgorithm, MemberType
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.test_rar_owner import OWNER_IDS_RAR5
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -52,6 +53,7 @@ _XTYPE_HASH = 2
 _XTYPE_TIME = 3
 _XTYPE_VERSION = 4
 _XTYPE_REDIR = 5
+_XTYPE_OWNER = 6
 
 
 class _Record:
@@ -292,6 +294,21 @@ def test_a_short_version_record_does_not_promote_a_stale_revision(
         )
         damaged = next(m for m in members if m.diagnostics)
         assert damaged.name == "file.txt" and not damaged.is_current
+
+
+def test_a_short_owner_record_lists_the_member_without_an_owner() -> None:
+    """The owner record holds nothing a read depends on, so it drops like the rest."""
+    record = _only_record(OWNER_IDS_RAR5, _XTYPE_OWNER)
+    data = _shrink_record(OWNER_IDS_RAR5, record, new_size=3)
+    with open_archive(io.BytesIO(data)) as archive:
+        (member,) = archive.members()
+        assert (member.uid, member.gid) == (None, None)
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert isinstance(diagnostic.context, MemberHeaderRecordContext)
+        assert diagnostic.context.record == "owner"
+        assert diagnostic.context.record_id == _XTYPE_OWNER
+        assert archive.read(member) == b"hi\n"
 
 
 def _zero_extra_area(data: bytes) -> bytes:

@@ -70,6 +70,7 @@ from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
     _RAR3_M0,
     _RAR5_XREDIR_REPARSE_POINTS,
+    RAR3_UOW_NAME,
     RAR5_ID,
     RAR5_UNPLACED_BYTES,
     RAR_ID,
@@ -78,6 +79,7 @@ from archivey.internal.backends.rar_parser import (
     RarEncryptionInfo,
     RarKdfCache,
     RarMemberInfo,
+    RarOwner,
     _check_rar5_password,
     _Rar3Comment,
     _rar5_redirect_target,
@@ -1138,6 +1140,10 @@ _SERVICE_PAYLOAD_LOST = {
     "CMT": "the archive comment",
     "QO": "the quick-open index",
 }
+
+
+# A member with no owner record: all four owner fields ``None``.
+_NO_OWNER = RarOwner(None, None, None, None)
 
 
 class RarReader(BaseArchiveReader):
@@ -2560,9 +2566,10 @@ class RarReader(BaseArchiveReader):
         weighs every member of the final list again (``header_metadata_bytes``) and
         adds the archive comment, before any comment is decoded. It recomputes rather
         than reading the walk's running total because that total is kept per list and
-        a comment can reach a member after it was weighed: a RAR 1.5-4 ``CMT`` service
-        header attaches its comment to the member before it (``_parse_rar3``), and a
-        split member's parts merge after each volume weighed its own list.
+        a comment or owner can reach a member after it was weighed: a RAR 1.5-4
+        ``CMT`` or ``UOW`` service header attaches its comment or owner to the member
+        before it (``_parse_rar3``), and a split member's parts merge after each
+        volume weighed its own list.
 
         Each compressed comment expands to up to 64 KiB (256 KiB for a RAR 2.9-4
         ``CMT`` header), and ``max_members`` alone lets one archive carry a million
@@ -2677,6 +2684,7 @@ class RarReader(BaseArchiveReader):
             elif host_os == _RAR_HOST_OS_WIN32:
                 windows_attrs = info.mode & 0xFFFFFFFF
 
+        owner = info.owner if info.owner is not None else _NO_OWNER
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -2688,6 +2696,10 @@ class RarReader(BaseArchiveReader):
             created=_rar_created(info),
             ctime=_rar_ctime(info),
             mode=mode,
+            uid=owner.uid,
+            gid=owner.gid,
+            uname=owner.uname,
+            gname=owner.gname,
             compression=_compression_for(info),
             # Fails closed: a member whose header stopped before the encryption
             # record could be ruled out is presented as encrypted. Answering
@@ -3204,7 +3216,8 @@ class RarReader(BaseArchiveReader):
         member: ArchiveMember | None,
         member_id: int | None = None,
     ) -> None:
-        """Report what a RAR5 extra-area walk dropped, and why it stopped.
+        """Report what a RAR5 extra-area walk dropped, and why it stopped, and a
+        RAR 1.5-4 ``UOW`` owner header that held no owner.
 
         ``member`` is ``None`` for a SERVICE header (``CMT``, ``QO``), which is not
         a listed member and so has nothing to attach to. It still comes through
@@ -3234,6 +3247,11 @@ class RarReader(BaseArchiveReader):
                     if member is not None
                     else f"This archive's {name} service header has {reason}, "
                     "which no writer leaves; they were not read."
+                )
+            elif record == RAR3_UOW_NAME:
+                message = (
+                    f"This member's RAR 1.5-4 UOW owner header has {reason}, so "
+                    "unrar applies no owner from it; the member is listed without one."
                 )
             elif member is not None:
                 message = (

@@ -45,7 +45,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import pbkdf2_hmac
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, NamedTuple, Protocol
 
 from archivey.config import ListingLimits
 from archivey.exceptions import (
@@ -108,6 +108,11 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 # header's fixed fields and its declared extra area. They are not a record, so the
 # reader words that diagnostic on its own.
 RAR5_UNPLACED_BYTES = "unplaced bytes"
+# RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``),
+# and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
+# no NUL, which ``unrar`` applies no owner from.
+RAR3_UOW_NAME = "UOW"
+RAR3_UOW_NO_NUL = "no NUL in its owner data"
 # SERVICE headers (``CMT``, ``QO``) are not members, so ``max_members`` never
 # counts them and a damaged one is retained for the reader to report. Both halves
 # of that are attacker-controlled: a 3.4 MB archive of nothing but damaged SERVICE
@@ -264,6 +269,12 @@ _RAR5_XTIME_UNIXTIME_NS = 0x10
 
 _RAR5_XHASH_BLAKE2SP = 0
 
+# FHEXTRA_UOWNER flags: which of the four owner fields follow, in this order.
+_RAR5_XOWNER_UNAME = 0x01
+_RAR5_XOWNER_GNAME = 0x02
+_RAR5_XOWNER_UID = 0x04
+_RAR5_XOWNER_GID = 0x08
+
 _RAR5_XREDIR_UNIX_SYMLINK = 1
 _RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
@@ -353,6 +364,15 @@ class _Rar3Comment:
     utf16: bool = False
 
 
+class RarOwner(NamedTuple):
+    """A RAR5 owner record: names and numeric ids, each optional."""
+
+    uname: str | None
+    gname: str | None
+    uid: int | None
+    gid: int | None
+
+
 @dataclass(slots=True)
 class RarMemberInfo:
     filename: str
@@ -423,13 +443,14 @@ class RarMemberInfo:
     # A RAR 1.5-4 8-bit name, with no Unicode flag, that decoded as UTF-8 where the
     # caller's ``encoding=`` would have given a different name.
     rar3_utf8_over_encoding: bool = False
-    # RAR5 FHEXTRA records that were malformed and dropped, as
-    # ``(record_name, record_type, reason)``. Empty for every well-formed archive,
-    # and the shared empty tuple keeps that case at one slot rather than an object:
-    # the listing bound is expressed in members, so per-member retained bytes are
-    # load-bearing. Capped at ``_MAX_SKIPPED_HEADER_RECORDS`` so a crafted extra
-    # area cannot retain one tuple per attacker byte. The reader turns each entry
-    # into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
+    # RAR5 FHEXTRA records that were malformed and dropped, and a RAR 1.5-4 ``UOW``
+    # header after the member with no owner in it, as ``(record_name, record_type,
+    # reason)``. Empty for every well-formed archive, and the shared empty tuple
+    # keeps that case at one slot rather than an object: the listing bound is
+    # expressed in members, so per-member retained bytes are load-bearing. Capped at
+    # ``_MAX_SKIPPED_HEADER_RECORDS`` so a crafted extra area cannot retain one tuple
+    # per attacker byte, and at one ``UOW`` entry per member. The reader turns each
+    # entry into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
     skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
     # Why the extra-area walk gave up with area still unread, in the words the
     # diagnostic uses, or ``None`` when the header was read to the end. The list
@@ -440,6 +461,11 @@ class RarMemberInfo:
     # turns each into a ``MEMBER_TIMESTAMP_INVALID`` diagnostic. Empty (the shared
     # tuple) for every well-formed header.
     timestamp_issues: tuple[TimestampIssue, ...] = ()
+    # The owner ``rar -ow`` stores: ``(uname, gname, uid, gid)``, each ``None`` when
+    # the record leaves it out. RAR5 reads it from the file header's owner record;
+    # RAR 1.5-4 from the ``UOW`` service header after the file, which the walk
+    # attaches to the member before it. ``None`` when there is no owner record.
+    owner: RarOwner | None = None
 
     @property
     def skipped_header_records_truncated(self) -> bool:
@@ -957,13 +983,17 @@ def header_metadata_bytes(member: RarMemberInfo) -> int:
     registration weighs the normalized one, which can be shorter (``a/./b`` lists as
     ``a/b``), so a name normalization shortens weighs a little more here. A RAR5 name
     has no stored bytes of its own, and its length stands for its UTF-8 bytes, which
-    are at least that many. The comment counts per :func:`comment_metadata_bytes`.
+    are at least that many. The owner's user and group names (RAR5 owner record,
+    RAR 1.5-4 ``UOW`` header) count as ``uname`` and ``gname`` do. The comment
+    counts per :func:`comment_metadata_bytes`.
     """
     filename = member.filename
     raw = member.orig_filename
     total = text_bytes(filename) + (len(raw) if raw is not None else len(filename))
     if member.file_redir is not None:
         total += text_bytes(_rar5_redirect_target(member.file_redir))
+    if member.owner is not None:
+        total += text_bytes(member.owner.uname) + text_bytes(member.owner.gname)
     return total + comment_metadata_bytes(member.comment)
 
 
@@ -1675,6 +1705,34 @@ def _decode_rar3_8bit_name(raw: bytes, *, host_os: int, encoding: str | None) ->
     return raw.decode(fallback, "surrogateescape")
 
 
+def _add_skipped_uow(
+    member: RarMemberInfo, records: tuple[tuple[str, int | None, str], ...]
+) -> None:
+    """Record a dropped RAR 1.5-4 ``UOW`` header on the file it follows.
+
+    Kept only while the member has no owner, so the report ("listed without one")
+    is true whenever it is there: a writer puts one ``UOW`` after a file, and with
+    several, ``unrar`` applies the owner of any that names one. A stack of headers
+    with no owner retains one entry.
+    """
+    if (
+        records
+        and member.owner is None
+        and not any(r[0] == RAR3_UOW_NAME for r in member.skipped_header_records)
+    ):
+        member.skipped_header_records += records[:1]
+
+
+def _set_uow_owner(member: RarMemberInfo, owner: RarOwner) -> None:
+    """Give ``member`` the owner a ``UOW`` header names, dropping any report of an
+    earlier ``UOW`` header that named none (see :func:`_add_skipped_uow`)."""
+    member.owner = owner
+    if member.skipped_header_records:
+        member.skipped_header_records = tuple(
+            r for r in member.skipped_header_records if r[0] != RAR3_UOW_NAME
+        )
+
+
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
 
@@ -1710,6 +1768,12 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
         old.crc32 = new.crc32
     if new.blake2sp_hash is not None:
         old.blake2sp_hash = new.blake2sp_hash
+    # RAR 1.5-4 writes a member's UOW header after its last part.
+    if new.owner is not None:
+        _set_uow_owner(old, new.owner)
+    _add_skipped_uow(
+        old, tuple(r for r in new.skipped_header_records if r[0] == RAR3_UOW_NAME)
+    )
     old.split_after = new.split_after
     old.spanned_volumes = True
 
@@ -2434,6 +2498,23 @@ def _parse_rar3(
                 ):
                     needs_next_volume = True
             elif (
+                block_type == _RAR3_SUB and member.filename == RAR3_UOW_NAME and members
+            ):
+                # ``rar -ow`` writes a UOW header right after the file it describes.
+                # The file was weighed when it was appended, so the names are here.
+                owner = member.owner
+                if owner is None:
+                    _add_skipped_uow(members[-1], member.skipped_header_records)
+                else:
+                    _set_uow_owner(members[-1], owner)
+                    if max_metadata_bytes is not None:
+                        _charge_metadata(
+                            members,
+                            text_bytes(owner.uname) + text_bytes(owner.gname),
+                            max_metadata_bytes,
+                            count=len(members),
+                        )
+            elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
                 and not member.is_encrypted
@@ -2562,6 +2643,7 @@ def _parse_rar3_file_header(
         file_size |= h2 << 32
 
     name, pos = _load_bytes(hdata, name_size, pos)
+    name_end = pos
     orig_filename: bytes | None
     unicode_name: str | None = None
     utf8_over_encoding = False
@@ -2660,7 +2742,37 @@ def _parse_rar3_file_header(
         else _RAR3_DICT_BASE << ((flags & _RAR3_DICT_MASK) >> _RAR3_DICT_SHIFT),
         rar3_salt=rar3_salt,
     )
+    if is_service and filename == RAR3_UOW_NAME:
+        # A service header's own data sits between the name and the salt: ``unrar``'s
+        # ``ReadHeader15`` reads it right after the name, as the header's remaining
+        # size less the salt, and reads the salt after it. The generic parse above
+        # reads a salt from right after the name instead, which only a salted
+        # service header with data would notice.
+        sub_end = header_size - (8 if flags & _RAR3_FILE_SALT else 0)
+        member.owner = _parse_rar3_uow(hdata[name_end:sub_end])
+        if member.owner is None:
+            member.skipped_header_records = ((RAR3_UOW_NAME, None, RAR3_UOW_NO_NUL),)
     return member, crc_pos
+
+
+def _parse_rar3_uow(data: bytes) -> RarOwner | None:
+    """The owner a RAR 1.5-4 ``UOW`` service header records: the user name and the
+    group name, each ended by a NUL or the data's end, as ``unrar``'s
+    ``ExtractUnixOwner30`` reads them. With no NUL ``unrar`` applies no owner, and
+    neither is one listed; the walk reports that header as a dropped record, as
+    RAR5 reports an owner record too short for its flags. RAR 3-6 stores names
+    only. Names decode as RAR5's do.
+    """
+    user, nul, rest = data.partition(b"\0")
+    if not nul:
+        return None
+    group = rest.partition(b"\0")[0]
+    return RarOwner(
+        user.decode("utf8", "surrogateescape") or None,
+        group.decode("utf8", "surrogateescape") or None,
+        None,
+        None,
+    )
 
 
 # Ten digits hold any 32-bit number; a longer run is not treated as a version.
@@ -3568,6 +3680,7 @@ def _parse_rar5_file_block(
     file_redir: tuple[int, int, str] | None = None
     file_encryption: RarEncryptionInfo | None = None
     file_version: int | None = None
+    owner: RarOwner | None = None
     flags = 0
     ctime: datetime | None = None
     atime: datetime | None = None
@@ -3701,7 +3814,9 @@ def _parse_rar5_file_block(
                 elif xtype == _RAR5_XFILE_VERSION:
                     _vflags, xpos = load_vint(xdata, xpos)
                     file_version, xpos = load_vint(xdata, xpos)
-                # OWNER / SERVICE / unknown: ignore
+                elif xtype == _RAR5_XFILE_OWNER:
+                    owner = _parse_rar5_owner(xdata, xpos)
+                # SERVICE / unknown: ignore
             except CorruptionError as exc:
                 if xtype == _RAR5_XFILE_ENCRYPTION:
                     raise
@@ -3781,6 +3896,7 @@ def _parse_rar5_file_block(
         split_before=split_before,
         split_after=split_after,
         file_version=file_version,
+        owner=owner,
         # RAR5 keeps the directory flag apart from the dictionary bits, so a
         # directory-flagged link reports what its compression info declares.
         dictionary_size=0
@@ -3791,6 +3907,29 @@ def _parse_rar5_file_block(
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
     )
+
+
+def _parse_rar5_owner(xdata: bytes, pos: int) -> RarOwner:
+    """The fields of a RAR5 owner record (``FHEXTRA_UOWNER``) after its type vint.
+
+    Flags, then each field its flag announces, in order: user name and group name
+    (vint length, bytes), user id and group id (vints). Names are decoded as UTF-8,
+    with any other byte kept as a lone surrogate, as for link targets.
+    """
+    flags, pos = load_vint(xdata, pos)
+    uname = gname = None
+    uid = gid = None
+    if flags & _RAR5_XOWNER_UNAME:
+        raw, pos = _load_vstr(xdata, pos)
+        uname = raw.decode("utf8", "surrogateescape")
+    if flags & _RAR5_XOWNER_GNAME:
+        raw, pos = _load_vstr(xdata, pos)
+        gname = raw.decode("utf8", "surrogateescape")
+    if flags & _RAR5_XOWNER_UID:
+        uid, pos = load_vint(xdata, pos)
+    if flags & _RAR5_XOWNER_GID:
+        gid, pos = load_vint(xdata, pos)
+    return RarOwner(uname, gname, uid, gid)
 
 
 def _apply_rar5_unix_ns(

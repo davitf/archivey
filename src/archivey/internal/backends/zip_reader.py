@@ -84,6 +84,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
+    ExtraField,
     WinZipAesInfo,
     iter_extra_fields,
     open_winzip_aes_member,
@@ -706,6 +707,116 @@ def _zip_timestamps(
                     ut_ctime = when
 
     return modified, accessed, ntfs_ctime, ut_ctime, issues
+
+
+# Extra fields that record a Unix owner: Info-ZIP's "new Unix" field (variable-width
+# ids), its "Unix type 2" (16-bit ids), PKWARE's Unix field and Info-ZIP's old "Unix"
+# field (both 16-bit ids after two times, the same layout). ``_zip_owner`` reads them
+# as unzip 6.00 does.
+_OWNER_TAG_INFOZIP_NEW_UNIX = 0x7875
+_OWNER_TAG_INFOZIP_UNIX2 = 0x7855
+_OWNER_TAG_PKWARE_UNIX = 0x000D
+_OWNER_TAG_INFOZIP_OLD_UNIX = 0x5855
+# The id widths unzip reads from the new Unix field; Info-ZIP writes 4 bytes.
+_NEW_UNIX_ID_SIZES = frozenset((2, 4, 8))
+# The two times every PKWARE or old Info-ZIP Unix field starts with; the ids follow.
+_UNIX_TIMES_LEN = 8
+
+
+class _ZipOwner(NamedTuple):
+    """What a member's owner extra fields give.
+
+    ``ids`` is ``(uid, gid)``, or ``None``. ``fault`` is ``(tag, reason)`` when there
+    are no ids because a field was damaged; the reader drops it and reports that.
+    """
+
+    ids: tuple[int, int] | None
+    fault: tuple[int, str] | None = None
+
+
+_NO_OWNER = _ZipOwner(None)
+
+
+def _zip_owner(extra: bytes) -> _ZipOwner:
+    """The owner ids ``extra`` records, read as unzip 6.00 reads them.
+
+    The fields are read in blob order (measured with ``unzip -X`` as root, see
+    dev-docs/formats/zip.md §6):
+
+    - A ``0x7875`` or ``0x7855`` decides the owner afresh, readable or not: the ids are
+      its own, or none. A ``0x7855`` after a ``0x7875`` is ignored.
+    - A PKWARE or old Info-ZIP field is ignored after either of them. Otherwise one
+      that holds ids replaces the earlier ids, and one that does not changes nothing.
+
+    Not damage, so not reported: a field holding only what its central directory copy
+    holds (an empty ``0x7855``, a PKWARE or old Info-ZIP field with its two times only;
+    those hold their ids in local headers only, which listing does not read), and a
+    ``0x7875`` of a version other than 1. Either still decides as above. No ZIP field
+    records the owner's names.
+    """
+    if not extra:
+        return _NO_OWNER
+    ids: tuple[int, int] | None = None
+    fault: tuple[int, str] | None = None
+    # 0: no newer field seen; 1: a 0x7855; 2: a 0x7875.
+    newer = 0
+    for field in iter_extra_fields(extra):
+        tag = field.tag
+        data = field.data
+        if tag == _OWNER_TAG_INFOZIP_NEW_UNIX:
+            newer = 2
+            ids, fault = _new_unix_owner(field)
+        elif tag == _OWNER_TAG_INFOZIP_UNIX2:
+            if newer == 2:
+                continue
+            newer = 1
+            ids = None
+            if not field.complete:
+                fault = (tag, "cut_short")
+            elif len(data) == 4:
+                ids, fault = struct.unpack_from("<HH", data), None
+            else:
+                fault = (tag, "wrong_size") if data else None
+        elif tag in (_OWNER_TAG_PKWARE_UNIX, _OWNER_TAG_INFOZIP_OLD_UNIX):
+            if newer:
+                continue
+            if field.complete and len(data) >= _UNIX_TIMES_LEN + 4:
+                ids, fault = struct.unpack_from("<HH", data, _UNIX_TIMES_LEN), None
+            elif ids is None and (not field.complete or len(data) != _UNIX_TIMES_LEN):
+                fault = (tag, "cut_short" if not field.complete else "too_short")
+    if ids is not None:
+        return _ZipOwner((ids[0], ids[1]))
+    return _NO_OWNER if fault is None else _ZipOwner(None, fault)
+
+
+def _new_unix_owner(field: ExtraField) -> _ZipOwner:
+    """The ids in an Info-ZIP new Unix field (``0x7875``).
+
+    Layout: version (1), uid size, uid, gid size, gid, each id little-endian.
+    """
+    data = field.data
+    tag = field.tag
+    if not field.complete:
+        return _ZipOwner(None, (tag, "cut_short"))
+    if not data:
+        return _ZipOwner(None, (tag, "too_short"))
+    if data[0] != 1:
+        return _NO_OWNER
+    if len(data) < 3:
+        return _ZipOwner(None, (tag, "too_short"))
+    uid_size = data[1]
+    gid_at = 2 + uid_size
+    if gid_at >= len(data):
+        return _ZipOwner(None, (tag, "too_short"))
+    gid_size = data[gid_at]
+    end = gid_at + 1 + gid_size
+    if end > len(data):
+        return _ZipOwner(None, (tag, "too_short"))
+    if uid_size not in _NEW_UNIX_ID_SIZES or gid_size not in _NEW_UNIX_ID_SIZES:
+        return _ZipOwner(None, (tag, "id_size"))
+    uid = int.from_bytes(data[2:gid_at], "little")
+    gid = int.from_bytes(data[gid_at + 1 : end], "little")
+    return _ZipOwner((uid, gid))
 
 
 def _zip_created(
@@ -1838,6 +1949,9 @@ class ZipReader(BaseArchiveReader):
             member.ctime = ctime
         if mode is not None:
             member.mode = mode
+        owner = _zip_owner(entry.extra)
+        if owner.ids is not None:
+            member.uid, member.gid = owner.ids
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         if entry.comment:
@@ -1886,6 +2000,27 @@ class ZipReader(BaseArchiveReader):
                     record="unicode_path",
                     record_id=_ZIP_EXTRA_UNICODE_PATH,
                     reason=unicode_extra_fault,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
+        if owner.fault is not None:
+            owner_tag, owner_fault = owner.fault
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"The Unix owner extra field (0x{owner_tag:04x}) of ZIP member "
+                    f"{quoted(member.name)} is malformed and was dropped "
+                    f"({owner_fault}); the member has no owner ids."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="unix_owner",
+                    record_id=owner_tag,
+                    reason=owner_fault,
                 ),
                 member=member,
                 attach_to_member=True,
@@ -1950,12 +2085,26 @@ class ZipReader(BaseArchiveReader):
 
         No field the directory alone holds is guessed: ``mode``, ``create_system`` and
         ``comment`` are ``None``, and the type is ``FILE`` or ``DIRECTORY`` from the
-        name. A backslash is a literal character until the host says otherwise, except
-        at the end of the name, which makes the member a ``DIRECTORY`` until then: a
-        DOS or Windows writer marks its folders that way, and a folder the pass wrote
-        as a file would stop every member inside it from being written, where a
-        directory the host turns out not to make one is taken back at the end of the
-        pass. Nothing is reported here: on a pipe the directory's version of the
+        name.
+
+        ``uid`` and ``gid`` are ``None`` too, although the local header has its own
+        extra field and Info-ZIP writers put the owner there. ``zip`` writes ``0x7875``
+        in both headers; the 16-bit ``0x7855`` and ``0x5855`` hold the ids in the local
+        header only, and their directory copies are empty or hold the times alone. A
+        file read takes the owner from the directory alone, so a local-only ``0x7855``
+        gives it no owner, and the pass must end with the directory's owner too. Left
+        ``None`` here, the owner reaches extraction the way the mode does: nothing is
+        applied as the member is written, and the directory's owner is applied at the
+        end of the pass. Yielding the local ids instead would make extraction
+        ``chown`` at write time, which the directory could not take back. A ZIP with
+        no directory has no owner from either read.
+
+        A backslash is a literal character until the host says otherwise, except at the
+        end of the name, which makes the member a ``DIRECTORY`` until then: a DOS or
+        Windows writer marks its folders that way, and a folder the pass wrote as a file
+        would stop every member inside it from being written, where a directory the host
+        turns out not to make one is taken back at the end of the pass. Nothing is
+        reported here: on a pipe the directory's version of the
         member reports what it finds, once. A ZIP with no directory lists this
         member as it stands (``_iter_walked``), and reports nothing for it either,
         as the pipe read reports nothing when no directory arrives; the listing then
