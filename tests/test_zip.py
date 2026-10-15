@@ -669,8 +669,9 @@ def _old_unix(uid: int, gid: int) -> bytes:
     return struct.pack("<HHIIHH", 0x5855, 12, 0, 0, uid, gid)
 
 
-# Each expected owner was checked against unzip 6.00 (`unzip -X` as root) on the same
-# extra blob in a local header, except where a case says it is central-only.
+# Each expected owner is what unzip 6.00 gives for the same extra blob in a local
+# header (`unzip -X` as root, and its `ef_scan_for_izux`), except where a case says it
+# is a central-only form.
 @pytest.mark.parametrize(
     ("extra", "owner"),
     [
@@ -692,16 +693,56 @@ def _old_unix(uid: int, gid: int) -> bytes:
             id="unknown-version-decides",
         ),
         pytest.param(
-            # The 16-bit Info-ZIP field's central copy is empty, and counts as absent.
-            struct.pack("<HH", 0x7855, 0) + _pkware_unix(1234, 5678),
-            (1234, 5678),
-            id="central-unix2-is-absent",
+            # The 16-bit Info-ZIP field's central copy is empty: no ids and no damage,
+            # but it still hides a later PKWARE field, as its local copy would.
+            struct.pack("<HH", 0x7855, 0) + _pkware_unix(1, 2),
+            (None, None),
+            id="central-unix2-hides-pkware",
         ),
         pytest.param(
             # The old Info-ZIP field's central copy holds the two times alone.
             _pkware_unix(1234, 5678) + struct.pack("<HHII", 0x5855, 8, 0, 0),
             (1234, 5678),
             id="central-old-unix-is-absent",
+        ),
+        pytest.param(
+            # A PKWARE or old Info-ZIP field that cannot give ids changes nothing.
+            _pkware_unix(1, 2) + struct.pack("<HHIIH", 0x5855, 10, 0, 0, 9),
+            (1, 2),
+            id="short-old-unix-after-pkware",
+        ),
+        pytest.param(
+            _pkware_unix(1, 2) + struct.pack("<HHIIH", 0x000D, 10, 0, 0, 9),
+            (1, 2),
+            id="short-pkware-after-pkware",
+        ),
+        pytest.param(_pkware_unix(1, 2) + _pkware_unix(3, 4), (3, 4), id="last-pkware"),
+        pytest.param(
+            _UNIX2 + struct.pack("<HHHH", 0x7855, 4, 7, 8), (7, 8), id="last-unix2"
+        ),
+        pytest.param(
+            # A new Unix field decides afresh, so a later readable one wins over a
+            # damaged one, and an unknown version after a readable one leaves none.
+            struct.pack("<HHBBI", 0x7875, 6, 1, 4, 9) + _NEW_UNIX_4,
+            (1234, 5678),
+            id="new-unix-after-short-new-unix",
+        ),
+        pytest.param(
+            _NEW_UNIX_4 + struct.pack("<HHBBIBI", 0x7875, 11, 2, 4, 1, 4, 2),
+            (None, None),
+            id="unknown-version-after-new-unix",
+        ),
+        pytest.param(
+            # PKWARE's field with its two times only is its central form, as for
+            # 0x5855: no ids, nothing damaged.
+            struct.pack("<HHII", 0x000D, 8, 0, 0),
+            (None, None),
+            id="pkware-times-only",
+        ),
+        pytest.param(
+            _NEW_UNIX_4 + struct.pack("<HHBBIBI", 0x7875, 11, 1, 4, 21, 4, 22),
+            (21, 22),
+            id="last-new-unix-wins",
         ),
         pytest.param(b"", (None, None), id="no-extra"),
     ],
@@ -745,9 +786,7 @@ def test_local_only_owner_fields_are_read_from_a_writer_that_copies_them(
     extra: bytes, owner: tuple[int, int]
 ) -> None:
     # A writer that copies the 16-bit Info-ZIP fields into the directory too gets them
-    # read there. The pipe pass does not read them from the local header (see
-    # test_local_only_owner_is_not_yielded_by_the_pass), so only the file read and the
-    # end of the pass are compared.
+    # read there; a file read and the end of a pipe pass give the same owner.
     data = _zip_with_extra(extra)
     with open_archive(io.BytesIO(data)) as ar:
         assert (ar.get("owned.txt").uid, ar.get("owned.txt").gid) == owner
@@ -757,36 +796,75 @@ def test_local_only_owner_fields_are_read_from_a_writer_that_copies_them(
 
 
 @pytest.mark.parametrize(
-    ("field", "reason"),
+    ("field", "reason", "tag"),
     [
         pytest.param(
             struct.pack("<HHBBIB", 0x7875, 11, 1, 4, 1234, 4) + b"\x2e\x16",
             "cut_short",
+            0x7875,
             id="new-unix-cut-short",
         ),
         pytest.param(
-            struct.pack("<HHBBI", 0x7875, 6, 1, 4, 1234), "too_short", id="no-gid"
+            struct.pack("<HHBBI", 0x7875, 6, 1, 4, 1234),
+            "too_short",
+            0x7875,
+            id="no-gid",
         ),
         pytest.param(
             struct.pack("<HHBB9sBI", 0x7875, 16, 1, 9, b"\x01" * 9, 4, 2),
             "id_size",
+            0x7875,
             id="new-unix-id-too-wide",
         ),
         pytest.param(
             struct.pack("<HHIIH", 0x000D, 10, 0, 0, 1234),
             "too_short",
+            0x000D,
             id="pkware-short",
         ),
         pytest.param(
-            # A damaged 16-bit field still outranks PKWARE's: unzip gives no owner.
+            # A damaged 0x7855 hides a later PKWARE field: unzip gives no owner.
             struct.pack("<HHH", 0x7855, 2, 3) + _pkware_unix(1, 2),
-            "too_short",
+            "wrong_size",
+            0x7855,
             id="unix2-short",
+        ),
+        pytest.param(
+            struct.pack("<HHHHH", 0x7855, 6, 1, 2, 3),
+            "wrong_size",
+            0x7855,
+            id="unix2-too-long",
+        ),
+        pytest.param(
+            # A 0x7855 or 0x7875 decides afresh, so a damaged one after PKWARE's
+            # leaves no owner, as unzip 6.00 gives none.
+            _pkware_unix(1, 2) + struct.pack("<HHH", 0x7855, 2, 9),
+            "wrong_size",
+            0x7855,
+            id="short-unix2-after-pkware",
+        ),
+        pytest.param(
+            _pkware_unix(1, 2) + struct.pack("<HHBBI", 0x7875, 6, 1, 4, 9),
+            "too_short",
+            0x7875,
+            id="short-new-unix-after-pkware",
+        ),
+        pytest.param(
+            _NEW_UNIX_4 + struct.pack("<HHBBI", 0x7875, 6, 1, 4, 9),
+            "too_short",
+            0x7875,
+            id="short-new-unix-after-new-unix",
+        ),
+        pytest.param(
+            struct.pack("<HHBB3sB3s", 0x7875, 9, 1, 3, b"\x07\0\0", 3, b"\x08\0\0"),
+            "id_size",
+            0x7875,
+            id="new-unix-3-byte-ids",
         ),
     ],
 )
 def test_damaged_owner_field_is_dropped_with_a_diagnostic(
-    field: bytes, reason: str
+    field: bytes, reason: str, tag: int
 ) -> None:
     data = _zip_with_extra(field)
     with open_archive(io.BytesIO(data)) as ar:
@@ -795,7 +873,7 @@ def test_damaged_owner_field_is_dropped_with_a_diagnostic(
         (diagnostic,) = member.diagnostics
     assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
     assert diagnostic.context.record == "unix_owner"
-    assert diagnostic.context.record_id == struct.unpack_from("<H", field)[0]
+    assert diagnostic.context.record_id == tag
     assert diagnostic.context.reason == reason
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError):
@@ -803,22 +881,33 @@ def test_damaged_owner_field_is_dropped_with_a_diagnostic(
             ar.members()
 
 
-def _local_only_owner_zip() -> bytes:
-    """A ZIP whose local header has a 16-bit Info-ZIP owner and whose directory has none."""
-    data = _zip_with_extra(_UNIX2)
-    central_at = data.rindex(_UNIX2)
+def _local_only_owner_zip(field: bytes) -> bytes:
+    """A ZIP whose local header carries owner ``field`` and whose directory has none."""
+    data = _zip_with_extra(field)
+    central_at = data.rindex(field)
     return data[:central_at] + struct.pack("<H", 0x1234) + data[central_at + 2 :]
 
 
-def test_local_only_owner_is_not_yielded_by_the_pass() -> None:
-    # The pass reads only the owner fields a directory entry also carries, so it never
-    # yields an owner the directory would take back: extraction applies the owner as
-    # it writes the member, and a chown cannot be undone at the end of the pass.
-    data = _local_only_owner_zip()
+_LOCAL_ONLY_OWNERS = [
+    pytest.param(_local_only_owner_zip(_UNIX2), (None, None), id="local-only-unix2"),
+    pytest.param(
+        _local_only_owner_zip(_NEW_UNIX_4), (None, None), id="local-only-new-unix"
+    ),
+    pytest.param(_zip_with_extra(_NEW_UNIX_4), (1234, 5678), id="both-new-unix"),
+]
+
+
+@pytest.mark.parametrize(("data", "owner"), _LOCAL_ONLY_OWNERS)
+def test_pass_yields_no_owner_until_the_directory(
+    data: bytes, owner: tuple[int | None, int | None]
+) -> None:
+    # Extraction applies an owner as it writes a member, and a chown cannot be taken
+    # back if the directory gives another owner or none. So the pass yields none, and
+    # the member gets the directory's at the end of the pass, as a file read lists it.
     with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
         during = [(m.uid, m.gid) for m, _ in ar.stream_members()]
     assert during == [(None, None)]
-    assert _owner_seen(data) == ((None, None), (None, None))
+    assert _owner_seen(data) == (owner, owner)
 
 
 @pytest.mark.skipif(
@@ -826,14 +915,17 @@ def test_local_only_owner_is_not_yielded_by_the_pass() -> None:
     reason="chown to another uid needs root",
 )
 @pytest.mark.parametrize("piped", [False, True], ids=["file", "pipe"])
-def test_trusted_as_root_owner_matches_from_a_pipe(tmp_path: Path, piped: bool) -> None:
-    data = _local_only_owner_zip()
+@pytest.mark.parametrize(("data", "owner"), _LOCAL_ONLY_OWNERS)
+def test_trusted_as_root_owner_matches_from_a_pipe(
+    tmp_path: Path, data: bytes, owner: tuple[int | None, int | None], piped: bool
+) -> None:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     dest = tmp_path / "out"
     with open_archive(source, streaming=piped) as ar:
         ar.extract_all(dest, policy=ExtractionPolicy.TRUSTED)
     st = (dest / "owned.txt").stat()
-    assert (st.st_uid, st.st_gid) == (os.geteuid(), os.getegid())
+    expected = (os.geteuid(), os.getegid()) if owner == (None, None) else owner
+    assert (st.st_uid, st.st_gid) == expected
 
 
 @requires_binary("zip")

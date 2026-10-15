@@ -66,7 +66,6 @@ from archivey.internal.backends.zip_parser import (
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
     _UNCONFIRMED_PASSWORD_FAILURE,
-    _ZIP_CENTRAL_OWNER_TAGS,
     _ZIP_COMPRESSION_ALGOS,
     _ZIP_COMPRESSION_TUPLES,
     _ZIP_KEYED_SETTINGS_METHODS,
@@ -86,7 +85,6 @@ from archivey.internal.backends.zip_reader import (
     _unverified_data_error,
     _uses_strong_encryption,
     _zip_created,
-    _zip_owner,
     _zip_timestamps,
     _zipcrypto_check_byte,
     _ZipLocator,
@@ -1681,7 +1679,10 @@ class ZipForwardReader(ZipReader):
 
         No field the directory alone holds is guessed: ``mode``, ``create_system`` and
         ``comment`` are ``None``, and the type is ``FILE`` or ``DIRECTORY`` from the
-        name. A backslash is a literal character until the host says otherwise, except
+        name. ``uid`` and ``gid`` are ``None`` too, though a local header can carry
+        them: extraction applies an owner as it writes the member, and a ``chown`` cannot
+        be taken back when the directory gives another owner or none. The directory's
+        owner is applied at the end of the pass, as the mode is. A backslash is a literal character until the host says otherwise, except
         at the end of the name, which makes the member a ``DIRECTORY`` until then: a
         DOS or Windows writer marks its folders that way, and a folder the pass wrote
         as a file would stop every member inside it from being written, where a
@@ -1731,10 +1732,6 @@ class ZipForwardReader(ZipReader):
             and not (aes_info is not None and aes_info.is_ae2)
             else {}
         )
-        # Only the owner fields the directory also carries, so the pass never yields
-        # an owner the directory takes back: extraction applies it as it writes the
-        # member, and nothing can undo a chown at the end of the pass.
-        uid, gid = _zip_owner(header.extra, _ZIP_CENTRAL_OWNER_TAGS).ids or (None, None)
         return ArchiveMember(
             type=member_type,
             name=name,
@@ -1748,8 +1745,6 @@ class ZipForwardReader(ZipReader):
             accessed=accessed,
             created=created,
             ctime=ctime,
-            uid=uid,
-            gid=gid,
             is_encrypted=_is_encrypted_entry(header.flags, method),
             _raw=_ZipLocator(
                 index=index,

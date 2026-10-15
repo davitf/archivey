@@ -107,14 +107,14 @@ yielded.
   used.
 - **From a pipe**, open with ``streaming=True``: the pass finds each member by its local
   header, and reads the central directory after the last one. A member is yielded with
-  what its local header says, so its ``mode``, ``create_system`` and ``comment`` are
-  ``None`` and a symlink is a ``FILE`` until the pass reaches the directory; then every
-  member is updated in place, and ``member_state_final`` turns ``True``. Extraction
-  writes each member as it arrives and, at the end of the pass, applies modes, makes the
-  links (after running your ``filter`` again on them) and removes what a member the
-  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A
-  member the directory does not list (an appended update, a planted entry) is dropped
-  and reported as ``ARCHIVE_UNLISTED_DATA``.
+  what its local header says, so its ``mode``, ``create_system``, ``comment``, ``uid``
+  and ``gid`` are ``None`` and a symlink is a ``FILE`` until the pass reaches the
+  directory; then every member is updated in place, and ``member_state_final`` turns
+  ``True``. Extraction writes each member as it arrives and, at the end of the pass,
+  applies modes and owners, makes the links (after running your ``filter`` again on
+  them) and removes what a member the directory types ``OTHER`` wrote, so the files on
+  disk match a read from a file. A member the directory does not list (an appended
+  update, a planted entry) is dropped and reported as ``ARCHIVE_UNLISTED_DATA``.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
   bit-3 PPMd member is decoded in a child process, so

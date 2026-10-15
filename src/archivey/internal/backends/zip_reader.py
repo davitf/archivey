@@ -700,40 +700,25 @@ def _zip_timestamps(
     return modified, accessed, ntfs_ctime, ut_ctime, issues
 
 
-# Extra fields that record a Unix owner. unzip 6.00 ranks them in three levels: Info-ZIP's
-# "new Unix" field (variable-width ids), then its "Unix type 2" (16-bit ids), then
-# PKWARE's Unix field and Info-ZIP's old "Unix" field (16-bit ids after two times), of
-# which the later in the blob wins. The highest level present decides, readable or not.
+# Extra fields that record a Unix owner: Info-ZIP's "new Unix" field (variable-width
+# ids), its "Unix type 2" (16-bit ids), PKWARE's Unix field and Info-ZIP's old "Unix"
+# field (both 16-bit ids after two times, the same layout). ``_zip_owner`` reads them
+# as unzip 6.00 does.
 _OWNER_TAG_INFOZIP_NEW_UNIX = 0x7875
 _OWNER_TAG_INFOZIP_UNIX2 = 0x7855
 _OWNER_TAG_PKWARE_UNIX = 0x000D
 _OWNER_TAG_INFOZIP_OLD_UNIX = 0x5855
-#: The two tags a central directory entry carries ids in. The 16-bit Info-ZIP fields
-#: hold the ids in local headers only: their central copy is empty (``0x7855``) or the
-#: two times alone (``0x5855``).
-_ZIP_CENTRAL_OWNER_TAGS = frozenset(
-    (_OWNER_TAG_INFOZIP_NEW_UNIX, _OWNER_TAG_PKWARE_UNIX)
-)
-_ALL_OWNER_TAGS = frozenset(
-    (
-        _OWNER_TAG_INFOZIP_NEW_UNIX,
-        _OWNER_TAG_INFOZIP_UNIX2,
-        _OWNER_TAG_PKWARE_UNIX,
-        _OWNER_TAG_INFOZIP_OLD_UNIX,
-    )
-)
-# The widest id the new Unix field may give: Info-ZIP writes 4 bytes, and unzip refuses
-# an id wider than its 64-bit value.
-_MAX_OWNER_ID_BYTES = 8
+# The id widths unzip reads from the new Unix field; Info-ZIP writes 4 bytes.
+_NEW_UNIX_ID_SIZES = frozenset((2, 4, 8))
+# The two times every PKWARE or old Info-ZIP Unix field starts with; the ids follow.
+_UNIX_TIMES_LEN = 8
 
 
 class _ZipOwner(NamedTuple):
     """What a member's owner extra fields give.
 
-    ``ids`` is ``(uid, gid)``, or ``None``. ``fault`` is ``(tag, reason)`` when the
-    deciding field is damaged; the reader drops it and reports that. A ``0x7875`` of a
-    version other than 1 is not damage, only a field this reader does not know: it
-    gives no ids and no fault.
+    ``ids`` is ``(uid, gid)``, or ``None``. ``fault`` is ``(tag, reason)`` when there
+    are no ids because a field was damaged; the reader drops it and reports that.
     """
 
     ids: tuple[int, int] | None
@@ -743,44 +728,56 @@ class _ZipOwner(NamedTuple):
 _NO_OWNER = _ZipOwner(None)
 
 
-def _zip_owner(extra: bytes, tags: frozenset[int] = _ALL_OWNER_TAGS) -> _ZipOwner:
+def _zip_owner(extra: bytes) -> _ZipOwner:
     """The owner ids ``extra`` records, read as unzip 6.00 reads them.
 
-    The highest level present decides (see ``_OWNER_TAG_INFOZIP_NEW_UNIX``), and when
-    its field cannot be read the member has no owner, as unzip gives it none: a damaged
-    field does not hand over to a lower one. A ``0x7855`` with no data or a ``0x5855``
-    with only its two times is the central directory's normal copy and counts as
-    absent. Only ``tags`` are looked at. No ZIP field records the owner's names.
+    The fields are read in blob order (measured with ``unzip -X`` as root, see
+    dev-docs/formats/zip.md §6):
+
+    - A ``0x7875`` or ``0x7855`` decides the owner afresh, readable or not: the ids are
+      its own, or none. A ``0x7855`` after a ``0x7875`` is ignored.
+    - A PKWARE or old Info-ZIP field is ignored after either of them. Otherwise one
+      that holds ids replaces the earlier ids, and one that does not changes nothing.
+
+    Not damage, so not reported: a field holding only what its central directory copy
+    holds (an empty ``0x7855``, a PKWARE or old Info-ZIP field with its two times only;
+    those hold their ids in local headers only, which listing does not read), and a
+    ``0x7875`` of a version other than 1. Either still decides as above. No ZIP field
+    records the owner's names.
     """
     if not extra:
         return _NO_OWNER
-    new_unix: ExtraField | None = None
-    unix2: ExtraField | None = None
-    legacy: ExtraField | None = None
+    ids: tuple[int, int] | None = None
+    fault: tuple[int, str] | None = None
+    # 0: no newer field seen; 1: a 0x7855; 2: a 0x7875.
+    newer = 0
     for field in iter_extra_fields(extra):
         tag = field.tag
-        if tag not in tags:
-            continue
+        data = field.data
         if tag == _OWNER_TAG_INFOZIP_NEW_UNIX:
-            if new_unix is None:
-                new_unix = field
+            newer = 2
+            ids, fault = _new_unix_owner(field)
         elif tag == _OWNER_TAG_INFOZIP_UNIX2:
-            if unix2 is None and field.data:
-                unix2 = field
-        elif tag != _OWNER_TAG_INFOZIP_OLD_UNIX or len(field.data) != 8:
-            legacy = field
-    if new_unix is not None:
-        return _new_unix_owner(new_unix)
-    deciding = unix2 if unix2 is not None else legacy
-    if deciding is None:
-        return _NO_OWNER
-    at = 0 if deciding is unix2 else 8
-    if not deciding.complete:
-        return _ZipOwner(None, (deciding.tag, "cut_short"))
-    if len(deciding.data) < at + 4:
-        return _ZipOwner(None, (deciding.tag, "too_short"))
-    uid, gid = struct.unpack_from("<HH", deciding.data, at)
-    return _ZipOwner((uid, gid))
+            if newer == 2:
+                continue
+            newer = 1
+            ids = None
+            if not field.complete:
+                fault = (tag, "cut_short")
+            elif len(data) == 4:
+                ids, fault = struct.unpack_from("<HH", data), None
+            else:
+                fault = (tag, "wrong_size") if data else None
+        elif tag in (_OWNER_TAG_PKWARE_UNIX, _OWNER_TAG_INFOZIP_OLD_UNIX):
+            if newer:
+                continue
+            if field.complete and len(data) >= _UNIX_TIMES_LEN + 4:
+                ids, fault = struct.unpack_from("<HH", data, _UNIX_TIMES_LEN), None
+            elif ids is None and (not field.complete or len(data) != _UNIX_TIMES_LEN):
+                fault = (tag, "cut_short" if not field.complete else "too_short")
+    if ids is not None:
+        return _ZipOwner((ids[0], ids[1]))
+    return _NO_OWNER if fault is None else _ZipOwner(None, fault)
 
 
 def _new_unix_owner(field: ExtraField) -> _ZipOwner:
@@ -806,9 +803,7 @@ def _new_unix_owner(field: ExtraField) -> _ZipOwner:
     end = gid_at + 1 + gid_size
     if end > len(data):
         return _ZipOwner(None, (tag, "too_short"))
-    if not (
-        0 < uid_size <= _MAX_OWNER_ID_BYTES and 0 < gid_size <= _MAX_OWNER_ID_BYTES
-    ):
+    if uid_size not in _NEW_UNIX_ID_SIZES or gid_size not in _NEW_UNIX_ID_SIZES:
         return _ZipOwner(None, (tag, "id_size"))
     uid = int.from_bytes(data[2:gid_at], "little")
     gid = int.from_bytes(data[gid_at + 1 : end], "little")
