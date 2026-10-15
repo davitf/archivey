@@ -1250,7 +1250,7 @@ def test_the_walk_scans_past_a_failed_decode_longer_than_what_it_keeps() -> None
 def test_a_bit3_ppmd_member_with_no_end_mark_fails_as_from_a_file() -> None:
     """PPMd has no flag for a missing end mark, so its decode fails as a file
     read's does, and the walk's scan passes the member."""
-    import pyppmd
+    pyppmd = pytest.importorskip("pyppmd")
 
     content = b"ppmd without its end mark\n" * 40
     encoder = pyppmd.Ppmd8Encoder(6, 16 << 20, 0)
