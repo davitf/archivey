@@ -1679,16 +1679,25 @@ class ZipForwardReader(ZipReader):
 
         No field the directory alone holds is guessed: ``mode``, ``create_system`` and
         ``comment`` are ``None``, and the type is ``FILE`` or ``DIRECTORY`` from the
-        name. ``uid`` and ``gid`` are ``None`` too, though a local header can carry
-        them: extraction applies an owner as it writes the member, and a ``chown``
-        cannot be taken back when the directory gives another owner or none. The
-        directory's owner is applied at the end of the pass, as the mode is. A backslash
-        is a literal character until the host says otherwise, except at the end of the
-        name, which makes the member a ``DIRECTORY`` until then: a DOS or Windows writer
-        marks its folders that way, and a folder the pass wrote as a file would stop
-        every member inside it from being written, where a directory the host turns out
-        not to make one is taken back at the end of the pass. Nothing is reported here;
-        the directory's version of the member reports what it finds, once.
+        name.
+
+        ``uid`` and ``gid`` are ``None`` too, although the local header has its own
+        extra field and Info-ZIP writers put the owner there. ``zip`` writes ``0x7875``
+        in both headers; the 16-bit ``0x7855`` and ``0x5855`` hold the ids in the local
+        header only, and their directory copies are empty or hold the times alone. A
+        file read takes the owner from the directory alone, so a local-only ``0x7855``
+        gives it no owner. Extraction applies an owner as it writes each member, and a
+        ``chown`` cannot be taken back, so a pass that used the local ids would leave
+        an owner on disk that the same archive read from a file does not. The
+        directory's owner is applied at the end of the pass instead, as the mode is.
+
+        A backslash is a literal character until the host says otherwise, except at the
+        end of the name, which makes the member a ``DIRECTORY`` until then: a DOS or
+        Windows writer marks its folders that way, and a folder the pass wrote as a file
+        would stop every member inside it from being written, where a directory the host
+        turns out not to make one is taken back at the end of the pass. Nothing is
+        reported here; the directory's version of the member reports what it finds,
+        once.
         """
         header = entry.header
         central = _central_from_local(entry)
