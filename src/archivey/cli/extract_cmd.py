@@ -32,7 +32,7 @@ from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, escape_path, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
-from archivey.config import PasswordInput
+from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.paths import numbered_name
 from archivey.reader import ForwardArchiveReader
@@ -1287,6 +1287,7 @@ def run_extract(
     overwrite: str,
     password: str | None,
     track_io: bool,
+    config: ArchiveyConfig | None = None,
     hide_progress: bool,
     verbose: bool,
     stop_on_error: bool = False,
@@ -1311,7 +1312,9 @@ def run_extract(
     abort_on_enum = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
     archive_path = Path(archive)
 
-    with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
+    with open_for_cli(
+        archive_path, password=pwd, track_io=track_io, config=config, err=err
+    ) as reader:
         # A complete free index settles the patterns before anything is written.
         # Without one, or with one that ends in damage, the extraction's own pass
         # offers each member to them, and they are judged after it: a separate pass

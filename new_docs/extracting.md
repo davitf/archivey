@@ -73,7 +73,7 @@ permissions gets written as it is:
 
 | `policy` | Names | Permissions |
 |---|---|---|
-| `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders always `rwxr-xr-x` |
+| `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files keep their stored permissions without setuid, setgid, sticky or group and other write, so at most `rwxr-xr-x`; a file the owner can't execute is executable by nobody; folders always `rwxr-xr-x` |
 | `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
 | `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
 
@@ -148,7 +148,7 @@ Some members are refused under every policy, and others depend on it:
 | `what?.txt`, with a character Windows doesn't allow | Written as `what%3F.txt` | Written as `what%3F.txt` | Written as is |
 | `back\slash` in a TAR | Written as `slash` in a folder `back` | Same as `"strict"` | Written as is |
 | `README`, then `readme`, or `café` written two ways in Unicode | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
-| A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
+| A file with mode `rwsr-xr-x` | Written as `rwxr-xr-x` | Written as `rwxr-xr-x` | Written as is |
 | A file with mode `rw-rw-rw-` | Written as `rw-r--r--` | Written as is | Written as is |
 
 `"strict"` and `"standard"` treat `README` and `readme` as the same file on every system. An

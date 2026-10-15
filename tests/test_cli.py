@@ -4785,3 +4785,40 @@ def test_test_verb_skips_every_readable_symlink_alike(
         assert f"skip {name}" in lines
         assert f"OK   {name}" not in lines
     assert f"{len(files)} OK, 0 failed" in lines
+
+
+# --- --probe-content ------------------------------------------------------------------
+
+
+def _raw_lzma(path: Path, data: bytes) -> Path:
+    """A raw LZMA Alone stream under a name no extension rule knows."""
+    import lzma
+
+    path.write_bytes(lzma.compress(data, format=lzma.FORMAT_ALONE))
+    return path
+
+
+@pytest.mark.parametrize("before_verb", [True, False], ids=["global", "after-verb"])
+@pytest.mark.parametrize("verb", ["list", "test", "extract", "info"])
+def test_probe_content_recognises_a_raw_stream_with_an_unknown_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], verb: str, before_verb: bool
+) -> None:
+    src = _raw_lzma(tmp_path / "data.bi5", b"payload " * 64)
+    rest = [str(src)] + (["-d", str(tmp_path / "out")] if verb == "extract" else [])
+    argv = (
+        ["--probe-content", verb, *rest]
+        if before_verb
+        else [verb, *rest, "--probe-content"]
+    )
+    assert main([*argv, "--hide-progress"]) == EXIT_OK
+    if verb == "extract":
+        (written,) = (tmp_path / "out").iterdir()
+        assert written.read_bytes() == b"payload " * 64
+
+
+def test_without_probe_content_the_refusal_names_the_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = _raw_lzma(tmp_path / "data.bi5", b"payload")
+    assert main(["list", str(src)]) == EXIT_FAIL
+    assert "on the command line, pass --probe-content" in capsys.readouterr().err

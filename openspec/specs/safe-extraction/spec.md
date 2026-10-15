@@ -457,7 +457,7 @@ waiting are removed unresolved and the run stops with `ResourceLimitError`. Test
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
-| Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError`; no uncaught OS/runtime error; same on every Python version |
+| Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError` with the message "Symlink target is part of a symlink loop", not the escape message; no uncaught OS/runtime error; same on every Python version |
 
 ### Requirement: Hardlink Two-Pass Extraction
 
@@ -564,7 +564,7 @@ non-bypassable safety checks.
 | --- | --- | --- | --- |
 | Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
-| Permission normalization | Files max `0o644`; dirs `0o755`; strip file execute | Preserve ordinary execute bits | Apply as stored |
+| Permission normalization | Files masked with `0o755` (execute kept when the owner has it; without owner execute, group/other execute are cleared too; group/other write stripped); dirs `0o755` | Preserve ordinary execute bits | Apply as stored |
 | setuid/setgid/sticky | Strip all | Strip all | Preserve |
 | uid/gid/uname/gname on the transformed member (what a `filter` sees) | Cleared to `None` | Kept as stored | Kept as stored |
 | Ownership applied on disk (`chown`) | Never | Never | Only when running as root; otherwise skipped silently |
@@ -595,7 +595,10 @@ group.
 
 | Case | Expected |
 | --- | --- |
-| FILE `mode=0o755` under `STRICT` | Written as `0o644` |
+| FILE `mode=0o755` under `STRICT` | Written as `0o755` |
+| FILE `mode=0o777` or `0o4755` under `STRICT` | Written as `0o755` |
+| FILE `mode=0o660` under `STRICT` | Written as `0o640`: a bit the file did not store is never added |
+| FILE `mode=0o011` or `0o655` under `STRICT` | Written as `0o000` / `0o644`: without the owner execute bit, group and other execute are cleared too, as `tarfile`'s `data` filter does |
 | FILE `mode=0o755` under `STANDARD` | Execute bits preserved; setuid/setgid/sticky stripped |
 | FILE with uid/gid under `TRUSTED` as root | uid/gid applied |
 | FILE with uid/gid under `STANDARD` | A `filter` sees the stored uid/gid; nothing is chowned |

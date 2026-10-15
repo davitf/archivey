@@ -106,6 +106,12 @@ a line about one member (`extract`'s per-member warnings), the notices and count
 that follow the fault line (stop notices, `N member(s) extracted before the stop`,
 `files left in <dir>/`) and `interrupted` keep their own shape.
 
+`--probe-content` SHALL open the archive with
+`ArchiveyConfig(always_probe_content=True)` in every verb, so a raw LZMA Alone, zlib or
+Brotli stream is recognised by its content whatever the file is named. Without it the
+CLI detects as the library does by default; when detection then fails with a message
+naming `always_probe_content`, the CLI SHALL add a line naming `--probe-content`.
+
 `--track-io` SHALL report I/O accounting for the operation using the internal
 measurement hook (decode/seek counters), without patching `builtins.open`. It is
 a maintainer/debug affordance and MUST NOT add a public library performance API.
@@ -284,6 +290,8 @@ other processed statuses are omitted from that line).
 | `archivey test <archive.tar.gz> a.txt` | The archive is decompressed once; no backward-seek warning |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[recommended]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
+| `archivey list data.bi5` (a raw LZMA Alone stream) | stderr names the detection failure and `--probe-content`; exit `1` |
+| `archivey --probe-content list data.bi5`, or the flag after any verb | Lists the one decompressed member; exit `0` |
 | `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
 | `archivey -- -weird.zip` | Lists `-weird.zip` (default `list` inserted ahead of `--`) |
 | `archivey -- list` | Opens a file named `list`; a verb word after `--` is an archive path |

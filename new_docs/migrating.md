@@ -131,9 +131,9 @@ zipfile and tarfile treat the same members differently:
 | `/abs.txt` | Written as `abs.txt` | Written as `abs.txt` | Refused | Written as `abs.txt` |
 | `../up.txt` | Written as `up.txt` | Raises, ending the extraction | Refused | Refused |
 | Link to `../../etc/passwd` | A plain file holding the path | Raises, ending the extraction | Refused | Refused |
-| File with mode 4755 (setuid) | Not kept | 755 | 644 | 755 |
+| File with mode 4755 (setuid) | Not kept | 755 | 755 | 755 |
 | File with mode 666 | Not kept | 644 | 644 | 666 |
-| File with mode 755 | Not kept | 755 | 644 | 755 |
+| File with mode 755 | Not kept | 755 | 755 | 755 |
 
 zipfile ignores the permissions an archive records, so each file gets the system's default for new
 files, usually 644. py7zr raises on `../up.txt` and on a link pointing outside, and rarfile renames

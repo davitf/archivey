@@ -10,7 +10,7 @@ from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import format_member_line
 from archivey.cli.password import resolve_password
-from archivey.config import PasswordInput
+from archivey.config import ArchiveyConfig, PasswordInput
 
 
 def run_list(
@@ -22,6 +22,7 @@ def run_list(
     verbose: bool,
     password: str | None,
     track_io: bool,
+    config: ArchiveyConfig | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -30,7 +31,9 @@ def run_list(
     pwd: PasswordInput = resolve_password(password)
     selection = MemberSelection(patterns, exclude)
 
-    with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
+    with open_for_cli(
+        archive, password=pwd, track_io=track_io, config=config, err=err
+    ) as reader:
         report = reader.members_report()
         # Select before printing, so the pattern warnings come first. ``list`` exits 0
         # when the patterns select nothing: the listing itself succeeded. A listing
