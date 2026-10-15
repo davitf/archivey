@@ -5301,3 +5301,196 @@ def test_unknown_on_error_raises_instead_of_continuing() -> None:
     coordinator = ExtractionCoordinator(on_error=future)
     with pytest.raises(AssertionError, match="unreachable"):
         coordinator._stops_on_failure()
+
+
+# ---------------------------------------------------------------------------
+# A parent the archive implies, where the caller has a non-directory
+# ---------------------------------------------------------------------------
+
+
+def _implied_parent_archive(fmt: str, names: list[str]) -> bytes:
+    """A TAR or ZIP of ``names``: a name ending in ``/`` is a directory entry, any
+    other a file holding its own name."""
+    if fmt == "tar":
+        return _tar_bytes(
+            [
+                ("dir", name, None)
+                if name.endswith("/")
+                else ("file", name, name.encode())
+                for name in names
+            ]
+        )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in names:
+            zf.writestr(name, b"" if name.endswith("/") else name.encode())
+    return buf.getvalue()
+
+
+def _extract_over_callers_file(
+    data: bytes,
+    dest: Path,
+    *,
+    streaming: bool,
+    overwrite: OverwritePolicy,
+    obstacle: str = "file",
+) -> tuple[list[tuple[str, ExtractionStatus, str | None, str | None]], list[str]]:
+    """Extract ``data`` with ``on_error=CONTINUE`` into ``dest``, where the caller
+    has ``foo`` (a file holding ``MINE``, or a dangling symlink); return each result
+    as ``(name, status, path, requested_path)`` with errors checked to be typed, and
+    the tree."""
+    dest.mkdir()
+    if obstacle == "file":
+        (dest / "foo").write_bytes(b"MINE")
+    else:
+        (dest / "foo").symlink_to("nowhere")
+    report = open_and_extract(
+        io.BytesIO(data),
+        dest,
+        streaming=streaming,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+    results = []
+    for r in report.results:
+        if r.error is not None:
+            # Never a raw OSError: the policy's own error, naming the caller's entry.
+            assert isinstance(r.error, ExtractionError), r.error
+            assert "Destination already exists" in str(r.error)
+            assert (dest / "foo").as_posix() in str(r.error)
+        assert r.collided_with is None  # the caller's entry is no collision event
+        results.append(
+            (
+                r.member.name.rstrip("/"),
+                r.status,
+                None if r.path is None else r.path.relative_to(dest).as_posix(),
+                None
+                if r.requested_path is None
+                else r.requested_path.relative_to(dest).as_posix(),
+            )
+        )
+    tree = sorted(
+        p.relative_to(dest).as_posix()
+        + ("/" if p.is_dir() and not p.is_symlink() else "")
+        for p in dest.rglob("*")
+    )
+    return results, tree
+
+
+_IMPLIED = ["foo/x.txt", "foo/a/y.txt", "foo/z.txt"]
+
+
+@pytest.mark.parametrize("fmt", ["tar", "zip"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_implied_parent_over_callers_file_follows_overwrite_policy(
+    tmp_path: Path, fmt: str, streaming: bool, overwrite: OverwritePolicy
+) -> None:
+    """``foo/x.txt`` with no ``foo/`` entry, where the caller has a file ``foo``:
+    the implied directory meets ``OverwritePolicy`` as an explicit ``foo/`` entry
+    would, and no raw ``OSError`` comes out of the library. The tree ends as it does
+    with the explicit entry, and the file members get the same results."""
+    implied, tree = _extract_over_callers_file(
+        _implied_parent_archive(fmt, _IMPLIED),
+        tmp_path / "implied",
+        streaming=streaming,
+        overwrite=overwrite,
+    )
+    explicit, explicit_tree = _extract_over_callers_file(
+        _implied_parent_archive(fmt, ["foo/", *_IMPLIED]),
+        tmp_path / "explicit",
+        streaming=streaming,
+        overwrite=overwrite,
+    )
+    assert tree == explicit_tree
+    assert implied == [r for r in explicit if r[0] != "foo"]
+
+    statuses = {name: status for name, status, _, _ in implied}
+    if overwrite is OverwritePolicy.ERROR:
+        assert set(statuses.values()) == {ExtractionStatus.FAILED}
+        assert tree == ["foo"]
+    elif overwrite is OverwritePolicy.SKIP:
+        assert set(statuses.values()) == {ExtractionStatus.NOT_OVERWRITTEN}
+        assert tree == ["foo"]
+    elif overwrite is OverwritePolicy.REPLACE:
+        assert set(statuses.values()) == {ExtractionStatus.EXTRACTED}
+        assert tree == ["foo/", "foo/a/", "foo/a/y.txt", "foo/x.txt", "foo/z.txt"]
+        assert (tmp_path / "implied/foo/x.txt").read_bytes() == b"foo/x.txt"
+    else:
+        assert overwrite is OverwritePolicy.RENAME
+        assert implied == [
+            (name, ExtractionStatus.EXTRACTED, name.replace("foo/", "foo (1)/"), name)
+            for name in _IMPLIED
+        ]
+        assert tree == [
+            "foo",
+            "foo (1)/",
+            "foo (1)/a/",
+            "foo (1)/a/y.txt",
+            "foo (1)/x.txt",
+            "foo (1)/z.txt",
+        ]
+    if overwrite is not OverwritePolicy.REPLACE:
+        assert (tmp_path / "implied/foo").read_bytes() == b"MINE"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_implied_parent_over_callers_dangling_symlink(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """A dangling symlink of the caller's is an entry that is not a directory too.
+    The symlink is never written through."""
+    implied, tree = _extract_over_callers_file(
+        _implied_parent_archive("tar", ["foo/x.txt"]),
+        tmp_path / "implied",
+        streaming=False,
+        overwrite=overwrite,
+        obstacle="symlink",
+    )
+    explicit, explicit_tree = _extract_over_callers_file(
+        _implied_parent_archive("tar", ["foo/", "foo/x.txt"]),
+        tmp_path / "explicit",
+        streaming=False,
+        overwrite=overwrite,
+        obstacle="symlink",
+    )
+    assert tree == explicit_tree
+    assert implied == [r for r in explicit if r[0] != "foo"]
+    assert not (tmp_path / "nowhere").exists()
+    assert not (tmp_path / "implied/nowhere").exists()
+
+
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_implied_parent_over_callers_file_under_stop(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """Under the default ``OnError.STOP``, ``ERROR`` raises its ``ExtractionError``,
+    not the ``FileExistsError`` ``mkdir`` gives; the other policies finish."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "foo").write_bytes(b"MINE")
+    data = _implied_parent_archive("tar", ["foo/x.txt"])
+    if overwrite is OverwritePolicy.ERROR:
+        with pytest.raises(ExtractionError, match="Destination already exists"):
+            open_and_extract(io.BytesIO(data), dest, overwrite=overwrite)
+        assert (dest / "foo").read_bytes() == b"MINE"
+    else:
+        report = open_and_extract(io.BytesIO(data), dest, overwrite=overwrite)
+        assert len(report.results) == 1
+
+
+def test_implied_parent_renamed_once_for_later_members(tmp_path: Path) -> None:
+    """Under ``RENAME`` the first member that implies ``foo`` picks ``foo (1)``; the
+    later ones, and a later ``foo/`` entry, follow it there rather than each picking
+    a name of its own."""
+    data = _implied_parent_archive("tar", ["foo/x.txt", "foo/", "foo/y.txt"])
+    results, tree = _extract_over_callers_file(
+        data, tmp_path / "out", streaming=False, overwrite=OverwritePolicy.RENAME
+    )
+    assert [path for _, _, path, _ in results] == [
+        "foo (1)/x.txt",
+        "foo (1)",
+        "foo (1)/y.txt",
+    ]
+    assert tree == ["foo", "foo (1)/", "foo (1)/x.txt", "foo (1)/y.txt"]

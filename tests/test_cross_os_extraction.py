@@ -1100,7 +1100,16 @@ def test_long_path_errors_name_the_plain_path(
     _fake_long_paths(monkeypatch)
     dest = tmp_path / "out"
     dest.mkdir()
-    (dest / "taken").write_bytes(b"caller's")
+    real_makedirs = os.makedirs
+
+    def refuse_taken(name: str, *args: object, **kwargs: object) -> None:
+        # The filesystem refuses the folder, as a read-only one would refuse a
+        # caller that is not root. ``name`` is the long form.
+        if str(name).endswith("/taken"):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), name)
+        real_makedirs(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "makedirs", refuse_taken)
     report = open_and_extract(
         io.BytesIO(_tar([("file", "taken/f", b"x")])),
         dest,

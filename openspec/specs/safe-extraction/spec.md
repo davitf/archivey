@@ -646,6 +646,25 @@ DIRECTORY member with the directory's own name merges into `dd (1)/`, as directo
 merge. A non-directory member with that name is not inside the directory: it resolves its
 own collision from the name it asked for (`dd (2)`, not `dd (1) (1)`).
 
+A member also implies a directory for each parent of its destination, whether or not the
+archive lists a directory entry for it. Where such a parent holds an entry that was there
+before the run and is not a directory (a file, a dangling symlink, or a symlink to a
+non-directory), that parent SHALL meet `OverwritePolicy` as an explicit DIRECTORY entry
+at that path would, and the member SHALL get the outcome that entry would get: `ERROR`
+fails the member with an `ExtractionError` naming the parent ("Destination already
+exists"), governed by `OnError`; `SKIP` records `NOT_OVERWRITTEN` and leaves the entry;
+`REPLACE` removes the entry and writes the member under a new directory there; `RENAME`
+leaves the entry and writes the member under a derived name for the parent (`foo/x` at
+`foo (1)/x`, `requested_path` `foo/x`), which later members inside it follow as above.
+The entry already there SHALL NOT cause a raw `OSError` to leave the library; a
+filesystem failure creating the parent (no space, no permission) still propagates as an
+`OSError`, recorded as `FAILED` under `OnError.CONTINUE`. The same applies to the
+members inside an explicit DIRECTORY entry that `ERROR` or `SKIP` left out. The entry is
+not a collision event, so `collided_with` stays `None`. A symlink of the caller's that
+resolves to a directory is a directory here and is followed, subject to the parent
+resolution check. A parent that is a non-directory this run wrote is not covered: the
+member fails as the `OnError` matrix states.
+
 Replacing an existing directory with any member type removes the directory first, and
 only an **empty** one: a directory that holds entries SHALL NOT be removed, and the
 replacing member SHALL fail with an `ExtractionError` governed by `OnError` (as GNU tar
@@ -719,6 +738,10 @@ name-safety requirement.
 | `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
 | `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`, with `collided_with=None`; no collision abort |
 | Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
+| `foo/x` with no `foo/` entry, the caller's file at `foo`, under `ERROR` | `foo/x` `FAILED` with `ExtractionError` ("Destination already exists"); the file is kept |
+| The same under `SKIP` | `foo/x` `NOT_OVERWRITTEN`; the file is kept |
+| The same under `REPLACE` | The file is removed; `foo/x` `EXTRACTED` under a new directory `foo/` |
+| The same under `RENAME` | The file is kept; `foo/x` `EXTRACTED` at `foo (1)/x`, and later members under `foo/` follow it there |
 
 ### Requirement: Extraction as a Composable Module
 
@@ -1134,7 +1157,8 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
 | Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
-| A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`; a non-directory already in `dest` before the run stays a filesystem `OSError` |
+| A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`, under every `OverwritePolicy` |
+| A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
 | Cumulative bytes/live ratio/max entries exceed limit under any `OnError` | `ResourceLimitError` propagates and halts; no later member processed |
 | Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |

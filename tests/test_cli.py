@@ -975,6 +975,29 @@ def test_extract_reports_a_renamed_directory_once(
     assert (dest / "dd (1)" / "s" / "g").read_bytes() == b"y"
 
 
+def test_extract_reports_a_renamed_implied_directory_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """As ``test_extract_reports_a_renamed_directory_once``, with no ``dd/`` entry:
+    the members imply ``dd``, which is renamed around the file all the same, and no
+    result carries that rename. It is still one rename."""
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for i in range(3):
+            zf.writestr(f"dd/f{i}", b"x")
+        zf.writestr("dd/s/g", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    assert (
+        main(["extract", str(z), "-d", str(dest), "--overwrite", "rename"]) == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert _report_lines(err, "renamed:") == ["renamed: dd -> dd (1)"]
+    assert "4 extracted, 1 renamed, 0 skipped" in err
+    assert (dest / "dd (1)" / "s" / "g").read_bytes() == b"y"
+
+
 def test_extract_reports_a_renamed_directory_stored_twice_once(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2303,36 +2326,62 @@ def test_hoist_merges_like_direct_extraction_replace(
     assert not (tmp_path / "bundle").exists()
 
 
-def test_hoist_collision_under_error_keeps_wrapper_and_fails(
+def test_hoist_collision_under_error_keeps_the_root_in_the_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Direct extraction would fail on this collision; the hoist fails the same
-    # way but keeps the unmoved remainder safely under the wrapper.
+    """The hoist is a convenience: a collision ``error`` refuses keeps the whole root
+    in the wrapper, with nothing moved, and the run succeeds."""
     monkeypatch.chdir(tmp_path)
     archive = _hoist_collision_archive(tmp_path)
     _seed_existing_root(tmp_path)
-    assert main(["extract", str(archive), "--overwrite", "error"]) == EXIT_FAIL
+    assert main(["extract", str(archive), "--overwrite", "error"]) == EXIT_OK
     err = capsys.readouterr().err
-    assert "Destination already exists" in err
+    assert _report_lines(err, "kept in ") == [
+        "kept in bundle/: root/clash.txt already exists"
+    ]
+    assert "Destination already exists" not in err
+    assert err.rstrip().endswith("→ bundle/")
     assert (tmp_path / "root" / "clash.txt").read_bytes() == b"MINE"
-    # The conflicting file is still available under the wrapper, not lost.
+    # No partial merge: ``new.txt`` stays with the rest of the root.
+    assert not (tmp_path / "root" / "new.txt").exists()
     assert (tmp_path / "bundle" / "root" / "clash.txt").read_bytes() == b"ARCHIVE"
+    assert (tmp_path / "bundle" / "root" / "new.txt").read_bytes() == b"NEW"
 
 
 def test_hoist_never_deletes_colliding_tree_under_replace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Archive member "root/clash" is a FILE; on disk ./root/clash is a DIRECTORY.
-    # replace must not rmtree the directory — it fails and keeps everything.
+    # replace must not rmtree the directory: the root stays in the wrapper.
     monkeypatch.chdir(tmp_path)
     archive = _tar(tmp_path / "bundle.tar", {"root/clash": b"ARCHIVE"})
     (tmp_path / "root" / "clash").mkdir(parents=True)
     (tmp_path / "root" / "clash" / "precious.txt").write_bytes(b"MINE")
-    assert main(["extract", str(archive), "--overwrite", "replace"]) == EXIT_FAIL
+    assert main(["extract", str(archive), "--overwrite", "replace"]) == EXIT_OK
     assert (tmp_path / "root" / "clash" / "precious.txt").read_bytes() == b"MINE"
     assert (tmp_path / "bundle" / "root" / "clash").read_bytes() == b"ARCHIVE"
+
+
+def test_hoist_discards_our_file_over_the_operators_directory_under_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``skip`` resolves our file against the operator's directory by discarding our
+    copy, so the hoist goes ahead: the opposite direction to ``replace`` above."""
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / "bundle.tar", {"root/clash": b"ARCHIVE", "root/new.txt": b"NEW"}
+    )
+    (tmp_path / "root" / "clash").mkdir(parents=True)
+    (tmp_path / "root" / "clash" / "precious.txt").write_bytes(b"MINE")
+    assert main(["extract", str(archive), "--overwrite", "skip"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "skipped: ") == ["skipped: root/clash"]
+    assert _report_lines(err, "kept in ") == []
+    assert (tmp_path / "root" / "clash" / "precious.txt").read_bytes() == b"MINE"
+    assert (tmp_path / "root" / "new.txt").read_bytes() == b"NEW"
+    assert not (tmp_path / "bundle").exists()
 
 
 def test_cli_logging_leaves_no_global_state(sample_zip: Path) -> None:
@@ -3262,11 +3311,29 @@ def test_hoist_escapes_the_collisions_it_resolves(
     assert "\u2028" not in err
 
 
+def test_hoist_escapes_a_collision_it_keeps_the_root_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Under ``error`` the hoist names the collision and the wrapper it kept."""
+    monkeypatch.chdir(tmp_path)
+    archive = _hostile_collision_archive(tmp_path, name=f"w{_SPOOF_PORTABLE_ROOT}.tar")
+    assert main(["x", str(archive), "--overwrite", "error"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "kept in ") == [
+        "kept in wev\\u2028il/: rootev\\u2028il/clash.txt already exists"
+    ]
+    assert "\u2028" not in err
+
+
 def test_hoist_escapes_a_collision_it_stops_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Under ``error`` the hoist names the collision and the wrapper it left behind."""
+    """A collision the check before the move did not see (the cwd changed in between)
+    still stops the hoist, which names the collision and the wrapper it left behind."""
+    from archivey.cli import extract_cmd
+
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(extract_cmd, "_first_clash", lambda *args: None)
     archive = _hostile_collision_archive(tmp_path, name=f"w{_SPOOF_PORTABLE_ROOT}.tar")
     assert main(["x", str(archive), "--overwrite", "error"]) == EXIT_FAIL
     err = capsys.readouterr().err
@@ -3477,9 +3544,8 @@ def _hoist_and_direct(
     each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``
     and ``args``; return each tree and stderr. Both runs must exit 0.
 
-    A name ending in ``/`` is stored as a directory, at ``dir_mode``. A root directory
-    that collides with a file is stored, because a direct extraction fails on an
-    implied one. ``mine_modes`` sets the mode of the operator's entries it names."""
+    A name ending in ``/`` is stored as a directory, at ``dir_mode``. ``mine_modes``
+    sets the mode of the operator's entries it names."""
     runs = []
     for how, extra in (("hoist", []), ("direct", ["-d", "."])):
         cwd = tmp_path / overwrite / how
@@ -3757,9 +3823,12 @@ def test_stopped_hoist_names_members_left_in_the_wrapper(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Under ``--overwrite error`` the hoist stops at the operator's ``c%02`` and
-    leaves the member in the wrapper: its line names ``c/c%02``, where it is, not the
-    operator's ``c%02``."""
+    """When the cwd changes after the check, the hoist stops at the operator's
+    ``c%02`` under ``--overwrite error`` and leaves the member in the wrapper: its
+    line names ``c/c%02``, where it is, not the operator's ``c%02``."""
+    from archivey.cli import extract_cmd
+
+    monkeypatch.setattr(extract_cmd, "_first_clash", lambda *args: None)
     archive = tmp_path / "c.tar"
     with tarfile.open(archive, "w") as tf:
         info = tarfile.TarInfo("c\x02")
@@ -4366,10 +4435,10 @@ def test_hoist_runs_when_a_directory_has_the_wrapper_name(
 @pytest.mark.parametrize(
     ("overwrite", "code", "expected", "leftover"),
     [
-        # A colliding file stops the hoist; the rest stays in the new wrapper.
+        # A colliding file keeps the whole root in the new wrapper; nothing moves.
         (
             "error",
-            EXIT_FAIL,
+            EXIT_OK,
             {"src/a.txt": b"mine-a", "src/c.txt": b"mine-c"},
             {"src (1)/src/a.txt": b"new-a", "src (1)/src/b.txt": b"new-b"},
         ),
@@ -4425,6 +4494,103 @@ def test_hoist_merges_root_named_like_stem_into_existing_directory(
     assert found == {**expected, **leftover}
     if not leftover:
         assert not (tmp_path / "src (1)").exists()
+
+
+def _tar_root_with_file(path: Path, *, explicit_root: bool) -> Path:
+    """``foo.tar``-style archive holding ``<stem>/x.txt``, with or without a stored
+    ``<stem>/`` directory entry."""
+    with tarfile.open(path, "w") as tf:
+        stem = path.name.removesuffix(".tar")
+        if explicit_root:
+            info = tarfile.TarInfo(stem)
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o755
+            tf.addfile(info)
+        info = tarfile.TarInfo(f"{stem}/x.txt")
+        info.size = 7
+        tf.addfile(info, io.BytesIO(b"ARCHIVE"))
+    return path
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("explicit_root", [False, True], ids=["implied", "stored"])
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_hoist_keeps_the_root_when_the_operators_file_has_its_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    explicit_root: bool,
+    dry_run: bool,
+) -> None:
+    """``foo.tar`` holding ``foo/x.txt``, with the operator's file ``foo``: no policy
+    but ``rename`` can merge a directory into a file without deleting it, so the root
+    stays in the wrapper ``foo (1)/`` and the run succeeds. ``rename`` moves the root
+    to ``foo (1)``, as before. The dry run says the same."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    archive = _tar_root_with_file(tmp_path / "foo.tar", explicit_root=explicit_root)
+    (cwd / "foo").write_bytes(b"MINE")
+    args = ["x", "--overwrite", overwrite, str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "into foo (1)/" in err
+    if overwrite == "rename":
+        assert _report_lines(err, "would keep in " if dry_run else "kept in ") == []
+        if not dry_run:
+            assert (cwd / "foo (1)" / "x.txt").read_bytes() == b"ARCHIVE"
+    else:
+        prefix = "would keep in " if dry_run else "kept in "
+        assert _report_lines(err, prefix) == [f"{prefix}foo (1)/: foo already exists"]
+        assert err.rstrip().endswith("→ foo (1)/")
+        if not dry_run:
+            assert (cwd / "foo (1)" / "foo" / "x.txt").read_bytes() == b"ARCHIVE"
+    assert (cwd / "foo").read_bytes() == b"MINE"
+    if dry_run:
+        assert sorted(p.name for p in cwd.iterdir()) == ["foo"]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_hoist_keeps_the_root_on_a_deep_clash_under_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+) -> None:
+    """A clash deep inside the operator's ``src/`` keeps the whole root in the
+    wrapper under ``error``: nothing moves, not even the members that would not
+    clash, and the run succeeds. The dry run predicts the same."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    (cwd / "src" / "lib").mkdir(parents=True)
+    (cwd / "src" / "lib" / "x.txt").write_bytes(b"MINE")
+    archive = _tar(
+        tmp_path / "pkg.tar",
+        {"src/a.txt": b"new-a", "src/lib/x.txt": b"new-x", "src/z.txt": b"new-z"},
+    )
+    args = ["x", "--overwrite", "error", str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    prefix = "would keep in " if dry_run else "kept in "
+    assert _report_lines(err, prefix) == [f"{prefix}pkg/: src/lib/x.txt already exists"]
+    assert err.rstrip().endswith("→ pkg/")
+    found = {
+        p.relative_to(cwd).as_posix(): p.read_bytes()
+        for p in cwd.rglob("*")
+        if p.is_file()
+    }
+    expected = {"src/lib/x.txt": b"MINE"}
+    if not dry_run:
+        expected |= {
+            "pkg/src/a.txt": b"new-a",
+            "pkg/src/lib/x.txt": b"new-x",
+            "pkg/src/z.txt": b"new-z",
+        }
+    assert found == expected
 
 
 def test_extract_dot_dot_stem_writes_under_cwd(

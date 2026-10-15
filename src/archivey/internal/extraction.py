@@ -257,15 +257,20 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
-def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
-    """Every symlink under ``root``, as (its path relative to ``root`` with ``/``
-    separators, its target), sorted; ``None`` when part of the tree could not be read.
+def _scratch_tree(
+    root: Path,
+) -> tuple[tuple[tuple[str, bool], ...], tuple[tuple[str, str], ...]] | None:
+    """Every entry under ``root``, as (its path relative to ``root`` with ``/``
+    separators, whether it is a directory and not a symlink), and every symlink, as
+    (that path, its target), each sorted; ``None`` when part of the tree could not be
+    read.
 
     Directories are listed without following links. A directory that cannot be listed,
     or a link that cannot be read, makes the whole record ``None`` rather than leaving
     it out: the CLI's hoist keeps a tree it could not fully walk, and a partial record
     would let the prediction move it.
     """
+    found = []
     links = []
     pending = [root]
     try:
@@ -276,14 +281,16 @@ def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
             with os.scandir(long_path(directory)) as entries:
                 for entry in entries:
                     path = Path(plain(entry.path))
+                    rel = path.relative_to(root).as_posix()
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    found.append((rel, is_dir))
                     if entry.is_symlink():
-                        rel = path.relative_to(root).as_posix()
                         links.append((rel, plain(os.readlink(entry.path))))
-                    elif entry.is_dir(follow_symlinks=False):
+                    elif is_dir:
                         pending.append(path)
     except OSError:
         return None
-    return tuple(sorted(links))
+    return tuple(sorted(found)), tuple(sorted(links))
 
 
 def _file_identity(st: os.stat_result) -> tuple[int, int, int, int]:
@@ -1108,6 +1115,7 @@ class ExtractionCoordinator:
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
+        self.dry_run_entries: tuple[tuple[str, bool], ...] | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -1194,7 +1202,9 @@ class ExtractionCoordinator:
                     )
                 if len(self.dry_run_top_level) == 1:
                     # What the CLI's hoist prediction walks; see ExtractionReport.
-                    self.dry_run_links = _scratch_links(work)
+                    tree = _scratch_tree(work)
+                    if tree is not None:
+                        self.dry_run_entries, self.dry_run_links = tree
             return [dry.rebase_result(result) for result in results]
         finally:
             self._dry = None
@@ -1985,9 +1995,15 @@ class ExtractionCoordinator:
         removed. One whose path holds something else now is left where it was moved,
         with a warning, rather than lost.
 
+        An entry moved aside for a parent a member implied
+        (``_make_room_for_parents``) is the same: the run's directory there replaced
+        it, unless that directory is gone, as when its member was not selected in the
+        end (``_unselect_revised_member``).
+
         A run that stopped before the end of its pass never settled what it wrote
         there, so that write is taken back and the caller's entry returns: whether
-        the member was selected is not known."""
+        the member was selected is not known. A write the filesystem refuses to take
+        back leaves the entry where it was moved, with a warning."""
         state = self._state
         set_aside, state.set_aside = state.set_aside, {}
         for path, aside in set_aside.items():
@@ -1995,7 +2011,10 @@ class ExtractionCoordinator:
             try:
                 if not state.settled and path in state.written_paths:
                     self._remove_unsettled(path)
-                if path in state.written_paths and not any(
+                elif not state.settled and path in state.created_dirs:
+                    self._remove_unsettled_tree(path)
+                replaced = path in state.written_paths or path in state.created_dirs
+                if replaced and not any(
                     path in unremoved for unremoved in state.unremoved.values()
                 ):
                     if os.path.isdir(on_disk) and not os.path.islink(on_disk):
@@ -2020,6 +2039,24 @@ class ExtractionCoordinator:
                     str(self._shown(path)),
                     exc,
                 )
+
+    def _remove_unsettled_tree(self, path: Path) -> None:
+        """``_remove_unsettled`` for what the run wrote or created at ``path`` and
+        under it, deepest first. A folder that still has entries stays.
+
+        A failure to remove ``path`` itself propagates, as one entry left under it
+        makes that removal fail: the run's directory is still there, so the caller
+        must not take it as replaced (``_restore_set_aside``)."""
+        state = self._state
+        under = {
+            p
+            for p in (*state.written_paths, *state.created_dirs)
+            if p.is_relative_to(path) and p != path
+        }
+        for p in sorted(under, key=lambda p: len(p.parts), reverse=True):
+            with contextlib.suppress(OSError):
+                self._remove_unsettled(p)
+        self._remove_unsettled(path)
 
     def _remove_unsettled(self, path: Path) -> None:
         """Remove what the run wrote at ``path`` before its pass was cut short (a
@@ -2653,7 +2690,9 @@ class ExtractionCoordinator:
         if transformed.type == MemberType.DIRECTORY:
             existed = self._occupied(dest_path)
             callers = self._is_callers_directory(dest_path)
-            if not self._prepare_destination(transformed, dest_path):
+            if not self._make_room_for_parents(
+                transformed, dest_path
+            ) or not self._prepare_destination(transformed, dest_path):
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
@@ -2726,8 +2765,15 @@ class ExtractionCoordinator:
     ) -> ExtractionResult | None:
         """Apply the OverwritePolicy at ``dest_path`` and create its parents; the
         result if the policy declines, else ``None``. A check that skips the member
-        comes first, so it cannot remove an entry under ``OverwritePolicy.REPLACE``."""
-        if not self._prepare_destination(transformed, dest_path, atomic=atomic):
+        comes first, so it cannot remove an entry under ``OverwritePolicy.REPLACE``.
+        A parent the caller holds as a non-directory is handled first, as an explicit
+        directory entry there would be (``_make_room_for_parents``). That keeps the
+        rule across both calls: the parent's own skip check runs before it removes
+        anything, and once it has replaced the parent nothing is left at
+        ``dest_path`` for ``_prepare_destination`` to skip."""
+        if not self._make_room_for_parents(
+            transformed, dest_path
+        ) or not self._prepare_destination(transformed, dest_path, atomic=atomic):
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
@@ -2769,7 +2815,13 @@ class ExtractionCoordinator:
         on the exact name and defers to the local OS (no collision *event*, but RENAME
         still uses the map to avoid re-deriving names). Shared by the main pass and the
         orphan second pass so deferred hardlinks honour the map too.
+
+        Under RENAME, a parent of ``requested`` that the caller holds as a file or a
+        symlink first moves ``requested`` under a derived name for that parent
+        (``_rename_callers_parent``).
         """
+        if self._overwrite is OverwritePolicy.RENAME:
+            requested = self._rename_callers_parent(requested)
         if transformed.type == MemberType.DIRECTORY and not self._blocks_directory(
             requested
         ):
@@ -2789,12 +2841,81 @@ class ExtractionCoordinator:
             self._check_collision_abort(original, transformed, prior)
         if self._overwrite is OverwritePolicy.RENAME:
             if prior is not None or self._occupied(requested):
-                return self._derive_free_name(requested, transformed), None, collided
+                is_dir = transformed.type == MemberType.DIRECTORY
+                free = self._derive_free_name(requested, is_dir=is_dir)
+                return free, None, collided
             return requested, None, None
         if collided is not None:
             assert prior is not None
             return prior.physical, prior, collided
         return requested, None, None
+
+    def _callers_parent(self, path: Path) -> Path | None:
+        """The parent of ``path`` under the destination that the caller holds as an
+        entry that is not a directory (a file, or a symlink that does not resolve to
+        a directory), or ``None``. Only the nearest to the destination can exist: the
+        directories below it are not there yet.
+
+        The member implies that parent as a directory, and it meets OverwritePolicy as
+        an explicit directory entry would (``_make_room_for_parents``). One the run
+        wrote is not the caller's: ``_makedirs`` fails the member with an error that
+        names it."""
+        dest = self._state.dest
+        parent = path.parent
+        if (
+            parent == dest
+            or parent in self._state.created_dirs
+            or os.path.isdir(long_path(parent))
+        ):
+            # The common case: a directory this run made (``created_dirs`` drops
+            # one the run removes), else one stat.
+            return None
+        try:
+            parts = parent.relative_to(dest).parts
+        except ValueError:
+            return None
+        probe = dest
+        for part in parts:
+            probe = probe / part
+            try:
+                st = os.lstat(long_path(probe))
+            except (OSError, ValueError):
+                return None
+            if stat.S_ISDIR(st.st_mode) or (
+                stat.S_ISLNK(st.st_mode) and os.path.isdir(long_path(probe))
+            ):
+                continue
+            if probe in self._current.parked or not self._is_callers_entry(probe, st):
+                return None
+            return probe
+        return None
+
+    def _rename_callers_parent(self, requested: Path) -> Path:
+        """``requested`` moved under a derived name for its parent that the caller
+        holds as a non-directory (``_callers_parent``), as RENAME writes an explicit
+        directory entry there: ``foo/x`` -> ``foo (1)/x``. The later members inside
+        it follow it (``_follow_renamed_dirs``), so the name is derived once."""
+        blocked = self._callers_parent(requested)
+        if blocked is None:
+            return requested
+        renamed_dirs = self._state.renamed_dirs
+        renamed = renamed_dirs.get(blocked)
+        if renamed is None:
+            renamed = renamed_dirs[blocked] = self._derive_free_name(
+                blocked, is_dir=True
+            )
+        return renamed / requested.relative_to(blocked)
+
+    def _make_room_for_parents(self, member: ArchiveMember, path: Path) -> bool:
+        """Apply OverwritePolicy to a parent of ``path`` that the caller holds as a
+        non-directory (``_callers_parent``), as for an explicit directory entry
+        there: ERROR raises, SKIP returns False, REPLACE removes the entry and returns
+        True. RENAME moved ``path`` away from it already
+        (``_rename_callers_parent``)."""
+        blocked = self._callers_parent(path)
+        if blocked is None:
+            return True
+        return self._prepare_destination(member, blocked)
 
     def _blocks_directory(self, path: Path) -> bool:
         """Whether ``path`` holds an entry that is not a real directory: a file or a
@@ -3046,7 +3167,7 @@ class ExtractionCoordinator:
             rel = self._rel_name(path)
         return collision_key(rel, ExtractionPolicy.STANDARD)
 
-    def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
+    def _derive_free_name(self, requested: Path, *, is_dir: bool) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
 
         :func:`~archivey.paths.numbered_name` spells each candidate (``photo.jpg`` →
@@ -3061,7 +3182,6 @@ class ExtractionCoordinator:
         deterministic, which is what the spec asks. ``_release_claim`` resets the
         counters, so a name freed by an anti-item is found again."""
         parent = requested.parent
-        is_dir = transformed.type == MemberType.DIRECTORY
         rename_next = self._state.rename_next
         counter_key = self._collision_key(requested)
         n = rename_next.get(counter_key, 1)
@@ -4036,10 +4156,10 @@ class ExtractionCoordinator:
         extracted, and the conflict is in the archive, not in the filesystem. So when
         creating the directories fails and one of the components is a non-directory
         that this run wrote, the member gets an ``ExtractionError`` that names that
-        component, a per-member failure like any other. Any other failure propagates
-        unchanged: a non-directory that was in ``dest`` before the run is a filesystem
-        condition, and ``OverwritePolicy`` governs a member's own destination only,
-        never its parents.
+        component, a per-member failure like any other. A non-directory that was in
+        ``dest`` before the run met ``OverwritePolicy`` before this
+        (``_make_room_for_parents``), so any other failure is the filesystem's, and
+        propagates unchanged.
         """
         # The components that do not exist yet: this run creates them, so a directory
         # member naming one later is not the caller's (``_is_callers_directory``).
