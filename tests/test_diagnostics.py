@@ -1014,7 +1014,30 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
         # A zero-width joiner is part of ordinary emoji and of Indic spelling.
         DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
+        # The name is wrong, not the bytes: the bytes win and the archive reads in full.
+        DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
     }
+
+
+def test_strict_opens_a_tarball_named_gz_and_records_the_conflict(
+    tmp_path: Path,
+) -> None:
+    """A wrong extension is recorded, but ``STRICT`` does not refuse the archive."""
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 2
+        tf.addfile(info, io.BytesIO(b"hi"))
+    path = tmp_path / "b.gz"
+    path.write_bytes(gzip.compress(buf.getvalue()))
+    with open_archive(
+        path, config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    ) as ar:
+        assert [m.name for m in ar.members()] == ["a.txt"]
+        assert ar.read("a.txt") == b"hi"
+        assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in ar.diagnostics.counts
 
 
 def test_the_logged_line_is_the_escaped_message(

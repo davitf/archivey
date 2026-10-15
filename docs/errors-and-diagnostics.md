@@ -239,7 +239,7 @@ config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
   report the archive's own bytes or metadata as anomalous — and collects the rest.
 - **`DiagnosticPolicy.PEDANTIC`** raises on everything.
 
-Ten codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
+Eleven codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
 is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
 `MEMBER_SELECTOR_UNMATCHED` (argument hygiene — a pipeline passing a password, or one
 list of names, to every call would otherwise raise on every archive they do not fit),
@@ -254,7 +254,9 @@ member would raise),
 `MEMBER_SPECIAL_FILE_HAS_DATA` (a documented writer option produces it, and the bytes
 are delivered and checked like any file's), and `MEMBER_NAME_INVISIBLE_CHARACTER` (a
 zero-width joiner is part of ordinary emoji, so `STRICT` would refuse archives of
-legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set).
+legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set),
+and `FORMAT_EXTENSION_CONFLICT` (the file's name is wrong, not its bytes: a tarball
+saved as `b.gz` opens and reads in full, and the code is still recorded).
 `ARCHIVE_INTEGRITY_CODES` is exported, and the presets are ordinary policies built from
 it, so you adjust one by building your own from the same set:
 
