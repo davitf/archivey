@@ -208,6 +208,22 @@ def test_a_walk_stopped_past_a_damaged_directory_fails_only_its_member(
         assert not isinstance(raised.value, TruncatedError)
 
 
+def test_a_local_header_past_the_end_lists_nothing_more_past_a_damaged_directory() -> (
+    None
+):
+    """The walk past a damaged directory meets a local header whose extra field runs
+    past the end: no member is past it, and the listing raises the damage."""
+    data = bytearray(_zip())
+    struct.pack_into("<H", data, 28, 0xFFFF)  # the first local header's extra length
+    first = _central_headers(bytes(data))[0]
+    data[first : first + 4] = b"XXXX"
+    with open_archive(io.BytesIO(bytes(data)), format=ArchiveFormat.ZIP) as reader:
+        report = reader.members_report()
+        assert list(report.members) == []
+        assert type(report.error) is CorruptionError
+        assert "Bad magic number" in str(report.error)
+
+
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
     """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
     that is not, optionally pointing at ``header_offset``, and whose third directory

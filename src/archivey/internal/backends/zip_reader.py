@@ -1655,14 +1655,11 @@ class ZipReader(BaseArchiveReader):
         damage, so the listing's error stays a ``CorruptionError`` and keeps the
         members listed. A limit the walk over the local headers met is raised
         instead, as at a directory entry past it. Any other error that stopped the
-        walk is about the member it could not get past, and that member's read
-        raises it (``_open_member``)."""
+        walk is either about the member whose data it could not get past, whose read
+        raises it (``_open_member``), or a local header it could not read (one whose
+        name or extra field runs past the end), past which nothing more is listed."""
         if isinstance(past.walked.error, ResourceLimitError):
             return self._walked_error(past.walked, None)
-        # Every other stop is at a member's data (``skip_member``): the walk reads
-        # bytes that are no local header as the members' end, and the end record
-        # read at open means the source does not end before the directory.
-        assert past.walked.error is None or past.walked.cut is not None
         return damage
 
     def _iter_walked(self, walked: _WalkedMembers) -> Iterator[ArchiveMember]:
