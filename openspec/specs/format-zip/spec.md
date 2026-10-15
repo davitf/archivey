@@ -590,7 +590,7 @@ reads fail too.
 | The first case with the directory naming one short member differently from its local header | From a file: that member keeps its stored offset and its read raises `CorruptionError`; the other is corrected. From a pipe: the directory entry points at no local header the pass met, so the pass raises `CorruptionError` at the directory, as for any such entry, and reports the unmatched local header as `ARCHIVE_UNLISTED_DATA` |
 | A member of 2³² + 2²⁹ bytes, sizes and offsets stored modulo 2³², then a short member | Both listed and the directory's offset corrected; the short member after the large one keeps its stored offset and its read raises `CorruptionError` (out of scope, see above) |
 | A ZIP under 4 GiB whose directory lists members out of file order | No correction and no extra read: every corrected offset would be past the directory |
-| The first case under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` for `ARCHIVE_OFFSET_WRAPPED` |
+| The first case under `DiagnosticPolicy.STRICT` | Reads as above; the `ARCHIVE_OFFSET_WRAPPED` diagnostics are recorded, not raised |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 

@@ -20,7 +20,7 @@ import pytest
 from archivey import open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy, OffsetWrapContext
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError
+from archivey.exceptions import CorruptionError
 from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     find_end_record,
@@ -246,12 +246,13 @@ def test_extraction_of_the_members_past_4_gib(tmp_path) -> None:
     assert (tmp_path / "c.txt").read_bytes() == b"sea " * 5
 
 
-def test_strict_refuses_a_wrapped_offset() -> None:
+def test_strict_reads_a_wrapped_offset_and_records_it() -> None:
+    # macOS writes and reads these by default, so STRICT does not refuse them.
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as caught:
-        with _open(_layout(_PAST_4_GIB), config=config) as reader:
-            reader.members()
-    assert caught.value.diagnostic.code is DiagnosticCode.ARCHIVE_OFFSET_WRAPPED
+    with _open(_layout(_PAST_4_GIB), config=config) as reader:
+        members = reader.members()
+        assert reader.read(members[2]) == b"sea " * 5
+        assert len(_wraps(reader)) == 3
 
 
 def test_only_the_directory_offset_wrapped() -> None:

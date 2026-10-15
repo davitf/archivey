@@ -142,7 +142,7 @@ yielded.
   missing multiple of 4 GiB where an offset falls below the furthest end of the
   members before it, but only when a local header with the member's name is at the corrected offset;
   the member's CRC-32 is still checked. Each correction emits `ARCHIVE_OFFSET_WRAPPED`,
-  which `DiagnosticPolicy.STRICT` refuses. A single member over 4 GiB in such an
+  which `DiagnosticPolicy.STRICT` does not raise on, since macOS writes such archives by default. A single member over 4 GiB in such an
   archive is not read, and neither are the members after it: its sizes are cut too,
   so the offsets after it cannot be corrected.
 - **Bytes after the end** of the archive (after its end record and comment) emit

@@ -700,12 +700,11 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
-        DiagnosticCode.ARCHIVE_OFFSET_WRAPPED,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eleven codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twelve codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -743,6 +742,10 @@ and the reasons are part of the contract rather than an oversight:
 - ``FORMAT_EXTENSION_CONFLICT`` — reports the file's name, not its bytes: the bytes
   win and the archive reads in full. A tarball saved as ``b.gz`` is an ordinary mistake,
   and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
+- ``ARCHIVE_OFFSET_WRAPPED`` — macOS Archive Utility (Finder's Compress) writes a ZIP
+  past 4 GiB this way by default and reads it back, and a correction is kept only when
+  a local header with the member's name is there, with the CRC-32 still checked.
+  ``STRICT`` would refuse an ordinary Mac archive.
 """
 
 
