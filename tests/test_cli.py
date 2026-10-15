@@ -1996,6 +1996,19 @@ def test_password_rejected_message_distinct_from_required() -> None:
         )
 
 
+def _tar_dirs(path: Path, names: list[str]) -> Path:
+    """A TAR of empty directory entries, each with mtime 0."""
+    import tarfile
+
+    with tarfile.open(path, "w") as tf:
+        for name in names:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o755
+            tf.addfile(info)
+    return path
+
+
 def _tar(path: Path, entries: dict[str, bytes]) -> Path:
     import tarfile
 
@@ -2034,6 +2047,54 @@ def test_hoist_single_file_named_like_wrapper(
     archive = _tar(tmp_path / "src.tar", {"src": b"solo"})
     assert main(["extract", str(archive)]) == EXIT_OK
     assert (tmp_path / "src").read_bytes() == b"solo"
+    assert not (tmp_path / "src (1)").exists()
+
+
+@pytest.mark.parametrize("step", ["rename", "rmdir", "restore"])
+def test_hoist_single_file_named_like_wrapper_restores_wrapper_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    step: str,
+) -> None:
+    # The wrapper steps aside to ``src (1)`` so the file can take its name. When
+    # the move or the removal of ``src (1)`` fails, the wrapper is back under its
+    # own name, which is the name the failure lines give.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "src.tar", {"src": b"solo"})
+    real_rename, real_rmdir = Path.rename, Path.rmdir
+
+    def rename(self: Path, target: str | os.PathLike[str]) -> Path:
+        if step == "rename" and self.parent.name == "src (1)":
+            raise PermissionError("refused")
+        if step == "restore" and Path(target).parent.name == "src (1)":
+            # The move back into ``src (1)`` fails as well: a double fault.
+            raise PermissionError("restore refused")
+        return real_rename(self, target)
+
+    def rmdir(self: Path) -> None:
+        if step in ("rmdir", "restore") and self.name == "src (1)":
+            raise PermissionError("refused")
+        real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    assert main(["extract", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    # A failed restore never replaces the error that stopped the hoist.
+    assert _report_lines(err, "archivey: hoist failed: ") == [
+        "archivey: hoist failed: refused"
+    ]
+    if step == "restore":
+        # The file kept its place in the cwd, so the wrapper's name is taken and
+        # ``src (1)`` is left behind empty. The lines name what is on disk.
+        assert (tmp_path / "src").read_bytes() == b"solo"
+        assert (tmp_path / "src (1)").is_dir()
+        assert not any((tmp_path / "src (1)").iterdir())
+        assert _report_lines(err, "files left in ") == ["files left in src (1)/"]
+        return
+    assert _report_lines(err, "files left in ") == ["files left in src/"]
+    assert (tmp_path / "src" / "src").read_bytes() == b"solo"
     assert not (tmp_path / "src (1)").exists()
 
 
@@ -3216,6 +3277,60 @@ def test_hoist_escapes_a_collision_it_stops_on(
         "hoist stopped; remaining files left in wev\\u2028il/"
     ]
     assert "\u2028" not in err
+
+
+def test_hoist_restores_the_wrapper_when_removing_it_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Every member moved out of the aside ``w (1)``, then its removal fails. The
+    # wrapper is back under its own name, so ``files left in w/`` names a directory
+    # that exists.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "w.tar", {"root/a.txt": b"a"})
+    real_rmdir = Path.rmdir
+
+    def rmdir(self: Path) -> None:
+        if self.name == "w (1)":
+            raise PermissionError("refused")
+        real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    assert main(["x", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert _report_lines(err, "archivey: hoist failed: ") == [
+        "archivey: hoist failed: refused"
+    ]
+    assert _report_lines(err, "files left in ") == ["files left in w/"]
+    assert (tmp_path / "w").is_dir()
+    assert not (tmp_path / "w (1)").exists()
+    assert (tmp_path / "root" / "a.txt").read_bytes() == b"a"
+
+
+def test_hoist_restore_never_replaces_a_member_the_merge_renamed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The cwd holds a file ``foo``, so ``foo.tar`` extracts into ``foo (1)/``, which
+    # steps aside to ``foo (1) (1)/``. Under rename the merge gives the root ``foo/``
+    # the free name ``foo (1)``. When removing the aside directory fails, the restore
+    # must not rename it onto that member, and the lines name where it stays.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "foo").write_bytes(b"MINE")
+    archive = _tar_dirs(tmp_path / "foo.tar", ["foo/"])
+    real_rmdir = Path.rmdir
+
+    def rmdir(self: Path) -> None:
+        if self.name == "foo (1) (1)":
+            raise PermissionError("refused")
+        real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    assert main(["x", str(archive), "--overwrite", "rename"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert _report_lines(err, "files left in ") == ["files left in foo (1) (1)/"]
+    assert (tmp_path / "foo").read_bytes() == b"MINE"
+    # The member keeps its stored mtime: it was not replaced by the aside directory.
+    assert (tmp_path / "foo (1)").stat().st_mtime == 0
+    assert not any((tmp_path / "foo (1) (1)").iterdir())
 
 
 def test_hoist_escapes_the_wrapper_when_the_move_fails(

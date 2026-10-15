@@ -192,8 +192,9 @@ class _Moves:
     wrapper's parent after the move. A name that is not a key moved with its nearest
     ancestor that is. ``discarded`` holds the keys whose entry ``SKIP`` unlinked
     rather than moved: their ``names`` value is the operator's entry that was kept,
-    not the member. ``left_in`` is the wrapper's name when the hoist stopped
-    part-way: a name under no key is still in the wrapper.
+    not the member. ``left_in`` names where the remainder is when the hoist stopped
+    part-way: the wrapper, or the aside directory when the wrapper's name could not
+    be taken back. A name under no key is still in that directory.
     """
 
     names: dict[str, str]
@@ -216,20 +217,40 @@ class _Moves:
     def of(
         cls,
         moved: dict[str, tuple[Path, bool]],
-        wrapper: Path,
+        left_in: Path,
         *,
         stopped: bool = False,
     ) -> _Moves:
-        """What the hoist recorded in ``moved``, named from ``wrapper``'s
-        parent; ``stopped`` when the merge did not finish."""
+        """What the hoist recorded in ``moved``, named from ``left_in``'s parent.
+
+        ``left_in`` is the directory that holds whatever did not move: the wrapper,
+        or the aside directory when the wrapper's name could not be taken back. Both
+        share one parent. ``stopped`` when the merge did not finish.
+        """
         return cls(
             {
-                name: path.relative_to(wrapper.parent).as_posix()
+                name: path.relative_to(left_in.parent).as_posix()
                 for name, (path, _) in moved.items()
             },
             frozenset(name for name, (_, gone) in moved.items() if gone),
-            wrapper.name if stopped else None,
+            left_in.name if stopped else None,
         )
+
+
+def _step_back(side: Path, wrapper: Path) -> Path:
+    """Rename ``side`` back to ``wrapper``; return where the remainder now is.
+
+    Only while ``wrapper`` is free: under ``--overwrite rename`` the merge can give a
+    member that name, and a rename onto an empty directory would replace it. When
+    the rename does not happen, the remainder stays in ``side``, which is returned.
+    """
+    if os.path.lexists(wrapper):
+        return side
+    try:
+        side.rename(wrapper)
+    except OSError:
+        return side
+    return wrapper
 
 
 class _HoistConflict(Exception):
@@ -557,6 +578,9 @@ def maybe_hoist_single_root(
     # The sole root shares the wrapper's name, so the wrapper is removed and the root
     # takes its place under that same name; otherwise the root is merged into the cwd.
     in_place = dest == wrapper
+    # Where the remainder is when the hoist stops: the wrapper, unless restoring it
+    # failed and the remainder stayed in the aside directory.
+    left_in = wrapper
     try:
         if in_place:
             if child.is_dir() and not child.is_symlink():
@@ -584,8 +608,23 @@ def maybe_hoist_single_root(
                 # aside so the entry can take its place.
                 side = _free_name(wrapper, is_dir=True)
                 wrapper.rename(side)
-                (side / child.name).rename(dest)
-                side.rmdir()
+                try:
+                    (side / child.name).rename(dest)
+                    try:
+                        side.rmdir()
+                    except BaseException:
+                        # The entry holds the wrapper's name now; it goes back inside
+                        # ``side`` first, so ``side`` can take that name again below.
+                        try:
+                            dest.rename(side / child.name)
+                        except OSError:
+                            # It stays at its final name: report it there.
+                            moved[child.name] = (dest, False)
+                        raise
+                except BaseException:
+                    # Leave the entry where the messages say it is: in the wrapper.
+                    left_in = _step_back(side, wrapper)
+                    raise
         else:
             # The wrapper took the first free name for the archive's stem, which can
             # be the free name a rename of the root would take (``foo`` exists, so
@@ -599,12 +638,11 @@ def maybe_hoist_single_root(
                 landed = _merge_move(
                     side / child.name, dest, overwrite, result, err, child.name, moved
                 )
+                side.rmdir()
             except BaseException:
                 # Leave the remainder where the messages say it is.
-                with contextlib.suppress(OSError):
-                    side.rename(wrapper)
+                left_in = _step_back(side, wrapper)
                 raise
-            side.rmdir()
             result.moves = _Moves.of(moved, wrapper)
             if landed is None:
                 # SKIP kept the operator's entry and discarded ours; ``skipped:``
@@ -619,26 +657,26 @@ def maybe_hoist_single_root(
             file=err,
         )
         print(
-            f"hoist stopped; remaining files left in {escape_path(wrapper)}/",
+            f"hoist stopped; remaining files left in {escape_path(left_in)}/",
             file=err,
         )
         return _HoistResult(
-            wrapper,
+            left_in,
             ok=False,
             renamed=result.renamed,
             skipped=result.skipped,
-            moves=_Moves.of(moved, wrapper, stopped=True),
+            moves=_Moves.of(moved, left_in, stopped=True),
         )
     except OSError as exc:
         # The ``archivey: `` prefix: see main._parse_and_dispatch.
         print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
-        print(f"files left in {escape_path(wrapper)}/", file=err)
+        print(f"files left in {escape_path(left_in)}/", file=err)
         return _HoistResult(
-            wrapper,
+            left_in,
             ok=False,
             renamed=result.renamed,
             skipped=result.skipped,
-            moves=_Moves.of(moved, wrapper, stopped=True),
+            moves=_Moves.of(moved, left_in, stopped=True),
         )
     if result.moves is None:
         result.moves = _Moves({child.name: child.name})  # in place: name unchanged
