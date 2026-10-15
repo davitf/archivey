@@ -208,20 +208,47 @@ def test_a_walk_stopped_past_a_damaged_directory_fails_only_its_member(
         assert not isinstance(raised.value, TruncatedError)
 
 
-def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first() -> None:
-    """The index pass reads past an entry whose member cannot be built (a name
-    flagged UTF-8 that is not), where the listing stops; each member past the damage
-    still carries its own data descriptor, whichever of the two runs first."""
+def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
+    """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
+    that is not, optionally pointing at ``header_offset``, and whose third directory
+    entry is unreadable."""
     data = bytearray(_with_modes(pipe=True))
-    for at, flags in (
-        (bytes(data).index(b"PK\x03\x04", 4), 6),
-        (_central_headers(bytes(data))[1], 8),
-    ):
+    second = _central_headers(bytes(data))[1]
+    spots = [(second, 8)]
+    if local_too:
+        spots.append((bytes(data).index(b"PK\x03\x04", 4), 6))
+    for at, flags in spots:
         (flag,) = struct.unpack_from("<H", data, at + flags)
         struct.pack_into("<H", data, at + flags, flag | 0x800)
-    data = bytearray(bytes(data).replace(b"m1.txt", b"m\xff.txt"))
+        name = at + (46 if at == second else 30)
+        data[name : name + 6] = b"m\xff.txt"
+    if header_offset is not None:
+        struct.pack_into("<I", data, second + 42, header_offset)
     third = _central_headers(bytes(data))[2]
     data[third : third + 4] = b"XXXX"
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            _bad_utf8_second_name(local_too=True, header_offset=None),
+            id="descriptors",
+        ),
+        pytest.param(
+            _bad_utf8_second_name(local_too=False, header_offset=60),
+            id="offset-of-no-local-header",
+        ),
+    ],
+)
+def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
+    data: bytes,
+) -> None:
+    """The index pass reads past an entry whose member cannot be built (a name
+    flagged UTF-8 that is not), where the listing stops. Whichever of the two runs
+    first, each member past the damage carries its own data descriptor, and an
+    offset of that entry's that points at no local header caps no member's data."""
     with open_archive(io.BytesIO(bytes(data))) as reader:
         listed_first = [
             (m.size, m.compressed_size, len(reader.read(m)))

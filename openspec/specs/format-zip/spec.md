@@ -420,20 +420,20 @@ raise `CorruptionError` after the members before it and the members the local he
 hold past it, which a read from a pipe lists the same way: those keep only what their
 local header holds (no mode, host or comment), and a member the directory already
 listed, by offset, is not listed again. `members()` raises, `members_report()` returns
-those members with the error, iteration yields them and then raises, and
-`extract_all()` writes them and then raises. Every listed member SHALL read, except one
-whose data the walk over the local headers could not get past: its read SHALL raise that
-walk's error, a cut as `CorruptionError` and never `TruncatedError` (the end record
-follows it). A listing limit that walk meets SHALL be raised instead of the damage. A
-read from a pipe raises whatever stops it, as it meets that before the directory, and
-raises the damage ahead of a check a member before it fails. `ArchiveInfo.member_count`
-SHALL be `None` when the walk did not complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise
-`CorruptionError` the same way, at its entry. A name, extra field or comment that runs past the
-directory's end can only be the last entry's; it is the end-record mismatch above, not
-damage. A local-header offset past the file's end SHALL raise `CorruptionError` when
-that member opens, never `TruncatedError` (the directory follows every local header, so
-the offset is wrong, not the file cut) and never an untyped error for an offset too
-large to seek to.
+those members with the error, iteration yields them and then raises, and `extract_all()`
+writes them and then raises. Every listed member SHALL read, except one whose data the
+walk over the local headers could not get past: its read SHALL raise that walk's error,
+a cut as `CorruptionError` and never `TruncatedError` (the end record follows it). A
+listing limit that walk meets SHALL be raised instead of the damage. A read from a pipe
+raises whatever stops it, as it meets that before the directory, and raises the damage
+ahead of a check a member before it fails. `ArchiveInfo.member_count` SHALL be `None`
+when the walk did not complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise
+`CorruptionError` the same way, at its entry. A name, extra field or comment that runs
+past the directory's end can only be the last entry's; it is the end-record mismatch
+above, not damage. A local-header offset past the file's end SHALL raise
+`CorruptionError` when that member opens, never `TruncatedError` (the directory follows
+every local header, so the offset is wrong, not the file cut) and never an untyped error
+for an offset too large to seek to.
 
 #### Scenario: damaged directory
 

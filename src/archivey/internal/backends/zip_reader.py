@@ -915,6 +915,9 @@ class _PastDamage:
     walked: _WalkedMembers
     #: The directory's offsets, then those of the members past the damage.
     offsets: array[int]
+    #: The overlap guard's offsets: ``offsets`` without the directory's that point at
+    #: no local header the walk found.
+    bounds: array[int]
     #: Each member past the damage's position in ``walked``.
     positions: list[int]
     #: The id of the member whose data the walk could not get past, if listed.
@@ -936,8 +939,11 @@ class _DataBounds:
     out; no member past the stop opens. The bound only loosens for a listed member
     whose next header is past the stop: its data may then run over entries that never
     open, so no byte still reads as two members' data. A walk that stops at damage
-    gives those offsets and then the ones the local headers hold past it
-    (``ZipReader._past_damage``), every member that listing hands out.
+    gives the offsets of the local headers a walk over them found
+    (``ZipReader._past_damage``): every member that listing hands out bar one whose
+    directory entry points at no local header, which reads nothing. The listing and
+    the index pass stop at different entries there (the index pass builds no member),
+    and those offsets are the same for both.
     """
 
     __slots__ = ("_cd_start", "_first_at", "_sorted")
@@ -1574,7 +1580,7 @@ class ZipReader(BaseArchiveReader):
             # ones the local headers hold, as a read from a pipe lists them, then
             # the damage is raised (``_past_damage``).
             past = self._past_damage_found = self._past_damage(offsets)
-            self._set_bounds(past.offsets, count=None)
+            self._set_bounds(past.bounds, count=None)
             for index, offset in enumerate(past.offsets):
                 if index < len(offsets):
                     continue
@@ -1586,6 +1592,7 @@ class ZipReader(BaseArchiveReader):
             self._set_bounds(offsets, count=None)
             raise
         self._set_bounds(offsets, count=walk.entries_read)
+        self._drop_local_walk()
         # The end record and the central directory disagree. Info-ZIP unzip and 7-Zip
         # list and test every member, then report the damage; so does this, once the
         # members are out, and a strict policy refuses the archive.
@@ -1608,7 +1615,9 @@ class ZipReader(BaseArchiveReader):
             if walked is None:
                 walked = self._local_walk = self._walk_local_headers()
         seen = set(listed)
+        found = set(walked.offsets)
         offsets = array("q", listed)
+        bounds = array("q", (offset for offset in listed if offset in found))
         positions: list[int] = []
         cut: int | None = None
         for position, offset in enumerate(walked.offsets):
@@ -1618,7 +1627,14 @@ class ZipReader(BaseArchiveReader):
                 cut = len(offsets)
             positions.append(position)
             offsets.append(offset)
-        return _PastDamage(walked, offsets, positions, cut)
+            bounds.append(offset)
+        return _PastDamage(walked, offsets, bounds, positions, cut)
+
+    def _drop_local_walk(self) -> None:
+        """Free the walk over the local headers: the directory was walked whole, so
+        no listing goes on past damage from it."""
+        with self._past_damage_lock:
+            self._local_walk = None
 
     def _member_past_damage(
         self, past: _PastDamage, index: int, offset: int
@@ -1643,6 +1659,10 @@ class ZipReader(BaseArchiveReader):
         raises it (``_open_member``)."""
         if isinstance(past.walked.error, ResourceLimitError):
             return self._walked_error(past.walked, None)
+        # Every other stop is at a member's data (``skip_member``): the walk reads
+        # bytes that are no local header as the members' end, and the end record
+        # read at open means the source does not end before the directory.
+        assert past.walked.error is None or past.walked.cut is not None
         return damage
 
     def _iter_walked(self, walked: _WalkedMembers) -> Iterator[ArchiveMember]:
@@ -1820,11 +1840,12 @@ class ZipReader(BaseArchiveReader):
                 self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
                 self._member_count = walk.entries_read
                 self._count_known = True
+                self._drop_local_walk()
                 return
         except CorruptionError:
             # The listing raises the damage itself, at the same entry, after the
             # members the local headers hold past it.
-            offsets = self._past_damage(offsets).offsets
+            offsets = self._past_damage(offsets).bounds
         except UnsupportedFeatureError:
             # The listing raises it itself, at the same entry.
             pass
