@@ -2441,9 +2441,12 @@ class ZipReader(BaseArchiveReader):
         from the central directory's, and a payload that runs into the next local
         header or the directory: the overlap guard.
         """
-        if loc.header_offset > self._end.eocd_offset:
-            # Past the end record, where no local header can start; not sought, since a
-            # source on disk cannot seek to every offset a directory entry can state.
+        if loc.header_offset >= self._end.cd_start:
+            # Every local header comes before the directory, as ``_holds_local_header``
+            # says; not sought, since a source on disk cannot seek to every offset a
+            # directory entry can state. For a ZIP with no end record the directory
+            # starts where the walk stopped, at the cut member, whose read
+            # ``_open_member`` has already refused with the walk's error.
             raise CorruptionError(f"Absurd local-header offset: {loc.header_offset}")
         try:
             header = read_local_header(self._read_at, loc.header_offset)

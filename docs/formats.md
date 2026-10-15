@@ -213,10 +213,10 @@ yielded.
   malformed field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped
   with a `member_header_record_skipped` diagnostic. The archive opens on every Python
   version; `zipfile` on its own refuses it from Python 3.12.
-- **A wrongly-set UTF-8 flag stops the listing at that name.** When general-purpose
-  bit 11 claims UTF-8 but the stored bytes are not, the listing raises
-  `CorruptionError` at that entry, after the members before it. Rare, and it fails
-  loudly.
+- **A wrongly-set UTF-8 flag is damage at that name.** When general-purpose bit 11
+  claims UTF-8 but the stored bytes are not, the listing raises `CorruptionError` at
+  that entry, after the members before it and the members the local headers hold past
+  it, as for a damaged directory. Rare, and it fails loudly.
 - **ZipCrypto** checks a password against one byte, so a wrong one passes about one
   time in 256. Its data then fails the CRC or the decompressor, and Archivey raises
   `EncryptionError` saying the password may be wrong or the member corrupt, since a
