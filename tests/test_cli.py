@@ -4549,7 +4549,15 @@ def test_hoist_moves_a_file_root_named_like_the_wrapper_but_for_case(
     assert main(args) == EXIT_OK
     err = capsys.readouterr().err
     assert "into file/" in err
-    assert ("would move to FILE" if dry_run else "moved to FILE") in err
+    # Windows flattens in place (the wrapper is removed, content at FILE); the others
+    # move the file up. Both land at ./FILE.
+    moved = "would move to FILE" if dry_run else "moved to FILE"
+    flattened = (
+        "would remove wrapper; content at FILE"
+        if dry_run
+        else "removed wrapper; content at FILE"
+    )
+    assert moved in err or flattened in err
     assert "keep in" not in err
     if dry_run:
         assert sorted(p.name for p in tmp_path.iterdir()) == ["file.tar"]
