@@ -45,7 +45,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import pbkdf2_hmac
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, NamedTuple, Protocol
 
 from archivey.config import ListingLimits
 from archivey.exceptions import (
@@ -264,6 +264,12 @@ _RAR5_XTIME_UNIXTIME_NS = 0x10
 
 _RAR5_XHASH_BLAKE2SP = 0
 
+# FHEXTRA_UOWNER flags: which of the four owner fields follow, in this order.
+_RAR5_XOWNER_UNAME = 0x01
+_RAR5_XOWNER_GNAME = 0x02
+_RAR5_XOWNER_UID = 0x04
+_RAR5_XOWNER_GID = 0x08
+
 _RAR5_XREDIR_UNIX_SYMLINK = 1
 _RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
@@ -353,6 +359,15 @@ class _Rar3Comment:
     utf16: bool = False
 
 
+class RarOwner(NamedTuple):
+    """A RAR5 owner record: names and numeric ids, each optional."""
+
+    uname: str | None
+    gname: str | None
+    uid: int | None
+    gid: int | None
+
+
 @dataclass(slots=True)
 class RarMemberInfo:
     filename: str
@@ -440,6 +455,9 @@ class RarMemberInfo:
     # turns each into a ``MEMBER_TIMESTAMP_INVALID`` diagnostic. Empty (the shared
     # tuple) for every well-formed header.
     timestamp_issues: tuple[TimestampIssue, ...] = ()
+    # RAR5 owner record (``rar -ow``): ``(uname, gname, uid, gid)``, each ``None``
+    # when the record leaves it out. ``None`` when the header has no owner record.
+    owner: RarOwner | None = None
 
     @property
     def skipped_header_records_truncated(self) -> bool:
@@ -3568,6 +3586,7 @@ def _parse_rar5_file_block(
     file_redir: tuple[int, int, str] | None = None
     file_encryption: RarEncryptionInfo | None = None
     file_version: int | None = None
+    owner: RarOwner | None = None
     flags = 0
     ctime: datetime | None = None
     atime: datetime | None = None
@@ -3701,7 +3720,9 @@ def _parse_rar5_file_block(
                 elif xtype == _RAR5_XFILE_VERSION:
                     _vflags, xpos = load_vint(xdata, xpos)
                     file_version, xpos = load_vint(xdata, xpos)
-                # OWNER / SERVICE / unknown: ignore
+                elif xtype == _RAR5_XFILE_OWNER:
+                    owner = _parse_rar5_owner(xdata, xpos)
+                # SERVICE / unknown: ignore
             except CorruptionError as exc:
                 if xtype == _RAR5_XFILE_ENCRYPTION:
                     raise
@@ -3781,6 +3802,7 @@ def _parse_rar5_file_block(
         split_before=split_before,
         split_after=split_after,
         file_version=file_version,
+        owner=owner,
         # RAR5 keeps the directory flag apart from the dictionary bits, so a
         # directory-flagged link reports what its compression info declares.
         dictionary_size=0
@@ -3791,6 +3813,29 @@ def _parse_rar5_file_block(
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
     )
+
+
+def _parse_rar5_owner(xdata: bytes, pos: int) -> RarOwner:
+    """The fields of a RAR5 owner record (``FHEXTRA_UOWNER``) after its type vint.
+
+    Flags, then each field its flag announces, in order: user name and group name
+    (vint length, bytes), user id and group id (vints). Names are decoded as UTF-8,
+    with any other byte kept as a lone surrogate, as for link targets.
+    """
+    flags, pos = load_vint(xdata, pos)
+    uname = gname = None
+    uid = gid = None
+    if flags & _RAR5_XOWNER_UNAME:
+        raw, pos = _load_vstr(xdata, pos)
+        uname = raw.decode("utf8", "surrogateescape")
+    if flags & _RAR5_XOWNER_GNAME:
+        raw, pos = _load_vstr(xdata, pos)
+        gname = raw.decode("utf8", "surrogateescape")
+    if flags & _RAR5_XOWNER_UID:
+        uid, pos = load_vint(xdata, pos)
+    if flags & _RAR5_XOWNER_GID:
+        gid, pos = load_vint(xdata, pos)
+    return RarOwner(uname, gname, uid, gid)
 
 
 def _apply_rar5_unix_ns(

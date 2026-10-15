@@ -2688,6 +2688,10 @@ class RarReader(BaseArchiveReader):
             created=_rar_created(info),
             ctime=_rar_ctime(info),
             mode=mode,
+            uid=info.owner.uid if info.owner else None,
+            gid=info.owner.gid if info.owner else None,
+            uname=info.owner.uname if info.owner else None,
+            gname=info.owner.gname if info.owner else None,
             compression=_compression_for(info),
             # Fails closed: a member whose header stopped before the encryption
             # record could be ruled out is presented as encrypted. Answering

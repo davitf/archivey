@@ -487,6 +487,11 @@ stores `st_ctime` (inode change) in the creation slot, and `created` never
 holds `st_ctime`. RAR5 Blake2sp-only members SHALL store the
 digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
 
+A RAR5 owner record (`rar -ow`) SHALL fill `uname`, `gname`, `uid` and `gid`, each
+only when the record's flags announce it; with no owner record all four SHALL be
+`None`. A record too short for what its flags announce SHALL be dropped like any
+other malformed optional record (`MEMBER_HEADER_RECORD_SKIPPED`).
+
 A **RAR5 redirect** member — symlink, hard link, or file copy — SHALL surface **no**
 stored digest. Such a member keeps its target in a header field and stores no data
 stream, so its CRC32 field covers zero bytes and RARLAB writes `crc32(b"") == 0`. That
@@ -517,6 +522,8 @@ member type.
 | RAR5 member with Blake2sp only | `"blake2sp"` present as bytes; `"crc32"` absent |
 | RAR5 symlink / hard link / file copy | `member.hashes` empty — never `crc32 == 0` |
 | RAR4 symlink (target stored as data) | `"crc32"` present, equal to the target string's CRC32 |
+| RAR5 `-ow` member whose owner has names | `uname` / `gname` set; `uid` / `gid` `None` |
+| RAR5 `-ow` member whose ids have no names | `uid` / `gid` set; `uname` / `gname` `None` |
 
 ### Requirement: Handle RAR5 redirect link types natively
 
