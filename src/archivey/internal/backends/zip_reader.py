@@ -44,7 +44,7 @@ import threading
 import zlib
 from array import array
 from bisect import bisect_right
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import (
@@ -601,8 +601,10 @@ def _zip_timestamps(
     datetime | None,
     datetime | None,
     list[TimestampIssue],
+    tuple[int, ...],
 ]:
-    """Return ``(modified, accessed, ntfs_ctime, ut_ctime, issues)`` for a member.
+    """Return ``(modified, accessed, ntfs_ctime, ut_ctime, issues, used_tags)`` for a
+    member, ``used_tags`` being the extra fields a time was taken from.
 
     Sources, lowest to highest precedence (each layer overrides only the times it
     actually carries):
@@ -612,7 +614,14 @@ def _zip_timestamps(
     2. An NTFS extra field (0x000A): three 64-bit FILETIMEs (modification, access,
        creation) in 100 ns UTC ticks since 1601; zero means "not set". Written by
        Windows tools (e.g. 7-Zip).
-    3. An Extended Timestamp extra field (0x5455): real Unix timestamps, its flags byte
+    3. A PKWARE Unix (0x000D) or Info-ZIP old Unix (0x5855) extra field: access then
+       modification time, each a 32-bit Unix time in UTC, then (local header only)
+       the owner ids. macOS ditto and Archive Utility write only 0x5855. As unzip 6.00
+       reads it (measured, dev-docs/formats/zip.md §6), it is ignored in a blob that
+       holds an Extended Timestamp, or after an Info-ZIP Unix type 2 or new Unix field
+       (0x7855, 0x7875), the rule ``_zip_owner`` applies to its ids; of several, the
+       last one long enough for both times counts.
+    4. An Extended Timestamp extra field (0x5455): real Unix timestamps, its flags byte
        signaling which of modification/access/"creation" follow (in that order), each a
        signed 32-bit Unix time interpreted as UTC. The central directory typically
        carries only the modification time even when the flags advertise more.
@@ -648,21 +657,33 @@ def _zip_timestamps(
     ntfs_ctime: datetime | None = None
     ut_ctime: datetime | None = None
 
-    # One scan collecting both timestamp extra fields, applied afterwards in precedence
-    # order (NTFS below Extended Timestamp) regardless of their order in the blob.
-    # Empty extra is the common case (zipfile.writestr / many tools) — skip the scan.
+    # One scan collecting the timestamp extra fields, applied afterwards in precedence
+    # order (NTFS, then Unix, then Extended Timestamp) regardless of their order in the
+    # blob. Empty extra is the common case (zipfile.writestr / many tools) — skip it.
     ntfs_field: bytes | None = None
     ut_field: bytes | None = None
+    unix_field: ExtraField | None = None
+    newer_unix = False
+    used: list[int] = []
     extra = entry.extra
     if not extra:
-        return modified, accessed, ntfs_ctime, ut_ctime, issues
+        return modified, accessed, ntfs_ctime, ut_ctime, issues, ()
     # A cut-short field is read for what it carries: the NTFS and UT walks below
     # check every read against the field's actual length.
     for field in iter_extra_fields(extra):
-        if field.tag == 0x000A and ntfs_field is None:
+        tag = field.tag
+        if tag == 0x000A and ntfs_field is None:
             ntfs_field = field.data
-        elif field.tag == 0x5455 and field.data and ut_field is None:
+        elif tag == 0x5455 and field.data and ut_field is None:
             ut_field = field.data
+        elif tag in (_OWNER_TAG_INFOZIP_NEW_UNIX, _OWNER_TAG_INFOZIP_UNIX2):
+            newer_unix = True
+        elif (
+            tag in (_OWNER_TAG_PKWARE_UNIX, _OWNER_TAG_INFOZIP_OLD_UNIX)
+            and len(field.data) >= _UNIX_TIMES_LEN
+            and not newer_unix
+        ):
+            unix_field = field
 
     if ntfs_field is not None:
         # Layout: 4 reserved bytes, then (tag, size) attributes; tag 1 carries the three
@@ -689,6 +710,8 @@ def _zip_timestamps(
                         issues.append(issue)
                     if dt is None:
                         continue
+                    if not used:
+                        used.append(0x000A)
                     if field_name == "mtime":
                         modified = dt
                     elif field_name == "atime":
@@ -697,6 +720,13 @@ def _zip_timestamps(
                         ntfs_ctime = dt
                 break
             cursor += attr_size
+
+    if unix_field is not None and ut_field is None:
+        # Signed, as the Extended Timestamp's times are read below.
+        atime, mtime = struct.unpack_from("<ii", unix_field.data)
+        accessed = unix32_to_datetime(atime)
+        modified = unix32_to_datetime(mtime)
+        used.append(unix_field.tag)
 
     if ut_field is not None:
         flags = ut_field[0]
@@ -710,6 +740,8 @@ def _zip_timestamps(
                 # A signed 32-bit field: a pre-1970 date is legitimate, and every
                 # value it can hold is a valid datetime on every platform.
                 when = unix32_to_datetime(ts)
+                if 0x5455 not in used:
+                    used.append(0x5455)
                 if bit == 0x01:
                     modified = when
                 elif bit == 0x02:
@@ -717,7 +749,7 @@ def _zip_timestamps(
                 else:
                     ut_ctime = when
 
-    return modified, accessed, ntfs_ctime, ut_ctime, issues
+    return modified, accessed, ntfs_ctime, ut_ctime, issues, tuple(used)
 
 
 # Extra fields that record a Unix owner: Info-ZIP's "new Unix" field (variable-width
@@ -737,12 +769,14 @@ _UNIX_TIMES_LEN = 8
 class _ZipOwner(NamedTuple):
     """What a member's owner extra fields give.
 
-    ``ids`` is ``(uid, gid)``, or ``None``. ``fault`` is ``(tag, reason)`` when there
-    are no ids because a field was damaged; the reader drops it and reports that.
+    ``ids`` is ``(uid, gid)``, or ``None``; ``tag`` is the field they came from.
+    ``fault`` is ``(tag, reason)`` when there are no ids because a field was damaged;
+    the reader drops it and reports that.
     """
 
     ids: tuple[int, int] | None
     fault: tuple[int, str] | None = None
+    tag: int | None = None
 
 
 _NO_OWNER = _ZipOwner(None)
@@ -768,6 +802,7 @@ def _zip_owner(extra: bytes) -> _ZipOwner:
     if not extra:
         return _NO_OWNER
     ids: tuple[int, int] | None = None
+    ids_tag: int | None = None
     fault: tuple[int, str] | None = None
     # 0: no newer field seen; 1: a 0x7855; 2: a 0x7875.
     newer = 0
@@ -776,7 +811,7 @@ def _zip_owner(extra: bytes) -> _ZipOwner:
         data = field.data
         if tag == _OWNER_TAG_INFOZIP_NEW_UNIX:
             newer = 2
-            ids, fault = _new_unix_owner(field)
+            ids, fault, ids_tag = _new_unix_owner(field)
         elif tag == _OWNER_TAG_INFOZIP_UNIX2:
             if newer == 2:
                 continue
@@ -785,7 +820,7 @@ def _zip_owner(extra: bytes) -> _ZipOwner:
             if not field.complete:
                 fault = (tag, "cut_short")
             elif len(data) == 4:
-                ids, fault = struct.unpack_from("<HH", data), None
+                ids, fault, ids_tag = struct.unpack_from("<HH", data), None, tag
             else:
                 fault = (tag, "wrong_size") if data else None
         elif tag in (_OWNER_TAG_PKWARE_UNIX, _OWNER_TAG_INFOZIP_OLD_UNIX):
@@ -793,10 +828,11 @@ def _zip_owner(extra: bytes) -> _ZipOwner:
                 continue
             if field.complete and len(data) >= _UNIX_TIMES_LEN + 4:
                 ids, fault = struct.unpack_from("<HH", data, _UNIX_TIMES_LEN), None
+                ids_tag = tag
             elif ids is None and (not field.complete or len(data) != _UNIX_TIMES_LEN):
                 fault = (tag, "cut_short" if not field.complete else "too_short")
     if ids is not None:
-        return _ZipOwner((ids[0], ids[1]))
+        return _ZipOwner((ids[0], ids[1]), tag=ids_tag)
     return _NO_OWNER if fault is None else _ZipOwner(None, fault)
 
 
@@ -827,7 +863,35 @@ def _new_unix_owner(field: ExtraField) -> _ZipOwner:
         return _ZipOwner(None, (tag, "id_size"))
     uid = int.from_bytes(data[2:gid_at], "little")
     gid = int.from_bytes(data[gid_at + 1 : end], "little")
-    return _ZipOwner((uid, gid))
+    return _ZipOwner((uid, gid), tag=tag)
+
+
+# Fields that are part of the ZIP structure rather than a record about the member: the
+# ZIP64 sizes (applied by the parser), WinZip AES and PKWARE Strong Encryption. They
+# never appear among the unparsed fields.
+_STRUCTURAL_EXTRA_TAGS = frozenset((0x0001, 0x9901, _ZIP_EXTRA_STRONG_ENCRYPTION))
+
+
+def _unparsed_extra_fields(
+    extra: bytes, used_tags: Collection[int]
+) -> dict[int, bytes] | None:
+    """The central extra fields archivey took nothing from, by tag, or ``None``.
+
+    ``used_tags`` names the fields a value was taken from. A field archivey knows
+    but took nothing from (malformed, or a Unicode Path field about another name) is
+    unparsed too, so a caller can see what was ignored. Of several fields with one
+    tag, the first is kept; a tag any copy of which was used is left out.
+    """
+    unparsed: dict[int, bytes] | None = None
+    for field in iter_extra_fields(extra):
+        tag = field.tag
+        if tag in _STRUCTURAL_EXTRA_TAGS or tag in used_tags:
+            continue
+        if unparsed is None:
+            unparsed = {tag: field.data}
+        else:
+            unparsed.setdefault(tag, field.data)
+    return unparsed
 
 
 def _zip_created(
@@ -1079,6 +1143,8 @@ class _DecodedName(NamedTuple):
     name and its comment decode as unflagged ones; ``None`` otherwise."""
     unicode_extra_fault: str | None
     """Why a malformed Unicode Path field was dropped, for the diagnostic."""
+    unicode_path_used: bool
+    """Whether the Unicode Path field named the entry."""
 
 
 def _stored_as_directory(name: str, create_system: CreateSystem) -> bool:
@@ -2221,6 +2287,7 @@ class ZipReader(BaseArchiveReader):
             inferred_encoding=inferred_encoding,
             declared_encoding=None,
             unicode_extra_fault=unicode_extra_fault,
+            unicode_path_used=unicode_name is not None,
         )
 
     def _to_member(self, entry: CentralEntry, index: int) -> ArchiveMember:
@@ -2289,8 +2356,8 @@ class ZipReader(BaseArchiveReader):
                 (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),),
             )
 
-        modified, accessed, ntfs_ctime, ut_ctime, ts_issues = _zip_timestamps(
-            entry, name
+        modified, accessed, ntfs_ctime, ut_ctime, ts_issues, time_tags = (
+            _zip_timestamps(entry, name)
         )
         created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
@@ -2391,6 +2458,15 @@ class ZipReader(BaseArchiveReader):
         owner = _zip_owner(entry.extra)
         if owner.ids is not None:
             member.uid, member.gid = owner.ids
+        if entry.extra:
+            used_tags = list(time_tags)
+            if owner.tag is not None:
+                used_tags.append(owner.tag)
+            if decoded_name.unicode_path_used:
+                used_tags.append(_ZIP_EXTRA_UNICODE_PATH)
+            unparsed = _unparsed_extra_fields(entry.extra, used_tags)
+            if unparsed is not None:
+                extra["zip.extra_fields"] = unparsed
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         if entry.comment:
@@ -2586,7 +2662,7 @@ class ZipReader(BaseArchiveReader):
             compression = _ZIP_COMPRESSION_TUPLES.get(
                 method, (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
             )
-        modified, accessed, ntfs_ctime, ut_ctime, _issues = _zip_timestamps(
+        modified, accessed, ntfs_ctime, ut_ctime, _issues, _tags = _zip_timestamps(
             central, name
         )
         created, ctime = _zip_created(CreateSystem.UNKNOWN, ntfs_ctime, ut_ctime)

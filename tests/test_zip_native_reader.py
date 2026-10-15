@@ -885,15 +885,18 @@ def test_member_count_before_any_listing_runs_the_index_pass(
 
 
 def _zip_with_large_extras(count: int, extra_size: int) -> bytes:
-    """Each central entry carries an unknown extra field and a comment of
-    ``extra_size`` bytes each."""
+    """Each central entry carries an extra field and a comment of ``extra_size``
+    bytes each. The extra field is an NTFS times field padded with an unknown
+    attribute, so archivey reads it and keeps nothing of it (an unknown field would
+    be kept, as ``extra["zip.extra_fields"]``)."""
+    times = struct.pack("<HHQQQ", 1, 24, 1, 1, 1)
+    padding = extra_size - 4 - 4 - len(times) - 4
+    ntfs = bytes(4) + times + struct.pack("<HH", 0x99, padding) + bytes(padding)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for i in range(count):
             info = zipfile.ZipInfo(f"f{i:05d}.txt")
-            info.extra = struct.pack("<HH", 0xCAFE, extra_size - 4) + bytes(
-                extra_size - 4
-            )
+            info.extra = struct.pack("<HH", 0x000A, len(ntfs)) + ntfs
             info.comment = b"c" * extra_size
             zf.writestr(info, b"x")
     return buf.getvalue()
@@ -918,6 +921,7 @@ def test_listing_does_not_keep_extra_fields_or_comments_alive() -> None:
         # all. Keeping the directory entry would hold both, over 8 KiB per member.
         assert per_member < extra_size + 3000, per_member
         assert all(m.comment == "c" * extra_size for m in members)
+        assert all("zip.extra_fields" not in m.extra for m in members)
     finally:
         reader.close()
 
