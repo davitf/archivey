@@ -1,10 +1,12 @@
 # API reference
 
 This page lists every public name in archivey, grouped by what you use it for. Each heading shows
-the full name to import, such as `archivey.open_archive` or `archivey.terminal.quoted`. The other
-pages explain when to use them, starting with [Opening an archive](opening.md).
+the full name to import, such as `archivey.open_archive` or `archivey.terminal.quoted`, and each
+group links to the page that explains it, where there is one.
 
 ## Opening
+
+See [Opening an archive](opening.md).
 
 ::: archivey.open_archive
 ::: archivey.open_stream
@@ -20,10 +22,11 @@ pages explain when to use them, starting with [Opening an archive](opening.md).
 
 ## Readers and streams
 
+See [Choosing how to read](reading.md), in particular [Reading once](reading.md#reading-once).
+
 `open_archive` returns an `ArchiveReader` unless you pass `streaming=True`. Then its type is
-`ForwardArchiveReader`, which reads the archive in one pass with `stream_members()`, and calling
-`members`, `get`, `read` or `open` raises `ArchiveyUsageError` ([Reading
-once](reading.md#reading-once)).
+`ForwardArchiveReader`, which leaves out `members`, `get`, `read` and `open`: calling them raises
+`ArchiveyUsageError`, so `stream_members()` is the way to read members.
 
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
@@ -32,6 +35,9 @@ once](reading.md#reading-once)).
 ::: archivey.MemberListReport
 
 ## Members and archive details
+
+See [Open and list](index.md#open-and-list) and [Members with the same
+name](opening.md#members-with-the-same-name).
 
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
@@ -48,6 +54,8 @@ once](reading.md#reading-once)).
 
 ## Formats and member types
 
+See [Format](opening.md#format).
+
 ::: archivey.ArchiveFormat
 ::: archivey.ContainerFormat
 ::: archivey.StreamFormat
@@ -59,6 +67,8 @@ once](reading.md#reading-once)).
 ::: archivey.CreateSystem
 
 ## Extraction
+
+See [Extracting](extracting.md).
 
 ::: archivey.ExtractionReport
 ::: archivey.ExtractionResult
@@ -74,6 +84,9 @@ once](reading.md#reading-once)).
 
 ## Configuration and passwords
 
+See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords) and
+[Hardening](security.md#hardening).
+
 ::: archivey.ArchiveyConfig
 ::: archivey.DEFAULT_ARCHIVEY_CONFIG
 ::: archivey.ExtractionLimits
@@ -87,6 +100,8 @@ once](reading.md#reading-once)).
 ::: archivey.PasswordProvider
 
 ## Diagnostics
+
+See [Diagnostics](errors-and-diagnostics.md#diagnostics).
 
 ::: archivey.Diagnostic
 ::: archivey.DiagnosticContext
@@ -161,7 +176,8 @@ These live in the `archivey.terminal` and `archivey.paths` modules and are not
 re-exported from `archivey`. archivey's own command-line tool is built on them.
 
 The `archivey.terminal` helpers are for showing archive-derived text, such as member
-names, to a person without letting it control the terminal.
+names, to a person without letting it control the terminal ([Names in other
+encodings](opening.md#names-in-other-encodings)).
 
 ::: archivey.terminal.escape_control_chars
 ::: archivey.terminal.display_path
@@ -176,7 +192,8 @@ extraction would have chosen.
 It also holds two functions that turn patterns into a `members=` argument, for
 selecting by pattern where `members=` itself matches names exactly. They read the same
 pattern differently: `match_glob` keeps `*` inside one folder, as archivey's CLI does,
-and `match_tar_glob` follows `tar`, where `*` also matches `/`.
+and `match_tar_glob` follows `tar`, where `*` also matches `/` ([Extracting all or some
+members](extracting.md#extracting-all-or-some-members)).
 
 ::: archivey.paths.match_glob
 ::: archivey.paths.match_tar_glob
