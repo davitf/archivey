@@ -327,3 +327,42 @@ def test_a_zip_with_no_end_record_lists_from_a_file_as_from_a_pipe(
         (tmp_path / side).mkdir(exist_ok=True)
     tree = _tree(tmp_path / "file", since=started)
     assert tree and _tree(tmp_path / "pipe", since=started) == tree
+
+
+def _descriptor_stating_size(size: int) -> bytes:
+    """One bit-3 deflated member with 8-byte descriptor sizes, its descriptor stating
+    an uncompressed size of ``size``, cut inside the directory after it."""
+    out = NonSeekableSink()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zf.open("a.txt", "w", force_zip64=True) as member:
+            member.write(b"hello world")
+    data = bytearray(out.getvalue())
+    at = data.index(b"PK\x07\x08")
+    struct.pack_into("<Q", data, at + 16, size)
+    return bytes(data[: data.index(b"PK\x01\x02") + 30])
+
+
+@pytest.mark.parametrize("size", [2**62, 2**64 - 1])
+def test_a_descriptor_a_file_read_cannot_check_is_listed_as_it_states(
+    size: int,
+) -> None:
+    """The file read decodes nothing at open, so it lists a deflated bit-3 member's
+    size as its descriptor states it, as it lists a directory's; the pipe read
+    measures it while decoding. Both refuse the data, and both raise the cut."""
+    data = _descriptor_stating_size(size)
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        report = reader.members_report()
+        (member,) = report.members
+        assert member.size == size
+        with pytest.raises(ArchiveyError):
+            reader.read(member)
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        with contextlib.suppress(ArchiveyError):
+            for _member, stream in reader.stream_members():
+                assert stream is not None
+                with pytest.raises(ArchiveyError):
+                    stream.read()
+        piped = reader.members_report()
+    assert [m.size for m in piped.members] == [11]
+    assert type(piped.error) is type(report.error)
+    assert str(piped.error) == str(report.error)

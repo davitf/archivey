@@ -314,10 +314,12 @@ def test_the_walk_charges_each_local_header_against_max_members() -> None:
         listing_limits=ListingLimits(max_members=2, max_metadata_bytes=1024)
     )
     source = _CountingBytesIO(_bit3_zip(zipfile.ZIP_DEFLATED) + _PAST_WINDOW)
-    with pytest.raises(ResourceLimitError, match="max_members=2.*local headers"):
-        open_archive(source, format=ArchiveFormat.ZIP, config=config)
-    # The third header is refused before its data or the tail is read.
-    assert source.bytes_read < len(_PAST_WINDOW) // 4
+    with open_archive(source, format=ArchiveFormat.ZIP, config=config) as reader:
+        # The third header is refused before its data or the tail is read.
+        assert source.bytes_read < len(_PAST_WINDOW) // 4
+        # The listing raises the limit, as when the directory's entries cross it.
+        with pytest.raises(ResourceLimitError, match="max_members=2.*local headers"):
+            reader.members()
 
 
 def test_an_encrypted_bit3_stored_member_is_walked_past_without_its_password() -> None:

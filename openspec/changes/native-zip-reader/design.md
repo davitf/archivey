@@ -635,6 +635,13 @@ Members come from their local headers as a pipe read builds them before its dire
 arrives (§"What only the central directory says"): no mode, `create_system` or
 comment, and a bit-3 member's CRC and sizes from its descriptor, which a read checks
 the data against. No directory comes, so they are final: `member_state_final` is true.
+A deflated or encrypted bit-3 member's descriptor is not checked at open (the walk
+decodes nothing), so a descriptor that lies is listed as it states, as a directory
+entry would be, and its read fails; a pipe read lists the size it measured. Junk after
+a bit-3 member makes the two reads raise in different words: the pipe decodes the
+member and looks for a descriptor with its CRC, the file read for one followed by a ZIP
+signature. A walk that meets more local headers than `max_members` stops there, and
+the listing raises the limit, as when the directory's entries cross it.
 `members()` is complete-or-raise; `members_report()` returns the members found and the
 error; `__iter__` yields them, then raises; `extract_all` writes them, then raises. This
 is the `partial-members-and-errors` model TAR already uses. The listing limits charge

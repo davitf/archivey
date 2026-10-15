@@ -115,7 +115,6 @@ from archivey.internal.backends.zip_parser import (
     locate_end_record,
     read_end_record,
     read_local_header,
-    step_over_directory,
 )
 from archivey.internal.backends.zipcrypto import (
     ZIPCRYPTO_HEADER_LEN,
@@ -954,7 +953,9 @@ class _WalkedMembers:
         #: A bit-3 member's CRC and sizes, from its data descriptor; 0 for any other.
         self.crcs: array[int] = array("L")
         self.compressed_sizes: array[int] = array("q")
-        self.file_sizes: array[int] = array("q")
+        #: Unsigned: an 8-byte descriptor's uncompressed size is whatever it states,
+        #: up to 2**64 - 1, and a read checks the data against it.
+        self.file_sizes: array[int] = array("Q")
         #: Where the last member the walk passed whole ends.
         self.members_end = 0
         #: Where that is, for a message: "after member #n".
@@ -1106,13 +1107,15 @@ class ZipReader(BaseArchiveReader):
         self._member_count: int | None = None
         self._count_known = False
         try:
-            found = locate_end_record(
+            found, stopped = locate_end_record(
                 self._read_at, file_size, members_end=self._walk_past_members
             )
             walked, self._salvage = self._salvage, None
             if found is None and walked is not None:
                 if walked.error is None:
-                    walked.error = self._missing_end_record(walked, file_size)
+                    # The walk got past the members, so the step ran from there.
+                    assert stopped is not None
+                    walked.error = self._missing_end_record(walked, stopped)
                 if walked.offsets:
                     self._list_walked_members(walked)
                     return
@@ -1133,13 +1136,11 @@ class ZipReader(BaseArchiveReader):
         self._report_trailing_data()
 
     def _missing_end_record(
-        self, walked: _WalkedMembers, file_size: int
+        self, walked: _WalkedMembers, stopped: int
     ) -> ArchiveyError:
         """Why no end record follows the members the walk passed, in the words a read
-        from a pipe uses (``missing_end_record_error``)."""
-        _found, stopped = step_over_directory(
-            self._read_at, file_size, walked.members_end
-        )
+        from a pipe uses (``missing_end_record_error``); ``stopped`` is where the step
+        over the directory after them stopped."""
         return missing_end_record_error(
             self._read_at, walked.members_end, walked.after, stopped, whole=True
         ) or CorruptionError(NO_END_RECORD_MSG)
@@ -1175,8 +1176,9 @@ class ZipReader(BaseArchiveReader):
         whose local header states its size is seeked over, and a bit-3 member's data
         is scanned for its descriptor, so the walk reads at most the source once, as a
         pipe read does. Each local header is charged against ``max_members`` before
-        its data is passed, as the pipe read charges it. Run once, at open, after the
-        tail search and before anything is listed.
+        its data is passed, as the pipe read charges it: past the limit the walk
+        stops there, and the listing raises the limit after the members before it.
+        Run once, at open, after the tail search and before anything is listed.
 
         What the walk found is kept in ``_salvage`` (offsets and descriptors, and
         why it stopped), for ``_open_index`` to list when no end record follows.
@@ -1201,9 +1203,12 @@ class ZipReader(BaseArchiveReader):
                     walked.after = walk.where()
                     return members_end
                 if max_members is not None and len(walked.offsets) >= max_members:
-                    raise _max_members_error(
+                    # Kept like any other stop: the archive opens, and its listing
+                    # raises the limit, as at a directory entry past it.
+                    walked.error = _max_members_error(
                         max_members, "ZIP file's local headers name"
                     )
+                    return None
                 try:
                     descriptor = walk.skip_member(entry)
                 except ArchiveyError as exc:
@@ -1947,8 +1952,11 @@ class ZipReader(BaseArchiveReader):
         DOS or Windows writer marks its folders that way, and a folder the pass wrote
         as a file would stop every member inside it from being written, where a
         directory the host turns out not to make one is taken back at the end of the
-        pass. Nothing is reported here; the directory's version of the member reports
-        what it finds, once.
+        pass. Nothing is reported here: on a pipe the directory's version of the
+        member reports what it finds, once. A ZIP with no directory lists this
+        member as it stands (``_iter_walked``), and reports nothing for it either,
+        as the pipe read reports nothing when no directory arrives; the listing then
+        raises.
         """
         header = entry.header
         central = _central_from_local(entry)

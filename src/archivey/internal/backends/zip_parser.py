@@ -158,14 +158,14 @@ def find_end_record(
     ``members_end`` is called for where the members end, which the caller knows from a
     walk over the local headers (``None`` when the walk found no end), and the record
     is found by stepping over the directory from there
-    (:func:`locate_record_after_directory`).
+    (:func:`step_over_directory`).
 
     Raises ``UnsupportedFeatureError`` for a record that names another disk (a spanned
     set) and for an encrypted central directory (PKWARE Strong Encryption), and
     ``CorruptionError`` when no record is found or the records contradict each other.
     The two halves are :func:`locate_end_record` and :func:`read_end_record`.
     """
-    found = locate_end_record(read_at, file_size, members_end=members_end)
+    found, _stopped = locate_end_record(read_at, file_size, members_end=members_end)
     if found is None:
         raise CorruptionError(NO_END_RECORD_MSG)
     return read_end_record(read_at, file_size, found)
@@ -176,15 +176,17 @@ def locate_end_record(
     file_size: int,
     *,
     members_end: Callable[[], int | None] | None = None,
-) -> tuple[int, bytes, bytes] | None:
+) -> tuple[tuple[int, bytes, bytes] | None, int | None]:
     """``(offset, record, comment)`` of the end record :func:`find_end_record`
-    reads, or ``None`` when neither the search nor the step finds one."""
+    reads, or ``None`` when neither the search nor the step finds one; and where the
+    step over the directory stopped (:func:`step_over_directory`), ``None`` when no
+    step ran."""
     found = locate_classic_record(read_at, file_size)
     if found is None and members_end is not None:
         directory_at = members_end()
         if directory_at is not None:
-            found = locate_record_after_directory(read_at, file_size, directory_at)
-    return found
+            return step_over_directory(read_at, file_size, directory_at)
+    return found, None
 
 
 def read_end_record(
@@ -258,15 +260,6 @@ def locate_classic_record(
     (comment_declared,) = struct.unpack_from("<H", record, 20)
     comment = window[idx + EOCD_SIZE : idx + EOCD_SIZE + comment_declared]
     return window_start + idx, record, comment
-
-
-def locate_record_after_directory(
-    read_at: ReadAt, file_size: int, directory_at: int
-) -> tuple[int, bytes, bytes] | None:
-    """``(offset, record, comment)`` of the classic end record that follows the
-    directory starting at ``directory_at``, or ``None``: the first half of
-    :func:`step_over_directory`."""
-    return step_over_directory(read_at, file_size, directory_at)[0]
 
 
 def step_over_directory(

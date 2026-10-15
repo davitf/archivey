@@ -485,7 +485,16 @@ directory: no `mode`, `create_system` or comment; a bit-3 member takes its CRC a
 sizes from its data descriptor, and a read checks the data against them. A member whose
 data the file cuts, or whose descriptor the walk does not find, SHALL be listed last,
 and reading it SHALL raise the walk's error. `ArchiveInfo.member_count` SHALL be
-`None`. With no member before the walk's error, `open_archive` SHALL raise it.
+`None`. With no member before the walk's error, `open_archive` SHALL raise it. A walk
+that meets more local headers than `max_members` SHALL stop there; the listing then
+raises `ResourceLimitError`, as when the directory's entries cross the limit.
+
+Two shapes read differently from a pipe, which decodes each member as it passes: a
+deflated or encrypted bit-3 member whose descriptor states a size or CRC its data does
+not have is listed from a file as the descriptor states it (the file read decodes
+nothing at open, as it does not check a directory's sizes either) and from a pipe with
+the size it measured; and junk after a bit-3 member makes the two raise in different
+words. Both list the same members, refuse the same data and write the same files.
 
 #### Scenario: ZIP with no end record
 
@@ -499,6 +508,7 @@ and reading it SHALL raise the walk's error. `ArchiveInfo.member_count` SHALL be
 | `JUNK` after a whole directory, where the end record should be | Three members, then `CorruptionError` naming the bytes after the central directory |
 | Cut inside the first local header | `TruncatedError` at open |
 | Any of these with bit-3 members | The same members, each with its descriptor's CRC and sizes; a pipe read lists and extracts the same |
+| A deflated bit-3 member whose descriptor states an uncompressed size of 2^62 or 2^64 − 1, cut inside the directory | Listed with that size; its read fails; from a pipe it is listed with the 11 bytes it holds; both raise the same `TruncatedError` |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 
@@ -527,7 +537,7 @@ fields and comments against `max_metadata_bytes` as they arrive, raising
 | Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
 | The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
 | Three entries from a non-seekable source, `streaming=True` | The first two members yielded, then `ResourceLimitError` at the third local header |
-| Three entries from a file, then 1 MiB of other bytes (the end record past the search window) | `ResourceLimitError` at open, at the third local header the walk meets, before its data is read |
+| Three entries from a file, then 1 MiB of other bytes (the end record past the search window) | Opens without reading the third member's data or the tail; the listing raises `ResourceLimitError`, as at the third directory entry |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 
