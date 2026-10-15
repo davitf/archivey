@@ -1009,7 +1009,9 @@ class _DecodedName(NamedTuple):
     alternate_raw_name: bytes | None
     """The header's bytes, when the Unicode Path field named the entry instead."""
     inferred_encoding: str | None
-    """The codec a sniff chose over the default, for the diagnostic."""
+    """The codec that produced ``text`` when it is not the one the name would
+    otherwise have had (a sniff's choice over the default, or the codec used for a
+    name whose UTF-8 flag the bytes refute), for the diagnostic."""
     declared_encoding: str | None
     """``"utf-8"`` when the UTF-8 flag is set over bytes that are not UTF-8, so the
     name and its comment decode as unflagged ones; ``None`` otherwise."""
@@ -1939,7 +1941,8 @@ class ZipReader(BaseArchiveReader):
             return cp437_decoded(), "cp437"
 
     def _decode_unflagged_comment(self, raw: bytes) -> str:
-        """Decode a comment with no UTF-8 flag the way an unflagged name is decoded.
+        """Decode a comment with no UTF-8 flag, or one whose name's bytes refute the flag,
+        the way an unflagged name is decoded.
 
         A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
         As for a name, ASCII skips the sniff (UTF-8 and cp437 agree on it), and the
@@ -2005,8 +2008,9 @@ class ZipReader(BaseArchiveReader):
         # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
         # so cp437 would yield mojibake. With no authoritative signal (flag clear and no
         # Unicode Path field), prefer UTF-8 when the stored bytes are valid UTF-8, else
-        # the caller's encoding= or a configurable legacy fallback. A set flag is honored
-        # as-is. ASCII bytes decode identically under UTF-8 and cp437 — skip the sniff.
+        # the caller's encoding= or a configurable legacy fallback. A set flag over valid
+        # UTF-8 is honored as-is (one the bytes refute returned above). ASCII bytes
+        # decode identically under UTF-8 and cp437 — skip the sniff.
         inferred_encoding: str | None = None
         if not is_utf8_flagged and unicode_name is None and not raw_name.isascii():
             name_source, inferred_encoding = self._sniff_unflagged_name(
