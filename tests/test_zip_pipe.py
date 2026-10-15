@@ -1017,7 +1017,13 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     )
     whole = record_dropped[:adjacent] + whole_record + record_dropped[adjacent + 56 :]
     assert [m["name"] for m in _seekable_view(whole)[0]] == ["a.txt", "b.txt"]
+    # The directory right after the members, but its ZIP64 end record's extensible
+    # data runs past the bytes kept after them, and junk past the search window
+    # after the end record: a file read steps on to the end record.
+    far_and_junk = far + b"\x01" * (2 * keep)
+    assert [m["name"] for m in _seekable_view(far_and_junk)[0]] == ["a.txt", "b.txt"]
     cases = (
+        (far_and_junk, "ZIP directory and end records run past"),
         (out_of_reach, "ZIP central directory starts"),
         (record_dropped, "ZIP64 end of central directory record starts"),
         (decoy, "ZIP64 end of central directory record starts"),

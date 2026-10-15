@@ -241,7 +241,17 @@ def locate_record_after_directory(
     read_at: ReadAt, file_size: int, directory_at: int
 ) -> tuple[int, bytes, bytes] | None:
     """``(offset, record, comment)`` of the classic end record that follows the
-    directory starting at ``directory_at``, or ``None``.
+    directory starting at ``directory_at``, or ``None``: the first half of
+    :func:`step_over_directory`."""
+    return step_over_directory(read_at, file_size, directory_at)[0]
+
+
+def step_over_directory(
+    read_at: ReadAt, file_size: int, directory_at: int
+) -> tuple[tuple[int, bytes, bytes] | None, int]:
+    """``(offset, record, comment)`` of the classic end record that follows the
+    directory starting at ``directory_at``, or ``None``; and where the step stopped:
+    the end record's offset, or that of the bytes it could not step over.
 
     Steps over what may lie between the members and the end record, in the order
     APPNOTE §4.3.6 gives: the directory's headers, a ZIP64 end record and its
@@ -273,28 +283,28 @@ def locate_record_after_directory(
     while pos + 4 <= file_size:
         sig = fixed(pos, 4)
         if sig not in order or order.index(sig) < stage:
-            return None
+            return None, pos
         stage = order.index(sig)
         if sig == CENTRAL_HEADER_SIGNATURE:
             header = fixed(pos, CENTRAL_HEADER_SIZE)
             if len(header) != CENTRAL_HEADER_SIZE:
-                return None
+                return None, pos
             name_len, extra_len, comment_len = struct.unpack_from("<3H", header, 28)
             pos += CENTRAL_HEADER_SIZE + name_len + extra_len + comment_len
         elif sig == ZIP64_EOCD_SIGNATURE:
             header = fixed(pos, 12)
             if len(header) != 12:
-                return None
+                return None, pos
             pos += 12 + struct.unpack_from("<Q", header, 4)[0]
         elif sig == ZIP64_LOCATOR_SIGNATURE:
             pos += ZIP64_LOCATOR_SIZE
         else:
             record = read_at(pos, EOCD_SIZE)
             if len(record) != EOCD_SIZE:
-                return None
+                return None, pos
             (comment_declared,) = struct.unpack_from("<H", record, 20)
-            return pos, record, read_at(pos + EOCD_SIZE, comment_declared)
-    return None
+            return (pos, record, read_at(pos + EOCD_SIZE, comment_declared)), pos
+    return None, pos
 
 
 def read_zip64_locator(read_at: ReadAt, eocd_offset: int) -> tuple[int, int] | None:

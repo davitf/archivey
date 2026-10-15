@@ -1040,8 +1040,8 @@ class ZipReader(BaseArchiveReader):
         whose local header states its size is seeked over, and a bit-3 member's data
         is scanned for its descriptor, so the walk reads at most the source once, as a
         pipe read does. Each local header is charged against ``max_members`` before
-        its data is passed, as the pipe read charges it. Run once, at open, before
-        anything else reads the handle.
+        its data is passed, as the pipe read charges it. Run once, at open, after the
+        tail search and before anything is listed.
         """
         max_members = self._config.listing_limits.max_members
         with self._lock:

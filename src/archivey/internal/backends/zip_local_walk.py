@@ -77,8 +77,8 @@ from archivey.internal.backends.zip_parser import (
     local_header_from,
     local_header_variable_length,
     locate_classic_record,
-    locate_record_after_directory,
     read_zip64_locator,
+    step_over_directory,
     zip64_record_matches,
 )
 from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
@@ -111,7 +111,7 @@ _AFTER_MEMBER = frozenset(
 # of an encrypted directory. Anything else is no ZIP structure.
 _DIRECTORY_STARTS = _AFTER_MEMBER - {LOCAL_HEADER_SIGNATURE}
 # What the end record is stepped to from, right after the members
-# (``locate_record_after_directory``).
+# (``step_over_directory``).
 _STEPPED_OVER = frozenset(
     {
         CENTRAL_HEADER_SIGNATURE,
@@ -1230,9 +1230,17 @@ class ForwardTail:
         if found is None:
             # Behind more bytes than the search window: step over the directory
             # after the members, as the file read does after its own walk.
-            found = locate_record_after_directory(
+            found, stopped = step_over_directory(
                 self.read_at, self.size, self.members_end
             )
+            if found is None and not self.holds(stopped, 4):
+                # The step left the bytes this tail holds: a file read would read
+                # on there.
+                raise ResourceLimitError(
+                    "ZIP directory and end records run past the "
+                    f"{len(self.head)} bytes after the members that a forward read "
+                    "holds within the listing limits"
+                )
         if found is None:
             # No end record at all: what follows the members says why. The head or
             # the tail holds their first four bytes.
