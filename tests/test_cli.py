@@ -4496,6 +4496,34 @@ def test_hoist_merges_root_named_like_stem_into_existing_directory(
         assert not (tmp_path / "src (1)").exists()
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("overwrite", ["rename", "replace", "error", "skip"])
+def test_hoist_moves_a_root_named_like_the_wrappers_aside_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    dry_run: bool,
+) -> None:
+    # foo.tar holding "foo (1)/": the wrapper is foo/, and the hoist steps it aside
+    # before the merge. The aside name must not be "foo (1)", or the root merges into
+    # the wrapper itself and loses a path component.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "foo.tar", {"foo (1)/x.txt": b"x"})
+    args = ["x", "--overwrite", overwrite, str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "into foo/" in err
+    assert ("would move to foo (1)/" if dry_run else "moved to foo (1)/") in err
+    assert "hoist failed" not in err
+    if dry_run:
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["foo.tar"]
+    else:
+        assert (tmp_path / "foo (1)" / "x.txt").read_bytes() == b"x"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["foo (1)", "foo.tar"]
+
+
 def _tar_root_with_file(path: Path, *, explicit_root: bool) -> Path:
     """``foo.tar``-style archive holding ``<stem>/x.txt``, with or without a stored
     ``<stem>/`` directory entry."""

@@ -261,12 +261,15 @@ class _HoistConflict(Exception):
         self.dest = dest
 
 
-def _free_name(dest: Path, *, is_dir: bool) -> Path:
-    """First ``name (N)`` free on disk, spelled as extraction spells its renames."""
+def _free_name(dest: Path, *, is_dir: bool, avoid: Path | None = None) -> Path:
+    """First ``name (N)`` free on disk, spelled as extraction spells its renames.
+
+    ``avoid`` is a path that is free now but must not be returned.
+    """
     n = 1
     while True:
         candidate = dest.parent / numbered_name(dest.name, n, is_dir=is_dir)
-        if not os.path.lexists(candidate):
+        if candidate != avoid and not os.path.lexists(candidate):
             return candidate
         n += 1
 
@@ -744,8 +747,11 @@ def maybe_hoist_single_root(
             # ``foo.tar`` extracts into ``foo (1)`` and its root ``foo`` must be
             # renamed). Step it aside so the merge sees the cwd a direct extraction
             # sees. The aside name is ``<wrapper> (N)``, which no rename of the root
-            # spells, as the root's name differs from the wrapper's here.
-            side = _free_name(wrapper, is_dir=True)
+            # spells, as the root's name differs from the wrapper's here. The root's
+            # stored name can still be ``<wrapper> (N)`` (``foo.tar`` holding
+            # ``foo (1)/``), and the merge would then move it into the wrapper
+            # itself, so the aside name is never ``dest``.
+            side = _free_name(wrapper, is_dir=True, avoid=dest)
             wrapper.rename(side)
             try:
                 landed = _merge_move(

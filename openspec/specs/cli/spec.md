@@ -196,7 +196,10 @@ When the container got the plain stem name, a sole root sharing the wrapper's ow
 collision, and the wrapper SHALL then take that root's mode and times.
 When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
 the sole root no longer shares its name, and the hoist merges the root into the existing
-`./<archive-stem>/` under the overwrite policy like any other root. A directory stored
+`./<archive-stem>/` under the overwrite policy like any other root. Before such a merge
+the hoist renames the wrapper to its aside name `<wrapper> (N)/`, and that name SHALL
+NOT be the root's own name: a root stored as `foo (1)/` in `foo.tar` lands at
+`./foo (1)/`, as in a direct extraction, not in the wrapper. A directory stored
 without owner write permission (`0o555`) SHALL still be moved: the hoist gives it owner
 read, write and search permission for the move and then puts its mode back, as a direct
 extraction into the cwd would have succeeded. After a hoist, the per-member lines
