@@ -266,9 +266,9 @@ class ListingLimits:
     ZIP, 7z, RAR and ISO apply ``max_members`` at parse (ZIP at open, or as it reads
     the directory when the end record understates the count), 7z and RAR weigh the
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
-    compressed RAR 1.5-4 comments by their declared sizes, before decoding them),
-    and ISO the directory records, path tables and UDF descriptors ``pycdlib``
-    parses, so ``open_archive`` raises.
+    compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
+    before decoding them), and ISO the directory records, path tables and UDF
+    descriptors ``pycdlib`` parses, so ``open_archive`` raises.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``

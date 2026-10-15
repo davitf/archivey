@@ -199,7 +199,8 @@ RAR has no header-size analogue for member count (the walk is sequential), so
 each member it keeps against `listing_limits.max_metadata_bytes` as it appends
 it: the stored name (as `name` and as `raw_name`), a RAR5 redirection target, and
 the member's comment (a stored one by its length; a compressed RAR 1.5-4 one by
-its declared unpacked size), by the weights of `archive-reading`. A RAR 1.5-4 `CMT`
+the larger of its declared unpacked size and its packed bytes, which the listing
+holds until the decode), by the weights of `archive-reading`. A RAR 1.5-4 `CMT`
 service header attaches its comment to the member before it, after that member was
 weighed, so the walk SHALL weigh that comment as it attaches. The running total
 is kept per member list, the way `max_members` is: per volume, and again for the
@@ -219,10 +220,11 @@ it. It recomputes the total rather than reusing the walk's, which is kept per li
 | Hostile or honest archive over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | `listing_limits.max_members is None` (`UNLIMITED`) | No member-count bound at parse; a large honest archive opens |
 | Default limits, typical archive | Open and listing succeed |
-| Compressed RAR 1.5-4 comments (old-style COMMENT subblocks or `CMT` service headers) whose declared unpacked sizes sum past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, before any comment is decoded, including `stream_members()` / `streaming=True` |
+| Compressed RAR 1.5-4 comments (old-style COMMENT subblocks or `CMT` service headers) whose weights (each the larger of its declared unpacked size and its packed bytes) sum past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, before any comment is decoded, including `stream_members()` / `streaming=True` |
 | RAR4 or RAR5 archive under `max_members` whose stored names weigh more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | Volume set whose members are split across volumes, `max_metadata_bytes` at exactly what registration weighs | Opens and lists: a split member's name is weighed once |
 | RAR 1.5-4 member whose stored `CMT` comment, attached after the member was weighed, takes the total past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` from the header walk at parse (`open_archive`); at exactly the total, opens and lists the comment |
+| Solid compressed `CMT` comments that each declare 1 byte over up to 256 KiB of packed data | Weighed by their packed bytes: `ResourceLimitError` naming `max_metadata_bytes` at parse once their sum passes it |
 
 ### Requirement: Expose RAR file-version history members
 

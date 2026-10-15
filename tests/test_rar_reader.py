@@ -1989,11 +1989,13 @@ def _rar3_file_block(
     trailing_subblock: bytes = b"",
     attributes: int = 0o100644,
     crc32: int = 0,
+    salt: bytes = b"",
 ) -> bytes:
     """Build one RAR3 FILE block with a valid 16-bit header CRC.
 
     ``trailing_subblock`` (an old-style COMMENT, say) counts in ``header_size`` but
-    sits after the CRC-covered fields, which is where RAR 1.5/2.x put it.
+    sits after the CRC-covered fields, which is where RAR 1.5/2.x put it. ``salt``
+    is the 8-byte field the SALT flag adds after the name, inside the CRC.
     """
     from archivey.internal.backends.rar_parser import (
         _RAR3_FILE_LARGE,
@@ -2015,7 +2017,7 @@ def _rar3_file_block(
     )
     if flags & _RAR3_FILE_LARGE:
         file_fields += struct.pack("<LL", pack_hi, unp_hi)
-    file_fields += name
+    file_fields += name + salt
     flags |= _RAR3_LONG_BLOCK
     header_size = 7 + len(file_fields) + len(trailing_subblock)
     header_without_crc = struct.pack("<BHH", block_type, flags, header_size)
@@ -2220,8 +2222,12 @@ def _rar3_compressed_cmt(
     crc32: int = 0,
     flags: int = 0,
     attributes: int = 0,
+    salt: bytes = b"",
 ) -> bytes:
-    """A RAR 2.9-4 ``CMT`` SERVICE header with ``-m3`` (0x33) data, then the data."""
+    """A RAR 2.9-4 ``CMT`` SERVICE header with ``-m3`` (0x33) data, then the data.
+
+    ``salt`` is the 8-byte field the SALT flag adds after the name.
+    """
     return (
         _rar3_file_block(
             b"CMT",
@@ -2232,6 +2238,7 @@ def _rar3_compressed_cmt(
             block_type=0x7A,
             extract_version=29,
             attributes=attributes,
+            salt=salt,
             crc32=crc32,
         )
         + packed
@@ -2266,8 +2273,9 @@ def test_rar3_compressed_member_service_comment_is_weighed_as_it_attaches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A solid ``CMT`` after a member attaches to it. When compressed, the walk
-    weighs its declared size: ``item.txt`` (8 + 8 bytes) and a 14-byte comment make
-    30, refused at 29 by the walk itself and listed at 30."""
+    weighs its declared size, here larger than its 8 packed bytes: ``item.txt``
+    (8 + 8 bytes) and a 14-byte comment make 30, refused at 29 by the walk itself
+    and listed at 30."""
     from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
 
     text = b"member comment"
@@ -2279,6 +2287,7 @@ def test_rar3_compressed_member_service_comment_is_weighed_as_it_attaches(
         + file_hdr
         + _rar3_compressed_cmt(
             unpacked_size=len(text),
+            packed=b"\x00" * 8,
             crc32=zlib.crc32(text),
             flags=_RAR3_FILE_SOLID,
         )
@@ -2390,7 +2399,11 @@ def test_rar3_compressed_service_comment_at_rar_maximum_is_decoded(
 
 
 class _CountingBytesIO(io.BytesIO):
-    """A ``BytesIO`` that adds up the bytes each ``read`` returns."""
+    """A ``BytesIO`` that adds up the bytes each ``read`` returns.
+
+    It counts ``read`` alone, so a bound on it holds only while the RAR walk reads
+    through ``read`` and not ``readinto``.
+    """
 
     bytes_read = 0
 
@@ -2419,11 +2432,76 @@ def test_rar3_compressed_service_comment_with_oversized_packed_data_is_dropped(
     )
     source = _CountingBytesIO(blob)
     assert parse_rar_archive(source).comment is None
-    assert source.bytes_read < len(packed)
+    # The walk reads only headers (62 bytes, a few of them twice: 70 measured),
+    # nothing of the 256 KiB of packed data it skips.
+    headers = len(blob) - len(packed)
+    assert source.bytes_read <= 2 * headers
     calls = _count_comment_decodes(monkeypatch)
     with open_archive(io.BytesIO(blob)) as archive:
         assert archive.info.comment is None
     assert calls == []
+
+
+def test_rar3_compressed_service_comments_weighed_by_packed_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compressed ``CMT`` holds its packed bytes until the decode, so the walk
+    weighs them when they are more than the declared size. Here each of 20 solid
+    ``CMT`` headers declares 1 byte over 1000 packed bytes: refused at a 10 000
+    byte budget, which their declared sizes (20 bytes) would pass."""
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    parts = [RAR_ID, main_hdr]
+    for i in range(20):
+        parts.append(
+            _rar3_file_block(f"m{i:02}.txt".encode(), flags=0, pack_lo=0, unp_lo=0)
+        )
+        parts.append(
+            _rar3_compressed_cmt(
+                unpacked_size=1, packed=b"\x00" * 1000, flags=_RAR3_FILE_SOLID
+            )
+        )
+    blob = b"".join(parts) + end_hdr
+    calls = _count_comment_decodes(monkeypatch)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=10_000))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        open_archive(io.BytesIO(blob), config=config)
+    assert calls == []
+
+
+def test_rar3_salted_compressed_service_comment_is_not_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``CMT`` header with the SALT flag and no PASSWORD flag passes the walk's
+    encryption test; its flags reach ``decompress_rar3_blob``, which refuses it
+    before building an archive or running ``unrar``."""
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SALT
+
+    spawned: list[object] = []
+
+    def _no_spawn(*args: object, **kwargs: object) -> None:
+        spawned.append(args)
+        raise AssertionError("unrar must not be spawned for a salted comment")
+
+    monkeypatch.setattr(rar_unrar, "open_unrar_p", _no_spawn)
+    main_hdr, end_hdr = _rar3_main_and_end()
+    text = b"salted"
+    blob = (
+        RAR_ID
+        + main_hdr
+        + _rar3_compressed_cmt(
+            unpacked_size=len(text),
+            crc32=zlib.crc32(text),
+            flags=_RAR3_FILE_SALT,
+            salt=b"\x01" * 8,
+        )
+        + end_hdr
+    )
+    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
+    with open_archive(io.BytesIO(blob), config=config) as archive:
+        assert archive.info.comment is None
+    assert spawned == []
 
 
 def test_rar3_large_packed_member_skips_full_64bit_size() -> None:

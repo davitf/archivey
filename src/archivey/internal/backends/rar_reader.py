@@ -2568,10 +2568,12 @@ class RarReader(BaseArchiveReader):
         ``CMT`` header), and ``max_members`` alone lets one archive carry a million
         of them. The header declares every ``unpacked_size`` up front, so the total
         is checked before anything is decoded, and a refused archive spawns no
-        ``unrar`` at all. The declared size
-        is a real bound on the decode, not a trusted attacker number:
-        ``decompress_rar3_blob`` reads at most ``unpacked_size + 1`` bytes from
-        ``unrar`` and discards a result of any other length.
+        ``unrar`` at all. The declared size is a real bound on the decode, not a
+        trusted attacker number: ``decompress_rar3_blob`` reads at most
+        ``unpacked_size + 1`` bytes from ``unrar`` and discards a result of any other
+        length. A comment whose packed bytes are more than its declared size counts
+        those instead, since the listing holds them until the decode
+        (``comment_metadata_bytes``).
 
         This bounds comment **bytes**, not the number of ``unrar`` spawns: comments
         that each declare a few bytes still cost one process apiece. Decoding every

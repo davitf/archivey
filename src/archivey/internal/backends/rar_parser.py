@@ -937,11 +937,15 @@ class _MemberList(list[RarMemberInfo]):
 
 
 def comment_metadata_bytes(comment: str | _Rar3Comment | None) -> int:
-    """A comment's weight before it is decoded: a compressed RAR 1.5-4 comment
-    counts its declared size, a real bound on the decode (``decompress_rar3_blob``
-    discards output of any other length)."""
+    """A comment's weight before it is decoded.
+
+    A compressed RAR 1.5-4 comment counts the larger of its declared size and its
+    packed bytes. The declared size bounds the decode (``decompress_rar3_blob``
+    discards output of any other length); the packed bytes are what the listing
+    holds until then, and a header can declare a 1-byte text over 256 KiB of them.
+    """
     if isinstance(comment, _Rar3Comment):
-        return comment.unpacked_size
+        return max(comment.unpacked_size, len(comment.packed))
     return text_bytes(comment)
 
 
