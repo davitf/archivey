@@ -1,8 +1,8 @@
 # API reference
 
-This page lists every public name in archivey, grouped by what you use it for. Each heading shows
-the full name to import, such as `archivey.open_archive` or `archivey.terminal.quoted`, and each
-group links to the page that explains it, where there is one.
+This page lists archivey's public API, grouped by what you use it for. Each entry is headed by the
+full name to import, such as `archivey.open_archive` or `archivey.terminal.quoted`, and each group
+links to the page that explains it, where there is one.
 
 ## Opening
 
@@ -24,9 +24,10 @@ See [Opening an archive](opening.md).
 
 See [Choosing how to read](reading.md), in particular [Reading once](reading.md#reading-once).
 
-`open_archive` returns an `ArchiveReader` unless you pass `streaming=True`. Then its type is
-`ForwardArchiveReader`, which leaves out `members`, `get`, `read` and `open`: calling them raises
-`ArchiveyUsageError`, so `stream_members()` is the way to read members.
+`open_archive` returns an `ArchiveReader` unless you pass `streaming=True`. Then its return type is
+`ForwardArchiveReader`, which leaves out `members`, `get`, `read` and `open`, so a type checker
+flags calls to them. The object is still an `ArchiveReader` at run time, and those calls raise
+`ArchiveyUsageError`. `stream_members()` is the way to read members.
 
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
@@ -41,6 +42,8 @@ name](opening.md#members-with-the-same-name).
 
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
+::: archivey.HashAlgorithm
+::: archivey.crc32_digest
 
 ::: archivey.MemberExtra
     options:
@@ -62,8 +65,6 @@ See [Format](opening.md#format).
 ::: archivey.MemberType
 ::: archivey.CompressionMethod
 ::: archivey.CompressionAlgorithm
-::: archivey.HashAlgorithm
-::: archivey.crc32_digest
 ::: archivey.CreateSystem
 
 ## Extraction
@@ -155,9 +156,9 @@ subclasses of `ArchiveyError` and unrelated to each other.
 
 ## Detection budgets
 
-These live in the `archivey.detection_cost` module. A budget bounds what
-[`detect_format`][archivey.detect_format] and `open_archive` may read and decode before they
-answer. You set it with `ArchiveyConfig(detection_budget=...)`, and `BALANCED_BUDGET` is the
+These live in the `archivey.detection_cost` module and are not re-exported from `archivey`. A budget
+bounds what [`detect_format`][archivey.detect_format] and `open_archive` may read and decode before
+they answer. You set it with `ArchiveyConfig(detection_budget=...)`, and `BALANCED_BUDGET` is the
 default. The receipt on [`FormatInfo.cost_receipt`][archivey.FormatInfo] says what detection
 actually did.
 

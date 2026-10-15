@@ -52,7 +52,7 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - toc:
-      toc_depth: 3
+      toc_depth: 4
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span
