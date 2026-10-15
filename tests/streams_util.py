@@ -291,6 +291,20 @@ def make_multi_stream_xz(parts: list[bytes]) -> bytes:
     return b"".join(lzma.compress(p, format=lzma.FORMAT_XZ) for p in parts)
 
 
+def encode_xz_mbi(value: int) -> bytes:
+    """Encode ``value`` as an XZ multibyte integer (the format of the index fields)."""
+    if value == 0:
+        return b"\x00"
+    result = bytearray()
+    while value > 0:
+        byte = value & 0x7F
+        value >>= 7
+        if value > 0:
+            byte |= 0x80
+        result.append(byte)
+    return bytes(result)
+
+
 def xz_cli_available() -> bool:
     """Whether the ``xz`` CLI is on PATH (needed to build a multi-block XZ stream)."""
     return shutil.which("xz") is not None

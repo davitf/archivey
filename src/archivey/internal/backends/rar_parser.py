@@ -295,6 +295,14 @@ _S_SHORT = struct.Struct("<H")
 # reads the payload as 8-bit text up to the first NUL (``Archive::ReadCommentData``).
 _RAR3_SUBHEAD_CMT_UNICODE = 0x01
 
+# The largest comment RARLAB ``rar`` writes and ``unrar`` shows: ``rar`` cuts a
+# longer comment file to this size. A compressed RAR 2.9-4 ``CMT`` that declares
+# more, or whose packed data is larger (``rar`` compresses a comment only when that
+# makes it smaller), is dropped before its bytes are read or its decode is run. A
+# stored ``CMT`` is not capped: its bytes are the text, and ``max_metadata_bytes``
+# weighs all of them.
+RAR3_MAX_COMMENT_SIZE = 0x40000
+
 
 def rar3_main_crc_end(flags: int) -> int:
     """Exclusive end of MAIN-header CRC coverage, from the start of the block.
@@ -328,7 +336,12 @@ class RarEncryptionInfo:
 
 @dataclass(slots=True)
 class _Rar3Comment:
-    """Compressed old-style comment awaiting ``unrar`` in the reader layer."""
+    """Compressed RAR 1.5-4 comment awaiting ``unrar`` in the reader layer.
+
+    Two sources make one: a RAR 1.5-2.x COMMENT subblock (``crc16`` only) and a
+    compressed RAR 2.9-4 ``CMT`` SERVICE header, which carries a full ``crc32`` and
+    can hold UTF-16LE text (``utf16``, from ``_RAR3_SUBHEAD_CMT_UNICODE``).
+    """
 
     packed: bytes
     unpacked_size: int
@@ -336,6 +349,8 @@ class _Rar3Comment:
     compress_type: int
     flags: int
     crc16: int
+    crc32: int | None = None
+    utf16: bool = False
 
 
 @dataclass(slots=True)
@@ -922,11 +937,15 @@ class _MemberList(list[RarMemberInfo]):
 
 
 def comment_metadata_bytes(comment: str | _Rar3Comment | None) -> int:
-    """A comment's weight before it is decoded: a compressed RAR 1.5-2.x comment
-    counts its declared size, a real bound on the decode (``decompress_rar3_blob``
-    discards output of any other length)."""
+    """A comment's weight before it is decoded.
+
+    A compressed RAR 1.5-4 comment counts the larger of its declared size and its
+    packed bytes. The declared size bounds the decode (``decompress_rar3_blob``
+    discards output of any other length); the packed bytes are what the listing
+    holds until then, and a header can declare a 1-byte text over 256 KiB of them.
+    """
     if isinstance(comment, _Rar3Comment):
-        return comment.unpacked_size
+        return max(comment.unpacked_size, len(comment.packed))
     return text_bytes(comment)
 
 
@@ -1570,6 +1589,23 @@ def _normalize_password_utf16le(password: str | bytes) -> bytes:
     except UnicodeError:
         raise wrong_password_error(_NO_UNICODE_FORM) from None
     return wstr[: _RAR_MAX_PASSWORD * 2]
+
+
+def decode_rar3_cmt_text(raw: bytes, *, utf16: bool, encoding: str | None) -> str:
+    """Decode the unpacked text of a RAR 1.5-4 comment.
+
+    Two sources reach it: a RAR 2.9-4 ``CMT`` SERVICE header, and a RAR 1.5-2.x
+    old-style COMMENT subblock (always 8-bit, so ``utf16`` is false).
+    ``utf16`` is ``_RAR3_SUBHEAD_CMT_UNICODE`` from a ``CMT`` header's attribute field.
+    With it, unrar converts ``CmtSize / 2`` units, so an odd trailing byte is
+    dropped rather than shown as U+FFFD, and the text is cut at the first NUL
+    *character*: ASCII text in UTF-16LE is full of NUL bytes. Without it, the
+    payload is 8-bit text (:func:`_decode_comment_text`).
+    """
+    if not utf16:
+        return _decode_comment_text(raw, encoding=encoding)
+    even = raw[: len(raw) - len(raw) % 2]
+    return even.decode("utf-16le", "replace").split("\0", 1)[0]
 
 
 def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
@@ -2400,26 +2436,45 @@ def _parse_rar3(
             elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
-                and member.is_stored
                 and not member.is_encrypted
                 and not member.split_before
                 and not member.split_after
                 and packed_size > 0
+                and (
+                    member.is_stored
+                    or (
+                        member.file_size <= RAR3_MAX_COMMENT_SIZE
+                        and packed_size <= RAR3_MAX_COMMENT_SIZE
+                    )
+                )
             ):
                 # The span the walk skips below, so no byte is read both as
                 # comment data and as a later header, which let a stack of small
                 # CMT headers each re-read the rest of the archive.
                 source.seek(data_offset)
                 raw = _read_stored_comment(source, packed_size, "RAR3 comment")
-                if member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE:
-                    # unrar converts ``CmtSize / 2`` units, so an odd trailing byte
-                    # is dropped rather than shown as U+FFFD. Cut at the first NUL
-                    # *character*: ASCII text in UTF-16LE is full of NUL bytes.
-                    even = raw[: len(raw) - len(raw) % 2]
-                    text = even.decode("utf-16le", "replace")
-                    cmt = text.split("\0", 1)[0]
+                utf16 = bool(
+                    member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE
+                )
+                cmt: str | _Rar3Comment
+                if member.is_stored:
+                    cmt = decode_rar3_cmt_text(raw, utf16=utf16, encoding=name_encoding)
                 else:
-                    cmt = _decode_comment_text(raw, encoding=name_encoding)
+                    # Compressed: ``unrar`` decodes it in the reader layer, as it
+                    # does a compressed RAR 1.5-2.x comment, once the listing
+                    # budget has weighed the declared size.
+                    # A RAR3 FILE or SUB header always carries FILE_CRC.
+                    assert member.crc32 is not None
+                    cmt = _Rar3Comment(
+                        packed=raw,
+                        unpacked_size=member.file_size,
+                        extract_version=member.extract_version or 0,
+                        compress_type=member.compress_type,
+                        flags=member.flags,
+                        crc16=member.crc32 & 0xFFFF,
+                        crc32=member.crc32,
+                        utf16=utf16,
+                    )
                 if member.file_solid and members:
                     # The member was weighed when it was appended, before this
                     # comment arrived, so the comment is weighed here.
@@ -2427,7 +2482,7 @@ def _parse_rar3(
                     if max_metadata_bytes is not None:
                         _charge_metadata(
                             members,
-                            text_bytes(cmt),
+                            comment_metadata_bytes(cmt),
                             max_metadata_bytes,
                             count=len(members),
                         )

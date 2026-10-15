@@ -891,19 +891,6 @@ class VerifyingStream(ReadOnlyIOStream):
                 super().close()
             raise
 
-    # Compat for tests / diagnostics that inspect frontier state.
-    @property
-    def _verify_enabled(self) -> bool:
-        return self._verifier.enabled
-
-    @property
-    def _pos(self) -> int:
-        return self._verifier.pos
-
-    @property
-    def _expected_size(self) -> int | None:
-        return self._verifier._expected_size
-
     def read(self, n: int | None = -1, /) -> bytes:
         return self._verifier.read(self._inner, n)
 

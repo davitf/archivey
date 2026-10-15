@@ -1906,10 +1906,16 @@ class ExtractionCoordinator:
         finally:
             if self._current.parked:
                 self._drop_parked_copies(state.results[index].member.name, None)
-        parent = path.parent if path is not None else None
-        # Only the folders made as its parents: one a member of the run wrote stays.
         # One whose own member the selection also drops is removed when its turn
         # comes, which is after everything inside it.
+        self._remove_created_parents(path)
+
+    def _remove_created_parents(self, path: Path | None) -> None:
+        """Remove the folders this run created as parents of ``path`` alone, now that
+        what it wrote there is taken back: each while it is empty, up to the first
+        one a member of the run wrote, or one the run found there."""
+        state = self._state
+        parent = path.parent if path is not None else None
         while parent is not None and parent != state.dest:
             if parent not in state.created_dirs or parent in state.written_paths:
                 break
@@ -2223,6 +2229,11 @@ class ExtractionCoordinator:
             if current.parked:
                 self._drop_parked_copies(member.name, index)
             link_error = self._recheck_links()
+        if written and old_path is not None and old_path not in state.written_paths:
+            # What an EXTRACTED result wrote is gone (a parked file only now): the
+            # folders made for it alone go too, while empty. Random access makes
+            # them only if the member is written there, and then they stay.
+            self._remove_created_parents(old_path)
         if link_error is not None:
             raise link_error
         if member_started:
