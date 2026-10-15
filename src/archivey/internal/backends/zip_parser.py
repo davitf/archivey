@@ -167,7 +167,10 @@ def find_end_record(
     Raises ``UnsupportedFeatureError`` for a record that names another disk (a spanned
     set) and for an encrypted central directory (PKWARE Strong Encryption), and
     ``CorruptionError`` when no record is found or the records contradict each other.
-    The two halves are :func:`locate_end_record` and :func:`read_end_record`.
+    A damaged ZIP64 record or locator is a ``CorruptionError`` only when the classic
+    record cannot stand in for it (a saturated field, or no place for the directory's
+    end); otherwise the classic values are returned, with the reason in
+    ``EndRecord.zip64_damage``. The two halves are :func:`locate_end_record` and :func:`read_end_record`.
     """
     found, _stopped = locate_end_record(read_at, file_size, members_end=members_end)
     if found is None:

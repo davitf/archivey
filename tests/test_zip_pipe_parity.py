@@ -30,6 +30,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.zip_reader import ZipReader
 from archivey.types import HashAlgorithm, OnError
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
@@ -546,6 +547,30 @@ def test_damaged_end_records_read_from_a_file_as_from_a_pipe(
         for piped in (False, True):
             assert "archive_eof_marker_missing" in _diagnostic_codes(data, piped=piped)
     _assert_same(data, None, tmp_path)
+
+
+def test_unusable_end_records_behind_trailing_bytes_walk_the_members_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Behind more trailing bytes than the search window, the tail search walks the
+    local headers to find the end record; when that record cannot be used, the
+    members listed are the ones that walk found, not a second walk's."""
+    data = _with_zip64_records(
+        _members_zip(pipe=False), saturated=True, damage="locator"
+    ) + b"\x01" * (1 << 20)
+    walks = []
+    walk = ZipReader._walk_past_members
+
+    def counted(self: ZipReader) -> int | None:
+        walks.append(self)
+        return walk(self)
+
+    monkeypatch.setattr(ZipReader, "_walk_past_members", counted)
+    from_file = _report(data, piped=False)
+    assert len(walks) == 1
+    assert isinstance(from_file, tuple) and isinstance(from_file[0], list)
+    assert [m["name"] for m in from_file[0]] == ["m0.txt", "m1.txt", "m2.txt"]
+    assert from_file[1] is not None and "ZIP64" in from_file[1][1]
 
 
 def test_a_saturated_zip64_locator_naming_member_data_writes_the_same_files(

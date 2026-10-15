@@ -1240,7 +1240,7 @@ class ZipReader(BaseArchiveReader):
                 # End records that cannot be used (a damaged ZIP64 record after a
                 # saturated classic one, a directory that would start before the
                 # file): the members are what the local headers hold, as from a pipe.
-                if self._list_after_bad_end_records(exc):
+                if self._list_after_bad_end_records(exc, walked):
                     return
                 raise
         except ArchiveyError as exc:
@@ -1256,14 +1256,19 @@ class ZipReader(BaseArchiveReader):
         self._report_zip64_damage()
         self._report_trailing_data()
 
-    def _list_after_bad_end_records(self, error: CorruptionError) -> bool:
+    def _list_after_bad_end_records(
+        self, error: CorruptionError, walked: _WalkedMembers | None
+    ) -> bool:
         """List the members the local headers hold, then raise ``error``, for end
         records ``read_end_record`` refused; ``False`` when the walk finds no member,
         and ``error`` is raised at open. A walk that stops first (a cut, a limit)
-        raises its own error, as the pipe read meets it first."""
-        self._walk_past_members()
-        walked, self._salvage = self._salvage, None
-        assert walked is not None
+        raises its own error, as the pipe read meets it first. ``walked`` is the walk
+        the tail search already made, reused; the headers are walked here only when
+        it made none."""
+        if walked is None:
+            self._walk_past_members()
+            walked, self._salvage = self._salvage, None
+            assert walked is not None
         if walked.error is None:
             walked.error = error
         if not walked.offsets:
@@ -1306,7 +1311,7 @@ class ZipReader(BaseArchiveReader):
     def _walk_past_members(self) -> int | None:
         """Where the members end, found by walking their local headers from the start:
         for an end record the tail search does not find, behind more trailing bytes
-        than its window holds. ``None`` when the walk does not get past the members.
+        than its window holds, or one that cannot be used. ``None`` when the walk does not get past the members.
 
         The walk is the one a read from a pipe makes, with no data decoded: a member
         whose local header states its size is seeked over, and a bit-3 member's data
@@ -1316,11 +1321,13 @@ class ZipReader(BaseArchiveReader):
         stops there and the archive opens. A pass that lists as it goes (streaming,
         from a file or a pipe) then yields the members before the limit and raises
         it; a random-access listing raises it with nothing listed, since there only
-        damage keeps the members before it (``_materialize_members``). Run once, at
-        open, after the tail search and before anything is listed.
+        damage keeps the members before it (``_materialize_members``). Run at most
+        once, at open, before anything is listed: by the tail search, or for end
+        records ``read_end_record`` refused when the search found them without it.
 
         What the walk found is kept in ``_salvage`` (offsets and descriptors, and
-        why it stopped), for ``_open_index`` to list when no end record follows.
+        why it stopped), for ``_open_index`` to list when no end record follows or
+        the one found cannot be used.
         """
         max_members = self._config.listing_limits.max_members
         walked = self._salvage = _WalkedMembers()
