@@ -33,4 +33,6 @@ have limits on memory and size, so a hostile archive raises an error instead of 
 machine. If you trust your archives, you can relax most of these checks.
 [Extracting](extracting.md#archives-you-trust) and [Security](security.md) have the details.
 
-[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md) explains these principles in more depth.
+[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md) explains these principles in more
+depth, and the [design rules](https://github.com/davitf/archivey/blob/main/dev-docs/design-rules.md)
+show how they settle specific cases.
