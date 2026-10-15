@@ -822,9 +822,23 @@ before it gets 2³² added until it is not. The wrapped directory offset shows u
 local header with the entry's name at the corrected offset, so a ZIP under 4 GiB
 whose directory is out of file order is untouched (the corrected offset would be past
 the directory, and nothing is read there). `ARCHIVE_OFFSET_WRAPPED` records each one.
-A member over 4 GiB in such an archive stays unread: its sizes wrap too, and only a
-real archive from a current Mac would show what to do about them. Its end then falls a
-multiple of 2³² short, so the members after it are not corrected and fail as well.
+A real archive of 5 GiB of random files from `ditto -c -k --sequesterRsrc`
+reads with every member's CRC matching (the maintainer, on macOS, 2026-10-15).
+
+A member over 4 GiB in such an archive stays unread: its sizes wrap too. Its end then
+falls a multiple of 2³² short, so the members after it are not corrected and fail as
+well. The same test with a 10 GB text file listed it as 1 410 065 408 bytes (10¹⁰ mod
+2³²) and reading it raised at that declared size, so nothing wrong is delivered on a
+full read; the next member read, so the file had compressed below 4 GiB and only its
+uncompressed size wrapped. No field holds the real size. The directory, local header
+and data descriptor are 32 bits, the `0x5855` extra holds times and ids, deflate does
+not record its length, and the `__MACOSX/._name` sidecar is AppleDouble (Finder info,
+extended attributes, resource fork, but not the data fork's length). The planned fix,
+agreed 2026-10-15: under the producer markers above, decode past the declared size in
+2³² steps and accept only on the stream's end and a matching CRC-32. A member whose
+deflate ratio bound (about 1032:1, and incompressible data barely shrinks) leaves
+several possible sizes lists `size=None` with the stored remainder in an extra, and
+gets its size once a full read has counted it.
 
 ## 4. Threat surface
 
