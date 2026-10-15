@@ -37,3 +37,34 @@ comparing both metadata and bytes. None of those libraries is used at run time. 
 details, see the [format handbooks](https://github.com/davitf/archivey/tree/main/dev-docs/formats)
 and the [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md),
 both written for people working on archivey itself.
+
+## Decoding member data
+
+Many formats share the same compression methods. LZMA appears in 7z, `.xz` and `.tar.xz`, and
+DEFLATE in ZIP, 7z and gzip. Archivey implements each method once, as a stream that decodes another
+stream, and each format reader stacks the streams a member needs. A method therefore behaves the
+same, with the same limits and checks, whichever format it comes in. As the data passes, the stack
+also computes the checksum the format recorded and compares it when the member's last byte comes
+out.
+
+The decoders come from three places. Python's standard library covers zlib, bzip2 and LZMA, and
+Zstandard on Python 3.14 and later. The `[recommended]` extra adds PPMd, Deflate64, Brotli, LZ4,
+Zstandard on older Pythons, and the `cryptography` package for AES. Archivey's own Python code
+handles `.Z` files, the 7z BCJ2 and ARM64 filters, the legacy LZ4 frame, and the wrapping around
+each compressed stream in formats such as gzip and xz. Some decoders written in C can crash on bad
+data, so archivey runs those in a child process, or feeds them in a way that avoids the crash.
+[Security](security.md#what-archivey-relies-on) says which.
+
+RAR is the exception. The licence of the UnRAR source code doesn't allow using it to build a RAR
+compressor, so no Python package includes it, and archivey decompresses RAR data by running an
+external program, `unrar`, `rar` or `unar`, and reading its output through a pipe. Archivey still
+reads the RAR structure with its own parser, and reads members stored without compression or
+encryption itself.
+
+Compressed data can't be read starting from the middle, so a seek inside a member takes one of three
+routes. Without help, archivey decompresses the member again from its start, or from where it
+already is if the target is ahead. Some formats record where they can be restarted: xz keeps an
+index of its blocks, so a seek starts decoding at the nearest block before the target. For bzip2
+data, and large DEFLATE data such as gzip files, the `seekable` extra adds an accelerator that marks
+restart points as it reads, and later seeks resume from the nearest one. [Seeking inside a
+member](reading.md#seeking-inside-a-member) says what each route means for the checksum.
