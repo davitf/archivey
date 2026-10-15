@@ -189,6 +189,19 @@ def test_rar4_stacked_uow_headers_report_once() -> None:
         ]
 
 
+@pytest.mark.parametrize("first_has_owner", [True, False])
+def test_rar4_uow_with_an_owner_beats_one_without(first_has_owner: bool) -> None:
+    # unrar applies the owner of whichever UOW header names one, so the member has an
+    # owner and no report that it is listed without one, in either order.
+    blocks = _rar3_parse(_with_uow_header(b"root"))
+    uow = next(i for i, b in enumerate(blocks) if b["type"] == _RAR3_SUB)
+    blocks.insert(uow + (0 if first_has_owner else 1), _uow_block())
+    with open_archive(io.BytesIO(_rar3_build(blocks))) as archive:
+        (member,) = archive.members()
+        assert (member.uname, member.gname) == ("root", "root")
+        assert not member.diagnostics
+
+
 @pytest.mark.parametrize(
     ("sub_data", "names", "codes"),
     [

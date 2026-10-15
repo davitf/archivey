@@ -1710,13 +1710,27 @@ def _add_skipped_uow(
 ) -> None:
     """Record a dropped RAR 1.5-4 ``UOW`` header on the file it follows.
 
-    Once per member: a writer puts one ``UOW`` after a file, so a second is as
-    crafted as the first and says nothing new, and a stack of them retains one entry.
+    Kept only while the member has no owner, so the report ("listed without one")
+    is true whenever it is there: a writer puts one ``UOW`` after a file, and with
+    several, ``unrar`` applies the owner of any that names one. A stack of headers
+    with no owner retains one entry.
     """
-    if records and not any(
-        r[0] == RAR3_UOW_NAME for r in member.skipped_header_records
+    if (
+        records
+        and member.owner is None
+        and not any(r[0] == RAR3_UOW_NAME for r in member.skipped_header_records)
     ):
         member.skipped_header_records += records[:1]
+
+
+def _set_uow_owner(member: RarMemberInfo, owner: RarOwner) -> None:
+    """Give ``member`` the owner a ``UOW`` header names, dropping any report of an
+    earlier ``UOW`` header that named none (see :func:`_add_skipped_uow`)."""
+    member.owner = owner
+    if member.skipped_header_records:
+        member.skipped_header_records = tuple(
+            r for r in member.skipped_header_records if r[0] != RAR3_UOW_NAME
+        )
 
 
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
@@ -1756,7 +1770,7 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
         old.blake2sp_hash = new.blake2sp_hash
     # RAR 1.5-4 writes a member's UOW header after its last part.
     if new.owner is not None:
-        old.owner = new.owner
+        _set_uow_owner(old, new.owner)
     _add_skipped_uow(
         old, tuple(r for r in new.skipped_header_records if r[0] == RAR3_UOW_NAME)
     )
@@ -2492,7 +2506,7 @@ def _parse_rar3(
                 if owner is None:
                     _add_skipped_uow(members[-1], member.skipped_header_records)
                 else:
-                    members[-1].owner = owner
+                    _set_uow_owner(members[-1], owner)
                     if max_metadata_bytes is not None:
                         _charge_metadata(
                             members,

@@ -493,7 +493,8 @@ only when the record's flags announce it. A RAR 1.5-4 `UOW` service header SHALL
 `None`. A record too short for what its flags announce SHALL be dropped like any other
 malformed optional record (`MEMBER_HEADER_RECORD_SKIPPED`). A `UOW` header whose data
 holds no NUL SHALL give no owner and SHALL be reported the same way, once, on the file it
-follows; one with no file before it SHALL be ignored.
+follows, unless another `UOW` header after that file names an owner; one with no file
+before it SHALL be ignored.
 
 A **RAR5 redirect** member — symlink, hard link, or file copy — SHALL surface **no**
 stored digest. Such a member keeps its target in a header field and stores no data
