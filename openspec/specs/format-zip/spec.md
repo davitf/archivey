@@ -500,6 +500,7 @@ fields and comments against `max_metadata_bytes` as they arrive, raising
 | Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
 | The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
 | Three entries from a non-seekable source, `streaming=True` | The first two members yielded, then `ResourceLimitError` at the third local header |
+| Three entries from a file, then 1 MiB of other bytes (the end record past the search window) | `ResourceLimitError` at open, at the third local header the walk meets, before its data is read |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 
