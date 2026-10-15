@@ -2352,8 +2352,8 @@ class ZipReader(BaseArchiveReader):
         directory's 0 (``_local_crc_stands_in``); else ``None``.
 
         Read only for a file or link, not WinZip AE-2, whose central CRC-32 is 0 over
-        some data, so a listing reads no local header for any other entry. A local header that cannot
-        be read gives ``None``: reading the member reports it
+        some data, so a listing reads no local header for any other entry. A local
+        header that cannot be read gives ``None``: reading the member reports it
         (``_local_data_region``).
         """
         if not 0 <= entry.header_offset < self._end.cd_start:
