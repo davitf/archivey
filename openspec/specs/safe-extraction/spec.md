@@ -564,7 +564,7 @@ non-bypassable safety checks.
 | --- | --- | --- | --- |
 | Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
-| Permission normalization | Files masked with `0o755` (execute kept, group/other write stripped); dirs `0o755` | Preserve ordinary execute bits | Apply as stored |
+| Permission normalization | Files masked with `0o755` (execute kept when the owner has it; without owner execute, group/other execute are cleared too; group/other write stripped); dirs `0o755` | Preserve ordinary execute bits | Apply as stored |
 | setuid/setgid/sticky | Strip all | Strip all | Preserve |
 | uid/gid/uname/gname on the transformed member (what a `filter` sees) | Cleared to `None` | Kept as stored | Kept as stored |
 | Ownership applied on disk (`chown`) | Never | Never | Only when running as root; otherwise skipped silently |
