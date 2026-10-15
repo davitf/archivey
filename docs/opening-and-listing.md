@@ -370,7 +370,7 @@ page for RAR 1.5-4, escapes for TAR and ISO).
 
 | Where the name comes from | What `encoding=` does |
 | --- | --- |
-| ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8 |
+| ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8. If the bytes are not valid UTF-8, the flag is wrong and the name is decoded as one without it |
 | ZIP, a name without the flag | Used only when the bytes are not valid UTF-8, in place of `zip_unflagged_fallback_encoding` |
 | ZIP, a name without the flag that has a matching Unicode Path extra field | Ignored; the name is the field's UTF-8 copy |
 | TAR, the name, link target, `uname` or `gname` in the header block | Used only when the bytes are not valid UTF-8 |

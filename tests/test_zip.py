@@ -2211,6 +2211,68 @@ def test_explicit_encoding_does_not_decode_valid_utf8() -> None:
     assert "cp437" not in diag.message
 
 
+@pytest.mark.parametrize(
+    ("encoding", "name", "codec"),
+    [
+        pytest.param(None, "cafΘ.txt", "cp437", id="cp437-default"),
+        pytest.param("cp1252", "café.txt", "cp1252", id="caller-encoding"),
+    ],
+)
+@pytest.mark.parametrize("streaming", [False, True], ids=["file", "pipe"])
+def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
+    tmp_path: Path, encoding: str | None, name: str, codec: str, streaming: bool
+) -> None:
+    # e9 alone is not UTF-8. The flag is read as a mistake: the name decodes the way an
+    # unflagged one that is not UTF-8 does, and the report names the codec used and
+    # the UTF-8 the flag declared.
+    raw = b"caf\xe9.txt"
+    data = _stored_zip(raw, utf8_flag=True)
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with open_archive(source, encoding=encoding, streaming=streaming) as ar:
+        ar.extract_all(tmp_path)
+        report = ar.members_report_if_available()
+        assert report is not None
+        (member,) = report.members
+    assert member.name == name
+    assert member.raw_name == raw
+    assert [p.name for p in tmp_path.iterdir()] == [name]
+    (diag,) = member.diagnostics
+    assert diag.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+    assert diag.context.inferred_encoding == codec
+    assert diag.context.declared_encoding == "utf-8"
+    assert "UTF-8 flag is set" in diag.message
+
+
+def test_strict_refuses_a_name_flagged_utf8_that_is_not() -> None:
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError, match="UTF-8 flag is set"):
+        with open_archive(
+            io.BytesIO(_stored_zip(b"caf\xe9.txt", utf8_flag=True)), config=strict
+        ) as ar:
+            ar.members()
+
+
+def test_two_stored_names_that_decode_alike_are_duplicates(tmp_path: Path) -> None:
+    # c3 a9 (UTF-8, unflagged, so sniffed) and 82 (cp437) both decode to "é.txt". The
+    # later member supersedes the earlier one like any duplicate; raw_name tells
+    # them apart.
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("XX.txt", b"first")
+        z.writestr("Y.txt", b"second")
+    data = buffer.getvalue()
+    for placeholder, raw in ((b"XX.txt", b"\xc3\xa9.txt"), (b"Y.txt", b"\x82.txt")):
+        assert data.count(placeholder) == 2
+        data = data.replace(placeholder, raw)
+    with open_archive(io.BytesIO(data)) as ar:
+        first, second = ar.members()
+        ar.extract_all(tmp_path)
+    assert (first.name, second.name) == ("é.txt", "é.txt")
+    assert (first.raw_name, second.raw_name) == (b"\xc3\xa9.txt", b"\x82.txt")
+    assert (first.is_current, second.is_current) == (False, True)
+    assert (tmp_path / "é.txt").read_bytes() == b"second"
+
+
 def test_utf8_inference_names_the_configured_fallback() -> None:
     data = _stored_zip(b"\xc3\xa9txt", utf8_flag=False)
     cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")

@@ -167,8 +167,9 @@ class NameEncodingContext(_JsonSafeContext):
 
     ``inferred_encoding`` decodes ``raw_name_base64`` to ``member_name``.
     ``declared_encoding`` is the encoding the name would otherwise have had: the
-    caller's ``encoding=`` or the format's fallback when UTF-8 was inferred, and ZIP's
-    cp437 default when a configured fallback was used. Both encoding fields are empty
+    caller's ``encoding=`` or the format's fallback when UTF-8 was inferred, ZIP's
+    cp437 default when a configured fallback was used, and ``"utf-8"`` when a ZIP name's
+    UTF-8 flag is set over bytes that are not UTF-8. Both encoding fields are empty
     when no decode of the stored bytes produced the name: ISO takes a Rock Ridge name
     that is not UTF-8 from the file's Joliet record instead.
     """

@@ -577,8 +577,8 @@ Two more differences are recorded (`tests/test_zip_pipe_parity.py`, `_DIFFERS`):
   read stops refusing what the pass writes). A missing end record makes the file read
   walk the local headers (task 3.0b), and so do end records it cannot use (task 3.0c1,
   §"Damaged ZIP64 end records") and a directory damaged part way (task 3.0c2,
-  §"A damaged directory"); a name flagged UTF-8 that is not valid UTF-8 is damage at
-  its entry until task 4.1 decodes it as unflagged. The two reads write the same files.
+  §"A damaged directory"); a name flagged UTF-8 that is not valid UTF-8 decodes as an
+  unflagged one (task 4.1). The two reads write the same files.
   A split set and an encrypted central directory stay refused: no member of either can
   be read.
 
@@ -609,8 +609,7 @@ reads what the file read reads. A locator naming another disk is still a split s
 
 ### A damaged directory
 
-An entry the directory walk cannot read (a wrong signature, a cut fixed header, a name
-flagged UTF-8 that is not) ends the directory's part of the listing. The file read then
+An entry the directory walk cannot read (a wrong signature, a cut fixed header) ends the directory's part of the listing. The file read then
 walks the local headers once (`ZipReader._past_damage`, the walk a ZIP with no end
 record gets) and lists every member whose offset the directory did not already list,
 from its local header, then raises the damage, so the listing's error stays a
@@ -618,9 +617,9 @@ from its local header, then raises the damage, so the listing's error stays a
 instead. A member whose data the walk could not get past is listed, and its read raises
 the walk's error, a cut as `CorruptionError` since the end record follows it. The walk
 is made once per reader (`_local_walk`, the tail search's walk when it made one), and
-each caller builds the offsets past the damage from what it listed itself: the index
-pass, which builds no member, stops at an entry whose name is flagged UTF-8 and is not,
-where the listing stops, so both list the same members past the damage. The overlap
+each caller builds the offsets past the damage from what it listed itself; the index
+pass and the listing stop at the same entry, so both list the same members past the
+damage. The overlap
 guard keeps one bound per member, aligned with the ids: -1, which bounds nothing, for a
 directory entry before the damage that points at no local header, and the entry's offset
 when a local header starts there, whether or not the walk reached it (a header inside

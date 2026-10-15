@@ -324,11 +324,11 @@ each lands with nothing half-done reachable:
 
 ## 4. Names (PR 4)
 
-- [ ] 4.1 A flagged name that is not valid UTF-8 decodes as an unflagged name, with
+- [x] 4.1 A flagged name that is not valid UTF-8 decodes as an unflagged name, with
       `MEMBER_NAME_ENCODING_INFERRED` (`declared_encoding="utf-8"`); tests from a real
       writer where one exists (DR-24), else hand-built.
-- [ ] 4.2 Collisions stay ordinary duplicates (question B: keep); a test pins it.
-- [ ] 4.3 Spec, handbook §2.2 and §5, `docs/formats.md`; the DR-21 ruling in
+- [x] 4.2 Collisions stay ordinary duplicates (question B: keep); a test pins it.
+- [x] 4.3 Spec, handbook §2.2 and §5, `docs/formats.md`; the DR-21 ruling in
       `dev-docs/design-rules.md`.
 
 ## 5. Header disagreement (PR 5)

@@ -20,6 +20,8 @@ import io
 import struct
 import tracemalloc
 import zipfile
+from collections.abc import Callable
+from functools import partial
 
 import pytest
 
@@ -352,8 +354,8 @@ def test_an_offset_no_file_can_seek_to_is_corruption(
 
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
     """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
-    that is not, optionally pointing at ``header_offset``, and whose third directory
-    entry is unreadable."""
+    that is not (read as unflagged), optionally pointing at ``header_offset``, and
+    whose third directory entry is unreadable."""
     data = bytearray(_with_modes(pipe=True))
     second = _central_headers(bytes(data))[1]
     spots = [(second, 8)]
@@ -372,41 +374,63 @@ def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> byte
 
 
 @pytest.mark.parametrize(
-    "data",
+    ("data", "expected"),
     [
         pytest.param(
             _bad_utf8_second_name(local_too=True, header_offset=None),
+            [("m0.txt", 512), ("m\xa0.txt", 768), ("m2.txt", 1024)],
             id="descriptors",
         ),
         pytest.param(
+            # The second entry points at no local header: its own read fails, and
+            # m1, whose local header no entry names, is listed from the walk.
             _bad_utf8_second_name(local_too=False, header_offset=60),
+            [
+                ("m0.txt", 512),
+                ("m\xa0.txt", "corrupt"),
+                ("m1.txt", 768),
+                ("m2.txt", 1024),
+            ],
             id="offset-of-no-local-header",
         ),
     ],
 )
 def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
-    data: bytes,
+    data: bytes, expected: list[tuple[str, int | str]]
 ) -> None:
-    """The index pass reads past an entry whose member cannot be built (a name
-    flagged UTF-8 that is not), where the listing stops. Whichever of the two runs
-    first, each member past the damage carries its own data descriptor, and an
-    offset of that entry's that points at no local header caps no member's data."""
+    """Whichever of the listing and the index pass meets a damaged directory first,
+    each member carries its own data descriptor, and an offset that points at no
+    local header caps no member's data: only that member's own read fails. A name
+    flagged UTF-8 that is not stops neither walk: it is read as an unflagged name,
+    and the damage is the third entry."""
+
+    def outcome(read: Callable[[], bytes]) -> int | str:
+        try:
+            return len(read())
+        except CorruptionError:
+            return "corrupt"
+
     with open_archive(io.BytesIO(bytes(data))) as reader:
         listed_first = [
-            (m.size, m.compressed_size, len(reader.read(m)))
+            (m.name, m.size, m.compressed_size, outcome(partial(reader.read, m)))
             for m in reader.members_report().members
         ]
     # A streaming pass opens each member as the listing reaches it, so the index
     # pass runs before the listing gets to the damage.
     opened_first = []
     with open_archive(io.BytesIO(bytes(data)), streaming=True) as reader:
-        with raises_corruption_not_truncation(match="Could not decode a ZIP member"):
+        with raises_corruption_not_truncation(match="magic"):
             for member, stream in reader.stream_members():
                 assert stream is not None
                 opened_first.append(
-                    (member.size, member.compressed_size, len(stream.read()))
+                    (
+                        member.name,
+                        member.size,
+                        member.compressed_size,
+                        outcome(stream.read),
+                    )
                 )
-    assert len(listed_first) == 3
+    assert [(name, read) for name, _, _, read in listed_first] == expected
     assert opened_first == listed_first
 
 

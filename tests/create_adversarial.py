@@ -7,8 +7,8 @@ tree.
 
 The case names describe what the format actually says:
 
-* invalid/WTF-8/overlong ZIP names have general-purpose bit 11 set in *both* headers and
-  therefore genuinely claim UTF-8;
+* invalid/WTF-8/overlong ZIP names have general-purpose bit 11 set in *both* headers, so
+  the flag claims UTF-8 and the bytes are not: they decode as an unflagged name would;
 * an unflagged high-byte ZIP name and comment are explicitly CP437 fallback cases, not
   mislabeled "invalid UTF-8";
 * TAR invalid bytes exercise tarfile's documented UTF-8+surrogateescape path;
@@ -245,6 +245,14 @@ class Adversarial:
     warning_text: str | None = None
 
 
+def _is_utf8(raw: bytes) -> bool:
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def _zip_name_case(
     case_id: str,
     key: str,
@@ -256,7 +264,9 @@ def _zip_name_case(
 ) -> Adversarial:
     raw = _padded(_HOSTILE[key], len(_NAME))
     decoded = (
-        raw.decode("utf-8" if utf8 else "cp437") if open_outcome == "success" else None
+        raw.decode("utf-8" if utf8 and _is_utf8(raw) else "cp437")
+        if open_outcome == "success"
+        else None
     )
     return Adversarial(
         id=case_id,
@@ -308,22 +318,19 @@ CORPUS: tuple[Adversarial, ...] = (
         "zip-name-wtf8-flagged",
         "lone_surrogate",
         utf8=True,
-        open_outcome="corruption",
-        extract_outcome="not_reached",
+        warning_text="UTF-8 flag is set",
     ),
     _zip_name_case(
         "zip-name-invalid-utf8-flagged",
         "invalid_utf8",
         utf8=True,
-        open_outcome="corruption",
-        extract_outcome="not_reached",
+        warning_text="UTF-8 flag is set",
     ),
     _zip_name_case(
         "zip-name-overlong-utf8-flagged",
         "overlong",
         utf8=True,
-        open_outcome="corruption",
-        extract_outcome="not_reached",
+        warning_text="UTF-8 flag is set",
     ),
     _zip_name_case(
         "zip-name-rtl-override",

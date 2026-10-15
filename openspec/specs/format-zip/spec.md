@@ -253,8 +253,7 @@ data's end; a bit-3 LZMA member without the end-of-stream marker is refused wher
 read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
 its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
-makes (a flagged name that is not valid UTF-8) is raised by a file read before anything
-is written and by the pass after every member is written, the files staying on disk.
+makes is raised by a file read before anything is written and by the pass after every member is written, the files staying on disk.
 
 #### Scenario: non-seekable read matrix
 
@@ -427,8 +426,7 @@ a cut as `CorruptionError` and never `TruncatedError` (the end record follows it
 listing limit that walk meets SHALL be raised instead of the damage. A read from a pipe
 raises whatever stops it, as it meets that before the directory, and raises the damage
 ahead of a check a member before it fails. `ArchiveInfo.member_count` SHALL be `None`
-when the walk did not complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise
-`CorruptionError` the same way, at its entry. A name, extra field or comment that runs
+when the walk did not complete. A name, extra field or comment that runs
 past the directory's end can only be the last entry's; it is the end-record mismatch
 above, not damage. A local-header offset past the file's end SHALL raise
 `CorruptionError` when that member opens, never `TruncatedError` (the directory follows
@@ -709,7 +707,12 @@ back to the caller's `encoding=` when one was passed, else to a configurable leg
 (default cp437, per APPNOTE). The caller's `encoding=` and the configured fallback SHALL
 decode with `surrogateescape`; a codec that refuses that handler (`idna`) gives way to the
 next one, and cp437 decodes every byte. This sniff SHALL apply only in the absence of an
-authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8. When the sniff
+authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8 when the bytes are
+valid UTF-8. A name whose bit 11 is set over bytes that are not valid UTF-8 SHALL decode
+as an unflagged name that is not valid UTF-8 does (the caller's `encoding=`, else the
+configured fallback, with no Unicode Path field consulted), and SHALL emit
+`MEMBER_NAME_ENCODING_INFERRED` with `inferred_encoding` the codec used and
+`declared_encoding="utf-8"`, whether or not the caller passed `encoding=`. When the sniff
 selects an encoding archivey chose over the cp437 default — UTF-8, or a configured fallback
 other than cp437 — the backend SHALL emit a `diagnostics` warning identifying the member,
 the chosen encoding and the encoding it passed over (the caller's `encoding=` or the
@@ -751,8 +754,17 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 
 #### Scenario: Authoritative signal disables the sniff
 
-- **WHEN** bit 11 is set
+- **WHEN** bit 11 is set and the name is valid UTF-8
 - **THEN** the name is decoded as UTF-8, with no sniff and no override diagnostic
+
+#### Scenario: A set flag the bytes refute
+
+- **WHEN** bit 11 is set and the name is not valid UTF-8 (`caf\xe9.txt`), from a file or
+  from a pipe
+- **THEN** the archive lists every member, the name decodes as `cafΘ.txt` (cp437), or
+  as `café.txt` under `encoding="cp1252"`, `raw_name` keeps the stored bytes, and
+  `MEMBER_NAME_ENCODING_INFERRED` records the codec used with
+  `declared_encoding="utf-8"`; `DiagnosticPolicy.STRICT` refuses the archive
 
 #### Scenario: A flagged name that is not UTF-8
 
