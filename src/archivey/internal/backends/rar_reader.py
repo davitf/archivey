@@ -70,6 +70,7 @@ from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
     _RAR3_M0,
     _RAR5_XREDIR_REPARSE_POINTS,
+    RAR3_UOW_NAME,
     RAR5_ID,
     RAR5_UNPLACED_BYTES,
     RAR_ID,
@@ -3215,7 +3216,8 @@ class RarReader(BaseArchiveReader):
         member: ArchiveMember | None,
         member_id: int | None = None,
     ) -> None:
-        """Report what a RAR5 extra-area walk dropped, and why it stopped.
+        """Report what a RAR5 extra-area walk dropped, and why it stopped, and a
+        RAR 1.5-4 ``UOW`` owner header that held no owner.
 
         ``member`` is ``None`` for a SERVICE header (``CMT``, ``QO``), which is not
         a listed member and so has nothing to attach to. It still comes through
@@ -3245,6 +3247,11 @@ class RarReader(BaseArchiveReader):
                     if member is not None
                     else f"This archive's {name} service header has {reason}, "
                     "which no writer leaves; they were not read."
+                )
+            elif record == RAR3_UOW_NAME:
+                message = (
+                    f"This member's RAR 1.5-4 UOW owner header has {reason}, so "
+                    "unrar applies no owner from it; the member is listed without one."
                 )
             elif member is not None:
                 message = (

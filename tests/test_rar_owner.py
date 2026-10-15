@@ -19,7 +19,8 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
-from archivey.exceptions import ResourceLimitError
+from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+from archivey.exceptions import ArchiveyError, ResourceLimitError
 from archivey.internal.listing_limits import member_metadata_bytes
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse
@@ -158,6 +159,20 @@ def test_rar4_uow_data_reads_as_unrar_reads_it(
         (member,) = archive.members()
         assert (member.uname, member.gname) == names
         assert archive.read(member) == b"hi\n"
+        # A header that names no owner is dropped as a malformed record is.
+        codes = [d.code for d in member.diagnostics]
+        expected = [] if names[0] else [DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED]
+        assert codes == expected
+
+
+def test_rar4_uow_without_an_owner_is_refused_under_strict() -> None:
+    data = _with_uow_header(b"root")
+    with pytest.raises(ArchiveyError, match="UOW owner header"):
+        with open_archive(
+            io.BytesIO(data),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as archive:
+            archive.members()
 
 
 def test_rar4_owner_after_the_last_part_of_a_split_member(tmp_path: Path) -> None:
@@ -171,8 +186,8 @@ def test_rar4_owner_after_the_last_part_of_a_split_member(tmp_path: Path) -> Non
     blocks.insert(end, _uow_block())
     last.write_bytes(_rar3_build(blocks))
     with open_archive(tmp_path / "tinyvol_rnn.rar") as archive:
-        spanning = [m for m in archive.members() if m.is_file]
-        assert spanning, "the fixture must hold a file"
-        split = spanning[-1]
+        # One file, split across both volumes: 1600 bytes only if both parts join.
+        (split,) = [m for m in archive.members() if m.is_file]
+        assert split.name == "payload.bin"
         assert (split.uname, split.gname) == ("root", "root")
-        assert archive.read(split)
+        assert len(archive.read(split)) == 1600

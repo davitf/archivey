@@ -108,6 +108,11 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 # header's fixed fields and its declared extra area. They are not a record, so the
 # reader words that diagnostic on its own.
 RAR5_UNPLACED_BYTES = "unplaced bytes"
+# RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``),
+# and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
+# no NUL, which ``unrar`` applies no owner from.
+RAR3_UOW_NAME = "UOW"
+RAR3_UOW_NO_NUL = "no NUL ends the user name"
 # SERVICE headers (``CMT``, ``QO``) are not members, so ``max_members`` never
 # counts them and a damaged one is retained for the reader to report. Both halves
 # of that are attacker-controlled: a 3.4 MB archive of nothing but damaged SERVICE
@@ -249,8 +254,6 @@ _RAR5_MHEXTRA_LOCATOR = 1
 _RAR5_MHEXTRA_LOCATOR_QLIST = 0x01
 _RAR5_QO_NAME = "QO"
 _RAR5_CMT_NAME = "CMT"
-# RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``).
-_RAR3_UOW_NAME = "UOW"
 # Stored QO is copies of FILE headers (~50–200 B each; measured 55 B/member on
 # `rar a -m0 -qo+`, RAR 7.00). 16 MiB covers roughly 300k members — below the
 # 1 048 576 parser ceiling, so a very large archive silently falls back to the
@@ -440,8 +443,8 @@ class RarMemberInfo:
     # A RAR 1.5-4 8-bit name, with no Unicode flag, that decoded as UTF-8 where the
     # caller's ``encoding=`` would have given a different name.
     rar3_utf8_over_encoding: bool = False
-    # RAR5 FHEXTRA records that were malformed and dropped, as
-    # ``(record_name, record_type, reason)``. Empty for every well-formed archive,
+    # RAR5 FHEXTRA records that were malformed and dropped, and a RAR 1.5-4 ``UOW``
+    # header with no owner in it, as ``(record_name, record_type, reason)``. Empty for every well-formed archive,
     # and the shared empty tuple keeps that case at one slot rather than an object:
     # the listing bound is expressed in members, so per-member retained bytes are
     # load-bearing. Capped at ``_MAX_SKIPPED_HEADER_RECORDS`` so a crafted extra
@@ -980,7 +983,8 @@ def header_metadata_bytes(member: RarMemberInfo) -> int:
     ``a/b``), so a name normalization shortens weighs a little more here. A RAR5 name
     has no stored bytes of its own, and its length stands for its UTF-8 bytes, which
     are at least that many. The owner's user and group names (RAR5 owner record,
-    RAR 1.5-4 ``UOW`` header) count as ``uname`` and ``gname`` do. The comment counts per :func:`comment_metadata_bytes`.
+    RAR 1.5-4 ``UOW`` header) count as ``uname`` and ``gname`` do. The comment
+    counts per :func:`comment_metadata_bytes`.
     """
     filename = member.filename
     raw = member.orig_filename
@@ -1700,6 +1704,20 @@ def _decode_rar3_8bit_name(raw: bytes, *, host_os: int, encoding: str | None) ->
     return raw.decode(fallback, "surrogateescape")
 
 
+def _add_skipped_uow(
+    member: RarMemberInfo, records: tuple[tuple[str, int | None, str], ...]
+) -> None:
+    """Record a dropped RAR 1.5-4 ``UOW`` header on the file it follows.
+
+    Capped like RAR5's dropped records, so a file followed by a stack of crafted
+    ``UOW`` headers retains a bounded list.
+    """
+    if records:
+        member.skipped_header_records = (member.skipped_header_records + records)[
+            :_MAX_SKIPPED_HEADER_RECORDS
+        ]
+
+
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
 
@@ -1738,6 +1756,9 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     # RAR 1.5-4 writes a member's UOW header after its last part.
     if new.owner is not None:
         old.owner = new.owner
+    _add_skipped_uow(
+        old, tuple(r for r in new.skipped_header_records if r[0] == RAR3_UOW_NAME)
+    )
     old.split_after = new.split_after
     old.spanned_volumes = True
 
@@ -2461,17 +2482,23 @@ def _parse_rar3(
                     max_metadata_bytes=max_metadata_bytes,
                 ):
                     needs_next_volume = True
-            elif block_type == _RAR3_SUB and member.owner is not None and members:
+            elif (
+                block_type == _RAR3_SUB and member.filename == RAR3_UOW_NAME and members
+            ):
                 # ``rar -ow`` writes a UOW header right after the file it describes.
                 # The file was weighed when it was appended, so the names are here.
-                members[-1].owner = member.owner
-                if max_metadata_bytes is not None:
-                    _charge_metadata(
-                        members,
-                        text_bytes(member.owner.uname) + text_bytes(member.owner.gname),
-                        max_metadata_bytes,
-                        count=len(members),
-                    )
+                owner = member.owner
+                if owner is None:
+                    _add_skipped_uow(members[-1], member.skipped_header_records)
+                else:
+                    members[-1].owner = owner
+                    if max_metadata_bytes is not None:
+                        _charge_metadata(
+                            members,
+                            text_bytes(owner.uname) + text_bytes(owner.gname),
+                            max_metadata_bytes,
+                            count=len(members),
+                        )
             elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
@@ -2700,7 +2727,7 @@ def _parse_rar3_file_header(
         else _RAR3_DICT_BASE << ((flags & _RAR3_DICT_MASK) >> _RAR3_DICT_SHIFT),
         rar3_salt=rar3_salt,
     )
-    if is_service and filename == _RAR3_UOW_NAME:
+    if is_service and filename == RAR3_UOW_NAME:
         # A service header's own data sits between the name and the salt: ``unrar``'s
         # ``ReadHeader15`` reads it right after the name, as the header's remaining
         # size less the salt, and reads the salt after it. The generic parse above
@@ -2708,6 +2735,8 @@ def _parse_rar3_file_header(
         # service header with data would notice.
         sub_end = header_size - (8 if flags & _RAR3_FILE_SALT else 0)
         member.owner = _parse_rar3_uow(hdata[name_end:sub_end])
+        if member.owner is None:
+            member.skipped_header_records = ((RAR3_UOW_NAME, None, RAR3_UOW_NO_NUL),)
     return member, crc_pos
 
 
@@ -2715,7 +2744,9 @@ def _parse_rar3_uow(data: bytes) -> RarOwner | None:
     """The owner a RAR 1.5-4 ``UOW`` service header records: the user name and the
     group name, each ended by a NUL or the data's end, as ``unrar``'s
     ``ExtractUnixOwner30`` reads them. With no NUL ``unrar`` applies no owner, and
-    neither is one listed. RAR 3-6 stores names only. Names decode as RAR5's do.
+    neither is one listed; the walk reports that header as a dropped record, as
+    RAR5 reports an owner record too short for its flags. RAR 3-6 stores names
+    only. Names decode as RAR5's do.
     """
     user, nul, rest = data.partition(b"\0")
     if not nul:
