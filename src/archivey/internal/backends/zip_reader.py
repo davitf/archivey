@@ -699,6 +699,77 @@ def _zip_timestamps(
     return modified, accessed, ntfs_ctime, ut_ctime, issues
 
 
+# Extra fields that record a Unix owner, highest precedence first: Info-ZIP's "new
+# Unix" field (variable-width ids), its "Unix type 2" (16-bit ids, in local headers
+# only: the central copy is empty), PKWARE's Unix field, and Info-ZIP's old "Unix" field
+# (16-bit ids after two times, also local only).
+_OWNER_TAG_INFOZIP_NEW_UNIX = 0x7875
+_OWNER_TAG_INFOZIP_UNIX2 = 0x7855
+_OWNER_TAG_PKWARE_UNIX = 0x000D
+_OWNER_TAG_INFOZIP_OLD_UNIX = 0x5855
+_OWNER_TAGS = (
+    _OWNER_TAG_INFOZIP_NEW_UNIX,
+    _OWNER_TAG_INFOZIP_UNIX2,
+    _OWNER_TAG_PKWARE_UNIX,
+    _OWNER_TAG_INFOZIP_OLD_UNIX,
+)
+# The widest id the new Unix field may give: Info-ZIP writes 4 bytes, and unzip reads
+# at most a 64-bit value. A wider id is not read.
+_MAX_OWNER_ID_BYTES = 8
+
+
+def _zip_owner(extra: bytes) -> tuple[int, int] | None:
+    """Return ``(uid, gid)`` from the first extra field that records them, or ``None``.
+
+    The fields are tried in ``_OWNER_TAGS`` order, and the first copy of each tag
+    counts. A field too short for its ids, or a new Unix field of an unknown version or
+    an id wider than 8 bytes, is skipped, and the next field is tried. No ZIP field
+    records the owner's names, so ``uname`` and ``gname`` stay ``None``.
+    """
+    if not extra:
+        return None
+    found: dict[int, bytes] = {}
+    for field in iter_extra_fields(extra):
+        if field.tag in _OWNER_TAGS and field.tag not in found:
+            found[field.tag] = field.data
+    for tag in _OWNER_TAGS:
+        data = found.get(tag)
+        if data is None:
+            continue
+        if tag == _OWNER_TAG_INFOZIP_NEW_UNIX:
+            owner = _new_unix_owner(data)
+        elif tag == _OWNER_TAG_INFOZIP_UNIX2:
+            owner = struct.unpack_from("<HH", data) if len(data) >= 4 else None
+        elif len(data) >= 12:
+            # PKWARE and the old Info-ZIP field: access and modification times first.
+            owner = struct.unpack_from("<HH", data, 8)
+        else:
+            owner = None
+        if owner is not None:
+            return owner[0], owner[1]
+    return None
+
+
+def _new_unix_owner(data: bytes) -> tuple[int, int] | None:
+    """``(uid, gid)`` from an Info-ZIP new Unix field (``0x7875``), or ``None``.
+
+    Layout: version (1), uid size, uid, gid size, gid, each id little-endian.
+    """
+    if len(data) < 3 or data[0] != 1:
+        return None
+    uid_size = data[1]
+    gid_at = 2 + uid_size
+    if not 0 < uid_size <= _MAX_OWNER_ID_BYTES or gid_at >= len(data):
+        return None
+    gid_size = data[gid_at]
+    end = gid_at + 1 + gid_size
+    if not 0 < gid_size <= _MAX_OWNER_ID_BYTES or end > len(data):
+        return None
+    uid = int.from_bytes(data[2:gid_at], "little")
+    gid = int.from_bytes(data[gid_at + 1 : end], "little")
+    return uid, gid
+
+
 def _zip_created(
     create_system: CreateSystem,
     ntfs_ctime: datetime | None,
@@ -1585,6 +1656,9 @@ class ZipReader(BaseArchiveReader):
             member.ctime = ctime
         if mode is not None:
             member.mode = mode
+        owner = _zip_owner(entry.extra)
+        if owner is not None:
+            member.uid, member.gid = owner
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         if entry.comment:

@@ -636,6 +636,116 @@ def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
         assert member.ctime == datetime.fromtimestamp(ctime, tz=UTC)
 
 
+def _zip_with_extra(extra: bytes) -> bytes:
+    """A one-member ZIP whose local and central headers both carry ``extra``."""
+    buf = io.BytesIO()
+    info = zipfile.ZipInfo("owned.txt")
+    info.create_system = 3
+    info.extra = extra
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(info, b"data")
+    return buf.getvalue()
+
+
+def _owner_seen(data: bytes) -> tuple[tuple[int | None, int | None], ...]:
+    """The owner a file read lists, then the one the pipe pass gives after its end."""
+    with open_archive(io.BytesIO(data)) as ar:
+        listed = ar.get("owned.txt")
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        streamed = [member for member, _ in ar.stream_members()]
+    return (listed.uid, listed.gid), (streamed[0].uid, streamed[0].gid)
+
+
+_NEW_UNIX_4 = struct.pack("<HHBBIBI", 0x7875, 11, 1, 4, 1234, 4, 5678)
+
+
+@pytest.mark.parametrize(
+    ("extra", "owner"),
+    [
+        pytest.param(_NEW_UNIX_4, (1234, 5678), id="new-unix-4-byte"),
+        pytest.param(
+            struct.pack("<HHBBHBQ", 0x7875, 13, 1, 2, 1234, 8, 2**40),
+            (1234, 2**40),
+            id="new-unix-mixed-widths",
+        ),
+        pytest.param(
+            struct.pack("<HHHH", 0x7855, 4, 1234, 5678), (1234, 5678), id="unix-type-2"
+        ),
+        pytest.param(
+            struct.pack("<HHIIHH", 0x000D, 12, 0, 0, 1234, 5678),
+            (1234, 5678),
+            id="pkware-unix",
+        ),
+        pytest.param(
+            struct.pack("<HHIIHH", 0x5855, 12, 0, 0, 1234, 5678),
+            (1234, 5678),
+            id="old-unix",
+        ),
+        pytest.param(
+            # PKWARE first in the blob, but Info-ZIP's new field takes precedence.
+            struct.pack("<HHIIHH", 0x000D, 12, 0, 0, 1, 2) + _NEW_UNIX_4,
+            (1234, 5678),
+            id="new-unix-beats-pkware",
+        ),
+        pytest.param(
+            # An unreadable new Unix field falls through to the next owner field.
+            struct.pack("<HHBBIBI", 0x7875, 11, 2, 4, 1, 4, 2)
+            + struct.pack("<HHHH", 0x7855, 4, 1234, 5678),
+            (1234, 5678),
+            id="unknown-version-falls-through",
+        ),
+        pytest.param(
+            struct.pack("<HHBB9sB", 0x7875, 12, 1, 9, b"\x01" * 9, 0),
+            (None, None),
+            id="new-unix-id-too-wide",
+        ),
+        pytest.param(
+            struct.pack("<HHBBI", 0x7875, 6, 1, 4, 1234), (None, None), id="no-gid"
+        ),
+        pytest.param(
+            struct.pack("<HHIIH", 0x000D, 10, 0, 0, 1234), (None, None), id="short"
+        ),
+        pytest.param(b"", (None, None), id="no-extra"),
+    ],
+)
+def test_unix_owner_extra_fields(
+    extra: bytes, owner: tuple[int | None, int | None]
+) -> None:
+    # Info-ZIP's zip writes 0x7875 on Unix by default; the other fields come from older
+    # Info-ZIP versions and PKWARE. No ZIP field records owner names.
+    data = _zip_with_extra(extra)
+    assert _owner_seen(data) == (owner, owner)
+    with open_archive(io.BytesIO(data)) as ar:
+        member = ar.get("owned.txt")
+        assert member.uname is None
+        assert member.gname is None
+
+
+def test_local_only_owner_is_replaced_by_the_directory() -> None:
+    # Info-ZIP's 16-bit field is in local headers only. The pipe pass gives the local
+    # header's owner while it walks, and the directory's (none here) once it has read
+    # it, so the end state matches a file read.
+    field = struct.pack("<HHHH", 0x7855, 4, 1234, 5678)
+    data = _zip_with_extra(field)
+    central_at = data.rindex(field)
+    data = data[:central_at] + struct.pack("<H", 0x1234) + data[central_at + 2 :]
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+        during = [(m.uid, m.gid) for m, _ in ar.stream_members()]
+    assert during == [(1234, 5678)]
+    assert _owner_seen(data) == ((None, None), (None, None))
+
+
+@requires_binary("zip")
+def test_info_zip_records_the_owner(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_bytes(b"data")
+    archive = tmp_path / "a.zip"
+    subprocess.run(["zip", "-q", str(archive), "a.txt"], cwd=tmp_path, check=True)
+    st = (tmp_path / "a.txt").stat()
+    with open_archive(archive) as ar:
+        member = ar.get("a.txt")
+        assert (member.uid, member.gid) == (st.st_uid, st.st_gid)
+
+
 def test_duplicate_member_names_read_independently(tmp_path: Path) -> None:
     # Two members stored under the same name: each must read its own data. The reader keys
     # off the member's own ZipInfo handle (member._raw), not a name map, so there is no

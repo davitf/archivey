@@ -85,6 +85,7 @@ from archivey.internal.backends.zip_reader import (
     _unverified_data_error,
     _uses_strong_encryption,
     _zip_created,
+    _zip_owner,
     _zip_timestamps,
     _zipcrypto_check_byte,
     _ZipLocator,
@@ -1729,6 +1730,9 @@ class ZipForwardReader(ZipReader):
             and not (aes_info is not None and aes_info.is_ae2)
             else {}
         )
+        # The local header's owner field may differ from the directory's (Info-ZIP's
+        # 16-bit field is in local headers only); the directory's replaces it at the end.
+        uid, gid = _zip_owner(header.extra) or (None, None)
         return ArchiveMember(
             type=member_type,
             name=name,
@@ -1742,6 +1746,8 @@ class ZipForwardReader(ZipReader):
             accessed=accessed,
             created=created,
             ctime=ctime,
+            uid=uid,
+            gid=gid,
             is_encrypted=_is_encrypted_entry(header.flags, method),
             _raw=_ZipLocator(
                 index=index,
