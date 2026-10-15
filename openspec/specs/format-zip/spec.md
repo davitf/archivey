@@ -458,11 +458,15 @@ plus the comment length that record declares. At open, a non-zero byte after tha
 SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="zip"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
 offset of that byte past the end. It is a warning by default and raises under
-`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes
-inside the declared comment are the comment, whatever they hold. The end record is
-searched for in the last 65 558 bytes of the file, so a tail longer than that hides it
-and the archive is not opened; a stub before the archive moves nothing. 7-Zip 23.01
-warns on any tail; Info-ZIP `unzip` says nothing.
+`DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes inside
+the declared comment are the comment, whatever they hold. The end record is searched for
+in the last 65 558 bytes of the file. When a longer tail hides it, the reader SHALL walk
+the local headers from the start, without decoding any member, to where the members end,
+and step over the directory and the ZIP64 end records there to the end record, which is
+then read as one the search found. Each local header the walk meets SHALL count toward
+`max_members` before its data is passed. A read from a pipe steps over the same records
+after its pass. A stub before the archive moves nothing. 7-Zip 23.01 warns on any tail;
+Info-ZIP `unzip` says nothing.
 
 #### Scenario: ZIP trailing bytes
 
@@ -473,6 +477,8 @@ warns on any tail; Info-ZIP `unzip` says nothing.
 | 0, 100 or 60 000 zero bytes then `JUNK` after the end record or its comment | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0, 100 or 60 000; members list and read |
 | A 1000-byte stub before the archive, 7 zero bytes and `JUNK` after it | `observed_bytes` 7 |
 | `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
+| 1 MiB of non-zero bytes after the end record, from a file or a pipe | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0; members list and read |
+| The same with the directory gone | `CorruptionError` at open: no end record |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 
@@ -501,6 +507,7 @@ fields and comments against `max_metadata_bytes` as they arrive, raising
 | Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
 | The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
 | Three entries from a non-seekable source, `streaming=True` | The first two members yielded, then `ResourceLimitError` at the third local header |
+| Three entries from a file, then 1 MiB of other bytes (the end record past the search window) | `ResourceLimitError` at open, at the third local header the walk meets, before its data is read |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 

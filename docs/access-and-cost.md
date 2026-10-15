@@ -69,6 +69,17 @@ seeks past every member's packed data, and open-time cost scales with member
 count. Once open, `members()` / `get()` return from the in-memory table at O(1)
 cost.
 
+### ZIP listing cost
+
+A ZIP opens by reading the end record from the last 64 KiB and the central directory
+it points to. When more than 64 KiB of other bytes follow the archive, the end record
+is not there, and the reader walks every local header from the start to find where
+the members end, then steps over the directory to the end record. It seeks over a
+member whose local header states its size and reads through one that leaves its size
+to a data descriptor (bit 3, as a writer to a pipe sets it), so that open costs up to
+one read of the file. Each local header counts toward `max_members`. `listing_cost`
+stays `INDEXED`, as for RAR.
+
 ## Solid archives: prefer one forward pass
 
 On solid 7z / RAR (and compressed TAR, which is solid for random member access), opening

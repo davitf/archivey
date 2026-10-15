@@ -110,6 +110,10 @@ each lands with nothing half-done reachable:
       a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
       (`CorruptionError` after the members before it); a sized member is seeked over
       (counted reads).
+      - [x] 3.0b1 A whole archive behind the trailing bytes: the walk finds where the
+            members end and steps over the directory to the end record, from a file
+            and from a pipe (which keeps the bytes right after the members as well as
+            the last ones).
 - [ ] 3.0c The same walk instead of a refusal for a damaged ZIP64 end record or locator
       (the classic record's fields when none is saturated, with a diagnostic), a bad
       directory offset and an unreadable directory entry, so a file read writes what

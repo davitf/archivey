@@ -43,6 +43,7 @@ diagnostic. Damage raises ``CorruptionError``, a stream that ends early
 
 from __future__ import annotations
 
+import io
 import zlib
 from collections import deque
 from dataclasses import dataclass
@@ -69,6 +70,7 @@ from archivey.internal.backends.zip_parser import (
     STRONG_ENCRYPTED_DIRECTORY_MSG,
     ZIP64_EOCD_SIGNATURE,
     ZIP64_EOCD_SIZE,
+    ZIP64_LOCATOR_SIGNATURE,
     EndRecord,
     LocalHeader,
     find_end_record,
@@ -76,6 +78,7 @@ from archivey.internal.backends.zip_parser import (
     local_header_variable_length,
     locate_classic_record,
     read_zip64_locator,
+    step_over_directory,
     zip64_record_matches,
 )
 from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
@@ -84,6 +87,7 @@ from archivey.internal.streams.streamtools.binaryio import read_exact
 
 DATA_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
 
+_FLAG_ENCRYPTED = 0x01
 _FLAG_DATA_DESCRIPTOR = 0x08
 _METHOD_STORED = 0
 _ZIP64_EXTRA_TAG = 0x0001
@@ -106,6 +110,16 @@ _AFTER_MEMBER = frozenset(
 # of an archive with no entries, or the record PKWARE Strong Encryption writes in front
 # of an encrypted directory. Anything else is no ZIP structure.
 _DIRECTORY_STARTS = _AFTER_MEMBER - {LOCAL_HEADER_SIGNATURE}
+# What the end record is stepped to from, right after the members
+# (``step_over_directory``).
+_STEPPED_OVER = frozenset(
+    {
+        CENTRAL_HEADER_SIGNATURE,
+        ZIP64_EOCD_SIGNATURE,
+        ZIP64_LOCATOR_SIGNATURE,
+        EOCD_SIGNATURE,
+    }
+)
 # What may open a stream without a stub in front: the same set as after a member.
 _OPENS_STREAM = _AFTER_MEMBER
 # The longest data descriptor, plus the signature after it: signature, CRC, two 8-byte
@@ -171,8 +185,21 @@ class ForwardSource:
         return data
 
     def skip(self, n: int) -> int:
-        """Read past ``n`` bytes; returns how many there were before the end."""
+        """Move past ``n`` bytes; returns how many there were before the end.
+
+        A stream that can seek is seeked; any other is read.
+        """
         skipped = 0
+        if self._pending:
+            skipped = len(self.read(min(n, len(self._pending))))
+        if skipped < n and self._stream.seekable():
+            here = self._stream.tell()
+            end = self._stream.seek(0, io.SEEK_END)
+            target = min(here + n - skipped, end)
+            self._stream.seek(target)
+            skipped += max(target - here, 0)
+            self.offset += max(target - here, 0)
+            return skipped
         while skipped < n:
             got = len(self.read(min(n - skipped, _READ_CHUNK)))
             if not got:
@@ -961,6 +988,16 @@ class LocalHeaderWalk:
         self._open = data
         return data
 
+    def skip_member(self, entry: LocalEntry) -> None:
+        """Move past ``entry``'s data and data descriptor without decoding it: a bit-3
+        codec member's end is found by the descriptor scan
+        (:meth:`scan_member_data`), as for one nobody read."""
+        encrypted = bool(entry.header.flags & _FLAG_ENCRYPTED)
+        data = self.member_data(entry, encrypted=encrypted)
+        if isinstance(data, _CodecData):
+            data = self.scan_member_data(data)
+        data.settle()
+
     def scan_starts_at_data_start(self, data: MemberData) -> bool:
         """Whether :meth:`scan_member_data` would start its scan of ``data`` at the
         data's start: every byte read from it so far is still kept."""
@@ -1057,20 +1094,34 @@ class LocalHeaderWalk:
         records, the comment and anything after it) is kept, so the caller parses it
         with the seekable read's own code (``find_end_record``,
         ``CentralDirectoryWalk``) and lists what that read lists, except where
-        :meth:`ForwardTail.end_record` refuses a record before the kept bytes.
-        ``keep`` bounds what is held: past it only the last ``keep`` bytes stay, which
-        is where the end record and the directory before it are; ``None`` keeps
-        everything. While the stream is read the chunks held come to at most ``keep``
-        plus one chunk; joining them at the end holds them and their copy for that
-        moment.
+        :meth:`ForwardTail.end_record` refuses a record in bytes not kept. ``keep``
+        bounds what is held: past it the last ``keep`` bytes stay, where the end
+        records of an archive that ends the stream are, and, when a directory or end
+        record follows the members right away, the first ``keep`` too, where those
+        are when other bytes follow the archive; ``None`` keeps everything. While the
+        stream is read the chunks held come to at most twice ``keep`` plus one chunk;
+        joining them at the end holds them and their copy for that moment.
         """
         if self._unsettled is not None:
             raise ValueError("settle the previous member's data first")
         members_end = self.source.offset
+        head = bytearray()
+        # At least the first four bytes, whatever ``keep`` is.
+        head_cap = None if keep is None else max(keep, 4)
         chunks: deque[bytes] = deque()
         held = 0
         dropped = 0
         while chunk := self.source.read(_READ_CHUNK):
+            if head_cap is not None and len(head) < head_cap:
+                head += chunk[: head_cap - len(head)]
+                # Past the first four bytes, the head is kept only for a directory or
+                # end record right after the members, the one place the end record is
+                # stepped to from: other bytes there cost a long stream nothing more.
+                # The four stay for ``ForwardTail.end_record``'s message, so they
+                # are held whenever any byte after them was dropped.
+                if len(head) >= 4 and bytes(head[:4]) not in _STEPPED_OVER:
+                    head_cap = 4
+                    del head[4:]
             chunks.append(chunk)
             held += len(chunk)
             # A whole chunk goes once the ones after it hold ``keep`` bytes.
@@ -1094,12 +1145,15 @@ class LocalHeaderWalk:
             members_end=members_end,
             start=members_end + dropped,
             data=data,
+            # Only needed when the tail does not reach back to the members.
+            head=bytes(head) if dropped else b"",
         )
 
 
 @dataclass(frozen=True, slots=True)
 class ForwardTail:
-    """The bytes after a forward walk's last member, up to the end of the stream."""
+    """The bytes after a forward walk's last member, up to the end of the stream:
+    all of them, or the first and the last ones."""
 
     #: Where the members ended, for a message: "after member #n" or "before the
     #: first local header".
@@ -1112,10 +1166,13 @@ class ForwardTail:
     #: Stream offset of ``data[0]``; past ``members_end`` when the bound dropped some.
     start: int
     data: bytes
+    #: The bytes from ``members_end`` when the bound dropped some; empty otherwise.
+    head: bytes = b""
 
     @property
     def dropped(self) -> int:
-        """Bytes after the members that the bound did not keep."""
+        """Bytes after the members that the tail does not start with: those the head
+        holds and those the bound dropped."""
         return self.start - self.members_end
 
     @property
@@ -1123,18 +1180,36 @@ class ForwardTail:
         """The stream's length: the offset of its end."""
         return self.start + len(self.data)
 
+    def holds(self, offset: int, n: int) -> bool:
+        """Whether the ``n`` bytes at stream ``offset``, cut at the end of the stream,
+        are all kept."""
+        if offset < self.members_end:
+            return False
+        head_end = self.members_end + len(self.head)
+        if offset >= self.start or head_end >= self.start:
+            return True
+        return min(offset + n, self.size) <= head_end
+
     def read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes at stream ``offset``, as a file read would read them.
 
-        Bytes before :attr:`start` were not kept and read as zeros, which hold no ZIP
-        record: the end-record search's window may reach back past the members' end,
-        and a ZIP64 locator may name an offset there (a stub stdlib's check moves
-        past). :meth:`end_record` refuses a directory that starts there."""
-        at = offset - self.start
-        if at >= 0:
+        Bytes not kept (before the members' end, or between the head and the tail)
+        read as zeros, which hold no ZIP record: the end-record search's window may
+        reach back past the members' end, and a ZIP64 locator may name an offset there
+        (a stub stdlib's check moves past). :meth:`end_record` refuses a directory that
+        starts there."""
+        if offset >= self.start:
+            at = offset - self.start
             return self.data[at : at + n]
-        missing = min(-at, n)
-        return bytes(missing) + self.data[: n - missing]
+        end = min(offset + n, self.size)
+        if offset >= end:
+            return b""
+        out = bytearray(end - offset)
+        for at, kept in ((self.members_end, self.head), (self.start, self.data)):
+            lo, hi = max(offset, at), min(end, at + len(kept))
+            if lo < hi:
+                out[lo - offset : hi - offset] = kept[lo - at : hi - at]
+        return bytes(out)
 
     def end_record(self) -> EndRecord:
         """The end record the seekable read would use.
@@ -1145,17 +1220,36 @@ class ForwardTail:
         is refused, and so is a ZIP64 end record there; either in bytes the bound
         dropped is a ``ResourceLimitError``.
 
-        A missing end record is described from the bytes after the members while all
-        of them are kept: the first four say whether the stream was cut inside the
-        directory, the directory is encrypted, or no ZIP structure follows at all.
+        Behind more bytes than the search window, the end record is stepped to from
+        the directory right after the members while the step stays in the kept
+        bytes; a step that runs past them is a ``ResourceLimitError``. A missing end
+        record is described from the first four bytes after the members: they say
+        whether the stream was cut inside the directory (only while every byte after
+        it is kept), the directory is encrypted, or no ZIP structure follows at all.
         Every other fault is ``find_end_record``'s, in the file read's words.
         """
         found = locate_classic_record(self.read_at, self.size)
-        if found is None and not self.dropped:
-            # No end record at all: what follows the members says why. Only while
-            # every byte after the members is kept, so the first four are theirs.
-            head = self.data[:4]
-            if head == CENTRAL_HEADER_SIGNATURE:
+        if found is None:
+            # Behind more bytes than the search window: step over the directory
+            # after the members, as the file read does after its own walk.
+            found, stopped = step_over_directory(
+                self.read_at, self.size, self.members_end
+            )
+            if found is None and not self.holds(stopped, 4):
+                # The step left the bytes this tail holds: a file read would read
+                # on there.
+                raise ResourceLimitError(
+                    "ZIP directory and end records run past the "
+                    f"{len(self.head)} bytes after the members that a forward read "
+                    "holds within the listing limits"
+                )
+        if found is None:
+            # No end record at all: what follows the members says why. The head or
+            # the tail holds their first four bytes.
+            head = self.read_at(self.members_end, 4)
+            # A directory that is all the stream holds was cut short; with bytes
+            # dropped after it, whatever follows it is unknown.
+            if head == CENTRAL_HEADER_SIGNATURE and not self.dropped:
                 raise TruncatedError(
                     "ZIP stream ends inside the central directory, before the end of "
                     "central directory record"
@@ -1171,8 +1265,10 @@ class ForwardTail:
         if found is not None:
             self._refuse_unseen_zip64_record(found[0])
         # Any other failure is the record's own, in the file read's words.
-        end = find_end_record(self.read_at, self.size)
-        if end.cd_size and end.cd_start < self.start:
+        end = find_end_record(
+            self.read_at, self.size, members_end=lambda: self.members_end
+        )
+        if end.cd_size and not self.holds(end.cd_start, end.cd_size):
             self._refuse_unseen("ZIP central directory", end.cd_start)
         return end
 
@@ -1195,11 +1291,11 @@ class ForwardTail:
         if located is None:
             return
         locator_at, record_at = located
-        if record_at >= self.start:
+        if self.holds(record_at, ZIP64_EOCD_SIZE):
             return
         adjacent = locator_at - ZIP64_EOCD_SIZE
         if (
-            adjacent >= self.start
+            self.holds(adjacent, ZIP64_EOCD_SIZE)
             and adjacent - record_at <= self.members_start
             and zip64_record_matches(
                 self.read_at(adjacent, ZIP64_EOCD_SIZE), record_at, 0
@@ -1209,13 +1305,14 @@ class ForwardTail:
         self._refuse_unseen("ZIP64 end of central directory record", record_at)
 
     def _refuse_unseen(self, what: str, offset: int) -> NoReturn:
-        """Refuse ``what``, which an end record places at stream ``offset``, before the
-        bytes this tail holds: among the members' data, which the walk read past, or
-        in bytes the bound dropped (``ResourceLimitError``)."""
+        """Refuse ``what``, which an end record places at stream ``offset``, outside
+        the bytes this tail holds: among the members' data, which the walk read past,
+        or in bytes the bound dropped (``ResourceLimitError``)."""
         if offset >= self.members_end:
             raise ResourceLimitError(
-                f"{what} starts {self.size - offset} bytes before the end of the "
-                "stream, more than a forward read holds within the listing limits"
+                f"{what} starts {offset - self.members_end} bytes after the members "
+                f"and {self.size - offset} before the end of the stream, further from "
+                "both than a forward read holds within the listing limits"
             )
         raise CorruptionError(
             f"ZIP end records place the {what} at stream offset {offset}, inside the "

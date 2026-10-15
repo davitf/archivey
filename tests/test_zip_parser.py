@@ -438,6 +438,84 @@ def test_no_end_record_is_corruption() -> None:
         find_end_record(_read_at(b"PK"), 2)
 
 
+def _with_records_before_the_end(data: bytes) -> tuple[bytes, int]:
+    """``data`` with a ZIP64 end record carrying 7 bytes of extensible data and its
+    locator between the directory and the end record, then junk past the search
+    window; and where the directory starts."""
+    eocd = data.rindex(b"PK\x05\x06")
+    entries, cd_size, cd_offset = struct.unpack_from("<HII", data, eocd + 10)
+    record_at = cd_offset + cd_size
+    record = struct.pack(
+        "<4sQHHIIQQQQ", b"PK\x06\x06", 44 + 7, 45, 45, 0, 0, entries, entries,
+        cd_size, cd_offset,
+    ) + bytes(7)  # fmt: skip
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, record_at, 1)
+    body = data[:eocd] + record + locator + data[eocd:]
+    return body + b"\x01" * (1 << 17), cd_offset
+
+
+def test_the_end_record_past_the_window_is_found_after_the_directory() -> None:
+    data, directory_at = _with_records_before_the_end(_zip({"a.txt": b"hello"}))
+    with pytest.raises(CorruptionError, match="no end of central directory"):
+        find_end_record(_read_at(data), len(data))
+    end = find_end_record(_read_at(data), len(data), members_end=lambda: directory_at)
+    assert end.zip64 and end.entries_declared == 1 and end.base == 0
+    assert end.cd_start == directory_at
+    assert end.trailing == 1 << 17
+    # And the reader lists and reads it.
+    with open_archive(io.BytesIO(data)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"hello"
+
+
+def test_a_digital_signature_record_is_not_stepped_over() -> None:
+    data, directory_at = _with_records_before_the_end(_zip({"a.txt": b"hello"}))
+    record = data.index(b"PK\x06\x06")
+    signed = (
+        data[:record] + b"PK\x05\x05" + struct.pack("<H", 3) + b"sig" + data[record:]
+    )
+    assert (
+        zip_parser.locate_record_after_directory(
+            _read_at(signed), len(signed), directory_at
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "where", ["inside the directory", "after the end record", "no walk end"]
+)
+def test_no_end_record_after_the_directory_is_corruption(where: str) -> None:
+    data, directory_at = _with_records_before_the_end(_zip({"a.txt": b"hello"}))
+    if where == "inside the directory":
+        directory_at += 1
+    elif where == "after the end record":
+        directory_at = data.rindex(b"PK\x05\x06") + 22
+    found = None if where == "no walk end" else directory_at
+    with pytest.raises(CorruptionError, match="no end of central directory"):
+        find_end_record(_read_at(data), len(data), members_end=lambda: found)
+
+
+def test_records_out_of_order_after_the_directory_are_not_stepped_over() -> None:
+    data, directory_at = _with_records_before_the_end(_zip({"a.txt": b"hello"}))
+    # The locator moved in front of the ZIP64 end record it should follow.
+    record = data.index(b"PK\x06\x06")
+    locator = data.index(b"PK\x06\x07")
+    swapped = (
+        data[:record] + data[locator : locator + 20] + data[record:locator]
+        + data[locator + 20 :]
+    )  # fmt: skip
+    assert zip_parser.locate_record_after_directory(
+        _read_at(data), len(data), directory_at
+    )
+    assert (
+        zip_parser.locate_record_after_directory(
+            _read_at(swapped), len(swapped), directory_at
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize("field_offset", [4, 6], ids=["this_disk", "cd_start_disk"])
 def test_classic_disk_fields_refuse_a_spanned_part(field_offset: int) -> None:
     data = bytearray(_zip({"a.txt": b"hello"}))
