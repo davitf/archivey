@@ -244,8 +244,8 @@ enforces — and MUST NOT be declared separately per backend:
 
 | `SUPPORTS_STREAMING_NON_SEEKABLE` | `required_source` | Formats |
 | --- | --- | --- |
-| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, the single-file compressors, UDIF |
-| `False` | `StreamCapability.SEEKABLE` | ZIP, ISO, 7z, RAR, directory |
+| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, ZIP, the single-file compressors, UDIF |
+| `False` | `StreamCapability.SEEKABLE` | ISO, 7z, RAR, directory |
 
 `DMG` sets the flag even though nothing reads it. `open_archive` raises
 `UnsupportedFeatureError` before the seekability check, and `SEEKABLE` would send
@@ -277,7 +277,8 @@ conservative answer.
 | `format_availability(TAR_GZ).required_source` | `FORWARD_ONLY` |
 | `format_availability(GZ).required_source` | `FORWARD_ONLY` |
 | `format_availability(DMG).required_source` | `FORWARD_ONLY` — open refuses before the seekability check; the field keeps the spool recipe from copying the file |
-| `format_availability(ZIP \| ISO \| SEVEN_Z \| RAR \| FOLDER).required_source` | `SEEKABLE` |
+| `format_availability(ZIP).required_source` | `FORWARD_ONLY` — `streaming=True` reads a ZIP forward over its local headers |
+| `format_availability(ISO \| SEVEN_Z \| RAR \| FOLDER).required_source` | `SEEKABLE` |
 | ISO queried without `pycdlib` | `support=NONE` **and** `required_source=SEEKABLE` — the answer does not depend on installability |
 | `required_source <= reader.cost.stream_capability` for a format opened successfully from that source | `True` for every format/source pair the library accepts |
 

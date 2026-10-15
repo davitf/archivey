@@ -25,9 +25,9 @@ Two defaults keep the common case cheap, and each can be lifted at open time:
   `seekable_members=True`. With that flag, every random `open()` stream seeks. A
   `stream_members()` stream never seeks, with or without the flag. That includes
   handing it to `open_archive()` to read a nested archive: to archivey it is a
-  non-seekable source, so ZIP, 7z, RAR and ISO refuse it with
-  `StreamNotSeekableError`, and TAR and single-file compressed streams open only
-  with `streaming=True`. To read a nested archive at random, pass `open_archive()`
+  non-seekable source, so 7z, RAR and ISO refuse it with `StreamNotSeekableError`,
+  and ZIP, TAR and single-file compressed streams open only with `streaming=True`.
+  To read a nested archive at random, pass `open_archive()`
   the stream from `open()` under `seekable_members=True`. A member stream's `name` is the
   member's name, so detection of the nested archive uses its extension, as it does for a
   file.

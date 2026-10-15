@@ -19,7 +19,7 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 
 | Format | Core? | Extra / tool | Listing | Random member access | Notes |
 | --- | --- | --- | --- | --- | --- |
-| ZIP | yes | — | indexed (central directory) | direct | Seekable source required |
+| ZIP | yes | — | indexed (central directory); from a pipe, scan headers | direct | A pipe needs `streaming=True` |
 | TAR | yes | — | scan headers | direct on uncompressed seekable TAR | Compressed TAR is solid for random opens |
 | `.tar.gz` / `.bz2` / `.xz` | yes | — | needs decompression | solid | Prefer `stream_members()` |
 | Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
@@ -81,7 +81,7 @@ The fields that change in practice:
 
 | Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
-| ZIP | `is_current`, `link_target_member` | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| ZIP | `is_current`, `link_target_member`; from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
@@ -103,8 +103,31 @@ yielded.
 ## ZIP
 
 - Archivey's own parser reads the **central directory** as members are listed; member
-  **data** decodes through archivey's shared codec layer (seekable source only, even
-  with ``streaming=True``). Stdlib ``zipfile`` is not used.
+  **data** decodes through archivey's shared codec layer. Stdlib ``zipfile`` is not
+  used.
+- **From a pipe**, open with ``streaming=True``: the pass finds each member by its local
+  header, and reads the central directory after the last one. A member is yielded with
+  what its local header says, so its ``mode``, ``create_system`` and ``comment`` are
+  ``None`` and a symlink is a ``FILE`` until the pass reaches the directory; then every
+  member is updated in place, and ``member_state_final`` turns ``True``. Extraction
+  writes each member as it arrives and, at the end of the pass, applies modes, makes the
+  links (after running your ``filter`` again on them) and removes what a member the
+  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A
+  member the directory does not list (an appended update, a planted entry) is dropped
+  and reported as ``ARCHIVE_UNLISTED_DATA``.
+- What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
+  without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
+  bit-3 PPMd member is decoded in a child process, so
+  ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
+  passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
+  is still possible after that, the first one is used.
+- Where a pipe and a file differ, on archives no writer produces: a data descriptor
+  that disagrees with the central directory, a local header the directory contradicts,
+  or two same-named members whose directory order reverses their file order make the
+  member fail at the end of the pass (`CorruptionError`), where a read from a file
+  writes it. An archive the directory refuses as a whole (a damaged ZIP64 end record,
+  a name flagged UTF-8 that is not) is refused from a file before anything is written,
+  and from a pipe after every member has been written; those files stay.
 - **A damaged central directory lists the members before the damage**, then raises
   `CorruptionError`; `members_report()` gives you both. An archive whose end record is
   gone (cut short, or followed by more than 64 KiB) still fails at open.
@@ -113,7 +136,9 @@ yielded.
   refuses. "Version needed to extract" never refuses a member: only a method or
   encryption Archivey cannot read does.
 - `ListingLimits.max_members` is checked at open against the entry count the end
-  record declares, and as the directory is read, in `stream_members()` too.
+  record declares, and as the directory is read, in `stream_members()` too. From a
+  pipe it is checked as the pass meets each local header, and again on the directory's
+  entries.
 - Extended ZIP codecs with ``[recommended]`` installed: Deflate64 and PPMd
   (``inflate64`` / ``pyppmd`` — the same packages the 7z reader uses, which is why no
   extra is named after a format) and Zstd (``backports.zstd``, or stdlib on 3.14+). A

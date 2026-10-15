@@ -109,8 +109,8 @@ no member replaces the destination itself.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
 
-**Residual.** A local process racing the destination (out of scope, §1). A hard kill can leave `.archivey-tmp-*`
-files, which are safe to delete.
+**Residual.** A local process racing the destination (out of scope, §1). A hard kill, or a removal the filesystem
+refuses (logged), can leave `.archivey-tmp-*` files, which are safe to delete.
 
 **Tests.** `tests/test_extraction.py`: `test_check_universal_rejects_traversal`,
 `test_check_universal_rejects_root_named_file`,
@@ -340,6 +340,10 @@ archive declares.
   disables it. ZIP, 7z, RAR and ISO also check `max_members` while parsing, at
   `open_archive` (ZIP, as it walks the directory when the end record understates the
   count; 7z and RAR weigh their header names against `max_metadata_bytes` there too).
+  A ZIP read from a pipe has no directory at open: its forward pass charges
+  `max_members` on each local header as it yields the member, and again on the
+  directory's entries after the last member, whose text it weighs against
+  `max_metadata_bytes` as it arrives (`zip_forward_reader.py`).
   The TAR walker keeps nothing behind the member list, so nothing else is
   held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, for the bytes present rather than the size a header declares
@@ -443,6 +447,8 @@ members are listed (ADR [0020](decisions/0020-native-zip-reader.md)) and keeps a
 locator per member, so nothing is built at open; an end record declaring more entries
 than `max_members` is refused at open, and the walk charges `max_members` in every mode,
 so an end record that understates the count is refused when the walk passes the limit.
+A ZIP read from a pipe charges the count on its local headers and its directory as it
+goes (above), so ZIP has no part in this residual from any source.
 `max_metadata_bytes` counts retained metadata, not a transient decode buffer discarded
 before any member exists. ISO's counts are a superset of the listing's: the extra
 records of a multi-extent file and the Rock Ridge `rr_moved` scaffolding count as
@@ -783,7 +789,12 @@ never reported as success. Public:
 **Residual.** Wrong-key 7z header garbage survives in principle when it parses into a
 non-empty plausible header that also ends exactly at the end of the decoded buffer.
 py7zr writing the encoded-header CRC would narrow it further. Bytes returned before an
-error are of unknown quality.
+error are of unknown quality. A ZIP member with bit 3 set (sizes in a data descriptor
+after its data) read from a pipe ends where its codec's stream ends, and the descriptor
+found after it dates the member's end from its own position, so junk between the two
+counts into the member's compressed size: refused from a file (DR-3), accepted from a
+pipe (DR-5a; the native ZIP reader's `design.md`, "Where a member's data ends"). Only a
+crafted archive has that shape; the decoded data is still checked against the CRC.
 
 **Tests.**
 `tests/test_codecs.py::test_verify_mismatch_raises_at_eof_without_losing_final_chunk`,

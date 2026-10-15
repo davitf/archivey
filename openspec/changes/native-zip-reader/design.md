@@ -274,12 +274,12 @@ the directory is then read forward from the same stream with the same entry pars
 | Member | How the walk finds its end |
 | --- | --- |
 | Sizes in the local header (bit 3 clear) | `compressed_size` bytes |
-| Bit 3, a codec with an end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark) | The codec's own end, then the data descriptor: signature optional, 8-byte sizes when the local header has a ZIP64 extra field, else 4-byte. Its CRC and sizes are checked against what was read |
+| Bit 3, a codec with an end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark) | The codec's own end, then the data descriptor: signature optional, 8-byte sizes when the local header has a ZIP64 extra field, else 4-byte. Its CRC and sizes are checked against what was read. If the decode fails, the walk's scan finds the descriptor on the stored bytes, with no key, starting at the last 4 MiB the decode read (the walk's put-back window) and counting the bytes before them; the members after it are read unless the decode ran more than that past the data's end |
 | Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for a local header, central header or end record signature (or the end of the stream), and take a descriptor ending right before it whose CRC and compressed size match the bytes since the data start. Its own `PK\x07\x08` is optional (APPNOTE 4.3.9.3; early PKZIP left it out), so both shapes are tried; libarchive finds only the signed one. None matching by the end record (damage, or bytes between the descriptor and the next header): `UnsupportedFeatureError` |
 | Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext. The descriptor's CRC covers the plaintext, so the scan matches on the compressed size and the signature after it only; the CRC (ZipCrypto, AE-1) or the HMAC (AES) then checks the plaintext as for any member |
-| Bit 3, LZMA without the EOS bit, PPMd without an end mark | No way to find the end: `UnsupportedFeatureError` in this mode, naming the reason. A seekable source reads it |
+| Bit 3, LZMA without the EOS bit | The codec cannot find the end, so the member's read is `UnsupportedFeatureError` in this mode, naming the reason. The walk's scan on the stored bytes then passes it as it does a failed decode, under the same 4 MiB window. A seekable source reads it. (PPMd has no flag for a missing end mark: such a member fails its decode, from a file too, and the scan passes it.) |
 | Bit 3, encrypted, any method but STORED, nobody reads it | The STORED scan, on the ciphertext, matching the compressed size and the signature after it: no key is needed to pass the member, and a short one keeps its ciphertext for a link target as a sized one does. A false match in ciphertext takes a planted signature and size (about 2^-64 per position by chance); a crafted one is the planted-prefix case, caught against the directory |
-| Bit 3, encrypted, any method but STORED, read | Only the decrypted codec finds the end, so the walk decrypts and decodes it, and a missing or wrong password ends the walk there with the error the member's read gives. The descriptor is found by the decoded CRC (zero under AE-2). Under WinZip AES the code follows the ciphertext, so the stage keeps the last bytes it read out of the HMAC until the descriptor says where the data ended (the walk's put-back window and one read more), and the bytes the descriptor search read past the stage's last read complete it |
+| Bit 3, encrypted, any method but STORED, read | Only the decrypted codec finds the end, so the walk decrypts and decodes it. When the read fails (no password, a wrong one, a key that passed its check byte and decodes garbage, damaged data), the walk puts back what the read took and passes the member by the scan above, so the member fails alone, as from a file. The scan starts at the last 4 MiB the read took (the walk's put-back window), so only a read that ran more than that past the data's end leaves the descriptor behind it and ends the walk there. The descriptor is found by the decoded CRC (zero under AE-2). Under WinZip AES the code follows the ciphertext, so the stage keeps the last bytes it read out of the HMAC until the descriptor says where the data ended (the walk's put-back window and one read more), and the bytes the descriptor search read past the stage's last read complete it |
 
 The STORED scan can be fooled on purpose: a member that carries, inside its own data, a
 descriptor for a prefix of itself followed by a local header signature ends early, and
@@ -553,10 +553,11 @@ requirement):
 The descriptor mismatch and the reversed pair make a streaming extraction fail a member
 that the seekable extraction of the same archive writes, and the contradicted local
 header one that it writes differently or fails too. Those three are the only places the
-two access modes differ on disk; a member whose two names differ fails in both, as the
-seekable read refuses it too. All three come only from crafted or hand-edited archives,
-which DR-5a allows to differ a little; matching them would mean buffering every member
-until the directory arrives (ADR 0010).
+two access modes differ on disk for one member; a member whose two names differ fails in
+both, as the seekable read refuses it too. All three come only from crafted or
+hand-edited archives, which DR-5a allows to differ a little; matching them would mean
+buffering every member until the directory arrives (ADR 0010). The archive-wide refusal
+below is the other difference on disk.
 
 One more thing is known only once the directory has been read, and is not a member
 failure. A directory entry pointing at a local header an earlier entry already took ends
@@ -564,6 +565,21 @@ the pass with its own `CorruptionError`: the seekable read lists both, and a for
 pass reads that data once, for one member. A directory whose entries fill a different
 size than the end record declares is a warning (`ARCHIVE_EOF_MARKER_MISSING`, marker
 `central_directory`), and every entry stays listed.
+
+Two more differences are recorded (`tests/test_zip_pipe_parity.py`, `_DIFFERS`):
+
+- In `extract_all`, a link member the pass wrote as a file keeps the error its data
+  read gave: under no password an encrypted link fails with `EncryptionError`, where
+  the file read reports `LinkTargetNotFoundError`; the files on disk are the same.
+- An archive-wide refusal that comes from the directory or the end records (a damaged
+  ZIP64 end record or locator, a name flagged UTF-8 that is not valid UTF-8) is found
+  by a file read before anything is written, and by the pass only after every member
+  has been written: the files stay, and the same error is raised. The pass keeps them:
+  the file read stops refusing these instead (davi, 2026-10-14). A damaged ZIP64 end
+  record, a damaged directory or a missing end record makes the file read walk the
+  local headers (task 3.0b), and a name flagged UTF-8 that is not valid UTF-8 decodes as
+  unflagged (task 4.1); once both land, the two reads write the same files. A split set
+  and an encrypted central directory stay refused: no member of either can be read.
 
 ### What the caller sees in a forward pass
 

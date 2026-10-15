@@ -222,7 +222,11 @@ digests, stream rewinds) — those have no per-member result to live on.
 
 Escalation is not lost with the codes: `abort_on` (see
 [Safe extraction](extracting.md)) is the named opt-in for being stopped by a blocked
-member, a collision, or a name rewrite.
+member, a collision, or a name rewrite. For a ZIP read from a pipe it fires as the pass
+writes a member, before the end of the pass decides whether the member is selected, so
+it can stop a run for a member the end would have removed; the extraction limits
+(`ResourceLimitError`) count such a member too while it is on disk
+([A ZIP from a pipe](extracting.md#a-zip-from-a-pipe)).
 
 ### Named policy presets
 

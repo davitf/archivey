@@ -111,7 +111,9 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   The end record is searched for in the last 64 KiB of the file, so a ZIP followed by
   more than that is not opened at all today: `open_archive` raises
   `CorruptionError`, or does not recognise the file without `format=`. Cut the tail
-  off, or open the ZIP part through a stream that ends where it does.
+  off, or open the ZIP part through a stream that ends where it does. From a pipe the
+  pass reads to the end of the stream after the last member, so a sender that keeps
+  the connection open after the ZIP ends makes the pass wait for EOF.
 - **The rapidgzip accelerator starts a child process for gzip, zlib and deflate.**
   rapidgzip aborts the process on a stream that ends early, so archivey decodes these
   codecs with it in a child Python process, one per open stream. When the child aborts,

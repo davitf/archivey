@@ -511,19 +511,22 @@ ISO) raises before the first yield. On any random-access reader, TAR included,
 `for member in reader` lists the whole archive first, unlike `stream_members()`.
 On a random-access reader a later listing call walks again and raises the same
 error; so does `members_report_if_available()` on a reader with an upfront
-index (ZIP, 7z, RAR, ISO, single-file).
+index (ZIP from a seekable source, 7z, RAR, ISO, single-file).
 An archive with more members than the limits allow is read only by raising
 them; `ListingLimits.UNLIMITED` streams any archive, and the reader then keeps
 every member until it closes. Formats that apply `max_members` at parse (ZIP,
 7z, RAR and ISO) fail at `open_archive` instead (ZIP, when its end record
-understates the count, as the directory walk passes the limit).
+understates the count, as the directory walk passes the limit). A ZIP read from a
+non-seekable source has no directory to read at open: its forward pass charges
+`max_members` on the local headers as it yields members, and again on the directory
+entries it reads after the last member (`format-zip`).
 
 #### Scenario: listing-limits matrix
 
 | Case | Expected |
 | --- | --- |
 | Default config, archive with ≤262_144 members and metadata under 64 MiB | `members()` / `members_report()` succeed |
-| Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`, `format-iso`); no full cache published |
+| Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-zip`, `format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes`, at `open_archive` on 7z and RAR, which weigh the names their headers hold at parse (`format-7z`, `format-rar`) |
 | RAR archive whose compressed RAR 1.5-4 comments, each weighed by the larger of its declared size and its packed bytes, total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
@@ -1209,9 +1212,11 @@ killed by SIGKILL, or one that dies allocating the member's model, SHALL raise
 `ResourceLimitError`, as SHALL a larger member where no child process can be started. A
 child that ends any other way (another signal, a plain exit status) SHALL raise
 `ReadError`, which is not a verdict on the data. `None` SHALL decode every member
-in-process. Per-call `limits`
-still beat `config.extraction_limits`, then reader/library default. Other
-per-call operational args stay outside `ArchiveyConfig`.
+in-process, except one whose size is known only once it has been read (a ZIP member with
+bit 3 set, read from a non-seekable source): that one SHALL be fed to the decoder in
+pieces and only in a child process, so `None` SHALL refuse it with `ResourceLimitError`.
+Per-call `limits` still beat `config.extraction_limits`, then reader/library default.
+Other per-call operational args stay outside `ArchiveyConfig`.
 `detection_budget` SHALL bound what format detection spends, for `detect_format` and for
 every detection `open_archive` and `open_stream` run (see `detection-cost`): the
 auto-detection itself, and under `format=` the stub-volume check and the rescan that
@@ -1324,6 +1329,19 @@ has been offered to the selector:
   then raises `DiagnosticRaisedError` from the iterator.
 - A predicate selector SHALL NOT be reported.
 
+`extract_all()` over a ZIP read from a non-seekable source SHALL make the selection
+again at the end of the pass, on what each member became once the central directory
+was read (its name, where a DOS host makes `\` a separator, and its type). During the
+pass a `str` entry SHALL match every name a member can end with (with `\` as a
+separator or not, with or without a folder's trailing `/`), so the data of any member
+it may select is written while the stream holds it; at the end it selects for good,
+what it no longer takes is removed with no result, and no entry counts as matched
+before then. A member a predicate or the filter left out during the pass SHALL be
+asked about again at the end; taken then, it is written when it needs no bytes the
+stream has passed (a link, a folder, an empty file) and otherwise fails with
+`ExtractionError`. A predicate is therefore called twice for every member, and reads
+`member_state_final` as `False` on the first call.
+
 #### Scenario: selector matrix
 
 | Case | Expected |
@@ -1336,6 +1354,8 @@ has been offered to the selector:
 | Same selector, caller breaks after the first member | No `MEMBER_SELECTOR_UNMATCHED` |
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
+| `extract_all(members=["docs/r.txt"])` on a ZIP from a pipe whose DOS-host entry stores `docs\r.txt` | `docs/r.txt` extracted, as from a file; `members=["docs\\r.txt"]` selects nothing, as from a file |
+| `extract_all(filter=...)` taking only names under `docs/`, the same archive from a pipe, on POSIX | `docs/r.txt` `FAILED` with `ExtractionError`: the filter saw `docs\r.txt` during the pass, and its data has gone by at the end |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
 | `extract_all(members=["typo.txt", "a.txt"])` on a listing that ends in damage after `a.txt`, code set to `RAISE` | `a.txt` written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
 

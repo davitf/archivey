@@ -395,7 +395,7 @@ a writer that never comes; on those `info` prints the open error alone.
 | `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey info <archive>` that opens | Detection runs once, inside the open |
-| `archivey info <fifo>` whose open fails (a ZIP, say) | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
+| `archivey info <fifo>` whose open fails (a 7z, say) | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 
 ### Requirement: version reports package identity and optional format matrix
@@ -495,12 +495,12 @@ When the archive path is a pipe (FIFO), a character device or a socket, which ca
 read only once, every verb that opens the archive (`list`, `test`, `extract`, `info`)
 SHALL open it in streaming mode, because the user has no option to choose the mode.
 `list` SHALL list the members in one pass, `test` SHALL verify them in one pass and
-`extract` SHALL extract them in one pass. When the format cannot be read in one
-forward pass (ZIP, 7z, RAR, ISO), the verb SHALL exit `1` with a message that names
-the format by its file extension (`zip`, `7z`, `rar`, `iso`) and tells the user to
-copy the input to a regular file first. The message MUST NOT suggest `streaming=True`
-or a `BytesIO`, which a CLI user cannot pass. A block device rereads the same bytes and
-opens as a regular file does.
+`extract` SHALL extract them in one pass; TAR, ZIP and the single-file formats read
+so. When the format cannot be read in one forward pass (7z, RAR, ISO), the verb SHALL
+exit `1` with a message that names the format by its file extension (`7z`, `rar`,
+`iso`) and tells the user to copy the input to a regular file first. The message MUST
+NOT suggest `streaming=True` or a `BytesIO`, which a CLI user cannot pass. A block
+device rereads the same bytes and opens as a regular file does.
 
 A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
 pipe, so an archive piped on stdin is read through this requirement. The `-` token is
@@ -510,11 +510,11 @@ separate and stays reserved (below).
 
 | Case | Expected |
 | --- | --- |
-| `archivey list <tar-fifo>` | Lists every member; exit `0` |
-| `archivey test <tar-fifo>` | Verifies every file member in one pass; exit `0` |
-| `archivey extract <tar-fifo> -d out` | Extracts every member into `out`; exit `0` |
+| `archivey list <tar-fifo>` (also `<zip-fifo>`) | Lists every member; exit `0` |
+| `archivey test <tar-fifo>` (also `<zip-fifo>`) | Verifies every file member in one pass; exit `0` |
+| `archivey extract <tar-fifo> -d out` (also `<zip-fifo>`) | Extracts every member into `out`; exit `0` |
 | `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
-| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first |
+| `archivey list <7z-fifo>` (also `test`, `extract`, `info`; also RAR, ISO) | Exit `1`; message names the format as `7z` (`rar`, `iso`) and says to copy the input to a regular file first |
 | `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
 
 ### Requirement: the stdin token `-` is reserved, not supported in v1

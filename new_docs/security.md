@@ -34,8 +34,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   to crash in a child process, or feeds them in a way that avoids the crash, but one nobody has
   found yet would still abort yours. Members compressed with PPMd, a method some 7z and ZIP archives
   use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB of
-  compressed data by default) and in a child process above it. Under a tight memory limit, such as a
-  container's, the in-process decoder can crash instead of raising an error.
+  compressed data by default) and in a child process above it. A ZIP member read from a pipe whose
+  size is stored after its data always goes to a child process, so with the limit set to `None`
+  archivey refuses it. Under a tight memory limit, such as a container's, the in-process decoder
+  can crash instead of raising an error.
 
     ??? note "Why the split at 16 MiB?"
         pyppmd, the PPMd decoder, crashes when it's asked to keep decoding after a damaged stream
@@ -71,7 +73,14 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
   files it wrote before then on disk. ZIP, 7z, RAR and ISO archives check the limits when they're
-  opened, with or without `streaming=True`.
+  opened, with or without `streaming=True`. A ZIP read from a pipe can't be checked then, so it's
+  checked like a TAR as its members arrive, and again on its index at the end.
+- **A ZIP extracted from a pipe is checked on what it writes before its index arrives.** The pass
+  writes each member as it comes, and only the index at the end says which members the extraction
+  keeps. The extraction limits count what's on disk while it's there, so a member that's later
+  removed can still stop the extraction under `max_entries` or `max_extracted_bytes`, where the
+  same archive read from a file completes. An `abort_on` check runs before a member is written, so
+  it can also stop the extraction for a member the end would have removed.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.

@@ -6,8 +6,8 @@ A rewrite of the user docs, grown one agreed paragraph at a time. Not published 
 Some sentences will go stale when work in progress lands. Check each before the switch, and empty
 this list:
 
-- Every ZIP claim in the tree, once the native ZIP reader is complete: reading from a pipe,
-  damaged or missing end records, and bytes after the archive are all expected to change.
+- Every ZIP claim in the tree, once the native ZIP reader is complete: damaged or missing end
+  records, and bytes after the archive, are expected to change.
 
 Pages linked from these but not written yet: `install.md`. `install.md` should say
 why RAR needs an outside program (RARLAB doesn't publish the compression format, and the UnRAR

@@ -2,8 +2,8 @@
 
 The refusal is one typed error (``StreamNotSeekableError``) for every format, but the
 *next step* it names depends on the backend rather than on the mode that was asked for.
-TAR and the single-file compressors read forward-only, so ``streaming=True`` really is
-the fix; ZIP, ISO, 7z and RAR need seek in either mode, so for those the only fix is a
+TAR, ZIP and the single-file compressors read forward-only, so ``streaming=True`` really
+is the fix; ISO, 7z and RAR need seek in either mode, so for those the only fix is a
 seekable source. Suggesting ``streaming=True`` there sent callers into a second refusal
 that explained the retry could never have worked, which is what these tests pin shut.
 
@@ -31,7 +31,6 @@ from tests.streams_util import NonSeekableBytesIO
 
 # Trailing index or offset-addressed: no forward-only pass exists for these.
 _NEEDS_SEEK = (
-    ArchiveFormat.ZIP,
     ArchiveFormat.ISO,
     ArchiveFormat.SEVEN_Z,
     ArchiveFormat.RAR,
@@ -43,6 +42,7 @@ _NEEDS_SEEK = (
 # skip through _skip_unless_registered rather than being left out of the list.
 _READS_FORWARD = (
     ArchiveFormat.TAR,
+    ArchiveFormat.ZIP,
     ArchiveFormat.TAR_GZ,
     ArchiveFormat.GZ,
     ArchiveFormat.BZ2,

@@ -1166,6 +1166,53 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |
 
+### Requirement: A ZIP extracted from a non-seekable source is settled at the end of the pass
+
+A ZIP read from a non-seekable source (`streaming=True`) gives each member's type, mode,
+host and comment, and the order that decides `is_current`, only in its central
+directory, after the last member. `extract_all` SHALL write each member as its local
+header describes it, then, at the end of the pass, settle every member the directory
+changes so that the files on disk match the extraction of the same archive from a
+file:
+
+- A member whose type the directory changes SHALL go through the caller's `filter` and
+  the policy's checks again, on the updated member, before its link is made. A refusal
+  removes the file written for it and is recorded as for any refused member, so a
+  symlink that escapes the destination is refused from a pipe as from a file. Links
+  are made only after the last member has been written.
+- Five things are known only once the directory has been read, and each SHALL fail
+  the member it names, under "Error Policy (OnError)" above: a size or CRC from a
+  data descriptor that differs from the central entry; a local header whose CRC, sizes
+  or encryption flag the central entry contradicts; two same-name members whose
+  directory order reverses their file order (the current one fails, the other becomes
+  `SUPERSEDED`); a directory entry with no local entry; and a local header and
+  directory entry that store different names. The member's result SHALL become the
+  one the extraction from a file gives it, or `FAILED` with `CorruptionError` where
+  that result needs bytes the stream has passed; the overwrite policy decides first.
+  An entry this run wrote stays only where the member whose result names it is
+  `EXTRACTED`; any other is removed. Under `OnError.STOP` the first such failure
+  SHALL raise `CorruptionError` at the end of the pass, after those revisions.
+- A local entry no directory entry points to SHALL be removed from disk and reported
+  as `ARCHIVE_UNLISTED_DATA`.
+
+Where the two reads MAY differ (DR-5a, shapes only crafted archives have): the
+descriptor mismatch and the reversed pair fail a member the extraction from a file
+writes; a member whose data fails as the pass writes it stops an `OnError.STOP` run
+though the directory may then not list it; `abort_on` fires before a member is
+written, which can be before the end of the pass decides it is not selected; and the
+bomb limits count what the pass writes while it is on disk, so a member it takes back
+can still stop a run under `max_entries` or `max_extracted_bytes`.
+
+#### Scenario: ZIP from a pipe, settled at the end of the pass
+
+| Case | Expected |
+| --- | --- |
+| The directory types a member written as a file as a symlink to `../../etc/passwd` | The filter and policy run again; the member is refused and its file removed, as from a file |
+| Two same-name members `M1`, `M2` in file order, the directory makes `M1` current, `OnError.CONTINUE` | `M1` `FAILED` with `CorruptionError`, `M2` `SUPERSEDED`; the path is empty |
+| A STORED bit-3 member whose data embeds a descriptor for a prefix of itself | `FAILED` with `CorruptionError`; its entry removed; under `OnError.STOP` raised at the end of the pass |
+| A directory entry with no local entry, selected | A `FAILED` result is added for it |
+| A local entry the directory does not list | Removed from disk; `ARCHIVE_UNLISTED_DATA` |
+
 ### Requirement: A listing that ends in damage extracts its prefix, then raises
 
 When an archive's listing ends in terminal damage (`CorruptionError` / `TruncatedError`

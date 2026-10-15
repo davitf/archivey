@@ -815,8 +815,10 @@ def _nested_params() -> list:
 
 
 # Formats open_archive() reads from a non-seekable source (streaming=True only).
-_STREAMS_FROM_PIPE = frozenset(k for k in FORMAT_KEYS if k.startswith("tar")) | set(
-    _BY_ID["single-file"].formats
+_STREAMS_FROM_PIPE = (
+    frozenset(k for k in FORMAT_KEYS if k.startswith("tar"))
+    | {"zip"}
+    | set(_BY_ID["single-file"].formats)
 )
 
 
@@ -829,8 +831,8 @@ def test_nested_archive_from_a_pass_handle_is_a_non_seekable_source(
     The pass handle never seeks, even under ``seekable_members=True``, so a nested
     archive read from it gets no random access: the default open raises
     ``StreamNotSeekableError``, ``streaming=True`` works only for formats that stream
-    from a non-seekable source, and the formats that need their index (ZIP, 7z, RAR,
-    ISO) refuse in either mode. ``open()`` on the same member still gives a seekable
+    from a non-seekable source, and the formats that need their index (7z, RAR, ISO)
+    refuse in either mode. ``open()`` on the same member still gives a seekable
     source, which is the documented way to read a nested archive at random.
     """
     entry = _BY_ID[entry_id]

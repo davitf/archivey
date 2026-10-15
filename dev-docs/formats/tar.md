@@ -274,7 +274,8 @@ index and the walk runs as the pass goes; it reads `True` when the pass ends and
 resolves links. Until then a later copy of the name can still make the member
 `is_current=False`, and `link_target_member` is set then. A pass after `members()`
 yields members that already read `True`. A TAR link target is in the header, so
-nothing else is late.
+nothing else is late: unlike a ZIP read from a pipe ([`zip.md`](zip.md) §2.2.2), no
+TAR member changes type, name or mode after it is yielded.
 
 Names keep their bytes until `_to_member` decodes them, once, knowing where each came
 from. A ustar or GNU field (name, link target, `uname`, `gname`) declares no encoding, so

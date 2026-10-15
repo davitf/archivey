@@ -4,8 +4,6 @@ The pass writes each member as its local header describes it; the central direct
 read after the last member, then settles the mode, type and name of what was written
 (``ExtractionCoordinator._settle_revised_members``). Each test extracts the same bytes
 from a file and from a pipe and expects the same files on disk and the same results.
-``open_archive`` still refuses a pipe for ZIP until the rest of the change lands, so
-these tests open the gate themselves.
 """
 
 from __future__ import annotations
@@ -29,7 +27,6 @@ from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
 )
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.extraction import BombTracker
 from archivey.types import (
     AbortOn,
@@ -50,11 +47,6 @@ needs_symlinks = pytest.mark.skipif(
 )
 # Also where a backslash in a name is no separator.
 posix_modes = pytest.mark.skipif(os.name == "nt", reason="needs POSIX")
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 def _entry(name: str, *, mode: int | None = None, host: int = 3) -> zipfile.ZipInfo:
@@ -1140,3 +1132,26 @@ def test_a_missing_entry_meets_the_overwrite_policy_first(
             {"a.txt": b"one", "b.txt": b"caller's"},
         )
     )
+
+
+def test_a_moved_copy_the_filesystem_keeps_is_logged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A DOS name is written again under its real name from the copy the pass wrote,
+    moved aside first; a removal of that copy the filesystem refuses is reported."""
+    fixture = Path(__file__).parent / "fixtures" / "zip_backslash" / "dos_backslash.zip"
+    real_unlink = os.unlink
+
+    def refuse_temp(path: str | os.PathLike[str], *args: object, **kw: object) -> None:
+        if os.path.basename(path).startswith(".archivey-tmp-"):
+            raise PermissionError(13, "Permission denied", str(path))
+        real_unlink(path, *args, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "unlink", refuse_temp)
+    with archivey.open_archive(
+        NonSeekableBytesIO(fixture.read_bytes()), streaming=True
+    ) as reader:
+        reader.extract_all(tmp_path / "out")
+    assert "the earlier copy of" in caplog.text

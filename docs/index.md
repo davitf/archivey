@@ -35,8 +35,8 @@ with archivey.open_archive("big.tar.gz") as reader:
             for chunk in iter(lambda: stream.read(1 << 20), b""):
                 ...
 
-# Read from a pipe: forward-only, single pass. TAR and the single-file compressors only
-# — ZIP, ISO, 7z and RAR need a seekable source.  -> Access costs
+# Read from a pipe: forward-only, single pass. TAR, ZIP and the single-file compressors
+# only — ISO, 7z and RAR need a seekable source.  -> Access costs
 with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
     for member, stream in reader.stream_members():
         ...
@@ -57,10 +57,9 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
   member *data* still uses the system `unrar` or `rar`, or `unar` when neither is found).
 - **Safe by default** — extraction blocks path traversal, symlink escapes, and archive
   bombs unless you opt out. See [Safe extraction](extracting.md).
-- **Streaming-friendly** — read TAR and the single-file compressors straight from a pipe
-  in a single forward pass (formats that keep their index at the end need a seekable
-  source), with explicit, predictable [access costs](access-and-cost.md) for solid
-  archives and seeking.
+- **Streaming-friendly** — read TAR, ZIP and the single-file compressors straight from a
+  pipe in a single forward pass (7z, RAR and ISO need a seekable source), with explicit,
+  predictable [access costs](access-and-cost.md) for solid archives and seeking.
 - **Consistent handling** of symlinks, timestamps, permissions, passwords, and a single
   [exception hierarchy](errors-and-diagnostics.md).
 

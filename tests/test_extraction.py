@@ -5504,3 +5504,31 @@ def test_implied_parent_renamed_once_for_later_members(tmp_path: Path) -> None:
         "foo (1)/y.txt",
     ]
     assert tree == ["foo", "foo (1)/", "foo (1)/x.txt", "foo (1)/y.txt"]
+
+
+def test_a_staging_file_the_filesystem_keeps_is_logged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A write that fails after staging removes its temp file; a removal the
+    filesystem refuses leaves it, and says so."""
+    archive = tmp_path / "a.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("f.txt", b"data")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise OSError(5, "simulated metadata failure")
+
+    real_unlink = os.unlink
+
+    def refuse_temp(path: str | os.PathLike[str], *args: object, **kw: object) -> None:
+        if os.path.basename(path).startswith(".archivey-tmp-"):
+            raise PermissionError(13, "Permission denied", str(path))
+        real_unlink(path, *args, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_apply_metadata", fail)
+    monkeypatch.setattr(os, "unlink", refuse_temp)
+    with open_archive(archive) as reader:
+        reader.extract_all(tmp_path / "out", on_error="continue")
+    assert "staged for 'f.txt'" in caplog.text

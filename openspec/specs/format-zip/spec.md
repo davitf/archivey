@@ -5,15 +5,17 @@
 ZIP archives are read through the unified `ArchiveReader` API using archivey's
 own parser for the end record, central directory and local headers
 (`internal/backends/zip_parser.py`) and archivey's shared codec layer for
-member data. ZIP listing is indexed, member access is direct, and read sources
-must be seekable. Read-only: writing is not shipped for any format.
+member data. ZIP listing is indexed, member access is direct, and a seekable
+source is read through its central directory. A non-seekable source is read under
+`streaming=True` in one forward pass over the local headers. Read-only: writing is
+not shipped for any format.
 
 ## Related specs
 
 | Spec | Relationship |
 | --- | --- |
 | `archive-reading` | Reader API, password candidates, weak-check confirmation, bounded storage |
-| `access-mode-and-cost` | Random-access vs streaming rules; non-seekable random-access failure |
+| `access-mode-and-cost` | Random-access vs streaming rules; non-seekable random-access failure; the forward pass's cost receipt |
 | `diagnostics` | Timestamp and symlink-target diagnostic values / policy |
 | `backend-registry` | `format_availability(ZIP)` FULL/PARTIAL from optional member codecs |
 | `compressed-streams` | ZIP member-data decode path (method id → `StreamCodec`) |
@@ -29,8 +31,8 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Backend dependency | None: archivey's parser for the structure (no `zipfile` import); shared codec layer for member data |
 | Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed |
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
-| Stream capability | `StreamCapability.SEEKABLE` |
-| Read source | Seekable only; no implicit buffering/spooling |
+| Stream capability | `StreamCapability.SEEKABLE`; `FORWARD_ONLY` for a non-seekable source |
+| Read source | Seekable in both access modes; non-seekable under `streaming=True` only; no implicit buffering/spooling |
 | Write support | No — writing is not shipped for any format (`dev-docs/investigations/archive-writing-design.md`) |
 
 `reader.get()` and other name lookups SHALL use the central-directory-derived
@@ -189,22 +191,87 @@ SHALL raise `UnsupportedFeatureError` naming Strong Encryption rather than
 - **THEN** listing raises `CorruptionError`, not `UnsupportedFeatureError`, after the
   entries before the damage
 
-### Requirement: Reject non-seekable ZIP read sources
+### Requirement: Read a non-seekable ZIP source in one forward pass
 
-The ZIP central directory is at EOF, so the ZIP reader SHALL raise
-`StreamNotSeekableError` at open when reading from a non-seekable source. The
-library MUST NOT buffer, spool, or copy a non-seekable ZIP source into seekable
-storage implicitly. Callers must provide a seekable source or choose an access
-path that does not require opening ZIP as random-access. Any future spooling
-convenience must be an explicit opt-in, not default behavior.
+A ZIP read from a non-seekable source SHALL be read under `streaming=True` in one
+forward pass over the local headers, with the central directory read after the last
+member. Under `streaming=False` it SHALL raise `StreamNotSeekableError` at open, naming
+`streaming=True`. The library MUST NOT buffer, spool, or copy the source into seekable
+storage. What the pass keeps SHALL be bounded: the directory and end records by the
+listing limits, and the member data it keeps (a password-confirmation prefix, a short
+member that may turn out to be a link) by fixed caps.
+
+Each member's data ends where its local header says, or, when bit 3 defers the sizes to
+a data descriptor, where its codec's end marker is (DEFLATE, Deflate64, bzip2,
+Zstandard, LZMA with the end-of-stream marker, PPMd with its end mark), followed by the
+descriptor; a STORED bit-3 member ends at a descriptor whose CRC and size match the
+bytes before it and that a ZIP signature follows. A bit-3 member nobody reads that is
+encrypted under a codec ends the same way, matched on its size, so passing it needs no
+key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
+its read SHALL raise `UnsupportedFeatureError`. A bit-3 PPMd member without an end mark
+fails its decode, as from a file. A bit-3 codec member whose decode fails or cannot find
+its end SHALL be passed by the same scan for its descriptor on its stored bytes, with no
+key. The scan starts at the last 4 MiB the decode read and counts the bytes before them
+into the size it matches; a decode that read more than that past the data's end leaves
+the descriptor behind the scan's start, and the pass SHALL then end with the scan's
+error. A bit-3 PPMd member is decoded in a child process, and
+`max_ppmd_in_process_input=None` SHALL refuse it with `ResourceLimitError`. Several
+password candidates SHALL be confirmed on a kept prefix of the member's data
+(`archive-reading`, "A unit read once").
+
+`stream_members()` SHALL yield each member with what its local header gives: `mode`,
+`create_system` and `comment` are `None`, the type is `FILE` or `DIRECTORY` from the
+name (a name ending in `\` is a `DIRECTORY`), and `member_state_final` is `False`
+(`archive-data-model`). Once the directory has been read, before the pass ends, each
+member SHALL be updated in place from its directory entry, matched by offset, as the
+same archive read from a file lists it, and `is_current` SHALL follow the directory
+order; member ids and listing order stay those of the file. A local entry no directory
+entry points to SHALL be dropped from the listing and reported as
+`ARCHIVE_UNLISTED_DATA`. A member flagged as a Windows reparse point whose data is not
+a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
+`FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
+`members_report_if_available()` SHALL return `None` until the directory has been read.
+
+Five things SHALL fail the member they name once the directory has been read: a size
+or CRC from a data descriptor that differs from the central entry; a local header whose
+CRC, sizes or encryption flag the central entry contradicts; two same-name members
+whose directory order reverses their file order; a directory entry with no local
+entry; and a local header and directory entry that store different names.
+`stream_members()` SHALL raise `CorruptionError` at the end of the pass for each but
+the reversed pair, which only updates the members. `extract_all` settles them as
+`safe-extraction` states. A directory entry pointing at a local header an earlier
+entry already took SHALL end the pass with `CorruptionError`.
+
+The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
+mismatch and the reversed pair fail a member the file read writes; bytes between a bit-3
+codec member's end and its descriptor, refused from a file, are counted into the member;
+the first of several inconclusive password candidates wins. It MAY also differ in these:
+a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
+the pass, losing the members after it, if its decode read more than 4 MiB past the
+data's end; a bit-3 LZMA member without the end-of-stream marker is refused where a file
+read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
+its data read gave (no password: `EncryptionError`, where the file read reports
+`LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
+makes (a damaged ZIP64 end record or locator, a flagged name that is not valid UTF-8) is
+raised by a file read before anything is written and by the pass after every member is
+written, the files staying on disk.
 
 #### Scenario: non-seekable read matrix
 
 | Case | Expected |
 | --- | --- |
-| Non-seekable ZIP with default `streaming=False` | `StreamNotSeekableError` at open; no reader |
-| Non-seekable ZIP with `streaming=True` | Still rejected because this backend cannot provide ZIP reading without seek |
+| Non-seekable ZIP with default `streaming=False` | `StreamNotSeekableError` at open, naming `streaming=True`; no reader |
+| Non-seekable ZIP with `streaming=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
 | Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
+| `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
+| `extract_all()` from a pipe, a Unix symlink member | The link is made at the end of the pass, after the filter runs again on it |
+| Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |
+| Bit-3 LZMA member without the end-of-stream marker | `UnsupportedFeatureError` at that member |
+| Bit-3 PPMd member, `max_ppmd_in_process_input=None` | `ResourceLimitError` |
+| Two same-name members whose directory order reverses their file order | `is_current` from the directory order; `stream_members()` raises nothing |
+| A data descriptor that understates a STORED member, `stream_members()` | `CorruptionError` at the end of the pass |
+| A local entry the directory does not list | Dropped from the listing; `ARCHIVE_UNLISTED_DATA` |
+| `reader.info` during the pass, then after it | `member_count` and `comment` `None`, then the directory's |
 
 ### Requirement: Map ZIP member metadata to ArchiveMember
 
@@ -413,6 +480,12 @@ entries really there: past `max_members` it SHALL raise `ResourceLimitError`. Th
 members listed before the limit SHALL read, also when they are opened before the
 listing reaches it.
 
+A forward pass over a non-seekable source has no directory to read first: it SHALL
+charge `max_members` on the local headers as it yields members, and again on the
+directory's entries as it reads them, and SHALL weigh the directory's names, extra
+fields and comments against `max_metadata_bytes` as they arrive, raising
+`ResourceLimitError` past either.
+
 #### Scenario: ZIP member limit
 
 | Archive, `max_members=2` | Expected |
@@ -420,6 +493,7 @@ listing reaches it.
 | Three entries, end record declares 3 | `ResourceLimitError` at open |
 | Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
 | The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
+| Three entries from a non-seekable source, `streaming=True` | The first two members yielded, then `ResourceLimitError` at the third local header |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 

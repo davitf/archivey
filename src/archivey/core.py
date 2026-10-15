@@ -658,8 +658,8 @@ def _open_resolved(
         )
 
     # Access-mode contract: streaming=False never implicitly buffers a pipe.
-    # streaming=True still needs a front-to-back format (TAR, raw codecs); trailing
-    # indexes (ZIP CD, ISO) cannot.
+    # streaming=True still needs a format with a front-to-back walk (TAR, ZIP's local
+    # headers, raw codecs); ISO, 7z and RAR cannot.
     source_is_read_once = (
         not archive_source.is_directory and not archive_source.seekable()
     )

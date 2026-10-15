@@ -4,9 +4,7 @@ with the error a file read gives where the pass can tell.
 The pass reads each member's data as its local header describes it, and meets the
 directory only at the end. A member whose local header the directory contradicts in a
 field a read relies on fails there, after its data was yielded: a file read, which
-reads by the directory, would have read it differently. ``open_archive`` still refuses
-a pipe for ZIP until the rest of the change lands, so these tests open the gate
-themselves.
+reads by the directory, would have read it differently.
 """
 
 from __future__ import annotations
@@ -21,16 +19,10 @@ import archivey
 from archivey.exceptions import CorruptionError, EncryptionError, TruncatedError
 from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_aes_fixture import build_aes_zip
 from tests.zipcrypto import build_zipcrypto_zip
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 def _zip(

@@ -333,12 +333,12 @@ class ReadBackend(ABC):
     READ_IMPLEMENTED: bool = True
     # The ``UnsupportedFeatureError`` text when ``READ_IMPLEMENTED`` is false.
     UNSUPPORTED_MESSAGE: str | None = None
-    # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for
-    # formats walkable front-to-back (TAR, the single-file codecs), false for formats
-    # whose index/metadata is not at the front (ZIP's central directory, ISO's
-    # descriptors). Random access (streaming=False) always requires a seekable source —
-    # repeatable open()/read() cannot be honored over one forward pass, and the library
-    # never implicitly buffers — so that side needs no per-backend flag.
+    # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for,
+    # among others, TAR, ZIP (by its local headers) and the single-file codecs; false
+    # for, among others, ISO and 7z. Each backend with it false says why in
+    # NON_SEEKABLE_REASON. Random access (streaming=False) always requires a seekable
+    # source (repeatable open()/read() cannot be honored over one forward pass, and
+    # the library never implicitly buffers), so that side needs no per-backend flag.
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     # Why a format with the flag above False cannot come from a non-seekable source,
     # as a clause for open_archive()'s StreamNotSeekableError. Formats differ: 7z's

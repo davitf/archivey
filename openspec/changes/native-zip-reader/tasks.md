@@ -110,6 +110,11 @@ each lands with nothing half-done reachable:
       a ZIP cut inside a member (`TruncatedError` at it) and junk after a member
       (`CorruptionError` after the members before it); a sized member is seeked over
       (counted reads).
+- [ ] 3.0c The same walk instead of a refusal for a damaged ZIP64 end record or locator
+      (the classic record's fields when none is saturated, with a diagnostic), a bad
+      directory offset and an unreadable directory entry, so a file read writes what
+      a pipe writes (davi 2026-10-14); `test_zip_pipe_parity.py`'s `_DIFFERS` loses
+      those rows.
 - [x] 3.1 Central and local headers parsed by the same code in both walks;
       `LocalHeaderWalk` over a forward reader (`zip_local_walk.py`); data descriptor
       parsing (signature optional, 4- or 8-byte sizes).
@@ -206,7 +211,7 @@ each lands with nothing half-done reachable:
       limit, and it ends the updates: members after a discard, and the kept prefix,
       are never updated from the directory, so neither needs `_link_target_unread`
       (each is a `FILE` or `DIRECTORY` from its local header, and stays one).
-- [ ] 3.3e3 The ZIP row of the `docs/formats.md` table gains the directory's fields
+- [x] 3.3e3 The ZIP row of the `docs/formats.md` table gains the directory's fields
       (3b3e, with the gate).
 - [x] 3.3f1 A reparse-flagged member whose data is not a reparse buffer is typed when
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
@@ -263,7 +268,7 @@ each lands with nothing half-done reachable:
       read or not (an unread encrypted one excepted), and a folder written for a member
       the directory makes a link taken back with the parents made for it
       (`tests/test_zip_pipe_reparse.py`).
-- [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
+- [x] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
       and `access-mode-and-cost` specs, `archive-reading` (ZIP applies `max_members` at
       parse) and the `ListingLimits` docstring in `config.py`, `archive-data-model` for
       `member_state_final` (and `safe-extraction` if the filter re-run needs a
@@ -288,7 +293,7 @@ each lands with nothing half-done reachable:
       `OnError` requirement; `ARCHIVE_UNLISTED_DATA` in `docs/formats.md` (ZIP) and
       `new_docs/errors-and-diagnostics.md`; `format-zip` for `is_current` from the
       directory order from a pipe.
-- [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
+- [x] 3.5a The other live statements of the two contracts stage 3 moves (grep
       `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
       is the 2026-10-10 result):
       - `max_members` at parse, ZIP joins (done in stage 2, which applies it at open and

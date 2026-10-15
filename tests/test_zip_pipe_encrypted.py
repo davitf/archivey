@@ -30,7 +30,6 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.zip_reader import ZipReadBackend
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_descriptors import without_descriptor_signatures
@@ -44,11 +43,6 @@ _COLLISION = (
 )
 _PASSWORD = b"secret"
 _TEXT = b"the quick brown fox jumps over the lazy dog\n" * 40
-
-
-@pytest.fixture(autouse=True)
-def _pipes_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ZipReadBackend, "SUPPORTS_STREAMING_NON_SEEKABLE", True)
 
 
 def _aes_zip(**kwargs: object) -> bytes:
@@ -298,21 +292,6 @@ def _zipcrypto_precompressed(method: int, encode, *, bit3: bool) -> bytes:  # no
     return _bit3(data) if bit3 else data
 
 
-def _ends_the_walk(data: bytes) -> bool:
-    """Whether the first member is a bit-3 codec member: from a pipe, only its key
-    finds where its data ends, so a read that fails ends the walk there."""
-    from archivey.internal.backends.zip_aes import parse_winzip_aes_extra
-
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        info = archive.infolist()[0]
-    method = info.compress_type
-    if method == 99:
-        aes = parse_winzip_aes_extra(info.extra)
-        assert aes is not None
-        method = aes.actual_method
-    return bool(info.flag_bits & 0x8) and method != zipfile.ZIP_STORED
-
-
 def _fixtures() -> list[pytest.ParameterSet]:
     zc = build_zipcrypto_zip
     return [
@@ -483,10 +462,8 @@ def test_a_wrong_or_missing_password_fails_as_from_a_file(build) -> None:  # noq
             assert kind is CorruptionError
         else:
             assert issubclass(kind, EncryptionError)
-        if _ends_the_walk(data):
-            # Without the key the pass cannot find the next header: it ends there,
-            # with the error the member's read gave.
-            expected = {"a.txt": expected["a.txt"], _WALK_ENDED: expected["a.txt"]}
+        # A bit-3 codec member's end is found by the scan on its ciphertext when
+        # its decode fails, so the pass reads on, as from a file.
         assert _pipe_read(data, password) == expected
 
 
@@ -615,14 +592,15 @@ def test_a_bit3_codec_member_cut_after_its_codec_ends_the_pass_as_truncated(
     build,  # noqa: ANN001
 ) -> None:
     """The codec ends; the code or the descriptor after it does not come. Going on
-    past the member raises the same truncation, as no next header can be found."""
+    past the member is a truncation too: the scan on the ciphertext finds no
+    descriptor before the stream ends."""
     data = build()
     descriptor = data.index(b"PK\x07\x08")
     cut = data[: descriptor - 4]
     result = _pipe_read(cut, _PASSWORD)
-    kind, message = result["a.txt"]  # type: ignore[misc]
+    kind, _message = result["a.txt"]  # type: ignore[misc]
     assert kind is TruncatedError
-    assert result[_WALK_ENDED] == (TruncatedError, message)
+    assert result[_WALK_ENDED][0] is TruncatedError  # type: ignore[index]
 
 
 @requires("cryptography")
@@ -739,14 +717,7 @@ def test_several_passwords_read_as_from_a_file(build, passwords) -> None:  # noq
     is skipped, as from a file."""
     data = _with_plain_member(build())
     expected = _file_read(data, passwords())
-    got = _pipe_read(data, passwords())
-    if _WALK_ENDED in got:
-        # Without a right password the pass cannot find the next header of a
-        # member it reads.
-        assert _ends_the_walk(data)
-        assert got == {"a.txt": expected["a.txt"], _WALK_ENDED: expected["a.txt"]}
-    else:
-        assert got == expected
+    assert _pipe_read(data, passwords()) == expected
 
 
 def _check_byte_collision(
@@ -873,11 +844,9 @@ def test_a_wrong_password_running_out_of_an_intact_archive_is_not_a_cut(
     got = _pipe_read(data, passwords)
     if with_right:
         assert expected["a.txt"] == _TEXT
-        assert got == expected
     else:
-        # Only the key finds a bit-3 codec member's end, so a wrong one ends the walk.
         assert expected["a.txt"][0] is EncryptionError  # type: ignore[index]
-        assert got == {"a.txt": expected["a.txt"], _WALK_ENDED: expected["a.txt"]}
+    assert got == expected
 
 
 def _ppmd_accepted(start: bytes) -> bool:

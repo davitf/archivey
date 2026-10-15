@@ -740,3 +740,49 @@ def test_planted_descriptor_signatures_cost_one_pass(
     # bytes past the earliest start a shape can have: up to the 12 bytes from there
     # to its own start, per candidate.
     assert fed <= 3 * len(payload)
+
+
+def _member_named(walk: LocalHeaderWalk, name: bytes) -> MemberData:
+    """The data of the member called ``name``, the ones before it read and settled."""
+    while (entry := walk.next_entry()) is not None:
+        if entry.header.name == name:
+            return walk.member_data(entry)
+        _decode(walk, entry)
+    raise AssertionError(f"no member {name!r}")
+
+
+def test_a_scan_counts_the_bytes_read_before_the_ones_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed read took more than the walk keeps: the scan starts at the kept bytes,
+    and the dropped ones count into the compressed size it matches."""
+    monkeypatch.setattr(zip_local_walk, "_CODEC_RETAIN", 64)
+    raw = _write(pipe=True)
+    stored_size = zipfile.ZipFile(io.BytesIO(raw)).getinfo("big-deflated.bin")
+    walk = LocalHeaderWalk(_Unseekable(raw))
+    data = _member_named(walk, b"big-deflated.bin")
+    while data.consumed < 100_000:
+        data.read(16)
+    descriptor = walk.scan_member_data(data).settle()
+    assert descriptor is not None
+    assert descriptor.compressed_size == stored_size.compress_size
+    after = walk.next_entry()
+    assert after is not None
+    assert after.header.name == b"dir/"
+
+
+def test_a_scan_that_starts_past_the_descriptor_finds_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The codec's reads ran past its data's end by more than the walk keeps, so
+    the descriptor is behind where the scan starts."""
+    monkeypatch.setattr(zip_local_walk, "_CODEC_RETAIN", 64)
+    walk = LocalHeaderWalk(_Unseekable(_write(pipe=True)))
+    data = _member_named(walk, b"big-deflated.bin")
+    decomp = zlib.decompressobj(-15)
+    while not decomp.eof:
+        decomp.decompress(data.read(16))
+    data.read(200)  # past the descriptor and into the next member
+    scanned = walk.scan_member_data(data)
+    with pytest.raises(UnsupportedFeatureError, match="none matches its data"):
+        scanned.settle()

@@ -570,6 +570,8 @@ def _main_on_fifo(fifo: Path, argv: list[str]) -> int:
 
 
 _FIFO_TAR = {"a.txt": b"hello", "b/c.txt": b"see"}
+# The formats the CLI reads from a pipe in one forward pass.
+_FIFO_BUILDERS = {"tar": _tar_bytes, "zip": _zip_bytes}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
@@ -581,11 +583,11 @@ def test_info_on_a_fifo_reports_the_open_error_without_reopening(
     """A failed open on a FIFO must not run ``detect_format`` on the path again.
 
     A pipe is read once, so a second open waits for a writer that never comes.
-    ``info`` must print the open error and return. A ZIP cannot be read in one
+    ``info`` must print the open error and return. A 7z cannot be read in one
     forward pass, so its open fails even in the streaming mode the CLI picks.
     """
-    fifo = tmp_path / "pipe.zip"
-    named_fifo_with_writer(fifo, _zip_bytes({"a.txt": b"hello"}))
+    fifo = tmp_path / "pipe.7z"
+    named_fifo_with_writer(fifo, _SEEK_ONLY_PAYLOADS["7z"])
     assert _main_on_fifo(fifo, ["info", str(fifo)]) == EXIT_FAIL
     captured = capsys.readouterr()
     assert "open:" in captured.err
@@ -597,13 +599,15 @@ def test_info_on_a_fifo_reports_the_open_error_without_reopening(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
-def test_info_on_a_tar_fifo_opens_in_streaming_mode(
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
+def test_info_on_a_tar_or_zip_fifo_opens_in_streaming_mode(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     capsys: pytest.CaptureFixture[str],
+    fmt: str,
 ) -> None:
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     assert _main_on_fifo(fifo, ["info", str(fifo)]) == EXIT_OK
     out = capsys.readouterr().out
     assert "format:" in out
@@ -612,14 +616,16 @@ def test_info_on_a_tar_fifo_opens_in_streaming_mode(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
 @pytest.mark.parametrize("verb", ["list", "l"])
-def test_list_on_a_tar_fifo_lists_every_member(
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
+def test_list_on_a_tar_or_zip_fifo_lists_every_member(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     capsys: pytest.CaptureFixture[str],
+    fmt: str,
     verb: str,
 ) -> None:
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     assert _main_on_fifo(fifo, [verb, str(fifo)]) == EXIT_OK
     out = capsys.readouterr().out
     assert "a.txt" in out
@@ -628,14 +634,16 @@ def test_list_on_a_tar_fifo_lists_every_member(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
 @pytest.mark.parametrize("patterns", [[], ["b/*"]])
-def test_test_on_a_tar_fifo_verifies_in_one_pass(
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
+def test_test_on_a_tar_or_zip_fifo_verifies_in_one_pass(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     capsys: pytest.CaptureFixture[str],
+    fmt: str,
     patterns: list[str],
 ) -> None:
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     argv = ["test", "--hide-progress", str(fifo), *patterns]
     assert _main_on_fifo(fifo, argv) == EXIT_OK
     expected = "1 OK, 0 failed" if patterns else "2 OK, 0 failed"
@@ -644,13 +652,15 @@ def test_test_on_a_tar_fifo_verifies_in_one_pass(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
 @pytest.mark.parametrize("patterns", [[], ["b/*"]])
-def test_extract_on_a_tar_fifo_streams_the_members_out(
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
+def test_extract_on_a_tar_or_zip_fifo_streams_the_members_out(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
+    fmt: str,
     patterns: list[str],
 ) -> None:
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     dest = tmp_path / "out"
     argv = ["extract", "--hide-progress", str(fifo), "-d", str(dest), *patterns]
     assert _main_on_fifo(fifo, argv) == EXIT_OK
@@ -661,7 +671,6 @@ def test_extract_on_a_tar_fifo_streams_the_members_out(
 # Only the magic bytes: the refusal comes right after detection, before the backend
 # reads anything else, so no real archive of these formats is needed.
 _SEEK_ONLY_PAYLOADS = {
-    "zip": b"PK\x03\x04" + bytes(1024),
     "7z": b"7z\xbc\xaf\x27\x1c\x00\x04" + bytes(1024),
     "rar": b"Rar!\x1a\x07\x01\x00" + bytes(1024),
     "iso": bytes(0x8001) + b"CD001\x01" + bytes(4096),
@@ -678,7 +687,7 @@ def test_verbs_on_a_seek_only_fifo_say_to_copy_it_to_a_file(
     verb: str,
     fmt: str,
 ) -> None:
-    """ZIP, 7z, RAR and ISO need to seek, so no mode can read them from a pipe: the
+    """7z, RAR and ISO need to seek, so no mode can read them from a pipe: the
     message must name the format as the user knows it (``7z``, not the enum's
     ``SEVEN_Z``) and what a CLI user can do, not a ``streaming=True`` they cannot pass.
     """
@@ -732,16 +741,18 @@ def test_verbs_on_a_gz_fifo_read_the_single_member(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
-def test_extract_on_a_tar_fifo_without_dest_wraps_in_the_stem(
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
+def test_extract_on_a_tar_or_zip_fifo_without_dest_wraps_in_the_stem(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     monkeypatch: pytest.MonkeyPatch,
+    fmt: str,
 ) -> None:
     """With no ``-d``, a forward-only reader has no index to choose a destination
     from, so the members go into ``./<stem>/``.
     """
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.chdir(work)
@@ -754,17 +765,19 @@ def test_extract_on_a_tar_fifo_without_dest_wraps_in_the_stem(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
 @pytest.mark.parametrize("verb", ["test", "extract"])
-def test_no_match_pattern_on_a_tar_fifo_fails(
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
+def test_no_match_pattern_on_a_tar_or_zip_fifo_fails(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     capsys: pytest.CaptureFixture[str],
     verb: str,
+    fmt: str,
 ) -> None:
     """A forward-only reader has no member list to check a pattern against before the
     pass, so the empty selection is reported after it.
     """
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     argv = [verb, "--hide-progress", str(fifo)]
     if verb == "extract":
         argv += ["-d", str(tmp_path / "out")]
