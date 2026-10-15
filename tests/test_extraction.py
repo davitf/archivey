@@ -5357,7 +5357,7 @@ def _extract_over_callers_file(
             # Never a raw OSError: the policy's own error, naming the caller's entry.
             assert isinstance(r.error, ExtractionError), r.error
             assert "Destination already exists" in str(r.error)
-            assert str(dest / "foo") in str(r.error)
+            assert (dest / "foo").as_posix() in str(r.error)
         assert r.collided_with is None  # the caller's entry is no collision event
         results.append(
             (
