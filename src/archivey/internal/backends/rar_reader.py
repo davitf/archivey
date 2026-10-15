@@ -2565,9 +2565,10 @@ class RarReader(BaseArchiveReader):
         weighs every member of the final list again (``header_metadata_bytes``) and
         adds the archive comment, before any comment is decoded. It recomputes rather
         than reading the walk's running total because that total is kept per list and
-        a comment can reach a member after it was weighed: a RAR 1.5-4 ``CMT`` service
-        header attaches its comment to the member before it (``_parse_rar3``), and a
-        split member's parts merge after each volume weighed its own list.
+        a comment or owner can reach a member after it was weighed: a RAR 1.5-4
+        ``CMT`` or ``UOW`` service header attaches its comment or owner to the member
+        before it (``_parse_rar3``), and a split member's parts merge after each
+        volume weighed its own list.
 
         Each compressed comment expands to up to 64 KiB (256 KiB for a RAR 2.9-4
         ``CMT`` header), and ``max_members`` alone lets one archive carry a million

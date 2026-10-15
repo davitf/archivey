@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
+import struct
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,6 +22,9 @@ from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.listing_limits import member_metadata_bytes
 from tests.conftest import requires_binary
+from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse
+
+_RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
 # One member ``a.txt`` ("hi\n"), written with ``-ow`` on Linux. RAR 7.00 stores the
 # owner's names when the system resolves them and the numeric ids otherwise. RAR 6.23
@@ -105,3 +111,68 @@ def test_rar_ow_records_the_current_owner(tmp_path: Path) -> None:
         assert (member.uname, member.gname) == (uname, gname)
         # With names to store, rar stores no ids.
         assert (member.uid, member.gid) == (None, None)
+
+
+_RAR3_SALT = 0x0400
+_RAR3_SUB = 0x7A
+_RAR3_ENDARC = 0x7B
+
+
+def _uow_block(data: bytes = OWNER_NAMES_RAR4) -> dict[str, Any]:
+    (block,) = [
+        b for b in _rar3_parse(data) if b["type"] == _RAR3_SUB and b"UOW" in b["header"]
+    ]
+    return block
+
+
+def _with_uow_header(sub_data: bytes, *, salt: bytes = b"") -> bytes:
+    """``OWNER_NAMES_RAR4`` with the UOW header's data replaced, then ``salt``."""
+    blocks = _rar3_parse(OWNER_NAMES_RAR4)
+    block = next(b for b in blocks if b["type"] == _RAR3_SUB)
+    header = block["header"]
+    name_end = 32 + struct.unpack_from("<H", header, 26)[0]
+    header[name_end:] = sub_data + salt
+    if salt:
+        flags = struct.unpack_from("<H", header, 3)[0]
+        struct.pack_into("<H", header, 3, flags | _RAR3_SALT)
+    struct.pack_into("<H", header, 5, len(header))
+    return _rar3_build(blocks)
+
+
+@pytest.mark.parametrize(
+    ("sub_data", "salt", "names"),
+    [
+        # unrar reads a service header's data before its salt (``ReadHeader15``).
+        pytest.param(b"root\0root", b"S" * 8, ("root", "root"), id="salted"),
+        # The group name ends at a NUL, as ``getgrnam`` reads it.
+        pytest.param(b"user\0group\0pad", b"", ("user", "group"), id="trailing-nul"),
+        # With no NUL ``unrar`` applies no owner (``ExtractUnixOwner30``).
+        pytest.param(b"root", b"", (None, None), id="no-nul"),
+    ],
+)
+def test_rar4_uow_data_reads_as_unrar_reads_it(
+    sub_data: bytes, salt: bytes, names: tuple[str | None, str | None]
+) -> None:
+    data = _with_uow_header(sub_data, salt=salt)
+    with open_archive(io.BytesIO(data)) as archive:
+        (member,) = archive.members()
+        assert (member.uname, member.gname) == names
+        assert archive.read(member) == b"hi\n"
+
+
+def test_rar4_owner_after_the_last_part_of_a_split_member(tmp_path: Path) -> None:
+    # rar 6.23 -ma4 -ow -v writes the UOW header after a split member's last part,
+    # in the last volume; the merged member keeps it.
+    for name in ("tinyvol_rnn.rar", "tinyvol_rnn.r00"):
+        shutil.copy(_RAR_FIXTURES / name, tmp_path / name)
+    last = tmp_path / "tinyvol_rnn.r00"
+    blocks = _rar3_parse(last.read_bytes())
+    end = next(i for i, b in enumerate(blocks) if b["type"] == _RAR3_ENDARC)
+    blocks.insert(end, _uow_block())
+    last.write_bytes(_rar3_build(blocks))
+    with open_archive(tmp_path / "tinyvol_rnn.rar") as archive:
+        spanning = [m for m in archive.members() if m.is_file]
+        assert spanning, "the fixture must hold a file"
+        split = spanning[-1]
+        assert (split.uname, split.gname) == ("root", "root")
+        assert archive.read(split)

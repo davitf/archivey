@@ -457,8 +457,10 @@ class RarMemberInfo:
     # turns each into a ``MEMBER_TIMESTAMP_INVALID`` diagnostic. Empty (the shared
     # tuple) for every well-formed header.
     timestamp_issues: tuple[TimestampIssue, ...] = ()
-    # RAR5 owner record (``rar -ow``): ``(uname, gname, uid, gid)``, each ``None``
-    # when the record leaves it out. ``None`` when the header has no owner record.
+    # The owner ``rar -ow`` stores: ``(uname, gname, uid, gid)``, each ``None`` when
+    # the record leaves it out. RAR5 reads it from the file header's owner record;
+    # RAR 1.5-4 from the ``UOW`` service header after the file, which the walk
+    # attaches to the member before it. ``None`` when there is no owner record.
     owner: RarOwner | None = None
 
     @property
@@ -977,8 +979,8 @@ def header_metadata_bytes(member: RarMemberInfo) -> int:
     registration weighs the normalized one, which can be shorter (``a/./b`` lists as
     ``a/b``), so a name normalization shortens weighs a little more here. A RAR5 name
     has no stored bytes of its own, and its length stands for its UTF-8 bytes, which
-    are at least that many. The RAR5 owner record's user and group names count as
-    ``uname`` and ``gname`` do. The comment counts per :func:`comment_metadata_bytes`.
+    are at least that many. The owner's user and group names (RAR5 owner record,
+    RAR 1.5-4 ``UOW`` header) count as ``uname`` and ``gname`` do. The comment counts per :func:`comment_metadata_bytes`.
     """
     filename = member.filename
     raw = member.orig_filename
@@ -1733,6 +1735,9 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
         old.crc32 = new.crc32
     if new.blake2sp_hash is not None:
         old.blake2sp_hash = new.blake2sp_hash
+    # RAR 1.5-4 writes a member's UOW header after its last part.
+    if new.owner is not None:
+        old.owner = new.owner
     old.split_after = new.split_after
     old.spanned_volumes = True
 
@@ -2696,19 +2701,26 @@ def _parse_rar3_file_header(
         rar3_salt=rar3_salt,
     )
     if is_service and filename == _RAR3_UOW_NAME:
-        # A service header's own data follows the name, ahead of any salt, and runs
-        # to the header's end (``unrar`` ``ReadHeader15``).
+        # A service header's own data sits between the name and the salt: ``unrar``'s
+        # ``ReadHeader15`` reads it right after the name, as the header's remaining
+        # size less the salt, and reads the salt after it. The generic parse above
+        # reads a salt from right after the name instead, which only a salted
+        # service header with data would notice.
         sub_end = header_size - (8 if flags & _RAR3_FILE_SALT else 0)
         member.owner = _parse_rar3_uow(hdata[name_end:sub_end])
     return member, crc_pos
 
 
-def _parse_rar3_uow(data: bytes) -> RarOwner:
-    """The owner a RAR 1.5-4 ``UOW`` service header records: the user name up to a
-    NUL, then the group name to the end (``unrar`` ``ExtractUnixOwner30``). RAR 3-6
-    stores names only. Names decode as RAR5's owner names do.
+def _parse_rar3_uow(data: bytes) -> RarOwner | None:
+    """The owner a RAR 1.5-4 ``UOW`` service header records: the user name and the
+    group name, each ended by a NUL or the data's end, as ``unrar``'s
+    ``ExtractUnixOwner30`` reads them. With no NUL ``unrar`` applies no owner, and
+    neither is one listed. RAR 3-6 stores names only. Names decode as RAR5's do.
     """
-    user, _, group = data.partition(b"\0")
+    user, nul, rest = data.partition(b"\0")
+    if not nul:
+        return None
+    group = rest.partition(b"\0")[0]
     return RarOwner(
         user.decode("utf8", "surrogateescape") or None,
         group.decode("utf8", "surrogateescape") or None,
