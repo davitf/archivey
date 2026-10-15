@@ -23,14 +23,16 @@ class ListingCost(Enum):
     single-file compressed stream (gzip, xz, …), whose one member is known from the
     header without decompressing. A filesystem directory is **not** indexed (its walk
     is ``REQUIRES_SCANNING``).
-    RAR is ``INDEXED`` because the reader walks all file headers at open and caches
-    the table — by ``members()`` time the list is already in memory.
     """
 
     REQUIRES_SCANNING = "requires_scanning"
     """No index, but members can be enumerated by seeking/scanning header-to-header
-    without decompressing payload (e.g. an uncompressed tar, or a filesystem directory
-    walk)."""
+    without decompressing payload (e.g. an uncompressed tar, a RAR archive, or a
+    filesystem directory walk).
+
+    The value names the work, not when it is paid: RAR walks its headers inside
+    ``open_archive``, so ``members()`` then returns from memory.
+    """
 
     REQUIRES_DECOMPRESSION = "requires_decompression"
     """The stream must be decompressed to reach the member headers (e.g. a compressed tar)."""

@@ -4350,7 +4350,9 @@ class RarReader(BaseArchiveReader):
     def _get_archive_info(self) -> ArchiveInfo:
         is_solid = self._archive.is_solid
         cost = CostReceipt(
-            listing_cost=ListingCost.INDEXED,
+            # A header-to-header walk at open; a RAR5 quick-open record saves the
+            # seeks, not the parse.
+            listing_cost=ListingCost.REQUIRES_SCANNING,
             access_cost=AccessCost.SOLID if is_solid else AccessCost.DIRECT,
             stream_capability=StreamCapability.SEEKABLE,
             # RAR solid is one continuous compression context; block count is unknown.

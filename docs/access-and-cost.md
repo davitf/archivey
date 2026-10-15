@@ -57,8 +57,8 @@ of trying the open and catching the failure; see
 
 ### RAR listing cost
 
-RAR reports `listing_cost=INDEXED`: the native parser builds the member table at
-open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
+RAR reports `listing_cost=REQUIRES_SCANNING`: the native parser walks the headers
+and builds the member table at open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
 copies of FILE headers stored after the members, with a pointer from MAIN. Listing
 reads QO first, seeks back to after MAIN, and skips FILE headers already in QO.
 Default WinRAR AUTO may omit small files from QO; those still list from their
@@ -78,7 +78,7 @@ the members end, then steps over the directory to the end record. It seeks over 
 member whose local header states its size and reads through one that leaves its size
 to a data descriptor (bit 3, as a writer to a pipe sets it), so that open costs up to
 one read of the file. Each local header counts toward `max_members`. `listing_cost`
-stays `INDEXED`, as for RAR. The same walk lists the members of an archive whose
+stays `INDEXED`, because the walk only stands in for a damaged layout. The same walk lists the members of an archive whose
 directory is gone, from their local headers.
 
 ## Solid archives: prefer one forward pass

@@ -988,7 +988,7 @@ def _max_members_error(
 #: Also the receipt for a seekable source read through its directory. An end record
 #: behind more trailing bytes than its search reads is found by a walk over every local
 #: header at open, reading the data of each bit-3 member (``_walk_past_members``); the
-#: listing stays ``INDEXED``, as RAR's does with its header walk at open. So does a ZIP
+#: listing stays ``INDEXED``: the walk is a fallback for a damaged layout. So does a ZIP
 #: with no end record at all, listed from the local headers that walk found.
 _ZIP_COST = CostReceipt(
     listing_cost=ListingCost.INDEXED,
