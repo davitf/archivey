@@ -9,6 +9,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.internal.config import (
     StreamConfig,
@@ -130,13 +131,19 @@ class PpmdCodec(StreamCodec):
         if (eof := self._eof_truncation(exc, "PPMd")) is not None:
             return eof
         if isinstance(exc, ValueError):
-            return CorruptionError(f"Error reading PPMd stream: {exc!r}")
+            return CorruptionError(
+                f"Error reading PPMd stream: {exception_detail(exc)}"
+            )
         pyppmd = deps.pyppmd.loaded()
         if pyppmd is not None and isinstance(exc, getattr(pyppmd, "PpmdError", ())):
-            return CorruptionError(f"Error reading PPMd stream: {exc!r}")
+            return CorruptionError(
+                f"Error reading PPMd stream: {exception_detail(exc)}"
+            )
         # A corrupt PPMd8 payload can surface as SystemError from the C extension.
         if isinstance(exc, SystemError):
-            return CorruptionError(f"Error reading PPMd stream: {exc!r}")
+            return CorruptionError(
+                f"Error reading PPMd stream: {exception_detail(exc)}"
+            )
         # The child process decoding a large member crashed (a fault signal, or its
         # Windows NTSTATUS), which is what pyppmd does on data it cannot decode. Any
         # other death is reported as ``ResourceLimitError`` or ``ReadError`` by

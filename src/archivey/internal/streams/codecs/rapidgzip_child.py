@@ -47,6 +47,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     TruncatedError,
+    exception_detail,
 )
 from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
@@ -564,8 +565,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._death = (
             ReadError,
             f"this {self._label} stream cannot continue: a read from its source "
-            f"failed ({fault!r}), and the rapidgzip decoder process took that for "
-            "the end of its input",
+            f"failed ({exception_detail(fault)}), and the rapidgzip decoder process "
+            "took that for the end of its input",
         )
         self._stop(kill=True)
 
@@ -597,7 +598,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             cls = ReadError
             message = (
                 f"the rapidgzip decoder process for this {label} stream ended ({how}) "
-                f"after a read from the source failed: {caused_by_source!r}"
+                f"after a read from the source failed: "
+                f"{exception_detail(caused_by_source)}"
             )
         elif returncode == MEMORY_LIMIT_EXIT:
             cls = ResourceLimitError
@@ -775,7 +777,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                     ReadError,
                     f"this {self._label} stream cannot continue: a read failed, "
                     f"and moving back to where it started failed too "
-                    f"({exc!r})",
+                    f"({exception_detail(exc)})",
                 )
                 self._stop(kill=True)
             return

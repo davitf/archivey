@@ -28,6 +28,7 @@ from archivey import (
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
+    CorruptionError,
     ResourceLimitError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
@@ -373,6 +374,54 @@ def test_an_image_cut_inside_its_first_descriptor_is_truncated() -> None:
     truncated = _build_iso(rock_ridge=True, joliet=False)[:32780]
     with pytest.raises(TruncatedError, match="ends before"):
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
+
+
+def test_a_parser_error_is_named_without_its_repr() -> None:
+    """A parser failure inside pycdlib (here ``struct.error`` from a path table moved
+    to block 0) is shown as ``TypeName: text``, not as the repr of a Python error, and
+    the message does not claim the image is damaged: the same arm catches errors from
+    this backend's own code. The original stays the cause."""
+    image = bytearray(_build_iso(rock_ridge=True, joliet=False))
+    # Byte 140 of the primary descriptor is the low byte of the type L path table's
+    # location.
+    image[16 * 2048 + 140] = 0
+    with raises_corruption_not_truncation() as excinfo:
+        with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO):
+            pass
+    assert isinstance(excinfo.value.__cause__, struct.error)
+    message = str(excinfo.value)
+    cause = excinfo.value.__cause__
+    assert message.startswith(
+        "Error reading ISO image: a structure in the image could not be parsed "
+        f"(struct.error: {cause})"
+    )
+    assert "damaged" not in message
+    assert "error(" not in message
+
+
+def test_an_error_from_this_backends_own_code_is_not_called_damage() -> None:
+    reader = IsoReader.__new__(IsoReader)
+    exc = AttributeError("'NoneType' object has no attribute 'ce_entries'")
+    translated = reader._translate_exception(exc)
+    assert isinstance(translated, CorruptionError)
+    assert str(translated) == (
+        "Error reading ISO image: a structure in the image could not be parsed "
+        "(AttributeError: 'NoneType' object has no attribute 'ce_entries')"
+    )
+
+
+def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
+    from archivey.exceptions import TruncatedError
+
+    truncated = _build_iso(rock_ridge=True, joliet=False)[:32780]
+    with pytest.raises(TruncatedError) as excinfo:
+        open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
+    message = str(excinfo.value)
+    cause = excinfo.value.__cause__
+    assert cause is not None
+    assert str(cause)
+    assert f"({cause})" in message
+    assert f"{type(cause).__name__}(" not in message
 
 
 @pytest.mark.timeout(5)

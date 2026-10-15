@@ -440,6 +440,10 @@ def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
         with raises_corruption_not_truncation() as excinfo:
             stream.read()
     assert isinstance(excinfo.value.__cause__, zlib.error)
+    # zlib's own text, not the Python repr of its exception ("error('...')").
+    assert str(excinfo.value).startswith(
+        f"Error reading gzip stream: {excinfo.value.__cause__}"
+    )
 
 
 def test_truncated_gzip_translates_to_truncated() -> None:
@@ -487,6 +491,11 @@ def test_corrupt_brotli_translates_to_corruption_with_cause() -> None:
         with raises_corruption_not_truncation() as excinfo:
             stream.read()
     assert isinstance(excinfo.value.__cause__, brotli.error)
+    # brotli's own text, not the Python repr of its exception ("error('...')").
+    assert str(excinfo.value).startswith(
+        f"Error reading brotli stream: {excinfo.value.__cause__}"
+    )
+    assert "error(" not in str(excinfo.value)
 
 
 @requires("brotli")
@@ -3034,7 +3043,7 @@ def test_a_translated_eof_names_its_format(codec: Codec, label: str) -> None:
     """
     translated = stream_codec(codec).translate(EOFError("cut"))
     assert type(translated) is TruncatedError
-    assert str(translated) == f"{label} stream is truncated: EOFError('cut')"
+    assert str(translated) == f"{label} stream is truncated: cut"
 
 
 @requires("lz4")

@@ -18,6 +18,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
+    exception_detail,
 )
 from archivey.internal import logs
 from archivey.internal.config import (
@@ -372,7 +373,7 @@ def _translate_rapidgzip_shared(
         # backstop). Recovering the distinction would need the dropped stderr detail, so
         # callers must treat gzip truncation as either error type (the
         # accelerator-corruption tests accept both).
-        return CorruptionError(f"Error reading {stream}: {exc!r}")
+        return CorruptionError(f"Error reading {stream}: {exception_detail(exc)}")
     return None
 
 
@@ -381,10 +382,12 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
     text = str(exc)
     if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
         return _StreamChecksumError(
-            f"Error reading {label} stream (rapidgzip): {exc!r}"
+            f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
         )
     if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return CorruptionError(
+            f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
+        )
     if isinstance(exc, ValueError) and (
         "deflate block" in text or "Huffman coding is not optimal" in text
     ):
@@ -392,21 +395,31 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         # - Linux ISA-L: RuntimeError via IsalInflateWrapper (above)
         # - non-ISA-L (macOS): ValueError "Failed to decode deflate block …" or
         #   "Failed to read deflate block header … The Huffman coding is not optimal!"
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return CorruptionError(
+            f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
+        )
     if isinstance(exc, RuntimeError) and "Invalid deflate block" in text:
         # Raw DEFLATE / zlib body corruption (or an over-long unbounded slice that
         # rapidgzip mistook for a concatenated member).
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return CorruptionError(
+            f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
+        )
     if isinstance(exc, (ValueError, RuntimeError)) and (
         "gzip/zlib header" in text or "gzip magic" in text or "zlib header" in text
     ):
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return CorruptionError(
+            f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
+        )
     if isinstance(exc, ValueError) and "Failed to detect a valid file format" in text:
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return CorruptionError(
+            f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
+        )
     if isinstance(exc, (ValueError, RuntimeError)) and (
         "End of file encountered" in text or "Unexpected end of file" in text
     ):
-        return TruncatedError(f"{truncated_message(label)} (rapidgzip): {exc!r}")
+        return TruncatedError(
+            f"{truncated_message(label)} (rapidgzip): {exception_detail(exc)}"
+        )
     shared = _translate_rapidgzip_shared(
         exc, f"{label} stream (rapidgzip)", "rapidgzip"
     )
@@ -418,5 +431,7 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         # its open-time probe of a truncated gzip) are not a stable list. The mark
         # tells rapidgzip's errors from a RuntimeError of the caller's own source,
         # which is raised as itself and must reach the caller unchanged.
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return CorruptionError(
+            f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
+        )
     return None

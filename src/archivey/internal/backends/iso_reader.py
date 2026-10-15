@@ -100,6 +100,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.internal.base_reader import (
     BaseArchiveReader,
@@ -919,6 +920,22 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
     (_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ()
 ) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 
+
+def _pycdlib_detail(exc: Exception) -> str | None:
+    """pycdlib's own text for ``exc``, or ``None`` when ``exc`` is a Python error.
+
+    A ``PyCdlibException`` names what pycdlib found wrong ("Invalid ISO9660 version"),
+    so it is worth showing. The other ``_PYCDLIB_ERRORS`` come from pycdlib's parser
+    stepping on bytes that are not there or not valid (``struct.error: unpack_from
+    requires a buffer of at least 16 bytes``, ``IndexError``) or from this backend's
+    own code; their text describes Python, not the image, so a caller that shows it
+    names the type with it.
+    """
+    if _pycdlib_exc is not None and isinstance(exc, _pycdlib_exc.PyCdlibException):
+        return str(exc) or None
+    return None
+
+
 # ECMA-119: the volume descriptors start at block 16 and are one 2048-byte sector each,
 # whatever the logical block size. In the primary descriptor, the volume space size (in
 # logical blocks) is a little-endian 32-bit field at byte 80, and the logical block size
@@ -975,9 +992,11 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
     declared = _declared_length(fp, image_length)
     if declared is None or position > declared:
         return None
+    detail = _pycdlib_detail(exc)
     return TruncatedError(
         f"Error reading ISO image: the image ends before its own structures do: it "
-        f"declares {declared} bytes and the file holds {image_length} ({exc!r})"
+        f"declares {declared} bytes and the file holds {image_length}"
+        + ("" if detail is None else f" ({detail})")
     )
 
 
@@ -1701,7 +1720,17 @@ class IsoReader(BaseArchiveReader):
         # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
         # this broad. A genuine OSError is not in it and propagates unchanged.
         if isinstance(exc, _PYCDLIB_ERRORS):
-            return CorruptionError(f"Error reading ISO image: {exc!r}")
+            detail = _pycdlib_detail(exc)
+            if detail is None:
+                # Not pycdlib's own verdict: a parser stepping on bad bytes, or this
+                # backend's own code reading pycdlib internals (see _PYCDLIB_ERRORS).
+                # Nothing here tells the two apart, so the message names the error
+                # and does not say the image is damaged.
+                detail = (
+                    "a structure in the image could not be parsed "
+                    f"({exception_detail(exc, with_type=True)})"
+                )
+            return CorruptionError(f"Error reading ISO image: {detail}")
         return None
 
     # --- listing ------------------------------------------------------------------------

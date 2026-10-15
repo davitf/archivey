@@ -9,6 +9,7 @@ from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.internal.config import (
     DecoderLimits,
@@ -184,14 +185,18 @@ class ZstdCodec(StreamCodec):
                 # The frame names a dictionary (its Dictionary_ID), and archivey has no
                 # way to be given one. zstd reports the same "Dictionary mismatch".
                 return UnsupportedFeatureError(
-                    f"zstd frame needs a dictionary, which is not supported: {exc!r}; "
-                    "a damaged header reads the same way"
+                    "zstd frame needs a dictionary, which is not supported: "
+                    f"{exception_detail(exc)}; a damaged header reads the same way"
                 )
             if "checksum" in str(exc):
                 # The frame's content checksum ("Restored data doesn't match
                 # checksum"), over everything the frame decoded.
-                return _StreamChecksumError(f"Error reading zstd stream: {exc!r}")
-            return CorruptionError(f"Error reading zstd stream: {exc!r}")
+                return _StreamChecksumError(
+                    f"Error reading zstd stream: {exception_detail(exc)}"
+                )
+            return CorruptionError(
+                f"Error reading zstd stream: {exception_detail(exc)}"
+            )
         return self._eof_truncation(exc, "zstd")
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:

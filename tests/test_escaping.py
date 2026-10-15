@@ -241,9 +241,9 @@ def test_no_message_site_interpolates_an_archive_derived_name_with_repr() -> Non
                         and _is_archive_derived(
                             ast.unparse(value.value), path.relative_to(_SRC).as_posix()
                         )
-                        and not re.fullmatch(
-                            r"exc|e|err|error", ast.unparse(value.value)
-                        )
+                        # A caught exception's !r is a different rule, checked by
+                        # test_no_message_shows_a_caught_exception_as_its_repr.
+                        and not _is_exception_named(ast.unparse(value.value))
                     ):
                         offenders.append(
                             f"{path.relative_to(_SRC).as_posix()}:{node.lineno} "
@@ -253,6 +253,74 @@ def test_no_message_site_interpolates_an_archive_derived_name_with_repr() -> Non
         "use quoted() instead of !r for archive-derived text in a self-escaping "
         "message:\n  " + "\n  ".join(offenders)
     )
+
+
+_EXCEPTION_WORDS = {"e", "exc", "err", "error", "cause", "caused", "fault", "exception"}
+
+# Sites that may still show a caught exception as its repr, keyed by
+# (module, enclosing function, interpolated expression) so a moved line keeps its entry.
+_EXCEPTION_REPR_ALLOWED = {
+    # The ``UnicodeDecodeError`` repr carries the raw name bytes as a bytes literal; its
+    # plain text would not show them. The message constructor escapes that literal a
+    # second time (``b'\\x80'``), so it does not arrive intact either. Reworded with
+    # the ZIP reader's native rewrite, not here.
+    ("internal/backends/zip_reader.py", "_decode_member_name", "exc"),
+}
+
+
+def _is_exception_named(expr: str) -> bool:
+    return any(tok.lower() in _EXCEPTION_WORDS for tok in re.split(r"[^A-Za-z]+", expr))
+
+
+def _exception_repr_sites() -> set[tuple[str, str, str]]:
+    """Every f-string ``{x!r}`` in ``src/archivey`` whose ``x`` is named like a caught
+    exception, keyed as in ``_EXCEPTION_REPR_ALLOWED``.
+
+    Every f-string, not only those passed to an exception: a message is often built in
+    a variable or a tuple first (``rapidgzip_child``'s ``_death``). That is
+    deliberately wider than the message sites: a ``logger.*`` f-string that needs the
+    repr (log records are not escaped) goes in the allowlist."""
+    found: set[tuple[str, str, str]] = set()
+
+    def walk(node: ast.AST, module: str, function: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, module, child.name)
+                continue
+            if (
+                isinstance(child, ast.FormattedValue)
+                and child.conversion == ord("r")
+                and _is_exception_named(ast.unparse(child.value))
+            ):
+                found.add((module, function, ast.unparse(child.value)))
+            walk(child, module, function)
+
+    for path in sorted(_SRC.rglob("*.py")):
+        walk(
+            ast.parse(path.read_text(encoding="utf-8")),
+            path.relative_to(_SRC).as_posix(),
+            "<module>",
+        )
+    return found
+
+
+def test_no_message_shows_a_caught_exception_as_its_repr() -> None:
+    """``{exc!r}`` shows Python's spelling of an error (``error('unpack_from …')``),
+    not what is wrong with the archive, and doubles the escape of one of ours.
+    ``exception_detail(exc)`` is the form (the rule in ``ArchiveyError``'s docstring).
+    """
+    offenders = _exception_repr_sites() - _EXCEPTION_REPR_ALLOWED
+    assert not offenders, (
+        "use exception_detail(exc) instead of {exc!r} in a message:\n  "
+        + "\n  ".join(f"{m} {f}(): {{{e}!r}}" for m, f, e in sorted(offenders))
+    )
+
+
+def test_exception_repr_allowlist_names_real_sites() -> None:
+    """An allowlist entry that matches nothing hides the day its site is fixed or
+    moved; drop it then, so it cannot excuse a new site under the same name."""
+    stale = _EXCEPTION_REPR_ALLOWED - _exception_repr_sites()
+    assert not stale, f"no such {{x!r}} site any more: {sorted(stale)}"
 
 
 def test_library_log_sites_still_escape_interpolated_names() -> None:
