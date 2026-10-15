@@ -88,7 +88,9 @@ class _IndexReportRecorder(DiagnosticCollector):
 
     Nothing is counted, logged or called back here: the member stream that uses the
     scan emits each report into the reader's collector instead. An emit that must
-    raise (``escalate_as``) is not deferred; it goes through as usual.
+    raise (``escalate_as``) is not deferred; it goes through as usual. The replay
+    passes no member and the stream module's logger, so an emit that names a member
+    is refused here rather than silently losing its attachment.
     """
 
     def __init__(self) -> None:
@@ -120,6 +122,9 @@ class _IndexReportRecorder(DiagnosticCollector):
                 escalate_message=escalate_message,
                 escalate_kwargs=escalate_kwargs,
             )
+        assert member is None and not attach_to_member, (
+            "an index scan's deferred report cannot name a member"
+        )
         self.reports.append(IndexReport(code, message, context))
         return Diagnostic(
             occurrence_id=uuid.uuid4().hex, code=code, message=message, context=context
@@ -215,7 +220,9 @@ class SingleFileReader(BaseArchiveReader):
         # hook needs it; codecs without header metadata never trigger a read). See _peek_header.
         self._header_cache: bytes | None = None
         # The xz index scan made for ``member.size``, kept for the member streams when
-        # they build an index (see _probe_decompressed_size).
+        # they build an index (see _probe_decompressed_size). It lives as long as the
+        # reader, whether or not a stream ever seeks, and holds at most MAX_SEEK_POINTS
+        # points (xz.md §6).
         self._seek_index: PrebuiltIndex | None = None
         self._member = self._build_member(archive_name)
 

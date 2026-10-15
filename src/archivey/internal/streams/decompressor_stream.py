@@ -426,7 +426,12 @@ SEEK_TABLE_THINNED = "SeekTableThinned"
 
 @dataclass(frozen=True)
 class IndexReport:
-    """One diagnostic an index scan emitted, kept to be emitted again later."""
+    """One diagnostic an index scan emitted, kept to be emitted again later.
+
+    ``message`` is kept raw: the emit that replays it escapes it. Storing a
+    :class:`Diagnostic` instead would escape it twice, because a ``Diagnostic``
+    escapes its message when it is constructed.
+    """
 
     code: DiagnosticCode
     message: str
@@ -444,6 +449,9 @@ class PrebuiltIndex:
     index). The stream emits them into its own collector when it would have run the
     scan, so the caller sees each report once per stream, under its own policy, as
     before.
+
+    Every stream that takes this index shares the same ``points`` objects, possibly
+    on different threads. Nothing may mutate a point or its ``state`` in place.
     """
 
     points: tuple[SeekPoint, ...]
