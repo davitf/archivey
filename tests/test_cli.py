@@ -741,16 +741,18 @@ def test_verbs_on_a_gz_fifo_read_the_single_member(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
 def test_extract_on_a_tar_or_zip_fifo_without_dest_wraps_in_the_stem(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     monkeypatch: pytest.MonkeyPatch,
+    fmt: str,
 ) -> None:
     """With no ``-d``, a forward-only reader has no index to choose a destination
     from, so the members go into ``./<stem>/``.
     """
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.chdir(work)
@@ -763,17 +765,19 @@ def test_extract_on_a_tar_or_zip_fifo_without_dest_wraps_in_the_stem(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
 @pytest.mark.parametrize("verb", ["test", "extract"])
+@pytest.mark.parametrize("fmt", sorted(_FIFO_BUILDERS))
 def test_no_match_pattern_on_a_tar_or_zip_fifo_fails(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     capsys: pytest.CaptureFixture[str],
     verb: str,
+    fmt: str,
 ) -> None:
     """A forward-only reader has no member list to check a pattern against before the
     pass, so the empty selection is reported after it.
     """
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _FIFO_BUILDERS[fmt](_FIFO_TAR))
     argv = [verb, "--hide-progress", str(fifo)]
     if verb == "extract":
         argv += ["-d", str(tmp_path / "out")]

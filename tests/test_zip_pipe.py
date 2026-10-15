@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import random
 import struct
 import zipfile
 import zlib
@@ -35,6 +36,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.zip_forward_reader import ZipForwardReader
 from archivey.types import ArchiveMember, MemberType
 from tests.sample_archives import (
@@ -634,6 +636,8 @@ def test_an_encrypted_member_fails_when_read_as_from_a_file_and_is_skipped() -> 
 
 
 def test_a_bit3_lzma_member_with_no_end_marker_is_refused() -> None:
+    """Its decoded data cannot find its end; its read is refused, and the walk's scan
+    finds the end on the stored bytes so the pass goes on."""
     import lzma
 
     filt = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
@@ -654,9 +658,11 @@ def test_a_bit3_lzma_member_with_no_end_marker_is_refused() -> None:
     end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(member), 0)
     data = member + central + end
     with archivey.open_archive(_pipe(data), streaming=True) as reader:
-        with pytest.raises(UnsupportedFeatureError, match="end-of-stream marker"):
-            for _ in reader.stream_members():
-                pass
+        for _, stream in reader.stream_members():
+            assert stream is not None
+            with pytest.raises(UnsupportedFeatureError, match="end-of-stream marker"):
+                stream.read()
+        assert [m.name for m in reader.members_report().members] == ["a.bin"]
 
 
 def _reparse_zip(data: bytes) -> bytes:
@@ -1158,3 +1164,81 @@ def test_a_digital_signature_record_is_refused_as_from_a_file() -> None:
         _seekable_view(bytes(data))
     with pytest.raises(CorruptionError, match="Bad magic number"):
         _piped_view(bytes(data))
+
+
+def _bit3_deflate_zip(members: list[tuple[str, bytes, bytes]]) -> bytes:
+    """A ZIP of bit-3 DEFLATE members, each ``(name, raw deflate, content)``, as a
+    writer to a pipe lays it out: zero sizes in the local header, a signed data
+    descriptor after the data."""
+    out = bytearray()
+    central = bytearray()
+    for name, deflated, content in members:
+        offset = len(out)
+        crc = zlib.crc32(content)
+        encoded = name.encode()
+        out += struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0x08, 8, 0, 0, 0, 0, 0, len(encoded), 0
+        )
+        out += encoded + deflated
+        out += struct.pack("<IIII", 0x08074B50, crc, len(deflated), len(content))
+        central += struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50, 20, 20, 0x08, 8, 0, 0, crc, len(deflated), len(content),
+            len(encoded), 0, 0, 0, 0, 0, offset,
+        )  # fmt: skip
+        central += encoded
+    end = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, len(members), len(members), len(central),
+        len(out), 0,
+    )  # fmt: skip
+    return bytes(out + central + end)
+
+
+def _late_decode_failure_zip() -> bytes:
+    """Two bit-3 DEFLATE members; the first's stream turns invalid (a block of
+    type 3) after about 600 KiB of good data."""
+    content = bytes(random.Random(0).choices(b"abcdefgh", k=1_500_000))
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    deflated = compressor.compress(content) + compressor.flush(zlib.Z_FULL_FLUSH)
+    deflated += b"\x07"  # BFINAL set, BTYPE 11: no such block type
+    second = zlib.compressobj(9, zlib.DEFLATED, -15)
+    tail = second.compress(b"after") + second.flush()
+    return _bit3_deflate_zip([("a.bin", deflated, content), ("b.txt", tail, b"after")])
+
+
+def _pipe_reads(data: bytes) -> dict[str, object]:
+    seen: dict[str, object] = {}
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        try:
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                try:
+                    seen[member.name] = stream.read()
+                except CorruptionError as exc:
+                    seen[member.name] = type(exc)
+        except CorruptionError as exc:
+            seen["<pass ended>"] = type(exc)
+    return seen
+
+
+def test_the_walk_scans_past_a_bit3_member_whose_decode_fails() -> None:
+    """The decode fails far into the member; the scan finds its descriptor on the
+    stored bytes, which needs no key, so the next member reads as from a file."""
+    data = _late_decode_failure_zip()
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        assert reader.read("b.txt") == b"after"
+    seen = _pipe_reads(data)
+    assert seen["a.bin"] is CorruptionError
+    assert seen["b.txt"] == b"after"
+
+
+def test_the_pass_ends_when_the_failed_read_has_passed_what_the_walk_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scan starts at the data's start, so it needs every byte the failed read
+    took still kept; past that the pass ends at the member."""
+    monkeypatch.setattr(zip_local_walk, "_CODEC_RETAIN", 1 << 16)
+    seen = _pipe_reads(_late_decode_failure_zip())
+    assert seen["a.bin"] is CorruptionError
+    assert "b.txt" not in seen
+    assert seen["<pass ended>"] is CorruptionError

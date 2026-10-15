@@ -208,8 +208,11 @@ descriptor; a STORED bit-3 member ends at a descriptor whose CRC and size match 
 bytes before it and that a ZIP signature follows. A bit-3 member nobody reads that is
 encrypted under a codec ends the same way, matched on its size, so passing it needs no
 key. A bit-3 LZMA member without the end-of-stream marker, or a bit-3 PPMd member
-without an end mark, has no end the pass can find: it SHALL raise
-`UnsupportedFeatureError`. A bit-3 PPMd member is decoded in a child process, and
+without an end mark, has no end its codec can find: its read SHALL raise
+`UnsupportedFeatureError`. A bit-3 codec member whose decode fails or cannot find its
+end SHALL be passed by the same scan for its descriptor on its stored bytes, with no
+key, while the walk still holds every byte the decode took; past that the pass SHALL
+end at that member. A bit-3 PPMd member is decoded in a child process, and
 `max_ppmd_in_process_input=None` SHALL refuse it with `ResourceLimitError`. Several
 password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").
@@ -237,17 +240,18 @@ the reversed pair, which only updates the members. `extract_all` settles them as
 `safe-extraction` states. A directory entry pointing at a local header an earlier
 entry already took SHALL end the pass with `CorruptionError`.
 
-The pass MAY differ from a file read where only crafted archives differ (DR-5a): the
-descriptor mismatch and the reversed pair fail a member the file read writes; bytes
-between a bit-3 codec member's end and its descriptor, refused from a file, are
-counted into the member; the first of several inconclusive password candidates wins;
-in `extract_all`, a link member the pass wrote as a file keeps the error its data
-read gave (no password: `EncryptionError`, where the file read reports
-`LinkTargetNotFoundError`);
-and an archive-wide refusal the directory or end record makes (a damaged ZIP64 end
-record or locator, a flagged name that is not valid UTF-8) is raised by a file read
-before anything is written and by the pass after every member is written, the files
-staying on disk.
+The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
+mismatch and the reversed pair fail a member the file read writes; bytes between a
+bit-3 codec member's end and its descriptor, refused from a file, are counted into the
+member; the first of several inconclusive password candidates wins. It MAY also differ
+in these: a damaged bit-3 codec member can fail with another `CorruptionError`
+subclass, the members after it reading the same; in `extract_all`, a link member the
+pass wrote as a file keeps the error its data read gave (no password:
+`EncryptionError`, where the file read reports `LinkTargetNotFoundError`); and an
+archive-wide refusal the directory or end record makes (a damaged ZIP64 end record or
+locator, a flagged name that is not valid UTF-8) is raised by a file read before
+anything is written and by the pass after every member is written, the files staying
+on disk.
 
 #### Scenario: non-seekable read matrix
 

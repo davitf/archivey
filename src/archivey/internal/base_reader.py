@@ -334,9 +334,9 @@ class ReadBackend(ABC):
     # The ``UnsupportedFeatureError`` text when ``READ_IMPLEMENTED`` is false.
     UNSUPPORTED_MESSAGE: str | None = None
     # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for
-    # formats walkable front-to-back (TAR, the single-file codecs), false for formats
-    # whose index/metadata is not at the front (ZIP's central directory, ISO's
-    # descriptors). Random access (streaming=False) always requires a seekable source —
+    # formats walkable front-to-back (TAR, ZIP by its local headers, the single-file
+    # codecs), false for formats that need their index or metadata to find the
+    # members (ISO's descriptors, 7z's trailing header). Random access (streaming=False) always requires a seekable source —
     # repeatable open()/read() cannot be honored over one forward pass, and the library
     # never implicitly buffers — so that side needs no per-backend flag.
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False

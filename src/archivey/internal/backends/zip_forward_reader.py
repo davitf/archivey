@@ -1196,13 +1196,13 @@ class _PassData:
         target nobody asked for, and asking a password provider for it: the member may
         turn out to be no link, which only a padded codec stream makes this long.
 
-        A bit-3 member is decoded to its end, which is the only way to find it from
-        its decoded data, so there a failure ends the walk. An encrypted one is the
-        exception, STORED or nobody read it: the walk's scan finds the end on the
-        ciphertext, with no key, and its ciphertext is kept as a sized one's is, if
-        it is short enough to be a link's. One the caller opened is decoded to its
-        end with the key it was opened with, and the scan takes over where that
-        decode fails (``_scan_past_failed_decode``).
+        A bit-3 member is decoded to its end, which is how its decoded data finds it;
+        where that decode fails, the walk's scan finds the end on the stored bytes,
+        with no key (``_scan_past_failed_decode``), while it still holds every byte
+        the decode took. An encrypted one, STORED or nobody read it, is not decoded:
+        the scan finds its end on the ciphertext, and its ciphertext is kept as a
+        sized one's is, if it is short enough to be a link's. One the caller opened
+        is decoded to its end with the key it was opened with.
         """
         if self.done:
             return
@@ -1218,7 +1218,9 @@ class _PassData:
         ):
             # A decrypt stage that failed to open (no password, or none passed its
             # check) read only the data's first bytes, which the scan puts back: the
-            # member is passed over as one nobody read, as from a file.
+            # member is passed over as one nobody read, as from a file. The
+            # ciphertext kept then serves a member nobody read; one whose read
+            # failed reports that failure instead (``uncaptured``).
             unopened = True
         # The data's end is found without decoding it: by its size, or for encrypted
         # bit-3 data by the scan, on the ciphertext.
@@ -1272,13 +1274,13 @@ class _PassData:
                     pass
             except ArchiveyError as exc:
                 failure = self._as_read_failure(exc) if encrypted else exc
-                if not ends_undecoded and not (
-                    deferred and encrypted and self._scan_past_failed_decode()
-                ):
-                    # As the member's own read words it.
-                    if failure is exc:
-                        raise
-                    raise failure from exc
+                if not ends_undecoded:
+                    scanned = deferred and self._scan_past_failed_decode()
+                    if not scanned:
+                        # As the member's own read words it.
+                        if failure is exc:
+                            raise
+                        raise failure from exc
                 if encrypted:
                     self._failure = failure
                 skip = True
@@ -1337,12 +1339,12 @@ class _PassData:
             self._failure = failure
 
     def _scan_past_failed_decode(self) -> bool:
-        """Find the end of an encrypted bit-3 codec member whose decode failed by the
-        walk's scan on its ciphertext, from the data's start, so the walk goes on as
-        it does past one nobody read; the file read fails the member alone. A wrong
-        key that passed its check byte decodes garbage, or the data is damaged; in
-        both the codec's end is not the data's. False when the bytes read so far
-        are no longer all kept (``LocalHeaderWalk.can_scan_member_data``)."""
+        """Find the end of a bit-3 codec member whose decode failed by the walk's scan
+        on its stored bytes, from the data's start, so the walk goes on as it does
+        past an encrypted one nobody read; the file read fails the member alone. The
+        data is damaged, or a wrong key that passed its check byte decoded garbage;
+        either way the codec's end is not the data's. False when the bytes read so
+        far are no longer all kept (``LocalHeaderWalk.can_scan_member_data``)."""
         walker = self._reader._walker
         if self._method() == 0 or not walker.can_scan_member_data(self._data):
             return False

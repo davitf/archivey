@@ -969,8 +969,8 @@ class LocalHeaderWalk:
         """``data``'s member read as scanned data instead: its end found by a scan for
         its descriptor on its bytes as stored, not by its codec.
 
-        For an encrypted bit-3 codec member nobody read, or whose read failed, so
-        the walk goes past it without its key. The bytes a failed read took are put
+        For an encrypted bit-3 codec member nobody read, or any bit-3 codec member
+        whose read failed, so the walk goes past it without decoding it. The bytes a failed read took are put
         back, so the scan starts at the data's start; that needs every one of them
         still kept (:data:`_CODEC_RETAIN`). ``data`` is done with, and the returned
         reader is the one to read and settle.

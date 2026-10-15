@@ -457,8 +457,10 @@ EOS bit, PPMd with its end mark), then finds the data descriptor by the decoded 
 STORED member ends at a descriptor whose CRC and size match the bytes before it and that a
 ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed the
 same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA member
-without EOS or PPMd member without an end mark has no findable end and is
-`UnsupportedFeatureError`. A bit-3 PPMd member is always decoded in a child process
+without EOS or PPMd member without an end mark has no end its codec can find, and its
+read is `UnsupportedFeatureError`. A bit-3 codec member whose decode fails or finds no
+end is passed by the same scan on its stored bytes, while the walk still holds every
+byte the decode took (`_CODEC_RETAIN`, 4 MiB); past that the pass ends at it. A bit-3 PPMd member is always decoded in a child process
 (`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several password
 candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
@@ -495,9 +497,10 @@ pair only updates the members in `stream_members()`), and extraction removes wha
 wrote for it. A directory entry pointing at a local header an earlier entry took ends the
 pass with `CorruptionError`.
 
-**Where the pass and a file read differ**, all on shapes only crafted archives have
-(DR-5a), each pinned in `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named
-in §8:
+**Where the pass and a file read differ**, each pinned in
+`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first three
+are shapes only crafted archives have (DR-5a); the rest come from damage, or from the
+directory's refusals the file read is to drop:
 
 - A data descriptor that understates a STORED member, and the reversed same-name pair,
   fail a member the file read writes.
@@ -508,6 +511,10 @@ in §8:
   though the directory may then not list it. `abort_on` fires before the end of the pass
   decides a member's selection, and the bomb limits count what the pass wrote until it
   is taken back.
+- A bit-3 codec member whose data is damaged can fail with another error than from a
+  file (`TruncatedError` where the file read says `DataAfterEndError`, for one): the
+  file read knows its stored size, and the pass finds its end by the scan for its
+  descriptor (§"Where a member's data ends"). The members after it read the same.
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
