@@ -16,10 +16,11 @@ header inside, so a tarball named `.gz` opens as a `.tar.gz`. The name is used o
 contents don't settle it.
 
 A few formats, such as raw zlib, LZMA alone and Brotli, have no signature at all. Archivey
-recognizes them by trying to decode the start of the data, which is called a probe. Almost any
-bytes can pass for the start of one of these streams, so a probe runs only when the file's
-extension names that format, when you set `always_probe_content=True`, or when you call
-`open_stream()`. `detect_format()` runs the same steps without opening the archive.
+recognizes them by trying to decode the start of the data, which is called a probe. A probe can
+mistake other data for one of these formats, because the start of an unrelated file sometimes
+decodes without an error. So a probe runs only when the file's extension names that format, when you
+set `always_probe_content=True`, or when you call `open_stream()`. `detect_format()` runs the same
+steps without opening the archive.
 
 ## Reading the archive's structure
 
