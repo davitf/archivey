@@ -181,7 +181,8 @@ because the implied parent directory is created, not extracted, so no collision 
 applies to it. The hoist MUST NOT delete pre-existing files or directories under any
 policy. A collision the policy cannot resolve without deleting data (`error`, or a
 dir-vs-file shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved
-remainder under the wrapper, and exit nonzero — mirroring the failure a direct
+remainder under the wrapper (or under the wrapper's aside name `<wrapper> (N)/` when
+the wrapper's name could not be taken back), and exit nonzero — mirroring the failure a direct
 extraction would have hit. When the container got the plain stem name, a sole root
 sharing the wrapper's own name (`src.tar.gz` containing `src/`) SHALL be flattened in
 place, not treated as a collision, and the wrapper SHALL then take that root's mode and
@@ -203,7 +204,9 @@ lines, not in the same order. `kept existing directory's mode` is printed when t
 archive's directory mode, as the platform stores it, differs from the operator's
 directory's mode, on both paths. Windows stores only a read-only attribute, so there the
 line is printed only when that attribute differs. When the hoist stops, a member left
-behind is named inside the wrapper.
+behind is named inside the directory that holds it: the wrapper, or the wrapper's aside
+name `<wrapper> (N)/` when the wrapper's name could not be taken back, because the
+merge gave that name to a member or the rename back failed.
 The container (`./<archive-stem>/`) SHALL always be a new directory that the run
 creates. When anything exists at the container name (a directory, a regular file, or a
 symlink, dangling or live), the name SHALL be treated as taken under every overwrite

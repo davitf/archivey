@@ -192,8 +192,9 @@ class _Moves:
     wrapper's parent after the move. A name that is not a key moved with its nearest
     ancestor that is. ``discarded`` holds the keys whose entry ``SKIP`` unlinked
     rather than moved: their ``names`` value is the operator's entry that was kept,
-    not the member. ``left_in`` is the wrapper's name when the hoist stopped
-    part-way: a name under no key is still in the wrapper.
+    not the member. ``left_in`` names where the remainder is when the hoist stopped
+    part-way: the wrapper, or the aside directory when the wrapper's name could not
+    be taken back. A name under no key is still in that directory.
     """
 
     names: dict[str, str]
@@ -216,19 +217,23 @@ class _Moves:
     def of(
         cls,
         moved: dict[str, tuple[Path, bool]],
-        wrapper: Path,
+        left_in: Path,
         *,
         stopped: bool = False,
     ) -> _Moves:
-        """What the hoist recorded in ``moved``, named from ``wrapper``'s
-        parent; ``stopped`` when the merge did not finish."""
+        """What the hoist recorded in ``moved``, named from ``left_in``'s parent.
+
+        ``left_in`` is the directory that holds whatever did not move: the wrapper,
+        or the aside directory when the wrapper's name could not be taken back. Both
+        share one parent. ``stopped`` when the merge did not finish.
+        """
         return cls(
             {
-                name: path.relative_to(wrapper.parent).as_posix()
+                name: path.relative_to(left_in.parent).as_posix()
                 for name, (path, _) in moved.items()
             },
             frozenset(name for name, (_, gone) in moved.items() if gone),
-            wrapper.name if stopped else None,
+            left_in.name if stopped else None,
         )
 
 
