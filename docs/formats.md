@@ -116,8 +116,8 @@ yielded.
   member the directory does not list (an appended update, a planted entry) is dropped
   and reported as ``ARCHIVE_UNLISTED_DATA``.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
-  without an end marker, or PPMd without an end mark, raises ``UnsupportedFeatureError``,
-  as no end can be found; a bit-3 PPMd member is decoded in a child process, so
+  without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
+  bit-3 PPMd member is decoded in a child process, so
   ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.

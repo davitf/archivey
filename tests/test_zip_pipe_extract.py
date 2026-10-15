@@ -4,8 +4,6 @@ The pass writes each member as its local header describes it; the central direct
 read after the last member, then settles the mode, type and name of what was written
 (``ExtractionCoordinator._settle_revised_members``). Each test extracts the same bytes
 from a file and from a pipe and expects the same files on disk and the same results.
-``open_archive`` still refuses a pipe for ZIP until the rest of the change lands, so
-these tests open the gate themselves.
 """
 
 from __future__ import annotations

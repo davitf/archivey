@@ -2,9 +2,7 @@
 
 Only the central directory, after the last member, says a member is a reparse point,
 so the pass keeps the start of data over the link target cap as far as a reparse
-buffer's parse reads it, whether or not the caller read the member. ``open_archive``
-still refuses a pipe for ZIP until the rest of the change lands, so these tests open
-the gate themselves.
+buffer's parse reads it, whether or not the caller read the member.
 """
 
 from __future__ import annotations

@@ -2,8 +2,7 @@
 
 The reader (``zip_forward_reader``) walks the local headers, yields each member with
 what its header says, and updates the members in place from the central directory at
-the end of the pass. ``open_archive`` still refuses a pipe for ZIP until the rest of
-the change lands, so these tests open the gate themselves.
+the end of the pass.
 """
 
 from __future__ import annotations
@@ -1166,24 +1165,27 @@ def test_a_digital_signature_record_is_refused_as_from_a_file() -> None:
         _piped_view(bytes(data))
 
 
-def _bit3_deflate_zip(members: list[tuple[str, bytes, bytes]]) -> bytes:
-    """A ZIP of bit-3 DEFLATE members, each ``(name, raw deflate, content)``, as a
-    writer to a pipe lays it out: zero sizes in the local header, a signed data
-    descriptor after the data."""
+def _bit3_deflate_zip(
+    members: list[tuple[str, bytes, bytes]], methods: dict[str, int] | None = None
+) -> bytes:
+    """A ZIP of bit-3 members, each ``(name, compressed, content)``, as a writer to
+    a pipe lays it out: zero sizes in the local header, a signed data descriptor
+    after the data. DEFLATE unless ``methods`` names another method for a member."""
     out = bytearray()
     central = bytearray()
     for name, deflated, content in members:
+        method = (methods or {}).get(name, 8)
         offset = len(out)
         crc = zlib.crc32(content)
         encoded = name.encode()
         out += struct.pack(
-            "<IHHHHHIIIHH", 0x04034B50, 20, 0x08, 8, 0, 0, 0, 0, 0, len(encoded), 0
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0x08, method, 0, 0, 0, 0, 0, len(encoded), 0
         )
         out += encoded + deflated
         out += struct.pack("<IIII", 0x08074B50, crc, len(deflated), len(content))
         central += struct.pack(
             "<IHHHHHHIIIHHHHHII",
-            0x02014B50, 20, 20, 0x08, 8, 0, 0, crc, len(deflated), len(content),
+            0x02014B50, 20, 20, 0x08, method, 0, 0, crc, len(deflated), len(content),
             len(encoded), 0, 0, 0, 0, 0, offset,
         )  # fmt: skip
         central += encoded
@@ -1242,4 +1244,28 @@ def test_the_walk_scans_past_a_failed_decode_longer_than_what_it_keeps() -> None
     assert stored > zip_local_walk._CODEC_RETAIN + zip_local_walk._READ_CHUNK
     seen = _pipe_reads(data)
     assert seen["a.bin"] is CorruptionError
+    assert seen["b.txt"] == b"after"
+
+
+def test_a_bit3_ppmd_member_with_no_end_mark_fails_as_from_a_file() -> None:
+    """PPMd has no flag for a missing end mark, so its decode fails as a file
+    read's does, and the walk's scan passes the member."""
+    import pyppmd
+
+    content = b"ppmd without its end mark\n" * 40
+    encoder = pyppmd.Ppmd8Encoder(6, 16 << 20, 0)
+    # Order 6, 16 MiB, restore method 0; flush(False) leaves out the end mark.
+    body = struct.pack("<H", 5 | (15 << 4)) + encoder.encode(content)
+    body += encoder.flush(False)
+    second = zlib.compressobj(9, zlib.DEFLATED, -15)
+    tail = second.compress(b"after") + second.flush()
+    data = _bit3_deflate_zip(
+        [("p.bin", body, content), ("b.txt", tail, b"after")], methods={"p.bin": 98}
+    )
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        with pytest.raises(CorruptionError):
+            reader.read("p.bin")
+        assert reader.read("b.txt") == b"after"
+    seen = _pipe_reads(data)
+    assert seen["p.bin"] is CorruptionError
     assert seen["b.txt"] == b"after"

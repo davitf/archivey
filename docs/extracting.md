@@ -468,9 +468,8 @@ Some things go differently from a pipe, on an archive that is crafted or damaged
   pipe does) can fail with a different error than from a file. The members after it are
   still written, unless decoding it read more than 4 MiB past where its data ends: then
   the pass stops there with an error.
-- An LZMA member with no end marker, or a PPMd member with no end mark, whose sizes come
-  after its data, fails with `UnsupportedFeatureError` from a pipe; from a file it is
-  written.
+- An LZMA member with no end marker whose sizes come after its data fails with
+  `UnsupportedFeatureError` from a pipe; from a file it is written.
 
 ## Limits
 

@@ -4,9 +4,7 @@ with the error a file read gives where the pass can tell.
 The pass reads each member's data as its local header describes it, and meets the
 directory only at the end. A member whose local header the directory contradicts in a
 field a read relies on fails there, after its data was yielded: a file read, which
-reads by the directory, would have read it differently. ``open_archive`` still refuses
-a pipe for ZIP until the rest of the change lands, so these tests open the gate
-themselves.
+reads by the directory, would have read it differently.
 """
 
 from __future__ import annotations

@@ -201,16 +201,16 @@ storage. What the pass keeps SHALL be bounded: the directory and end records by 
 listing limits, and the member data it keeps (a password-confirmation prefix, a short
 member that may turn out to be a link) by fixed caps.
 
-Each member's data ends where its local header says, or, when bit 3 defers the sizes
-to a data descriptor, where its codec's end marker is (DEFLATE, Deflate64, bzip2,
+Each member's data ends where its local header says, or, when bit 3 defers the sizes to
+a data descriptor, where its codec's end marker is (DEFLATE, Deflate64, bzip2,
 Zstandard, LZMA with the end-of-stream marker, PPMd with its end mark), followed by the
 descriptor; a STORED bit-3 member ends at a descriptor whose CRC and size match the
 bytes before it and that a ZIP signature follows. A bit-3 member nobody reads that is
 encrypted under a codec ends the same way, matched on its size, so passing it needs no
-key. A bit-3 LZMA member without the end-of-stream marker, or a bit-3 PPMd member
-without an end mark, has no end its codec can find: its read SHALL raise
-`UnsupportedFeatureError`. A bit-3 codec member whose decode fails or cannot find its
-end SHALL be passed by the same scan for its descriptor on its stored bytes, with no
+key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
+its read SHALL raise `UnsupportedFeatureError`. A bit-3 PPMd member without an end mark
+fails its decode, as from a file. A bit-3 codec member whose decode fails or cannot find
+its end SHALL be passed by the same scan for its descriptor on its stored bytes, with no
 key. The scan starts at the last 4 MiB the decode read and counts the bytes before them
 into the size it matches; a decode that read more than that past the data's end leaves
 the descriptor behind the scan's start, and the pass SHALL then end with the scan's
@@ -248,13 +248,13 @@ codec member's end and its descriptor, refused from a file, are counted into the
 the first of several inconclusive password candidates wins. It MAY also differ in these:
 a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
 the pass, losing the members after it, if its decode read more than 4 MiB past the
-data's end; a bit-3 LZMA member without the end-of-stream marker, or PPMd member without
-an end mark, is refused where a file read reads it; in `extract_all`, a link member the
-pass wrote as a file keeps the error its data read gave (no password: `EncryptionError`,
-where the file read reports `LinkTargetNotFoundError`); and an archive-wide refusal the
-directory or end record makes (a damaged ZIP64 end record or locator, a flagged name
-that is not valid UTF-8) is raised by a file read before anything is written and by the
-pass after every member is written, the files staying on disk.
+data's end; a bit-3 LZMA member without the end-of-stream marker is refused where a file
+read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
+its data read gave (no password: `EncryptionError`, where the file read reports
+`LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
+makes (a damaged ZIP64 end record or locator, a flagged name that is not valid UTF-8) is
+raised by a file read before anything is written and by the pass after every member is
+written, the files staying on disk.
 
 #### Scenario: non-seekable read matrix
 

@@ -16,7 +16,7 @@ states the behaviour and links the row.
 | Stream capability | `SEEKABLE`; `FORWARD_ONLY` from a pipe |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | A pipe under `streaming=False` · from a pipe, a bit-3 LZMA member without the end marker or PPMd member without the end mark (§2.2.2) · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
+| Refuses | A pipe under `streaming=False` · from a pipe, a bit-3 LZMA member without the end marker (§2.2.2) · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).
@@ -454,16 +454,17 @@ been read. The full design, row by row, is the `native-zip-reader` change's `des
 **Where a member's data ends.** A sized local header gives it. With bit 3 set the walk
 decodes to the codec's end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the
 EOS bit, PPMd with its end mark), then finds the data descriptor by the decoded CRC; a
-STORED member ends at a descriptor whose CRC and size match the bytes before it and that a
-ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed the
-same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA member
-without EOS or PPMd member without an end mark has no end its codec can find, and its
-read is `UnsupportedFeatureError`. A bit-3 codec member whose decode fails or finds no
-end is passed by the same scan on its stored bytes. The scan starts at the bytes the
-walk kept of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before
-them into the size it matches, so the descriptor is found unless the decode read more
-than that past the data's end; then the scan runs to the end of the stream and the pass
-ends with its error. A bit-3 PPMd member is always decoded in a child process
+STORED member ends at a descriptor whose CRC and size match the bytes before it and that
+a ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed
+the same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA
+member without EOS has no end its codec can find, and its read is
+`UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
+its decode, as from a file. A bit-3 codec member whose decode fails or finds no end is
+passed by the same scan on its stored bytes. The scan starts at the bytes the walk kept
+of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into the
+size it matches, so the descriptor is found unless the decode read more than that past
+the data's end; then the scan runs to the end of the stream and the pass ends with its
+error. A bit-3 PPMd member is always decoded in a child process
 (`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several password
 candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
@@ -519,16 +520,17 @@ directory's refusals the file read is to drop:
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
-- A bit-3 LZMA member without the EOS bit, or PPMd member without an end mark, is
-  refused (`UnsupportedFeatureError`); a file read knows its size and reads it.
+- A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
+  file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
 - An archive-wide refusal from the directory or the end records (a damaged ZIP64 end
   record or locator, a name flagged UTF-8 that is not valid UTF-8) comes before anything
   is written from a file, and after every member is written from a pipe: the files
-  stay, and the same error is raised. Whether the pass should take them back is the
-  maintainer's to decide.
+  stay, and the same error is raised. The pass keeps them, and the file read is to stop
+  refusing instead (davi, 2026-10-14): it will walk the local headers past a damaged
+  ZIP64 record or directory, and decode an invalid UTF-8-flagged name as unflagged.
 
 ### 2.3 Member data
 
@@ -840,7 +842,7 @@ ours.
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Read a non-seekable source forward over the local headers under `streaming=True`, and refuse it under `streaming=False`, rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for; the local headers make one forward pass possible (the maintainer, 2026-10-10) | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | Apply the fields only the directory holds at the end of a forward pass (2026-10-02) | Matches the file read on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive's streaming reader does (a symlink becomes a file: DR-1); spooling the archive to read the directory first |
-| From a pipe, keep the files a directory-wide refusal finds after they were written (current behaviour, pending the maintainer) | The pass learns of a damaged ZIP64 end record or a mislabelled UTF-8 name only after every member is written; it raises the file read's error and leaves the files | Taking them back, as a member failure at the end of the pass does |
+| From a pipe, keep the files a directory-wide refusal finds after they were written (davi, 2026-10-14; the file read is to stop refusing these instead) | The pass learns of a damaged ZIP64 end record or a mislabelled UTF-8 name only after every member is written; it raises the file read's error and leaves the files | Taking them back, as a member failure at the end of the pass does |
 | Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` behind its own re-entrant lock (a source whose read closes the archive re-enters it on the same thread), for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable for random access, because a pipe is read only by the forward pass, whose streams never seek. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
