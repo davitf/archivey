@@ -55,11 +55,12 @@ each compressed stream in formats such as gzip and xz. Some decoders written in 
 data, so archivey runs those in a child process, or feeds them in a way that avoids the crash.
 [Security](security.md#what-archivey-relies-on) says which.
 
-RAR is the exception. The licence of the UnRAR source code doesn't allow using it to build a RAR
-compressor, so no Python package includes it, and archivey decompresses RAR data by running an
-external program, `unrar`, `rar` or `unar`, and reading its output through a pipe. Archivey still
-reads the RAR structure with its own parser, and reads members stored without compression or
-encryption itself.
+RAR is the exception. No good library decodes it, so archivey decompresses RAR data by running an
+external program, `unrar`, `rar` or `unar`, and reading its output through a pipe, as the rarfile
+library does. Archivey still reads the RAR structure with its own parser, and reads members stored
+without compression or encryption itself. The [decision
+record](https://github.com/davitf/archivey/blob/main/dev-docs/decisions/0002-native-rar-metadata-unrar-data.md)
+explains the choice.
 
 Compressed data can't be read starting from the middle, so a seek inside a member takes one of three
 routes. Without help, archivey decompresses the member again from its start, or from where it
