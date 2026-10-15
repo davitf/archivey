@@ -935,6 +935,8 @@ class _MemberState:
     # copy, read back from disk: nothing is decoded, so it counts as a copy
     # (``BombTracker.count_copy``), not toward the decompression ratio.
     recopy: bool = False
+    # Where that earlier copy was moved to be read from (``_open_parked_copy``).
+    recopy_from: Path | None = None
     # A streaming pass's earlier copies of this member's name, left in place while it
     # is handled so it can replace one atomically: path -> index of the superseded
     # result. See ``_park_earlier_copies``.
@@ -1663,6 +1665,26 @@ class ExtractionCoordinator:
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
 
+    def _open_parked_copy(self, path: Path) -> BinaryIO:
+        """Open the parked copy at ``path`` to write its member again, from a temporary
+        name beside it: the write may land on ``path`` itself (on Windows, a DOS name
+        whose backslashes the directory makes separators), and Windows refuses to
+        replace a file that is open."""
+        aside = self._temp_sibling(path.parent)
+        os.replace(long_path(path), long_path(aside))
+        self._current.recopy_from = aside
+        self._current.parked.pop(path, None)
+        return open(long_path(aside), "rb")  # noqa: SIM115
+
+    @staticmethod
+    def _remove_recopy_source(aside: Path) -> None:
+        """Remove the moved parked copy once its member is written again or failed:
+        the parked copy goes either way (``_drop_parked_copies``)."""
+        with contextlib.suppress(OSError):
+            os.chmod(long_path(aside), stat.S_IREAD | stat.S_IWRITE)
+        with contextlib.suppress(OSError):
+            os.unlink(long_path(aside))
+
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
         at ``result_index``, landed on it.
@@ -2137,7 +2159,7 @@ class ExtractionCoordinator:
                     if missing is not None:
                         held = _passed_data(missing)
                     elif old_path is not None and old_path in current.parked:
-                        held = open(long_path(old_path), "rb")  # noqa: SIM115
+                        held = self._open_parked_copy(old_path)
                         current.recopy = True
                     elif member.size == 0:
                         held = io.BytesIO()
@@ -2199,6 +2221,8 @@ class ExtractionCoordinator:
                 )
         finally:
             self._close(held)
+            if current.recopy_from is not None:
+                self._remove_recopy_source(current.recopy_from)
             if current.parked:
                 self._drop_parked_copies(member.name, index)
             link_error = self._recheck_links()
