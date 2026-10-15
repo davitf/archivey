@@ -441,7 +441,7 @@ stored as `docs\r.txt`, sees the stored name during the pass, so that member fai
 file of yours that the pass replaces under `overwrite="replace"` is moved aside and put
 back at the end, unless the member still lands there.
 
-Some things go differently from a pipe, on archives no writer produces:
+Some things go differently from a pipe, on an archive that is crafted or damaged:
 
 - A data descriptor that disagrees with the directory, a local header the directory
   contradicts, two same-named members whose directory order reverses their file order,
@@ -463,6 +463,13 @@ Some things go differently from a pipe, on archives no writer produces:
 - An archive the directory refuses as a whole (a damaged ZIP64 end record, a name
   flagged UTF-8 that is not) raises from a file before anything is written, and from a
   pipe after every member is written; those files stay.
+- A damaged member whose sizes the archive stores after its data (as every writer to a
+  pipe does) can fail with a different error than from a file. The members after it are
+  still written, unless decoding it read more than 4 MiB past where its data ends: then
+  the pass stops there with an error.
+- An LZMA member with no end marker, or a PPMd member with no end mark, whose sizes come
+  after its data, fails with `UnsupportedFeatureError` from a pipe; from a file it is
+  written.
 
 ## Limits
 

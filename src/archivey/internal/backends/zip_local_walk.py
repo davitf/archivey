@@ -603,11 +603,11 @@ class _CodecData(MemberData):
 class _ScannedData(MemberData):
     """Bit-3 data ended by a scan for its data descriptor, on the bytes as stored.
 
-    A STORED member's, or an encrypted codec member's nobody read
-    (:meth:`LocalHeaderWalk.scan_member_data`). ``check_crc`` is false when the
-    descriptor's CRC covers bytes other than these (the plaintext, the decoded data):
-    the scan then matches the compressed size and the signature after the descriptor
-    only.
+    A STORED member's, or, from :meth:`LocalHeaderWalk.scan_member_data`, a codec
+    member's that is encrypted and nobody read, or whose read failed. ``check_crc`` is
+    false when the descriptor's CRC covers bytes other than these (the plaintext, the
+    decoded data): the scan then matches the compressed size and the signature after
+    the descriptor only.
     """
 
     def __init__(
@@ -644,8 +644,12 @@ class _ScannedData(MemberData):
         the scan looks for those and tries each descriptor shape ending there:
         signed or not (APPNOTE 4.3.9.3 makes ``PK\\x07\\x08`` optional), 4- or
         8-byte sizes. A shape is taken when its compressed size is the length of the
-        data before it, and its CRC that data's when ``check_crc``. Under encryption
-        a false match takes a planted signature and size in random bytes.
+        data before it, and its CRC that data's when ``check_crc``. Without the CRC,
+        a false match in ciphertext takes a planted signature and size; in a damaged
+        codec member's stored bytes it can also come by accident, a signature and a
+        size that happen to fit. Either way the member ends early and the walk reads on
+        from inside its data, and the directory entry's size and CRC catch it at the
+        end of the pass.
 
         The CRC runs on from one candidate to the next, so a buffer full of planted
         signatures costs one pass, and it is computed only for a candidate whose
@@ -958,7 +962,8 @@ class LocalHeaderWalk:
         return data
 
     def can_scan_member_data(self, data: MemberData) -> bool:
-        """Whether :meth:`scan_member_data` takes ``data``."""
+        """Whether :meth:`scan_member_data` takes ``data`` and starts its scan at the
+        data's start: every byte read from it so far is still kept."""
         return (
             data is self._open
             and isinstance(data, _CodecData)
@@ -970,20 +975,24 @@ class LocalHeaderWalk:
         its descriptor on its bytes as stored, not by its codec.
 
         For an encrypted bit-3 codec member nobody read, or any bit-3 codec member
-        whose read failed, so the walk goes past it without decoding it. The bytes a failed read took are put
-        back, so the scan starts at the data's start; that needs every one of them
-        still kept (:data:`_CODEC_RETAIN`). ``data`` is done with, and the returned
-        reader is the one to read and settle.
+        whose read failed, so the walk goes past it without decoding it. The bytes
+        still kept of what a read took (the last :data:`_CODEC_RETAIN`) are put back
+        and the ones before them counted, so the scan starts where the kept bytes
+        do: at the data's start when :meth:`can_scan_member_data`. A descriptor
+        before that point is not found, which takes a codec that read more than
+        :data:`_CODEC_RETAIN` past its data's end: the scan then runs to the end of
+        the stream and raises. ``data`` is done with, and the returned reader is the
+        one to read and settle.
         """
-        if not isinstance(data, _CodecData) or not self.can_scan_member_data(data):
-            raise ValueError(
-                "scan_member_data() is for an open codec member's data whose bytes "
-                "read so far are all kept"
-            )
-        if data.consumed:
-            self.source.unread(b"".join(data._kept)[-data.consumed :])
+        if not isinstance(data, _CodecData) or data is not self._open:
+            raise ValueError("scan_member_data() is for the open codec member's data")
+        kept = min(data.consumed, data._kept_len)
+        if kept:
+            self.source.unread(b"".join(data._kept)[-kept:])
         data._settled = True
         scanned = _ScannedData(self, data.entry, check_crc=False)
+        # The bytes before the kept ones count into the compressed size.
+        scanned.consumed = data.consumed - kept
         self._open = scanned
         return scanned
 

@@ -1134,3 +1134,26 @@ def test_a_missing_entry_meets_the_overwrite_policy_first(
             {"a.txt": b"one", "b.txt": b"caller's"},
         )
     )
+
+
+def test_a_moved_copy_the_filesystem_keeps_is_logged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A DOS name is written again under its real name from the copy the pass wrote,
+    moved aside first; a removal of that copy the filesystem refuses is reported."""
+    fixture = Path(__file__).parent / "fixtures" / "zip_backslash" / "dos_backslash.zip"
+    real_unlink = os.unlink
+
+    def refuse_temp(path: str | os.PathLike[str], *args: object, **kw: object) -> None:
+        if os.path.basename(path).startswith(".archivey-tmp-"):
+            raise PermissionError(13, "Permission denied", str(path))
+        real_unlink(path, *args, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "unlink", refuse_temp)
+    with archivey.open_archive(
+        NonSeekableBytesIO(fixture.read_bytes()), streaming=True
+    ) as reader:
+        reader.extract_all(tmp_path / "out")
+    assert "the earlier copy of" in caplog.text

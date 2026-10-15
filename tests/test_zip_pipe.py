@@ -36,7 +36,6 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.zip_forward_reader import ZipForwardReader
 from archivey.types import ArchiveMember, MemberType
 from tests.sample_archives import (
@@ -1194,10 +1193,10 @@ def _bit3_deflate_zip(members: list[tuple[str, bytes, bytes]]) -> bytes:
     return bytes(out + central + end)
 
 
-def _late_decode_failure_zip() -> bytes:
+def _late_decode_failure_zip(size: int = 1_500_000) -> bytes:
     """Two bit-3 DEFLATE members; the first's stream turns invalid (a block of
-    type 3) after about 600 KiB of good data."""
-    content = bytes(random.Random(0).choices(b"abcdefgh", k=1_500_000))
+    type 3) at the end of ``size`` random letters."""
+    content = bytes(random.Random(0).choices(b"abcdefgh", k=size))
     compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
     deflated = compressor.compress(content) + compressor.flush(zlib.Z_FULL_FLUSH)
     deflated += b"\x07"  # BFINAL set, BTYPE 11: no such block type
@@ -1232,13 +1231,11 @@ def test_the_walk_scans_past_a_bit3_member_whose_decode_fails() -> None:
     assert seen["b.txt"] == b"after"
 
 
-def test_the_pass_ends_when_the_failed_read_has_passed_what_the_walk_kept(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The scan starts at the data's start, so it needs every byte the failed read
-    took still kept; past that the pass ends at the member."""
-    monkeypatch.setattr(zip_local_walk, "_CODEC_RETAIN", 1 << 16)
-    seen = _pipe_reads(_late_decode_failure_zip())
+def test_the_walk_scans_past_a_failed_decode_longer_than_what_it_keeps() -> None:
+    """Over 4 MiB of stored bytes before the decode fails, more than the walk keeps
+    of what a read took: the scan starts at the kept bytes, and the next member
+    still reads as from a file."""
+    data = _late_decode_failure_zip(12_000_000)
+    seen = _pipe_reads(data)
     assert seen["a.bin"] is CorruptionError
-    assert "b.txt" not in seen
-    assert seen["<pass ended>"] is CorruptionError
+    assert seen["b.txt"] == b"after"

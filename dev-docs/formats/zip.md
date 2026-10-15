@@ -91,8 +91,8 @@ are both off by default even here — see §6.
 **Sizes and the CRC may arrive after the data.** With general-purpose bit 3 set, the LFH
 carries zeros and a DD follows the compressed bytes. The CDH carries the real values, so
 a random-access read is unaffected; a forward-only reader sees them late, and has to find
-where the data ends without them (§2.2.2). This is also why the ZipCrypto verification byte is the high
-byte of the DOS time rather than of the CRC when bit 3 is set.
+where the data ends without them (§2.2.2). This is also why the ZipCrypto verification
+byte is the high byte of the DOS time rather than of the CRC when bit 3 is set.
 
 **Names are bytes plus one unreliable flag.** General-purpose bit 11 declares UTF-8;
 unflagged names are nominally CP437. Producers set the flag on names that are not UTF-8
@@ -459,8 +459,11 @@ ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is 
 same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA member
 without EOS or PPMd member without an end mark has no end its codec can find, and its
 read is `UnsupportedFeatureError`. A bit-3 codec member whose decode fails or finds no
-end is passed by the same scan on its stored bytes, while the walk still holds every
-byte the decode took (`_CODEC_RETAIN`, 4 MiB); past that the pass ends at it. A bit-3 PPMd member is always decoded in a child process
+end is passed by the same scan on its stored bytes. The scan starts at the bytes the
+walk kept of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before
+them into the size it matches, so the descriptor is found unless the decode read more
+than that past the data's end; then the scan runs to the end of the stream and the pass
+ends with its error. A bit-3 PPMd member is always decoded in a child process
 (`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several password
 candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
@@ -514,7 +517,10 @@ directory's refusals the file read is to drop:
 - A bit-3 codec member whose data is damaged can fail with another error than from a
   file (`TruncatedError` where the file read says `DataAfterEndError`, for one): the
   file read knows its stored size, and the pass finds its end by the scan for its
-  descriptor (§"Where a member's data ends"). The members after it read the same.
+  descriptor (§"Where a member's data ends"). The members after it read the same,
+  unless its decode read more than 4 MiB past the data's end: then the pass ends there.
+- A bit-3 LZMA member without the EOS bit, or PPMd member without an end mark, is
+  refused (`UnsupportedFeatureError`); a file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.

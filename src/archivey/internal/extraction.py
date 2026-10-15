@@ -1694,14 +1694,24 @@ class ExtractionCoordinator:
         self._current.parked.pop(path, None)
         return open(long_path(aside), "rb")  # noqa: SIM115
 
-    @staticmethod
-    def _remove_recopy_source(aside: Path) -> None:
+    def _remove_recopy_source(self, aside: Path, name: str) -> None:
         """Remove the moved parked copy once its member is written again or failed:
-        the parked copy goes either way (``_drop_parked_copies``)."""
+        the parked copy goes either way (``_drop_parked_copies``). A removal the
+        filesystem refuses is logged, not raised: this runs in a ``finally``."""
         with contextlib.suppress(OSError):
             os.chmod(long_path(aside), stat.S_IREAD | stat.S_IWRITE)
-        with contextlib.suppress(OSError):
+        try:
             os.unlink(long_path(aside))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self._rebase_os_error(exc)
+            logger.warning(
+                "Could not remove %r, the earlier copy of %r: %s",
+                str(self._shown(aside)),
+                name,
+                exc,
+            )
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -2267,7 +2277,7 @@ class ExtractionCoordinator:
         finally:
             self._close(held)
             if current.recopy_from is not None:
-                self._remove_recopy_source(current.recopy_from)
+                self._remove_recopy_source(current.recopy_from, member.name)
             if current.parked:
                 self._drop_parked_copies(member.name, index)
             link_error = self._recheck_links()
