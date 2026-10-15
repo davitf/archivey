@@ -272,7 +272,9 @@ class ListingLimits:
     stream that cannot seek has no directory to read at open: its pass charges
     ``max_members`` on each local header as it yields the member, and again on the
     directory's entries after the last member, and weighs the directory's text
-    against ``max_metadata_bytes`` as it arrives.
+    against ``max_metadata_bytes`` as it arrives. A ZIP file whose end record sits
+    behind more than 64 KiB of trailing bytes is walked the same way at open, which
+    charges ``max_members`` on each local header.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``

@@ -343,12 +343,16 @@ archive declares.
   A ZIP read from a pipe has no directory at open: its forward pass charges
   `max_members` on each local header as it yields the member, and again on the
   directory's entries after the last member, whose text it weighs against
-  `max_metadata_bytes` as it arrives (`zip_forward_reader.py`).
+  `max_metadata_bytes` as it arrives (`zip_forward_reader.py`). A ZIP file whose end
+  record sits behind more trailing bytes than the end-record search reads is walked
+  the same way at `open_archive`, which charges `max_members` on each local header
+  before passing its data (`ZipReader._walk_past_members`).
   The TAR walker keeps nothing behind the member list, so nothing else is
   held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, for the bytes present rather than the size a header declares
   (a member declaring more than the archive holds raises `TruncatedError` at the first
-  short read).
+  short read), and that ZIP walk reads through the data of every member whose local
+  header leaves its size to a data descriptor, up to one read of the file.
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the

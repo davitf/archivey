@@ -449,6 +449,9 @@ def test_a_bound_under_one_chunk_keeps_that_many_bytes(keep: int) -> None:
     tail = walk.read_rest(keep)
     assert tail.data == raw[len(raw) - keep :]
     assert tail.start == len(raw) - keep
+    # The first four bytes after the members are held whatever the bound.
+    end = tail.members_end
+    assert tail.read_at(end, 4) == raw[end : end + 4] == b"PK\x01\x02"
 
 
 def test_a_directory_among_the_members_data_is_refused() -> None:

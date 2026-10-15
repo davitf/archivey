@@ -1106,7 +1106,8 @@ class LocalHeaderWalk:
             raise ValueError("settle the previous member's data first")
         members_end = self.source.offset
         head = bytearray()
-        head_cap = keep
+        # At least the first four bytes, whatever ``keep`` is.
+        head_cap = None if keep is None else max(keep, 4)
         chunks: deque[bytes] = deque()
         held = 0
         dropped = 0
@@ -1116,6 +1117,8 @@ class LocalHeaderWalk:
                 # Past the first four bytes, the head is kept only for a directory or
                 # end record right after the members, the one place the end record is
                 # stepped to from: other bytes there cost a long stream nothing more.
+                # The four stay for ``ForwardTail.end_record``'s message, so they
+                # are held whenever any byte after them was dropped.
                 if len(head) >= 4 and bytes(head[:4]) not in _STEPPED_OVER:
                     head_cap = 4
                     del head[4:]
