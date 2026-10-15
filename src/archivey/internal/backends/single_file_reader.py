@@ -18,6 +18,8 @@ codecs is an idea in ``dev-docs/IDEAS.md`` ("Seekable zstd through a native fram
 from __future__ import annotations
 
 import io
+import logging
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from typing import BinaryIO, TypeVar
@@ -29,6 +31,7 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError, StreamNotSeekableError
 from archivey.internal.base_reader import (
     BaseArchiveReader,
@@ -52,7 +55,11 @@ from archivey.internal.streams.codecs import (
     stream_codec_for_format,
 )
 from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
-from archivey.internal.streams.decompressor_stream import DecompressorStream
+from archivey.internal.streams.decompressor_stream import (
+    DecompressorStream,
+    IndexReport,
+    PrebuiltIndex,
+)
 from archivey.internal.streams.streamtools import (
     SharedSource,
     SlicingStream,
@@ -74,6 +81,54 @@ _T = TypeVar("_T")
 _COMPRESSION_EXTS: frozenset[str] = frozenset(
     ext.lower() for c in SINGLE_FILE_CODECS for ext in c.extensions
 )
+
+
+class _IndexReportRecorder(DiagnosticCollector):
+    """Keeps what an index scan emits, for a member stream to emit later.
+
+    Nothing is counted, logged or called back here: the member stream that uses the
+    scan emits each report into the reader's collector instead. An emit that must
+    raise (``escalate_as``) is not deferred; it goes through as usual. The replay
+    passes no member and the stream module's logger, so an emit that names a member
+    is refused here rather than silently losing its attachment.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reports: list[IndexReport] = []
+
+    def emit(
+        self,
+        *,
+        code: DiagnosticCode,
+        message: str,
+        context: DiagnosticContext,
+        member: ArchiveMember | None = None,
+        attach_to_member: bool = False,
+        logger: logging.Logger | None = None,
+        escalate_as: type[BaseException] | None = None,
+        escalate_message: str | None = None,
+        escalate_kwargs: dict[str, object] | None = None,
+    ) -> Diagnostic:
+        if escalate_as is not None:
+            return super().emit(
+                code=code,
+                message=message,
+                context=context,
+                member=member,
+                attach_to_member=attach_to_member,
+                logger=logger,
+                escalate_as=escalate_as,
+                escalate_message=escalate_message,
+                escalate_kwargs=escalate_kwargs,
+            )
+        assert member is None and not attach_to_member, (
+            "an index scan's deferred report cannot name a member"
+        )
+        self.reports.append(IndexReport(code, message, context))
+        return Diagnostic(
+            occurrence_id=uuid.uuid4().hex, code=code, message=message, context=context
+        )
 
 
 def _infer_member_name(archive_name: str | None) -> str:
@@ -164,6 +219,11 @@ class SingleFileReader(BaseArchiveReader):
         # The compressed-source header, read at most once and cached (only the gzip metadata
         # hook needs it; codecs without header metadata never trigger a read). See _peek_header.
         self._header_cache: bytes | None = None
+        # The xz index scan made for ``member.size``, kept for the member streams when
+        # they build an index (see _probe_decompressed_size). It lives as long as the
+        # reader, whether or not a stream ever seeks, and holds at most MAX_SEEK_POINTS
+        # points (xz.md §6).
+        self._seek_index: PrebuiltIndex | None = None
         self._member = self._build_member(archive_name)
 
         # Concurrent/re-entrant member open (no ``_first_stream`` scratch):
@@ -387,23 +447,40 @@ class SingleFileReader(BaseArchiveReader):
         view, so closing the probe's decompressor never closes a stream the caller owns.
         """
 
-        # Deliberately no collector here: a degraded index reports into
-        # resolve_collector's throwaway (a WARNING line and nothing else). This asks a
-        # metadata question and answers size=None when the index is unreadable. The
-        # member stream reports the same index into the reader's collector when a
-        # caller seeks; reporting here too would count one file twice, and under
-        # STRICT would refuse the open for a caller who never seeks. The cost is a
-        # second WARNING line for that file.
+        # Not the reader's collector: a degraded index is not reported at open. This
+        # asks a metadata question and answers size=None when the index is unreadable.
+        # The member stream reports the index into the reader's collector when a caller
+        # seeks; reporting here too would count one file twice, and under STRICT would
+        # refuse the open for a caller who never seeks.
+        #
+        # When member streams build an index (``seekable_members`` on a seekable
+        # source), the scan is kept for them: each one uses it in place of its own scan
+        # and emits the reports recorded here. A crafted file of many tiny xz streams
+        # makes the scan expensive, so it runs once. Otherwise a degraded index goes to
+        # resolve_collector's throwaway (a WARNING line and nothing else).
+        keep = self._codec_config.seekable
+        recorder = _IndexReportRecorder() if keep else None
+        config = replace(self._metadata_config, collector=recorder)
+
         def probe(f: BinaryIO) -> int | None:
             try:
-                backend = resolve_codec(self._codec, self._metadata_config)
+                backend = resolve_codec(self._codec, config)
                 stream = backend.open(SlicingStream(f, start=0))
             except (ArchiveyError, OSError, ValueError):
                 return None
             try:
-                if isinstance(stream, DecompressorStream):
+                if not isinstance(stream, DecompressorStream):
+                    return None
+                if recorder is None:
                     return stream.try_get_size()
-                return None
+                scanned = stream.scan_index()
+                if scanned is None:
+                    return None
+                points, size = scanned
+                self._seek_index = PrebuiltIndex(
+                    tuple(points), size, tuple(recorder.reports)
+                )
+                return size
             finally:
                 stream.close()
 
@@ -447,10 +524,13 @@ class SingleFileReader(BaseArchiveReader):
             codec_source = str(src.path)
         else:
             codec_source = self._wrap_compressed_input(src)
+        config = self._codec_config
+        if self._seek_index is not None:
+            config = replace(config, seek_index=self._seek_index)
         raw = open_codec_stream(
             self._codec,
             codec_source,
-            config=self._codec_config,
+            config=config,
             stamp=stamp,
             collector=self._diagnostics_collector,
         )

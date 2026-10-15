@@ -34,7 +34,12 @@ from typing import (
     cast,
 )
 
-from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, SeekIndexContext
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    DiagnosticContext,
+    SeekIndexContext,
+)
 from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
@@ -418,6 +423,42 @@ MAX_SEEK_POINTS = 1 << 18
 # ``SeekIndexContext.error_type`` when a table was thinned; no exception is involved.
 SEEK_TABLE_THINNED = "SeekTableThinned"
 
+
+@dataclass(frozen=True)
+class IndexReport:
+    """One diagnostic an index scan emitted, kept to be emitted again later.
+
+    ``message`` is kept raw: the emit that replays it escapes it. Storing a
+    :class:`Diagnostic` instead would escape it twice, because a ``Diagnostic``
+    escapes its message when it is constructed.
+    """
+
+    code: DiagnosticCode
+    message: str
+    context: DiagnosticContext
+
+
+@dataclass(frozen=True)
+class PrebuiltIndex:
+    """The result of a whole-source index scan, for another stream over the same bytes.
+
+    The single-file reader scans the xz index at open to learn ``member.size``. Each
+    member stream it opens takes this result as ``initial_index`` and uses it in place
+    of its own scan. ``points`` and ``size`` are what :meth:`Decoder.build_index`
+    returned. ``reports`` are the diagnostics the scan emitted (a thinned or unreadable
+    index). The stream emits them into its own collector when it would have run the
+    scan, so the caller sees each report once per stream, under its own policy, as
+    before.
+
+    Every stream that takes this index shares the same ``points`` objects, possibly
+    on different threads. Nothing may mutate a point or its ``state`` in place.
+    """
+
+    points: tuple[SeekPoint, ...]
+    size: int | None
+    reports: tuple[IndexReport, ...] = ()
+
+
 _T = TypeVar("_T")
 
 
@@ -633,9 +674,12 @@ class DecompressorStream(ReadOnlyIOStream):
         owns_inner: bool = False,
         report_trailing_data: bool = False,
         refuse_input_after_end: bool = False,
+        initial_index: PrebuiltIndex | None = None,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
+        # Used once, in place of the decoder's index scan (see _ensure_index_built).
+        self._initial_index = initial_index
         self._refuse_input_after_end = refuse_input_after_end
         # The DataAfterEndError of a ``refuse_input_after_end`` stream, raised once the
         # output before the end has been read (see _end_error), until a seek restarts.
@@ -1178,11 +1222,21 @@ class DecompressorStream(ReadOnlyIOStream):
     def _ensure_index_built(self) -> None:
         if not self._index_enabled or self._index_built or self._index_build_attempted:
             return
-        inner_pos = self._inner.tell()
-        # Always scan from the absolute origin. Using a mid-stream last_known (from
-        # progressive enrichment) as the baseline renumbers later streams' decompressed
-        # offsets incorrectly. A full from-origin scan is cheap (index/trailer only).
-        new_points, new_size = self._decoder.build_index(self._inner, SeekPoint(0, 0))
+        initial = self._initial_index
+        if initial is None:
+            new_points, new_size = self._scan_index()
+        else:
+            # The scan made elsewhere, with what it emitted emitted here, in the same
+            # order a scan here would (the caller's deferring block holds a raise).
+            self._initial_index = None
+            new_points, new_size = initial.points, initial.size
+            for report in initial.reports:
+                resolve_collector(self._diagnostics_collector).emit(
+                    code=report.code,
+                    message=report.message,
+                    context=report.context,
+                    logger=logger,
+                )
         self._index_build_attempted = True
         if new_points or new_size is not None:
             self._index_built = True
@@ -1190,10 +1244,30 @@ class DecompressorStream(ReadOnlyIOStream):
             self.add_seek_points(new_points)
         if new_size is not None:
             self._size = new_size
+
+    def _scan_index(self) -> tuple[Sequence[SeekPoint], int | None]:
+        inner_pos = self._inner.tell()
+        # Always scan from the absolute origin. Using a mid-stream last_known (from
+        # progressive enrichment) as the baseline renumbers later streams' decompressed
+        # offsets incorrectly. A full from-origin scan is cheap (index/trailer only).
+        found = self._decoder.build_index(self._inner, SeekPoint(0, 0))
         # build_index may have seeked _inner (e.g. lzip's backward trailer scan);
         # restore it so the decompressor's expected read position is still valid.
         if self._inner.tell() != inner_pos:
             self._inner.seek(inner_pos)
+        return found
+
+    def scan_index(self) -> tuple[Sequence[SeekPoint], int | None] | None:
+        """Run the decoder's whole-source index scan and return it, keeping nothing.
+
+        ``None`` when this stream builds no index (seeking not declared, or a source
+        that cannot seek). For a caller that hands the result to other streams as a
+        :class:`PrebuiltIndex`; the diagnostics the scan emits go to this stream's
+        collector.
+        """
+        if not self._index_enabled or not self._inner.seekable():
+            return None
+        return self._scan_index()
 
     def try_get_size(self) -> int | None:
         """The total decompressed size if cheaply available (via the index), else ``None``."""

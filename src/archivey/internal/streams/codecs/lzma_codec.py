@@ -108,6 +108,7 @@ class XzCodec(_SizedLzmaCodec):
             seekable=config.seekable,
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
+            initial_index=config.seek_index,
         )
 
 

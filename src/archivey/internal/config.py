@@ -21,6 +21,7 @@ from archivey.exceptions import ResourceLimitError
 
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.streams.decompressor_stream import PrebuiltIndex
 
 # Only the names other modules import from here. ``ArchiveyConfig`` and
 # ``DEFAULT_ARCHIVEY_CONFIG`` are imported for use below, not re-exported —
@@ -79,7 +80,9 @@ class StreamConfig:
     declares builds it no larger than that read needs (:func:`probe_lzma_dictionary`
     for the LZMA family; zstd, which cannot shrink a window, lowers
     ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
-    no further.
+    no further. ``seek_index`` is an xz index scan the single-file reader already
+    made over this same source; the xz stream uses it in place of its own scan. Like
+    ``collector`` it is left out of equality.
     """
 
     streaming: bool = False
@@ -94,6 +97,7 @@ class StreamConfig:
     report_trailing_data: bool = False
     probe_read_bound: int | None = None
     refuse_input_after_end: bool = False
+    seek_index: PrebuiltIndex | None = field(default=None, compare=False)
 
 
 def stream_config_from_archivey(
