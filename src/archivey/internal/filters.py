@@ -177,14 +177,22 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
     return resolved
 
 
-def _escapes(path: Path, root: Path) -> bool:
-    """Whether ``path`` resolves outside ``root``. A path that cannot be resolved (a
-    symlink loop, say) counts as an escape, as it does in the check after a link is
-    created."""
+SYMLINK_ESCAPES = "Symlink target escapes destination"
+SYMLINK_LOOPS = "Symlink target is part of a symlink loop"
+
+
+def link_resolution_problem(path: Path, root: Path) -> str | None:
+    """Why ``path`` does not resolve to a place inside ``root``, or ``None`` when it
+    does: ``SYMLINK_LOOPS`` for a loop on the way, else ``SYMLINK_ESCAPES``. A path
+    that cannot be resolved for another reason counts as an escape, as it does in the
+    check after a link is created. Both are refused the same way; only the message
+    differs. A loop cannot be resolved at all, so there is no inside or outside to
+    compare: the loop message wins even when the target might have led outside."""
     try:
-        return not _within(resolve_or_raise_on_loop(path), root)
-    except OSError:
-        return True
+        resolved = resolve_or_raise_on_loop(path)
+    except OSError as exc:
+        return SYMLINK_LOOPS if exc.errno == errno.ELOOP else SYMLINK_ESCAPES
+    return None if _within(resolved, root) else SYMLINK_ESCAPES
 
 
 def _check_path_string(
@@ -422,9 +430,10 @@ def check_universal(
         # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
         if link_target_on_disk is not None:
             target = link_target_on_disk(target)
-        if _escapes((dest_root / name).parent / target, dest_root):
+        problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
+        if problem is not None:
             raise FilterRejectionError(
-                "Symlink target escapes destination",
+                problem,
                 member_name=name,
                 link_target=member.link_target,
             )
@@ -433,7 +442,6 @@ def check_universal(
 # --- Policy permission transforms (applied to a transient copy) ---------------------
 
 _HIGH_BITS = 0o7000  # setuid | setgid | sticky
-_EXEC_BITS = 0o111
 
 
 def _carries_file_mode(member: ArchiveMember) -> bool:
@@ -442,11 +450,18 @@ def _carries_file_mode(member: ArchiveMember) -> bool:
 
 
 def transform_strict(member: ArchiveMember) -> ArchiveMember:
-    """STRICT: drop ownership, strip high/execute bits, cap files at 644, dirs at 755.
+    """STRICT: drop ownership, strip high bits and group/other write, dirs at 755.
 
-    A file's stored mode is *masked* with ``0o644``, never raised to it: ``0o660``
+    A file's stored mode is *masked* with ``0o755``, never raised to it: ``0o660``
     (``umask 007``, a group-shared file) becomes ``0o640``, not ``0o644``. The policy
     that distrusts the archive must not be the one that opens a file up to other users.
+    When the owner has an execute bit, the stored execute bits are kept, as GNU tar,
+    unzip, 7-Zip, unar and ``tarfile``'s ``data`` filter keep them: a script extracted
+    from a release tarball must still run. Setuid, setgid and sticky are stripped
+    (both masks, ``0o755`` and ``0o644``, clear them). As in the ``data`` filter, and
+    unlike the other four tools, a file whose owner has no execute bit loses the
+    group and other execute bits too, so ``0o011`` is written ``0o000``. The filter's
+    other step, adding owner read and write, is left out: it would widen the mode.
 
     A hardlink's mode is treated as a file's: a link materialized as a copy (the source
     was not selected, or it sits on another device) is written with it.
@@ -464,7 +479,7 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
         if mode is None:
             new["mode"] = 0o644
         else:
-            new["mode"] = mode & ~_HIGH_BITS & ~_EXEC_BITS & 0o644
+            new["mode"] = mode & 0o755 if mode & 0o100 else mode & 0o644
     return member.replace(**new)
 
 

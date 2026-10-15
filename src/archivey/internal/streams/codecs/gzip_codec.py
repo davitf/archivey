@@ -14,6 +14,7 @@ from typing import BinaryIO
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    exception_detail,
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs.base import (
@@ -649,7 +650,9 @@ class GzipCodec(_DeflateFamilyCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
-            return CorruptionError(f"Error reading gzip stream: {exc!r}")
+            return CorruptionError(
+                f"Error reading gzip stream: {exception_detail(exc)}"
+            )
         if isinstance(exc, zlib.error):
             # Corruption inside the deflate body (a valid gzip header, then bad data) is
             # raised by zlib's gzip window as a raw zlib.error. zlib does not flag

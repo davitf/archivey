@@ -367,11 +367,11 @@ archive declares.
   An encoded header must have exactly one folder, as in 7-Zip, and its unpack size is
   capped at `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
 - RAR checks `max_members` while parsing the member table at `open_archive`. It weighs
-  the summed declared sizes of compressed RAR 1.5/2.x comments against
-  `max_metadata_bytes` before decoding any, because the decode is the cost (one `unrar`
-  spawn each). RAR5 quick-open records that are not FILE never become members; their
-  bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB, `internal/backends/rar_parser.py`) and their
-  parse is linear.
+  each compressed RAR 1.5-4 comment by the larger of its declared size (the decode,
+  one `unrar` spawn each) and its packed bytes (held until the decode), and checks the
+  sum against `max_metadata_bytes` before decoding any. RAR5 quick-open records that
+  are not FILE never become members; their bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB,
+  `internal/backends/rar_parser.py`) and their parse is linear.
 - ISO checks both caps while `pycdlib` parses, inside `open_fp` at `open_archive`.
   `pycdlib` builds every directory tree of the image there, hundreds of bytes of Python
   objects per record, so the post-open tracker came too late: 3000 records under

@@ -17,6 +17,7 @@ from archivey.exceptions import (
     CorruptionError,
     PackageNotInstalledError,
     TruncatedError,
+    exception_detail,
 )
 from archivey.internal.config import (
     AcceleratorMode,
@@ -846,9 +847,11 @@ class Bzip2Codec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
-            return CorruptionError(f"bzip2 stream is corrupt: {exc!r}")
+            return CorruptionError(f"bzip2 stream is corrupt: {exception_detail(exc)}")
         if isinstance(exc, ValueError):
-            return TruncatedError(f"{truncated_message('bzip2')}: {exc!r}")
+            return TruncatedError(
+                f"{truncated_message('bzip2')}: {exception_detail(exc)}"
+            )
         return self._eof_truncation(exc, "bzip2")
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
@@ -893,13 +896,13 @@ class Bzip2Codec(StreamCodec):
         text = str(exc)
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
             return CorruptionError(
-                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exception_detail(exc)}"
             )
         if "[BZip2 block" in text:
             # Corrupt block data or block header (e.g. "[BZip2 block header] Invalid Huffman
             # coding group count"); surfaced as ValueError or RuntimeError depending on where.
             return CorruptionError(
-                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exception_detail(exc)}"
             )
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "Huffman" in text
@@ -913,7 +916,7 @@ class Bzip2Codec(StreamCodec):
             # coding … failed!" or "bad optional access") — found by the corpus
             # mutation harness, apart from the header's block-size byte.
             return CorruptionError(
-                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exception_detail(exc)}"
             )
         shared = _translate_rapidgzip_shared(
             exc,
@@ -927,7 +930,7 @@ class Bzip2Codec(StreamCodec):
             # (_translate_rapidgzip): its data errors are not a stable list, and the
             # mark tells them from a RuntimeError of the caller's own source.
             return CorruptionError(
-                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exception_detail(exc)}"
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.

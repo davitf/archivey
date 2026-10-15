@@ -355,6 +355,12 @@ is a requirement rather than a style preference:
 - A caught exception that may be an archivey exception SHALL be interpolated with
   `raw_message_of()`, which yields `raw_message` for archivey exceptions and `str(exc)`
   for any other. A handler catching only third-party types MAY interpolate directly.
+- A caught exception SHALL NOT be interpolated with `!r`: the repr is Python's spelling
+  (`error('unpack_from requires …')`), not a description of the archive.
+  `archivey.exceptions.exception_detail()` gives the exception's own text (unescaped,
+  as `raw_message_of()` does), or its type name when it has no text. One site is
+  exempt until the native ZIP reader rewrite rewords it: the ZIP reader's
+  `_decode_member_name`, for a member name that is not valid UTF-8.
 
 `ArchiveyError` and `ArchiveyUsageError` SHALL expose `raw_message` — the text as the
 call site wrote it — alongside the escaped `message`, since the escaped form cannot be
@@ -376,6 +382,7 @@ escape: there `%r` is what makes an interpolated name inert and SHALL be kept.
 | A message interpolating a name with `{name!r}` | Doubly-escaped — the form this requirement forbids |
 | Wrapping an archivey exception with `raw_message_of(exc)` | Escaped once |
 | Wrapping a third-party exception directly | Escaped once — it was never escaped |
+| Interpolating a caught exception with `{exc!r}` | The repr — the form this requirement forbids |
 | `exc.raw_message` | The unescaped text the call site wrote |
 | A log record interpolating a name with `%r` | Inert; the CLI handler does not escape it |
 | A native Windows path in a message | Rendered `/`-separated by `display_path()` first, so the escape has no separators to double |

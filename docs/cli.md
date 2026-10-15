@@ -43,8 +43,9 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 
 # Dry run: every check and every read, nothing written. Same report lines
 # and exit code as a real extraction into an empty directory. Without -d, a
-# single top-level folder is named where it would be moved to; what is
-# already there is not checked for collisions, nor whether it can be written to.
+# single top-level folder is named where it would be moved to, or why it would
+# stay in its wrapper; whether a directory already there can be written to is
+# not checked.
 archivey extract photos.zip --dry-run
 ```
 
@@ -73,9 +74,14 @@ encrypted members fail as if no password had been given.
 ### Notes
 
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
-- Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`) go before or after the
-  verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...) go after a verb that
-  owns them (`--policy` after `extract`, `--exclude` after `list`, `test` or `extract`).
+- Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`, `--probe-content`)
+  go before or after the verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...)
+  go after a verb that owns them (`--policy` after `extract`, `--exclude` after `list`,
+  `test` or `extract`).
+- A raw LZMA, zlib or Brotli stream has no magic bytes, so it is recognised only by its
+  extension (`.lzma`, `.zz`, `.br`, ...). For a file named otherwise, pass
+  `--probe-content`: detection then trial-decodes the start of the file. It is off by
+  default because arbitrary binary files sometimes pass the trial.
 - Patterns are globs where `*` stays inside one folder and `**` matches any depth:
   `archivey extract a.zip '*.md'` extracts the top-level `.md` files, and `'**/*.md'`
   those at every depth. A pattern matching a directory selects it and everything under
@@ -104,8 +110,12 @@ encrypted members fail as if no password had been given.
   It skips the move when the entry is a symlink, or when a symlink in it leaves it on
   the way to its target (or is absolute), because such a link would point somewhere
   else after the move. It also skips the move when part of the entry could not be
-  listed, since it may hold such a link. It prints a line saying why the files stayed
-  in the wrapper.
+  listed, since it may hold such a link. And it skips the move when an entry already
+  there collides in a way `--overwrite` cannot settle without deleting it: any
+  collision under `--overwrite error`; under `replace`, any collision that has a folder
+  on either side; under `skip`, a folder from the archive against a file already
+  there. Then nothing is moved and the run still succeeds. It prints a line saying why
+  the files stayed in the wrapper.
 - `test` exits `1` when its summary reports members as not tested, or digests as not
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip

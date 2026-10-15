@@ -591,6 +591,41 @@ def test_after_a_source_fault_every_later_call_raises(codec: Codec) -> None:
         assert _child_stream(stream)._proc is None  # the child is stopped
 
 
+# The caller's source can be a member stream of an outer archive, so the fault it raises
+# can be one of archivey's own, whose text is already escaped once.
+_ESCAPED_FAULT = "outer member n\x1bme is damaged"
+
+
+def _assert_escaped_once(message: str) -> None:
+    assert "n\\x1bme" in message  # the escape the outer error wrote, once
+    assert "\\\\" not in message  # no backslash escaped a second time
+    assert "CorruptionError(" not in message
+
+
+def test_a_stopped_stream_escapes_a_source_fault_of_ours_once() -> None:
+    with open_codec_stream(
+        Codec.ZLIB, io.BytesIO(_compress(Codec.ZLIB, _payload())), config=_ON
+    ) as stream:
+        stream.read(1)
+        child = _child_stream(stream)
+        child._poison(CorruptionError(_ESCAPED_FAULT))
+        with pytest.raises(ReadError) as later:
+            child.read(1)
+    _assert_escaped_once(str(later.value))
+
+
+def test_a_child_death_after_a_source_fault_of_ours_is_escaped_once() -> None:
+    with open_codec_stream(
+        Codec.ZLIB, io.BytesIO(_compress(Codec.ZLIB, _payload())), config=_ON
+    ) as stream:
+        stream.read(1)
+        death = _child_stream(stream)._child_died(
+            caused_by_source=CorruptionError(_ESCAPED_FAULT)
+        )
+    assert isinstance(death, ReadError)
+    _assert_escaped_once(str(death))
+
+
 def test_an_interrupt_from_the_callers_source_leaves_the_stream_unusable() -> None:
     source = _FailingSource(_compress(Codec.ZLIB, _payload()), KeyboardInterrupt())
     with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:

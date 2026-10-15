@@ -83,7 +83,7 @@ class RarDecompressor(Enum):
     """Which external program decompresses RAR member data.
 
     The native parser lists a RAR archive without either program, except for a
-    compressed RAR 1.5/2.x comment, which the selected program decodes (without it the
+    compressed RAR 1.5-4 comment, which the selected program decodes (without it the
     comment is ``None``). Otherwise one of them is needed only to read a compressed or
     encrypted member; stored members are read directly.
 
@@ -105,7 +105,7 @@ class RarDecompressor(Enum):
       reading a stored (uncompressed) member that is not encrypted, also when it is
       split across volumes or sits in a solid archive. A compressed or encrypted
       member, or a split one with a volume missing, raises ``UnsupportedFeatureError``
-      before anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
+      before anything runs, and a compressed RAR 1.5-4 comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
@@ -266,13 +266,13 @@ class ListingLimits:
     ZIP, 7z, RAR and ISO apply ``max_members`` at parse (ZIP at open, or as it reads
     the directory when the end record understates the count), 7z and RAR weigh the
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
-    compressed RAR 1.5/2.x comments by their declared sizes, before decoding them),
-    and ISO the directory records, path tables and UDF descriptors ``pycdlib``
-    parses, so ``open_archive`` raises. A ZIP read from a stream that cannot seek
-    has no directory to read at open: its pass charges ``max_members`` on each local
-    header as it yields the member, and again on the directory's entries after the
-    last member, and weighs the directory's text against ``max_metadata_bytes`` as it
-    arrives.
+    compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
+    before decoding them), and ISO the directory records, path tables and UDF
+    descriptors ``pycdlib`` parses, so ``open_archive`` raises. A ZIP read from a
+    stream that cannot seek has no directory to read at open: its pass charges
+    ``max_members`` on each local header as it yields the member, and again on the
+    directory's entries after the last member, and weighs the directory's text
+    against ``max_metadata_bytes`` as it arrives.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``
@@ -671,7 +671,7 @@ class ArchiveyConfig:
 
     Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
     listing does not depend on it, except that the selected program decodes compressed
-    RAR 1.5/2.x comments.
+    RAR 1.5-4 comments.
     """
 
     read_link_targets: bool = True

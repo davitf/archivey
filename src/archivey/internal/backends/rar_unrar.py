@@ -36,6 +36,7 @@ from archivey.internal.backends.rar_parser import (
     _RAR3_MAIN,
     _S_BLK_HDR,
     _S_FILE_HDR,
+    RAR3_MAX_COMMENT_SIZE,
     RAR_ID,
     _normalize_password_utf8,
     _normalize_password_utf16le,
@@ -1273,14 +1274,16 @@ def decompress_rar3_blob(
 ) -> bytes | None:
     """Decode a non-file RAR3 payload by wrapping it in a temporary RAR.
 
-    RAR3 old-style comments hold compressed bytes inside a header, without a
-    FILE block that ``unrar`` can address. A minimal one-file archive lets the
+    RAR3 old-style comments hold compressed bytes inside a header, and a RAR 2.9-4
+    ``CMT`` SERVICE header holds them in a block ``unrar p`` does not pipe; neither
+    is a FILE block that ``unrar`` can address. A minimal one-file archive lets the
     existing RARLAB process decode that one blob. This is deliberately limited
     to metadata blobs; it does not change stream-source member reads.
 
     ``unrar`` can report a CRC error for the synthetic FILE because old comment
-    blocks retain only a CRC16. The caller validates that CRC16 against the
-    returned bytes, which is the integrity check the on-disk comment provides.
+    blocks retain only a CRC16. The caller validates the comment's CRC (the CRC16,
+    or a ``CMT`` header's CRC32) against the returned bytes, which is the integrity
+    check the on-disk comment provides.
 
     ``open_pipe`` spawns the decompressor on the synthetic archive and returns
     ``(proc, stdout)`` for its only member; ``None`` means :func:`open_unrar_p`.
@@ -1294,7 +1297,7 @@ def decompress_rar3_blob(
     no salt, so it must not claim one, and it copies no other bit of the comment's
     flag word.
     """
-    if unpacked_size < 0 or unpacked_size > 0xFFFF:
+    if unpacked_size < 0 or unpacked_size > RAR3_MAX_COMMENT_SIZE:
         return None
     if flags & (_RAR3_FILE_PASSWORD | _RAR3_FILE_SALT):
         return None
@@ -1340,9 +1343,9 @@ def decompress_rar3_blob(
             archive.write(RAR_ID + main_header + file_header + packed)
         proc, stdout = (open_pipe or open_unrar_p)(path)
         try:
-            # A comment's declared unpacked length is a uint16. Bound the
-            # process output so a malformed blob cannot turn archive listing
-            # into an unbounded metadata read.
+            # A comment's declared unpacked length is at most
+            # ``RAR3_MAX_COMMENT_SIZE``. Bound the process output so a malformed
+            # blob cannot turn archive listing into an unbounded metadata read.
             data = stdout.read(unpacked_size + 1)
             if len(data) != unpacked_size:
                 return None

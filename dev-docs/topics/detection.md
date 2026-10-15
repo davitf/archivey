@@ -324,8 +324,9 @@ is a hand-built file. `format=` already lets a caller choose.
 When the bytes and the extension disagree, the bytes win and `FORMAT_EXTENSION_CONFLICT`
 is emitted, naming the evidence that won (magic, the stub scan, or content inspection). The
 diagnostic lands on `FormatInfo.diagnostics`, or on the reader's collector when
-`open_archive` detected. A caller whose policy raises on it gets `DiagnosticRaisedError`
-before any reader exists. A TAR-combination extension over a bare compressor (`foo.tar.gz`
+`open_archive` detected. `STRICT` does not raise on it (the name lies outside the
+archive, and the archive reads in full); a caller whose policy does, such as `PEDANTIC`,
+gets `DiagnosticRaisedError` before any reader exists. A TAR-combination extension over a bare compressor (`foo.tar.gz`
 reported as `GZ` because no `ustar` was found) is agreement, not a conflict, and is silent.
 
 An explicit `format=` skips detection, so it never produces a conflict. The detection
@@ -537,7 +538,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | The probe sample is the whole window, and small hits are re-checked whole (§2.5) | `tests/test_probe_completeness_gate.py::test_text_that_decodes_for_256_bytes_is_not_brotli`, `::test_probe_hit_under_the_completion_window_is_checked_whole`, `::test_probe_hit_above_the_completion_window_is_accepted_on_the_window` |
 | Probe-only and extension-only failures are stamped; corroborated ones are not (§2.5, §2.6) | `tests/test_probe_provenance_unconfirmed.py::test_lzma_alone_probable_failure_sets_format_unconfirmed`, `::test_inner_tar_upgrade_is_corroborated_and_probable`, `::test_br_extension_failure_does_not_stamp`, `::test_extension_only_failure_sets_format_unconfirmed`, `::test_confidence_matrix_unchanged_by_provenance` |
 | One decode allowance, shared by every decoding step (§4.1) | `tests/test_detection.py::test_content_probes_share_one_decode_allowance`, `::test_inner_tar_probe_stays_inside_the_decode_budget`, `tests/test_probe_completeness_gate.py::test_completion_the_decode_allowance_cannot_cover_is_recorded` |
-| The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) | `tests/test_detection.py::test_open_archive_detects_under_the_config_budget`, `::test_format_argument_stub_checks_detect_under_the_config_budget`, `::test_empty_listing_rescan_detects_under_the_config_budget`, `::test_empty_listing_rescan_stays_internal_under_strict` |
+| The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) | `tests/test_detection.py::test_open_archive_detects_under_the_config_budget`, `::test_format_argument_stub_checks_detect_under_the_config_budget`, `::test_empty_listing_rescan_detects_under_the_config_budget`, `::test_empty_listing_rescan_stays_internal` |
 | A receipt over budget always names a step cut short, for one pass and two (§4.1) | `tests/test_detection_workspace.py::test_over_budget_receipt_always_names_a_cut_short_tier`, `::test_two_pass_receipt_over_budget_also_names_a_cut_short_tier` |
 | A stub-volume detection's receipt keeps the stub pass (§2.7, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
 | A path to any volume of a set is detected on the set `open_archive` reads; a gapped set raises `TruncatedError` (§2.7) | `tests/test_volumes.py::test_detect_format_on_any_numbered_part_agrees_with_open_archive`, `::test_detect_format_on_a_rar_continuation_agrees_with_open_archive`, `::test_detect_format_on_a_gapped_numbered_set_raises_truncated`, `::test_detect_format_on_a_lone_first_part_reports_its_bytes` |

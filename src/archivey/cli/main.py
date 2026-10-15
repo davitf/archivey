@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TextIO, TypedDict, 
 import archivey
 from archivey import (
     AbortOn,
+    ArchiveyConfig,
     ExtractionPolicy,
+    FormatDetectionError,
     FormatSupport,
     OverwritePolicy,
     format_availability,
@@ -253,6 +255,15 @@ def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
             "(bytes decompressed, compressed consumed, seeks)"
         ),
     )
+    p.add_argument(
+        "--probe-content",
+        action="store_true",
+        default=default_false,
+        help=(
+            "recognise a raw LZMA, zlib or Brotli stream by trial-decoding it, "
+            "whatever the file is named (off by default: random files can pass)"
+        ),
+    )
     # Pre-verb globals include reserved --salvage so it gets the same "not yet"
     # message as post-verb (P13), not argparse's "unrecognized arguments".
     p.add_argument(
@@ -317,6 +328,7 @@ class _Common(TypedDict):
     password: str | None
     track_io: bool
     verbose: bool
+    config: ArchiveyConfig | None
     out: TextIO
     err: TextIO
 
@@ -587,6 +599,9 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
         password=args.password,
         track_io=bool(args.track_io),
         verbose=bool(args.verbose),
+        config=ArchiveyConfig(always_probe_content=True)
+        if args.probe_content
+        else None,
         out=out,
         err=err,
     )
@@ -768,6 +783,9 @@ def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO)
         return exc.code
     except ArchiveyError as exc:
         print(f"archivey: {format_error_detail(exc)}", file=err)
+        if isinstance(exc, FormatDetectionError) and "always_probe_content" in str(exc):
+            # The library's message names the config field; say what the CLI spells it.
+            print("archivey: on the command line, pass --probe-content", file=err)
         return EXIT_FAIL
     except BrokenPipeError:
         # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2), which

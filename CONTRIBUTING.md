@@ -400,7 +400,7 @@ maintainer.
 
 The test matrix covers Linux, macOS and Windows, but your container is Linux — so this
 class of failure lands *after* you push, and it has repeatedly cost a review round. Check
-new tests and new message-formatting code for all four:
+new tests and new message-formatting code for each of these:
 
 - **`read_text()` / `open()` without `encoding="utf-8"`.** Python's default encoding on
   Windows is the ANSI code page (cp1252), not UTF-8. Any test that reads a repo source
@@ -419,6 +419,10 @@ new tests and new message-formatting code for all four:
 - **Filesystem case-insensitivity.** macOS and Windows collapse `A.txt` / `a.txt`, which
   changes name-collision behaviour. If a test depends on two members differing only by
   case, it is testing something different on each platform.
+- **Path comparison folds case on Windows.** `WindowsPath("FILE") == WindowsPath("file")`
+  is `True` whatever the filesystem, and `in` and `sorted()` on paths fold case too. When
+  a comparison is about the *spelling*, compare `str(path)` or `path.name`. Only Windows
+  CI catches this: on a case-insensitive macOS volume `PosixPath` comparison stays exact.
 
 ### Fuzzing
 

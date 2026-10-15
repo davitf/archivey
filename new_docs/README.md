@@ -9,10 +9,12 @@ this list:
 - Every ZIP claim in the tree, once the native ZIP reader is complete: damaged or missing end
   records, and bytes after the archive, are expected to change.
 
-Pages linked from these but not written yet: `install.md` and `api.md`. `install.md` should say
+Pages linked from these but not written yet: `install.md`. `install.md` should say
 why RAR needs an outside program (RARLAB doesn't publish the compression format, and the UnRAR
 licence forbids re-creating it from that source), as `docs/` does. `migrating.md` isn't linked
-from `index.md` yet; the site navigation covers it at the switch. No check looks at
+from `index.md` yet; the site navigation covers it at the switch. The access-cost material in
+`docs/access-and-cost.md` has no page here yet; the API reference lists its types without a guide
+link. No check looks at
 links in this tree, so a broken one goes unnoticed.
 
 When this tree replaces `docs/`, three pointers outside it move too. `SECURITY.md` links the known

@@ -29,7 +29,7 @@ from archivey.internal.extraction import (
     BombTracker,
     ExtractionCoordinator,
     _RunState,
-    _symlink_escapes,
+    _symlink_problem,
 )
 from archivey.types import ArchiveMember, MemberType
 
@@ -113,6 +113,26 @@ def test_a_link_made_escaping_by_a_later_symlink_is_removed(
     assert results["a"].status is ExtractionStatus.EXTRACTED
     assert not os.path.lexists(dest / "l")
     assert _escaping_links(dest) == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_loop_a_later_symlink_closes_is_named_as_a_loop(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # `p -> q/p` dangles inside dest when written; `q -> .` then closes the loop.
+    dest, results = _extract(
+        tmp_path, [("p", "sym", "q/p"), ("q", "sym", ".")], streaming=streaming
+    )
+
+    result = results["p"]
+    assert result.status is ExtractionStatus.BLOCKED
+    assert isinstance(result.error, FilterRejectionError)
+    assert result.error.message == (
+        "Symlink target is part of a symlink loop: a later member changed a path it "
+        "resolves through"
+    )
+    assert results["q"].status is ExtractionStatus.EXTRACTED
+    assert not os.path.lexists(dest / "p")
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -542,7 +562,7 @@ def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
     anti = ArchiveMember(type=MemberType.ANTI, name="x")
     coordinator._apply_anti_item(anti, root / "x")
     outcome = watch.recheck(
-        lambda path, target: _symlink_escapes(path, target, root.resolve())
+        lambda path, target: _symlink_problem(path, target, root.resolve()) is not None
     )
 
     assert [link.path.name for link in outcome.escaped] == ["l"]

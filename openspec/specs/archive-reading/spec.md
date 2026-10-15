@@ -528,9 +528,9 @@ entries it reads after the last member (`format-zip`).
 | Default config, archive with ≤262_144 members and metadata under 64 MiB | `members()` / `members_report()` succeed |
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-zip`, `format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes`, at `open_archive` on 7z and RAR, which weigh the names their headers hold at parse (`format-7z`, `format-rar`) |
-| RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
+| RAR archive whose compressed RAR 1.5-4 comments, each weighed by the larger of its declared size and its packed bytes, total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared size) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
+| `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared or packed size, whichever is larger) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 | `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
 | `stream_members()` on a streaming reader or a random-access TAR, past a cap | Yields the members within the caps, then raises `ResourceLimitError` at the member that crosses one, without parsing the headers after it; `members_report_if_available()` then returns `None` |
@@ -565,22 +565,23 @@ count toward `max_metadata_bytes` before that list is published.
 
 A field that is expanded before any member is registered MAY be weighed by the size
 its header declares, before it is expanded, when expanding it is itself the cost to
-bound. The case that exists is RAR 1.5/2.x compressed old-style comments, each decoded
-by a separate `unrar` process: `format-rar` sums their declared unpacked sizes at
+bound. The case that exists is RAR 1.5-4 compressed comments, each decoded by a
+separate `unrar` process: `format-rar` sums their declared unpacked sizes (or their
+packed bytes, which the listing holds until the decode, where those are larger) at
 `open_archive` and refuses the archive before decoding any. That check is separate
 from the running total above; the decoded comments are weighed again at registration.
 
 A format whose parser builds the whole member table before any member is registered
 (7z and RAR) SHALL also weigh the text that table holds against `max_metadata_bytes`
 at parse, so that `open_archive` raises before the table is kept, as it does for
-`max_members`: each stored name (as `name` and as `raw_name`), a RAR5 link target
-held in the header, and the member and archive comments. The parse weight SHALL use
-the rules above on the stored values: the stored name stands for the normalized
-`name`, and a raw name not yet encoded counts one byte per character for UTF-8, two
-for UTF-16, never more than its encoded size. An archive whose names normalization
-leaves unchanged therefore opens under any cap its listing fits; the RAR compressed
-comments count by declared size, as above. Registration still weighs every member as
-usual.
+`max_members`: each stored name (as `name` and as `raw_name`), a RAR5 link target held
+in the header, and the member and archive comments. The parse weight SHALL use the
+rules above on the stored values: the stored name stands for the normalized `name`,
+and a raw name not yet encoded counts one byte per character for UTF-8, two for
+UTF-16, never more than its encoded size. An archive whose names normalization leaves
+unchanged therefore opens under any cap its listing fits; the RAR compressed comments
+count by declared or packed size, whichever is larger, as above. Registration still
+weighs every member as usual.
 
 A TAR sparse member's map is retained on `_raw` (the member's data is read through it),
 and the archive sizes it: a few kilobytes of compressed PAX sparse 1.0 map hold millions
@@ -611,7 +612,7 @@ chain left, not against the member's whole share.
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
-| RAR compressed old-style comments whose declared sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
+| RAR compressed comments whose declared (or larger packed) sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
 | TAR chain of extended headers ahead of one member, each under the cap, together over it | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
 | TAR sparse map whose entries weigh more than the member has left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before its entries are parsed |
 

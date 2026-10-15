@@ -79,6 +79,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
     raw_message_of,
 )
 from archivey.internal.backends.zip_aes import (
@@ -1119,20 +1120,24 @@ class ZipReader(BaseArchiveReader):
             # decode_lzma_filter_properties (_zip_lzma_params) and the codec layer
             # types the decoder's own errors. Kept so a new one reads as corruption,
             # which the password ladder counts as a failed candidate under ZipCrypto.
-            return CorruptionError(f"Error decompressing ZIP member: {exc!r}")
+            return CorruptionError(
+                f"Error decompressing ZIP member: {exception_detail(exc)}"
+            )
         if isinstance(exc, ValueError):
             # A raw ValueError from a member read is a malformed structure some layer
             # did not type. A closed handle is *not* corruption and never reaches this
             # arm: the shared boundary (BaseArchiveReader._raise_translated) maps a
             # closed source ahead of this translator (ArchiveyUsageError is
             # deliberately not an ArchiveyError, so it cannot be returned from here).
-            return CorruptionError(f"Corrupt ZIP member structure: {exc!r}")
+            return CorruptionError(
+                f"Corrupt ZIP member structure: {exception_detail(exc)}"
+            )
         if isinstance(exc, EOFError):
             # Short input, from any decoder a member read reaches. The codec layer maps
             # its own EOFError and no ZIP path is known to raise a bare one now; this
             # translator sees every exception a member stream raises, so a new source
             # still reads as truncation rather than escaping untyped.
-            return TruncatedError(f"Truncated ZIP member data: {exc!r}")
+            return TruncatedError(f"Truncated ZIP member data: {exception_detail(exc)}")
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:

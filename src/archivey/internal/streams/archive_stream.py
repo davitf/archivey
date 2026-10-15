@@ -69,14 +69,20 @@ CloseHook = Callable[[], None]
 
 @dataclass(frozen=True)
 class RewindWarning:
-    """Signals that this codec services a backward seek by re-decompressing from the start.
+    """How to phrase ``STREAM_REWIND_REDECOMPRESSES`` for this stream's codec.
 
-    Carried by :class:`ArchiveStream` so the public stream handle can warn once, on the first
-    rewinding seek, that random access is O(n) here. ``codec_name`` names the format; when an
-    ``accelerator`` package (the ``[seekable]`` extra) would provide indexed random access, the
-    warning names it. ``suggest_install`` is True when that package is absent (tell the user to
-    install it) and False when it is present but was not engaged for this stream. Codecs with a
-    native random-access index (or an active accelerator) carry no ``RewindWarning``.
+    It does not decide *whether* a backward seek is reported: :class:`ArchiveStream`
+    measures the decoded progress the seek discards, from the position before the seek
+    back to the nearest resume point for the target, and reports it once that reaches
+    ``REWIND_REDECODE_WARN_BYTES``. Every decompressing codec carries one, including
+    those with resume points (a multi-block ``.xz``, a multi-member ``.lz``) and those
+    with an engaged accelerator, because a seek can still land far past the nearest
+    resume point. Only ``STORED``, which re-decodes nothing, carries none.
+
+    ``codec_name`` names the format. When an ``accelerator`` package (the ``[seekable]``
+    extra) can provide indexed random access, the report names it. ``suggest_install`` is
+    True when that package is absent (tell the user to install it) and False when it is
+    present.
 
     ``min_redecode_bytes`` is a cost floor the predicate maxes against. Use it when the
     carrier re-decodes bytes the member stream's own ``tell()`` does not contain (a
@@ -690,7 +696,7 @@ class ArchiveStream(ReadOnlyIOStream):
             to_offset=after,
             accelerator=warning.accelerator,
         )
-        message = self._rewind_message(warning, distance)
+        message = self._rewind_message(warning, distance, resume, after)
         collector = resolve_collector(self._diagnostics_collector)
         if self._rewind_warned:
             collector.escalate_only(
@@ -708,22 +714,43 @@ class ArchiveStream(ReadOnlyIOStream):
         )
 
     @staticmethod
-    def _rewind_message(warning: RewindWarning, distance: int) -> str:
+    def _rewind_message(
+        warning: RewindWarning, distance: int, resume: int, target: int
+    ) -> str:
+        """The rewind report's text.
+
+        It says where decoding resumes (``resume``, at or before ``target``), not what
+        the codec can do: a multi-block ``.xz`` has resume points, and a seek can still
+        land far past the nearest one. A codec with an accelerator adds a sentence
+        about it after that.
+        """
         cost = (
             f"Backward seek in a {warning.codec_name} stream discards {distance} "
             f"decompressed bytes; returning to the previous position re-decompresses "
             f"them"
         )
+        if resume == 0:
+            where = (
+                "Decoding restarts from the start of the stream: no resume point is "
+                "closer to the seek target."
+            )
+        elif resume == target:
+            where = "Decoding restarts at the seek target, which is a resume point."
+        else:
+            where = (
+                f"Decoding restarts from the nearest resume point, {target - resume} "
+                f"bytes before the seek target."
+            )
         if warning.accelerator is None:
-            return f"{cost}, because this codec has no random-access index."
+            return f"{cost}. {where}"
         if warning.suggest_install:
             return (
-                f"{cost}. Install the 'seekable' extra ({warning.accelerator}) for "
-                f"indexed random access."
+                f"{cost}. {where} Install the 'seekable' extra ({warning.accelerator}) "
+                f"for indexed random access."
             )
         return (
-            f"{cost}. The '{warning.accelerator}' accelerator has no closer resume point "
-            f"in its index (or was not engaged for this stream)."
+            f"{cost}. {where} The '{warning.accelerator}' accelerator has no closer "
+            f"resume point in its index (or was not engaged for this stream)."
         )
 
     def tell(self, /) -> int:

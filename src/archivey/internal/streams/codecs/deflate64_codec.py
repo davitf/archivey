@@ -8,6 +8,7 @@ from typing import BinaryIO
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    exception_detail,
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs import deps
@@ -45,5 +46,7 @@ class Deflate64Codec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, (ValueError, zlib.error)):
-            return CorruptionError(f"Error reading deflate64 stream: {exc!r}")
+            return CorruptionError(
+                f"Error reading deflate64 stream: {exception_detail(exc)}"
+            )
         return self._eof_truncation(exc, "deflate64")

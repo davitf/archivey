@@ -35,7 +35,7 @@ plugins:
         python:
           paths: [src]
           options:
-            heading_level: 2
+            heading_level: 3
             show_source: false
             show_root_heading: true
             docstring_section_style: table
@@ -52,7 +52,7 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - toc:
-      toc_depth: 3
+      toc_depth: 4
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span

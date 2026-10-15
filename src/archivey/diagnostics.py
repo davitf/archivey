@@ -645,7 +645,6 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
         DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
-        DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
         DiagnosticCode.SCAN_DIRECTORY_VANISHED,
         DiagnosticCode.SCAN_ENTRY_VANISHED,
@@ -662,7 +661,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Ten codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eleven codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -697,6 +696,9 @@ and the reasons are part of the contract rather than an oversight:
   subdivision flags. ``STRICT`` would refuse an archive of legitimately named files.
   Its sibling ``MEMBER_NAME_ZERO_WIDTH_CHARACTER`` is **in** the set: U+200B, U+2060
   and U+FEFF have no use inside a filename.
+- ``FORMAT_EXTENSION_CONFLICT`` — reports the file's name, not its bytes: the bytes
+  win and the archive reads in full. A tarball saved as ``b.gz`` is an ordinary mistake,
+  and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
 """
 
 
@@ -976,6 +978,13 @@ class ExtractionReport:
     # with a single top-level entry means part of the tree could not be read. Private,
     # for the same prediction: the CLI walks them as its hoist walks a real tree.
     _dry_run_links: tuple[tuple[str, str], ...] | None = field(
+        default=None, repr=False, compare=False
+    )
+    # Every entry of the same scratch tree, as (path under ``dest`` with ``/``
+    # separators, is a directory and not a symlink), recorded with ``_dry_run_links``
+    # and ``None`` when it is. Private, for the same prediction: the CLI checks the
+    # hoist's merge against them as its hoist checks a real tree.
+    _dry_run_entries: tuple[tuple[str, bool], ...] | None = field(
         default=None, repr=False, compare=False
     )
 

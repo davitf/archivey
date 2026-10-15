@@ -410,20 +410,23 @@ _NOT_ON_API_PAGE = {
 }
 
 
-def test_every_public_name_is_on_the_api_page() -> None:
-    """``docs/api.md`` carries a ``::: archivey.<Name>`` block for each name in ``__all__``.
+# The live reference, and its rewrite in the unpublished new_docs tree, which
+# replaces it later and must not fall behind meanwhile.
+@pytest.mark.parametrize("page", ["docs/api.md", "new_docs/api.md"])
+def test_every_public_name_is_on_the_api_page(page: str) -> None:
+    """Each API page carries a ``::: archivey.<Name>`` block for each name in ``__all__``.
 
     The documentation spec says the API reference documents the public symbols
     re-exported from ``archivey.__all__``. Nothing in a docs build notices a name that
     was exported and never documented, and 29 had drifted off the page before this test.
     """
-    api_page = Path(__file__).resolve().parent.parent / "docs" / "api.md"
+    api_page = Path(__file__).resolve().parent.parent / page
     documented = {
         line.removeprefix("::: archivey.").strip()
         for line in api_page.read_text(encoding="utf-8").splitlines()
         if line.startswith("::: archivey.")
     }
     missing = sorted(set(archivey.__all__) - documented - _NOT_ON_API_PAGE)
-    assert not missing, f"public names with no ::: block in docs/api.md: {missing}"
+    assert not missing, f"public names with no ::: block in {page}: {missing}"
     stale = sorted(_NOT_ON_API_PAGE & documented)
     assert not stale, f"_NOT_ON_API_PAGE entries now documented, remove them: {stale}"

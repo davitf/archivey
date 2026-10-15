@@ -8,6 +8,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.archive_stream import RewindWarning
@@ -78,17 +79,19 @@ class Lz4Codec(StreamCodec):
                 # The frame's version bits are not 01, the only version the LZ4 frame
                 # format defines; the lz4 CLI's decoder refuses it the same way.
                 return UnsupportedFeatureError(
-                    f"Unsupported lz4 frame version: {exc!r}; a damaged header reads "
-                    "the same way"
+                    f"Unsupported lz4 frame version: {exception_detail(exc)}; a "
+                    "damaged header reads the same way"
                 )
             if "contentChecksum" in str(exc):
                 # The frame's content checksum, over everything the frame decoded; a
                 # block checksum covers one block and stays a plain corruption.
-                return _StreamChecksumError(f"Error reading lz4 stream: {exc!r}")
-            return CorruptionError(f"Error reading lz4 stream: {exc!r}")
+                return _StreamChecksumError(
+                    f"Error reading lz4 stream: {exception_detail(exc)}"
+                )
+            return CorruptionError(f"Error reading lz4 stream: {exception_detail(exc)}")
         if deps.lz4_block is not None and isinstance(exc, deps.lz4_block.LZ4BlockError):
             # A block of a legacy stream; it has no checksum to fail.
-            return CorruptionError(f"Error reading lz4 stream: {exc!r}")
+            return CorruptionError(f"Error reading lz4 stream: {exception_detail(exc)}")
         return self._eof_truncation(exc, "lz4")
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:

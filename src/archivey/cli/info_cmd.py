@@ -15,7 +15,7 @@ from archivey.cli.format import (
     format_format_label,
 )
 from archivey.cli.password import resolve_password
-from archivey.config import PasswordInput
+from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.cost import CostReceipt
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import escape_control_chars
@@ -87,6 +87,7 @@ def run_info(
     password: str | None,
     track_io: bool,
     verbose: bool,
+    config: ArchiveyConfig | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -102,7 +103,9 @@ def run_info(
     # needs random access, and a random-access open of a pipe always fails.
     streaming = is_read_once(archive)
     try:
-        with open_archive(archive, password=pwd, streaming=streaming) as reader:
+        with open_archive(
+            archive, password=pwd, streaming=streaming, config=config
+        ) as reader:
             # The open already detected the format; print what it found rather than
             # detecting a second time. No format= is passed, so it is never None.
             detected = reader.format_info
@@ -135,7 +138,7 @@ def run_info(
         # are read once, so a second open gets different bytes or waits for a writer
         # that never comes.
         if not identity_printed and _can_reread(archive):
-            _print_identity(archive, detect_format(archive), out)
+            _print_identity(archive, detect_format(archive, config=config), out)
         refusal = read_once_refusal(archive, exc, streaming=streaming)
         if refusal is not None:
             _field("open", escape_control_chars(refusal), err)

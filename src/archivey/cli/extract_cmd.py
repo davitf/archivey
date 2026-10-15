@@ -32,7 +32,7 @@ from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, escape_path, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
-from archivey.config import PasswordInput
+from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.paths import numbered_name
 from archivey.reader import ForwardArchiveReader
@@ -192,8 +192,9 @@ class _Moves:
     wrapper's parent after the move. A name that is not a key moved with its nearest
     ancestor that is. ``discarded`` holds the keys whose entry ``SKIP`` unlinked
     rather than moved: their ``names`` value is the operator's entry that was kept,
-    not the member. ``left_in`` is the wrapper's name when the hoist stopped
-    part-way: a name under no key is still in the wrapper.
+    not the member. ``left_in`` names where the remainder is when the hoist stopped
+    part-way: the wrapper, or the aside directory when the wrapper's name could not
+    be taken back. A name under no key is still in that directory.
     """
 
     names: dict[str, str]
@@ -216,20 +217,40 @@ class _Moves:
     def of(
         cls,
         moved: dict[str, tuple[Path, bool]],
-        wrapper: Path,
+        left_in: Path,
         *,
         stopped: bool = False,
     ) -> _Moves:
-        """What the hoist recorded in ``moved``, named from ``wrapper``'s
-        parent; ``stopped`` when the merge did not finish."""
+        """What the hoist recorded in ``moved``, named from ``left_in``'s parent.
+
+        ``left_in`` is the directory that holds whatever did not move: the wrapper,
+        or the aside directory when the wrapper's name could not be taken back. Both
+        share one parent. ``stopped`` when the merge did not finish.
+        """
         return cls(
             {
-                name: path.relative_to(wrapper.parent).as_posix()
+                name: path.relative_to(left_in.parent).as_posix()
                 for name, (path, _) in moved.items()
             },
             frozenset(name for name, (_, gone) in moved.items() if gone),
-            wrapper.name if stopped else None,
+            left_in.name if stopped else None,
         )
+
+
+def _step_back(side: Path, wrapper: Path) -> Path:
+    """Rename ``side`` back to ``wrapper``; return where the remainder now is.
+
+    Only while ``wrapper`` is free: under ``--overwrite rename`` the merge can give a
+    member that name, and a rename onto an empty directory would replace it. When
+    the rename does not happen, the remainder stays in ``side``, which is returned.
+    """
+    if os.path.lexists(wrapper):
+        return side
+    try:
+        side.rename(wrapper)
+    except OSError:
+        return side
+    return wrapper
 
 
 class _HoistConflict(Exception):
@@ -248,6 +269,32 @@ def _free_name(dest: Path, *, is_dir: bool) -> Path:
         if not os.path.lexists(candidate):
             return candidate
         n += 1
+
+
+def _same_entry(a: Path, b: Path) -> bool:
+    """Whether ``a`` and ``b`` name the same entry on disk, which the spelling cannot
+    tell on a case-insensitive filesystem (``FILE`` and ``file``). False when either
+    cannot be stat'ed, as when nothing is at it."""
+    try:
+        return os.path.samestat(os.lstat(a), os.lstat(b))
+    except OSError:
+        return False
+
+
+def _off_dest(side: Path, wrapper: Path, dest: Path) -> Path:
+    """Rename the aside directory ``side`` to the next ``<wrapper> (N)`` when it is the
+    entry at ``dest``; return where it is.
+
+    The root's stored name can be the aside name (``foo.tar`` holding ``foo (1)/``),
+    and on a case-insensitive filesystem a different spelling (``FOO (1)/``) is the
+    same entry too, so the filesystem decides, not the string. The next name was free
+    while ``side`` held ``dest``, so it is never ``dest``.
+    """
+    if not _same_entry(side, dest):
+        return side
+    free = _free_name(wrapper, is_dir=True)
+    side.rename(free)
+    return free
 
 
 def _open_up(path: Path) -> int | None:
@@ -298,10 +345,15 @@ def _merge_move(
 ) -> Path | None:
     """Move ``src`` to ``dest`` with the same per-file semantics as extracting
     directly into ``dest``'s parent: directories merge, file/symlink collisions
-    resolve by the overwrite policy. Pre-existing files are never deleted — the
-    only removal is our own just-extracted copy under SKIP, which a direct
-    extraction would never have written. Symlinks are moved as links and never
-    descended into (on either side).
+    resolve by the overwrite policy. Per policy: RENAME moves ours to a free
+    name; REPLACE replaces the operator's file with ours, the one deletion of the
+    operator's data, and only a file over a file; SKIP discards our own
+    just-extracted copy when it is not a directory; ERROR resolves nothing. No
+    directory of the operator's is ever removed. Symlinks are moved as links and
+    never descended into (on either side). A collision the policy cannot resolve
+    (:func:`_policy_resolves`) raises :class:`_HoistConflict`; the caller checks the
+    whole merge with :func:`_first_clash` before calling this, so that happens only
+    when the cwd changed in between.
 
     ``name`` is ``src``'s name in the wrapper. Each entry moved, merged or discarded
     is recorded in ``moved`` under its name in the wrapper, with the path it took (the
@@ -349,6 +401,14 @@ def _merge_move(
             _put_back(src, mode)
             raise
         return dest
+    if not _policy_resolves(overwrite, src_is_dir=src_is_dir, dest_is_dir=dest_is_dir):
+        # A collision the policy cannot resolve without deleting the operator's data:
+        # any under ``error``, a directory on either side under ``replace``, our
+        # directory under ``skip`` (:func:`_policy_resolves`). The hoist checked the
+        # whole merge first (:func:`_first_clash`), so this is reached only when the
+        # cwd changed after that check. Stop; the caller keeps the remainder under
+        # the wrapper and exits nonzero.
+        raise _HoistConflict(dest)
     if overwrite is OverwritePolicy.RENAME:
         free = _free_name(dest, is_dir=src_is_dir)
         _rename(src, free)
@@ -359,21 +419,99 @@ def _merge_move(
             file=err,
         )
         return free
-    if overwrite is OverwritePolicy.REPLACE and not src_is_dir and not dest_is_dir:
+    if overwrite is OverwritePolicy.REPLACE:
         os.replace(src, dest)  # replaces exactly the file being extracted
         moved[name] = (dest, False)
         return dest
     if overwrite is OverwritePolicy.SKIP and not src_is_dir:
+        # The operator's entry is kept; ours is discarded.
         src.unlink()
         moved[name] = (dest, True)
         result.skipped += 1
         print(f"skipped: {escape_path(dest)}", file=err)
         return None
-    # ERROR policy — or a dir-vs-file shape that REPLACE/SKIP cannot express
-    # without deleting pre-existing data. Stop; the caller keeps the remainder
-    # under the wrapper and exits nonzero (direct extraction would have failed
-    # on this same collision).
+    # A policy no branch above handles: stop rather than discard anything.
     raise _HoistConflict(dest)
+
+
+def _policy_resolves(
+    overwrite: OverwritePolicy, *, src_is_dir: bool, dest_is_dir: bool
+) -> bool:
+    """Whether :func:`_merge_move` resolves a collision of this shape without deleting
+    the operator's data: ``rename`` always does, ``replace`` a file over a file, and
+    ``skip`` any file of ours (it discards ours). Two directories merge, so they are
+    no collision and are not asked about here."""
+    if overwrite is OverwritePolicy.RENAME:
+        return True
+    if overwrite is OverwritePolicy.REPLACE:
+        return not src_is_dir and not dest_is_dir
+    if overwrite is OverwritePolicy.SKIP:
+        return not src_is_dir
+    return False
+
+
+def _first_clash(
+    relative: str,
+    src_is_dir: bool,
+    dest: Path,
+    overwrite: OverwritePolicy,
+    listing: Callable[[str], list[tuple[str, bool]]],
+) -> Path | None:
+    """The first path where merging the entry at ``relative`` into ``dest`` would meet
+    a collision ``overwrite`` cannot resolve (:func:`_policy_resolves`), or ``None``.
+
+    The same walk as :func:`_merge_move`, without moving anything: directories merge,
+    so only their contents can clash. ``listing`` gives the entries of the directory
+    at a ``/``-separated path in the wrapper, as (name, is a directory and not a
+    symlink), sorted as the merge visits them."""
+    if not os.path.lexists(dest):
+        return None
+    dest_is_dir = dest.is_dir() and not dest.is_symlink()
+    if src_is_dir and dest_is_dir:
+        for name, is_dir in listing(relative):
+            clash = _first_clash(
+                f"{relative}/{name}", is_dir, dest / name, overwrite, listing
+            )
+            if clash is not None:
+                return clash
+        return None
+    if _policy_resolves(overwrite, src_is_dir=src_is_dir, dest_is_dir=dest_is_dir):
+        return None
+    return dest
+
+
+def _disk_listing(wrapper: Path) -> Callable[[str], list[tuple[str, bool]]]:
+    """:func:`_first_clash`'s ``listing`` for the tree extracted into ``wrapper``.
+
+    A directory extracted without owner read or search permission is opened up to be
+    listed and then given its mode back, as the merge opens it up to empty it."""
+
+    def listing(relative: str) -> list[tuple[str, bool]]:
+        path = wrapper / relative
+        mode = _open_up(path)
+        try:
+            return [
+                (entry.name, entry.is_dir() and not entry.is_symlink())
+                for entry in sorted(path.iterdir())
+            ]
+        finally:
+            _put_back(path, mode)
+
+    return listing
+
+
+def _recorded_listing(
+    entries: tuple[tuple[str, bool], ...],
+) -> Callable[[str], list[tuple[str, bool]]]:
+    """:func:`_first_clash`'s ``listing`` for a dry run, from the entries its scratch
+    tree held (``ExtractionReport._dry_run_entries``)."""
+    children: dict[str, list[tuple[str, bool]]] = {}
+    for path, is_dir in entries:
+        parent, _, name = path.rpartition("/")
+        children.setdefault(parent, []).append((name, is_dir))
+    for listed in children.values():
+        listed.sort()
+    return lambda relative: children.get(relative, [])
 
 
 _MAX_LINK_HOPS = 40  # the Linux ``MAXSYMLINKS``
@@ -531,9 +669,18 @@ def maybe_hoist_single_root(
     after an always-wrap extract, without a pre-extract metadata pass. The final
     layout matches extracting directly into the wrapper's parent: directories
     merge into existing ones and per-file collisions follow the overwrite policy
-    (:func:`_merge_move`). When the sole root shares the wrapper's own name
-    (``src.tar.gz`` containing ``src/``), the child is flattened in place — the
-    wrapper *becomes* the root, so no collision logic applies to it.
+    (:func:`_merge_move`). The hoist is a convenience, not a promise: when the merge
+    would meet a collision the policy cannot resolve without deleting the operator's
+    data, nothing is moved, a ``kept in`` line names the first such path, and the run
+    still succeeds with the content in the wrapper. Such a collision is any collision
+    under ``error``, one with a directory on either side under ``replace``, and one
+    where our entry is a directory and the operator's is not under ``skip``
+    (:func:`_policy_resolves`). A destination that is the wrapper itself (``FILE`` in
+    ``file/`` on a case-insensitive filesystem) is not a collision, because the
+    wrapper moves aside before the merge. When the sole root shares the wrapper's own
+    name, spelled the same (``src.tar.gz`` containing ``src/``), the child is
+    flattened in place — the wrapper *becomes* the root, so no collision logic
+    applies to it. A root whose name differs only in case is merged like any other.
     """
     if wrapper == Path(".") or wrapper.is_symlink() or not wrapper.is_dir():
         return _HoistResult(wrapper)
@@ -548,15 +695,39 @@ def maybe_hoist_single_root(
         child.is_symlink(),
         lambda: child.is_dir() and not _disk_links_stay_inside(child),
     )
+    dest = wrapper.parent / child.name
+    # The sole root shares the wrapper's name, spelled the same, so the wrapper is
+    # removed and the root takes its place under that name; otherwise the root is
+    # merged into the cwd. Strings, not paths: Windows paths compare equal across
+    # case, and a root spelled ``PLAIN`` in ``plain/`` must land at ``./PLAIN``.
+    in_place = dest.name == wrapper.name
+    # On a case-insensitive filesystem a root spelled ``FILE`` in ``file/`` has the
+    # wrapper itself at ``dest``. That is not the operator's data: the wrapper moves
+    # aside before the merge, so the check skips it, as the dry run does.
+    if reason is None and not in_place and not _same_entry(dest, wrapper):
+        try:
+            clash = _first_clash(
+                child.name,
+                child.is_dir() and not child.is_symlink(),
+                dest,
+                overwrite,
+                _disk_listing(wrapper),
+            )
+        except OSError as exc:
+            # The ``archivey: `` prefix: see main._parse_and_dispatch.
+            print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
+            print(f"files left in {escape_path(wrapper)}/", file=err)
+            return _HoistResult(wrapper, ok=False)
+        if clash is not None:
+            reason = f"{escape_path(clash)} already exists"
     if reason is not None:
         print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
-    dest = wrapper.parent / child.name
     result = _HoistResult(dest)
     moved: dict[str, tuple[Path, bool]] = {}
-    # The sole root shares the wrapper's name, so the wrapper is removed and the root
-    # takes its place under that same name; otherwise the root is merged into the cwd.
-    in_place = dest == wrapper
+    # Where the remainder is when the hoist stops: the wrapper, unless restoring it
+    # failed and the remainder stayed in the aside directory.
+    left_in = wrapper
     try:
         if in_place:
             if child.is_dir() and not child.is_symlink():
@@ -584,27 +755,44 @@ def maybe_hoist_single_root(
                 # aside so the entry can take its place.
                 side = _free_name(wrapper, is_dir=True)
                 wrapper.rename(side)
-                (side / child.name).rename(dest)
-                side.rmdir()
+                try:
+                    (side / child.name).rename(dest)
+                    try:
+                        side.rmdir()
+                    except BaseException:
+                        # The entry holds the wrapper's name now; it goes back inside
+                        # ``side`` first, so ``side`` can take that name again below.
+                        try:
+                            dest.rename(side / child.name)
+                        except OSError:
+                            # It stays at its final name: report it there.
+                            moved[child.name] = (dest, False)
+                        raise
+                except BaseException:
+                    # Leave the entry where the messages say it is: in the wrapper.
+                    left_in = _step_back(side, wrapper)
+                    raise
         else:
             # The wrapper took the first free name for the archive's stem, which can
             # be the free name a rename of the root would take (``foo`` exists, so
             # ``foo.tar`` extracts into ``foo (1)`` and its root ``foo`` must be
             # renamed). Step it aside so the merge sees the cwd a direct extraction
             # sees. The aside name is ``<wrapper> (N)``, which no rename of the root
-            # spells, as the root's name differs from the wrapper's here.
+            # spells, as the root's name differs from the wrapper's here. The root's
+            # stored name can still be that name, and the merge would then move the
+            # root into the wrapper itself, so :func:`_off_dest` moves it on.
             side = _free_name(wrapper, is_dir=True)
             wrapper.rename(side)
             try:
+                side = _off_dest(side, wrapper, dest)
                 landed = _merge_move(
                     side / child.name, dest, overwrite, result, err, child.name, moved
                 )
+                side.rmdir()
             except BaseException:
                 # Leave the remainder where the messages say it is.
-                with contextlib.suppress(OSError):
-                    side.rename(wrapper)
+                left_in = _step_back(side, wrapper)
                 raise
-            side.rmdir()
             result.moves = _Moves.of(moved, wrapper)
             if landed is None:
                 # SKIP kept the operator's entry and discarded ours; ``skipped:``
@@ -619,26 +807,26 @@ def maybe_hoist_single_root(
             file=err,
         )
         print(
-            f"hoist stopped; remaining files left in {escape_path(wrapper)}/",
+            f"hoist stopped; remaining files left in {escape_path(left_in)}/",
             file=err,
         )
         return _HoistResult(
-            wrapper,
+            left_in,
             ok=False,
             renamed=result.renamed,
             skipped=result.skipped,
-            moves=_Moves.of(moved, wrapper, stopped=True),
+            moves=_Moves.of(moved, left_in, stopped=True),
         )
     except OSError as exc:
         # The ``archivey: `` prefix: see main._parse_and_dispatch.
         print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
-        print(f"files left in {escape_path(wrapper)}/", file=err)
+        print(f"files left in {escape_path(left_in)}/", file=err)
         return _HoistResult(
-            wrapper,
+            left_in,
             ok=False,
             renamed=result.renamed,
             skipped=result.skipped,
-            moves=_Moves.of(moved, wrapper, stopped=True),
+            moves=_Moves.of(moved, left_in, stopped=True),
         )
     if result.moves is None:
         result.moves = _Moves({child.name: child.name})  # in place: name unchanged
@@ -658,6 +846,7 @@ def predict_hoist(
     wrapper: Path,
     report: ExtractionReport,
     *,
+    overwrite: OverwritePolicy,
     err: TextIO,
 ) -> _HoistResult:
     """What :func:`maybe_hoist_single_root` would do after a real run, for a dry run.
@@ -666,9 +855,11 @@ def predict_hoist(
     the next best thing: the run created the same directories, links and (empty) files
     there, and the report carries the entries it left at the top. A single entry is
     lifted to the wrapper's parent under its own name, as the hoist lifts it. Where that
-    name exists already, the hoist would merge into it, and the collisions that merge
-    could meet are not checked. The entry stays in the wrapper for the reasons the hoist
-    has, judged from the symlinks the scratch tree held, and a line says why.
+    name exists already, the hoist would merge into it: the collisions the overwrite
+    policy resolves are not listed, but one it cannot resolve keeps the entry in the
+    wrapper, as it does in the hoist (:func:`_first_clash`, over the entries the scratch
+    tree held). The entry also stays in the wrapper for the hoist's other reasons, judged
+    from the symlinks the scratch tree held, and a line says why.
     """
     tops = _dry_run_top_level(report)
     if len(tops) != 1:
@@ -683,17 +874,35 @@ def predict_hoist(
             links is None or (is_dir and not _recorded_links_stay_inside(name, links))
         ),
     )
+    dest = wrapper.parent / name
+    in_place = name == wrapper.name  # by spelling, as in the hoist
+    entries = report._dry_run_entries
+    # ``lexists`` first: with nothing at ``dest`` there is no merge, so the entries
+    # are not indexed.
+    if (
+        reason is None
+        and not in_place
+        and entries is not None
+        and os.path.lexists(dest)
+    ):
+        try:
+            clash = _first_clash(
+                name, is_dir, dest, overwrite, _recorded_listing(entries)
+            )
+        except OSError:
+            clash = None  # the real run's check meets the same error and says so
+        if clash is not None:
+            reason = f"{escape_path(clash)} already exists"
     if reason is not None:
         print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
-    dest = wrapper.parent / name
     label = f"{escape_path(dest)}{'/' if is_dir else ''}"
-    if dest == wrapper:
+    if in_place:
         print(f"would remove wrapper; content at {label}", file=err)
     elif os.path.lexists(dest):
         print(
             f"would move to {label}, which exists already: "
-            "collisions with its contents are not checked",
+            "collisions with its contents follow --overwrite",
             file=err,
         )
     else:
@@ -758,6 +967,25 @@ def _follows_renamed_dir(
     return False
 
 
+def _implied_dir_rename(requested: Path, path: Path) -> tuple[Path, Path] | None:
+    """The directory rename that ``requested`` -> ``path`` only followed, or ``None``:
+    the one ancestor whose name differs, with the same tail below it.
+
+    A parent the archive implies but does not store has no result of its own, so
+    when the library renames it (``foo/x`` -> ``foo (1)/x``) only its members show
+    the rename."""
+    if len(requested.parts) != len(path.parts):
+        return None
+    for i, (asked, written) in enumerate(zip(requested.parts, path.parts)):
+        if asked != written:
+            if i == len(requested.parts) - 1:
+                return None  # the member's own name: its own rename
+            if requested.parts[i + 1 :] != path.parts[i + 1 :]:
+                return None
+            return Path(*requested.parts[: i + 1]), Path(*path.parts[: i + 1])
+    return None
+
+
 def _report_extraction(
     report: ExtractionReport,
     *,
@@ -812,6 +1040,22 @@ def _report_extraction(
         and r.path is not None
         and r.requested_path != r.path
     }
+    # A renamed directory the archive only implies has no result: take its rename
+    # from the members that followed it, and print it once, at the first of them.
+    implied_dirs: dict[Path, Path] = {}
+    for r in report.results:
+        if (
+            r.status is ExtractionStatus.EXTRACTED
+            and r.requested_path is not None
+            and r.path is not None
+            and not r.member.is_anti
+            and not _follows_renamed_dir(r.requested_path, r.path, renamed_dirs)
+        ):
+            implied = _implied_dir_rename(r.requested_path, r.path)
+            if implied is not None:
+                asked, written = implied
+                implied_dirs.setdefault(asked, written)
+    renamed_dirs.update(implied_dirs)
 
     def shown(path: Path | None) -> str:
         """``path`` as the line names it."""
@@ -836,6 +1080,21 @@ def _report_extraction(
                     result.requested_path, result.path, renamed_dirs
                 )
             )
+            if (
+                result.requested_path is not None
+                and implied_dirs
+                and not result.member.is_anti
+            ):
+                for ancestor in result.requested_path.parents:
+                    if ancestor in renamed_dirs:
+                        renamed_to = implied_dirs.pop(ancestor, None)
+                        if renamed_to is not None:
+                            renamed += 1
+                            print(
+                                f"renamed: {shown(ancestor)} -> {shown(renamed_to)}",
+                                file=err,
+                            )
+                        break
             landed = shown(result.path)
             if was_renamed:
                 renamed += 1
@@ -1066,6 +1325,7 @@ def run_extract(
     overwrite: str,
     password: str | None,
     track_io: bool,
+    config: ArchiveyConfig | None = None,
     hide_progress: bool,
     verbose: bool,
     stop_on_error: bool = False,
@@ -1090,7 +1350,9 @@ def run_extract(
     abort_on_enum = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
     archive_path = Path(archive)
 
-    with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
+    with open_for_cli(
+        archive_path, password=pwd, track_io=track_io, config=config, err=err
+    ) as reader:
         # A complete free index settles the patterns before anything is written.
         # Without one, or with one that ends in damage, the extraction's own pass
         # offers each member to them, and they are judged after it: a separate pass
@@ -1190,7 +1452,7 @@ def run_extract(
             hoist = _HoistResult(target)
             if may_hoist and dry_run:
                 # The hoist moves what the extraction wrote; a dry run wrote nothing.
-                hoist = predict_hoist(target, report, err=err)
+                hoist = predict_hoist(target, report, overwrite=overwrite_enum, err=err)
             elif may_hoist:
                 hoist = maybe_hoist_single_root(
                     target, overwrite=overwrite_enum, err=err

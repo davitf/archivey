@@ -4,7 +4,7 @@
 
 Archivey parses RAR metadata natively (RAR 1.5 / 2.x through RAR5) with no
 `rarfile` dependency. Listing uses the native parser only (except a compressed
-RAR 1.5/2.x comment, which the data program decodes); reading compressed or
+RAR 1.5-4 comment, which the data program decodes); reading compressed or
 encrypted member data delegates to the system RARLAB `unrar` binary, or to `unar`
 when selected. RAR is
 read-only, and `rarfile` is only a test oracle.
@@ -133,7 +133,7 @@ name.
 
 A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`. A RAR 2.9-4 `CMT`
 SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Every other
-RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or
+RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored or
 compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
 and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
 `encoding=` when one was passed, else as windows-1252. A byte the chosen code page
@@ -198,15 +198,16 @@ RAR has no header-size analogue for member count (the walk is sequential), so
 `UNLIMITED` can walk until memory is exhausted. The header walk SHALL also weigh
 each member it keeps against `listing_limits.max_metadata_bytes` as it appends
 it: the stored name (as `name` and as `raw_name`), a RAR5 redirection target, and
-the member's comment (a stored one by its length; a compressed RAR 1.5/2.x one by
-its declared unpacked size), by the weights of `archive-reading`. A RAR 1.5-4 `CMT`
+the member's comment (a stored one by its length; a compressed RAR 1.5-4 one by
+the larger of its declared unpacked size and its packed bytes, which the listing
+holds until the decode), by the weights of `archive-reading`. A RAR 1.5-4 `CMT`
 service header attaches its comment to the member before it, after that member was
 weighed, so the walk SHALL weigh that comment as it attaches. The running total
 is kept per member list, the way `max_members` is: per volume, and again for the
 merged list of a volume set, where a split member's later parts merge into its
 first and are not weighed again. Crossing the cap SHALL raise `ResourceLimitError`
-naming `max_metadata_bytes` at parse (`open_archive`). RAR 1.5/2.x compressed
-old-style comments expand after the parse: before decoding any, the reader SHALL
+naming `max_metadata_bytes` at parse (`open_archive`). Compressed RAR 1.5-4
+comments expand after the parse: before decoding any, the reader SHALL
 weigh every member of the final list again, add the archive comment, and raise
 `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` when the sum exceeds
 it. It recomputes the total rather than reusing the walk's, which is kept per list. Spine
@@ -219,10 +220,11 @@ it. It recomputes the total rather than reusing the walk's, which is kept per li
 | Hostile or honest archive over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | `listing_limits.max_members is None` (`UNLIMITED`) | No member-count bound at parse; a large honest archive opens |
 | Default limits, typical archive | Open and listing succeed |
-| Compressed RAR 1.5/2.x comments whose declared unpacked sizes sum past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, before any comment is decoded, including `stream_members()` / `streaming=True` |
+| Compressed RAR 1.5-4 comments (old-style COMMENT subblocks or `CMT` service headers) whose weights (each the larger of its declared unpacked size and its packed bytes) sum past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, before any comment is decoded, including `stream_members()` / `streaming=True` |
 | RAR4 or RAR5 archive under `max_members` whose stored names weigh more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | Volume set whose members are split across volumes, `max_metadata_bytes` at exactly what registration weighs | Opens and lists: a split member's name is weighed once |
 | RAR 1.5-4 member whose stored `CMT` comment, attached after the member was weighed, takes the total past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` from the header walk at parse (`open_archive`); at exactly the total, opens and lists the comment |
+| Solid compressed `CMT` comments that each declare 1 byte over up to 256 KiB of packed data | Weighed by their packed bytes: `ResourceLimitError` naming `max_metadata_bytes` at parse once their sum passes it |
 
 ### Requirement: Expose RAR file-version history members
 
@@ -316,7 +318,7 @@ data with unar`.
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
 | Listing only, both missing | No data dependency is checked |
-| Listing only, both missing, archive has a compressed RAR 1.5/2.x comment | The comment is `None`; nothing else depends on a data program |
+| Listing only, both missing, archive has a compressed RAR 1.5-4 comment | The comment is `None`; nothing else depends on a data program |
 
 ### Requirement: Constrain unrar argv by call site
 
@@ -1117,10 +1119,13 @@ source. Every
 member read through `unar` SHALL be checked against its declared
 size and stored digest, because `unar` exits 0 on some failures.
 
-A compressed RAR 1.5/2.x old-style comment SHALL be decoded by the selected
+A compressed RAR 1.5-4 comment (a RAR 1.5/2.x old-style COMMENT subblock, or a
+RAR 2.9-4 `CMT` SERVICE header that is not stored) SHALL be decoded by the selected
 program, so with `unar` selected `unar` decodes it. The decoded text SHALL be used
-only when its stored CRC16 matches; otherwise, or when the selected program is
-missing, the comment SHALL be `None`, as it is with `unrar`.
+only when its stored CRC matches (the CRC16 of a COMMENT subblock, the full CRC32 of a
+`CMT` header); otherwise, or when the selected program is missing, the comment SHALL be
+`None`, as it is with `unrar`. A compressed `CMT` that declares more than 256 KiB, the
+most `rar` writes, SHALL be `None` and SHALL NOT be weighed or decoded.
 
 #### Scenario: unar selection matrix
 
@@ -1146,6 +1151,7 @@ missing, the comment SHALL be `None`, as it is with `unrar`.
 | `unar` selected, single archive after a 4 KiB prefix | Read from a copy that starts at the RAR; `ar.cost.notes` warns of the copy at open |
 | `unar` selected, solid pass with a refused member and more than 4000 readable members | Members past the 4000th refused in the pass; each still opens on its own |
 | `unar` selected, compressed RAR 1.5 archive comment | Decoded by `unar` and checked against its CRC16 |
+| `unrar` present, RAR 2.9-4 archive comment in a compressed `CMT` SERVICE header | Decoded, checked against its CRC32, and UTF-16LE when `SUBHEAD_FLAGS_CMT_UNICODE` is set |
 
 ### Requirement: Count the RAR dictionary against the decoder memory cap
 
@@ -1424,7 +1430,7 @@ as under every setting ("A set with volumes missing SHALL list what it has, then
 raise"): no program can read data that is not there. Every other member read SHALL raise
 `UnsupportedFeatureError` before any process starts or any source is copied, naming why
 the member cannot be read (compressed or encrypted) and the `unrar` setting that reads
-it. A compressed RAR 1.5/2.x old-style comment SHALL be `None`. When
+it. A compressed RAR 1.5-4 comment SHALL be `None`. When
 the archive has a file member that this setting refuses, `ar.cost.notes` SHALL say so at
 open.
 
@@ -1440,7 +1446,7 @@ open.
 | Stored member with its own solid flag | Read directly; no process starts |
 | Solid archive, `stream_members()` | Each member's read is refused on its own; no solid pass starts |
 | Header-encrypted archive, right password | Lists; no process starts |
-| Compressed RAR 1.5 archive comment | `None` |
+| Compressed RAR 1.5 archive comment, or a compressed RAR 2.9-4 `CMT` | `None` |
 
 ### Requirement: Password lists for data with no password check
 

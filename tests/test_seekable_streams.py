@@ -42,6 +42,7 @@ from tests.corruption_util import raises_corruption_not_truncation
 from tests.memory_util import traced_peak
 from tests.streams_util import (
     CountingBytesIO,
+    encode_xz_mbi,
     make_lzip_member,
     make_multi_member_lzip,
     make_multi_stream_xz,
@@ -126,7 +127,6 @@ def test_xz_zero_uncompressed_size_blocks_do_not_crash_index() -> None:
     from archivey.internal.streams.codecs.xz_decoder import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
-        _encode_mbi,
         _round_up_4,
     )
 
@@ -136,9 +136,9 @@ def test_xz_zero_uncompressed_size_blocks_do_not_crash_index() -> None:
         _XZ_STREAM_MAGIC + flags + struct.pack("<I", zlib.crc32(flags) & 0xFFFFFFFF)
     )
     records = [(10, 100), (10, 0), (10, 0)]
-    body = b"\x00" + _encode_mbi(len(records))
+    body = b"\x00" + encode_xz_mbi(len(records))
     for unpadded, uncomp in records:
-        body += _encode_mbi(unpadded) + _encode_mbi(uncomp)
+        body += encode_xz_mbi(unpadded) + encode_xz_mbi(uncomp)
     body += b"\x00" * (_round_up_4(len(body)) - len(body))
     index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
     backward_raw = (len(index) // 4) - 1
@@ -403,7 +403,6 @@ def test_xz_index_unpadded_overflow_raises() -> None:
     from archivey.internal.streams.codecs.xz_decoder import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
-        _encode_mbi,
         _round_up_4,
     )
 
@@ -414,9 +413,9 @@ def test_xz_index_unpadded_overflow_raises() -> None:
     )
     # Huge unpadded_size → stream_header_start computes negative.
     records = [(1 << 30, 100)]
-    body = b"\x00" + _encode_mbi(len(records))
+    body = b"\x00" + encode_xz_mbi(len(records))
     for unpadded, uncomp in records:
-        body += _encode_mbi(unpadded) + _encode_mbi(uncomp)
+        body += encode_xz_mbi(unpadded) + encode_xz_mbi(uncomp)
     body += b"\x00" * (_round_up_4(len(body)) - len(body))
     index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
     backward_raw = (len(index) // 4) - 1
@@ -667,15 +666,15 @@ def test_xz_short_source_that_is_not_xz_is_corrupt(data: bytes) -> None:
 
 def test_xz_index_with_room_for_more_records_is_rejected() -> None:
     """Records plus padding must fill the index the footer declared, exactly."""
-    from archivey.internal.streams.codecs.xz_decoder import _parse_xz_index
+    from archivey.internal.streams.codecs.xz_decoder import _iter_xz_index
 
     # Indicator, zero records, then 4 bytes of zeros past the padding.
     with raises_corruption_not_truncation(match="length mismatch"):
-        _parse_xz_index(b"\x00\x00\x00\x00" + b"\x00" * 4)
+        list(_iter_xz_index(b"\x00\x00\x00\x00" + b"\x00" * 4))
     # Index cut short of its padding.
     with raises_corruption_not_truncation(match="length mismatch"):
-        _parse_xz_index(b"\x00\x00")
-    assert _parse_xz_index(b"\x00\x00\x00\x00") == []
+        list(_iter_xz_index(b"\x00\x00"))
+    assert list(_iter_xz_index(b"\x00\x00\x00\x00")) == []
 
 
 def test_xz_index_rejects_a_non_minimal_multibyte_integer() -> None:
@@ -777,14 +776,12 @@ def test_xz_cold_seek_trusts_a_self_consistent_block_index() -> None:
     footer = compressed[-12:]
     _check, index_size = xz_module._parse_xz_footer(footer)
     index_start = len(compressed) - 12 - index_size
-    records = xz_module._parse_xz_index(compressed[index_start : -12 - 4])
+    records = list(xz_module._iter_xz_index(compressed[index_start : -12 - 4]))
     assert len(records) == 4
     (u0, d0), (u1, _d1) = records[0], records[1]
     merged = [(xz_module._round_up_4(u0) + u1, d0), *records[2:]]
-    body = b"\x00" + xz_module._encode_mbi(len(merged))
-    body += b"".join(
-        xz_module._encode_mbi(u) + xz_module._encode_mbi(d) for u, d in merged
-    )
+    body = b"\x00" + encode_xz_mbi(len(merged))
+    body += b"".join(encode_xz_mbi(u) + encode_xz_mbi(d) for u, d in merged)
     body += b"\x00" * (xz_module._round_up_4(len(body)) - len(body))
     index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
     footer_body = struct.pack("<I", len(index) // 4 - 1) + footer[8:10]
@@ -1348,15 +1345,14 @@ def _xz_stream_from_records(records: list[tuple[int, int]]) -> bytes:
     from archivey.internal.streams.codecs.xz_decoder import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
-        _encode_mbi,
         _round_up_4,
     )
 
     flags = bytes([0x00, 0x00])
     header = _XZ_STREAM_MAGIC + flags + struct.pack("<I", zlib.crc32(flags))
     blocks = b"".join(b"\x00" * _round_up_4(unpadded) for unpadded, _ in records)
-    body = b"\x00" + _encode_mbi(len(records))
-    body += b"".join(_encode_mbi(u) + _encode_mbi(n) for u, n in records)
+    body = b"\x00" + encode_xz_mbi(len(records))
+    body += b"".join(encode_xz_mbi(u) + encode_xz_mbi(n) for u, n in records)
     body += b"\x00" * (-len(body) % 4)
     index = body + struct.pack("<I", zlib.crc32(body))
     fbody = struct.pack("<I", len(index) // 4 - 1) + flags
@@ -1365,10 +1361,10 @@ def _xz_stream_from_records(records: list[tuple[int, int]]) -> bytes:
 
 
 def test_xz_index_with_a_huge_declared_count_fails_without_reserving() -> None:
-    from archivey.internal.streams.codecs.xz_decoder import _encode_mbi, _iter_xz_index
+    from archivey.internal.streams.codecs.xz_decoder import _iter_xz_index
 
     with raises_corruption_not_truncation():
-        list(_iter_xz_index(b"\x00" + _encode_mbi(1 << 40)))
+        list(_iter_xz_index(b"\x00" + encode_xz_mbi(1 << 40)))
 
 
 # --- codec streams report into the caller's collector ------------------------------------
@@ -1448,6 +1444,62 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
                 stream.size  # noqa: B018 - the size query is what raises
             assert stream.read() == data
             assert stream.size == len(data)
+
+
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+def test_a_bare_xz_scans_its_index_once_for_size_and_seeks(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    small_seek_cap: int,
+    source_kind: str,
+) -> None:
+    """Open scans the index for ``member.size``; the member stream reuses that scan.
+
+    Before, the member stream threw the open-time index away and scanned the whole
+    file again on its first seek, and the thinned index was reported twice (once to
+    a throwaway collector at open, once to the reader's). The cap is lowered so
+    a few thousand streams are enough to thin the index.
+    """
+    import logging
+
+    import archivey
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.streams.codecs import xz_decoder
+
+    parts = [bytes([65 + i % 26]) * (1 + i % 5) for i in range(2000)]
+    full = b"".join(parts)
+    compressed = make_multi_stream_xz(parts)
+    path = tmp_path / "many.xz"
+    path.write_bytes(compressed)
+    source: Any = path if source_kind == "path" else io.BytesIO(compressed)
+
+    scans = 0
+    real_scan = xz_decoder.build_index_backwards
+
+    def counting_scan(*args: Any, **kwargs: Any) -> Any:
+        nonlocal scans
+        scans += 1
+        return real_scan(*args, **kwargs)
+
+    # The whole-file scan; a forward read still reads each finished stream's own index.
+    monkeypatch.setattr(xz_decoder, "build_index_backwards", counting_scan)
+    caplog.set_level(logging.WARNING)
+    with archivey.open_archive(source, seekable_members=True) as reader:
+        member = reader.members()[0]
+        assert member.size == len(full)
+        assert scans == 1
+        for _ in range(2):  # a second open reuses the scan too
+            with reader.open(member) as stream:
+                for pos in (len(full) // 2, 7, len(full) - 3, len(full) // 3):
+                    assert stream.seek(pos) == pos
+                    assert stream.read(40) == full[pos : pos + 40]
+                assert stream.seek(0, io.SEEK_END) == len(full)
+        assert scans == 1
+        assert reader.diagnostics.counts[DiagnosticCode.SEEK_INDEX_DEGRADED] == 2
+    # One report per member stream that uses the index, and none at open.
+    logged = [r for r in caplog.records if "index has more than" in r.getMessage()]
+    assert len(logged) == 2
 
 
 def _strict_collector() -> Any:
@@ -1746,7 +1798,10 @@ def test_bzip2_accelerator_off_warns_on_rewind(
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
-    assert any("rapidgzip" in r.getMessage() for r in caplog.records)
+    (message,) = [r.getMessage() for r in caplog.records]
+    assert "rapidgzip" in message
+    # An accelerator-named report still says where decoding restarts.
+    assert "Decoding restarts from the start of the stream" in message
 
 
 # --- forward-only codecs without an accelerator: warn (generically) on a rewind ---------
@@ -1809,7 +1864,13 @@ def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
-    assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
+    assert (
+        sum(
+            "restarts from the start of the stream" in r.getMessage()
+            for r in caplog.records
+        )
+        == 1
+    )
 
 
 @requires("lz4")
@@ -1824,7 +1885,83 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
-    assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
+    assert (
+        sum(
+            "restarts from the start of the stream" in r.getMessage()
+            for r in caplog.records
+        )
+        == 1
+    )
+
+
+def _resume_point_rewind_messages(
+    codec: Codec,
+    compressed: bytes,
+    caplog: pytest.LogCaptureFixture,
+    past_middle: int = 100,
+) -> list[str]:
+    """Read ``REWIND_CONTENT`` to its end, then seek back to ``past_middle`` bytes past its midpoint.
+
+    The callers split the content into pieces at the midpoint, so the seek resumes
+    from a resume point that is not the start, and still discards more than the
+    threshold.
+    """
+    target = len(REWIND_CONTENT) // 2 + past_middle
+    with open_codec_stream(
+        codec, io.BytesIO(compressed), config=StreamConfig(seekable=True)
+    ) as stream:
+        assert stream.read() == REWIND_CONTENT
+        with caplog.at_level("WARNING", logger="archivey.streams"):
+            assert stream.seek(target) == target
+        assert stream.read(10) == REWIND_CONTENT[target : target + 10]
+    return [r.getMessage() for r in caplog.records]
+
+
+_RESUME_POINT_MESSAGE = (
+    "Decoding restarts from the nearest resume point, 100 bytes before the seek target."
+)
+
+
+def test_multi_member_lzip_rewind_message_names_the_resume_point(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rewind that resumes from a member start does not say the codec has no index."""
+    middle = len(REWIND_CONTENT) // 2
+    parts = [REWIND_CONTENT[:middle], REWIND_CONTENT[middle:]]
+    (message,) = _resume_point_rewind_messages(
+        Codec.LZIP, make_multi_member_lzip(parts), caplog
+    )
+    assert message.endswith(_RESUME_POINT_MESSAGE)
+    assert "start of the stream" not in message
+
+
+def test_rewind_to_a_resume_point_says_decoding_restarts_at_the_target(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rewind that lands exactly on a member start does not say "0 bytes before"."""
+    middle = len(REWIND_CONTENT) // 2
+    parts = [REWIND_CONTENT[:middle], REWIND_CONTENT[middle:]]
+    (message,) = _resume_point_rewind_messages(
+        Codec.LZIP, make_multi_member_lzip(parts), caplog, past_middle=0
+    )
+    assert message.endswith(
+        "Decoding restarts at the seek target, which is a resume point."
+    )
+    assert "0 bytes before" not in message
+
+
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+def test_multi_block_xz_rewind_message_names_the_resume_point(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rewind that resumes from a block start does not say the codec has no index."""
+    compressed = make_multiblock_xz(REWIND_CONTENT, len(REWIND_CONTENT) // 2)
+    assert len(_read_xz_index_backwards(io.BytesIO(compressed), len(compressed))) == 2
+    (message,) = _resume_point_rewind_messages(Codec.XZ, compressed, caplog)
+    assert message.endswith(_RESUME_POINT_MESSAGE)
 
 
 @requires_zstd()
@@ -1847,7 +1984,13 @@ def test_zstd_rewinds_and_warns_on_backward_seek(
         with caplog.at_level("WARNING", logger="archivey.streams"):
             assert stream.seek(0) == 0  # backward → re-decode from start
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-    assert sum("no random-access index" in r.getMessage() for r in caplog.records) == 1
+    assert (
+        sum(
+            "restarts from the start of the stream" in r.getMessage()
+            for r in caplog.records
+        )
+        == 1
+    )
 
 
 def test_gzip_accelerator_on_without_package_raises() -> None:

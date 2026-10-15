@@ -83,6 +83,10 @@ _COMMENT: tuple[_File, ...] = (
     _File("subdir/123.txt", b"1234567890"),
 )
 
+# Texts of the compressed RAR4 comment fixtures; the tests repeat them.
+_COMPRESSED_COMMENT_ASCII = "A compressed RAR4 archive comment.\n" * 20
+_COMPRESSED_COMMENT_UNICODE = "Caf\u00e9 \u2014 a compressed UTF-16 comment.\n" * 20
+
 _ENCRYPTION: tuple[_File, ...] = (
     _File("secret.txt", b"This is secret"),
     _File("also_secret.txt", b"This is also secret"),
@@ -678,7 +682,7 @@ def _build_missing_last_volume(rar5_bin: Path, out_dir: Path) -> None:
             raise RuntimeError(f"expected {stem} to span at least four volumes")
         volumes[-1].unlink()
         for volume in volumes[:-1]:
-            print(f"wrote {volume.relative_to(REPO_ROOT)}")
+            print(f"wrote {_shown(volume)}")
 
 
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
@@ -976,6 +980,24 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         "wildcard_names__rar4.rar",
         _WILDCARD_NAMES,
         extra=("-ma4", "-m3"),
+    )
+    # RAR 2.9-4 archive comments in a compressed ``CMT`` SERVICE header: ``rar``
+    # compresses a comment that shrinks, so the text repeats. Without ``-sc`` the
+    # ASCII comment is stored as 8-bit text. ``-scfc`` reads the comment file as
+    # UTF-8 and stores it as UTF-16LE with ``SUBHEAD_FLAGS_CMT_UNICODE`` set.
+    build(
+        rar4_bin,
+        "comment_compressed__rar4.rar",
+        _COMMENT,
+        extra=("-ma4", "-m3"),
+        comment=_COMPRESSED_COMMENT_ASCII,
+    )
+    build(
+        rar4_bin,
+        "comment_compressed_unicode__rar4.rar",
+        _COMMENT,
+        extra=("-ma4", "-m3", "-scfc"),
+        comment=_COMPRESSED_COMMENT_UNICODE,
     )
     _build_file_version(
         rar4_bin,

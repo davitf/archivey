@@ -11,6 +11,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     ArchiveyError,
+    exception_detail,
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs.base import (
@@ -345,7 +346,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     adler = zlib.adler32(out[: self._sum.frontier - produced], adler)
                     produced += len(out)
         except zlib.error as exc:
-            raise _StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
+            raise _StreamChecksumError(
+                f"Error reading zlib stream: {exception_detail(exc)}"
+            ) from exc
         if adler == self._sum.value and (
             stopped_short or produced > self._sum.frontier
         ):

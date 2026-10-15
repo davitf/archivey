@@ -382,9 +382,9 @@ yielded.
 ## RAR
 
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`). The one
-  exception is a compressed RAR 1.5 / 2.x comment, which the selected program
-  (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
-  `comment` is `None`.
+  exception is a compressed RAR 1.5-4 comment, which the selected program (`unrar` or
+  `unar`) decodes; without it, or when the decoded text fails its CRC, `comment` is
+  `None`.
 - An entry from a Unix host whose mode is a device, FIFO or socket and that stores no
   data lists as `MemberType.OTHER`, so extraction skips it; one that stores data is a
   `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way

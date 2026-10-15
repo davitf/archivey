@@ -47,7 +47,13 @@ from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_CHUNK_BYTES
 from archivey.internal.streams import codecs, crypto
 from archivey.types import CompressionAlgorithm, HashAlgorithm, MemberType
-from tests.conftest import ReadSizeSpy, requires, requires_binary, requires_zstd
+from tests.conftest import (
+    ReadSizeSpy,
+    requires,
+    requires_binary,
+    requires_zstd,
+    run_7z,
+)
 from tests.corruption_util import raises_corruption_not_truncation
 
 _FILES = {
@@ -559,21 +565,10 @@ def test_truncated_encrypted_folder_is_not_wrong_password(
     payload = tmp_path / "blob.bin"
     payload.write_bytes(bytes(range(256)) * 8)
     archive = tmp_path / "store-aes-trunc.7z"
-    result = subprocess.run(
-        [
-            "7z",
-            "a",
-            "-t7z",
-            "-psecret",
-            "-mhe=off",
-            "-mx0",
-            str(archive),
-            payload.name,
-            "-y",
-        ],
+    result = run_7z(
+        ["a", "-t7z", "-psecret", "-mhe=off", "-mx0", str(archive), payload.name, "-y"],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -652,21 +647,10 @@ def test_stored_encrypted_member_seeks_past_first_block(tmp_path: Path) -> None:
     for name, data in payloads.items():
         (tmp_path / name).write_bytes(data)
     archive = tmp_path / "store-aes.7z"
-    result = subprocess.run(
-        [
-            "7z",
-            "a",
-            "-t7z",
-            "-psecret",
-            "-mhe=off",
-            "-mx0",
-            str(archive),
-            *payloads,
-            "-y",
-        ],
+    result = run_7z(
+        ["a", "-t7z", "-psecret", "-mhe=off", "-mx0", str(archive), *payloads, "-y"],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -689,9 +673,8 @@ def test_stored_encrypted_member_seeks_past_first_block(tmp_path: Path) -> None:
 def _encrypted_codec_archive(tmp_path: Path, *, method: str, payload: bytes) -> Path:
     (tmp_path / "blob.bin").write_bytes(payload)
     archive = tmp_path / f"enc-{method.lower()}.7z"
-    result = subprocess.run(
+    result = run_7z(
         [
-            "7z",
             "a",
             "-t7z",
             f"-m0={method}",
@@ -703,7 +686,6 @@ def _encrypted_codec_archive(tmp_path: Path, *, method: str, payload: bytes) -> 
         ],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -852,10 +834,8 @@ def test_header_encrypted_cli_archive_password_list_order_does_not_matter(
     source.mkdir()
     (source / "a.txt").write_bytes(b"hello")
     archive = tmp_path / "cli-header-encrypted.7z"
-    subprocess.run(
-        ["7z", "a", "-psecret", "-mhe=on", str(archive), str(source / "a.txt")],
-        check=True,
-        capture_output=True,
+    run_7z(
+        ["a", "-psecret", "-mhe=on", str(archive), str(source / "a.txt")], check=True
     )
     with open_archive(archive, password=["wrong", "secret"]) as reader:
         assert reader.read("a.txt") == b"hello"
@@ -952,11 +932,10 @@ def test_7z_cli_lzma1_bcj_avoids_liblzma_truncation(tmp_path: Path) -> None:
     src = tmp_path / "payload.bin"
     src.write_bytes(payload_bytes)
     archive = tmp_path / "lzma1-bcj-cli.7z"
-    result = subprocess.run(
-        ["7z", "a", "-t7z", "-m0=BCJ", "-m1=LZMA", str(archive), src.name, "-y"],
+    result = run_7z(
+        ["a", "-t7z", "-m0=BCJ", "-m1=LZMA", str(archive), src.name, "-y"],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -1003,11 +982,10 @@ def test_member_compression_is_in_compress_order(
     src = tmp_path / "payload.bin"
     src.write_bytes(bytes(range(256)) * 64)
     archive = tmp_path / "chain.7z"
-    result = subprocess.run(
-        ["7z", "a", "-t7z", *switches, str(archive), src.name, "-y"],
+    result = run_7z(
+        ["a", "-t7z", *switches, str(archive), src.name, "-y"],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -1028,9 +1006,8 @@ def test_bcj2_member_compression_starts_with_bcj2(tmp_path: Path) -> None:
     src = tmp_path / "payload.bin"
     src.write_bytes(bytes(range(256)) * 64)
     archive = tmp_path / "bcj2.7z"
-    result = subprocess.run(
+    result = run_7z(
         [
-            "7z",
             "a",
             "-t7z",
             "-m0=BCJ2",
@@ -1043,7 +1020,6 @@ def test_bcj2_member_compression_starts_with_bcj2(tmp_path: Path) -> None:
         ],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -1143,11 +1119,10 @@ def test_7z_cli_deflate64_fixture_roundtrip(tmp_path: Path) -> None:
     payload = tmp_path / "payload.bin"
     payload.write_bytes(bytes(range(251)) * 200)
     archive = tmp_path / "deflate64.7z"
-    result = subprocess.run(
-        ["7z", "a", "-t7z", "-m0=Deflate64", str(archive), payload.name, "-y"],
+    result = run_7z(
+        ["a", "-t7z", "-m0=Deflate64", str(archive), payload.name, "-y"],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -1165,13 +1140,11 @@ def test_7z_cli_multi_password_archive_roundtrip(tmp_path: Path) -> None:
     second.write_bytes(b"second secret")
     archive = tmp_path / "multi-password.7z"
     commands = (
-        ["7z", "a", "-t7z", str(archive), first.name, "-pfirst", "-y"],
-        ["7z", "a", "-t7z", str(archive), second.name, "-psecond", "-y"],
+        ["a", "-t7z", str(archive), first.name, "-pfirst", "-y"],
+        ["a", "-t7z", str(archive), second.name, "-psecond", "-y"],
     )
     for command in commands:
-        result = subprocess.run(
-            command, cwd=tmp_path, check=False, capture_output=True, text=True
-        )
+        result = run_7z(command, cwd=tmp_path, check=False, text=True)
         if result.returncode != 0:
             pytest.skip(
                 f"7z CLI cannot build multi-password 7z fixture: {result.stderr}"
@@ -1196,12 +1169,10 @@ def test_7z_multi_password_rejects_wrong_candidate_via_crc(
     second.write_bytes(b"second secret")
     archive = tmp_path / "multi-password-crc.7z"
     for command in (
-        ["7z", "a", "-t7z", str(archive), first.name, "-pfirst", "-y"],
-        ["7z", "a", "-t7z", str(archive), second.name, "-psecond", "-y"],
+        ["a", "-t7z", str(archive), first.name, "-pfirst", "-y"],
+        ["a", "-t7z", str(archive), second.name, "-psecond", "-y"],
     ):
-        result = subprocess.run(
-            command, cwd=tmp_path, check=False, capture_output=True, text=True
-        )
+        result = run_7z(command, cwd=tmp_path, check=False, text=True)
         if result.returncode != 0:
             pytest.skip(
                 f"7z CLI cannot build multi-password 7z fixture: {result.stderr}"
@@ -1245,11 +1216,10 @@ def test_7z_multi_password_rejects_wrong_candidate_via_crc(
 def test_7z_cli_multi_volume_archive_roundtrip(tmp_path: Path) -> None:
     payload = tmp_path / "large.bin"
     payload.write_bytes(bytes(range(256)) * 1200)
-    result = subprocess.run(
-        ["7z", "a", "-t7z", "-v100k", str(tmp_path / "vol.7z"), payload.name, "-y"],
+    result = run_7z(
+        ["a", "-t7z", "-v100k", str(tmp_path / "vol.7z"), payload.name, "-y"],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -1279,9 +1249,8 @@ def test_password_confirm_does_not_request_the_whole_folder(
     payload = tmp_path / "payload.bin"
     payload.write_bytes(bytes(range(256)) * (folder_size // 256))
     archive = tmp_path / "store-aes.7z"
-    result = subprocess.run(
+    result = run_7z(
         [
-            "7z",
             "a",
             "-t7z",
             "-psecret",
@@ -1294,7 +1263,6 @@ def test_password_confirm_does_not_request_the_whole_folder(
         ],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
     )
     if result.returncode != 0:
@@ -1646,19 +1614,17 @@ def test_anti_item_fresh_extract_matches_7z_cli(tmp_path: Path) -> None:
     (work / "gone.txt").write_text("gone\n", encoding="utf-8")
     base = tmp_path / "base.7z"
     archive = tmp_path / "with_anti.7z"
-    create = subprocess.run(
-        ["7z", "a", "-t7z", str(base), "keep.txt", "gone.txt", "-y"],
+    create = run_7z(
+        ["a", "-t7z", str(base), "keep.txt", "gone.txt", "-y"],
         cwd=work,
         check=False,
-        capture_output=True,
         text=True,
     )
     if create.returncode != 0:
         pytest.skip(f"7z CLI cannot build base archive: {create.stderr}")
     (work / "gone.txt").unlink()
-    update = subprocess.run(
+    update = run_7z(
         [
-            "7z",
             "u",
             str(base),
             "-u-",
@@ -1669,7 +1635,6 @@ def test_anti_item_fresh_extract_matches_7z_cli(tmp_path: Path) -> None:
         ],
         cwd=work,
         check=False,
-        capture_output=True,
         text=True,
     )
     if update.returncode != 0 or not archive.is_file():
@@ -1691,11 +1656,7 @@ def test_anti_item_fresh_extract_matches_7z_cli(tmp_path: Path) -> None:
     cli_dest.mkdir()
     with open_archive(archive) as reader:
         reader.extract_all(archivey_dest)
-    subprocess.run(
-        ["7z", "x", str(archive), f"-o{cli_dest}", "-y"],
-        check=True,
-        capture_output=True,
-    )
+    run_7z(["x", str(archive), f"-o{cli_dest}", "-y"], check=True)
 
     assert sorted(
         p.relative_to(archivey_dest) for p in archivey_dest.rglob("*") if p.is_file()
@@ -2210,10 +2171,9 @@ def above_stream_cap_archives(
             (directory / f"f{i:05d}.txt").write_bytes(b"x")
         for shape, extra_args in _ABOVE_STREAM_CAP_SHAPES.items():
             archive = root / f"{shape}.7z"
-            result = subprocess.run(
-                ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
+            result = run_7z(
+                ["a", "-t7z", *extra_args, str(archive), src.name],
                 cwd=root,
-                capture_output=True,
                 check=False,
                 timeout=300,
             )
@@ -2327,9 +2287,8 @@ def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> Non
     for i in range(n_files):
         shutil.copy(sevenz, src / f"prog{i}.exe")
     archive = tmp_path / "bcj2.7z"
-    result = subprocess.run(
+    result = run_7z(
         [
-            "7z",
             "a",
             "-t7z",
             "-ms=off",
@@ -2341,7 +2300,6 @@ def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> Non
             ".",
         ],
         cwd=src,
-        capture_output=True,
         check=False,
     )
     if result.returncode != 0 or not archive.is_file():
@@ -2393,11 +2351,8 @@ def test_infer_nameless_member_name_matrix() -> None:
 def test_nameless_7z_members_use_archive_stem(tmp_path: Path) -> None:
     """7z ``-si`` archives omit NAME; list with the archive stem (no ``_1`` suffixes)."""
     single = tmp_path / "github_14.7z"
-    result = subprocess.run(
-        ["7z", "a", "-si", "-t7z", str(single)],
-        input=b"hello nameless\n",
-        capture_output=True,
-        check=False,
+    result = run_7z(
+        ["a", "-si", "-t7z", str(single)], input=b"hello nameless\n", check=False
     )
     if result.returncode != 0:
         pytest.skip(f"7z CLI cannot write nameless fixture: {result.stderr!r}")
@@ -2411,12 +2366,7 @@ def test_nameless_7z_members_use_archive_stem(tmp_path: Path) -> None:
 
     multi = tmp_path / "github_14_multi.7z"
     for payload in (b"one\n", b"two\n"):
-        result = subprocess.run(
-            ["7z", "a", "-si", "-t7z", str(multi)],
-            input=payload,
-            capture_output=True,
-            check=False,
-        )
+        result = run_7z(["a", "-si", "-t7z", str(multi)], input=payload, check=False)
         if result.returncode != 0:
             pytest.skip(f"7z CLI cannot append nameless member: {result.stderr!r}")
 
@@ -2466,11 +2416,10 @@ def test_bcj_member_whose_length_is_not_a_whole_number_of_blocks(
     src = tmp_path / "payload.bin"
     src.write_bytes(payload)
     archive = tmp_path / f"{method.lower()}.7z"
-    subprocess.run(
-        ["7z", "a", "-t7z", f"-m0={method}", "-m1=LZMA", str(archive), src.name, "-y"],
+    run_7z(
+        ["a", "-t7z", f"-m0={method}", "-m1=LZMA", str(archive), src.name, "-y"],
         cwd=tmp_path,
         check=True,
-        capture_output=True,
     )
     _assert_roundtrip(archive, {"payload.bin": payload})
 
@@ -2652,11 +2601,10 @@ def test_lzma1_bcj_decodes_without_pybcj_installed(
     src = tmp_path / "payload.bin"
     src.write_bytes(payload)
     archive = tmp_path / "lzma1-bcj-no-pybcj.7z"
-    subprocess.run(
-        ["7z", "a", "-t7z", "-m0=BCJ", "-m1=LZMA", str(archive), src.name, "-y"],
+    run_7z(
+        ["a", "-t7z", "-m0=BCJ", "-m1=LZMA", str(archive), src.name, "-y"],
         cwd=tmp_path,
         check=True,
-        capture_output=True,
     )
 
     monkeypatch.setitem(sys.modules, "bcj", None)
@@ -2749,11 +2697,7 @@ def test_ppmd_folder_overstating_unpack_size_is_truncated(
     member = tmp_path / "small.txt"
     member.write_bytes(_K6_PAYLOAD)
     archive = tmp_path / "overstated.7z"
-    subprocess.run(
-        ["7z", "a", "-mhc=off", "-m0=PPMd", str(archive), str(member)],
-        check=True,
-        capture_output=True,
-    )
+    run_7z(["a", "-mhc=off", "-m0=PPMd", str(archive), str(member)], check=True)
     assert _overstate_ppmd_unpack_size(archive, unpack_size) == len(_K6_PAYLOAD)
 
     _run_ppmd_child(
@@ -3024,12 +2968,7 @@ def test_real_7z_cli_fifo_is_other_and_not_extracted(tmp_path: Path) -> None:
     os.mkfifo(src / "fifo")
     (src / "reg.txt").write_bytes(b"hi")
     archive = tmp_path / "fifo.7z"
-    subprocess.run(
-        ["7z", "a", str(archive), "fifo", "reg.txt"],
-        cwd=src,
-        check=True,
-        capture_output=True,
-    )
+    run_7z(["a", str(archive), "fifo", "reg.txt"], cwd=src, check=True)
     with open_archive(archive) as reader:
         types = {m.name: m.type for m in reader.members()}
         assert types == {"fifo": MemberType.OTHER, "reg.txt": MemberType.FILE}
@@ -3116,16 +3055,11 @@ def test_real_7z_cli_created_slot_matches_its_host(tmp_path: Path) -> None:
     """The real writer behind the rule, on whichever host runs the suite."""
     (tmp_path / "a.txt").write_bytes(b"hi")
     archive = tmp_path / "ctime.7z"
-    result = subprocess.run(
-        ["7z", "a", "-t7z", "-mtc=on", str(archive), "a.txt", "-y"],
+    result = run_7z(
+        ["a", "-t7z", "-mtc=on", str(archive), "a.txt", "-y"],
         cwd=tmp_path,
         check=False,
-        capture_output=True,
         text=True,
-        # A 7z that hangs (seen once on Windows CI) must fail this test, not run into
-        # the 60 s thread timeout, which kills the whole xdist worker with no traceback.
-        stdin=subprocess.DEVNULL,
-        timeout=30,
     )
     if result.returncode != 0:
         pytest.skip(f"7z CLI cannot build a -mtc=on fixture: {result.stderr}")

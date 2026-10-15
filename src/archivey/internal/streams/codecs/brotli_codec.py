@@ -7,6 +7,7 @@ from typing import BinaryIO
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    exception_detail,
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.detection_workspace import (
@@ -75,7 +76,9 @@ class BrotliCodec(StreamCodec):
         # DecompressorStream surfaces that as TruncatedError on its own.
         brotli = deps.brotli.loaded()
         if brotli is not None and isinstance(exc, brotli.error):
-            return CorruptionError(f"Error reading brotli stream: {exc!r}")
+            return CorruptionError(
+                f"Error reading brotli stream: {exception_detail(exc)}"
+            )
         return None
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:

@@ -33,7 +33,7 @@ React to specific cases with the subtypes:
 | [`NameCollisionError`][archivey.NameCollisionError] / [`NameRewrittenError`][archivey.NameRewrittenError] | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
 | [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is recognized but this archive uses something archivey cannot handle: a variant or layout (a raw CD sector image, a UDIF disk image, a 7z coder graph that is not a tree of chains, multi-volume where the format has none) or a request the backend cannot serve (a RAR password with a line break, which `unrar` cannot be given). An unknown compression method, codec or version number read from a header with no checksum, such as a ZIP method, may also mean that header is damaged: archivey cannot tell the two apart, so it reports it as unsupported, and the message says a damaged header reads the same way |
 | [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] | a diagnostic whose disposition you set to `RAISE` fired; carries the `Diagnostic` (see [Diagnostics](#diagnostics)) |
-| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and comment bytes at open, compressed RAR 1.5/2.x comments by their declared size), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)). So does an `unrar` or `unar` process the system kills with SIGKILL while it reads a RAR member |
+| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and comment bytes at open, compressed RAR 1.5-4 comments by declared or packed size, whichever is larger), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)). So does an `unrar` or `unar` process the system kills with SIGKILL while it reads a RAR member |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
 overlapping stream without `concurrent_members=True`, using a closed reader, calling
@@ -243,7 +243,7 @@ config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
   report the archive's own bytes or metadata as anomalous — and collects the rest.
 - **`DiagnosticPolicy.PEDANTIC`** raises on everything.
 
-Ten codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
+Eleven codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
 is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
 `MEMBER_SELECTOR_UNMATCHED` (argument hygiene — a pipeline passing a password, or one
 list of names, to every call would otherwise raise on every archive they do not fit),
@@ -256,9 +256,12 @@ member would raise),
 `PROBE_FORMAT_UNCONFIRMED` (it is emitted while the matching `TruncatedError` or
 `CorruptionError` is raised, and that error already carries `format_unconfirmed=True`),
 `MEMBER_SPECIAL_FILE_HAS_DATA` (a documented writer option produces it, and the bytes
-are delivered and checked like any file's), and `MEMBER_NAME_INVISIBLE_CHARACTER` (a
+are delivered and checked like any file's), `MEMBER_NAME_INVISIBLE_CHARACTER` (a
 zero-width joiner is part of ordinary emoji, so `STRICT` would refuse archives of
-legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set).
+legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set),
+and `FORMAT_EXTENSION_CONFLICT` (the file's name is wrong, not its bytes: a tarball
+saved as `b.gz` opens and reads in full, and the code is still recorded; to refuse such
+files, add the code to `raise_on`).
 `ARCHIVE_INTEGRITY_CODES` is exported, and the presets are ordinary policies built from
 it, so you adjust one by building your own from the same set:
 

@@ -21,6 +21,7 @@ from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
     TruncatedError,
+    exception_detail,
 )
 from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
@@ -378,7 +379,9 @@ class StreamCodec:
         decoder, or ``None`` for any other exception. A :meth:`translate` calls it for
         its ``EOFError`` arm, so every codec words a truncation the same way."""
         if isinstance(exc, EOFError):
-            return TruncatedError(f"{truncated_message(label)}: {exc!r}")
+            return TruncatedError(
+                f"{truncated_message(label)}: {exception_detail(exc)}"
+            )
         return None
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
