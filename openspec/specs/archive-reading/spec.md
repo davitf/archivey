@@ -575,7 +575,8 @@ A format whose parser builds the whole member table before any member is registe
 (7z and RAR) SHALL also weigh the text that table holds against `max_metadata_bytes`
 at parse, so that `open_archive` raises before the table is kept, as it does for
 `max_members`: each stored name (as `name` and as `raw_name`), a RAR5 link target held
-in the header, and the member and archive comments. The parse weight SHALL use the
+in the header, the owner's user and group names (the RAR5 owner record, the RAR 1.5-4
+`UOW` header), and the member and archive comments. The parse weight SHALL use the
 rules above on the stored values: the stored name stands for the normalized `name`,
 and a raw name not yet encoded counts one byte per character for UTF-8, two for
 UTF-16, never more than its encoded size. An archive whose names normalization leaves
