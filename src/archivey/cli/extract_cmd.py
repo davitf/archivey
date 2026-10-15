@@ -693,10 +693,15 @@ def maybe_hoist_single_root(
         lambda: child.is_dir() and not _disk_links_stay_inside(child),
     )
     dest = wrapper.parent / child.name
+    # The sole root shares the wrapper's name, spelled the same, so the wrapper is
+    # removed and the root takes its place under that name; otherwise the root is
+    # merged into the cwd. Strings, not paths: Windows paths compare equal across
+    # case, and a root spelled ``PLAIN`` in ``plain/`` must land at ``./PLAIN``.
+    in_place = dest.name == wrapper.name
     # On a case-insensitive filesystem a root spelled ``FILE`` in ``file/`` has the
     # wrapper itself at ``dest``. That is not the operator's data: the wrapper moves
     # aside before the merge, so the check skips it, as the dry run does.
-    if reason is None and dest != wrapper and not _same_entry(dest, wrapper):
+    if reason is None and not in_place and not _same_entry(dest, wrapper):
         try:
             clash = _first_clash(
                 child.name,
@@ -717,9 +722,6 @@ def maybe_hoist_single_root(
         return _HoistResult(wrapper)
     result = _HoistResult(dest)
     moved: dict[str, tuple[Path, bool]] = {}
-    # The sole root shares the wrapper's name, so the wrapper is removed and the root
-    # takes its place under that same name; otherwise the root is merged into the cwd.
-    in_place = dest == wrapper
     # Where the remainder is when the hoist stops: the wrapper, unless restoring it
     # failed and the remainder stayed in the aside directory.
     left_in = wrapper
@@ -870,12 +872,13 @@ def predict_hoist(
         ),
     )
     dest = wrapper.parent / name
+    in_place = name == wrapper.name  # by spelling, as in the hoist
     entries = report._dry_run_entries
     # ``lexists`` first: with nothing at ``dest`` there is no merge, so the entries
     # are not indexed.
     if (
         reason is None
-        and dest != wrapper
+        and not in_place
         and entries is not None
         and os.path.lexists(dest)
     ):
@@ -891,7 +894,7 @@ def predict_hoist(
         print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
     label = f"{escape_path(dest)}{'/' if is_dir else ''}"
-    if dest == wrapper:
+    if in_place:
         print(f"would remove wrapper; content at {label}", file=err)
     elif os.path.lexists(dest):
         print(

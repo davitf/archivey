@@ -4530,40 +4530,41 @@ def test_hoist_moves_a_root_named_like_the_wrappers_aside_name(
 
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("overwrite", ["rename", "replace", "error", "skip"])
-def test_hoist_moves_a_file_root_named_like_the_wrapper_but_for_case(
+@pytest.mark.parametrize(
+    ("stem", "member", "top"),
+    [("file", "FILE", "FILE"), ("plain", "PLAIN/a", "PLAIN/")],
+)
+def test_hoist_moves_a_root_named_like_the_wrapper_but_for_case(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    stem: str,
+    member: str,
+    top: str,
     overwrite: str,
     dry_run: bool,
 ) -> None:
-    # file.tar holding the file "FILE": the wrapper is file/. On a case-insensitive
-    # filesystem ./FILE is the wrapper itself, which is no collision with the
-    # operator's data, so the file moves up as a direct extraction puts it. The test
-    # runs everywhere, but only macOS can fail it: on Linux the names differ, and on
-    # Windows the paths compare equal, so the hoist takes its in-place branch.
+    # file.tar holding the file "FILE": the wrapper is file/, and the root keeps its
+    # own spelling, as a direct extraction writes it. On a case-insensitive filesystem
+    # ./FILE is the wrapper itself, which is no collision with the operator's data.
+    # Runs everywhere; it can fail on macOS (the clash check) and Windows (paths
+    # compare equal across case), not on Linux, where the names differ.
     monkeypatch.chdir(tmp_path)
-    archive = _tar(tmp_path / "file.tar", {"FILE": b"x"})
+    archive = _tar(tmp_path / f"{stem}.tar", {member: b"x"})
     args = ["x", "--overwrite", overwrite, str(archive)]
     args += ["--dry-run"] if dry_run else []
     assert main(args) == EXIT_OK
     err = capsys.readouterr().err
-    assert "into file/" in err
-    # Windows flattens in place (the wrapper is removed, content at FILE); the others
-    # move the file up. Both land at ./FILE.
-    moved = "would move to FILE" if dry_run else "moved to FILE"
-    flattened = (
-        "would remove wrapper; content at FILE"
-        if dry_run
-        else "removed wrapper; content at FILE"
-    )
-    assert moved in err or flattened in err
+    assert f"into {stem}/" in err
+    assert (f"would move to {top}" if dry_run else f"moved to {top}") in err
     assert "keep in" not in err
+    assert "kept in" not in err
     if dry_run:
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["file.tar"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == [f"{stem}.tar"]
     else:
-        assert (tmp_path / "FILE").read_bytes() == b"x"
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["FILE", "file.tar"]
+        assert (tmp_path / member).read_bytes() == b"x"
+        listed = sorted(p.name for p in tmp_path.iterdir())
+        assert listed == sorted([top.rstrip("/"), f"{stem}.tar"])
 
 
 def _tar_root_with_file(path: Path, *, explicit_root: bool) -> Path:
