@@ -139,8 +139,8 @@ yielded.
 - **A ZIP over 4 GiB that macOS wrote without ZIP64** reads. Finder's Compress (macOS
   Archive Utility, `ditto -c -k`) stores every offset past 4 GiB with its top bits cut
   off, so 7-Zip and Python's `zipfile` fail on such an archive. Archivey puts back the
-  missing multiple of 4 GiB where an offset falls below the end of the member before
-  it, but only when a local header with the member's name is at the corrected offset;
+  missing multiple of 4 GiB where an offset falls below the furthest end of the
+  members before it, but only when a local header with the member's name is at the corrected offset;
   the member's CRC-32 is still checked. Each correction emits `ARCHIVE_OFFSET_WRAPPED`,
   which `DiagnosticPolicy.STRICT` refuses. A single member over 4 GiB in such an
   archive is not read, and neither are the members after it: its sizes are cut too,

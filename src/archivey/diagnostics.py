@@ -598,9 +598,9 @@ class OffsetWrapContext(_JsonSafeContext):
     2³², because the writer stored a 32-bit field past 4 GiB without ZIP64.
 
     macOS Archive Utility (Finder's Compress, ``ditto -c -k``) writes such ZIPs. The
-    reader adds 2³² to an offset that falls below the end of the member before it, until
-    it no longer does, and keeps the result only when a local header with the member's
-    name starts there; the member's CRC-32 is still checked when it is read.
+    reader adds 2³² to an offset that falls below the furthest end of the members before
+    it, until it no longer does, and keeps the result only when a local header with the
+    member's name starts there; the member's CRC-32 is still checked when it is read.
     ``record`` says which offset was corrected:
 
     - ``"local_header"`` — a central directory entry's local header offset.

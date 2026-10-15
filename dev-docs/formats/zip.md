@@ -805,8 +805,8 @@ signatures. A backup in the scan had 261 of its 2 122 offsets off by exactly
 2³², and 7-Zip and stdlib cannot open it
 ([`investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md)
 §4). One rule recovers every offset, and `CentralDirectoryWalk` applies it: the
-members lie in directory order, so an offset below the end of a member before it gets
-2³² added until it is not. The wrapped directory offset shows up as a stub length
+members lie in directory order, so an offset below the furthest end of the members
+before it gets 2³² added until it is not. The wrapped directory offset shows up as a stub length
 (`base`) 2³² too large, so the walk takes `base` modulo 2³². Each correction needs a
 local header with the entry's name at the corrected offset, so a ZIP under 4 GiB
 whose directory is out of file order is untouched (the corrected offset would be past
