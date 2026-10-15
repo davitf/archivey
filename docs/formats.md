@@ -202,7 +202,12 @@ yielded.
   file, or a directory entry whose name, extra field or comment runs past the
   directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.STRICT`` raises.
-- Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- Timestamps: DOS base; NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
+  Extended Timestamp override when present, the Unix fields read as unzip 6.00 reads
+  them. macOS `ditto` and Archive Utility write only `0x5855`, so their archives list
+  `modified` and `accessed` in UTC.
+- Extra fields archivey takes nothing from (a vendor's own, or one it knows but
+  found malformed) stay readable as `extra["zip.extra_fields"]`, `{tag: data}`.
 - Owner ids: Info-ZIP `zip` on Unix records `uid` / `gid`, read as unzip 6.00 reads
   them; `uname` / `gname` stay `None`, and Windows writers store no owner.
 - An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as

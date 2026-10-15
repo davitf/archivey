@@ -604,7 +604,8 @@ def _zip_timestamps(
     tuple[int, ...],
 ]:
     """Return ``(modified, accessed, ntfs_ctime, ut_ctime, issues, used_tags)`` for a
-    member, ``used_tags`` being the extra fields a time was taken from.
+    member, ``used_tags`` being the extra fields a time the member keeps came from:
+    a field whose every time a higher layer replaced is not among them.
 
     Sources, lowest to highest precedence (each layer overrides only the times it
     actually carries):
@@ -617,7 +618,7 @@ def _zip_timestamps(
     3. A PKWARE Unix (0x000D) or Info-ZIP old Unix (0x5855) extra field: access then
        modification time, each a 32-bit Unix time in UTC, then (local header only)
        the owner ids. macOS ditto and Archive Utility write only 0x5855. As unzip 6.00
-       reads it (measured, dev-docs/formats/zip.md §6), it is ignored in a blob that
+       reads it (measured, dev-docs/formats/zip.md §6 Decisions), it is ignored in a blob that
        holds an Extended Timestamp, or after an Info-ZIP Unix type 2 or new Unix field
        (0x7855, 0x7875), the rule ``_zip_owner`` applies to its ids; of several, the
        last one long enough for both times counts.
@@ -664,7 +665,9 @@ def _zip_timestamps(
     ut_field: bytes | None = None
     unix_field: ExtraField | None = None
     newer_unix = False
-    used: list[int] = []
+    # The extra field each time came from, None for the DOS stamp or no time.
+    modified_from: int | None = None
+    accessed_from: int | None = None
     extra = entry.extra
     if not extra:
         return modified, accessed, ntfs_ctime, ut_ctime, issues, ()
@@ -710,12 +713,10 @@ def _zip_timestamps(
                         issues.append(issue)
                     if dt is None:
                         continue
-                    if not used:
-                        used.append(0x000A)
                     if field_name == "mtime":
-                        modified = dt
+                        modified, modified_from = dt, 0x000A
                     elif field_name == "atime":
-                        accessed = dt
+                        accessed, accessed_from = dt, 0x000A
                     else:
                         ntfs_ctime = dt
                 break
@@ -726,7 +727,7 @@ def _zip_timestamps(
         atime, mtime = struct.unpack_from("<ii", unix_field.data)
         accessed = unix32_to_datetime(atime)
         modified = unix32_to_datetime(mtime)
-        used.append(unix_field.tag)
+        accessed_from = modified_from = unix_field.tag
 
     if ut_field is not None:
         flags = ut_field[0]
@@ -740,16 +741,27 @@ def _zip_timestamps(
                 # A signed 32-bit field: a pre-1970 date is legitimate, and every
                 # value it can hold is a valid datetime on every platform.
                 when = unix32_to_datetime(ts)
-                if 0x5455 not in used:
-                    used.append(0x5455)
                 if bit == 0x01:
-                    modified = when
+                    modified, modified_from = when, 0x5455
                 elif bit == 0x02:
-                    accessed = when
+                    accessed, accessed_from = when, 0x5455
                 else:
                     ut_ctime = when
 
-    return modified, accessed, ntfs_ctime, ut_ctime, issues, tuple(used)
+    # A field counts as read only for a time it still gives once every layer has run;
+    # the creation slot takes the Extended Timestamp's time over the NTFS one
+    # (``_zip_created``).
+    creation_from = (
+        0x5455 if ut_ctime is not None else 0x000A if ntfs_ctime is not None else None
+    )
+    used = tuple(
+        {
+            tag
+            for tag in (modified_from, accessed_from, creation_from)
+            if tag is not None
+        }
+    )
+    return modified, accessed, ntfs_ctime, ut_ctime, issues, used
 
 
 # Extra fields that record a Unix owner: Info-ZIP's "new Unix" field (variable-width

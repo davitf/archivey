@@ -60,6 +60,10 @@ NEW_UNIX = _field(0x7875, struct.pack("<BBIBI", 1, 4, 501, 4, 20))
 UNIX2_EMPTY = _field(0x7855, b"")
 _FILETIME = (_NTFS_TIME + 11_644_473_600) * 10**7
 NTFS = _field(0x000A, b"\0" * 4 + struct.pack("<HHQQQ", 1, 24, _FILETIME, _FILETIME, 0))
+# With a creation time too, which no Unix field replaces.
+NTFS_CREATED = _field(
+    0x000A, b"\0" * 4 + struct.pack("<HHQQQ", 1, 24, _FILETIME, _FILETIME, _FILETIME)
+)
 
 _DOS = datetime(*_DOS_TIME)
 _UNIX_TIMES = (_utc(_MTIME), _utc(_ATIME))
@@ -107,11 +111,17 @@ def test_unix_field_times_match_unzip(
     (tmp_path / "a.zip").write_bytes(_zip(extra))
     subprocess.run(["unzip", "-qo", "a.zip", "-d", "out"], cwd=tmp_path, check=True)
     st = (tmp_path / "out" / "a.txt").stat()
-    modified = times[0]
+    modified, accessed = times
     if modified.tzinfo is None:
         # The DOS stamp is local time, which unzip reads in the test's time zone.
         modified = modified.astimezone(UTC)
     assert _utc(int(st.st_mtime)) == modified
+    # unzip sets the access time with the modification time, and nothing reads the
+    # file before the stat, so a relatime or noatime mount keeps it. Where archivey
+    # lists none, unzip fills it from the modification time; there is nothing to
+    # compare.
+    if accessed is not None:
+        assert _utc(int(st.st_atime)) == accessed
 
 
 def test_macos_archive_times_are_utc() -> None:
@@ -131,7 +141,10 @@ JAR_MARKER = _field(0xCAFE, b"")
     ("extra", "unparsed"),
     [
         pytest.param(b"", None, id="none"),
-        pytest.param(NTFS + OLD_UNIX_IDS + NEW_UNIX, None, id="all-read"),
+        pytest.param(NTFS_CREATED + OLD_UNIX_IDS + NEW_UNIX, None, id="all-read"),
+        # Its two times are replaced by the Unix field's and it has no creation time,
+        # so the member keeps nothing from it.
+        pytest.param(NTFS + OLD_UNIX, {0x000A: NTFS[4:]}, id="ntfs-overridden"),
         pytest.param(VENDOR, {0x4242: b"vendor data"}, id="vendor"),
         pytest.param(JAR_MARKER, {0xCAFE: b""}, id="jar-marker"),
         pytest.param(
@@ -185,11 +198,21 @@ def test_stale_unicode_path_field_is_unparsed() -> None:
     assert member.extra["zip.extra_fields"] == {0x7075: field[4:]}
 
 
-def test_unparsed_fields_count_against_the_listing_limit() -> None:
-    big = _field(0x4242, b"x" * 60_000)
-    data = _zip(big)
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param(_field(0x4242, b"x" * 60_000), id="one-big-field"),
+        # An empty field retains about 70 bytes and has no data to weigh: each counts.
+        pytest.param(
+            b"".join(_field(0x1000 + tag, b"") for tag in range(16_000)),
+            id="many-empty-fields",
+        ),
+    ],
+)
+def test_unparsed_fields_count_against_the_listing_limit(extra: bytes) -> None:
+    data = _zip(extra)
     with open_archive(io.BytesIO(data)) as archive:
-        assert archive.members()[0].extra["zip.extra_fields"] == {0x4242: b"x" * 60_000}
+        assert archive.members()[0].extra["zip.extra_fields"]
     limited = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=10_000))
     with pytest.raises(ResourceLimitError):
         with open_archive(io.BytesIO(data), config=limited) as archive:
