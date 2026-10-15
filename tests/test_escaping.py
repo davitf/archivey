@@ -260,9 +260,10 @@ _EXCEPTION_WORDS = {"e", "exc", "err", "error", "cause", "caused", "fault", "exc
 # Sites that may still show a caught exception as its repr, keyed by
 # (module, enclosing function, interpolated expression) so a moved line keeps its entry.
 _EXCEPTION_REPR_ALLOWED = {
-    # The ``UnicodeDecodeError`` repr carries the raw name bytes as a bytes literal,
-    # which a reader can match against the archive; its plain text would not show them.
-    # Reworded with the ZIP reader's native rewrite, not here.
+    # The ``UnicodeDecodeError`` repr carries the raw name bytes as a bytes literal; its
+    # plain text would not show them. The message constructor escapes that literal a
+    # second time (``b'\\x80'``), so it does not arrive intact either. Reworded with
+    # the ZIP reader's native rewrite, not here.
     ("internal/backends/zip_reader.py", "_decode_member_name", "exc"),
 }
 
@@ -276,7 +277,9 @@ def _exception_repr_sites() -> set[tuple[str, str, str]]:
     exception, keyed as in ``_EXCEPTION_REPR_ALLOWED``.
 
     Every f-string, not only those passed to an exception: a message is often built in
-    a variable or a tuple first (``rapidgzip_child``'s ``_death``)."""
+    a variable or a tuple first (``rapidgzip_child``'s ``_death``). That is
+    deliberately wider than the message sites: a ``logger.*`` f-string that needs the
+    repr (log records are not escaped) goes in the allowlist."""
     found: set[tuple[str, str, str]] = set()
 
     def walk(node: ast.AST, module: str, function: str) -> None:

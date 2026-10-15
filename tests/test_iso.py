@@ -393,7 +393,7 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
     cause = excinfo.value.__cause__
     assert message.startswith(
         "Error reading ISO image: a structure in the image could not be parsed "
-        f"(error: {cause})"
+        f"(struct.error: {cause})"
     )
     assert "damaged" not in message
     assert "error(" not in message

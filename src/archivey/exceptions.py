@@ -95,15 +95,17 @@ class ArchiveyError(Exception):
 
     - a member name, link target or path → :func:`~archivey.terminal.quoted`, not
       ``!r``. ``!r`` escapes first, and this escapes the backslashes it introduced.
-    - a caught exception → :func:`exception_detail`, not ``{exc}`` or ``{exc!r}``. It
-      gives the unescaped text of one of ours (as :func:`raw_message_of` does), and the
-      type name of an exception that has no text.
+    - a caught exception that might be one of ours → :func:`exception_detail`, not
+      ``{exc}``. It gives the unescaped text of one of ours (as :func:`raw_message_of`
+      does), and the type name of an exception that has no text. A handler that
+      catches only a third-party decoder's type can use ``{exc}``.
     - never ``{exc!r}`` for a caught exception: it shows Python's spelling
-      (``error('unpack_from requires …')``), not what is wrong with the archive. When
-      the exception's own text does not describe the archive (``struct.error``,
-      ``IndexError`` from a parser), write that description instead and keep the
-      original as ``__cause__``. ``tests/test_escaping.py`` checks this rule and names
-      the one site that still breaks it (a ZIP member name that is not valid UTF-8).
+      (``error('unpack_from requires …')``), not what is wrong with the archive, and
+      escapes one of ours a second time. When the exception's own text does not
+      describe the archive (``struct.error``, ``IndexError`` from a parser), write that
+      description instead and keep the original as ``__cause__``.
+      ``tests/test_escaping.py`` checks this rule and names the one site that still
+      breaks it (a ZIP member name that is not valid UTF-8).
 
     Note this is the opposite of the rule for ``logger.*`` calls, whose records the CLI
     does **not** escape: there, ``%r`` is what makes an interpolated name inert and must
@@ -450,13 +452,24 @@ def exception_detail(exc: BaseException, *, with_type: bool = False) -> str:
     That is the exception's own message, unescaped (:func:`raw_message_of`), or its type
     name when it has no message, so that a message never ends at a bare colon. With
     ``with_type``, the type name comes first (``AttributeError: …``): use it where the
-    text alone does not say that a Python error, not the archive, is the subject.
+    text alone does not say that a Python error, not the archive, is the subject. A
+    type outside ``builtins`` is named with its module (``struct.error``), since its
+    bare name is often just ``error``.
 
     Never the ``repr``: ``error('unpack_from requires …')`` is Python's spelling, not
-    a description of the archive.
+    a description of the archive. ``str()`` of a ``KeyError`` is the repr of its key,
+    so a one-key ``KeyError`` shows the key itself.
     """
-    text = raw_message_of(exc)
-    name = type(exc).__name__
+    if isinstance(exc, KeyError) and len(exc.args) == 1:
+        text = str(exc.args[0])
+    else:
+        text = raw_message_of(exc)
+    cls = type(exc)
+    name = (
+        cls.__qualname__
+        if cls.__module__ == "builtins"
+        else f"{cls.__module__}.{cls.__qualname__}"
+    )
     if not text:
         return name
     return f"{name}: {text}" if with_type else text

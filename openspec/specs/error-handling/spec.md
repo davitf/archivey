@@ -358,7 +358,9 @@ is a requirement rather than a style preference:
 - A caught exception SHALL NOT be interpolated with `!r`: the repr is Python's spelling
   (`error('unpack_from requires …')`), not a description of the archive.
   `archivey.exceptions.exception_detail()` gives the exception's own text (unescaped,
-  as `raw_message_of()` does), or its type name when it has no text.
+  as `raw_message_of()` does), or its type name when it has no text. One site is
+  exempt until the native ZIP reader rewrite rewords it: the ZIP reader's
+  `_decode_member_name`, for a member name that is not valid UTF-8.
 
 `ArchiveyError` and `ArchiveyUsageError` SHALL expose `raw_message` — the text as the
 call site wrote it — alongside the escaped `message`, since the escaped form cannot be

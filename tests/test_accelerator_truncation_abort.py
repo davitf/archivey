@@ -552,16 +552,15 @@ class _FailingOnceSource(io.BytesIO):
     """The caller's stream, failing once, on the first read past its middle; every
     other read works, so nothing but the stream's own state can stop a later read."""
 
-    def __init__(self, data: bytes, fault: Exception | None = None) -> None:
+    def __init__(self, data: bytes) -> None:
         super().__init__(data)
         self.failed = False
-        self.fault = fault or OSError("transient source fault")
 
     def read(self, size: int | None = -1, /) -> bytes:
         size_ = len(self.getbuffer())
         if not self.failed and size_ // 2 < self.tell() < size_ - 64 * 1024:
             self.failed = True
-            raise self.fault
+            raise OSError("transient source fault")
         return super().read(size)
 
 

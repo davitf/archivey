@@ -398,8 +398,15 @@ _LIBRARY_ERRORS: list[tuple[str, str, Callable[[], Exception]]] = [
         "Error reading PPMd stream: ",
         lambda: _library_error("pyppmd", "PpmdError", "Corrupted input data"),
     ),
-    # No text at all: the type name stands in, so the message does not end at a colon.
-    ("ppmd", "Error reading PPMd stream: ", lambda: ValueError()),
+]
+
+# No text at all: the type name stands in, so the message does not end at a colon. A
+# type outside builtins is named with its module, since its bare name is "error".
+_TEXTLESS_ERRORS: list[tuple[str, Callable[[], Exception], str]] = [
+    ("ppmd", lambda: ValueError(), "Error reading PPMd stream: ValueError"),
+    ("gzip", lambda: zlib.error(), "Error reading gzip stream: zlib.error"),
+    # The shared EOF arm every codec inherits.
+    ("zstd", lambda: EOFError(), "zstd stream is truncated: EOFError"),
 ]
 
 
@@ -419,3 +426,28 @@ def test_a_codec_shows_the_librarys_text_not_its_repr(
     expected = str(exc) or type(exc).__name__
     assert translated.raw_message == prefix + expected
     assert f"{type(exc).__name__}(" not in str(translated)
+
+
+@pytest.mark.parametrize(
+    ("codec_name", "make_error", "expected"),
+    _TEXTLESS_ERRORS,
+    ids=[name for name, _, _ in _TEXTLESS_ERRORS],
+)
+def test_a_codec_names_an_error_with_no_text_by_its_type(
+    codec_name: str, make_error: Callable[[], Exception], expected: str
+) -> None:
+    from archivey.internal.streams.codecs import Codec, stream_codec
+
+    translated = stream_codec(Codec(codec_name)).translate(make_error())
+    assert isinstance(translated, ArchiveyError)
+    assert translated.raw_message == expected
+
+
+def test_a_key_error_shows_its_key_escaped_once() -> None:
+    """``str(KeyError(k))`` is ``repr(k)``, which the message would escape again."""
+    from archivey.exceptions import exception_detail
+
+    exc = KeyError("na\x1bme")
+    assert exception_detail(exc) == "na\x1bme"
+    message = str(CorruptionError(f"({exception_detail(exc, with_type=True)})"))
+    assert message.startswith("(KeyError: na\\x1bme)")
