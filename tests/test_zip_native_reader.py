@@ -556,3 +556,37 @@ def test_listing_does_not_keep_extra_fields_or_comments_alive() -> None:
         assert all(m.comment == "c" * extra_size for m in members)
     finally:
         reader.close()
+
+
+# --- Damaged ZIP64 end records -------------------------------------------------------
+#
+# File and pipe reads are compared in test_zip_pipe_parity.py; these pin the report.
+
+
+def _with_damaged_zip64_record(data: bytes) -> bytes:
+    """``data`` with a ZIP64 locator and a record whose signature is damaged, before
+    a classic end record that needs neither."""
+    eocd = data.rindex(b"PK\x05\x06")
+    record = struct.pack("<4sQ2H2L4Q", b"XXXX", 44, 45, 45, 0, 0, 3, 3, 0, 0)
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, eocd, 1)
+    return data[:eocd] + record + locator + data[eocd:]
+
+
+def test_a_classic_end_record_stands_in_for_a_damaged_zip64_record() -> None:
+    data = _with_damaged_zip64_record(_zip())
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
+        assert [m.name for m in reader.members()] == list(_NAMES)
+        (diagnostic,) = reader.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+    assert isinstance(diagnostic.context, ArchiveEofContext)
+    assert diagnostic.context.expected_marker == "zip64_end_of_central_directory"
+    assert diagnostic.context.observed_kind == "absent"
+    assert diagnostic.context.observed_bytes == data.rindex(b"PK\x06\x07")
+    assert "ZIP64 end of central directory record not found" in diagnostic.message
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError) as raised:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.ZIP, config=config
+        ) as reader:
+            reader.members()
+    assert raised.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING

@@ -125,14 +125,17 @@ yielded.
   that disagrees with the central directory, a local header the directory contradicts,
   or two same-named members whose directory order reverses their file order make the
   member fail at the end of the pass (`CorruptionError`), where a read from a file
-  writes it. An archive the directory refuses as a whole (a damaged ZIP64 end record,
-  a name flagged UTF-8 that is not) is refused from a file before anything is written,
-  and from a pipe after every member has been written; those files stay.
+  writes it. An archive the directory refuses as a whole (a name flagged UTF-8 that is
+  not) is refused from a file before anything is written, and from a pipe after every
+  member has been written; those files stay.
 - **A damaged central directory lists the members before the damage**, then raises
   `CorruptionError`; `members_report()` gives you both. An archive whose end record is
   gone (a download cut short) lists the members its local headers hold, without the
   mode, host or comment only the directory has, then raises `TruncatedError` (or
-  `CorruptionError` when other bytes stand where the directory should be).
+  `CorruptionError` when other bytes stand where the directory should be). Damaged
+  ZIP64 end records are read past when the end record holds every value itself and
+  the directory's end can be placed (`ARCHIVE_EOF_MARKER_MISSING`); otherwise the
+  members the local headers hold are listed, then `CorruptionError` is raised.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or

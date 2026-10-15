@@ -253,9 +253,8 @@ data's end; a bit-3 LZMA member without the end-of-stream marker is refused wher
 read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
 its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
-makes (a damaged ZIP64 end record or locator, a flagged name that is not valid UTF-8) is
-raised by a file read before anything is written and by the pass after every member is
-written, the files staying on disk.
+makes (a flagged name that is not valid UTF-8) is raised by a file read before anything
+is written and by the pass after every member is written, the files staying on disk.
 
 #### Scenario: non-seekable read matrix
 
@@ -526,6 +525,36 @@ Both write the same files.
 | Cut inside the first local header | `TruncatedError` at open |
 | Any of these with bit-3 members | The same members, each with its descriptor's CRC and sizes; a pipe read lists and extracts the same, and for a cut raises in the same words (junk after a member raises in different words, as above) |
 | A deflated bit-3 member whose descriptor states an uncompressed size of 2^62 or 2^64 − 1, or a wrong CRC, cut inside the directory | Listed with that size and CRC32; its read and its extraction fail; from a pipe it is listed with the 11 bytes it holds, without the wrong CRC32, and its read fails; both listings raise the same `TruncatedError`; nothing is written |
+
+### Requirement: Read past damaged ZIP64 end records
+
+When the ZIP64 end record a locator announces cannot be used (no record where the
+locator points or right before it, a record that does not match the locator, or a
+locator naming an offset past itself), and no field of the classic end record holds the
+ZIP64 sentinel, both reads SHALL use the classic record's values and report
+`ARCHIVE_EOF_MARKER_MISSING` with `expected_marker="zip64_end_of_central_directory"` and
+`observed_kind="absent"`. The directory SHALL end at the first of these that follows a
+central header: where the locator names the record, right before the locator, at the
+locator. When a classic field holds the sentinel, or no such place exists, a file read
+SHALL list the members the local headers hold and then raise the end records' error,
+as a read from a pipe does (Requirement: List a ZIP whose end record is missing). A
+read from a pipe whose listing limits dropped the bytes the locator names SHALL raise
+`ResourceLimitError` instead of using the classic record: higher limits keep those
+bytes, and the pass then reads what a file read reads. A locator naming another disk
+SHALL stay refused as a split set.
+
+#### Scenario: damaged ZIP64 end records
+
+| Archive, three members, ZIP64 records before the classic one | Expected, from a file and from a pipe |
+| --- | --- |
+| The ZIP64 record's signature damaged, classic fields unsaturated | Three members listed and read; `ARCHIVE_EOF_MARKER_MISSING` |
+| The locator names an offset past itself, classic fields unsaturated | The same |
+| The locator names an offset among the members' data, classic fields unsaturated | The same; the pass's message says it passed those bytes |
+| A locator with no ZIP64 record, naming an offset among the members' data; the directory ends at the locator; classic fields unsaturated | The same |
+| The ZIP64 record's signature damaged and the classic directory size one byte longer than the directory, so no place fits a directory; classic fields unsaturated | Three members as their local headers say, then `CorruptionError`, from a file and a pipe alike |
+| A locator naming an offset in bytes a pipe's listing limits dropped, classic fields unsaturated | Members listed from a file with `ARCHIVE_EOF_MARKER_MISSING`; `ResourceLimitError` from a pipe |
+| Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
+| A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 

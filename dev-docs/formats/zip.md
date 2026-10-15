@@ -534,12 +534,22 @@ directory's refusals the file read is to drop:
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
-- An archive-wide refusal from the directory or the end records (a damaged ZIP64 end
-  record or locator, a name flagged UTF-8 that is not valid UTF-8) comes before anything
-  is written from a file, and after every member is written from a pipe: the files
-  stay, and the same error is raised. The pass keeps them, and the file read is to stop
-  refusing instead (davi, 2026-10-14): it will walk the local headers past a damaged
-  ZIP64 record or directory, and decode an invalid UTF-8-flagged name as unflagged.
+- An archive-wide refusal from the directory (a name flagged UTF-8 that is not valid
+  UTF-8) comes before anything is written from a file, and after every member is
+  written from a pipe: the files stay, and the same error is raised. The pass keeps
+  them, and the file read is to stop refusing instead (davi, 2026-10-14): it will
+  decode an invalid UTF-8-flagged name as unflagged, and walk the local headers past
+  a damaged directory.
+- Damaged ZIP64 end records no longer refuse the archive in either read. When no
+  field of the classic end record holds the ZIP64 sentinel and the directory's end can
+  be placed, the classic record is used and `ARCHIVE_EOF_MARKER_MISSING` (marker
+  `zip64_end_of_central_directory`, `observed_kind="absent"`) reports it. Otherwise
+  the end records cannot be used: the file read walks the local headers, lists what
+  they hold and raises the end records' error, as the pass does. A locator naming an
+  offset among the members' data reads the same, though the two say why in different
+  words: a file read checks the bytes there, the pass has passed them. One naming
+  bytes the pass's listing limits dropped is a `ResourceLimitError` from a pipe, since
+  higher limits keep those bytes.
 
 ### 2.3 Member data
 
@@ -851,7 +861,7 @@ ours.
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Read a non-seekable source forward over the local headers under `streaming=True`, and refuse it under `streaming=False`, rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for; the local headers make one forward pass possible (the maintainer, 2026-10-10) | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | Apply the fields only the directory holds at the end of a forward pass (2026-10-02) | Matches the file read on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive's streaming reader does (a symlink becomes a file: DR-1); spooling the archive to read the directory first |
-| From a pipe, keep the files a directory-wide refusal finds after they were written (davi, 2026-10-14; the file read is to stop refusing these instead) | The pass learns of a damaged ZIP64 end record or a mislabelled UTF-8 name only after every member is written; it raises the file read's error and leaves the files | Taking them back, as a member failure at the end of the pass does |
+| From a pipe, keep the files a directory-wide refusal finds after they were written (davi, 2026-10-14; the file read is to stop refusing these instead) | The pass learns of a mislabelled UTF-8 name only after every member is written; it raises the file read's error and leaves the files | Taking them back, as a member failure at the end of the pass does |
 | Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` behind its own re-entrant lock (a source whose read closes the archive re-enters it on the same thread), for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable for random access, because a pipe is read only by the forward pass, whose streams never seek. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |

@@ -1023,7 +1023,19 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
     # after the end record: a file read steps on to the end record.
     far_and_junk = far + b"\x01" * (2 * keep)
     assert [m["name"] for m in _seekable_view(far_and_junk)[0]] == ["a.txt", "b.txt"]
+    # A locator with no ZIP64 record, naming an offset in the bytes the bound
+    # dropped, after a classic record that needs none of its fields: a file read
+    # finds no record there and lets the classic record stand in. The pass cannot
+    # tell what those bytes hold, so it refuses rather than stand in: higher limits
+    # keep them.
+    spaced = _with_bytes_before_directory(plain, 2 * keep + 1000)
+    eocd = spaced.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", spaced, eocd + 16)
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, cd_offset - keep - 500, 1)
+    lone_locator = spaced[:eocd] + locator + spaced[eocd:]
+    assert [m["name"] for m in _seekable_view(lone_locator)[0]] == ["a.txt", "b.txt"]
     cases = (
+        (lone_locator, "ZIP64 end of central directory record starts"),
         (far_and_junk, "ZIP directory and end records run past"),
         (out_of_reach, "ZIP central directory starts"),
         (record_dropped, "ZIP64 end of central directory record starts"),
@@ -1177,6 +1189,8 @@ def test_a_damaged_end_record_fails_in_the_file_reads_words(
     if edit == "cd_size":
         struct.pack_into("<I", data, eocd + 12, 0xFFFF_FF00)
     else:
+        # Saturated, so the classic record cannot stand in for the ZIP64 records.
+        struct.pack_into("<HH", data, eocd + 8, 0xFFFF, 0xFFFF)
         data[eocd:eocd] = struct.pack("<4sIQI", b"PK\x06\x07", 0, 1 << 40, 1)
     with pytest.raises(CorruptionError, match=message) as from_file:
         _seekable_view(bytes(data))

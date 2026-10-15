@@ -30,6 +30,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.zip_reader import ZipReader
 from archivey.types import HashAlgorithm, OnError
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
@@ -55,8 +56,8 @@ _PasswordArg = str | list[str] | None
 # link is refused for its missing target (``LinkTargetNotFoundError``).
 # ``"disk"``: the directory refuses the archive, which a file read finds before
 # writing anything and the pass only after writing every member.
-# The file read is to stop refusing these (design.md; tasks 3.0c and 4.1), which
-# removes the rows.
+# The file read is to stop refusing these (design.md; task 4.1), which removes the
+# rows.
 _DIFFERS: dict[str, str] = {
     "sevenzip/encrypted_link.zip-no-password": "error",
     "sevenzip/encrypted_link.zip-wrong": "error",
@@ -444,3 +445,154 @@ def test_a_whole_zip_streamed_past_its_directory_limit_has_no_report_to_peek() -
         yielded, _error, report = _stream_past_the_limit(data, seekable=seekable)
         assert [name for name, _ in yielded] == ["m0.txt", "m1.txt"]
         assert report is None
+
+
+def _with_zip64_records(data: bytes, *, saturated: bool, damage: str) -> bytes:
+    """``data`` with ZIP64 end records added before its classic one, damaged:
+    ``"record"`` (no ZIP64 signature where the locator points), ``"locator"`` (the
+    locator names an offset past itself), ``"into-members"`` (it names offset 5),
+    ``"lone-locator"`` (no record, the locator naming offset 5, so the directory ends
+    at the locator) or ``"no-directory"`` (``"record"`` with the classic record's
+    directory size one byte longer than the directory, so no place it names starts at
+    a central header and the classic record cannot stand in). ``saturated`` puts the
+    ZIP64 sentinel in the count, size and offset fields of the classic record, so only
+    the ZIP64 record holds them."""
+    eocd = data.rindex(b"PK\x05\x06")
+    _sig, _disk, _cd_disk, _here, entries, cd_size, cd_offset, _comment = struct.unpack(
+        "<4s4H2LH", data[eocd : eocd + 22]
+    )
+    record = struct.pack(
+        "<4sQ2H2L4Q",
+        b"PK\x06\x06",
+        44,
+        45,
+        45,
+        0,
+        0,
+        entries,
+        entries,
+        cd_size,
+        cd_offset,
+    )
+    record_at = {"locator": 1 << 40, "into-members": 5, "lone-locator": 5}.get(
+        damage, eocd
+    )
+    if damage in ("record", "no-directory"):
+        record = b"XXXX" + record[4:]
+    if damage == "lone-locator":
+        record = b""
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, record_at, 1)
+    classic = bytearray(data[eocd:])
+    if damage == "no-directory":
+        struct.pack_into("<L", classic, 12, cd_size + 1)
+    if saturated:
+        struct.pack_into(
+            "<4HLL", classic, 4, 0, 0, 0xFFFF, 0xFFFF, 2**32 - 1, 2**32 - 1
+        )
+    return data[:eocd] + record + locator + bytes(classic)
+
+
+def _damaged_zip64_params() -> Iterator[pytest.ParameterSet]:
+    for kind, pipe in (("sized", False), ("bit3", True)):
+        for saturated in (False, True):
+            for damage in (
+                "record",
+                "locator",
+                "into-members",
+                "lone-locator",
+                "no-directory",
+            ):
+                if saturated and damage not in ("record", "locator"):
+                    continue
+                data = _with_zip64_records(
+                    _members_zip(pipe=pipe), saturated=saturated, damage=damage
+                )
+                label = "saturated" if saturated else "classic"
+                raised = "ZIP64" if saturated or damage == "no-directory" else None
+                yield pytest.param(data, raised, id=f"{kind}-{label}-{damage}")
+        # A directory that would start before the file: no ZIP64 records at all.
+        data = bytearray(_members_zip(pipe=pipe))
+        struct.pack_into("<I", data, data.rindex(b"PK\x05\x06") + 12, 0x7FFF_FFF0)
+        yield pytest.param(
+            bytes(data), "Bad offset for central directory", id=f"{kind}-bad-offset"
+        )
+
+
+def _diagnostic_codes(data: bytes, *, piped: bool) -> list[str]:
+    source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=piped) as reader:
+        with contextlib.suppress(ArchiveyError):
+            for _member, _stream in reader.stream_members():
+                pass
+        return [code.value for code in reader.members_report().diagnostics.counts]
+
+
+@pytest.mark.parametrize(("data", "raised"), list(_damaged_zip64_params()))
+def test_damaged_end_records_read_from_a_file_as_from_a_pipe(
+    data: bytes, raised: str | None, tmp_path: Path
+) -> None:
+    """A classic end record that needs none of the ZIP64 fields stands in for them,
+    reported; end records that cannot be used (a saturated classic record, no place
+    that fits the directory's end, a directory before the file's start) list the
+    members the local headers hold, then raise. Either way the two reads list, read and write alike."""
+    from_file = _report(data, piped=False)
+    assert from_file == _report(data, piped=True)
+    assert isinstance(from_file, tuple)
+    members, error = from_file
+    assert isinstance(members, list) and len(members) == 3
+    if raised is not None:
+        assert error is not None and raised in error[1]
+    else:
+        assert error is None
+        for piped in (False, True):
+            assert "archive_eof_marker_missing" in _diagnostic_codes(data, piped=piped)
+    _assert_same(data, None, tmp_path)
+
+
+def test_unusable_end_records_behind_trailing_bytes_walk_the_members_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Behind more trailing bytes than the search window, the tail search walks the
+    local headers to find the end record; when that record cannot be used, the
+    members listed are the ones that walk found, not a second walk's."""
+    data = _with_zip64_records(
+        _members_zip(pipe=False), saturated=True, damage="locator"
+    ) + b"\x01" * (1 << 20)
+    walks = []
+    walk = ZipReader._walk_past_members
+
+    def counted(self: ZipReader) -> int | None:
+        walks.append(self)
+        return walk(self)
+
+    monkeypatch.setattr(ZipReader, "_walk_past_members", counted)
+    from_file = _report(data, piped=False)
+    assert len(walks) == 1
+    assert isinstance(from_file, tuple) and isinstance(from_file[0], list)
+    assert [m["name"] for m in from_file[0]] == ["m0.txt", "m1.txt", "m2.txt"]
+    assert from_file[1] is not None and "ZIP64" in from_file[1][1]
+
+
+def test_a_saturated_zip64_locator_naming_member_data_writes_the_same_files(
+    tmp_path: Path,
+) -> None:
+    """A locator naming an offset among the members' data, with nothing in the
+    classic record to stand in: a file read finds no ZIP64 record there that matches
+    it; a pipe has passed those bytes and says so. Both list the members the local
+    headers hold, raise, and write the same files."""
+    data = _with_zip64_records(
+        _members_zip(pipe=False), saturated=True, damage="into-members"
+    )
+    from_file = _report(data, piped=False)
+    from_pipe = _report(data, piped=True)
+    assert isinstance(from_file, tuple) and isinstance(from_pipe, tuple)
+    assert from_file[0] == from_pipe[0] and len(from_file[0]) == 3
+    assert from_file[1] is not None and from_pipe[1] is not None
+    assert "Corrupt ZIP64 end of central directory record" in from_file[1][1]
+    assert "inside the members' data" in from_pipe[1][1]
+    started = time.time() - 1
+    for side in ("file", "pipe"):
+        _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
+        (tmp_path / side).mkdir(exist_ok=True)
+    tree = _tree(tmp_path / "file", since=started)
+    assert len(tree) == 3 and _tree(tmp_path / "pipe", since=started) == tree

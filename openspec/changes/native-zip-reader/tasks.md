@@ -124,6 +124,10 @@ each lands with nothing half-done reachable:
       directory offset and an unreadable directory entry, so a file read writes what
       a pipe writes (davi 2026-10-14); `test_zip_pipe_parity.py`'s `_DIFFERS` loses
       those rows.
+  - [x] 3.0c1 Damaged ZIP64 end records and a directory offset before the file's
+        start: the classic record when none of its fields is saturated, else the walk.
+  - [ ] 3.0c2 A stored directory offset the members' offsets contradict (a negative
+        `base`) and an unreadable directory entry.
 - [x] 3.1 Central and local headers parsed by the same code in both walks;
       `LocalHeaderWalk` over a forward reader (`zip_local_walk.py`); data descriptor
       parsing (signature optional, 4- or 8-byte sizes).

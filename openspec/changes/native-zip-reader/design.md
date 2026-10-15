@@ -573,15 +573,41 @@ Two more differences are recorded (`tests/test_zip_pipe_parity.py`, `_DIFFERS`):
 - In `extract_all`, a link member the pass wrote as a file keeps the error its data
   read gave: under no password an encrypted link fails with `EncryptionError`, where
   the file read reports `LinkTargetNotFoundError`; the files on disk are the same.
-- An archive-wide refusal that comes from the directory or the end records (a damaged
-  ZIP64 end record or locator, a name flagged UTF-8 that is not valid UTF-8) is found
-  by a file read before anything is written, and by the pass only after every member
-  has been written: the files stay, and the same error is raised. The pass keeps them:
-  the file read stops refusing these instead (davi, 2026-10-14). A damaged ZIP64 end
-  record, a damaged directory or a missing end record makes the file read walk the
-  local headers (task 3.0b), and a name flagged UTF-8 that is not valid UTF-8 decodes as
-  unflagged (task 4.1); once both land, the two reads write the same files. A split set
-  and an encrypted central directory stay refused: no member of either can be read.
+- An archive-wide refusal that comes from the directory (a name flagged UTF-8 that is
+  not valid UTF-8) is found by a file read before anything is written, and by the pass
+  only after every member has been written: the files stay, and the same error is
+  raised. The pass keeps them: the file read stops refusing these instead (davi,
+  2026-10-14). A missing end record makes the file read walk the local headers (task
+  3.0b), and so do end records it cannot use (task 3.0c, §"Damaged ZIP64 end
+  records"); a damaged directory is to follow, and a name flagged UTF-8 that is not
+  valid UTF-8 decodes as unflagged (task 4.1); once those land, the two reads write the
+  same files. A split set and an encrypted central directory stay refused: no member
+  of either can be read.
+
+### Damaged ZIP64 end records
+
+Some writers add ZIP64 end records whether a value needs them or not, so a classic
+record often holds every value itself. When the ZIP64 record a locator announces cannot
+be used (missing, not matching the locator, or named past the locator) and no classic
+field holds the ZIP64 sentinel, both reads use the classic record and report
+`ARCHIVE_EOF_MARKER_MISSING` (marker `zip64_end_of_central_directory`, `observed_kind`
+`"absent"`, `observed_bytes` the locator's offset); `STRICT` refuses it. Without a ZIP64
+record the directory's end is not known from the records, so the parser takes the first
+place, of where the locator names the record, right before the locator and the locator
+itself, that sits `cd_size` bytes after a central header.
+
+When a classic field holds the sentinel, or no place fits, the end records cannot be
+used, and the parser raises as before. The file read then walks the local headers and
+lists what they hold, then raises that error, as the pass does when it reaches the end
+records (§"A seekable source whose end record is not in the tail"); a directory offset
+before the start of the file is read the same way. A locator naming an offset among
+the members' data, which the pass has passed, reads the same on both sides: with the
+classic record standing in, the pass takes it as the file read does, which differs
+only when crafted member data holds a ZIP64 record that matches the locator; with a
+saturated classic record, both raise, the pass in its own words. A locator naming bytes
+the pass's listing limits dropped stays a `ResourceLimitError` from a pipe, where a file
+read lets the classic record stand in: higher limits keep those bytes, and the pass then
+reads what the file read reads. A locator naming another disk is still a split set.
 
 ### What the caller sees in a forward pass
 
@@ -696,6 +722,7 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 | A ZIP from a pipe whose data descriptor understates a STORED member, or whose directory lists two same-name members in the reverse of their file order | Not readable at all (non-seekable source refused) | That member fails at the end of the pass (`FAILED` under `OnError.CONTINUE`, a raise under `STOP`); the seekable read of the same archive writes it. The only on-disk difference between the two modes | DR-5a: only crafted archives have these shapes, and matching would mean buffering every member (ADR 0010). Stage 3 |
 | A member flagged as a Windows reparse point whose data is not a reparse buffer, in a `stream_members()` pass | Yielded as a SYMLINK with no stream, retyped to FILE after the pass: its content is lost | Typed when the pass reaches it, by reading the bounded reparse header ahead and handing back a stream of the whole member, as 7z already does; `members()` already lists it as FILE. From a pipe the reparse bit arrives with the directory, so such a member is written as a file and stays one, and only a real reparse buffer becomes a link (§"What only the central directory says") | DR-5, DR-1. Stage 3 |
 | An end record whose comment and trailing bytes total exactly 65 536 bytes (a maximal comment and one junk byte), on Python 3.13 and later 3.12 releases | `BadZipFile`, so `CorruptionError` at open | Listed; the junk is trailing data. Where stdlib keeps the older window (3.11, early 3.12) it already reads it | The wider window reads everything either stdlib window reads (§"Layout"). Stage 2 |
+| A damaged ZIP64 end record or locator | `CorruptionError` at open, nothing listed | The classic record's values when none is saturated, with `ARCHIVE_EOF_MARKER_MISSING`; otherwise the local-header walk lists the members, then raises the same `CorruptionError`, as a pipe read does | The maintainer's ruling, 2026-10-14. Stage 3 |
 | A ZIP followed by more than 64 KiB of other bytes, or with its directory and end record missing, from a seekable source | `CorruptionError` at open, nothing listed | Read by the local-header walk (§"A seekable source whose end record is not in the tail"): a whole archive opens with `ARCHIVE_TRAILING_DATA`; a missing directory lists or extracts the members found, then raises the walk's error (`TruncatedError` for a cut), in the words a pipe read uses | The maintainer's ruling, 2026-10-12. Stage 3 |
 | Open of an archive with a huge declared directory | All `ZipInfo` built at open | Members built as listed; `ListingLimits` stop the walk | DR-9a, DR-15b |
 

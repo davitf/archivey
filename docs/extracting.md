@@ -461,9 +461,9 @@ Some things go differently from a pipe, on an archive that is crafted or damaged
   member that the end of the pass then removes.
 - An encrypted link that the pass wrote as a file, read with no password, fails with
   `EncryptionError`; from a file it fails with `LinkTargetNotFoundError`.
-- An archive the directory refuses as a whole (a damaged ZIP64 end record, a name
-  flagged UTF-8 that is not) raises from a file before anything is written, and from a
-  pipe after every member is written; those files stay.
+- An archive the directory refuses as a whole (a name flagged UTF-8 that is not)
+  raises from a file before anything is written, and from a pipe after every member is
+  written; those files stay.
 - A damaged member whose sizes the archive stores after its data (as every writer to a
   pipe does) can fail with a different error than from a file. The members after it are
   still written, unless decoding it read more than 4 MiB past where its data ends: then
