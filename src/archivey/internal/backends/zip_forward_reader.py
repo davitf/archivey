@@ -1686,10 +1686,11 @@ class ZipForwardReader(ZipReader):
         in both headers; the 16-bit ``0x7855`` and ``0x5855`` hold the ids in the local
         header only, and their directory copies are empty or hold the times alone. A
         file read takes the owner from the directory alone, so a local-only ``0x7855``
-        gives it no owner. Extraction applies an owner as it writes each member, and a
-        ``chown`` cannot be taken back, so a pass that used the local ids would leave
-        an owner on disk that the same archive read from a file does not. The
-        directory's owner is applied at the end of the pass instead, as the mode is.
+        gives it no owner, and the pass must end with the directory's owner too. Left
+        ``None`` here, the owner reaches extraction the way the mode does: nothing is
+        applied as the member is written, and the directory's owner is applied at the
+        end of the pass. Yielding the local ids instead would make extraction
+        ``chown`` at write time, which the directory could not take back.
 
         A backslash is a literal character until the host says otherwise, except at the
         end of the name, which makes the member a ``DIRECTORY`` until then: a DOS or
