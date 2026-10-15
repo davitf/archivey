@@ -387,6 +387,28 @@ def test_replaying_repeats_the_emit_raise_but_not_a_callback_raise() -> None:
     assert strict.snapshot().counts == {DiagnosticCode.MEMBER_NAME_NORMALIZED: 1}
 
 
+def test_replayed_raise_does_not_grow_its_traceback() -> None:
+    # A replay raises the stored exception object again. Each raise adds the frames it
+    # passes to that object's traceback, so without a reset every retry made it longer.
+    strict = DiagnosticCollector(
+        policy=DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_NORMALIZED})
+    )
+    log = EmitLog()
+    depths: list[int] = []
+    for _ in range(10):
+        with pytest.raises(DiagnosticRaisedError) as caught, strict.replaying(log):
+            _emit_norm(strict)
+        tb = caught.value.__traceback__
+        depth = 0
+        while tb is not None:
+            depth += 1
+            tb = tb.tb_next
+        depths.append(depth)
+    # The first run raises from the recording site; compare the replays with each other.
+    assert depths[1:] == [depths[1]] * (len(depths) - 1), depths
+    assert strict.snapshot().counts == {DiagnosticCode.MEMBER_NAME_NORMALIZED: 1}
+
+
 def test_operational_reentrancy_rejected() -> None:
     collector = DiagnosticCollector()
 
