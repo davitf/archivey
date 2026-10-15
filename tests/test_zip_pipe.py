@@ -969,8 +969,9 @@ def _with_bytes_before_directory(data: bytes, gap: int) -> bytes:
 def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> None:
     """The pass keeps what a directory within the listing limits takes, plus room for
     the records after it, at both ends of what follows the members: a directory right
-    after them is read however much follows it, and one further from both ends is
-    out of reach."""
+    after them is read however much junk follows the end record, as long as the step
+    from it to the end record stays in the kept bytes; past them, or for a directory
+    further from both ends, it is out of reach."""
     limits = ListingLimits(max_members=2, max_metadata_bytes=200_000)
     config = archivey.ArchiveyConfig(listing_limits=limits)
     plain = _zip([("a.txt", b"one"), ("b.txt", b"two")])

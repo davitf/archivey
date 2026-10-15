@@ -1220,10 +1220,12 @@ class ForwardTail:
         is refused, and so is a ZIP64 end record there; either in bytes the bound
         dropped is a ``ResourceLimitError``.
 
-        A missing end record is described from the first four bytes after the
-        members: they say whether the stream was cut inside the directory (only while
-        every byte after it is kept), the directory is encrypted, or no ZIP structure
-        follows at all.
+        Behind more bytes than the search window, the end record is stepped to from
+        the directory right after the members while the step stays in the kept
+        bytes; a step that runs past them is a ``ResourceLimitError``. A missing end
+        record is described from the first four bytes after the members: they say
+        whether the stream was cut inside the directory (only while every byte after
+        it is kept), the directory is encrypted, or no ZIP structure follows at all.
         Every other fault is ``find_end_record``'s, in the file read's words.
         """
         found = locate_classic_record(self.read_at, self.size)
