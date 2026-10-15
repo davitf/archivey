@@ -4498,30 +4498,34 @@ def test_hoist_merges_root_named_like_stem_into_existing_directory(
 
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("overwrite", ["rename", "replace", "error", "skip"])
+@pytest.mark.parametrize("root", ["foo (1)", "FOO (1)"])
 def test_hoist_moves_a_root_named_like_the_wrappers_aside_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    root: str,
     overwrite: str,
     dry_run: bool,
 ) -> None:
     # foo.tar holding "foo (1)/": the wrapper is foo/, and the hoist steps it aside
-    # before the merge. The aside name must not be "foo (1)", or the root merges into
-    # the wrapper itself and loses a path component.
+    # before the merge. The aside directory must not be the root's destination, or
+    # the root merges into the wrapper itself and loses a path component.
+    # "FOO (1)" is that same entry only on a case-insensitive filesystem: the case
+    # runs everywhere, but only macOS and Windows runs can fail it.
     monkeypatch.chdir(tmp_path)
-    archive = _tar(tmp_path / "foo.tar", {"foo (1)/x.txt": b"x"})
+    archive = _tar(tmp_path / "foo.tar", {f"{root}/x.txt": b"x"})
     args = ["x", "--overwrite", overwrite, str(archive)]
     args += ["--dry-run"] if dry_run else []
     assert main(args) == EXIT_OK
     err = capsys.readouterr().err
     assert "into foo/" in err
-    assert ("would move to foo (1)/" if dry_run else "moved to foo (1)/") in err
+    assert (f"would move to {root}/" if dry_run else f"moved to {root}/") in err
     assert "hoist failed" not in err
     if dry_run:
         assert sorted(p.name for p in tmp_path.iterdir()) == ["foo.tar"]
     else:
-        assert (tmp_path / "foo (1)" / "x.txt").read_bytes() == b"x"
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["foo (1)", "foo.tar"]
+        assert (tmp_path / root / "x.txt").read_bytes() == b"x"
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted([root, "foo.tar"])
 
 
 def _tar_root_with_file(path: Path, *, explicit_root: bool) -> Path:

@@ -172,19 +172,24 @@ inside the entry (`pkg/bin/a -> ../lib/a.so`) means the same thing after the mov
 does not block it. In each of these cases a line says the content was kept in the
 wrapper and why. When it runs, the hoist SHALL produce the same final layout as
 extracting directly into the cwd: directories merge into existing directories, and
-per-file collisions resolve by the overwrite policy. The hoist is a convenience, not a
-guarantee: with no `-d`, the operator accepts wherever the content lands. Before it
-moves anything, the hoist SHALL check the whole merge for a collision the policy
-cannot resolve without deleting the operator's data. Per policy: `rename` resolves
-every collision, writing the archive's entry under the library's `name (N)` spelling;
-`replace` resolves only the archive's file against the operator's file, and replaces
-that one file; `skip` resolves every collision where the archive's entry is not a
-directory, and discards the archive's copy; `error` resolves none. The hoist MUST NOT
-delete anything else the operator had, and MUST NOT remove a directory of the
-operator's under any policy. When the check finds a collision the policy does not resolve, the hoist SHALL move nothing,
-print `kept in <wrapper>/: <path> already exists` naming the first such path, and
-leave the whole root in the wrapper; the run counts as successful (exit `0`) and the
-closing summary names the wrapper. So a direct extraction's `replace` of a file by a
+per-file collisions resolve by the overwrite policy. To move a root whose name differs
+from the wrapper's, the hoist first renames the wrapper to an aside name
+`<wrapper> (N)/`, and that aside directory SHALL NOT be the entry at the root's
+destination: with nothing at `./foo`, `foo.tar` holding `foo (1)/` (or `FOO (1)/` on a
+case-insensitive filesystem) lands at `./foo (1)/`, as a direct extraction puts it, and
+not in the wrapper. The hoist is a convenience, not a guarantee: with no `-d`, the
+operator accepts wherever the content lands. Before it moves anything, the hoist SHALL
+check the whole merge for a collision the policy cannot resolve without deleting the
+operator's data. Per policy: `rename` resolves every collision, writing the archive's
+entry under the library's `name (N)` spelling; `replace` resolves only the archive's
+file against the operator's file, and replaces that one file; `skip` resolves every
+collision where the archive's entry is not a directory, and discards the archive's
+copy; `error` resolves none. The hoist MUST NOT delete anything else the operator had,
+and MUST NOT remove a directory of the operator's under any policy. When the check
+finds a collision the policy does not resolve, the hoist SHALL move nothing, print
+`kept in <wrapper>/: <path> already exists` naming the first such path, and leave the
+whole root in the wrapper; the run counts as successful (exit `0`) and the closing
+summary names the wrapper. So a direct extraction's `replace` of a file by a
 directory, which deletes the operator's file, is not reproduced: the hoist keeps the
 root instead. atool's `aunpack` keeps the content in its `Unpack-NNNN/` directory the
 same way. A collision that appears after that check (the cwd changed during the move)
@@ -196,10 +201,7 @@ When the container got the plain stem name, a sole root sharing the wrapper's ow
 collision, and the wrapper SHALL then take that root's mode and times.
 When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
 the sole root no longer shares its name, and the hoist merges the root into the existing
-`./<archive-stem>/` under the overwrite policy like any other root. Before such a merge
-the hoist renames the wrapper to its aside name `<wrapper> (N)/`, and that name SHALL
-NOT be the root's own name: a root stored as `foo (1)/` in `foo.tar` lands at
-`./foo (1)/`, as in a direct extraction, not in the wrapper. A directory stored
+`./<archive-stem>/` under the overwrite policy like any other root. A directory stored
 without owner write permission (`0o555`) SHALL still be moved: the hoist gives it owner
 read, write and search permission for the move and then puts its mode back, as a direct
 extraction into the cwd would have succeeded. After a hoist, the per-member lines

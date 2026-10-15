@@ -261,17 +261,34 @@ class _HoistConflict(Exception):
         self.dest = dest
 
 
-def _free_name(dest: Path, *, is_dir: bool, avoid: Path | None = None) -> Path:
-    """First ``name (N)`` free on disk, spelled as extraction spells its renames.
-
-    ``avoid`` is a path that is free now but must not be returned.
-    """
+def _free_name(dest: Path, *, is_dir: bool) -> Path:
+    """First ``name (N)`` free on disk, spelled as extraction spells its renames."""
     n = 1
     while True:
         candidate = dest.parent / numbered_name(dest.name, n, is_dir=is_dir)
-        if candidate != avoid and not os.path.lexists(candidate):
+        if not os.path.lexists(candidate):
             return candidate
         n += 1
+
+
+def _off_dest(side: Path, wrapper: Path, dest: Path) -> Path:
+    """Rename the aside directory ``side`` to the next ``<wrapper> (N)`` when it is the
+    entry at ``dest``; return where it is.
+
+    The root's stored name can be the aside name (``foo.tar`` holding ``foo (1)/``),
+    and on a case-insensitive filesystem a different spelling (``FOO (1)/``) is the
+    same entry too, so the filesystem decides, not the string. The next name was free
+    while ``side`` held ``dest``, so it is never ``dest``.
+    """
+    try:
+        same = os.path.samestat(os.lstat(side), os.lstat(dest))
+    except OSError:
+        return side  # nothing at ``dest``
+    if not same:
+        return side
+    free = _free_name(wrapper, is_dir=True)
+    side.rename(free)
+    return free
 
 
 def _open_up(path: Path) -> int | None:
@@ -748,12 +765,12 @@ def maybe_hoist_single_root(
             # renamed). Step it aside so the merge sees the cwd a direct extraction
             # sees. The aside name is ``<wrapper> (N)``, which no rename of the root
             # spells, as the root's name differs from the wrapper's here. The root's
-            # stored name can still be ``<wrapper> (N)`` (``foo.tar`` holding
-            # ``foo (1)/``), and the merge would then move it into the wrapper
-            # itself, so the aside name is never ``dest``.
-            side = _free_name(wrapper, is_dir=True, avoid=dest)
+            # stored name can still be that name, and the merge would then move the
+            # root into the wrapper itself, so :func:`_off_dest` moves it on.
+            side = _free_name(wrapper, is_dir=True)
             wrapper.rename(side)
             try:
+                side = _off_dest(side, wrapper, dest)
                 landed = _merge_move(
                     side / child.name, dest, overwrite, result, err, child.name, moved
                 )
