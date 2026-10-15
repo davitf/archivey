@@ -176,26 +176,27 @@ per-file collisions resolve by the overwrite policy. To move a root whose name d
 from the wrapper's, the hoist first renames the wrapper to an aside name
 `<wrapper> (N)/`, and that aside directory SHALL NOT be the entry at the root's
 destination: with nothing at `./foo`, `foo.tar` holding `foo (1)/` (or `FOO (1)/` on a
-case-insensitive filesystem) lands at `./foo (1)/`, as a direct extraction puts it, and
-not in the wrapper. The hoist is a convenience, not a guarantee: with no `-d`, the
-operator accepts wherever the content lands. Before it moves anything, the hoist SHALL
-check the whole merge for a collision the policy cannot resolve without deleting the
-operator's data. Per policy: `rename` resolves every collision, writing the archive's
-entry under the library's `name (N)` spelling; `replace` resolves only the archive's
-file against the operator's file, and replaces that one file; `skip` resolves every
-collision where the archive's entry is not a directory, and discards the archive's
-copy; `error` resolves none. The hoist MUST NOT delete anything else the operator had,
-and MUST NOT remove a directory of the operator's under any policy. When the check
-finds a collision the policy does not resolve, the hoist SHALL move nothing, print
-`kept in <wrapper>/: <path> already exists` naming the first such path, and leave the
-whole root in the wrapper; the run counts as successful (exit `0`) and the closing
-summary names the wrapper. So a direct extraction's `replace` of a file by a
-directory, which deletes the operator's file, is not reproduced: the hoist keeps the
-root instead. atool's `aunpack` keeps the content in its `Unpack-NNNN/` directory the
-same way. A collision that appears after that check (the cwd changed during the move)
-SHALL stop the hoist, leave the unmoved remainder under the wrapper (or under the
-wrapper's aside name `<wrapper> (N)/` when the wrapper's name could not be taken
-back), and exit nonzero; a filesystem error during the move does the same.
+case-insensitive filesystem) lands at `./foo (1)/` (`./FOO (1)/` for that spelling),
+as a direct extraction puts it, and not in the wrapper. The hoist is a convenience,
+not a guarantee: with no `-d`, the operator accepts wherever the content lands. Before
+it moves anything, the hoist SHALL check the whole merge for a collision the policy
+cannot resolve without deleting the operator's data. Per policy: `rename` resolves
+every collision, writing the archive's entry under the library's `name (N)` spelling;
+`replace` resolves only the archive's file against the operator's file, and replaces
+that one file; `skip` resolves every collision where the archive's entry is not a
+directory, and discards the archive's copy; `error` resolves none. The hoist MUST NOT
+delete anything else the operator had, and MUST NOT remove a directory of the
+operator's under any policy. When the check finds a collision the policy does not
+resolve, the hoist SHALL move nothing, print a line naming the first such path,
+`kept in <wrapper>/: <path> already exists`, and leave the whole root in the wrapper;
+the run counts as successful (exit `0`) and the closing summary names the wrapper. So
+a direct extraction's `replace` of a file by a directory, which deletes the operator's
+file, is not reproduced: the hoist keeps the root instead. atool's `aunpack` keeps the
+content in its `Unpack-NNNN/` directory the same way. A collision that appears after
+that check (the cwd changed during the move) SHALL stop the hoist, leave the unmoved
+remainder under the wrapper (or under the wrapper's aside name `<wrapper> (N)/` when
+the wrapper's name could not be taken back), and exit nonzero; a filesystem error
+during the move does the same.
 When the container got the plain stem name, a sole root sharing the wrapper's own name
 (`src.tar.gz` containing `src/`) SHALL be flattened in place, not treated as a
 collision, and the wrapper SHALL then take that root's mode and times.

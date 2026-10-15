@@ -4528,6 +4528,36 @@ def test_hoist_moves_a_root_named_like_the_wrappers_aside_name(
         assert sorted(p.name for p in tmp_path.iterdir()) == sorted([root, "foo.tar"])
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("overwrite", ["rename", "replace", "error", "skip"])
+def test_hoist_moves_a_file_root_named_like_the_wrapper_but_for_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    dry_run: bool,
+) -> None:
+    # file.tar holding the file "FILE": the wrapper is file/. On a case-insensitive
+    # filesystem ./FILE is the wrapper itself, which is no collision with the
+    # operator's data, so the file moves up as a direct extraction puts it. The test
+    # runs everywhere, but only macOS can fail it: on Linux the names differ, and on
+    # Windows the paths compare equal, so the hoist takes its in-place branch.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "file.tar", {"FILE": b"x"})
+    args = ["x", "--overwrite", overwrite, str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "into file/" in err
+    assert ("would move to FILE" if dry_run else "moved to FILE") in err
+    assert "keep in" not in err
+    if dry_run:
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["file.tar"]
+    else:
+        assert (tmp_path / "FILE").read_bytes() == b"x"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["FILE", "file.tar"]
+
+
 def _tar_root_with_file(path: Path, *, explicit_root: bool) -> Path:
     """``foo.tar``-style archive holding ``<stem>/x.txt``, with or without a stored
     ``<stem>/`` directory entry."""

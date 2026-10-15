@@ -271,6 +271,16 @@ def _free_name(dest: Path, *, is_dir: bool) -> Path:
         n += 1
 
 
+def _same_entry(a: Path, b: Path) -> bool:
+    """Whether ``a`` and ``b`` name the same entry on disk, which the spelling cannot
+    tell on a case-insensitive filesystem (``FILE`` and ``file``). False when either
+    cannot be stat'ed, as when nothing is at it."""
+    try:
+        return os.path.samestat(os.lstat(a), os.lstat(b))
+    except OSError:
+        return False
+
+
 def _off_dest(side: Path, wrapper: Path, dest: Path) -> Path:
     """Rename the aside directory ``side`` to the next ``<wrapper> (N)`` when it is the
     entry at ``dest``; return where it is.
@@ -280,11 +290,7 @@ def _off_dest(side: Path, wrapper: Path, dest: Path) -> Path:
     same entry too, so the filesystem decides, not the string. The next name was free
     while ``side`` held ``dest``, so it is never ``dest``.
     """
-    try:
-        same = os.path.samestat(os.lstat(side), os.lstat(dest))
-    except OSError:
-        return side  # nothing at ``dest``
-    if not same:
+    if not _same_entry(side, dest):
         return side
     free = _free_name(wrapper, is_dir=True)
     side.rename(free)
@@ -687,7 +693,10 @@ def maybe_hoist_single_root(
         lambda: child.is_dir() and not _disk_links_stay_inside(child),
     )
     dest = wrapper.parent / child.name
-    if reason is None and dest != wrapper:
+    # On a case-insensitive filesystem a root spelled ``FILE`` in ``file/`` has the
+    # wrapper itself at ``dest``. That is not the operator's data: the wrapper moves
+    # aside before the merge, so the check skips it, as the dry run does.
+    if reason is None and dest != wrapper and not _same_entry(dest, wrapper):
         try:
             clash = _first_clash(
                 child.name,
