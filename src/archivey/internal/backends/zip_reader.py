@@ -1311,7 +1311,8 @@ class ZipReader(BaseArchiveReader):
     def _walk_past_members(self) -> int | None:
         """Where the members end, found by walking their local headers from the start:
         for an end record the tail search does not find, behind more trailing bytes
-        than its window holds, or one that cannot be used. ``None`` when the walk does not get past the members.
+        than its window holds, or one that cannot be used. ``None`` when the walk
+        does not get past the members.
 
         The walk is the one a read from a pipe makes, with no data decoded: a member
         whose local header states its size is seeked over, and a bit-3 member's data
