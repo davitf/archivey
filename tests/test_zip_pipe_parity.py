@@ -54,16 +54,9 @@ _PasswordArg = str | list[str] | None
 # the error type, the files on disk the same. A link the pass wrote as a file keeps
 # the error its data read gave (no password, ``EncryptionError``); from a file the
 # link is refused for its missing target (``LinkTargetNotFoundError``).
-# ``"disk"``: the directory refuses the archive, which a file read finds before
-# writing anything and the pass only after writing every member.
-# The file read is to stop refusing these (design.md; task 4.1), which removes the
-# rows.
 _DIFFERS: dict[str, str] = {
     "sevenzip/encrypted_link.zip-no-password": "error",
     "sevenzip/encrypted_link.zip-wrong": "error",
-    "adversarial-zip-name-wtf8-flagged": "disk",
-    "adversarial-zip-name-invalid-utf8-flagged": "disk",
-    "adversarial-zip-name-overlong-utf8-flagged": "disk",
 }
 
 
@@ -186,10 +179,7 @@ def _assert_same(
         (tmp_path / side).mkdir(exist_ok=True)
     piped_tree = _tree(tmp_path / "pipe", since=started)
     tree = _tree(tmp_path / "file", since=started)
-    if differs == "disk":
-        assert tree == {} != piped_tree
-    else:
-        assert piped_tree == tree
+    assert piped_tree == tree
 
 
 @pytest.mark.filterwarnings("ignore:Duplicate name")
@@ -547,6 +537,75 @@ def test_damaged_end_records_read_from_a_file_as_from_a_pipe(
         for piped in (False, True):
             assert "archive_eof_marker_missing" in _diagnostic_codes(data, piped=piped)
     _assert_same(data, None, tmp_path)
+
+
+def _with_modes(*, pipe: bool) -> bytes:
+    """Three members whose directory entries give mode 0o751, which their local
+    headers cannot hold."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n in range(3):
+            info = zipfile.ZipInfo(f"m{n}.txt", (2020, 1, 1, 0, 0, 0))
+            info.external_attr = 0o751 << 16
+            info.create_system = 3
+            zf.writestr(info, bytes(range(256)) * (n + 2))
+    return bytes(out.getvalue())
+
+
+def _damaged_directory_params() -> Iterator[pytest.ParameterSet]:
+    for kind, pipe in (("sized", False), ("bit3", True)):
+        data = bytearray(_with_modes(pipe=pipe))
+        first = data.index(b"PK\x01\x02")
+        second = data.index(b"PK\x01\x02", first + 4)
+        data[second : second + 4] = b"XXXX"
+        yield pytest.param(bytes(data), id=f"{kind}-second-entry")
+
+
+@pytest.mark.parametrize("data", list(_damaged_directory_params()))
+def test_a_damaged_directory_reads_from_a_file_as_from_a_pipe(
+    data: bytes, tmp_path: Path
+) -> None:
+    """An unreadable directory entry: the entries before it list from the directory
+    (its mode with them), the members after it from their local headers, then the
+    damage is raised; both reads list, read and write alike."""
+    from_file = _report(data, piped=False)
+    assert from_file == _report(data, piped=True)
+    assert isinstance(from_file, tuple)
+    members, error = from_file
+    assert isinstance(members, list)
+    assert [m["name"] for m in members] == ["m0.txt", "m1.txt", "m2.txt"]
+    assert [m["mode"] for m in members] == [0o751, None, None]
+    assert error is not None and "Bad magic number for central directory" in error[1]
+    started = time.time() - 1
+    for side in ("file", "pipe"):
+        _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
+    tree = _tree(tmp_path / "file", since=started)
+    assert len(tree) == 3 and _tree(tmp_path / "pipe", since=started) == tree
+
+
+@pytest.mark.parametrize("cd_offset", [7, 0xFFFF_FFF0], ids=["by-7", "huge"])
+def test_a_directory_offset_past_the_directory_writes_nothing_either_way(
+    cd_offset: int, tmp_path: Path
+) -> None:
+    """A stored directory offset larger than where the directory is moves every
+    member offset back by the difference, onto bytes that are no local header. That
+    shift is what a stub sliced off the source gives (``start_offset``), so it is not
+    refused: a file read lists the directory's entries and each read fails, the pass
+    finds no local header for them and lists none. Neither writes anything, as
+    Info-ZIP unzip and 7-Zip extract nothing."""
+    data = bytearray(_members_zip(pipe=False))
+    eocd = data.rindex(b"PK\x05\x06")
+    (real,) = struct.unpack_from("<I", data, eocd + 16)
+    struct.pack_into("<I", data, eocd + 16, min(real + cd_offset, 0xFFFF_FFF0))
+    started = time.time() - 1
+    results = [
+        _extracted(bytes(data), tmp_path / side, piped=side == "pipe", password=None)
+        for side in ("file", "pipe")
+    ]
+    assert results[0] == results[1]
+    for side in ("file", "pipe"):
+        (tmp_path / side).mkdir(exist_ok=True)
+        assert _tree(tmp_path / side, since=started) == {}
 
 
 def test_unusable_end_records_behind_trailing_bytes_walk_the_members_once(

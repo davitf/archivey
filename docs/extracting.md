@@ -284,9 +284,10 @@ The members listed before the damage are written, and then the call raises the d
 usually `TruncatedError` or `CorruptionError`, under either `OnError`. No report is
 returned. This is what unrar and 7-Zip do, and the order `stream_members()` gives. A hard
 link in that prefix still gets its content, because its source always comes before it. A
-7z or ZIP keeps its member list in one index, so damage there fails `open_archive()` and
-nothing is written. A ZIP read from a pipe reads that index last, so damage there is
-found after every member is written, and those files stay
+7z keeps its member list in one index, so damage there fails `open_archive()` and
+nothing is written. A ZIP whose central directory is damaged lists the entries before
+the damage and then the members its local headers hold, from a file or a pipe alike,
+so the same files are written before the damage is raised
 ([A ZIP from a pipe](#a-zip-from-a-pipe)).
 
 To abort the whole archive on the first unsafe member (fail-closed strict security),
@@ -428,7 +429,9 @@ too), removes what it wrote for a member the directory makes a device or another
 file, and moves a member whose DOS name uses `\` as a separator to its real name. Links
 are made only after the last member is written. A member the directory does not list (an
 update appended to the archive, or a member planted between two others) is removed and
-reported as `ARCHIVE_UNLISTED_DATA`.
+reported as `ARCHIVE_UNLISTED_DATA`. When the directory is damaged part way, it does
+this for the members it lists before the damage; the rest stay as their headers
+describe them, as from a file, and the damage is raised.
 
 The selection is made again at the end, on what each member became. A `members=` list
 matches every name a member could end with, so the pass writes any member the list may
@@ -461,9 +464,6 @@ Some things go differently from a pipe, on an archive that is crafted or damaged
   member that the end of the pass then removes.
 - An encrypted link that the pass wrote as a file, read with no password, fails with
   `EncryptionError`; from a file it fails with `LinkTargetNotFoundError`.
-- An archive the directory refuses as a whole (a name flagged UTF-8 that is not)
-  raises from a file before anything is written, and from a pipe after every member is
-  written; those files stay.
 - A damaged member whose sizes the archive stores after its data (as every writer to a
   pipe does) can fail with a different error than from a file. The members after it are
   still written, unless decoding it read more than 4 MiB past where its data ends: then

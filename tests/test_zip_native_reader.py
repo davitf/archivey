@@ -60,6 +60,8 @@ def _central_headers(data: bytes) -> list[int]:
 
 
 # --- A damaged directory lists, then raises -----------------------------------------
+# The entries before the damage list from the directory, the members after it from
+# their local headers, as a read from a pipe lists them; then the damage is raised.
 
 
 def _with_bad_third_header() -> bytes:
@@ -83,28 +85,40 @@ def _with_cut_header_after_the_second() -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("build", "match"),
+    ("build", "match", "names"),
     [
-        pytest.param(_with_bad_third_header, "Bad magic number", id="bad-signature"),
+        pytest.param(
+            _with_bad_third_header,
+            "Bad magic number",
+            ["a.txt", "b.txt", "c.txt"],
+            id="bad-signature",
+        ),
         pytest.param(
             _with_cut_header_after_the_second,
             "Truncated central directory",
+            ["a.txt", "b.txt"],
             id="cut-header",
         ),
     ],
 )
-def test_damaged_directory_lists_the_entries_before_the_damage(
-    build: object, match: str
+def test_damaged_directory_lists_the_members_the_local_headers_hold(
+    build: object, match: str, names: list[str]
 ) -> None:
     data = build()  # type: ignore[operator]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
         report = reader.members_report()
-        assert [m.name for m in report.members] == ["a.txt", "b.txt"]
+        assert [m.name for m in report.members] == names
         assert isinstance(report.error, CorruptionError)
         assert match in str(report.error)
-        # The members before the damage read, with the overlap guard's bounds from
-        # the offsets the walk read.
-        assert reader.read(report.members[1]) == b"b.txtb.txtb.txt"
+        # Every member listed reads, with the overlap guard's bounds from the
+        # offsets of both walks.
+        for member in report.members:
+            assert reader.read(member) == member.name.encode() * 3
+        # The directory's entries keep its fields; the member past the damage has
+        # only what its local header holds.
+        assert report.members[0].mode is not None
+        if len(names) == 3:
+            assert report.members[2].mode is None
         with raises_corruption_not_truncation(match=match):
             reader.members()
         assert reader.info.member_count is None
@@ -116,7 +130,7 @@ def test_damaged_directory_iteration_yields_then_raises() -> None:
         with raises_corruption_not_truncation(match="Bad magic number"):
             for member in reader:
                 seen.append(member.name)
-    assert seen == ["a.txt", "b.txt"]
+    assert seen == ["a.txt", "b.txt", "c.txt"]
 
 
 def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> None:
@@ -126,7 +140,7 @@ def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> N
     with open_archive(io.BytesIO(_with_bad_third_header())) as reader:
         with raises_corruption_not_truncation(match="Bad magic number"):
             reader.extract_all(dest)
-    assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "b.txt"]
+    assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "b.txt", "c.txt"]
 
 
 # --- Version needed above 6.3 -------------------------------------------------------

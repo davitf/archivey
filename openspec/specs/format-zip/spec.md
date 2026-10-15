@@ -189,7 +189,7 @@ SHALL raise `UnsupportedFeatureError` naming Strong Encryption rather than
 - **WHEN** the central directory cannot be read and no archive extra data record sits
   where it starts
 - **THEN** listing raises `CorruptionError`, not `UnsupportedFeatureError`, after the
-  entries before the damage
+  entries before the damage and the members the local headers hold past it
 
 ### Requirement: Read a non-seekable ZIP source in one forward pass
 
@@ -414,14 +414,18 @@ while 7-Zip searches further back and lists the real members.
 ### Requirement: List a damaged ZIP central directory up to the damage
 
 The central directory SHALL be walked as members are listed, so a damaged entry costs
-the entries from it on, not the archive (DR-2). An entry whose signature is wrong, or
-whose 46-byte fixed header the directory cuts short, SHALL make the listing raise
-`CorruptionError` after the members before it: `members()` raises,
-`members_report()` returns those members with the error, iteration yields them and then
-raises, and `extract_all()` writes them and then raises. A listed member before the
-damage SHALL read. `ArchiveInfo.member_count` SHALL be `None` when the walk did not
-complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise `CorruptionError`
-the same way, at its entry. A name, extra field or comment that runs past the
+the directory's fields from it on, not the archive (DR-2). An entry whose signature is
+wrong, or whose 46-byte fixed header the directory cuts short, SHALL make the listing
+raise `CorruptionError` after the members before it and the members the local headers
+hold past it, which a read from a pipe lists the same way: those keep only what their
+local header holds (no mode, host or comment), and a member the directory already
+listed, by offset, is not listed again. `members()` raises, `members_report()` returns
+those members with the error, iteration yields them and then raises, and
+`extract_all()` writes them and then raises. Every listed member SHALL read. A walk over
+the local headers that stops first (a cut, a listing limit) raises its own error
+instead, as a pipe read meets it first. `ArchiveInfo.member_count` SHALL be `None` when
+the walk did not complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise
+`CorruptionError` the same way, at its entry. A name, extra field or comment that runs past the
 directory's end can only be the last entry's; it is the end-record mismatch above, not
 damage. A local-header offset past the file's end SHALL raise `CorruptionError` when
 that member opens, never `TruncatedError` (the directory follows every local header, so
@@ -432,9 +436,10 @@ large to seek to.
 
 | Archive | Expected |
 | --- | --- |
-| Third central header's signature overwritten | `a.txt`, `b.txt` listed, then `CorruptionError` naming a bad magic number; both read |
-| A 10-byte header fragment after the second entry, inside the declared directory size | The same, `CorruptionError` naming a truncated central directory |
-| Either, through `for member in reader` or `extract_all()` | Two members yielded or written, then `CorruptionError` |
+| Third central header's signature overwritten | `a.txt`, `b.txt` listed from the directory, `c.txt` from its local header (no mode), then `CorruptionError` naming a bad magic number; all three read |
+| A 10-byte header fragment after the second entry, inside the declared directory size | `a.txt`, `b.txt` listed (no third local header), then `CorruptionError` naming a truncated central directory |
+| The first, through `for member in reader` or `extract_all()` | Three members yielded or written, then `CorruptionError` |
+| Second central header's signature overwritten, from a file and from a pipe | The same listing, mode from the directory for the first member only, the same files written |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 
 ### Requirement: Read ZIP members whatever version they say they need
