@@ -177,11 +177,13 @@ Two things are ZIP-specific rather than general in the shared detector:
 
 archivey's own parser (`internal/backends/zip_parser.py`, ADR
 [0020](../decisions/0020-native-zip-reader.md)) finds the end record at open and walks
-the central directory (the CDH run) as members are listed; nothing else is read at
-open but the trailing-data scan. Each listed member keeps a small locator
-(`_ZipLocator`: offsets, sizes, CRC, flags, method, and what its open needs), not the
-directory entry, so an entry's extra field is not kept alive. `reader.get()` and name
-lookup are satisfied from the listing with no further archive I/O.
+the central directory (the CDH run) as members are listed. Open reads nothing else but
+the trailing-data scan, unless the tail search finds no end record: then open walks the
+local headers from the start (§1, and the "no end record" row below). Each listed member
+keeps a small locator (`_ZipLocator`: offsets, sizes, CRC, flags, method, and what its
+open needs), not the directory entry, so an entry's extra field is not kept alive.
+`reader.get()` and name lookup are satisfied from the listing with no further archive
+I/O.
 
 The walk records each entry's local-header offset for the overlap guard (§4) and counts
 the entries for `member_count`. A member opened before the listing has finished (a

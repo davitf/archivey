@@ -517,7 +517,7 @@ Both write the same files.
 | `JUNK` where the directory should start | Three members, then `CorruptionError`: the bytes after member #2 are not a ZIP header |
 | `JUNK` after a whole directory, where the end record should be | Three members, then `CorruptionError` naming the bytes after the central directory |
 | Cut inside the first local header | `TruncatedError` at open |
-| Any of these with bit-3 members | The same members, each with its descriptor's CRC and sizes; a pipe read lists and extracts the same |
+| Any of these with bit-3 members | The same members, each with its descriptor's CRC and sizes; a pipe read lists and extracts the same, and for a cut raises in the same words (junk after a member raises in different words, as above) |
 | A deflated bit-3 member whose descriptor states an uncompressed size of 2^62 or 2^64 − 1, or a wrong CRC, cut inside the directory | Listed with that size and CRC32; its read and its extraction fail; from a pipe it is listed with the 11 bytes it holds, without the wrong CRC32, and its read fails; both listings raise the same `TruncatedError`; nothing is written |
 
 ### Requirement: Apply max_members while reading a ZIP directory
