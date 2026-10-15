@@ -14,6 +14,7 @@ import re
 import subprocess
 import tarfile
 import zipfile
+import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import BinaryIO
@@ -337,3 +338,84 @@ def test_source_closed_with_no_member_is_a_usage_error_naming_no_member(
         match=r"^Cannot read this stream: its source has been closed\.$",
     ):
         act(tmp_path)
+
+
+# --- codec translators show the library's text, not its repr -------------------------
+
+
+def _library_error(module: str, attr: str, text: str) -> Exception:
+    """``module.attr(text)``, or a skip when the optional library is not installed.
+
+    Loaded through ``deps`` as a codec open would: a translator only knows a lazily
+    imported library's types once it has been loaded."""
+    from archivey.internal.streams.codecs import deps
+
+    lib = getattr(deps, module).load()
+    if lib is None:
+        pytest.skip(f"requires {module}")
+    return getattr(lib, attr)(text)
+
+
+def _zstd_error(text: str) -> Exception:
+    from archivey.internal.streams.codecs import deps
+
+    if deps.zstd is None:
+        pytest.skip("requires a zstd library")
+    return deps.zstd.ZstdError(text)
+
+
+_LIBRARY_ERRORS: list[tuple[str, str, Callable[[], Exception]]] = [
+    ("gzip", "Error reading gzip stream: ", lambda: zlib.error("invalid stored block")),
+    ("zlib", "Error reading zlib stream: ", lambda: zlib.error("invalid distance")),
+    ("deflate", "Error reading deflate stream: ", lambda: zlib.error("invalid code")),
+    (
+        "bzip2",
+        "bzip2 stream is corrupt: ",
+        lambda: OSError("Invalid data stream"),
+    ),
+    (
+        "deflate64",
+        "Error reading deflate64 stream: ",
+        lambda: ValueError("Invalid block type"),
+    ),
+    (
+        "lz4",
+        "Error reading lz4 stream: ",
+        lambda: RuntimeError("LZ4F_decompress failed with code: ERROR_GENERIC"),
+    ),
+    (
+        "brotli",
+        "Error reading brotli stream: ",
+        lambda: _library_error("brotli", "error", "BrotliDecompress failed"),
+    ),
+    (
+        "zstd",
+        "Error reading zstd stream: ",
+        lambda: _zstd_error("Unknown frame descriptor"),
+    ),
+    (
+        "ppmd",
+        "Error reading PPMd stream: ",
+        lambda: _library_error("pyppmd", "PpmdError", "Corrupted input data"),
+    ),
+    # No text at all: the type name stands in, so the message does not end at a colon.
+    ("ppmd", "Error reading PPMd stream: ", lambda: ValueError()),
+]
+
+
+@pytest.mark.parametrize(
+    ("codec_name", "prefix", "make_error"),
+    _LIBRARY_ERRORS,
+    ids=[f"{name}-{i}" for i, (name, _, _) in enumerate(_LIBRARY_ERRORS)],
+)
+def test_a_codec_shows_the_librarys_text_not_its_repr(
+    codec_name: str, prefix: str, make_error: Callable[[], Exception]
+) -> None:
+    from archivey.internal.streams.codecs import Codec, stream_codec
+
+    exc = make_error()
+    translated = stream_codec(Codec(codec_name)).translate(exc)
+    assert isinstance(translated, ArchiveyError)
+    expected = str(exc) or type(exc).__name__
+    assert translated.raw_message == prefix + expected
+    assert f"{type(exc).__name__}(" not in str(translated)

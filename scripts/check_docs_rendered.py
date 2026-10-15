@@ -55,6 +55,7 @@ UNRESOLVED_OK = {
     # an internal module path.
     "archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
     "archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    "archivey.exceptions.exception_detail",
     "archivey.exceptions.raw_message_of",
     # Members the page shows in a table or not at all, so they get no heading anchor.
     "archivey.ArchiveFormat.DIRECTORY",

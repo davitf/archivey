@@ -100,6 +100,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.internal.base_reader import (
     BaseArchiveReader,
@@ -926,8 +927,9 @@ def _pycdlib_detail(exc: Exception) -> str | None:
     A ``PyCdlibException`` names what pycdlib found wrong ("Invalid ISO9660 version"),
     so it is worth showing. The other ``_PYCDLIB_ERRORS`` come from pycdlib's parser
     stepping on bytes that are not there or not valid (``struct.error: unpack_from
-    requires a buffer of at least 16 bytes``, ``IndexError``); their text describes
-    Python, not the image. They stay available as ``__cause__``.
+    requires a buffer of at least 16 bytes``, ``IndexError``) or from this backend's
+    own code; their text describes Python, not the image, so a caller that shows it
+    names the type with it.
     """
     if _pycdlib_exc is not None and isinstance(exc, _pycdlib_exc.PyCdlibException):
         return str(exc) or None
@@ -1720,9 +1722,13 @@ class IsoReader(BaseArchiveReader):
         if isinstance(exc, _PYCDLIB_ERRORS):
             detail = _pycdlib_detail(exc)
             if detail is None:
+                # Not pycdlib's own verdict: a parser stepping on bad bytes, or this
+                # backend's own code reading pycdlib internals (see _PYCDLIB_ERRORS).
+                # Nothing here tells the two apart, so the message names the error
+                # and does not say the image is damaged.
                 detail = (
-                    "a structure in the image is damaged or cut short, so it could "
-                    "not be parsed"
+                    "a structure in the image could not be parsed "
+                    f"({exception_detail(exc, with_type=True)})"
                 )
             return CorruptionError(f"Error reading ISO image: {detail}")
         return None
