@@ -640,9 +640,9 @@ decodes nothing), so a descriptor that lies is listed with the size and CRC32 it
 states, as a directory entry would be, and its read and extraction fail by the size,
 digest or declared ratio check; a pipe read lists the size it measured, and no CRC32
 when the data does not match the descriptor's, and fails the member at the end of its
-data, in other words. Junk after a bit-3 member
-makes the two reads raise in different words: the pipe decodes the member and looks
-for a descriptor with its CRC, the file read for one followed by a ZIP signature.
+data, in different words. Junk after a bit-3 member makes the two reads raise in
+different words: the pipe decodes the member and looks for a descriptor with its CRC,
+the file read for one followed by a ZIP signature.
 
 `members()` is complete-or-raise; `members_report()` returns the members found and the
 error; `__iter__` yields them, then raises; `extract_all` writes them, then raises. This
@@ -652,9 +652,11 @@ each member as it arrives, and the walk charges `max_members` on each local head
 normal archive pays nothing for it.
 
 A walk that meets more local headers than `max_members` stops there and the archive
-opens. The listing then raises the limit with nothing listed, as when the directory's
-entries cross it: only damage keeps the members before it, where a pipe read, which
-streams, yields them first.
+opens. The listing then raises the limit as when the directory's entries cross it:
+a streaming pass, from a file as from a pipe, yields the members before it first, and
+a random-access listing lists none, since there only damage keeps the members before
+it. The listing is the walk's, not an upfront index, so `members_report_if_available()`
+returns `None` until a pass publishes a report, as for a pipe read.
 
 ## What the parser removes
 

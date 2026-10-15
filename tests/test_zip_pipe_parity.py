@@ -24,7 +24,12 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
+from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.exceptions import (
+    ArchiveyError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from archivey.types import HashAlgorithm, OnError
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
@@ -390,9 +395,37 @@ def test_a_descriptor_a_file_read_cannot_check_is_listed_as_it_states(
     assert str(piped.error) == str(report.error)
     started = time.time() - 1
     for side in ("file", "pipe"):
-        assert isinstance(
-            _extracted(data, tmp_path / side, piped=side == "pipe", password=None),
-            (type, list),
+        extracted = _extracted(
+            data, tmp_path / side, piped=side == "pipe", password=None
         )
+        assert extracted is type(report.error)
         (tmp_path / side).mkdir(exist_ok=True)
         assert _tree(tmp_path / side, since=started) == {}
+
+
+def _stream_past_the_limit(data: bytes, *, seekable: bool) -> object:
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    source = io.BytesIO(data) if seekable else NonSeekableBytesIO(data)
+    yielded = []
+    with archivey.open_archive(source, streaming=True, config=config) as reader:
+        with pytest.raises(ResourceLimitError) as raised:
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                yielded.append((member.name, stream.read()))
+        return yielded, str(raised.value), reader.members_report_if_available()
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sized", "bit3"])
+def test_a_zip_with_no_end_record_streams_to_the_limit_from_a_file_as_from_a_pipe(
+    pipe: bool,
+) -> None:
+    """Streamed, a file read yields the members before ``max_members`` and then
+    raises it, as a pipe read does; neither has a report it can give without a
+    scan."""
+    data = _members_zip(pipe=pipe)
+    data = data[: data.index(b"PK\x01\x02")]
+    from_file = _stream_past_the_limit(data, seekable=True)
+    assert from_file == _stream_past_the_limit(data, seekable=False)
+    yielded, _error, report = from_file
+    assert [name for name, _ in yielded] == ["m0.txt", "m1.txt"]
+    assert report is None

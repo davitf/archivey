@@ -1150,8 +1150,11 @@ class ZipReader(BaseArchiveReader):
         what the local headers hold is listed, then the walk's error is raised, as a
         cut TAR lists and raises. The end record stands in for none: no directory, no
         comment, no trailing bytes. The overlap guard's bounds are the walk's offsets,
-        ending where the members it passed whole end; the count is unknown."""
+        ending where the members it passed whole end; the count is unknown. The
+        listing is the walk's, not an upfront index, so ``members_report_if_available``
+        answers as for a pipe read: ``None`` until a pass has published one."""
         self._salvage = walked
+        self._MEMBER_LIST_UPFRONT = False
         members_end = walked.members_end
         self._end = EndRecord(
             eocd_offset=members_end,
@@ -1177,10 +1180,10 @@ class ZipReader(BaseArchiveReader):
         is scanned for its descriptor, so the walk reads at most the source once, as a
         pipe read does. Each local header is charged against ``max_members`` before
         its data is passed, as the pipe read charges it: past the limit the walk
-        stops there and the archive opens; the listing then raises the limit with
-        nothing listed, since only damage keeps the members before it
-        (``_materialize_members``), where a pipe read yields them first.
-        Run once, at open, after the tail search and before anything is listed.
+        stops there and the archive opens. A pass that lists as it goes (streaming,
+        from a file or a pipe) then yields the members before the limit and raises
+        it; a random-access listing raises it with nothing listed, since there only
+        damage keeps the members before it (``_materialize_members``). Run once, at open, after the tail search and before anything is listed.
 
         What the walk found is kept in ``_salvage`` (offsets and descriptors, and
         why it stopped), for ``_open_index`` to list when no end record follows.
@@ -1208,7 +1211,7 @@ class ZipReader(BaseArchiveReader):
                     # Kept like any other stop: the archive opens, and its listing
                     # raises the limit, as at a directory entry past it.
                     walked.error = _max_members_error(
-                        max_members, "ZIP file's local headers name"
+                        max_members, "ZIP local headers name"
                     )
                     return None
                 try:

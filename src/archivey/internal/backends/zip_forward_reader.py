@@ -1589,7 +1589,9 @@ class ZipForwardReader(ZipReader):
             if entry is None:
                 break
             if max_members is not None and index >= max_members:
-                raise _max_members_error(max_members, "ZIP stream's local headers name")
+                error = _max_members_error(max_members, "ZIP local headers name")
+                self._stamp_error_context(error)
+                raise error
             member = self._local_member(entry, index)
             aes = cast("_ZipLocator", member._raw).aes
             self._pass_data = _PassData(

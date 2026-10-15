@@ -487,9 +487,11 @@ data the file cuts, or whose descriptor the walk does not find, SHALL be listed 
 and reading it SHALL raise the walk's error. `ArchiveInfo.member_count` SHALL be
 `None`. With no member before the walk's error, `open_archive` SHALL raise it. A walk
 that meets more local headers than `max_members` SHALL stop there and the archive
-SHALL open; the listing then raises `ResourceLimitError` with nothing listed, as when
-the directory's entries cross the limit (only damage keeps the members before it; a
-pipe read, which streams, yields them first).
+SHALL open; the listing then raises `ResourceLimitError` as when the directory's
+entries cross the limit: a streaming pass, from a file as from a pipe, yields the
+members before it first, and a random-access listing lists none.
+`members_report_if_available()` SHALL return `None` for a ZIP listed from its local
+headers, as for a pipe read, until a pass has published a report.
 
 Two shapes read differently from a pipe, which decodes each member as it passes:
 
