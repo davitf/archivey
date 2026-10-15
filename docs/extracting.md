@@ -417,18 +417,18 @@ Archive order and identity matter more than “the” name.
 
 ## A ZIP from a pipe
 
-A ZIP's central directory, which holds its member types, permissions and comments,
-comes after the last member. Read from a pipe (`streaming=True`), `extract_all` writes
-each member as the header in front of it describes it: a regular file or a folder. When
-the pass reaches the directory, it brings the files on disk to what extracting the same
-archive from a file gives. It applies permissions, turns a member the directory makes a
-symlink into a link (calling your `filter` and the policy checks again first, so a link
-that escapes the destination is refused from a pipe too), removes what it wrote for a
-member the directory makes a device or another special file, and moves a member whose
-DOS name uses `\` as a separator to its real name. Links are made only after the last
-member is written. A member the directory does not list (an update appended to the
-archive, or a member planted between two others) is removed and reported as
-`ARCHIVE_UNLISTED_DATA`.
+A ZIP's central directory, which holds its member types, permissions, owners and
+comments, comes after the last member. Read from a pipe (`streaming=True`),
+`extract_all` writes each member as the header in front of it describes it: a regular
+file or a folder. When the pass reaches the directory, it brings the files on disk to
+what extracting the same archive from a file gives. It applies permissions and owners,
+turns a member the directory makes a symlink into a link (calling your `filter` and the
+policy checks again first, so a link that escapes the destination is refused from a pipe
+too), removes what it wrote for a member the directory makes a device or another special
+file, and moves a member whose DOS name uses `\` as a separator to its real name. Links
+are made only after the last member is written. A member the directory does not list (an
+update appended to the archive, or a member planted between two others) is removed and
+reported as `ARCHIVE_UNLISTED_DATA`.
 
 The selection is made again at the end, on what each member became. A `members=` list
 matches every name a member could end with, so the pass writes any member the list may

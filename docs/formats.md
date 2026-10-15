@@ -81,7 +81,7 @@ The fields that change in practice:
 
 | Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
-| ZIP | `is_current`, `link_target_member`; from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| ZIP | `is_current`, `link_target_member`; from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
@@ -107,14 +107,14 @@ yielded.
   used.
 - **From a pipe**, open with ``streaming=True``: the pass finds each member by its local
   header, and reads the central directory after the last one. A member is yielded with
-  what its local header says, so its ``mode``, ``create_system`` and ``comment`` are
-  ``None`` and a symlink is a ``FILE`` until the pass reaches the directory; then every
-  member is updated in place, and ``member_state_final`` turns ``True``. Extraction
-  writes each member as it arrives and, at the end of the pass, applies modes, makes the
-  links (after running your ``filter`` again on them) and removes what a member the
-  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A
-  member the directory does not list (an appended update, a planted entry) is dropped
-  and reported as ``ARCHIVE_UNLISTED_DATA``.
+  what its local header says, so its ``mode``, ``create_system``, ``comment``, ``uid``
+  and ``gid`` are ``None`` and a symlink is a ``FILE`` until the pass reaches the
+  directory; then every member is updated in place, and ``member_state_final`` turns
+  ``True``. Extraction writes each member as it arrives and, at the end of the pass,
+  applies modes and owners, makes the links (after running your ``filter`` again on
+  them) and removes what a member the directory types ``OTHER`` wrote, so the files on
+  disk match a read from a file. A member the directory does not list (an appended
+  update, a planted entry) is dropped and reported as ``ARCHIVE_UNLISTED_DATA``.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
   bit-3 PPMd member is decoded in a child process, so
@@ -184,6 +184,8 @@ yielded.
   directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.STRICT`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- Owner ids: Info-ZIP `zip` on Unix records `uid` / `gid`, read as unzip 6.00 reads
+  them; `uname` / `gname` stay `None`, and Windows writers store no owner.
 - An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as
   `MemberType.OTHER`, so extraction skips it. One that stores data is a `FILE` (`zip -FI`
   writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in

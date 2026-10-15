@@ -111,8 +111,8 @@ Its other limitations:
   ends, so the member objects you already hold are updated then.
   `member.member_state_final` is `False` until then and `True` after. A ZIP read
   from a pipe changes more: its central directory comes after the last member, so
-  each member is yielded with what its local header says (no `mode`, host or comment,
-  and a symlink is a `FILE`) and is updated from the directory when the pass reaches
+  each member is yielded with what its local header says (no `mode`, owner, host or
+  comment, and a symlink is a `FILE`) and is updated from the directory when the pass reaches
   it ([ZIP](formats.md#zip)). A ZIP, 7z or RAR 4 symlink whose target has not been
   read (`read_link_targets=False`) also reads `False`, in either mode, until `open()`
   or `extract_all()` reads it.
