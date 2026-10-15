@@ -490,9 +490,10 @@ digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
 A RAR5 owner record (`rar -ow`) SHALL fill `uname`, `gname`, `uid` and `gid`, each
 only when the record's flags announce it. A RAR 1.5-4 `UOW` service header SHALL fill
 `uname` and `gname` of the file it follows. With no owner record all four SHALL be
-`None`. A record too short for what its flags announce, and a `UOW` header whose data
-holds no NUL, SHALL be dropped like any other malformed optional record
-(`MEMBER_HEADER_RECORD_SKIPPED`).
+`None`. A record too short for what its flags announce SHALL be dropped like any other
+malformed optional record (`MEMBER_HEADER_RECORD_SKIPPED`). A `UOW` header whose data
+holds no NUL SHALL give no owner and SHALL be reported the same way, once, on the file it
+follows; one with no file before it SHALL be ignored.
 
 A **RAR5 redirect** member — symlink, hard link, or file copy — SHALL surface **no**
 stored digest. Such a member keeps its target in a header field and stores no data

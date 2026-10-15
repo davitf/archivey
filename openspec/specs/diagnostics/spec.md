@@ -178,8 +178,9 @@ returned bytes, since nothing unchecked was delivered.
 
 #### Scenario: A malformed optional member-header record is reported, not raised
 
-- **WHEN** a backend drops an optional metadata record inside a member header because it
-  could not be parsed, and lists the member without it
+- **WHEN** a backend drops an optional metadata record inside a member header, or in a
+  header that belongs to one member (a RAR 1.5-4 `UOW` owner header), because it could
+  not be parsed, and lists the member without it
 - **THEN** it SHALL emit `MEMBER_HEADER_RECORD_SKIPPED` with `MemberHeaderRecordContext`,
   attached to that member
 - **AND** `record` SHALL name the record as the format names it, and `record_id` SHALL

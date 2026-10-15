@@ -167,7 +167,9 @@ def test_rar4_uow_data_reads_as_unrar_reads_it(
 
 def test_rar4_uow_without_an_owner_is_refused_under_strict() -> None:
     data = _with_uow_header(b"root")
-    with pytest.raises(ArchiveyError, match="UOW owner header"):
+    with pytest.raises(
+        ArchiveyError, match="UOW owner header has no NUL in its owner data, so"
+    ):
         with open_archive(
             io.BytesIO(data),
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
@@ -175,19 +177,49 @@ def test_rar4_uow_without_an_owner_is_refused_under_strict() -> None:
             archive.members()
 
 
-def test_rar4_owner_after_the_last_part_of_a_split_member(tmp_path: Path) -> None:
+def test_rar4_stacked_uow_headers_report_once() -> None:
+    # A writer puts one UOW after a file; a stack of crafted ones reports once.
+    blocks = _rar3_parse(_with_uow_header(b"root"))
+    uow = next(i for i, b in enumerate(blocks) if b["type"] == _RAR3_SUB)
+    blocks[uow:uow] = [blocks[uow]] * 20
+    with open_archive(io.BytesIO(_rar3_build(blocks))) as archive:
+        (member,) = archive.members()
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+
+
+@pytest.mark.parametrize(
+    ("sub_data", "names", "codes"),
+    [
+        pytest.param(b"root\0root", ("root", "root"), [], id="owner"),
+        pytest.param(
+            b"root",
+            (None, None),
+            [DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED],
+            id="no-nul",
+        ),
+    ],
+)
+def test_rar4_owner_after_the_last_part_of_a_split_member(
+    tmp_path: Path,
+    sub_data: bytes,
+    names: tuple[str | None, str | None],
+    codes: list[DiagnosticCode],
+) -> None:
     # rar 6.23 -ma4 -ow -v writes the UOW header after a split member's last part,
-    # in the last volume; the merged member keeps it.
+    # in the last volume; the merged member keeps it, or the report of it.
     for name in ("tinyvol_rnn.rar", "tinyvol_rnn.r00"):
         shutil.copy(_RAR_FIXTURES / name, tmp_path / name)
     last = tmp_path / "tinyvol_rnn.r00"
     blocks = _rar3_parse(last.read_bytes())
     end = next(i for i, b in enumerate(blocks) if b["type"] == _RAR3_ENDARC)
-    blocks.insert(end, _uow_block())
+    blocks.insert(end, _uow_block(_with_uow_header(sub_data)))
     last.write_bytes(_rar3_build(blocks))
     with open_archive(tmp_path / "tinyvol_rnn.rar") as archive:
         # One file, split across both volumes: 1600 bytes only if both parts join.
         (split,) = [m for m in archive.members() if m.is_file]
         assert split.name == "payload.bin"
-        assert (split.uname, split.gname) == ("root", "root")
+        assert (split.uname, split.gname) == names
+        assert [d.code for d in split.diagnostics] == codes
         assert len(archive.read(split)) == 1600

@@ -112,7 +112,7 @@ RAR5_UNPLACED_BYTES = "unplaced bytes"
 # and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
 # no NUL, which ``unrar`` applies no owner from.
 RAR3_UOW_NAME = "UOW"
-RAR3_UOW_NO_NUL = "no NUL ends the user name"
+RAR3_UOW_NO_NUL = "no NUL in its owner data"
 # SERVICE headers (``CMT``, ``QO``) are not members, so ``max_members`` never
 # counts them and a damaged one is retained for the reader to report. Both halves
 # of that are attacker-controlled: a 3.4 MB archive of nothing but damaged SERVICE
@@ -444,12 +444,13 @@ class RarMemberInfo:
     # caller's ``encoding=`` would have given a different name.
     rar3_utf8_over_encoding: bool = False
     # RAR5 FHEXTRA records that were malformed and dropped, and a RAR 1.5-4 ``UOW``
-    # header with no owner in it, as ``(record_name, record_type, reason)``. Empty for every well-formed archive,
-    # and the shared empty tuple keeps that case at one slot rather than an object:
-    # the listing bound is expressed in members, so per-member retained bytes are
-    # load-bearing. Capped at ``_MAX_SKIPPED_HEADER_RECORDS`` so a crafted extra
-    # area cannot retain one tuple per attacker byte. The reader turns each entry
-    # into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
+    # header after the member with no owner in it, as ``(record_name, record_type,
+    # reason)``. Empty for every well-formed archive, and the shared empty tuple
+    # keeps that case at one slot rather than an object: the listing bound is
+    # expressed in members, so per-member retained bytes are load-bearing. Capped at
+    # ``_MAX_SKIPPED_HEADER_RECORDS`` so a crafted extra area cannot retain one tuple
+    # per attacker byte, and at one ``UOW`` entry per member. The reader turns each
+    # entry into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
     skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
     # Why the extra-area walk gave up with area still unread, in the words the
     # diagnostic uses, or ``None`` when the header was read to the end. The list
@@ -1709,13 +1710,13 @@ def _add_skipped_uow(
 ) -> None:
     """Record a dropped RAR 1.5-4 ``UOW`` header on the file it follows.
 
-    Capped like RAR5's dropped records, so a file followed by a stack of crafted
-    ``UOW`` headers retains a bounded list.
+    Once per member: a writer puts one ``UOW`` after a file, so a second is as
+    crafted as the first and says nothing new, and a stack of them retains one entry.
     """
-    if records:
-        member.skipped_header_records = (member.skipped_header_records + records)[
-            :_MAX_SKIPPED_HEADER_RECORDS
-        ]
+    if records and not any(
+        r[0] == RAR3_UOW_NAME for r in member.skipped_header_records
+    ):
+        member.skipped_header_records += records[:1]
 
 
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
