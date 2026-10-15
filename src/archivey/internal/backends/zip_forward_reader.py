@@ -220,7 +220,7 @@ def _header_disagreements(
         if (
             crc_used
             and crc != central.crc
-            and not _local_crc_stands_in(central.crc, flags, crc)
+            and not _local_crc_stands_in(central, flags, crc)
         ):
             differ.append(f"CRC-32 {crc:08x} against {central.crc:08x}")
         if compressed_size != central.compressed_size:
@@ -1850,7 +1850,7 @@ class ZipForwardReader(ZipReader):
         if member is None:
             return None
         local = cast("_ZipLocator", member._raw)
-        if not _local_crc_stands_in(entry.crc, local.flags, local.crc):
+        if not _local_crc_stands_in(entry, local.flags, local.crc):
             return None
         return local.crc
 

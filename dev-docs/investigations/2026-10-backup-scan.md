@@ -1,7 +1,8 @@
 # What a scan of a real backup drive found
 
 **Status:** six defects reproduced with synthetic inputs and pinned as `xfail(strict=True)`
-in `tests/test_audit_backup_scan.py`. Three of them need a maintainer decision (§3.3-§3.5).
+in `tests/test_audit_backup_scan.py`. Three of them needed a maintainer decision
+(§3.3-§3.5): two are now read with a diagnostic and the third stays refused.
 The other failures were checked against `unzip`, `unrar`, 7-Zip and `xz` on the original
 files (§5). The scan script's decoder-memory column is fixed (§2).
 
@@ -106,7 +107,7 @@ for tools that trust the local header.
 | --- | --- | --- | --- | --- | --- |
 | 3.3 | Name: other code page (`0xF4` vs `0x93`, no UTF-8 flag), or `crack\` vs `crack/` | 3 archives, 4 members | warns, uses central name, passes | passes | `test_local_name_in_another_codepage_still_reads` |
 | 3.4 | CRC: central 0, local right | 6 Adobe AIR packages, `META-INF/AIR/hash` | passes (checks the local CRC) | headers error | `test_zero_central_crc_with_a_right_local_crc_reads` |
-| 3.5 | Size: both headers about 3.5% under the decoded size; CRC matches the full output | 1 archive (two copies), 12 deflated MP3s | passes (ignores the size) | CRC errors | `test_understated_size_with_a_matching_crc_reads` |
+| 3.5 | Size: both headers about 3.5% under the decoded size; CRC matches the full output | 1 archive (two copies), 12 deflated MP3s | passes (ignores the size) | CRC errors | `test_understated_size_with_a_matching_crc_is_refused` |
 
 3.3 is refused by `ZipReader._local_data_region`, as stdlib `zipfile` does, and
 `dev-docs/formats/zip.md` documents the comparison. In 3.4 the AIR packager writes the
@@ -114,6 +115,15 @@ hash file after its central entry was made. In 3.5 the declared size is the boun
 stops a member from decoding past it, so honouring the CRC means decoding past the
 declared size first; the extraction limits (`max_ratio`, `max_extracted_bytes`) would
 still apply.
+
+**Status (maintainer ruling 2026-10-10; shipped with stage 5 of the `native-zip-reader`
+change).** 3.3 and 3.4 are read, from a file and from a pipe alike, and report
+`MEMBER_LOCAL_HEADER_DIFFERS`, which `DiagnosticPolicy.STRICT` refuses. In 3.3 the
+member keeps the central directory's name; a `crack/` directory reports nothing, since
+reading a directory never reads its local header. In 3.4 the local CRC-32 is the
+member's digest and the data is checked against it. 3.5 stays refused with
+`CorruptionError` ("exceeds its declared size"): the declared size is the bound that
+stops decoding (DR-9a).
 
 ## 4. ZIP local headers not where the central directory says
 

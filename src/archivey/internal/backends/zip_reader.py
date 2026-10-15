@@ -894,18 +894,23 @@ class _ZipLocator:
     reparse_fallback: MemberType | None
 
 
-def _local_crc_stands_in(central_crc: int, local_flags: int, local_crc: int) -> bool:
+def _local_crc_stands_in(
+    central: CentralEntry, local_flags: int, local_crc: int
+) -> bool:
     """Whether a local header's CRC-32 replaces its directory entry's 0.
 
-    The directory stores 0 and the local header a non-zero value that no data
-    descriptor defers (bit 3 clear). unzip checks the data against the local value and
-    archivey does too, reporting ``MEMBER_LOCAL_HEADER_DIFFERS`` (``design.md`` of the
-    ``native-zip-reader`` change, question A, case 2). Adobe AIR's packager writes
+    The directory stores 0 over some data and the local header a non-zero value that
+    no data descriptor defers (bit 3 clear). 0 is the CRC-32 of no data, so an empty
+    member's 0 needs nothing, and a listing reads no local header for one. unzip checks
+    the data against the local value and archivey does too, reporting
+    ``MEMBER_LOCAL_HEADER_DIFFERS`` (``design.md`` of the ``native-zip-reader`` change,
+    question A, case 2). Adobe AIR's packager writes
     ``META-INF/AIR/hash`` this way: it fills the local header after the directory
     entry was made.
     """
     return (
-        central_crc == 0
+        central.crc == 0
+        and central.file_size > 0
         and local_crc != 0
         and not local_flags & _ZIP_MASK_USE_DATA_DESCRIPTOR
     )
@@ -2132,6 +2137,7 @@ class ZipReader(BaseArchiveReader):
         local_crc = (
             self._local_crc_for(entry)
             if crc == 0
+            and entry.file_size > 0
             and not is_ae2
             and member_type in (MemberType.FILE, MemberType.SYMLINK)
             else None
@@ -2346,7 +2352,7 @@ class ZipReader(BaseArchiveReader):
         """The CRC-32 the local header of ``entry`` holds, when it replaces the
         directory's 0 (``_local_crc_stands_in``); else ``None``.
 
-        Read only for an entry whose directory CRC-32 is 0 over a file's data, so a
+        Read only for a file or link whose directory CRC-32 is 0 over some data, so a
         listing reads no local header for any other entry. A local header that cannot
         be read gives ``None``: reading the member reports it
         (``_local_data_region``).
@@ -2357,7 +2363,7 @@ class ZipReader(BaseArchiveReader):
             header = read_local_header(self._read_at, entry.header_offset)
         except ArchiveyError:
             return None
-        if not _local_crc_stands_in(entry.crc, header.flags, header.crc):
+        if not _local_crc_stands_in(entry, header.flags, header.crc):
             return None
         return header.crc
 

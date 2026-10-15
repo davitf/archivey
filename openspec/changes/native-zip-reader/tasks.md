@@ -333,10 +333,10 @@ each lands with nothing half-done reachable:
 
 ## 5. Header disagreement (PR 5)
 
-- [ ] 5.1 Cases 1 and 2 read, with a new diagnostic (name to the maintainer) and
+- [x] 5.1 Cases 1 and 2 read, with a new diagnostic (name to the maintainer) and
       strict refusing; case 3 stays refused. Turn the `xfail(strict)` tests in
       `tests/test_audit_backup_scan.py` into the ruled behaviour.
-- [ ] 5.2 Format-zip spec, `docs/errors-and-diagnostics.md`, handbook §5, the status of
+- [x] 5.2 Format-zip spec, `docs/errors-and-diagnostics.md`, handbook §5, the status of
       §3.3-3.4 in `dev-docs/investigations/2026-10-backup-scan.md`.
 
 ## 6. ZIPs over 4 GiB without ZIP64 (PR 6)
