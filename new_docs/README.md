@@ -14,8 +14,9 @@ why RAR needs an outside program (RARLAB doesn't publish the compression format,
 licence forbids re-creating it from that source), as `docs/` does. `migrating.md` isn't linked
 from `index.md` yet; the site navigation covers it at the switch. The access-cost material in
 `docs/access-and-cost.md` has no page here yet; the API reference lists its types without a guide
-link. No check looks at
-links in this tree, so a broken one goes unnoticed.
+link. Two limitations the old philosophy page listed have no page here yet: archivey has no async
+API, and it doesn't recover data from beyond a damaged part of an archive. They belong on a future
+limitations or formats page. No check looks at links in this tree, so a broken one goes unnoticed.
 
 When this tree replaces `docs/`, three pointers outside it move too. `SECURITY.md` links the known
 limits at `docs/extracting.md`, and `dev-docs/threat-model.md` names `docs/extracting.md` as its

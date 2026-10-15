@@ -32,3 +32,5 @@ Extraction never writes outside the folder you chose, and listing, decompression
 have limits on memory and size, so a hostile archive raises an error instead of exhausting the
 machine. If you trust your archives, you can relax most of these checks.
 [Extracting](extracting.md#archives-you-trust) and [Security](security.md) have the details.
+
+[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md) explains these principles in more depth.
