@@ -46,7 +46,11 @@ def _zip(names: tuple[str, ...] = _NAMES, *, comment: bytes = b"") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for name in names:
-            zf.writestr(name, name.encode() * 3)
+            # Made on Unix whatever the host, so every entry carries a mode.
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, name.encode() * 3)
         zf.comment = comment
     return buf.getvalue()
 
