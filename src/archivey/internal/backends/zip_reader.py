@@ -129,6 +129,7 @@ from archivey.internal.backends.zipcrypto import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -1807,6 +1808,22 @@ class ZipReader(BaseArchiveReader):
             context=context,
             logger=logger,
         )
+
+    def _iter_with_data(
+        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        """Read the whole directory before the first member's data, then go forward.
+
+        A streaming pass on a seekable source would otherwise interleave the listing
+        with the data: the first open runs the index pass (``_data_bounds``), which
+        seeks back to the directory, and a directory longer than one walk chunk keeps
+        drawing the listing from the tail between members. Walking it first leaves one
+        backward move after the tail reads, the seek to the first local header. A
+        source that cannot seek is read by ``ZipForwardReader``, which overrides this.
+        """
+        if self._streaming:
+            self._walk_ahead()
+        yield from super()._iter_with_data(copies)
 
     def _set_bounds(self, offsets: array[int], *, count: int | None) -> None:
         """Record the offsets a listing walk read, and what it says of the count.

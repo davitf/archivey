@@ -798,18 +798,69 @@ def test_listing_then_open_walks_the_directory_once(
     assert walks == [1]
 
 
-def test_open_before_the_listing_ends_runs_one_index_pass(
+def test_a_streaming_pass_walks_the_directory_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     walks = _counting_walks(monkeypatch)
-    # A streaming pass opens each member as the walk yields it.
+    # The pass walks the whole directory before the first member's data, so no open
+    # comes before the listing has finished and no index pass runs.
     with open_archive(io.BytesIO(_zip()), streaming=True) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             assert stream.read() == member.name.encode() * 3
         assert reader.info.member_count == 3
-    # The listing walk, and one index pass for the open that came first.
-    assert walks == [1, 1]
+    assert walks == [1]
+
+
+class _PositionLog(io.BytesIO):
+    """Records where each read starts and how many bytes it returns."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.reads: list[tuple[int, int]] = []
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        start = self.tell()
+        out = super().read(size)
+        self.reads.append((start, len(out)))
+        return out
+
+    def readinto(self, buffer: bytearray | memoryview, /) -> int:  # type: ignore[override]
+        start = self.tell()
+        n = super().readinto(buffer)
+        self.reads.append((start, n))
+        return n
+
+
+@pytest.mark.parametrize("entries", [3, 25_000], ids=["small", "past_one_chunk"])
+def test_a_seekable_streaming_pass_reads_the_directory_then_forward_only(
+    entries: int,
+) -> None:
+    # 25 000 entries make a directory of about 1.4 MiB, longer than one walk chunk,
+    # so a listing drawn from the tail between members would show up here.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(entries):
+            zf.writestr(f"m{i:05}.txt", f"member {i} ".encode() * 20)
+    data = buf.getvalue()
+    source = _PositionLog(data)
+    with open_archive(source, streaming=True) as reader:
+        cd_start = struct.unpack_from("<I", data, len(data) - 6)[0]
+        at_open = len(source.reads)
+        names = []
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == f"member {len(names)} ".encode() * 20
+            names.append(member.name)
+    assert len(names) == entries
+    # The open reads at the tail; the pass reads the directory, then the members in
+    # file order: one move back, to the first local header, and none after it.
+    pass_reads = [start for start, n in source.reads[at_open:] if n]
+    first_data = next(i for i, start in enumerate(pass_reads) if start < cd_start)
+    assert all(start >= cd_start for start in pass_reads[:first_data])
+    member_reads = pass_reads[first_data:]
+    assert all(start < cd_start for start in member_reads)
+    assert member_reads == sorted(member_reads)
 
 
 def test_member_count_before_any_listing_runs_the_index_pass(

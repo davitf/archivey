@@ -555,6 +555,8 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_done: bool = False
         self._walk_error: CorruptionError | None = None
         self._walk_failure: BaseException | None = None
+        # ``_walk_ahead`` met ``_walk_failure``; the next pull raises it as it is.
+        self._walk_failure_unraised: bool = False
         self._walk_pulling: bool = False
         # Every pull, every pass cursor step and link finalization hold this lock, so
         # the passes and listing calls a CONCURRENT reader runs side by side share the
@@ -1472,6 +1474,9 @@ class BaseArchiveReader(ArchiveReader):
         if self._walk_done:
             return None
         if self._walk_failure is not None:
+            if self._walk_failure_unraised:
+                self._walk_failure_unraised = False
+                raise self._walk_failure
             raise ReadError(
                 "The archive scan previously failed "
                 f"({type(self._walk_failure).__name__}); the member list is incomplete "
@@ -1623,6 +1628,29 @@ class BaseArchiveReader(ArchiveReader):
         """Pull to the end of the walk."""
         while self._pull_member() is not None:
             pass
+
+    def _walk_ahead(self) -> None:
+        """Drain a streaming walk before its pass reads data; a failure waits for it.
+
+        For a backend whose pass reads better with the whole listing first: ZIP on a
+        seekable source reads its directory once, then member data forward only. A
+        pull that fails poisons the walk as in any streaming pass, and the pass then
+        yields the members listed before it and raises it when it gets there, as it
+        would with the listing and the data interleaved. Terminal damage is kept in
+        ``_walk_error`` and raised at the end of the pass as usual, and the limit check
+        at the end of the walk is left to the pass as well.
+        """
+        assert self._streaming
+        if self._walk_done or not self._state.begin_materialization():
+            return
+        try:
+            self._drain_walk()
+        except Exception as exc:
+            if exc is not self._walk_failure:
+                raise
+            self._walk_failure_unraised = True
+        finally:
+            self._state.fail_materialization()
 
     def _ensure_walked(self) -> None:
         """Drain the walk under the first-touch election, without resolving links.

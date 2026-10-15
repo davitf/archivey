@@ -186,9 +186,10 @@ open needs), not the directory entry, so an entry's extra field is not kept aliv
 I/O.
 
 The walk records each entry's local-header offset for the overlap guard (§4) and counts
-the entries for `member_count`. A member opened before the listing has finished (a
-streaming pass opens each member as the walk yields it), or `info.member_count` read
-first, runs one index pass over the directory instead. Both walks charge
+the entries for `member_count`. A member opened before the listing has finished, or
+`info.member_count` read first, runs one index pass over the directory instead. A
+streaming pass over a seekable source walks the whole directory before its first
+member's data, so it reads the directory once and then moves forward only. Both walks charge
 `ListingLimits.max_members` in every mode, because each keeps an offset per entry; an
 end record that declares more entries than the limit, in a directory large enough to
 hold them (46 bytes each), is refused at open. A count the directory cannot hold is a
@@ -938,7 +939,7 @@ move.
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
 | Overlapping-entry bomb; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_entries_sharing_one_local_header_read_only_once` |
-| A damaged directory lists up to the damage, then the local headers past it; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when an open comes first; a listed member keeps no extra field | `tests/test_zip_native_reader.py` |
+| A damaged directory lists up to the damage, then the local headers past it; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when an open comes first, a seekable streaming pass reads the directory then forward only; a listed member keeps no extra field | `tests/test_zip_native_reader.py` |
 | `max_members` refused at open from the declared count, charged by the walk when the count lies | `tests/test_listing_limits.py::test_zip_applies_max_members_at_open`, `::test_zip_walk_charges_max_members_when_the_declared_count_lies` |
 | The parser against stdlib on every fixture, ZIP64, stubs, disk fields | `tests/test_zip_parser.py` |
 | A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is refused | `tests/test_surplus_input.py`, `tests/test_audit2_zip.py::test_bytes_after_a_deflate_members_stream_are_corrupt`, `::test_bzip2_member_with_a_second_stream_is_corrupt` |
