@@ -1705,7 +1705,8 @@ class ZipForwardReader(ZipReader):
                     entries.append(central)
         except CorruptionError as exc:
             damage = exc
-        self._entries_read = walk.entries_read
+        # A walk that met damage read no count.
+        self._entries_read = None if damage is not None else walk.entries_read
         local_offsets = self._local_offsets
         by_offset = self._by_offset
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
@@ -1761,7 +1762,15 @@ class ZipForwardReader(ZipReader):
                 failed.append(
                     (position, member, _descriptor_error(member, descriptor, central))
                 )
-        unlisted = [] if damage is not None else sorted(local_offsets - matched)
+        unlisted = sorted(local_offsets - matched)
+        if damage is not None:
+            # Past the damage, the members keep their local headers, in file order
+            # after the directory's, as the seekable read lists them; they take part
+            # in which copy of a name is current.
+            kept = [by_offset[offset] for offset in unlisted]
+            order.extend(kept)
+            placed.extend(kept)
+            unlisted = []
         for member, central in updates:
             self._update_from_directory(member, central)
         if any_missing:
@@ -1810,6 +1819,10 @@ class ZipForwardReader(ZipReader):
         self._by_offset = {}
         self._local_offsets = set()
         self._descriptors = {}
+        if damage is not None:
+            # The listing's error, as from a file; a member that fails a check of its
+            # own fails at the end of the pass (``_failed_at_end``).
+            raise damage
         if shared:
             first = shared[0]
             raise CorruptionError(
@@ -1823,8 +1836,6 @@ class ZipForwardReader(ZipReader):
         if failed:
             _, _, error = failed[0]
             raise error
-        if damage is not None:
-            raise damage
 
     def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:
         """The member a directory entry with no local entry describes, for the end of

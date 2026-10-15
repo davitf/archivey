@@ -611,14 +611,22 @@ reads what the file read reads. A locator naming another disk is still a split s
 
 An entry the directory walk cannot read (a wrong signature, a cut fixed header, a name
 flagged UTF-8 that is not) ends the directory's part of the listing. The file read then
-walks the local headers once (`ZipReader._past_damage`, the walk a ZIP with no end record
-gets) and lists every member whose offset the directory did not already list, from its
-local header, then raises the damage, or the walk's own error when the walk stopped
-first. The listing, the index pass and a member opened before the listing ends all use
-the same walk, so the overlap guard's bounds hold both walks' offsets and a member's id
-is its position in them. The pass gets the same result from the other side: it applies
-the directory to the members described before the damage, keeps the rest as their local
-headers say without reporting them as unlisted, and raises the damage at the end.
+walks the local headers once (`ZipReader._past_damage`, the walk a ZIP with no end
+record gets) and lists every member whose offset the directory did not already list,
+from its local header, then raises the damage, so the listing's error stays a
+`CorruptionError` and keeps its members; only a listing limit the walk meets is raised
+instead. A member whose data the walk could not get past is listed, and its read raises
+the walk's error, a cut as `CorruptionError` since the end record follows it. The walk
+is made once per reader (`_local_walk`, the tail search's walk when it made one), and
+each caller builds the offsets past the damage from what it listed itself: the index
+pass builds no member, so it reads past an entry whose member cannot be built (a name
+flagged UTF-8 that is not), where the listing stops. The overlap guard's bounds hold
+both walks' offsets and a member's id is its position in the listing's. The members past
+the damage take part in which copy of a name is current. The pass gets the same result
+from the other side: it applies the directory to the members described before the
+damage, keeps the rest as their local headers say without reporting them as unlisted,
+and raises the damage at the end, ahead of a check a member before it fails, which fails
+only that member.
 
 A stored directory offset larger than the directory's position gives a negative `base`.
 That is not damage: a stub sliced off the source (`start_offset`, a zipapp whose

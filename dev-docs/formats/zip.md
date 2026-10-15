@@ -196,21 +196,23 @@ wrong field: the walk charges the entries really there, and the mismatch is repo
 below. Both walks stop at the same entry, at the limit as at damage, and the members
 before the stop read with the overlap bounds of the entries before it.
 
-**A damaged directory lists up to the damage, then the local headers past it.** An
-entry with a wrong signature, or whose 46-byte fixed header the directory cuts short,
-raises `CorruptionError` after the members before it, as a cut TAR or RAR does (DR-2),
-and after the members the local headers hold past it: the headers are walked once, as
-for a ZIP with no end record, and a member the directory already listed (by offset) is
-not listed again. Those keep what their local header holds and nothing the directory
-alone has (mode, host, comment), as a read from a pipe lists them, so the two reads
-write the same files (davi, 2026-10-14). `members_report()` carries both, iteration and
+**A damaged directory lists up to the damage, then the local headers past it.** An entry
+with a wrong signature, or whose 46-byte fixed header the directory cuts short, raises
+`CorruptionError` after the members before it, as a cut TAR or RAR does (DR-2), and
+after the members the local headers hold past it: the headers are walked once, as for a
+ZIP with no end record, and a member the directory already listed (by offset) is not
+listed again. Those keep what their local header holds and nothing the directory alone
+has (mode, host, comment), as a read from a pipe lists them, so the two reads write the
+same files (davi, 2026-10-14). `members_report()` carries both, iteration and
 `extract_all()` deliver those members and then raise, and `member_count` is `None`. The
 overlap guard's bounds hold both walks' offsets. A walk over the local headers that
-stops first raises its own error, as the pass meets it first. A name, extra field or
-comment that runs past the directory's end can only be the last entry's, so it lists
-and is reported with the end-record checks below.
-A local header that the file cuts short means the directory pointed at the wrong place
-(the directory follows every local header), so it is `CorruptionError` too, never
+meets a listing limit raises the limit instead. One that cannot get past a member's data
+lists that member, whose read fails, never as `TruncatedError` (the end record follows
+it), and the listing still raises the damage; the pass meets that error first and raises
+it. A name, extra field or comment that runs past the directory's end can only be the
+last entry's, so it lists and is reported with the end-record checks below. A local
+header that the file cuts short means the directory pointed at the wrong place (the
+directory follows every local header), so it is `CorruptionError` too, never
 `TruncatedError`.
 
 **"Version needed to extract" decides nothing.** Stdlib refused an archive whose entry

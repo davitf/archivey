@@ -1,7 +1,7 @@
 """The ZIP reader on archivey's own parser: what changed when ``zipfile`` left.
 
-- A damaged central directory lists the entries before the damage, then raises, as a
-  cut TAR or RAR does (DR-2).
+- A damaged central directory lists the entries before the damage and the members
+  the local headers hold past it, then raises, as a cut TAR or RAR does (DR-2).
 - "Version needed to extract" above 6.3 no longer refuses the archive (DR-4): only a
   method or flag archivey cannot read refuses a member.
 - Bytes after the end record and its comment are ``ARCHIVE_TRAILING_DATA`` (DR-3), as
@@ -38,6 +38,7 @@ from archivey.internal.backends import zip_parser
 from archivey.types import ArchiveFormat, HashAlgorithm
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
+from tests.test_zip_pipe_parity import _with_modes
 
 _NAMES = ("a.txt", "b.txt", "c.txt")
 
@@ -145,6 +146,99 @@ def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> N
         with raises_corruption_not_truncation(match="Bad magic number"):
             reader.extract_all(dest)
     assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "b.txt", "c.txt"]
+
+
+def _bit3_with_bad_second_header(*, last_descriptor: bool) -> bytes:
+    """Three bit-3 members whose second directory entry is unreadable; without
+    ``last_descriptor`` the last member's data descriptor has no signature, so a walk
+    over the local headers cannot find where its data ends."""
+    data = bytearray(_with_modes(pipe=True))
+    if not last_descriptor:
+        last = bytes(data).rindex(b"PK\x07\x08")
+        data[last : last + 4] = b"ZZZZ"
+    second = _central_headers(bytes(data))[1]
+    data[second : second + 4] = b"XXXX"
+    return bytes(data)
+
+
+def _with_lying_local_size() -> bytes:
+    """The second member's local header claims 1 GiB of data, and its directory entry
+    is unreadable."""
+    data = bytearray(_zip())
+    second = bytes(data).index(b"PK\x03\x04", 4)
+    struct.pack_into("<I", data, second + 18, 1 << 30)
+    central = _central_headers(bytes(data))[1]
+    data[central : central + 4] = b"XXXX"
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    ("build", "names", "cut_error"),
+    [
+        pytest.param(
+            lambda: _bit3_with_bad_second_header(last_descriptor=False),
+            ["m0.txt", "m1.txt", "m2.txt"],
+            UnsupportedFeatureError,
+            id="no-descriptor",
+        ),
+        pytest.param(
+            _with_lying_local_size,
+            ["a.txt", "b.txt"],
+            CorruptionError,
+            id="local-size-past-the-end",
+        ),
+    ],
+)
+def test_a_walk_stopped_past_a_damaged_directory_fails_only_its_member(
+    build: object, names: list[str], cut_error: type[Exception]
+) -> None:
+    """The listing raises the directory's damage, whatever stopped the walk over
+    the local headers; the member that walk could not get past fails its own read.
+    The end record follows it, so that is never truncation."""
+    with open_archive(io.BytesIO(build()), format=ArchiveFormat.ZIP) as reader:  # type: ignore[operator]
+        report = reader.members_report()
+        assert [m.name for m in report.members] == names
+        assert type(report.error) is CorruptionError
+        assert "Bad magic number" in str(report.error)
+        *whole, cut = report.members
+        for member in whole:
+            reader.read(member)
+        with pytest.raises(cut_error) as raised:
+            reader.read(cut)
+        assert not isinstance(raised.value, TruncatedError)
+
+
+def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first() -> None:
+    """The index pass reads past an entry whose member cannot be built (a name
+    flagged UTF-8 that is not), where the listing stops; each member past the damage
+    still carries its own data descriptor, whichever of the two runs first."""
+    data = bytearray(_with_modes(pipe=True))
+    for at, flags in (
+        (bytes(data).index(b"PK\x03\x04", 4), 6),
+        (_central_headers(bytes(data))[1], 8),
+    ):
+        (flag,) = struct.unpack_from("<H", data, at + flags)
+        struct.pack_into("<H", data, at + flags, flag | 0x800)
+    data = bytearray(bytes(data).replace(b"m1.txt", b"m\xff.txt"))
+    third = _central_headers(bytes(data))[2]
+    data[third : third + 4] = b"XXXX"
+    with open_archive(io.BytesIO(bytes(data))) as reader:
+        listed_first = [
+            (m.size, m.compressed_size, len(reader.read(m)))
+            for m in reader.members_report().members
+        ]
+    # A streaming pass opens each member as the listing reaches it, so the index
+    # pass runs before the listing gets to the damage.
+    opened_first = []
+    with open_archive(io.BytesIO(bytes(data)), streaming=True) as reader:
+        with raises_corruption_not_truncation(match="Could not decode a ZIP member"):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                opened_first.append(
+                    (member.size, member.compressed_size, len(stream.read()))
+                )
+    assert len(listed_first) == 3
+    assert opened_first == listed_first
 
 
 # --- Version needed above 6.3 -------------------------------------------------------
