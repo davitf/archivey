@@ -107,6 +107,7 @@ from archivey.internal.backends.zip_parser import (
     EOCD_SIZE,
     MAX_DATA_OFFSET,
     NO_END_RECORD_MSG,
+    ZIP64_LOCATOR_SIZE,
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
@@ -1233,7 +1234,15 @@ class ZipReader(BaseArchiveReader):
                 raise walked.error
             if found is None:
                 raise CorruptionError(NO_END_RECORD_MSG)
-            self._end: EndRecord = read_end_record(self._read_at, file_size, found)
+            try:
+                self._end: EndRecord = read_end_record(self._read_at, file_size, found)
+            except CorruptionError as exc:
+                # End records that cannot be used (a damaged ZIP64 record after a
+                # saturated classic one, a directory that would start before the
+                # file): the members are what the local headers hold, as from a pipe.
+                if self._list_after_bad_end_records(exc):
+                    return
+                raise
         except ArchiveyError as exc:
             if isinstance(exc, CorruptionError):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
@@ -1244,7 +1253,23 @@ class ZipReader(BaseArchiveReader):
             self._stamp_error_context(exc)
             raise
         self._refuse_declared_count_over_limit()
+        self._report_zip64_damage()
         self._report_trailing_data()
+
+    def _list_after_bad_end_records(self, error: CorruptionError) -> bool:
+        """List the members the local headers hold, then raise ``error``, for end
+        records ``read_end_record`` refused; ``False`` when the walk finds no member,
+        and ``error`` is raised at open. A walk that stops first (a cut, a limit)
+        raises its own error, as the pipe read meets it first."""
+        self._walk_past_members()
+        walked, self._salvage = self._salvage, None
+        assert walked is not None
+        if walked.error is None:
+            walked.error = error
+        if not walked.offsets:
+            return False
+        self._list_walked_members(walked)
+        return True
 
     def _missing_end_record(
         self, walked: _WalkedMembers, stopped: int
@@ -1366,6 +1391,31 @@ class ZipReader(BaseArchiveReader):
             )
             self._stamp_error_context(error)
             raise error
+
+    def _report_zip64_damage(self) -> None:
+        """Report ZIP64 records the classic end record stood in for
+        (``EndRecord.zip64_damage``): it holds every value, none saturated, so the
+        archive is listed from it."""
+        end = self._end
+        if end.zip64_damage is None:
+            return
+        locator_offset = end.eocd_offset - ZIP64_LOCATOR_SIZE
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+            message=(
+                f"{end.zip64_damage}; the ZIP end record holds every value, so it is "
+                "used instead."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="zip",
+                expected_marker="end_of_central_directory",
+                expected_bytes=0,
+                observed_bytes=locator_offset,
+                observed_kind="absent",
+            ),
+            logger=logger,
+        )
 
     def _report_trailing_data(self) -> None:
         """Report a non-zero byte after the end record and its declared comment.

@@ -46,7 +46,7 @@ from __future__ import annotations
 import io
 import zlib
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import BinaryIO, NoReturn
 
 from archivey.exceptions import (
@@ -74,6 +74,7 @@ from archivey.internal.backends.zip_parser import (
     EndRecord,
     LocalHeader,
     ReadAt,
+    classic_record_saturated,
     find_end_record,
     local_header_from,
     local_header_variable_length,
@@ -93,6 +94,7 @@ _FLAG_ENCRYPTED = 0x01
 _FLAG_DATA_DESCRIPTOR = 0x08
 _METHOD_STORED = 0
 _ZIP64_EXTRA_TAG = 0x0001
+_ZIP64_RECORD = "ZIP64 end of central directory record"
 _U32_MAX = 0xFFFF_FFFF
 
 # What may follow a member's data descriptor: the next member, the directory, the end
@@ -1274,8 +1276,10 @@ class ForwardTail:
         ``find_end_record`` runs over :meth:`read_at`, so it picks the record a file
         read picks, decoy signatures in the comment included. A record that places
         a non-empty directory among the members' data, which the walk has read past,
-        is refused, and so is a ZIP64 end record there; either in bytes the bound
-        dropped is a ``ResourceLimitError``.
+        is refused, and so is a ZIP64 end record there, unless the classic record
+        needs none of its fields and stands in for it as it does for a file read
+        that finds the ZIP64 record damaged; either in bytes the bound dropped is a
+        ``ResourceLimitError``.
 
         Behind more bytes than the search window, the end record is stepped to from
         the directory right after the members while the step stays in the kept
@@ -1312,18 +1316,36 @@ class ForwardTail:
                 )
                 if error is not None:
                     raise error
+        unseen = None
         if found is not None:
-            self._refuse_unseen_zip64_record(found[0])
+            unseen = self._unseen_zip64_record(found[0])
+            if unseen is not None and classic_record_saturated(found[1]):
+                self._refuse_unseen(_ZIP64_RECORD, unseen)
         # Any other failure is the record's own, in the file read's words.
-        end = find_end_record(
-            self.read_at, self.size, members_end=lambda: self.members_end
-        )
+        try:
+            end = find_end_record(
+                self.read_at, self.size, members_end=lambda: self.members_end
+            )
+        except CorruptionError:
+            if unseen is not None:
+                self._refuse_unseen(_ZIP64_RECORD, unseen)
+            raise
+        if unseen is not None:
+            if end.zip64_damage is None:
+                # A record right before the locator: the file read takes the one
+                # the locator names, which this tail did not see.
+                self._refuse_unseen(_ZIP64_RECORD, unseen)
+            # The classic record stands in for a ZIP64 record this tail did not
+            # see, which a file read finds missing or not matching the locator
+            # unless crafted member data holds one that matches.
+            end = replace(end, zip64_damage=self._unseen_message(_ZIP64_RECORD, unseen))
         if end.cd_size and not self.holds(end.cd_start, end.cd_size):
             self._refuse_unseen("ZIP central directory", end.cd_start)
         return end
 
-    def _refuse_unseen_zip64_record(self, eocd_offset: int) -> None:
-        """Refuse a ZIP64 locator naming a record in bytes this tail does not hold.
+    def _unseen_zip64_record(self, eocd_offset: int) -> int | None:
+        """Where a ZIP64 locator names a record in bytes this tail does not hold, or
+        ``None``.
 
         ``find_end_record`` reads the record at the locator's offset, and falls back
         to one right before the locator when that offset holds none (data prepended
@@ -1335,14 +1357,19 @@ class ForwardTail:
         told where the archive starts (``format=`` skips the detection that slices
         the stub off) would instead read a record the locator names in unkept bytes
         within that shift; that takes a stub longer than the tail keeps. Otherwise the
-        record the locator names is unseen, not missing. The locator's own
-        refusals come first, as from a file (``read_zip64_locator``)."""
-        located = read_zip64_locator(self.read_at, eocd_offset)
+        record the locator names is unseen, not missing. A split set is refused as
+        from a file (``read_zip64_locator``); a corrupt locator is left to
+        ``find_end_record``, which reads past it when the classic record needs
+        none of the ZIP64 fields."""
+        try:
+            located = read_zip64_locator(self.read_at, eocd_offset)
+        except CorruptionError:
+            return None
         if located is None:
-            return
+            return None
         locator_at, record_at = located
         if self.holds(record_at, ZIP64_EOCD_SIZE):
-            return
+            return None
         adjacent = locator_at - ZIP64_EOCD_SIZE
         if (
             self.holds(adjacent, ZIP64_EOCD_SIZE)
@@ -1351,20 +1378,27 @@ class ForwardTail:
                 self.read_at(adjacent, ZIP64_EOCD_SIZE), record_at, 0
             )
         ):
-            return
-        self._refuse_unseen("ZIP64 end of central directory record", record_at)
+            return None
+        return record_at
 
     def _refuse_unseen(self, what: str, offset: int) -> NoReturn:
         """Refuse ``what``, which an end record places at stream ``offset``, outside
         the bytes this tail holds: among the members' data, which the walk read past,
         or in bytes the bound dropped (``ResourceLimitError``)."""
+        message = self._unseen_message(what, offset)
         if offset >= self.members_end:
-            raise ResourceLimitError(
+            raise ResourceLimitError(message)
+        raise CorruptionError(message)
+
+    def _unseen_message(self, what: str, offset: int) -> str:
+        """Why ``what`` at stream ``offset`` is outside the bytes this tail holds."""
+        if offset >= self.members_end:
+            return (
                 f"{what} starts {offset - self.members_end} bytes after the members "
                 f"and {self.size - offset} before the end of the stream, further from "
                 "both than a forward read holds within the listing limits"
             )
-        raise CorruptionError(
+        return (
             f"ZIP end records place the {what} at stream offset {offset}, inside the "
             "members' data, which a read from a source that cannot seek has passed"
         )

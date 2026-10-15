@@ -38,6 +38,7 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    raw_message_of,
 )
 from archivey.internal.backends.zip_aes import iter_extra_fields
 from archivey.internal.backends.zip_detect import (
@@ -86,6 +87,7 @@ _U64_MAX = 0xFFFF_FFFF_FFFF_FFFF
 # Classic end-record disk fields use 0xFFFF to mean "see the ZIP64 record", not disk
 # 65535.
 _ZIP64_DISK_SENTINEL = 0xFFFF
+_ZIP64_SIZE_SENTINEL = 0xFFFFFFFF
 
 # The directory is read forward in pieces of this size. It trades memory (one piece
 # plus one entry) against the number of reads, each a seek and a read on the shared
@@ -128,6 +130,9 @@ class EndRecord:
     #: reader reports them; the parser only counts them. Junk longer than the search
     #: window hides the record itself, as it does for stdlib.
     trailing: int
+    #: Why the ZIP64 records after a locator were not used, when the classic record,
+    #: none of whose fields is saturated, stood in for them; the reader reports it.
+    zip64_damage: str | None = None
 
     @property
     def cd_start(self) -> int:
@@ -204,14 +209,27 @@ def read_end_record(
         cd_offset,
         comment_declared,
     ) = _EOCD.unpack(record)
-    zip64 = _read_zip64_records(read_at, eocd_offset)
+    zip64_damage = None
+    records_start = eocd_offset
+    try:
+        zip64 = _read_zip64_records(read_at, eocd_offset)
+    except CorruptionError as exc:
+        # A damaged ZIP64 record or locator after a classic record that needs none of
+        # its fields: the classic record holds everything, as for a writer that adds
+        # the ZIP64 records whether they are needed or not.
+        start = (
+            None
+            if classic_record_saturated(record)
+            else _directory_end_before_zip64(read_at, eocd_offset, cd_size)
+        )
+        if start is None:
+            raise
+        zip64, zip64_damage, records_start = None, raw_message_of(exc), start
     if zip64 is not None:
         # The ZIP64 record's disk fields replace the classic ones, as stdlib's do.
         records_start, this_disk, cd_start_disk, entries_total, cd_size, cd_offset = (
             zip64
         )
-    else:
-        records_start = eocd_offset
     if disk_field_is_split(this_disk) or disk_field_is_split(cd_start_disk):
         raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
     base = records_start - cd_size - cd_offset
@@ -225,6 +243,7 @@ def read_end_record(
         comment=comment,
         comment_declared=comment_declared,
         trailing=max(file_size - (eocd_offset + EOCD_SIZE + comment_declared), 0),
+        zip64_damage=zip64_damage,
     )
     if end.cd_start < 0:
         raise CorruptionError("Bad offset for central directory")
@@ -401,6 +420,40 @@ def _read_zip64_records(
         cd_offset,
     ) = _ZIP64_EOCD.unpack(record)
     return adjacent - extensible, this_disk, cd_disk, entries_total, cd_size, cd_offset
+
+
+def _directory_end_before_zip64(
+    read_at: ReadAt, eocd_offset: int, cd_size: int
+) -> int | None:
+    """Where the directory ends, before ZIP64 records that cannot be read, or ``None``
+    when no place fits.
+
+    The places a directory of ``cd_size`` bytes can end are, in turn: where the
+    locator names the ZIP64 record, right before the locator where a record of no
+    extensible data sits, and at the locator. The first one
+    after a central header, ``cd_size`` bytes back, is taken; a directory with no
+    entries takes the first.
+    """
+    locator_offset = eocd_offset - ZIP64_LOCATOR_SIZE
+    (record_offset,) = struct.unpack("<Q", read_at(locator_offset + 8, 8))
+    places = (
+        record_offset,
+        locator_offset - ZIP64_EOCD_SIZE,
+        locator_offset,
+    )
+    for place in places:
+        if not cd_size <= place <= locator_offset:
+            continue
+        if not cd_size or read_at(place - cd_size, 4) == CENTRAL_HEADER_SIGNATURE:
+            return place
+    return None
+
+
+def classic_record_saturated(record: bytes) -> bool:
+    """Whether any field of the classic end ``record`` holds the ZIP64 sentinel, so its
+    value is in the ZIP64 record alone."""
+    fields = _EOCD.unpack(record)
+    return _ZIP64_DISK_SENTINEL in fields[1:5] or _ZIP64_SIZE_SENTINEL in fields[5:7]
 
 
 def disk_field_is_split(value: int) -> bool:

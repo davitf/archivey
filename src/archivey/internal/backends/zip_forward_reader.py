@@ -1678,6 +1678,7 @@ class ZipForwardReader(ZipReader):
             end = tail.end_record()
         self._end_record = self._end = end
         self._refuse_declared_count_over_limit()
+        self._report_zip64_damage()
         walk = CentralDirectoryWalk(tail.read_at, end)
         # Every entry's local header offset, in directory order, and the entries.
         offsets = array("q")

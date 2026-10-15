@@ -444,3 +444,117 @@ def test_a_whole_zip_streamed_past_its_directory_limit_has_no_report_to_peek() -
         yielded, _error, report = _stream_past_the_limit(data, seekable=seekable)
         assert [name for name, _ in yielded] == ["m0.txt", "m1.txt"]
         assert report is None
+
+
+def _with_zip64_records(data: bytes, *, saturated: bool, damage: str) -> bytes:
+    """``data`` with ZIP64 end records added before its classic one, damaged:
+    ``"record"`` (no ZIP64 signature where the locator points), ``"locator"`` (the
+    locator names an offset past itself) or ``"into-members"`` (it names offset 5).
+    ``saturated`` puts the ZIP64 sentinel in every classic field, so only the ZIP64
+    record holds the values."""
+    eocd = data.rindex(b"PK\x05\x06")
+    _sig, _disk, _cd_disk, _here, entries, cd_size, cd_offset, _comment = struct.unpack(
+        "<4s4H2LH", data[eocd : eocd + 22]
+    )
+    record = struct.pack(
+        "<4sQ2H2L4Q",
+        b"PK\x06\x06",
+        44,
+        45,
+        45,
+        0,
+        0,
+        entries,
+        entries,
+        cd_size,
+        cd_offset,
+    )
+    record_at = {"record": eocd, "locator": 1 << 40, "into-members": 5}[damage]
+    if damage == "record":
+        record = b"XXXX" + record[4:]
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, record_at, 1)
+    classic = bytearray(data[eocd:])
+    if saturated:
+        struct.pack_into(
+            "<4HLL", classic, 4, 0, 0, 0xFFFF, 0xFFFF, 2**32 - 1, 2**32 - 1
+        )
+    return data[:eocd] + record + locator + bytes(classic)
+
+
+def _damaged_zip64_params() -> Iterator[pytest.ParameterSet]:
+    for kind, pipe in (("sized", False), ("bit3", True)):
+        for saturated in (False, True):
+            for damage in ("record", "locator", "into-members"):
+                if saturated and damage == "into-members":
+                    continue
+                data = _with_zip64_records(
+                    _members_zip(pipe=pipe), saturated=saturated, damage=damage
+                )
+                label = "saturated" if saturated else "classic"
+                yield pytest.param(
+                    data,
+                    "ZIP64" if saturated else None,
+                    id=f"{kind}-{label}-{damage}",
+                )
+        # A directory that would start before the file: no ZIP64 records at all.
+        data = bytearray(_members_zip(pipe=pipe))
+        struct.pack_into("<I", data, data.rindex(b"PK\x05\x06") + 12, 0x7FFF_FFF0)
+        yield pytest.param(
+            bytes(data), "Bad offset for central directory", id=f"{kind}-bad-offset"
+        )
+
+
+def _diagnostic_codes(data: bytes, *, piped: bool) -> list[str]:
+    source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=piped) as reader:
+        with contextlib.suppress(ArchiveyError):
+            for _member, _stream in reader.stream_members():
+                pass
+        return [code.value for code in reader.members_report().diagnostics.counts]
+
+
+@pytest.mark.parametrize(("data", "raised"), list(_damaged_zip64_params()))
+def test_damaged_end_records_read_from_a_file_as_from_a_pipe(
+    data: bytes, raised: str | None, tmp_path: Path
+) -> None:
+    """A classic end record that needs none of the ZIP64 fields stands in for them,
+    reported; end records that cannot be used (a saturated classic record, a
+    directory before the file's start) list the members the local headers hold, then
+    raise. Either way the two reads list, read and write alike."""
+    from_file = _report(data, piped=False)
+    assert from_file == _report(data, piped=True)
+    assert isinstance(from_file, tuple)
+    members, error = from_file
+    assert isinstance(members, list) and len(members) == 3
+    if raised is not None:
+        assert error is not None and raised in error[1]
+    else:
+        assert error is None
+        for piped in (False, True):
+            assert "archive_eof_marker_missing" in _diagnostic_codes(data, piped=piped)
+    _assert_same(data, None, tmp_path)
+
+
+def test_a_saturated_zip64_locator_naming_member_data_writes_the_same_files(
+    tmp_path: Path,
+) -> None:
+    """A locator naming an offset among the members' data, with nothing in the
+    classic record to stand in: a file read finds no ZIP64 record there that matches
+    it; a pipe has passed those bytes and says so. Both list the members the local
+    headers hold, raise, and write the same files."""
+    data = _with_zip64_records(
+        _members_zip(pipe=False), saturated=True, damage="into-members"
+    )
+    from_file = _report(data, piped=False)
+    from_pipe = _report(data, piped=True)
+    assert isinstance(from_file, tuple) and isinstance(from_pipe, tuple)
+    assert from_file[0] == from_pipe[0] and len(from_file[0]) == 3
+    assert from_file[1] is not None and from_pipe[1] is not None
+    assert "Corrupt ZIP64 end of central directory record" in from_file[1][1]
+    assert "inside the members' data" in from_pipe[1][1]
+    started = time.time() - 1
+    for side in ("file", "pipe"):
+        _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
+        (tmp_path / side).mkdir(exist_ok=True)
+    tree = _tree(tmp_path / "file", since=started)
+    assert len(tree) == 3 and _tree(tmp_path / "pipe", since=started) == tree

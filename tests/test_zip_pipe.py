@@ -1177,6 +1177,8 @@ def test_a_damaged_end_record_fails_in_the_file_reads_words(
     if edit == "cd_size":
         struct.pack_into("<I", data, eocd + 12, 0xFFFF_FF00)
     else:
+        # Saturated, so the classic record cannot stand in for the ZIP64 records.
+        struct.pack_into("<HH", data, eocd + 8, 0xFFFF, 0xFFFF)
         data[eocd:eocd] = struct.pack("<4sIQI", b"PK\x06\x07", 0, 1 << 40, 1)
     with pytest.raises(CorruptionError, match=message) as from_file:
         _seekable_view(bytes(data))
