@@ -2353,8 +2353,8 @@ class ZipReader(BaseArchiveReader):
         """The CRC-32 the local header of ``entry`` holds, when it replaces the
         directory's 0 (``_local_crc_stands_in``); else ``None``.
 
-        Read only for a file or link whose directory CRC-32 is 0 over some data, so a
-        listing reads no local header for any other entry. A local header that cannot
+        Read only for a file or link, not WinZip AE-2, whose central CRC-32 is 0 over
+        some data, so a listing reads no local header for any other entry. A local header that cannot
         be read gives ``None``: reading the member reports it
         (``_local_data_region``).
         """
@@ -2404,10 +2404,10 @@ class ZipReader(BaseArchiveReader):
         open only, so a password ladder that reads the header once per candidate
         counts it once; a policy that raises on the code raises on every open.
 
-        Only a file or a link reports it. Extraction reads no directory's data, so a
-        directory that declares some reaches its local header only through a
-        ``read()`` a caller makes, and a pass from a pipe, which reads every local
-        header, could not report what extraction from a file does.
+        Only a file or a link reports it. Reporting a directory from a pipe would
+        break extraction parity under a policy that raises on the code, because
+        extraction from a file never reads a directory's data and so never reaches
+        its local header.
         """
         if member.type not in (MemberType.FILE, MemberType.SYMLINK):
             return

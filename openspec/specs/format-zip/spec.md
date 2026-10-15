@@ -29,7 +29,7 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Property | Value |
 | --- | --- |
 | Backend dependency | None: archivey's parser for the structure (no `zipfile` import); shared codec layer for member data |
-| Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed; the local header of a file or link whose directory CRC-32 is 0 over data is read too (the requirement on headers that disagree) |
+| Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed; the local header of a file or link (not WinZip AE-2) whose central CRC-32 is 0 over data is read too (the requirement on headers that disagree) |
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE`; `FORWARD_ONLY` for a non-seekable source |
 | Read source | Seekable in both access modes; non-seekable under `streaming=True` only; no implicit buffering/spooling |
@@ -482,15 +482,17 @@ both) and SHALL report `MEMBER_LOCAL_HEADER_DIFFERS` with `LocalHeaderContext`, 
   every open. Only a file or link reports it: extraction reads no directory's data, so a
   directory reports nothing, even after a `read()` of data it declares, and nor does the
   pass from a pipe, which reads every local header.
-- **A CRC-32 of 0.** The directory stores 0 for a file or link of one byte or more
-  and the local header, with no data descriptor (bit 3 clear), a non-zero value. The
-  member's `hashes` and every check of its data (the CRC, the ZipCrypto check byte)
-  take the local value. A file read reads that local header when it lists the member,
-  the only listing-time read of a local header, and reports then (`field="crc32"`,
-  `local_crc32`); an archive whose every entry stores 0 so costs one positioned read
-  per member while listing. Adobe AIR's packager stores `META-INF/AIR/hash` this way. A
-  directory that declares data under a CRC-32 of 0 keeps no digest, from a file and a
-  pipe alike (`DIGEST_UNVERIFIABLE`), and reports nothing more.
+- **A CRC-32 of 0.** The directory stores 0 for a file or link of one byte or more,
+  not WinZip AE-2 (whose HMAC checks the data, above), and the local header, with no
+  data descriptor (bit 3 clear), a non-zero value. Adobe AIR's packager stores
+  `META-INF/AIR/hash` this way. The member's `hashes` and every check of its data (the
+  CRC, the ZipCrypto check byte) take the local value. A file read reads that local
+  header when it lists the member, the only listing-time read of a local header, and
+  reports then (`field="crc32"`, `local_crc32`); a crafted plaintext archive whose
+  every entry stores 0 so costs one positioned read per member while listing. An AE-2
+  entry costs none and reports nothing. A directory that declares data under a CRC-32
+  of 0 keeps no digest, from a file and a pipe alike (`DIGEST_UNVERIFIABLE`), and
+  reports nothing more.
 
 Both headers understating the size, with a CRC-32 over the longer output, SHALL stay
 refused: the declared size is the bound that stops decoding (DR-9a). A read from a pipe

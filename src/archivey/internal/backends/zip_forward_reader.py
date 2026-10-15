@@ -215,7 +215,7 @@ def _header_disagreements(
             else "encrypted in the directory, not in the local header"
         )
     if not flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
-        # A directory CRC-32 of 0 over data against a local value is no
+        # A central CRC-32 of 0 over data against a local value is no
         # contradiction, whatever the member's type: a file or link takes the local
         # value (``_local_crc_for``), and a directory keeps no digest
         # (``DIGEST_UNVERIFIABLE``), as from a file, which never compares the two.

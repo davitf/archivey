@@ -39,6 +39,7 @@ from archivey.internal.streams import codecs as codecs_module
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
+from tests.zip_aes_fixture import build_aes_zip
 
 # --- LZMA Alone: zero runs decode as an endless stream of zero literals. -------------
 #
@@ -408,6 +409,31 @@ def test_zero_crc_in_both_headers_over_data_is_still_corruption(pipe: bool) -> N
     blob[14:18] = b"\0\0\0\0"
     with pytest.raises(CorruptionError):
         _read_only_member(bytes(blob), pipe=pipe)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_ae2_zero_central_crc_ignores_a_local_crc(pipe: bool) -> None:
+    """AE-2 stores CRC-32 0 by design and its HMAC checks the data, so a non-zero
+    local CRC-32 stands in for nothing: no digest and no report, from a file or a pipe."""
+    blob = bytearray(build_aes_zip([(b"a.txt", b"h" * 22)], password=b"pw"))
+    assert blob[14:18] == b"\0\0\0\0"  # the local header's CRC-32
+    blob[14:18] = struct.pack("<I", zlib.crc32(b"h" * 22))
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    source = NonSeekableBytesIO(bytes(blob)) if pipe else io.BytesIO(bytes(blob))
+    with archivey.open_archive(
+        source, streaming=pipe, password="pw", config=config
+    ) as ar:
+        if pipe:
+            read = [stream.read() for _, stream in ar.stream_members() if stream]
+            (member,) = ar.members_report().members
+        else:
+            (member,) = ar.members()
+            read = [ar.read(member)]
+        counts = ar.diagnostics.counts
+    assert read == [b"h" * 22]
+    assert member.hashes == {}
+    assert DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS not in counts
 
 
 # Case 3 stays refused: the declared size is the bound that stops decoding (DR-9a).
