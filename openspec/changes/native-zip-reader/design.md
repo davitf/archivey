@@ -573,16 +573,14 @@ Two more differences are recorded (`tests/test_zip_pipe_parity.py`, `_DIFFERS`):
 - In `extract_all`, a link member the pass wrote as a file keeps the error its data
   read gave: under no password an encrypted link fails with `EncryptionError`, where
   the file read reports `LinkTargetNotFoundError`; the files on disk are the same.
-- An archive-wide refusal that comes from the directory (a name flagged UTF-8 that is
-  not valid UTF-8) is found by a file read before anything is written, and by the pass
-  only after every member has been written: the files stay, and the same error is
-  raised. The pass keeps them: the file read stops refusing these instead (davi,
-  2026-10-14). A missing end record makes the file read walk the local headers (task
-  3.0b), and so do end records it cannot use (task 3.0c, §"Damaged ZIP64 end
-  records"); a damaged directory is to follow, and a name flagged UTF-8 that is not
-  valid UTF-8 decodes as unflagged (task 4.1); once those land, the two reads write the
-  same files. A split set and an encrypted central directory stay refused: no member
-  of either can be read.
+- What the directory refused as a whole is now read past (davi, 2026-10-14: the file
+  read stops refusing what the pass writes). A missing end record makes the file read
+  walk the local headers (task 3.0b), and so do end records it cannot use (task 3.0c1,
+  §"Damaged ZIP64 end records") and a directory damaged part way (task 3.0c2,
+  §"A damaged directory"); a name flagged UTF-8 that is not valid UTF-8 is damage at
+  its entry until task 4.1 decodes it as unflagged. The two reads write the same files.
+  A split set and an encrypted central directory stay refused: no member of either can
+  be read.
 
 ### Damaged ZIP64 end records
 
@@ -608,6 +606,36 @@ saturated classic record, both raise, the pass in its own words. A locator namin
 the pass's listing limits dropped stays a `ResourceLimitError` from a pipe, where a file
 read lets the classic record stand in: higher limits keep those bytes, and the pass then
 reads what the file read reads. A locator naming another disk is still a split set.
+
+### A damaged directory
+
+An entry the directory walk cannot read (a wrong signature, a cut fixed header, a name
+flagged UTF-8 that is not) ends the directory's part of the listing. The file read then
+walks the local headers once (`ZipReader._past_damage`, the walk a ZIP with no end
+record gets) and lists every member whose offset the directory did not already list,
+from its local header, then raises the damage, so the listing's error stays a
+`CorruptionError` and keeps its members; only a listing limit the walk meets is raised
+instead. A member whose data the walk could not get past is listed, and its read raises
+the walk's error, a cut as `CorruptionError` since the end record follows it. The walk
+is made once per reader (`_local_walk`, the tail search's walk when it made one), and
+each caller builds the offsets past the damage from what it listed itself: the index
+pass, which builds no member, stops at an entry whose name is flagged UTF-8 and is not,
+where the listing stops, so both list the same members past the damage. The overlap
+guard keeps one bound per member, aligned with the ids: -1, which bounds nothing, for a
+directory entry before the damage that points at no local header, and the entry's offset
+when a local header starts there, whether or not the walk reached it (a header inside
+another member's stated data is real, and two entries over it stay an overlap). The
+members past the damage take part in which copy of a name is current. The pass gets the
+same result from the other side: it applies the directory to the members described
+before the damage, keeps the rest as their local headers say without reporting them as
+unlisted, and raises the damage at the end, ahead of a check a member before it fails,
+which fails only that member.
+
+A stored directory offset larger than the directory's position gives a negative `base`.
+That is not damage: a stub sliced off the source (`start_offset`, a zipapp whose
+offsets count from the file's start) gives the same shift. When the offsets it moves
+land on no local header, every read fails from a file and the pass lists none, so
+neither read writes anything, as Info-ZIP unzip and 7-Zip extract nothing.
 
 ### What the caller sees in a forward pass
 

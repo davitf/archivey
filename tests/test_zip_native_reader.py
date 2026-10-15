@@ -1,7 +1,7 @@
 """The ZIP reader on archivey's own parser: what changed when ``zipfile`` left.
 
-- A damaged central directory lists the entries before the damage, then raises, as a
-  cut TAR or RAR does (DR-2).
+- A damaged central directory lists the entries before the damage and the members
+  the local headers hold past it, then raises, as a cut TAR or RAR does (DR-2).
 - "Version needed to extract" above 6.3 no longer refuses the archive (DR-4): only a
   method or flag archivey cannot read refuses a member.
 - Bytes after the end record and its comment are ``ARCHIVE_TRAILING_DATA`` (DR-3), as
@@ -38,6 +38,7 @@ from archivey.internal.backends import zip_parser
 from archivey.types import ArchiveFormat, HashAlgorithm
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
+from tests.test_zip_pipe_parity import _with_modes
 
 _NAMES = ("a.txt", "b.txt", "c.txt")
 
@@ -46,7 +47,11 @@ def _zip(names: tuple[str, ...] = _NAMES, *, comment: bytes = b"") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for name in names:
-            zf.writestr(name, name.encode() * 3)
+            # Made on Unix whatever the host, so every entry carries a mode.
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, name.encode() * 3)
         zf.comment = comment
     return buf.getvalue()
 
@@ -60,6 +65,8 @@ def _central_headers(data: bytes) -> list[int]:
 
 
 # --- A damaged directory lists, then raises -----------------------------------------
+# The entries before the damage list from the directory, the members after it from
+# their local headers, as a read from a pipe lists them; then the damage is raised.
 
 
 def _with_bad_third_header() -> bytes:
@@ -83,28 +90,40 @@ def _with_cut_header_after_the_second() -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("build", "match"),
+    ("build", "match", "names"),
     [
-        pytest.param(_with_bad_third_header, "Bad magic number", id="bad-signature"),
+        pytest.param(
+            _with_bad_third_header,
+            "Bad magic number",
+            ["a.txt", "b.txt", "c.txt"],
+            id="bad-signature",
+        ),
         pytest.param(
             _with_cut_header_after_the_second,
             "Truncated central directory",
+            ["a.txt", "b.txt"],
             id="cut-header",
         ),
     ],
 )
-def test_damaged_directory_lists_the_entries_before_the_damage(
-    build: object, match: str
+def test_damaged_directory_lists_the_members_the_local_headers_hold(
+    build: object, match: str, names: list[str]
 ) -> None:
     data = build()  # type: ignore[operator]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
         report = reader.members_report()
-        assert [m.name for m in report.members] == ["a.txt", "b.txt"]
+        assert [m.name for m in report.members] == names
         assert isinstance(report.error, CorruptionError)
         assert match in str(report.error)
-        # The members before the damage read, with the overlap guard's bounds from
-        # the offsets the walk read.
-        assert reader.read(report.members[1]) == b"b.txtb.txtb.txt"
+        # Every member listed reads, with the overlap guard's bounds from the
+        # offsets of both walks.
+        for member in report.members:
+            assert reader.read(member) == member.name.encode() * 3
+        # The directory's entries keep its fields; the member past the damage has
+        # only what its local header holds.
+        assert report.members[0].mode is not None
+        if len(names) == 3:
+            assert report.members[2].mode is None
         with raises_corruption_not_truncation(match=match):
             reader.members()
         assert reader.info.member_count is None
@@ -116,7 +135,7 @@ def test_damaged_directory_iteration_yields_then_raises() -> None:
         with raises_corruption_not_truncation(match="Bad magic number"):
             for member in reader:
                 seen.append(member.name)
-    assert seen == ["a.txt", "b.txt"]
+    assert seen == ["a.txt", "b.txt", "c.txt"]
 
 
 def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> None:
@@ -126,7 +145,269 @@ def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> N
     with open_archive(io.BytesIO(_with_bad_third_header())) as reader:
         with raises_corruption_not_truncation(match="Bad magic number"):
             reader.extract_all(dest)
-    assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "b.txt"]
+    assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "b.txt", "c.txt"]
+
+
+def _bit3_with_bad_second_header(*, last_descriptor: bool) -> bytes:
+    """Three bit-3 members whose second directory entry is unreadable; without
+    ``last_descriptor`` the last member's data descriptor has no signature, so a walk
+    over the local headers cannot find where its data ends."""
+    data = bytearray(_with_modes(pipe=True))
+    if not last_descriptor:
+        last = bytes(data).rindex(b"PK\x07\x08")
+        data[last : last + 4] = b"ZZZZ"
+    second = _central_headers(bytes(data))[1]
+    data[second : second + 4] = b"XXXX"
+    return bytes(data)
+
+
+def _with_lying_local_size() -> bytes:
+    """The second member's local header claims 1 GiB of data, and its directory entry
+    is unreadable."""
+    data = bytearray(_zip())
+    second = bytes(data).index(b"PK\x03\x04", 4)
+    struct.pack_into("<I", data, second + 18, 1 << 30)
+    central = _central_headers(bytes(data))[1]
+    data[central : central + 4] = b"XXXX"
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    ("build", "names", "cut_error"),
+    [
+        pytest.param(
+            lambda: _bit3_with_bad_second_header(last_descriptor=False),
+            ["m0.txt", "m1.txt", "m2.txt"],
+            UnsupportedFeatureError,
+            id="no-descriptor",
+        ),
+        pytest.param(
+            _with_lying_local_size,
+            ["a.txt", "b.txt"],
+            CorruptionError,
+            id="local-size-past-the-end",
+        ),
+    ],
+)
+def test_a_walk_stopped_past_a_damaged_directory_fails_only_its_member(
+    build: object, names: list[str], cut_error: type[Exception]
+) -> None:
+    """The listing raises the directory's damage, whatever stopped the walk over
+    the local headers; the member that walk could not get past fails its own read.
+    The end record follows it, so that is never truncation."""
+    with open_archive(io.BytesIO(build()), format=ArchiveFormat.ZIP) as reader:  # type: ignore[operator]
+        report = reader.members_report()
+        assert [m.name for m in report.members] == names
+        assert type(report.error) is CorruptionError
+        assert "Bad magic number" in str(report.error)
+        *whole, cut = report.members
+        for member in whole:
+            reader.read(member)
+        with pytest.raises(cut_error) as raised:
+            reader.read(cut)
+        assert not isinstance(raised.value, TruncatedError)
+
+
+def test_a_local_header_past_the_end_lists_nothing_more_past_a_damaged_directory() -> (
+    None
+):
+    """The walk past a damaged directory meets a local header whose extra field runs
+    past the end: no member is past it, and the listing raises the damage."""
+    data = bytearray(_zip())
+    struct.pack_into("<H", data, 28, 0xFFFF)  # the first local header's extra length
+    first = _central_headers(bytes(data))[0]
+    data[first : first + 4] = b"XXXX"
+    with open_archive(io.BytesIO(bytes(data)), format=ArchiveFormat.ZIP) as reader:
+        report = reader.members_report()
+        assert list(report.members) == []
+        assert type(report.error) is CorruptionError
+        assert "Bad magic number" in str(report.error)
+
+
+def _central_entries(data: bytes) -> list[bytes]:
+    """Each central directory entry's bytes, in order."""
+    eocd = data.rindex(b"PK\x05\x06")
+    starts = _central_headers(data)
+    return [data[at:end] for at, end in zip(starts, [*starts[1:], eocd], strict=True)]
+
+
+def _with_directory(data: bytes, entries: list[bytes]) -> bytes:
+    """``data`` with its central directory replaced by ``entries``."""
+    cd_offset = _central_headers(data)[0]
+    eocd = data.rindex(b"PK\x05\x06")
+    directory = b"".join(entries)
+    end = bytearray(data[eocd:])
+    struct.pack_into(
+        "<HHII", end, 8, len(entries), len(entries), len(directory), cd_offset
+    )
+    return data[:cd_offset] + directory + bytes(end)
+
+
+def _damaged(entry: bytes) -> bytes:
+    return b"XXXX" + entry[4:]
+
+
+def _overlap_outcomes(data: bytes, *, streaming: bool) -> list[object]:
+    """Each member's read: its length, or whether it was refused as an overlap."""
+    outcomes: list[object] = []
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        if streaming:
+            with raises_corruption_not_truncation(match="Bad magic number"):
+                for _member, stream in reader.stream_members():
+                    assert stream is not None
+                    try:
+                        outcomes.append(len(stream.read()))
+                    except CorruptionError as exc:
+                        outcomes.append(_refusal(exc))
+            return outcomes
+        for member in reader.members_report().members:
+            try:
+                outcomes.append(len(reader.read(member)))
+            except CorruptionError as exc:
+                outcomes.append(_refusal(exc))
+    return outcomes
+
+
+def _refusal(exc: CorruptionError) -> str:
+    return "overlap" if "Overlapped entries" in str(exc) else "corrupt"
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name")
+@pytest.mark.parametrize("streaming", [False, True], ids=["listed", "streamed"])
+def test_two_entries_over_a_header_the_walk_steps_over_stay_an_overlap(
+    streaming: bool,
+) -> None:
+    """A local header that states more data than it has makes the walk past a
+    damaged directory step over the next member's header. That header is still
+    real, so of two entries over it the second is refused, as without damage."""
+    data = bytearray(_zip())
+    second = bytes(data).index(b"PK\x03\x04", 4)
+    third = bytes(data).index(b"PK\x03\x04", second + 4)
+    struct.pack_into("<I", data, 18, third - 30 - len("a.txt"))  # a.txt's local size
+    a, b, c = _central_entries(bytes(data))
+    data = bytearray(_with_directory(bytes(data), [a, b, b, _damaged(c)]))
+    assert _overlap_outcomes(bytes(data), streaming=streaming) == [
+        15,
+        15,
+        "overlap",
+        15,
+    ]
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name")
+@pytest.mark.parametrize("streaming", [False, True], ids=["listed", "streamed"])
+def test_an_entry_over_no_header_leaves_a_later_overlap_as_it_was(
+    streaming: bool,
+) -> None:
+    """A directory entry over no local header ahead of two entries over one header:
+    the first of the two reads and the second is refused, past a damaged directory
+    as without one."""
+    data = _zip()
+    a, b, c = _central_entries(data)
+    nowhere = bytearray(a)
+    struct.pack_into("<I", nowhere, 42, 20)
+    damaged = _with_directory(data, [a, bytes(nowhere), b, b, _damaged(c)])
+    outcomes = _overlap_outcomes(damaged, streaming=streaming)
+    assert outcomes == [15, "corrupt", 15, "overlap", 15]
+
+
+def _with_zip64_offset(entry: bytes, offset: int) -> bytes:
+    """``entry`` stating its local header at ``offset`` through a ZIP64 extra field."""
+    out = bytearray(entry)
+    (name_len, extra_len) = struct.unpack_from("<HH", out, 28)
+    assert extra_len == 0
+    struct.pack_into("<H", out, 30, 12)
+    struct.pack_into("<I", out, 42, 0xFFFF_FFFF)
+    at = 46 + name_len
+    return bytes(out[:at] + struct.pack("<HHQ", 1, 8, offset) + out[at:])
+
+
+@pytest.mark.parametrize("offset", [1 << 45, (1 << 64) - 1], ids=["2^45", "2^64-1"])
+@pytest.mark.parametrize("damaged", [False, True], ids=["whole", "damaged"])
+def test_an_offset_no_file_can_seek_to_is_corruption(
+    offset: int, damaged: bool, tmp_path: object
+) -> None:
+    """A directory entry whose ZIP64 field puts its local header beyond what a file
+    on disk can seek to: the listing goes on, damaged directory or not, and that
+    entry's read raises ``CorruptionError``, never the seek's ``OSError``."""
+    from pathlib import Path
+
+    data = _zip()
+    a, b, c = _central_entries(data)
+    far = _with_zip64_offset(a, offset)
+    path = Path(str(tmp_path)) / "far.zip"
+    path.write_bytes(_with_directory(data, [a, far, b, _damaged(c) if damaged else c]))
+    with open_archive(path) as reader:
+        report = reader.members_report()
+        names = [m.name for m in report.members]
+        assert names == ["a.txt", "a.txt", "b.txt", "c.txt"]
+        if damaged:
+            assert type(report.error) is CorruptionError
+        else:
+            assert report.error is None
+        with raises_corruption_not_truncation(match="Absurd local-header offset"):
+            reader.read(report.members[1])
+        assert reader.read(report.members[2]) == b"b.txtb.txtb.txt"
+
+
+def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
+    """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
+    that is not, optionally pointing at ``header_offset``, and whose third directory
+    entry is unreadable."""
+    data = bytearray(_with_modes(pipe=True))
+    second = _central_headers(bytes(data))[1]
+    spots = [(second, 8)]
+    if local_too:
+        spots.append((bytes(data).index(b"PK\x03\x04", 4), 6))
+    for at, flags in spots:
+        (flag,) = struct.unpack_from("<H", data, at + flags)
+        struct.pack_into("<H", data, at + flags, flag | 0x800)
+        name = at + (46 if at == second else 30)
+        data[name : name + 6] = b"m\xff.txt"
+    if header_offset is not None:
+        struct.pack_into("<I", data, second + 42, header_offset)
+    third = _central_headers(bytes(data))[2]
+    data[third : third + 4] = b"XXXX"
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            _bad_utf8_second_name(local_too=True, header_offset=None),
+            id="descriptors",
+        ),
+        pytest.param(
+            _bad_utf8_second_name(local_too=False, header_offset=60),
+            id="offset-of-no-local-header",
+        ),
+    ],
+)
+def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
+    data: bytes,
+) -> None:
+    """The index pass reads past an entry whose member cannot be built (a name
+    flagged UTF-8 that is not), where the listing stops. Whichever of the two runs
+    first, each member past the damage carries its own data descriptor, and an
+    offset of that entry's that points at no local header caps no member's data."""
+    with open_archive(io.BytesIO(bytes(data))) as reader:
+        listed_first = [
+            (m.size, m.compressed_size, len(reader.read(m)))
+            for m in reader.members_report().members
+        ]
+    # A streaming pass opens each member as the listing reaches it, so the index
+    # pass runs before the listing gets to the damage.
+    opened_first = []
+    with open_archive(io.BytesIO(bytes(data)), streaming=True) as reader:
+        with raises_corruption_not_truncation(match="Could not decode a ZIP member"):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                opened_first.append(
+                    (member.size, member.compressed_size, len(stream.read()))
+                )
+    assert len(listed_first) == 3
+    assert opened_first == listed_first
 
 
 # --- Version needed above 6.3 -------------------------------------------------------

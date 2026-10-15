@@ -28,8 +28,8 @@ Each idea carries a status:
 
 - **List a ZIP whose central directory is lost, and read spanned ZIP sets.** *Needs
   design.* The native ZIP reader (the `native-zip-reader` OpenSpec change) already
-  lists a damaged central directory up to the damage, and a wrong UTF-8 flag on one name
-  stops the listing there, after the entries before it. It reads a ZIP from a pipe or
+  lists a damaged central directory up to the damage and the local headers past it, and
+  treats a wrong UTF-8 flag on one name as that damage. It reads a ZIP from a pipe or
   socket by walking the local headers forward; its later stages, planned for 0.2.0, walk
   them when the end record is not in the file's tail (which lists a ZIP cut before its
   directory), and decode a wrongly flagged name as an unflagged one. Its parser's

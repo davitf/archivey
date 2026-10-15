@@ -1693,18 +1693,28 @@ class ZipForwardReader(ZipReader):
         offsets = array("q")
         entries: list[CentralEntry] = []
         held = 0
-        with self._translated_errors():
-            for central in walk:
-                if max_members is not None and len(offsets) >= max_members:
-                    raise _max_members_error(max_members)
-                # Clamped as the seekable read's are: one past what the array holds
-                # points at no local header either, and fails as missing.
-                offsets.append(_bound_offset(central.header_offset))
-                held += len(central.name) + len(central.extra) + len(central.comment)
-                if max_meta is not None and held > max_meta:
-                    self._charge_held_directory(held)
-                entries.append(central)
-        self._entries_read = walk.entries_read
+        # Damage part way through the directory: the entries before it update their
+        # members, the members after it keep their local headers, and the damage is
+        # raised at the end, as the seekable read lists past it (``_past_damage``).
+        damage: CorruptionError | None = None
+        try:
+            with self._translated_errors():
+                for central in walk:
+                    if max_members is not None and len(offsets) >= max_members:
+                        raise _max_members_error(max_members)
+                    # Clamped as the seekable read's are: one past what the array
+                    # holds points at no local header either, and fails as missing.
+                    offsets.append(_bound_offset(central.header_offset))
+                    held += (
+                        len(central.name) + len(central.extra) + len(central.comment)
+                    )
+                    if max_meta is not None and held > max_meta:
+                        self._charge_held_directory(held)
+                    entries.append(central)
+        except CorruptionError as exc:
+            damage = exc
+        # A walk that met damage read no count.
+        self._entries_read = None if damage is not None else walk.entries_read
         local_offsets = self._local_offsets
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
         matched: set[int] = set()
@@ -1760,6 +1770,14 @@ class ZipForwardReader(ZipReader):
                     (position, member, _descriptor_error(member, descriptor, central))
                 )
         unlisted = sorted(local_offsets - matched)
+        if damage is not None:
+            # Past the damage, the members keep their local headers, in file order
+            # after the directory's, as the seekable read lists them; they take part
+            # in which copy of a name is current.
+            kept = [by_offset[offset] for offset in unlisted]
+            order.extend(kept)
+            placed.extend(kept)
+            unlisted = []
         for member, central in updates:
             self._update_from_directory(member, central)
         if any_missing:
@@ -1797,7 +1815,7 @@ class ZipForwardReader(ZipReader):
         }
         self._report_unlisted(unlisted)
         last = entries[-1] if entries else None
-        for finding in walk.findings:
+        for finding in () if damage is not None else walk.findings:
             self._emit_walk_finding(finding, last)
         # The kept bytes end where the stream does, so the last ``trailing`` of them
         # follow the end record and its declared comment.
@@ -1808,6 +1826,10 @@ class ZipForwardReader(ZipReader):
         self._by_offset = {}
         self._local_offsets = set()
         self._descriptors = {}
+        if damage is not None:
+            # The listing's error, as from a file; a member that fails a check of its
+            # own fails at the end of the pass (``_failed_at_end``).
+            raise damage
         if shared:
             first = shared[0]
             raise CorruptionError(

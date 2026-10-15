@@ -92,6 +92,7 @@ from archivey.internal.backends.zip_aes import (
     parse_winzip_aes_extra,
 )
 from archivey.internal.backends.zip_detect import (
+    LOCAL_HEADER_SIGNATURE,
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
     validate_zip_local_header,
@@ -910,6 +911,23 @@ def _bound_offset(offset: int) -> int:
     return min(max(offset, -1), MAX_DATA_OFFSET)
 
 
+@dataclass(frozen=True, slots=True)
+class _PastDamage:
+    """The members a walk over the local headers found past a damaged directory
+    (``ZipReader._past_damage``)."""
+
+    walked: _WalkedMembers
+    #: The directory's offsets, then those of the members past the damage.
+    offsets: array[int]
+    #: The overlap guard's offsets, one per member as ``offsets`` is: -1, which bounds
+    #: nothing, for a directory entry that points at no local header.
+    bounds: array[int]
+    #: Each member past the damage's position in ``walked``.
+    positions: list[int]
+    #: The id of the member whose data the walk could not get past, if listed.
+    cut: int | None
+
+
 class _DataBounds:
     """Where each member's data must end, for the overlap guard.
 
@@ -920,11 +938,16 @@ class _DataBounds:
     overlapping-entry amplification shape (DR-9a). stdlib warns and reads both from
     3.12.10, 3.13.3 and 3.14.
 
-    A walk that stops early, at damage or at ``max_members``, gives the offsets of the
-    entries before the stop. Every walk stops at the same entry, so those are every
-    member ever handed out; no member past the stop opens. The bound only loosens for
-    a listed member whose next header is past the stop: its data may then run over
-    entries that never open, so no byte still reads as two members' data.
+    A walk that stops early at ``max_members`` gives the offsets of the entries before
+    the stop. Every walk stops at the same entry, so those are every member ever handed
+    out; no member past the stop opens. The bound only loosens for a listed member
+    whose next header is past the stop: its data may then run over entries that never
+    open, so no byte still reads as two members' data. A walk that stops at damage
+    gives those offsets and then the ones the local headers hold past it
+    (``ZipReader._past_damage``), one per member that listing hands out, but -1 for a
+    directory entry that points at no local header: it reads nothing, and bounds
+    nothing. The index pass stops at the entry the listing stops at, so the two
+    give the same bounds.
     """
 
     __slots__ = ("_cd_start", "_first_at", "_sorted")
@@ -951,6 +974,14 @@ class _DataBounds:
         ordered = self._sorted
         above = bisect_right(ordered, offset)
         return ordered[above] if above < len(ordered) else self._cd_start
+
+
+def _is_utf8(raw: bytes) -> bool:
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def _max_members_error(
@@ -1174,6 +1205,13 @@ class ZipReader(BaseArchiveReader):
         # The members a walk over the local headers found, when the archive has no end
         # record: listed from there (``_iter_walked``). ``None`` for every other read.
         self._salvage: _WalkedMembers | None = None
+        # The walk over the local headers, once made: by the tail search at open, or
+        # for a directory damaged part way, whose members after the damage are listed
+        # from it (``_past_damage``). Read and set under ``_past_damage_lock``.
+        self._local_walk: _WalkedMembers | None = None
+        self._past_damage_lock = threading.Lock()
+        # What the listing listed past the damage, for ``_open_member``.
+        self._past_damage_found: _PastDamage | None = None
         self._refuse_lone_split_segment()
         self._open_index(source, start_offset)
 
@@ -1225,7 +1263,7 @@ class ZipReader(BaseArchiveReader):
             found, stopped = locate_end_record(
                 self._read_at, file_size, members_end=self._walk_past_members
             )
-            walked, self._salvage = self._salvage, None
+            walked = self._local_walk
             if found is None and walked is not None:
                 if walked.error is None:
                     # The walk got past the members, so the step ran from there.
@@ -1269,9 +1307,7 @@ class ZipReader(BaseArchiveReader):
         the tail search already made, reused; the headers are walked here only when
         it made none."""
         if walked is None:
-            self._walk_past_members()
-            walked, self._salvage = self._salvage, None
-            assert walked is not None
+            walked = self._local_walk = self._walk_local_headers()
         if walked.error is None:
             walked.error = error
         if not walked.offsets:
@@ -1312,10 +1348,19 @@ class ZipReader(BaseArchiveReader):
         self._count_known = True
 
     def _walk_past_members(self) -> int | None:
-        """Where the members end, found by walking their local headers from the start:
-        for an end record the tail search does not find, behind more trailing bytes
-        than its window holds, or one that cannot be used. ``None`` when the walk
-        does not get past the members.
+        """Where the members end, found by walking their local headers from the start
+        (``_walk_local_headers``), for an end record the tail search does not find
+        behind more trailing bytes than its window holds. ``None`` when the walk does
+        not get past the members. The tail search's step, at open: the walk is kept
+        in ``_local_walk``, for ``_open_index`` to list when no end record follows or
+        the one found cannot be used, and for a damaged directory's listing to go on
+        from (``_past_damage``)."""
+        walked = self._local_walk = self._walk_local_headers()
+        return walked.members_end if walked.error is None else None
+
+    def _walk_local_headers(self) -> _WalkedMembers:
+        """Walk the members' local headers from the start: their offsets and
+        descriptors, where they end and why the walk stopped.
 
         The walk is the one a read from a pipe makes, with no data decoded: a member
         whose local header states its size is seeked over, and a bit-3 member's data
@@ -1325,16 +1370,13 @@ class ZipReader(BaseArchiveReader):
         stops there and the archive opens. A pass that lists as it goes (streaming,
         from a file or a pipe) then yields the members before the limit and raises
         it; a random-access listing raises it with nothing listed, since there only
-        damage keeps the members before it (``_materialize_members``). Run at most
-        once, at open, before anything is listed: by the tail search, or for end
-        records ``read_end_record`` refused when the search found them without it.
-
-        What the walk found is kept in ``_salvage`` (offsets and descriptors, and
-        why it stopped), for ``_open_index`` to list when no end record follows or
-        the one found cannot be used.
+        damage keeps the members before it (``_materialize_members``). Made at most
+        once per reader (``_local_walk``): by the tail search, for end records
+        ``read_end_record`` refused when the search found them without it, or for a
+        directory damaged part way.
         """
         max_members = self._config.listing_limits.max_members
-        walked = self._salvage = _WalkedMembers()
+        walked = _WalkedMembers()
         with self._lock:
             fp = self._fp
             if fp is None:
@@ -1348,24 +1390,24 @@ class ZipReader(BaseArchiveReader):
                     entry = walk.next_entry()
                 except ArchiveyError as exc:
                     walked.error = exc
-                    return None
+                    return walked
                 if entry is None:
                     walked.after = walk.where()
-                    return members_end
+                    return walked
                 if max_members is not None and len(walked.offsets) >= max_members:
                     # Kept like any other stop: the archive opens, and its listing
                     # raises the limit, as at a directory entry past it.
                     walked.error = _max_members_error(
                         max_members, "ZIP local headers name"
                     )
-                    return None
+                    return walked
                 try:
                     descriptor = walk.skip_member(entry)
                 except ArchiveyError as exc:
                     walked.add(entry.offset, None)
                     walked.cut = entry.index
                     walked.error = exc
-                    return None
+                    return walked
                 walked.add(entry.offset, descriptor)
 
     def _read_at(self, offset: int, n: int) -> bytes:
@@ -1517,8 +1559,9 @@ class ZipReader(BaseArchiveReader):
         each header offset for the overlap guard, and charges ``max_members`` itself,
         in every mode, because the offsets are held in every mode: it raises before
         building one member more than the limit. Damage raises after the
-        members before it, as a cut TAR does; the end-record findings come after the
-        last member. A ZIP with no end record has no directory to walk: its members
+        members before it, as a cut TAR does, and after the members the local headers
+        hold past it (``_past_damage``); the end-record findings come after the last
+        member. A ZIP with no end record has no directory to walk: its members
         come from the local headers the walk at open found (``_iter_walked``).
         """
         walked = self._salvage
@@ -1537,20 +1580,117 @@ class ZipReader(BaseArchiveReader):
                 index = entry.index
                 if max_members is not None and index >= max_members:
                     raise _max_members_error(max_members)
+                # Built before its offset is kept: an entry whose fields cannot be
+                # read (a name flagged UTF-8 that is not) is damage, and its member
+                # is listed from its local header past it (``_past_damage``).
+                member = self._to_member(entry, index)
                 offsets.append(_bound_offset(entry.header_offset))
                 last = entry
-                yield self._to_member(entry, index)
-        except (CorruptionError, UnsupportedFeatureError, ResourceLimitError):
-            # The members before the damage or the limit keep their bound, from the
-            # offsets the walk read (``_DataBounds``).
+                yield member
+        except CorruptionError as damage:
+            # A directory damaged part way: the members after the damage are the
+            # ones the local headers hold, as a read from a pipe lists them, then
+            # the damage is raised (``_past_damage``).
+            past = self._past_damage_found = self._past_damage(offsets)
+            self._set_bounds(past.bounds, count=None)
+            for index, offset in enumerate(past.offsets):
+                if index < len(offsets):
+                    continue
+                yield self._member_past_damage(past, index, offset)
+            raise self._error_past_damage(past, damage)
+        except (UnsupportedFeatureError, ResourceLimitError):
+            # The members before the stop keep their bound, from the offsets the walk
+            # read (``_DataBounds``).
             self._set_bounds(offsets, count=None)
             raise
         self._set_bounds(offsets, count=walk.entries_read)
+        self._drop_local_walk()
         # The end record and the central directory disagree. Info-ZIP unzip and 7-Zip
         # list and test every member, then report the damage; so does this, once the
         # members are out, and a strict policy refuses the archive.
         for finding in walk.findings:
             self._emit_walk_finding(finding, last)
+
+    def _past_damage(self, listed: array[int]) -> _PastDamage:
+        """The members past a directory damaged after the entries at ``listed``.
+
+        The local headers are walked once per reader, as for a ZIP with no end record
+        (``_local_walk``); a member the directory already listed, by offset, is not
+        listed again. ``offsets`` holds the directory's offsets, then the new ones in
+        file order, so a member's id is its position there and the overlap guard
+        bounds every member listed (``_DataBounds``). The listing and the index pass
+        stop at the same entry, so both build the same members past the damage.
+        """
+        with self._past_damage_lock:
+            walked = self._local_walk
+            if walked is None:
+                walked = self._local_walk = self._walk_local_headers()
+        seen = set(listed)
+        found = set(walked.offsets)
+        offsets = array("q", listed)
+        # The walk steps over each member's data by the size its own local header
+        # states, so a real header it did not reach (inside another member's data,
+        # or past where it stopped) is read for: it keeps bounding its neighbours,
+        # and two entries over it stay an overlap.
+        bounds = array(
+            "q",
+            (
+                offset if offset in found or self._holds_local_header(offset) else -1
+                for offset in listed
+            ),
+        )
+        positions: list[int] = []
+        cut: int | None = None
+        for position, offset in enumerate(walked.offsets):
+            if offset in seen:
+                continue
+            if position == walked.cut:
+                cut = len(offsets)
+            positions.append(position)
+            offsets.append(offset)
+            bounds.append(offset)
+        return _PastDamage(walked, offsets, bounds, positions, cut)
+
+    def _holds_local_header(self, offset: int) -> bool:
+        """Whether a local header's signature starts at ``offset``. Every local header
+        comes before the directory, so an offset at or past it is not read: a source
+        on disk cannot seek to every offset a directory entry can state."""
+        return (
+            0 <= offset < self._end.cd_start
+            and self._read_at(offset, 4) == LOCAL_HEADER_SIGNATURE
+        )
+
+    def _drop_local_walk(self) -> None:
+        """Free the walk over the local headers: the directory was walked whole, so
+        no listing goes on past damage from it."""
+        with self._past_damage_lock:
+            self._local_walk = None
+
+    def _member_past_damage(
+        self, past: _PastDamage, index: int, offset: int
+    ) -> ArchiveMember:
+        """The member at ``offset`` past the damage, built from its local header as
+        ``_iter_walked`` builds one."""
+        entry = local_entry_at(self._read_at, index, offset)
+        member = self._local_member(entry, index)
+        if entry.deferred and index != past.cut:
+            position = past.positions[index - (len(past.offsets) - len(past.positions))]
+            self._apply_descriptor(member, past.walked, position)
+        return member
+
+    def _error_past_damage(
+        self, past: _PastDamage, damage: CorruptionError
+    ) -> ArchiveyError:
+        """What the listing raises after the members past the damage: the directory's
+        damage, so the listing's error stays a ``CorruptionError`` and keeps the
+        members listed. A limit the walk over the local headers met is raised
+        instead, as at a directory entry past it. Any other error that stopped the
+        walk is either about the member whose data it could not get past, whose read
+        raises it (``_open_member``), or a local header it could not read (one whose
+        name or extra field runs past the end), past which nothing more is listed."""
+        if isinstance(past.walked.error, ResourceLimitError):
+            return self._walked_error(past.walked, None)
+        return damage
 
     def _iter_walked(self, walked: _WalkedMembers) -> Iterator[ArchiveMember]:
         """The members of a ZIP with no end record, from the local headers the walk at
@@ -1574,13 +1714,17 @@ class ZipReader(BaseArchiveReader):
         raise self._walked_error(walked, name if cut is not None else None)
 
     def _walked_error(
-        self, walked: _WalkedMembers, member_name: str | None
+        self, walked: _WalkedMembers, member_name: str | None, *, corrupt: bool = False
     ) -> ArchiveyError:
         """A fresh copy of the error that ended the walk, stamped: the listing raises
-        it once per walk, and a cut member's read raises it too."""
+        it once per walk, and a cut member's read raises it too. ``corrupt`` makes a
+        ``TruncatedError`` a ``CorruptionError``, for a source known not to be cut."""
         error = walked.error
         assert error is not None
-        fresh = type(error)(raw_message_of(error))
+        kind = type(error)
+        if corrupt and isinstance(error, TruncatedError):
+            kind = CorruptionError
+        fresh = kind(raw_message_of(error))
         self._stamp_error_context(fresh, member_name)
         return fresh
 
@@ -1774,14 +1918,24 @@ class ZipReader(BaseArchiveReader):
                 if max_members is not None and entry.index >= max_members:
                     # The listing raises the limit itself, at the same entry.
                     break
+                if entry.flags & _ZIP_MASK_UTF8 and not _is_utf8(entry.name):
+                    # The listing cannot build this entry's member and stops at it as
+                    # damage (``_decode_member_name``); so does this pass, so both
+                    # list the same members past it (``_past_damage``).
+                    raise CorruptionError("ZIP member name flagged UTF-8 is not")
                 offsets.append(_bound_offset(entry.header_offset))
             else:
                 self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
                 self._member_count = walk.entries_read
                 self._count_known = True
+                self._drop_local_walk()
                 return
-        except (CorruptionError, UnsupportedFeatureError):
-            # The listing raises the damage itself, at the same entry.
+        except CorruptionError:
+            # The listing raises the damage itself, at the same entry, after the
+            # members the local headers hold past it.
+            offsets = self._past_damage(offsets).bounds
+        except UnsupportedFeatureError:
+            # The listing raises it itself, at the same entry.
             pass
         # Stopped early: an open meanwhile reads with the bounds of the entries before
         # the stop, as after a listing that met it; the count is unknown.
@@ -1875,7 +2029,9 @@ class ZipReader(BaseArchiveReader):
                 decoded = raw_name.decode("utf-8")
             except UnicodeDecodeError as exc:
                 # The flag says UTF-8 and the bytes are not: refused (format-zip spec).
-                # The entries before it are listed, then this raises.
+                # The entries before it are listed, then this raises. The index pass
+                # stops at the same entry (``_index_pass``); a new refusal here needs
+                # the same stop there, or the two give different overlap bounds.
                 raise CorruptionError(
                     f"Could not decode a ZIP member name: {exc!r}"
                 ) from exc
@@ -2346,6 +2502,13 @@ class ZipReader(BaseArchiveReader):
         from the central directory's, and a payload that runs into the next local
         header or the directory: the overlap guard.
         """
+        if loc.header_offset >= self._end.cd_start:
+            # Every local header comes before the directory, as ``_holds_local_header``
+            # says; not sought, since a source on disk cannot seek to every offset a
+            # directory entry can state. For a ZIP with no end record the directory
+            # starts where the walk stopped, at the cut member, whose read
+            # ``_open_member`` has already refused with the walk's error.
+            raise CorruptionError(f"Absurd local-header offset: {loc.header_offset}")
         try:
             header = read_local_header(self._read_at, loc.header_offset)
         except TruncatedError as exc:
@@ -3293,6 +3456,12 @@ class ZipReader(BaseArchiveReader):
         # map, and a duplicate member name can't resolve to the wrong entry.
         loc = member._raw
         assert isinstance(loc, _ZipLocator), "ZIP member is missing its locator"
+        past = self._past_damage_found
+        if past is not None and loc.index == past.cut:
+            # The walk past a damaged directory could not get past this member's
+            # data. The end record follows it, so the file is not cut: a local header
+            # that runs past the end is corruption (``corrupt``).
+            raise self._walked_error(past.walked, member.name, corrupt=True)
         walked = self._salvage
         if walked is not None and loc.index == walked.cut:
             # The walk could not get past this member's data: a read fails where the
