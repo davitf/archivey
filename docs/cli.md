@@ -9,6 +9,7 @@ archivey l photos.zip               # list (alias)
 archivey t photos.zip               # full-read integrity check
 archivey x photos.zip               # safe extract (alias for extract)
 archivey info photos.zip            # format / identity + access cost (alias: detect)
+archivey cat photos.zip notes.txt   # a member's contents to stdout
 archivey --version -v               # version + format availability for this install
 ```
 
@@ -63,6 +64,35 @@ Where the library raises, the CLI finishes the run and reports. To get the libra
 behaviour, pass `--overwrite error --stop-on-error`. For the CLI's in Python, pass
 `overwrite="rename", on_error="continue"`.
 
+### Writing to stdout
+
+`archivey cat` writes the contents of the selected members to stdout, one after another
+in archive order, like `unzip -p` or `tar -xO`. Patterns select members as they do for
+`extract`. Directories and links are skipped; with `-v`, each member's name goes to
+stderr.
+
+```bash
+archivey cat config.zip settings.ini     # one member
+archivey cat logs.tar.zst '**/*.log'     # every .log, at any depth, in one pass
+curl -s URL | archivey cat - '*.txt'     # - reads the archive from stdin
+```
+
+`--outer` removes only the compression layer and writes what is inside unchanged: the
+tar inside a `.tar.gz`, the file inside a `.gz`. The compressor is detected by content,
+so one command decompresses whatever arrives:
+
+```bash
+curl -s URL | archivey cat - --outer | tar t
+```
+
+From a pipe, the archive is read in one forward pass, with the same format limits as an
+archive piped to the other verbs (see the notes below). A redirect from a regular file
+(`archivey cat - < a.zip`) can seek, so every format reads.
+
+The bytes reach stdout as they are decoded, so some or all of a member whose checksum
+fails may already have been written when the failure is found. `cat` then prints the error, stops, and exits
+`1`, as `zcat` does. Check the exit code before you trust the output.
+
 ### Passwords
 
 `--password` puts the password on the command line, where other users of the machine can
@@ -77,7 +107,7 @@ encrypted members fail as if no password had been given.
 - Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`, `--probe-content`)
   go before or after the verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...)
   go after a verb that owns them (`--policy` after `extract`, `--exclude` after `list`,
-  `test` or `extract`).
+  `test`, `extract` or `cat`).
 - A raw LZMA, zlib or Brotli stream has no magic bytes, so it is recognised only by its
   extension (`.lzma`, `.zz`, `.br`, ...). For a file named otherwise, pass
   `--probe-content`: detection then trial-decodes the start of the file. It is off by
@@ -142,7 +172,7 @@ encrypted members fail as if no password had been given.
 - Such a path can be `/dev/stdin`, so on Linux and macOS an archive piped on stdin
   can be read: `cat a.tar | archivey list /dev/stdin`. On Linux, `/proc/self/fd/N`
   works the same way. The same format limits apply.
-- `--salvage`, the `-` token for stdin, and `hash` / `create` / `convert` are reserved
-  for later.
+- `--salvage` and `hash` / `create` / `convert` are reserved for later, and so is the
+  `-` token for stdin outside `cat`.
 - An empty archive path or `--dest ""` is a usage error, not the current
   directory. Write `.` for the current directory.
