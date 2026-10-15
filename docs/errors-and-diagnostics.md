@@ -252,11 +252,12 @@ member would raise),
 `PROBE_FORMAT_UNCONFIRMED` (it is emitted while the matching `TruncatedError` or
 `CorruptionError` is raised, and that error already carries `format_unconfirmed=True`),
 `MEMBER_SPECIAL_FILE_HAS_DATA` (a documented writer option produces it, and the bytes
-are delivered and checked like any file's), and `MEMBER_NAME_INVISIBLE_CHARACTER` (a
+are delivered and checked like any file's), `MEMBER_NAME_INVISIBLE_CHARACTER` (a
 zero-width joiner is part of ordinary emoji, so `STRICT` would refuse archives of
 legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set),
 and `FORMAT_EXTENSION_CONFLICT` (the file's name is wrong, not its bytes: a tarball
-saved as `b.gz` opens and reads in full, and the code is still recorded).
+saved as `b.gz` opens and reads in full, and the code is still recorded; to refuse such
+files, add the code to `raise_on`).
 `ARCHIVE_INTEGRITY_CODES` is exported, and the presets are ordinary policies built from
 it, so you adjust one by building your own from the same set:
 

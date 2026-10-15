@@ -38,7 +38,7 @@ from archivey.exceptions import (
     FilterRejectionError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector, EmitLog
-from archivey.types import MemberType
+from archivey.types import ArchiveFormat, MemberType
 from tests.extract_util import open_and_extract
 from tests.scandir_util import patch_dir_entry_stat
 
@@ -1032,9 +1032,11 @@ def test_strict_opens_a_tarball_named_gz_and_records_the_conflict(
         tf.addfile(info, io.BytesIO(b"hi"))
     path = tmp_path / "b.gz"
     path.write_bytes(gzip.compress(buf.getvalue()))
-    with open_archive(
-        path, config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    ) as ar:
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    info = detect_format(path, config=config)
+    assert info.format == ArchiveFormat.TAR_GZ
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
+    with open_archive(path, config=config) as ar:
         assert [m.name for m in ar.members()] == ["a.txt"]
         assert ar.read("a.txt") == b"hi"
         assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in ar.diagnostics.counts

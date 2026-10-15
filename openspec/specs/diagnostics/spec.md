@@ -521,20 +521,21 @@ is retired); and
 `PROBE_FORMAT_UNCONFIRMED` because a probe-only identification is an advisory about
 what the file *is* (its bytes did pass that format's content check), not a finding
 about the archive's own bytes, and the code only ever accompanies a read that has
-already failed with a typed error, so `STRICT` would have nothing further to stop;
-and `MEMBER_SPECIAL_FILE_HAS_DATA` because a documented writer option produces the
+already failed with a typed error, so `STRICT` would have nothing further to stop
+(the emit keeps that typed error through `escalate_as` when a policy does resolve the
+code to RAISE, so the exclusion is not what protects it);
+`MEMBER_SPECIAL_FILE_HAS_DATA` because a documented writer option produces the
 shape it reports (Info-ZIP's `zip -FI` stores a named pipe's content under the FIFO
 mode) and every official extractor writes the bytes out, so the member is well-formed
-and `STRICT` refusing it would hide data rather than damage; and
+and `STRICT` refusing it would hide data rather than damage;
 `MEMBER_NAME_INVISIBLE_CHARACTER` because a zero-width joiner is part of ordinary emoji
 sequences and a non-joiner of Persian and Indic spelling, so `STRICT` would refuse
-archives of legitimately named files. Its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is
-**in** the set: U+200B, U+2060 and U+FEFF have no use inside a filename; and
-`FORMAT_EXTENSION_CONFLICT` because it reports the file's name, not the archive's bytes:
-the bytes win and the archive reads in full, so `STRICT` would refuse a well-formed
-tarball saved as `b.gz`. The code is still recorded under every policy that keeps it.
-(The emit keeps that typed error through `escalate_as` when a policy does resolve the
-code to RAISE, so the exclusion is not what protects it.)
+archives of legitimately named files; and `FORMAT_EXTENSION_CONFLICT` because it
+reports the file's name, which lies outside the archive, not the archive's bytes: the
+bytes win and the archive reads in full, so `STRICT` would refuse a well-formed tarball
+saved as `b.gz`. The code is still recorded, and a caller who wants the refusal adds it
+to `raise_on`. Its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is **in** the set: U+200B,
+U+2060 and U+FEFF have no use inside a filename.
 `EXTENSION_FORMAT_UNCONFIRMED`, its sibling, is **in** the set because it also fires
 on a successful open: an extension-only empty listing, where no byte confirmed the
 format at all, is exactly the case a `STRICT` caller wants stopped.
