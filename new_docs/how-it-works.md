@@ -20,3 +20,20 @@ recognizes them by trying to decode the start of the data, which is called a pro
 bytes can pass for the start of one of these streams, so a probe runs only when the file's
 extension names that format, when you set `always_probe_content=True`, or when you call
 `open_stream()`. `detect_format()` runs the same steps without opening the archive.
+
+## Reading the archive's structure
+
+Once the format is known, a parser reads the archive's structure: the list of members, their names,
+sizes and times, and where each one's data starts. Archivey has its own parsers for ZIP, TAR, 7z and
+RAR, and uses pycdlib for ISO images. All of them are written in Python, so a malicious archive can
+make a parser give a wrong answer but can't corrupt memory. [Security](security.md) covers the code
+that can, the decompressors.
+
+Its own parsers mean every format follows the same rules for metadata, and any archive, solid ones
+included, can be read in a single forward pass with `stream_members()`.
+
+In archivey's tests, the 7z and RAR parsers are checked against py7zr, rarfile and `unrar`,
+comparing both metadata and bytes. None of those libraries is used at run time. For each format's
+details, see the [format handbooks](https://github.com/davitf/archivey/tree/main/dev-docs/formats)
+and the [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md),
+both written for people working on archivey itself.
