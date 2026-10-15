@@ -883,7 +883,8 @@ class _ZipLocator:
     method: int
     #: The DOS time word: its high byte is the ZipCrypto check byte under bit 3.
     dos_time: int
-    #: The central directory's name bytes, which the local header's must equal.
+    #: The central directory's name bytes. ``_local_data_region`` compares the local
+    #: header's with them and reports a difference (``_report_local_name``).
     name: bytes
     #: The WinZip AES record (strength, real method) for method 99; ``None`` when
     #: absent or malformed.
@@ -2398,12 +2399,18 @@ class ZipReader(BaseArchiveReader):
     ) -> None:
         """Report that the local header of ``member`` names it ``local_name``.
 
-        Read anyway, by the directory's name (question A, case 1): archivey takes
-        every field from the directory, so the local copy decides nothing. Reported
-        on the member's first open only, so a password ladder that reads the header
-        once per candidate counts it once; a policy that raises on the code raises
-        on every open.
+        Read anyway, by the directory's name: archivey takes every field from the
+        directory, so the local copy decides nothing. Reported on the member's first
+        open only, so a password ladder that reads the header once per candidate
+        counts it once; a policy that raises on the code raises on every open.
+
+        Only a file or a link reports it. Extraction reads no directory's data, so a
+        directory that declares some reaches its local header only through a
+        ``read()`` a caller makes, and a pass from a pipe, which reads every local
+        header, could not report what extraction from a file does.
         """
+        if member.type not in (MemberType.FILE, MemberType.SYMLINK):
+            return
         code = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
         with self._lock:
             first = loc.index not in self._local_names_reported

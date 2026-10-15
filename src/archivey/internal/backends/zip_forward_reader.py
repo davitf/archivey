@@ -215,8 +215,10 @@ def _header_disagreements(
             else "encrypted in the directory, not in the local header"
         )
     if not flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
-        # A directory CRC-32 of 0 the local header's replaces is no disagreement:
-        # the directory's member takes the local value (``_local_crc_for``).
+        # A directory CRC-32 of 0 over data against a local value is no
+        # contradiction, whatever the member's type: a file or link takes the local
+        # value (``_local_crc_for``), and a directory keeps no digest
+        # (``DIGEST_UNVERIFIABLE``), as from a file, which never compares the two.
         if (
             crc_used
             and crc != central.crc
@@ -1770,12 +1772,8 @@ class ZipForwardReader(ZipReader):
         for member, central in updates:
             self._update_from_directory(member, central)
             local_name = renamed.get(cast("int", member._member_id))
-            # A file read reads a local header only to open the member's data, so
-            # never a directory's; the pass reports what that read would.
-            if local_name is not None and member.type in (
-                MemberType.FILE,
-                MemberType.SYMLINK,
-            ):
+            if local_name is not None:
+                # A file or link only, as from a file (``_report_local_name``).
                 self._report_local_name(
                     cast("_ZipLocator", member._raw), member, local_name
                 )

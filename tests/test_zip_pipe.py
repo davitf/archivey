@@ -563,7 +563,9 @@ def test_a_name_that_differs_between_the_two_headers_takes_the_directory_name() 
     }
 
 
-def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict() -> None:
+def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict(
+    tmp_path: Path,
+) -> None:
     data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
     cd = data.index(b"PK\x01\x02")
     at = data.index(b"b.txt", cd)
@@ -580,6 +582,18 @@ def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict() -
     ) as reader:
         with pytest.raises(DiagnosticRaisedError, match="local header stores"):
             reader.members_report()
+    # Extraction stops where each read finds it: a file read at the member, the pass
+    # at the directory, every member written and the renamed one still under the
+    # local header's name, as the end-of-pass rename never ran.
+    for piped, expected in ((False, ["a.txt"]), (True, ["a.txt", "b.txt"])):
+        dest = tmp_path / ("pipe" if piped else "file")
+        source = _pipe(bytes(data)) if piped else io.BytesIO(bytes(data))
+        with pytest.raises(DiagnosticRaisedError):
+            with archivey.open_archive(
+                source, streaming=piped, config=config
+            ) as reader:
+                reader.extract_all(dest)
+        assert sorted(p.name for p in dest.iterdir()) == expected
 
 
 def test_too_many_local_headers_name_what_was_counted() -> None:

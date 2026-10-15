@@ -317,25 +317,50 @@ def test_local_name_in_another_codepage_still_reads(pipe: bool) -> None:
         _read_only_member(blob, pipe=pipe, strict=True)
 
 
-@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
-def test_local_name_with_a_backslash_names_a_directory_without_a_report(
-    pipe: bool,
-) -> None:
-    # Seen in the scan: ``crack/`` in the directory, ``crack\`` in the local header.
-    # A file read reads a local header only to read the member's data, which a
-    # directory has none of; from a pipe the same member reports nothing either.
-    blob = _one_member_zip(b"", central_name=b"crack/", local_name=b"crack\\")
+def _directory_codes(blob: bytes, *, pipe: bool, policy: DiagnosticPolicy) -> list[str]:
+    """The codes the one directory member of ``blob`` carries once a read has gone
+    through its data: ``read()`` from a file, the pass from a pipe."""
     source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    config = ArchiveyConfig(diagnostic_policy=policy)
     with archivey.open_archive(source, streaming=pipe, config=config) as ar:
         if pipe:
             for _ in ar.stream_members():
                 pass
-            (member,) = ar.members_report().members
+            report = ar.members_report()
+            assert report.error is None
+            (member,) = report.members
         else:
             (member,) = ar.members()
+            if member.size:
+                assert ar.read(member) == b"x" * member.size
     assert (member.name, member.type) == ("crack/", MemberType.DIRECTORY)
-    assert member.diagnostics == ()
+    return sorted(str(diagnostic.code) for diagnostic in member.diagnostics)
+
+
+@pytest.mark.parametrize("data", [b"", b"x" * 22], ids=["empty", "with-data"])
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_local_name_with_a_backslash_names_a_directory_without_a_report(
+    pipe: bool, data: bytes
+) -> None:
+    # Seen in the scan: ``crack/`` in the directory, ``crack\\`` in the local header.
+    # A directory's name decides nothing its local header could change, and
+    # extraction reads no directory's data, so neither read reports it, even under
+    # a policy that raises on the code, and even when ``read()`` has gone through
+    # declared data.
+    blob = _one_member_zip(data, central_name=b"crack/", local_name=b"crack\\")
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS})
+    codes = _directory_codes(blob, pipe=pipe, policy=policy)
+    assert codes == ([] if not data else ["member_directory_data_ignored"])
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_zero_central_crc_over_directory_data_reads_alike(pipe: bool) -> None:
+    # A directory keeps no digest when its CRC-32 field is 0, whatever the local
+    # header says: the bytes ``read()`` gives are unchecked from a file, and the pass
+    # does not count the local value against the directory's 0.
+    blob = _one_member_zip(b"x" * 22, central_name=b"crack/", central_crc=0)
+    codes = _directory_codes(blob, pipe=pipe, policy=DiagnosticPolicy())
+    assert codes == ["digest_unverifiable", "member_directory_data_ignored"]
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])

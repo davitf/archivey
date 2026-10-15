@@ -29,7 +29,7 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Property | Value |
 | --- | --- |
 | Backend dependency | None: archivey's parser for the structure (no `zipfile` import); shared codec layer for member data |
-| Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed |
+| Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed; the local header of a file or link whose directory CRC-32 is 0 over data is read too (the requirement on headers that disagree) |
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE`; `FORWARD_ONLY` for a non-seekable source |
 | Read source | Seekable in both access modes; non-seekable under `streaming=True` only; no implicit buffering/spooling |
@@ -235,8 +235,9 @@ a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `D
 
 Four things SHALL fail the member they name once the directory has been read: a size
 or CRC from a data descriptor that differs from the central entry; a local header whose
-CRC, sizes or encryption flag the central entry contradicts (a central CRC-32 of 0 that
-the local header's replaces is no contradiction); two same-name members whose directory
+CRC, sizes or encryption flag the central entry contradicts (a central CRC-32 of 0 over
+data against a non-zero local one is none: a file or link takes the local value, and a
+directory keeps no digest, as from a file); two same-name members whose directory
 order reverses their file order; and a directory entry with no local entry.
 `stream_members()` SHALL raise `CorruptionError` at the end of the pass for each but
 the reversed pair, which only updates the members. A local header that stores another
@@ -260,7 +261,9 @@ makes (a flagged name that is not valid UTF-8) is raised by a file read before a
 is written and by the pass after every member is written, the files staying on disk. A
 policy that raises on `MEMBER_LOCAL_HEADER_DIFFERS` is the same: a file read raises when
 it lists or opens the member, the pass once it has read the directory, leaving every
-member it wrote as the pass wrote it.
+member it wrote as the pass wrote it: a member whose local header names it differently
+stays under the local header's name, since the pass stops before the end-of-pass
+rename.
 
 #### Scenario: non-seekable read matrix
 
@@ -476,13 +479,18 @@ both) and SHALL report `MEMBER_LOCAL_HEADER_DIFFERS` with `LocalHeaderContext`, 
   so the member keeps the directory's name. A file read reads a local header only when it
   opens a member's data, so the report comes then (`field="name"`, the local bytes in
   `local_raw_name_base64`), once per member; a policy that raises on the code raises on
-  every open. A directory's local header is never read, so it reports nothing.
+  every open. Only a file or link reports it: extraction reads no directory's data, so a
+  directory reports nothing, even after a `read()` of data it declares, and nor does the
+  pass from a pipe, which reads every local header.
 - **A CRC-32 of 0.** The directory stores 0 for a file or link of one byte or more
-  and the local header, with no data descriptor (bit 3 clear), a non-zero value. The member's `hashes` and
-  every check of its data (the CRC, the ZipCrypto check byte) take the local value. A
-  file read reads that local header when it lists the member, the only listing-time
-  read of a local header, and reports then (`field="crc32"`, `local_crc32`). Adobe AIR's
-  packager stores `META-INF/AIR/hash` this way.
+  and the local header, with no data descriptor (bit 3 clear), a non-zero value. The
+  member's `hashes` and every check of its data (the CRC, the ZipCrypto check byte)
+  take the local value. A file read reads that local header when it lists the member,
+  the only listing-time read of a local header, and reports then (`field="crc32"`,
+  `local_crc32`); an archive whose every entry stores 0 so costs one positioned read
+  per member while listing. Adobe AIR's packager stores `META-INF/AIR/hash` this way. A
+  directory that declares data under a CRC-32 of 0 keeps no digest, from a file and a
+  pipe alike (`DIGEST_UNVERIFIABLE`), and reports nothing more.
 
 Both headers understating the size, with a CRC-32 over the longer output, SHALL stay
 refused: the declared size is the bound that stops decoding (DR-9a). A read from a pipe
@@ -493,7 +501,8 @@ SHALL behave as a file read: the same members, data, reports and files on disk.
 | Archive | Expected |
 | --- | --- |
 | Local name `Patag\x93nia.mp3`, directory `Patag\xf4nia.mp3` | Reads; the member's name from the directory; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="name"`) when its data is read |
-| Local name `crack\`, directory `crack/` | A directory, `crack/`; no report |
+| Local name `crack\`, directory `crack/`, with or without declared data | A directory, `crack/`; no report |
+| Directory `crack/` declaring data, its CRC-32 0, the local CRC-32 right | `DIGEST_UNVERIFIABLE` and `MEMBER_DIRECTORY_DATA_IGNORED`, from a file and a pipe alike |
 | Directory CRC-32 0, local CRC-32 right | Listed with the local CRC-32 in `hashes`; reads; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="crc32"`) at listing |
 | Directory CRC-32 0, local CRC-32 wrong, or 0 in both | `CorruptionError` when read |
 | Either of the first and third under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` |
