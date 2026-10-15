@@ -571,14 +571,14 @@ from the running total above; the decoded comments are weighed again at registra
 A format whose parser builds the whole member table before any member is registered
 (7z and RAR) SHALL also weigh the text that table holds against `max_metadata_bytes`
 at parse, so that `open_archive` raises before the table is kept, as it does for
-`max_members`: each stored name (as `name` and as `raw_name`), a RAR5 link target
-held in the header, and the member and archive comments. The parse weight SHALL use
-the rules above on the stored values: the stored name stands for the normalized
-`name`, and a raw name not yet encoded counts one byte per character for UTF-8, two
-for UTF-16, never more than its encoded size. An archive whose names normalization
-leaves unchanged therefore opens under any cap its listing fits; the RAR compressed
-comments count by declared or packed size, whichever is larger, as above. Registration still weighs every member as
-usual.
+`max_members`: each stored name (as `name` and as `raw_name`), a RAR5 link target held
+in the header, and the member and archive comments. The parse weight SHALL use the
+rules above on the stored values: the stored name stands for the normalized `name`,
+and a raw name not yet encoded counts one byte per character for UTF-8, two for
+UTF-16, never more than its encoded size. An archive whose names normalization leaves
+unchanged therefore opens under any cap its listing fits; the RAR compressed comments
+count by declared or packed size, whichever is larger, as above. Registration still
+weighs every member as usual.
 
 A TAR sparse member's map is retained on `_raw` (the member's data is read through it),
 and the archive sizes it: a few kilobytes of compressed PAX sparse 1.0 map hold millions
