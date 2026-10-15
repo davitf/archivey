@@ -257,15 +257,20 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
-def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
-    """Every symlink under ``root``, as (its path relative to ``root`` with ``/``
-    separators, its target), sorted; ``None`` when part of the tree could not be read.
+def _scratch_tree(
+    root: Path,
+) -> tuple[tuple[tuple[str, bool], ...], tuple[tuple[str, str], ...]] | None:
+    """Every entry under ``root``, as (its path relative to ``root`` with ``/``
+    separators, whether it is a directory and not a symlink), and every symlink, as
+    (that path, its target), each sorted; ``None`` when part of the tree could not be
+    read.
 
     Directories are listed without following links. A directory that cannot be listed,
     or a link that cannot be read, makes the whole record ``None`` rather than leaving
     it out: the CLI's hoist keeps a tree it could not fully walk, and a partial record
     would let the prediction move it.
     """
+    found = []
     links = []
     pending = [root]
     try:
@@ -276,14 +281,16 @@ def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
             with os.scandir(long_path(directory)) as entries:
                 for entry in entries:
                     path = Path(plain(entry.path))
+                    rel = path.relative_to(root).as_posix()
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    found.append((rel, is_dir))
                     if entry.is_symlink():
-                        rel = path.relative_to(root).as_posix()
                         links.append((rel, plain(os.readlink(entry.path))))
-                    elif entry.is_dir(follow_symlinks=False):
+                    elif is_dir:
                         pending.append(path)
     except OSError:
         return None
-    return tuple(sorted(links))
+    return tuple(sorted(found)), tuple(sorted(links))
 
 
 def _file_identity(st: os.stat_result) -> tuple[int, int, int, int]:
@@ -1108,6 +1115,7 @@ class ExtractionCoordinator:
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
+        self.dry_run_entries: tuple[tuple[str, bool], ...] | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -1194,7 +1202,9 @@ class ExtractionCoordinator:
                     )
                 if len(self.dry_run_top_level) == 1:
                     # What the CLI's hoist prediction walks; see ExtractionReport.
-                    self.dry_run_links = _scratch_links(work)
+                    tree = _scratch_tree(work)
+                    if tree is not None:
+                        self.dry_run_entries, self.dry_run_links = tree
             return [dry.rebase_result(result) for result in results]
         finally:
             self._dry = None

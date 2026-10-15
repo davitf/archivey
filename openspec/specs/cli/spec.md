@@ -174,16 +174,21 @@ wrapper and why. When it runs, the hoist SHALL produce the same final layout as
 extracting directly into the cwd: directories merge into existing directories, and
 per-file collisions resolve by the overwrite policy (`rename` derives the library's
 `name (N)` spelling; `replace` replaces only the individual files being extracted;
-`skip` keeps the existing file). One exception stands: an archive that stores
-`foo/x.txt` without a `foo/` directory member, extracted where the operator's file
-`foo` exists, hoists to `foo (1)/x.txt` where a direct extraction fails on `foo`,
-because the implied parent directory is created, not extracted, so no collision policy
-applies to it. The hoist MUST NOT delete pre-existing files or directories under any
-policy. A collision the policy cannot resolve without deleting data (`error`, or a
-dir-vs-file shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved
-remainder under the wrapper (or under the wrapper's aside name `<wrapper> (N)/` when
-the wrapper's name could not be taken back), and exit nonzero — mirroring the failure a direct
-extraction would have hit. When the container got the plain stem name, a sole root
+`skip` keeps the existing file). The hoist MUST NOT delete pre-existing files or
+directories under any policy. The hoist is a convenience, not a guarantee: with no
+`-d`, the operator accepts wherever the content lands. Before it moves anything, the
+hoist SHALL check the whole merge for a collision the policy cannot resolve without
+deleting data (`error`, or a dir-vs-file shape under `replace`/`skip`). When it finds
+one, it SHALL move nothing, print `kept in <wrapper>/: <path> already exists` naming the
+first such path, and leave the whole root in the wrapper; the run counts as successful
+(exit `0`) and the closing summary names the wrapper. So a direct extraction's
+`replace` of a file by a directory, which deletes the operator's file, is not
+reproduced: the hoist keeps the root instead. atool's `aunpack` keeps the content in its
+`Unpack-NNNN/` directory the same way. A collision that appears after that check (the
+cwd changed during the move) SHALL stop the hoist, leave the unmoved remainder under
+the wrapper (or under the wrapper's aside name `<wrapper> (N)/` when the wrapper's name
+could not be taken back), and exit nonzero; a filesystem error during the move does the
+same. When the container got the plain stem name, a sole root
 sharing the wrapper's own name (`src.tar.gz` containing `src/`) SHALL be flattened in
 place, not treated as a collision, and the wrapper SHALL then take that root's mode and
 times. When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
@@ -248,6 +253,7 @@ other processed statuses are omitted from that line).
 | `archivey extract <indexed-archive> 'b/*'` where filtered set has single root `b/` | Extracts into `.` (tops on filtered set); lands as `./b/…` |
 | `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
 | `archivey extract foo.tar` holding only `foo`, with the operator's `foo` in the cwd | Wraps in `foo (1)/`, then hoists the root to `foo (1)`, as `-d .` does; prints `renamed: foo -> foo (1)` |
+| `archivey extract foo.tar --overwrite skip\|replace\|error` holding `foo/x.txt` (with or without a `foo/` entry), with the operator's FILE `foo` in the cwd | Prints `kept in foo (1)/: foo already exists`; the content is at `foo (1)/foo/x.txt`; the file `foo` is untouched; exit `0`. Under `rename` the root moves to `foo (1)/x.txt` |
 | `archivey extract <no-index-archive>` with a single root `top/` holding `c\x02` | Prints `name rewritten: top/c\x02 -> top/c%02`, the path after the hoist |
 | As above, with the operator's `top/c%02` in the cwd | Prints `name rewritten: top/c\x02 -> top/c%02 (1)`, as `-d .` does |
 | `archivey extract c.tar --overwrite skip` holding `c\x02`, with the operator's `c%02` | Prints `skipped: c%02` and no `name rewritten:` line |
@@ -256,7 +262,7 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a regular file (for example the archive itself, when it has no extension), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; the file is untouched |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>/` is an existing directory, any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written into the existing directory |
 | `archivey extract <no-index-archive>` with a single top-level dir `root/` when `./<archive-stem>/` is an existing directory, any `--overwrite` | Extracts into `./<archive-stem> (N)/`, then hoists `root/` to the cwd and removes the wrapper; the existing directory is untouched |
-| `archivey extract <no-index-archive>` whose single top-level dir is named like the stem (`src.tar` holding `src/`) when `./src/` is an existing directory | Extracts into `./src (N)/`, then hoists `src/` into the existing `./src/` under the overwrite policy: `replace` replaces colliding files, `skip` keeps them, `rename` writes `name (N)` beside them; under `--overwrite error` a colliding file stops the hoist, the remainder stays under `./src (N)/src/`, and the exit code is `1` |
+| `archivey extract <no-index-archive>` whose single top-level dir is named like the stem (`src.tar` holding `src/`) when `./src/` is an existing directory | Extracts into `./src (N)/`, then hoists `src/` into the existing `./src/` under the overwrite policy: `replace` replaces colliding files, `skip` keeps them, `rename` writes `name (N)` beside them; under `--overwrite error` a colliding file anywhere in the root keeps the whole root under `./src (N)/src/` with nothing moved, prints `kept in src (N)/: src/<file> already exists`, and the exit code is `0` |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
@@ -529,12 +535,12 @@ needs beyond `archivey.__all__` SHALL otherwise come from a public module, such 
 `archivey.terminal` for terminal-safe display and `archivey.paths` for the `name (N)`
 spelling its single-root hoist shares with extraction. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
-without touching any public name. `extract --dry-run` also reads one private field,
-`ExtractionReport._dry_run_top_level` and `ExtractionReport._dry_run_links`: the
-entries the dry run left at the top of its scratch copy of the destination, and the
-symlinks in that copy. A dry run writes nothing the CLI could look at instead, and
-renaming either field breaks the dry run's hoist line and summary. Apart from those two
-fields, the CLI SHALL NOT read a private attribute of a library object, and SHALL NOT
+without touching any public name. `extract --dry-run` also reads three private fields,
+`ExtractionReport._dry_run_top_level`, `ExtractionReport._dry_run_links` and
+`ExtractionReport._dry_run_entries`: the entries the dry run left at the top of its
+scratch copy of the destination, the symlinks in that copy, and every entry in it. A
+dry run writes nothing the CLI could look at instead, and renaming any of these fields
+breaks the dry run's hoist line and summary. Apart from those three fields, the CLI SHALL NOT read a private attribute of a library object, and SHALL NOT
 decide anything from a library exception's message: `extract` tells a re-root from a
 portable rewrite by `ExtractionResult.rewrites`, and `test` tells a link the archive
 left without a target by `ArchiveMember.link_target_unrecorded`, and an error about
@@ -562,10 +568,13 @@ and use that place in the closing summary. Where a real run would keep that entr
 the destination (the entry is a symlink, a symlink in it leaves it, or part of the
 entry could not be listed, which here means part of the scratch tree could not be
 read), it SHALL print `would keep in <stem>/:` with the same reason, judged from the
-symlinks the dry run created. It SHALL NOT check for collisions with entries
-already at that place, nor whether an existing directory there can be written into: a
-real run whose hoist is refused by that directory's permissions fails where the dry run
-predicted the move.
+symlinks the dry run created. Where the real run would keep the entry because its merge
+meets a collision the overwrite policy cannot resolve, it SHALL print
+`would keep in <stem>/: <path> already exists`, judged from the entries the dry run
+created against what is on disk. It SHALL NOT list the collisions the policy resolves,
+nor check whether an existing directory there can be written into: a real run whose
+hoist is refused by that directory's permissions fails where the dry run predicted the
+move.
 
 #### Scenario: extract dry-run matrix
 
@@ -576,3 +585,4 @@ predicted the move.
 | `archivey extract <archive> -d out --dry-run` | `out` is not created |
 | `archivey extract <tar-with-single-root-src> --dry-run` | stderr names `would move to src/`; summary ends `→ src/`; nothing created in the cwd |
 | `archivey extract <tar-whose-single-root-has-a-link-leaving-it> --dry-run` | stderr names `would keep in <stem>/:` and the reason the real run prints; no `would move` |
+| `archivey extract foo.tar --dry-run --overwrite error` holding `foo/x.txt`, with the operator's file `foo` | stderr names `would keep in foo (1)/: foo already exists`; summary ends `→ foo (1)/` |

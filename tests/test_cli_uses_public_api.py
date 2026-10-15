@@ -97,7 +97,7 @@ def test_the_allowlist_admits_one_statement_not_its_file(tmp_path: Path) -> None
 # Private attributes the CLI may read on an object that is not its own, keyed like
 # ``ALLOWED_INTERNAL_IMPORTS`` by ``file: expression``, so an entry admits that
 # expression in that file and not the same attribute name on another object or in
-# another module. The two dry-run fields are the ``cli`` spec's recorded exception; the
+# another module. The three dry-run fields are the ``cli`` spec's recorded exception; the
 # rest are argparse's (``_actions``, ``_SubParsersAction``) and the CLI's own namespace
 # default (``_reserved_message``), none of which belong to the library.
 #
@@ -105,6 +105,7 @@ def test_the_allowlist_admits_one_statement_not_its_file(tmp_path: Path) -> None
 # dynamic lookups are invisible to it, so a read spelled that way is a review matter.
 ALLOWED_PRIVATE_ATTRIBUTES = frozenset(
     {
+        "extract_cmd.py: report._dry_run_entries",
         "extract_cmd.py: report._dry_run_links",
         "extract_cmd.py: report._dry_run_top_level",
         "main.py: parser._actions",

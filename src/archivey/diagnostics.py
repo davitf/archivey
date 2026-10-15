@@ -978,6 +978,13 @@ class ExtractionReport:
     _dry_run_links: tuple[tuple[str, str], ...] | None = field(
         default=None, repr=False, compare=False
     )
+    # Every entry of the same scratch tree, as (path under ``dest`` with ``/``
+    # separators, is a directory and not a symlink), recorded with ``_dry_run_links``
+    # and ``None`` when it is. Private, for the same prediction: the CLI checks the
+    # hoist's merge against them as its hoist checks a real tree.
+    _dry_run_entries: tuple[tuple[str, bool], ...] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __iter__(self) -> Iterator[ExtractionResult]:
         return iter(self.results)
