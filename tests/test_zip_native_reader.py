@@ -5,7 +5,8 @@
 - "Version needed to extract" above 6.3 no longer refuses the archive (DR-4): only a
   method or flag archivey cannot read refuses a member.
 - Bytes after the end record and its comment are ``ARCHIVE_TRAILING_DATA`` (DR-3), as
-  after a TAR trailer or a 7z archive's end.
+  after a TAR trailer or a 7z archive's end, also when there are more of them than
+  the end-record search reads: a walk over the local headers finds the directory.
 - The directory is walked as members are listed; the overlap guard's offsets and
   ``member_count`` come from that walk, or from one index pass when a member opens
   first.
@@ -23,16 +24,18 @@ import zipfile
 import pytest
 
 from archivey import open_archive
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
+    ResourceLimitError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_parser
 from archivey.types import ArchiveFormat
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
 
 _NAMES = ("a.txt", "b.txt", "c.txt")
 
@@ -217,6 +220,120 @@ def test_start_offset_scan_stays_inside_the_slice() -> None:
     stub = b"MZ" + b"\x00" * 1000
     (context,) = _trailing(stub + _zip() + b"\x00" * 7 + b"JUNK")
     assert context.observed_bytes == 7
+
+
+# --- Past the search window: the walk over the local headers -------------------------
+
+# More bytes after the archive than the end-record search reads.
+_PAST_WINDOW = b"\x01" * (1 << 20)
+
+
+class _Pipe(io.RawIOBase):
+    """A sink that cannot seek: stdlib ``zipfile`` then sets bit 3 on every member."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+        self.data += b
+        return len(b)
+
+
+def _bit3_zip(method: int) -> bytes:
+    out = _Pipe()
+    with zipfile.ZipFile(out, "w", method) as zf:
+        for name in _NAMES:
+            zf.writestr(name, name.encode() * 3)
+    return bytes(out.data)
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("bit3", [False, True], ids=["sized", "bit3"])
+def test_junk_past_the_search_window_is_reported(method: int, bit3: bool) -> None:
+    """The walk over the local headers finds where the members end, and the end
+    record is found by stepping over the directory after them."""
+    if bit3:
+        data = _bit3_zip(method)
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", method) as zf:
+            for name in _NAMES:
+                zf.writestr(name, name.encode() * 3)
+        data = buf.getvalue()
+    (context,) = _trailing(data + _PAST_WINDOW)
+    assert context.observed_bytes == 0
+
+
+def test_junk_past_the_search_window_after_a_stub_and_a_comment() -> None:
+    stub = b"MZ" + b"\x00" * 1000
+    (context,) = _trailing(stub + _zip(comment=b"note") + bytes(5) + _PAST_WINDOW)
+    assert context.observed_bytes == 5
+
+
+def test_junk_past_the_search_window_is_refused_under_strict() -> None:
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError) as ei:
+        with open_archive(io.BytesIO(_zip() + _PAST_WINDOW), config=config) as reader:
+            reader.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+
+
+class _CountingBytesIO(io.BytesIO):
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.bytes_read = 0
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        out = super().read(size)
+        self.bytes_read += len(out)
+        return out
+
+    def readinto(self, buffer: bytearray | memoryview, /) -> int:  # type: ignore[override]
+        n = super().readinto(buffer)
+        self.bytes_read += n
+        return n
+
+
+def test_the_walk_seeks_over_a_member_whose_header_states_its_size() -> None:
+    payload = bytes(range(256)) * (32 << 10)  # 8 MiB, stored
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", payload)
+    source = _CountingBytesIO(buf.getvalue() + _PAST_WINDOW)
+    with open_archive(source, format=ArchiveFormat.ZIP) as reader:
+        assert [m.name for m in reader.members()] == ["big.bin"]
+    assert source.bytes_read < len(payload) // 2
+
+
+def test_the_walk_charges_each_local_header_against_max_members() -> None:
+    config = ArchiveyConfig(
+        listing_limits=ListingLimits(max_members=2, max_metadata_bytes=1024)
+    )
+    source = _CountingBytesIO(_bit3_zip(zipfile.ZIP_DEFLATED) + _PAST_WINDOW)
+    with pytest.raises(ResourceLimitError, match="max_members=2.*local headers"):
+        open_archive(source, format=ArchiveFormat.ZIP, config=config)
+    # The third header is refused before its data or the tail is read.
+    assert source.bytes_read < len(_PAST_WINDOW) // 4
+
+
+def test_an_encrypted_bit3_stored_member_is_walked_past_without_its_password() -> None:
+    """Its descriptor's CRC covers the plaintext, so the scan matches its size only."""
+    data = _bit3_stored_zipcrypto(b"secret contents" * 50)
+    with open_archive(
+        io.BytesIO(data + _PAST_WINDOW), format=ArchiveFormat.ZIP, password=_PASSWORD
+    ) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"secret contents" * 50
+
+
+def test_a_directory_missing_past_the_search_window_fails_at_open() -> None:
+    data = _zip()
+    members_end = data.index(b"PK\x01\x02")
+    with pytest.raises(CorruptionError, match="no end of central directory"):
+        open_archive(io.BytesIO(data[:members_end] + _PAST_WINDOW), format="zip")
 
 
 # --- One walk for the listing, one index pass when an open comes first ---------------

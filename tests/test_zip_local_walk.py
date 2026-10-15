@@ -449,6 +449,9 @@ def test_a_bound_under_one_chunk_keeps_that_many_bytes(keep: int) -> None:
     tail = walk.read_rest(keep)
     assert tail.data == raw[len(raw) - keep :]
     assert tail.start == len(raw) - keep
+    # The first four bytes after the members are held whatever the bound.
+    end = tail.members_end
+    assert tail.read_at(end, 4) == raw[end : end + 4] == b"PK\x01\x02"
 
 
 def test_a_directory_among_the_members_data_is_refused() -> None:
@@ -786,3 +789,30 @@ def test_a_scan_that_starts_past_the_descriptor_finds_none(
     scanned = walk.scan_member_data(data)
     with pytest.raises(UnsupportedFeatureError, match="none matches its data"):
         scanned.settle()
+
+
+def _rest(raw: bytes, keep: int) -> zip_local_walk.ForwardTail:
+    walk = LocalHeaderWalk(_Unseekable(raw))
+    while (entry := walk.next_entry()) is not None:
+        _decode(walk, entry)
+    return walk.read_rest(keep)
+
+
+def test_past_the_bound_the_head_is_kept_only_for_a_directory_after_the_members() -> (
+    None
+):
+    raw = _write(pipe=True)
+    keep = 3 * 65_558
+    junk = b"\x01" * (3 * keep)
+    # A directory right after the members: its first ``keep`` bytes stay.
+    tail = _rest(raw + junk, keep)
+    assert tail.dropped and len(tail.head) == keep
+    assert len(tail.data) == keep
+    assert tail.end_record().trailing == len(junk)
+    # Other bytes there: only their first four, for the message. Sized members,
+    # whose end needs no signature after it.
+    sized = _write(pipe=False)
+    tail = _rest(sized[: sized.index(b"PK\x01\x02")] + junk, keep)
+    assert tail.head == b"\x01" * 4
+    with pytest.raises(CorruptionError, match="are not a ZIP header"):
+        tail.end_record()

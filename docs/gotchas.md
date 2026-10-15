@@ -106,12 +106,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   source (a pipe or socket) the listing reads up to 1 MiB past the trailer, so a
   sender that keeps the connection open after the tar ends makes the listing wait for
   more bytes or EOF. Close the sending side when the tar is done.
-- **ZIP trailing data is seen only when the end record is still found.** Bytes after a
-  ZIP's end record and its comment emit `ARCHIVE_TRAILING_DATA`; zero padding passes.
-  The end record is searched for in the last 64 KiB of the file, so a ZIP followed by
-  more than that is not opened at all today: `open_archive` raises
-  `CorruptionError`, or does not recognise the file without `format=`. Cut the tail
-  off, or open the ZIP part through a stream that ends where it does. From a pipe the
+- **A ZIP followed by a lot of other data is slower to open.** Bytes after a ZIP's end
+  record and its comment emit `ARCHIVE_TRAILING_DATA`; zero padding passes. The end
+  record is searched for in the last 64 KiB of the file; behind more than that, the
+  reader walks the members' local headers from the start to find it, reading through
+  any member whose header leaves its size to a data descriptor. From a pipe the
   pass reads to the end of the stream after the last member, so a sender that keeps
   the connection open after the ZIP ends makes the pass wait for EOF.
 - **The rapidgzip accelerator starts a child process for gzip, zlib and deflate.**

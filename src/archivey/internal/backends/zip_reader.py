@@ -94,6 +94,7 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
     validate_zip_local_header,
 )
+from archivey.internal.backends.zip_local_walk import LocalHeaderWalk
 from archivey.internal.backends.zip_parser import (
     CENTRAL_HEADER_SIZE,
     EOCD_SIZE,
@@ -840,7 +841,10 @@ def _max_members_error(
     )
 
 
-#: Also the receipt for a seekable source read through its directory.
+#: Also the receipt for a seekable source read through its directory. An end record
+#: behind more trailing bytes than its search reads is found by a walk over every local
+#: header at open, reading the data of each bit-3 member (``_walk_past_members``); the
+#: listing stays ``INDEXED``, as RAR's does with its header walk at open.
 _ZIP_COST = CostReceipt(
     listing_cost=ListingCost.INDEXED,
     access_cost=AccessCost.DIRECT,
@@ -1006,7 +1010,9 @@ class ZipReader(BaseArchiveReader):
         self._fp = handle
         file_size = handle.seek(0, io.SEEK_END)
         try:
-            self._end: EndRecord = find_end_record(self._read_at, file_size)
+            self._end: EndRecord = find_end_record(
+                self._read_at, file_size, members_end=self._walk_past_members
+            )
         except ArchiveyError as exc:
             if isinstance(exc, CorruptionError):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
@@ -1024,6 +1030,43 @@ class ZipReader(BaseArchiveReader):
         self._member_count: int | None = None
         self._count_known = False
         self._report_trailing_data()
+
+    def _walk_past_members(self) -> int | None:
+        """Where the members end, found by walking their local headers from the start:
+        for an end record the tail search does not find, behind more trailing bytes
+        than its window holds. ``None`` when the walk does not get past the members.
+
+        The walk is the one a read from a pipe makes, with no data decoded: a member
+        whose local header states its size is seeked over, and a bit-3 member's data
+        is scanned for its descriptor, so the walk reads at most the source once, as a
+        pipe read does. Each local header is charged against ``max_members`` before
+        its data is passed, as the pipe read charges it. Run once, at open, after the
+        tail search and before anything is listed.
+        """
+        max_members = self._config.listing_limits.max_members
+        with self._lock:
+            fp = self._fp
+            if fp is None:
+                raise _closed_archive_error()
+            fp.seek(0)
+            walk = LocalHeaderWalk(fp)
+            count = 0
+            while True:
+                try:
+                    entry = walk.next_entry()
+                except ArchiveyError:
+                    return None
+                if entry is None:
+                    return walk.source.offset
+                if max_members is not None and count >= max_members:
+                    raise _max_members_error(
+                        max_members, "ZIP file's local headers name"
+                    )
+                count += 1
+                try:
+                    walk.skip_member(entry)
+                except ArchiveyError:
+                    return None
 
     def _read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes at absolute ``offset``, under the reader's lock.
