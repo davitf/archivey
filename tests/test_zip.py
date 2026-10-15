@@ -32,6 +32,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.diagnostics import raw_name_to_base64
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -1473,11 +1474,11 @@ def test_corrupt_member_data_raises_corruption_on_read() -> None:
             ar.read("data.txt")
 
 
-def test_non_utf8_local_header_name_is_reported_as_a_bad_name() -> None:
-    """A local header whose name bytes differ from the central directory's is a
-    corrupt entry. The names compare as bytes, so a local name that is not UTF-8
-    under the UTF-8 flag is never decoded, and the error names both spellings rather
-    than blaming the offset."""
+def test_non_utf8_local_header_name_is_reported_as_another_name() -> None:
+    """A local header whose name bytes differ from the central directory's is read by
+    the directory's name and reported. The names compare as bytes, so a local name
+    that is not UTF-8 under the UTF-8 flag is never decoded, and the report gives
+    its bytes."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
         z.writestr("data.txt", b"A" * 200)
@@ -1486,11 +1487,15 @@ def test_non_utf8_local_header_name_is_reported_as_a_bad_name() -> None:
     raw[30] = 0xFF  # first byte of the local name; the central name is untouched
 
     with open_archive(io.BytesIO(bytes(raw))) as ar:
-        assert ar.members()[0].name == "data.txt"
-        with raises_corruption_not_truncation(
-            match=r"File name in directory .data\.txt. and header .+ata\.txt. differ"
-        ):
-            ar.read("data.txt")
+        (member,) = ar.members()
+        assert member.name == "data.txt"
+        assert member.diagnostics == ()
+        assert ar.read(member) == b"A" * 200
+    (reported,) = member.diagnostics
+    assert reported.code is DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
+    assert reported.context.field == "name"
+    assert reported.context.local_raw_name_base64 == raw_name_to_base64(b"\xffata.txt")
+    assert r"'\xffata.txt'" in reported.message
 
 
 def _overlapping_entries_zip() -> bytes:

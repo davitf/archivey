@@ -83,6 +83,7 @@ class DiagnosticCode(StrEnum):
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
+    MEMBER_LOCAL_HEADER_DIFFERS = "member_local_header_differs"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -143,6 +144,8 @@ DiagnosticCodeStr = Literal[
     "member-selector-unmatched",
     "member_special_file_has_data",
     "member-special-file-has-data",
+    "member_local_header_differs",
+    "member-local-header-differs",
     "member_directory_data_ignored",
     "member-directory-data-ignored",
 ]
@@ -589,6 +592,31 @@ class SpecialFileDataContext(_JsonSafeContext):
     size: int | None = None
 
 
+@dataclass(frozen=True)
+class LocalHeaderContext(_JsonSafeContext):
+    """A ZIP member's local header disagrees with its central directory entry, and the
+    member is read anyway.
+
+    ``field`` says on what. ``"name"``: the local header stores other name bytes
+    (``local_raw_name_base64``), such as another code page or ``\\`` for ``/``. The
+    member keeps the directory's name, as unzip and 7-Zip read it. ``"crc32"``: the
+    directory stores CRC-32 0 and the local header a non-zero value (``local_crc32``).
+    The data is checked against the local value, as unzip checks it, and ``hashes``
+    holds it. Every Adobe AIR package stores ``META-INF/AIR/hash`` this way.
+
+    In :data:`ARCHIVE_INTEGRITY_CODES`: the two copies of the header contradict each
+    other, so ``STRICT`` refuses the member.
+    """
+
+    kind: Literal["local_header"] = "local_header"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    field: Literal["name", "crc32"] = "name"
+    local_raw_name_base64: str | None = None
+    local_crc32: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -610,6 +638,7 @@ DiagnosticContext = (
     | StreamRewindContext
     | SelectorUnmatchedContext
     | SpecialFileDataContext
+    | LocalHeaderContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -641,6 +670,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
+        DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS: "local_header",
     }
 )
 
@@ -663,6 +693,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
+        DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
@@ -1064,6 +1095,7 @@ __all__ = [
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "LocalHeaderContext",
     "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",

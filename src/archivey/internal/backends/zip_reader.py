@@ -68,7 +68,9 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    LocalHeaderContext,
     MemberHeaderRecordContext,
+    raw_name_to_base64,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -892,6 +894,23 @@ class _ZipLocator:
     reparse_fallback: MemberType | None
 
 
+def _local_crc_stands_in(central_crc: int, local_flags: int, local_crc: int) -> bool:
+    """Whether a local header's CRC-32 replaces its directory entry's 0.
+
+    The directory stores 0 and the local header a non-zero value that no data
+    descriptor defers (bit 3 clear). unzip checks the data against the local value and
+    archivey does too, reporting ``MEMBER_LOCAL_HEADER_DIFFERS`` (``design.md`` of the
+    ``native-zip-reader`` change, question A, case 2). Adobe AIR's packager writes
+    ``META-INF/AIR/hash`` this way: it fills the local header after the directory
+    entry was made.
+    """
+    return (
+        central_crc == 0
+        and local_crc != 0
+        and not local_flags & _ZIP_MASK_USE_DATA_DESCRIPTOR
+    )
+
+
 def _stored_text(name: bytes) -> str:
     """Stored name bytes as message text: UTF-8, with any other byte kept as a lone
     surrogate for the message's own escaping to show."""
@@ -1209,6 +1228,9 @@ class ZipReader(BaseArchiveReader):
         self._past_damage_lock = threading.Lock()
         # What the listing listed past the damage, for ``_open_member``.
         self._past_damage_found: _PastDamage | None = None
+        # Members whose local header named them differently, already reported once
+        # (``_report_local_name``). Under the reader's lock.
+        self._local_names_reported: set[int] = set()
         self._refuse_lone_split_segment()
         self._open_index(source, start_offset)
 
@@ -2104,6 +2126,18 @@ class ZipReader(BaseArchiveReader):
         # on the HMAC — never surface a fake crc32 for it.
         hashes: dict[HashAlgorithm, bytes] = {}
         is_ae2 = aes_info is not None and aes_info.is_ae2
+        crc = entry.crc
+        # A directory CRC-32 of 0 over a file is 0 for its data only once in 2**32;
+        # the local header may hold the real value (``_local_crc_stands_in``).
+        local_crc = (
+            self._local_crc_for(entry)
+            if crc == 0
+            and not is_ae2
+            and member_type in (MemberType.FILE, MemberType.SYMLINK)
+            else None
+        )
+        if local_crc is not None:
+            crc = local_crc
         directory_data = member_type is MemberType.DIRECTORY and entry.file_size > 0
         directory_zero_crc = directory_data and entry.crc == 0
         directory_without_anchor = directory_zero_crc and aes_info is None
@@ -2111,7 +2145,7 @@ class ZipReader(BaseArchiveReader):
             directory_data and not directory_zero_crc
         ):
             if not is_ae2:
-                hashes = {HashAlgorithm.CRC32: crc32_digest(entry.crc)}
+                hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
         extra = MemberExtra({"zip.compress_type": method})
         if special is not None:
             # Whatever the type decided above, the key records what the mode said, so
@@ -2145,7 +2179,7 @@ class ZipReader(BaseArchiveReader):
                 header_offset=entry.header_offset,
                 compressed_size=entry.compressed_size,
                 file_size=entry.file_size,
-                crc=entry.crc,
+                crc=crc,
                 flags=entry.flags,
                 method=method,
                 dos_time=entry.dos_time,
@@ -2294,7 +2328,93 @@ class ZipReader(BaseArchiveReader):
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))
+        if local_crc is not None:
+            self._emit_local_header_differs(
+                member,
+                index,
+                field="crc32",
+                local_crc32=local_crc,
+                message=(
+                    f"ZIP member {quoted(member.name)}: its central directory entry "
+                    f"stores CRC-32 0 and its local header {local_crc:08x}; the data "
+                    "is checked against the local header's value, as unzip checks it."
+                ),
+            )
         return member
+
+    def _local_crc_for(self, entry: CentralEntry) -> int | None:
+        """The CRC-32 the local header of ``entry`` holds, when it replaces the
+        directory's 0 (``_local_crc_stands_in``); else ``None``.
+
+        Read only for an entry whose directory CRC-32 is 0 over a file's data, so a
+        listing reads no local header for any other entry. A local header that cannot
+        be read gives ``None``: reading the member reports it
+        (``_local_data_region``).
+        """
+        if not 0 <= entry.header_offset < self._end.cd_start:
+            return None
+        try:
+            header = read_local_header(self._read_at, entry.header_offset)
+        except ArchiveyError:
+            return None
+        if not _local_crc_stands_in(entry.crc, header.flags, header.crc):
+            return None
+        return header.crc
+
+    def _emit_local_header_differs(
+        self,
+        member: ArchiveMember,
+        member_id: int,
+        *,
+        field: Literal["name", "crc32"],
+        message: str,
+        local_name: bytes | None = None,
+        local_crc32: int | None = None,
+    ) -> None:
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
+            message=message,
+            context=LocalHeaderContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                field=field,
+                local_raw_name_base64=raw_name_to_base64(local_name),
+                local_crc32=local_crc32,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
+
+    def _report_local_name(
+        self, loc: _ZipLocator, member: ArchiveMember, local_name: bytes
+    ) -> None:
+        """Report that the local header of ``member`` names it ``local_name``.
+
+        Read anyway, by the directory's name (question A, case 1): archivey takes
+        every field from the directory, so the local copy decides nothing. Reported
+        on the member's first open only, so a password ladder that reads the header
+        once per candidate counts it once; a policy that raises on the code raises
+        on every open.
+        """
+        code = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
+        with self._lock:
+            first = loc.index not in self._local_names_reported
+            self._local_names_reported.add(loc.index)
+        if not first and code not in self._diagnostics_collector.policy.raise_on:
+            return
+        self._emit_local_header_differs(
+            member,
+            loc.index,
+            field="name",
+            local_name=local_name,
+            message=(
+                f"ZIP member {quoted(member.name)}: its local header stores the name "
+                f"{quoted(_stored_text(local_name))}; the central directory's name "
+                "is used, as unzip and 7-Zip use it."
+            ),
+        )
 
     def _local_member(self, entry: LocalEntry, index: int) -> ArchiveMember:
         """The member as its local header describes it, until the directory arrives.
@@ -2432,14 +2552,17 @@ class ZipReader(BaseArchiveReader):
             raise truncated
         return header
 
-    def _local_data_region(self, loc: _ZipLocator) -> tuple[int, int]:
+    def _local_data_region(
+        self, loc: _ZipLocator, member: ArchiveMember
+    ) -> tuple[int, int]:
         """Return ``(data_start, compressed_size)`` for ``loc`` from its local header.
 
         The parser reads the fixed 30-byte header plus the local name and extra (the
         central extra can differ) and refuses a bad signature, a cut header and an
-        offset past ``MAX_DATA_OFFSET``. This refuses a local name whose bytes differ
-        from the central directory's, and a payload that runs into the next local
-        header or the directory: the overlap guard.
+        offset past ``MAX_DATA_OFFSET``. This refuses a payload that runs into the
+        next local header or the directory: the overlap guard. A local name whose
+        bytes differ from the central directory's is reported
+        (``_report_local_name``), and the member reads by the directory's name.
         """
         if loc.header_offset >= self._end.cd_start:
             # Every local header comes before the directory, as ``_holds_local_header``
@@ -2455,10 +2578,7 @@ class ZipReader(BaseArchiveReader):
             # the file cuts short sits at a wrong offset: damage, not a cut archive.
             raise CorruptionError(raw_message_of(exc)) from exc
         if header.name != loc.name:
-            raise CorruptionError(
-                f"File name in directory {quoted(_stored_text(loc.name))} and header "
-                f"{quoted(_stored_text(header.name))} differ."
-            )
+            self._report_local_name(loc, member, header.name)
         # stdlib ZipFile.open's guard, with archivey's own bounds: a member whose
         # compressed payload extends past the next entry's start is a zip bomb.
         length = max(0, loc.compressed_size)
@@ -2473,9 +2593,9 @@ class ZipReader(BaseArchiveReader):
         if self._fp is None:
             raise _closed_archive_error()
 
-    def _raw_member_stream(self, loc: _ZipLocator) -> BinaryIO:
+    def _raw_member_stream(self, loc: _ZipLocator, member: ArchiveMember) -> BinaryIO:
         """Locked :class:`SharedView` over the member's raw compressed payload."""
-        data_start, length = self._local_data_region(loc)
+        data_start, length = self._local_data_region(loc, member)
         fp = self._fp
         if fp is None:
             raise _closed_archive_error()
@@ -2731,33 +2851,33 @@ class ZipReader(BaseArchiveReader):
         decoded = self._decode_body(
             loc,
             member,
-            self._open_raw_payload(loc, member.name),
+            self._open_raw_payload(loc, member),
             method=loc.method,
             codec=codec,
         )
         return self._verified_member_stream(decoded, member)
 
-    def _payload_is_complete(self, loc: _ZipLocator, member_name: str) -> bool:
+    def _payload_is_complete(self, loc: _ZipLocator, member: ArchiveMember) -> bool:
         """Whether the file holds every byte of ``loc``'s declared payload."""
         try:
-            data_start, length = self._local_data_region(loc)
+            data_start, length = self._local_data_region(loc, member)
         except _LOCAL_HEADER_ERRORS as exc:
-            self._reraise_member_error(exc, member_name)
+            self._reraise_member_error(exc, member.name)
         with self._lock:
             fp = self._fp
             if fp is None:
                 raise _closed_archive_error()
             return data_start + length <= fp.seek(0, io.SEEK_END)
 
-    def _open_raw_payload(self, loc: _ZipLocator, member_name: str) -> BinaryIO:
+    def _open_raw_payload(self, loc: _ZipLocator, member: ArchiveMember) -> BinaryIO:
         """:meth:`_raw_member_stream`, with a damaged local header raised translated."""
         try:
-            return self._raw_member_stream(loc)
+            return self._raw_member_stream(loc, member)
         except _LOCAL_HEADER_ERRORS as exc:
-            self._reraise_member_error(exc, member_name)
+            self._reraise_member_error(exc, member.name)
 
     def _zipcrypto_stage(
-        self, loc: _ZipLocator, member_name: str
+        self, loc: _ZipLocator, member: ArchiveMember
     ) -> Callable[[bytes], BinaryIO]:
         """Return ``stage(password)``: the member's plaintext under ZipCrypto.
 
@@ -2767,9 +2887,9 @@ class ZipReader(BaseArchiveReader):
         check_byte = _zipcrypto_check_byte(loc)
 
         def stage(password: bytes) -> BinaryIO:
-            raw = self._open_raw_payload(loc, member_name)
+            raw = self._open_raw_payload(loc, member)
             try:
-                header = self._read_zipcrypto_header(raw, loc, member_name)
+                header = self._read_zipcrypto_header(raw, loc, member.name)
             except BaseException:
                 raw.close()
                 raise
@@ -2784,7 +2904,7 @@ class ZipReader(BaseArchiveReader):
         return stage
 
     def _winzip_aes_stage(
-        self, loc: _ZipLocator, aes: WinZipAesInfo, member_name: str
+        self, loc: _ZipLocator, aes: WinZipAesInfo, member: ArchiveMember
     ) -> Callable[[bytes], BinaryIO]:
         """Return ``stage(password)``: the member's plaintext under WinZip AES.
 
@@ -2793,7 +2913,7 @@ class ZipReader(BaseArchiveReader):
         """
 
         def stage(password: bytes) -> BinaryIO:
-            raw = self._open_raw_payload(loc, member_name)
+            raw = self._open_raw_payload(loc, member)
             try:
                 return open_winzip_aes_member(
                     raw,
@@ -2803,7 +2923,7 @@ class ZipReader(BaseArchiveReader):
                 )
             except ArchiveyError as exc:
                 raw.close()
-                self._stamp_error_context(exc, member_name)
+                self._stamp_error_context(exc, member.name)
                 raise
             except BaseException:
                 raw.close()
@@ -2847,7 +2967,7 @@ class ZipReader(BaseArchiveReader):
                 codec=self._member_codec(
                     aes.actual_method, member.name, suffix=" under WinZip AES"
                 ),
-                stage=self._winzip_aes_stage(loc, aes, member.name),
+                stage=self._winzip_aes_stage(loc, aes, member),
                 crc_anchor=None if aes.is_ae2 else loc.crc,
                 is_aes=True,
             )
@@ -2855,7 +2975,7 @@ class ZipReader(BaseArchiveReader):
             cipher = _ZipCipher(
                 method=loc.method,
                 codec=self._member_codec(loc.method, member.name),
-                stage=self._zipcrypto_stage(loc, member.name),
+                stage=self._zipcrypto_stage(loc, member),
                 crc_anchor=loc.crc,
                 is_aes=False,
             )
@@ -2872,7 +2992,7 @@ class ZipReader(BaseArchiveReader):
             )
 
         def payload_complete() -> bool:
-            return self._payload_is_complete(loc, member.name)
+            return self._payload_is_complete(loc, member)
 
         if not self._passwords.is_ambiguous():
             return self._open_encrypted_unconfirmed(
@@ -3149,7 +3269,7 @@ class ZipReader(BaseArchiveReader):
         # The same validated view every member open reads through: the local
         # header's name, data offset and overlap are checked before any pass runs.
         # One view serves the header read and every CRC pass; each pass rewinds it.
-        raw = self._open_raw_payload(loc, member.name)
+        raw = self._open_raw_payload(loc, member)
         try:
             header = self._read_zipcrypto_header(raw, loc, member.name)
 
