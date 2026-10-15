@@ -2894,7 +2894,10 @@ class BaseArchiveReader(ArchiveReader):
         ):
             # A streaming pass stopped by a listing limit handed out a prefix it
             # cannot walk again, so there is no report without a scan, as on a
-            # reader with no index. Any other failure still raises the poison.
+            # reader with no index. Any other failure still raises the poison. On a
+            # reader with an upfront index a walk's ResourceLimitError is a listing
+            # limit: the walks that raise other kinds (a decoder cap met finding a
+            # bit-3 descriptor, from a pipe) belong to readers with no index.
             return None
         self._ensure_walked()
         materialized = self._materialized

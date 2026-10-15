@@ -25,6 +25,7 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.cost import ListingCost
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
     CorruptionError,
@@ -336,6 +337,19 @@ def test_an_encrypted_bit3_stored_member_is_walked_past_without_its_password() -
 #
 # File and pipe reads are compared shape by shape in test_zip_pipe_parity.py; these
 # pin what the file read does with what it lists.
+
+
+def test_a_zip_with_no_end_record_peeks_its_listing_as_an_index() -> None:
+    """Random access, its listing is an index (``listing_cost=INDEXED``): the peek
+    returns the members and the walk's error, as ``members_report()`` does."""
+    data = _zip()
+    cut = data[: data.index(b"PK\x01\x02")]
+    with open_archive(io.BytesIO(cut), format=ArchiveFormat.ZIP) as reader:
+        assert reader.info.cost.listing_cost is ListingCost.INDEXED
+        peeked = reader.members_report_if_available()
+        assert peeked is not None
+        assert [m.name for m in peeked.members] == list(_NAMES)
+        assert isinstance(peeked.error, TruncatedError)
 
 
 def test_a_zip_cut_before_its_directory_lists_its_members_then_raises() -> None:
