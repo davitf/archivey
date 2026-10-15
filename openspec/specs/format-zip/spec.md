@@ -471,7 +471,34 @@ Info-ZIP `unzip` says nothing.
 | A 1000-byte stub before the archive, 7 zero bytes and `JUNK` after it | `observed_bytes` 7 |
 | `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
 | 1 MiB of non-zero bytes after the end record, from a file or a pipe | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0; members list and read |
-| The same with the directory gone | `CorruptionError` at open: no end record |
+| The same with the directory gone | Members listed from their local headers, then `CorruptionError` (see the next requirement) |
+
+### Requirement: List a ZIP whose end record is missing
+
+When neither the search nor the step over the directory finds an end record, the
+reader SHALL list the members the local-header walk found and then raise the error the
+walk met, in the words a read from a pipe uses for the same bytes, as a cut TAR lists
+and raises: `members()` raises, `members_report()` returns the members with the error,
+iteration yields them and then raises, and `extract_all()` writes them and then raises.
+Each member SHALL be what its local header says, as a pipe read lists it before its
+directory: no `mode`, `create_system` or comment; a bit-3 member takes its CRC and
+sizes from its data descriptor, and a read checks the data against them. A member whose
+data the file cuts, or whose descriptor the walk does not find, SHALL be listed last,
+and reading it SHALL raise the walk's error. `ArchiveInfo.member_count` SHALL be
+`None`. With no member before the walk's error, `open_archive` SHALL raise it.
+
+#### Scenario: ZIP with no end record
+
+| Archive, three members | Expected |
+| --- | --- |
+| Cut where the directory starts | Three members listed and read, then `TruncatedError` naming the end after 3 members |
+| Cut inside the directory, or right before the end record | Three members, then `TruncatedError`: the stream ends inside the central directory |
+| Cut inside the third member's data | Three members, then `TruncatedError` naming member #2, which its read raises too; the first two read |
+| Cut inside the second local header | One member, then `TruncatedError` naming local header #1 |
+| `JUNK` where the directory should start | Three members, then `CorruptionError`: the bytes after member #2 are not a ZIP header |
+| `JUNK` after a whole directory, where the end record should be | Three members, then `CorruptionError` naming the bytes after the central directory |
+| Cut inside the first local header | `TruncatedError` at open |
+| Any of these with bit-3 members | The same members, each with its descriptor's CRC and sizes; a pipe read lists and extracts the same |
 
 ### Requirement: Apply max_members while reading a ZIP directory
 

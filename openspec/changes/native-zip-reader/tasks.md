@@ -102,7 +102,7 @@ each lands with nothing half-done reachable:
       forward only (question C); a test counts its seeks.
 - [ ] 3.0a Before the walk: open a real self-extractor fixture through a pipe under the
       `FAST` and default budgets and record what `payload_offset` comes back as.
-- [ ] 3.0b A seekable source whose end record is not in the last 65 558 bytes runs the
+- [x] 3.0b A seekable source whose end record is not in the last 65 558 bytes runs the
       local-header walk, per `design.md` §"A seekable source whose end record is not in
       the tail": tests first for a ZIP followed by 1 MiB of non-zero bytes (opens, members
       updated from the directory, `ARCHIVE_TRAILING_DATA`), a ZIP cut before its
@@ -114,6 +114,11 @@ each lands with nothing half-done reachable:
             members end and steps over the directory to the end record, from a file
             and from a pipe (which keeps the bytes right after the members as well as
             the last ones).
+      - [x] 3.0b2 No end record: the members the walk found are listed from their
+            local headers (a bit-3 member's CRC and sizes from its descriptor), then
+            the walk's error is raised in the pipe read's words; a member the file
+            cuts is listed and its read raises the cut; a test compares sixteen cut
+            and junk shapes from a file and from a pipe.
 - [ ] 3.0c The same walk instead of a refusal for a damaged ZIP64 end record or locator
       (the classic record's fields when none is saturated, with a diagnostic), a bad
       directory offset and an unreadable directory entry, so a file read writes what

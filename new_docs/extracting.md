@@ -211,10 +211,10 @@ archive expanding too much, stops the extraction even with `on_error="continue"`
 that the whole archive is hostile. A single member that expands too much fails like any other
 member.
 
-If the damage is in the list of members itself, such as a TAR or RAR cut short or a damaged ZIP
-central directory, the members before it are written and the call then raises, with either
-`on_error`, and returns no report. A damaged 7z index, or a ZIP whose end record is missing, fails
-`open_archive` before anything is written.
+If the damage is in the list of members itself, such as a TAR, RAR or ZIP cut short or a damaged
+ZIP central directory, the members before it are written and the call then raises, with either
+`on_error`, and returns no report. A damaged 7z index fails `open_archive` before anything is
+written.
 
 A process killed during an extraction can leave a file named `.archivey-tmp-` followed by random
 characters in the destination. It's safe to delete.

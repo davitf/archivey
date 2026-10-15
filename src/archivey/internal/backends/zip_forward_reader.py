@@ -46,7 +46,6 @@ from archivey.internal.backends.zip_aes import (
     WinZipAesInfo,
     open_winzip_aes_forward,
     open_winzip_aes_member,
-    parse_winzip_aes_extra,
 )
 from archivey.internal.backends.zip_local_walk import (
     _CODEC_RETAIN,
@@ -66,13 +65,10 @@ from archivey.internal.backends.zip_parser import (
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
     _UNCONFIRMED_PASSWORD_FAILURE,
-    _ZIP_COMPRESSION_ALGOS,
-    _ZIP_COMPRESSION_TUPLES,
     _ZIP_KEYED_SETTINGS_METHODS,
     _ZIP_MASK_COMPRESSED_PATCHED_DATA,
     _ZIP_MASK_LZMA_EOS_MARKER,
     _ZIP_MASK_USE_DATA_DESCRIPTOR,
-    _ZIP_MASK_UTF8,
     _ZIP_REJECTING_METHODS,
     ZipReader,
     _bound_offset,
@@ -83,9 +79,6 @@ from archivey.internal.backends.zip_reader import (
     _stored_text,
     _unconfirmed_resource_limit,
     _unverified_data_error,
-    _uses_strong_encryption,
-    _zip_created,
-    _zip_timestamps,
     _zipcrypto_check_byte,
     _ZipLocator,
 )
@@ -101,7 +94,6 @@ from archivey.internal.base_reader import (
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
-from archivey.internal.naming import normalize_member_name
 from archivey.internal.password import wrong_password_error
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
@@ -131,11 +123,7 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveInfoExtra,
     ArchiveMember,
-    CompressionAlgorithm,
-    CompressionMethod,
-    CreateSystem,
     HashAlgorithm,
-    MemberExtra,
     MemberType,
     crc32_digest,
 )
@@ -188,33 +176,6 @@ _KEPT_ON_UPDATE = frozenset(
         "link_target_member",
     }
 )
-
-
-def _central_from_local(entry: LocalEntry) -> CentralEntry:
-    """A central-entry view of what ``entry``'s local header says.
-
-    The fields only the directory holds are zero: no host, no attributes, no comment.
-    It feeds the name and time decoders, which read the same fields from either."""
-    header = entry.header
-    return CentralEntry(
-        index=entry.index,
-        version_made_by=0,
-        version_needed=header.version_needed,
-        flags=header.flags,
-        method=header.method,
-        dos_time=header.dos_time,
-        dos_date=header.dos_date,
-        crc=header.crc,
-        compressed_size=header.compressed_size,
-        file_size=header.file_size,
-        header_offset=entry.offset,
-        disk_start=0,
-        internal_attr=0,
-        external_attr=0,
-        name=header.name,
-        extra=header.extra,
-        comment=b"",
-    )
 
 
 def _contradicts(descriptor: tuple[int, int, int], central: CentralEntry) -> bool:
@@ -1677,91 +1638,6 @@ class ZipForwardReader(ZipReader):
             self._uncaptured[member._member_id] = why
             if isinstance(why, _KeptCiphertext):
                 self._listing_tracker.account_retained_bytes(len(why), enforce=False)
-
-    def _local_member(self, entry: LocalEntry, index: int) -> ArchiveMember:
-        """The member as its local header describes it, until the directory arrives.
-
-        No field the directory alone holds is guessed: ``mode``, ``create_system`` and
-        ``comment`` are ``None``, and the type is ``FILE`` or ``DIRECTORY`` from the
-        name. A backslash is a literal character until the host says otherwise, except
-        at the end of the name, which makes the member a ``DIRECTORY`` until then: a
-        DOS or Windows writer marks its folders that way, and a folder the pass wrote
-        as a file would stop every member inside it from being written, where a
-        directory the host turns out not to make one is taken back at the end of the
-        pass. Nothing is reported here; the directory's version of the member reports
-        what it finds, once.
-        """
-        header = entry.header
-        central = _central_from_local(entry)
-        try:
-            decoded_name = self._decode_member_name(central)
-        except CorruptionError:
-            if not central.flags & _ZIP_MASK_UTF8:
-                raise
-            # A name the UTF-8 flag mislabels is the directory's to refuse: a file
-            # read refuses this member when its local name differs from the central
-            # one, and the whole listing only when the central name is the bad one.
-            # Read as unflagged, the member goes on to that check at the end.
-            decoded_name = self._decode_member_name(
-                replace(central, flags=central.flags & ~_ZIP_MASK_UTF8)
-            )
-        stored_as_directory = decoded_name.text.endswith(("/", "\\"))
-        member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
-        name = normalize_member_name(
-            decoded_name.text, member_type, backslash_is_separator=False
-        )
-        method = header.method
-        aes_info = parse_winzip_aes_extra(header.extra) if method == 99 else None
-        if aes_info is not None:
-            algo = _ZIP_COMPRESSION_ALGOS.get(
-                aes_info.actual_method, CompressionAlgorithm.UNKNOWN
-            )
-            compression: tuple[CompressionMethod, ...] = (CompressionMethod(algo=algo),)
-        else:
-            compression = _ZIP_COMPRESSION_TUPLES.get(
-                method, (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
-            )
-        modified, accessed, ntfs_ctime, ut_ctime, _issues = _zip_timestamps(
-            central, name
-        )
-        created, ctime = _zip_created(CreateSystem.UNKNOWN, ntfs_ctime, ut_ctime)
-        deferred = entry.deferred
-        hashes = (
-            {HashAlgorithm.CRC32: crc32_digest(header.crc)}
-            if not deferred
-            and member_type is MemberType.FILE
-            and not (aes_info is not None and aes_info.is_ae2)
-            else {}
-        )
-        return ArchiveMember(
-            type=member_type,
-            name=name,
-            raw_name=decoded_name.raw_name,
-            size=None if deferred else header.file_size,
-            compressed_size=None if deferred else header.compressed_size,
-            compression=compression,
-            hashes=hashes,
-            extra=MemberExtra({"zip.compress_type": method}),
-            modified=modified,
-            accessed=accessed,
-            created=created,
-            ctime=ctime,
-            is_encrypted=_is_encrypted_entry(header.flags, method),
-            _raw=_ZipLocator(
-                index=index,
-                header_offset=entry.offset,
-                compressed_size=header.compressed_size,
-                file_size=header.file_size,
-                crc=header.crc,
-                flags=header.flags,
-                method=method,
-                dos_time=header.dos_time,
-                name=header.name,
-                aes=aes_info,
-                strong_encryption=_uses_strong_encryption(header.flags, header.extra),
-                reparse_fallback=None,
-            ),
-        )
 
     # -- the directory -------------------------------------------------------------
 

@@ -1103,16 +1103,22 @@ def test_read_after_source_close_raises_typed_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_truncated_zip_raises_corruption() -> None:
-    # A ZIP whose central directory / EOCD has been cut off: the local-file-header magic
-    # still makes detection pick ZIP, but no end record is left to read.
+def test_truncated_zip_lists_its_cut_member_then_raises() -> None:
+    # A ZIP cut inside its only member's data: no end record is left, so the member is
+    # listed from its local header, and the listing and its read raise the cut.
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
         z.writestr("hello.txt", b"hello world" * 100)
     truncated = buf.getvalue()[: len(buf.getvalue()) // 2]
 
-    with raises_corruption_not_truncation(match="Could not open ZIP archive"):
-        open_archive(io.BytesIO(truncated))
+    with open_archive(io.BytesIO(truncated)) as reader:
+        report = reader.members_report()
+        (member,) = report.members
+        assert member.name == "hello.txt"
+        assert isinstance(report.error, TruncatedError)
+        assert "inside member #0's data" in str(report.error)
+        with pytest.raises(TruncatedError, match="inside member #0's data"):
+            reader.read(member)
 
 
 def test_corrupt_member_data_raises_corruption_on_read() -> None:

@@ -1936,10 +1936,11 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     towards the cap, so a long run of zeros is still part 0.
     """
     digits = "1" * 5000
-    zip_bytes = b"PK\x03\x04" + b"\x00" * 60
+    # Cut inside the first local header, so the ZIP read fails at open.
+    zip_bytes = b"PK\x03\x04" + b"\x00" * 20
     stream = io.BytesIO(zip_bytes)
     stream.name = f"x.7z.{digits}"
-    with raises_corruption_not_truncation(match="Could not open ZIP archive"):
+    with pytest.raises(TruncatedError, match="Could not open ZIP archive"):
         open_archive(stream)
     stream = io.BytesIO(zip_bytes)
     stream.name = f"x.zip.{digits}"

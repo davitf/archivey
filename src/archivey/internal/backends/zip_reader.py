@@ -94,19 +94,28 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
     validate_zip_local_header,
 )
-from archivey.internal.backends.zip_local_walk import LocalHeaderWalk
+from archivey.internal.backends.zip_local_walk import (
+    DataDescriptor,
+    LocalEntry,
+    LocalHeaderWalk,
+    local_entry_at,
+    missing_end_record_error,
+)
 from archivey.internal.backends.zip_parser import (
     CENTRAL_HEADER_SIZE,
     EOCD_SIZE,
     MAX_DATA_OFFSET,
+    NO_END_RECORD_MSG,
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
     EndRecord,
     EntryCountMismatch,
     EntryOverrun,
-    find_end_record,
+    locate_end_record,
+    read_end_record,
     read_local_header,
+    step_over_directory,
 )
 from archivey.internal.backends.zipcrypto import (
     ZIPCRYPTO_HEADER_LEN,
@@ -844,7 +853,8 @@ def _max_members_error(
 #: Also the receipt for a seekable source read through its directory. An end record
 #: behind more trailing bytes than its search reads is found by a walk over every local
 #: header at open, reading the data of each bit-3 member (``_walk_past_members``); the
-#: listing stays ``INDEXED``, as RAR's does with its header walk at open.
+#: listing stays ``INDEXED``, as RAR's does with its header walk at open. So does a ZIP
+#: with no end record at all, listed from the local headers that walk found.
 _ZIP_COST = CostReceipt(
     listing_cost=ListingCost.INDEXED,
     access_cost=AccessCost.DIRECT,
@@ -918,6 +928,83 @@ def _reparse_fallback_type(
     return MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
 
 
+class _WalkedMembers:
+    """What the walk over the local headers found (``ZipReader._walk_past_members``).
+
+    For a ZIP with no end record, the members it found are listed from their local
+    headers and then ``error`` is raised, as a read from a pipe lists and raises
+    (``ZipReader._iter_walked``). Kept in arrays, a few bytes a member, since the
+    walk may meet up to ``max_members`` of them.
+    """
+
+    __slots__ = (
+        "after",
+        "compressed_sizes",
+        "crcs",
+        "cut",
+        "error",
+        "file_sizes",
+        "members_end",
+        "offsets",
+    )
+
+    def __init__(self) -> None:
+        #: Each member's local header offset, in file order.
+        self.offsets: array[int] = array("q")
+        #: A bit-3 member's CRC and sizes, from its data descriptor; 0 for any other.
+        self.crcs: array[int] = array("L")
+        self.compressed_sizes: array[int] = array("q")
+        self.file_sizes: array[int] = array("q")
+        #: Where the last member the walk passed whole ends.
+        self.members_end = 0
+        #: Where that is, for a message: "after member #n".
+        self.after = ""
+        #: The member whose data or descriptor the walk could not get past: listed
+        #: last, and its read raises ``error``.
+        self.cut: int | None = None
+        #: Why the walk stopped short of the directory; ``None`` when it reached
+        #: bytes that are no local header.
+        self.error: ArchiveyError | None = None
+
+    def add(self, offset: int, descriptor: DataDescriptor | None) -> None:
+        self.offsets.append(_bound_offset(offset))
+        if descriptor is None:
+            self.crcs.append(0)
+            self.compressed_sizes.append(0)
+            self.file_sizes.append(0)
+        else:
+            self.crcs.append(descriptor.crc)
+            self.compressed_sizes.append(descriptor.compressed_size)
+            self.file_sizes.append(descriptor.file_size)
+
+
+def _central_from_local(entry: LocalEntry) -> CentralEntry:
+    """A central-entry view of what ``entry``'s local header says.
+
+    The fields only the directory holds are zero: no host, no attributes, no comment.
+    It feeds the name and time decoders, which read the same fields from either."""
+    header = entry.header
+    return CentralEntry(
+        index=entry.index,
+        version_made_by=0,
+        version_needed=header.version_needed,
+        flags=header.flags,
+        method=header.method,
+        dos_time=header.dos_time,
+        dos_date=header.dos_date,
+        crc=header.crc,
+        compressed_size=header.compressed_size,
+        file_size=header.file_size,
+        header_offset=entry.offset,
+        disk_start=0,
+        internal_attr=0,
+        external_attr=0,
+        name=header.name,
+        extra=header.extra,
+        comment=b"",
+    )
+
+
 class ZipReader(BaseArchiveReader):
     """Reads a ZIP archive: the central directory and local headers through
     ``zip_parser``, member data through archivey's decrypt stages and codec layer."""
@@ -968,6 +1055,9 @@ class ZipReader(BaseArchiveReader):
         # than acted on. The source states it, so no wrapper between the boundary and
         # here can hide it.
         self._volume_count: int = source.volume_count
+        # The members a walk over the local headers found, when the archive has no end
+        # record: listed from there (``_iter_walked``). ``None`` for every other read.
+        self._salvage: _WalkedMembers | None = None
         self._refuse_lone_split_segment()
         self._open_index(source, start_offset)
 
@@ -1009,10 +1099,27 @@ class ZipReader(BaseArchiveReader):
             handle = SlicingStream(handle, start=start_offset)
         self._fp = handle
         file_size = handle.seek(0, io.SEEK_END)
+        # Every header offset the listing walk has read, for the overlap guard; then
+        # the guard's sorted bounds once the walk is complete (``_data_bounds``).
+        self._index_lock = threading.Lock()
+        self._bounds: _DataBounds | None = None
+        self._member_count: int | None = None
+        self._count_known = False
         try:
-            self._end: EndRecord = find_end_record(
+            found = locate_end_record(
                 self._read_at, file_size, members_end=self._walk_past_members
             )
+            walked, self._salvage = self._salvage, None
+            if found is None and walked is not None:
+                if walked.error is None:
+                    walked.error = self._missing_end_record(walked, file_size)
+                if walked.offsets:
+                    self._list_walked_members(walked)
+                    return
+                raise walked.error
+            if found is None:
+                raise CorruptionError(NO_END_RECORD_MSG)
+            self._end: EndRecord = read_end_record(self._read_at, file_size, found)
         except ArchiveyError as exc:
             if isinstance(exc, CorruptionError):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
@@ -1023,13 +1130,41 @@ class ZipReader(BaseArchiveReader):
             self._stamp_error_context(exc)
             raise
         self._refuse_declared_count_over_limit()
-        # Every header offset the listing walk has read, for the overlap guard; then
-        # the guard's sorted bounds once the walk is complete (``_data_bounds``).
-        self._index_lock = threading.Lock()
-        self._bounds: _DataBounds | None = None
-        self._member_count: int | None = None
-        self._count_known = False
         self._report_trailing_data()
+
+    def _missing_end_record(
+        self, walked: _WalkedMembers, file_size: int
+    ) -> ArchiveyError:
+        """Why no end record follows the members the walk passed, in the words a read
+        from a pipe uses (``missing_end_record_error``)."""
+        _found, stopped = step_over_directory(
+            self._read_at, file_size, walked.members_end
+        )
+        return missing_end_record_error(
+            self._read_at, walked.members_end, walked.after, stopped, whole=True
+        ) or CorruptionError(NO_END_RECORD_MSG)
+
+    def _list_walked_members(self, walked: _WalkedMembers) -> None:
+        """Get ready to list the members the walk found, for a ZIP with no end record:
+        what the local headers hold is listed, then the walk's error is raised, as a
+        cut TAR lists and raises. The end record stands in for none: no directory, no
+        comment, no trailing bytes. The overlap guard's bounds are the walk's offsets,
+        ending where the members it passed whole end; the count is unknown."""
+        self._salvage = walked
+        members_end = walked.members_end
+        self._end = EndRecord(
+            eocd_offset=members_end,
+            zip64=False,
+            entries_declared=0,
+            cd_size=0,
+            cd_offset=members_end,
+            base=0,
+            comment=b"",
+            comment_declared=0,
+            trailing=0,
+        )
+        self._bounds = _DataBounds(walked.offsets, cd_start=members_end)
+        self._count_known = True
 
     def _walk_past_members(self) -> int | None:
         """Where the members end, found by walking their local headers from the start:
@@ -1042,31 +1177,41 @@ class ZipReader(BaseArchiveReader):
         pipe read does. Each local header is charged against ``max_members`` before
         its data is passed, as the pipe read charges it. Run once, at open, after the
         tail search and before anything is listed.
+
+        What the walk found is kept in ``_salvage`` (offsets and descriptors, and
+        why it stopped), for ``_open_index`` to list when no end record follows.
         """
         max_members = self._config.listing_limits.max_members
+        walked = self._salvage = _WalkedMembers()
         with self._lock:
             fp = self._fp
             if fp is None:
                 raise _closed_archive_error()
             fp.seek(0)
             walk = LocalHeaderWalk(fp)
-            count = 0
             while True:
+                members_end = walk.source.offset
+                walked.members_end = members_end
                 try:
                     entry = walk.next_entry()
-                except ArchiveyError:
+                except ArchiveyError as exc:
+                    walked.error = exc
                     return None
                 if entry is None:
-                    return walk.source.offset
-                if max_members is not None and count >= max_members:
+                    walked.after = walk.where()
+                    return members_end
+                if max_members is not None and len(walked.offsets) >= max_members:
                     raise _max_members_error(
                         max_members, "ZIP file's local headers name"
                     )
-                count += 1
                 try:
-                    walk.skip_member(entry)
-                except ArchiveyError:
+                    descriptor = walk.skip_member(entry)
+                except ArchiveyError as exc:
+                    walked.add(entry.offset, None)
+                    walked.cut = entry.index
+                    walked.error = exc
                     return None
+                walked.add(entry.offset, descriptor)
 
     def _read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes at absolute ``offset``, under the reader's lock.
@@ -1191,8 +1336,13 @@ class ZipReader(BaseArchiveReader):
         in every mode, because the offsets are held in every mode: it raises before
         building one member more than the limit. Damage raises after the
         members before it, as a cut TAR does; the end-record findings come after the
-        last member.
+        last member. A ZIP with no end record has no directory to walk: its members
+        come from the local headers the walk at open found (``_iter_walked``).
         """
+        walked = self._salvage
+        if walked is not None:
+            yield from self._iter_walked(walked)
+            return
         walk = CentralDirectoryWalk(self._read_at, self._end)
         offsets: array[int] = array("q")
         max_members = self._config.listing_limits.max_members
@@ -1219,6 +1369,58 @@ class ZipReader(BaseArchiveReader):
         # members are out, and a strict policy refuses the archive.
         for finding in walk.findings:
             self._emit_walk_finding(finding, last)
+
+    def _iter_walked(self, walked: _WalkedMembers) -> Iterator[ArchiveMember]:
+        """The members of a ZIP with no end record, from the local headers the walk at
+        open found, then the error that ended the walk (``_list_walked_members``).
+
+        Each member is built as a read from a pipe builds it before the directory
+        arrives (``_local_member``), with a bit-3 member's CRC and sizes from its data
+        descriptor; nothing the directory alone holds is guessed. A member whose data
+        the walk could not get past is listed last, as the pipe lists it, and its
+        read raises the walk's error (``_open_member``).
+        """
+        cut = walked.cut
+        name: str | None = None
+        for index, offset in enumerate(walked.offsets):
+            entry = local_entry_at(self._read_at, index, offset)
+            member = self._local_member(entry, index)
+            if entry.deferred and index != cut:
+                self._apply_descriptor(member, walked, index)
+            name = member.name
+            yield member
+        raise self._walked_error(walked, name if cut is not None else None)
+
+    def _walked_error(
+        self, walked: _WalkedMembers, member_name: str | None
+    ) -> ArchiveyError:
+        """A fresh copy of the error that ended the walk, stamped: the listing raises
+        it once per walk, and a cut member's read raises it too."""
+        error = walked.error
+        assert error is not None
+        fresh = type(error)(raw_message_of(error))
+        self._stamp_error_context(fresh, member_name)
+        return fresh
+
+    @staticmethod
+    def _apply_descriptor(
+        member: ArchiveMember, walked: _WalkedMembers, index: int
+    ) -> None:
+        """Give a bit-3 member the CRC and sizes its data descriptor holds, which a
+        read checks the data against, as the directory's would be."""
+        crc = walked.crcs[index]
+        compressed_size = walked.compressed_sizes[index]
+        file_size = walked.file_sizes[index]
+        loc = cast("_ZipLocator", member._raw)
+        loc.crc = crc
+        loc.compressed_size = compressed_size
+        loc.file_size = file_size
+        member.compressed_size = compressed_size
+        member.size = file_size
+        if member.type is MemberType.FILE and not (
+            loc.aes is not None and loc.aes.is_ae2
+        ):
+            member.hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
 
     def _emit_walk_finding(
         self,
@@ -1734,6 +1936,91 @@ class ZipReader(BaseArchiveReader):
             field = _zip_timestamp_field(create_system, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))
         return member
+
+    def _local_member(self, entry: LocalEntry, index: int) -> ArchiveMember:
+        """The member as its local header describes it, until the directory arrives.
+
+        No field the directory alone holds is guessed: ``mode``, ``create_system`` and
+        ``comment`` are ``None``, and the type is ``FILE`` or ``DIRECTORY`` from the
+        name. A backslash is a literal character until the host says otherwise, except
+        at the end of the name, which makes the member a ``DIRECTORY`` until then: a
+        DOS or Windows writer marks its folders that way, and a folder the pass wrote
+        as a file would stop every member inside it from being written, where a
+        directory the host turns out not to make one is taken back at the end of the
+        pass. Nothing is reported here; the directory's version of the member reports
+        what it finds, once.
+        """
+        header = entry.header
+        central = _central_from_local(entry)
+        try:
+            decoded_name = self._decode_member_name(central)
+        except CorruptionError:
+            if not central.flags & _ZIP_MASK_UTF8:
+                raise
+            # A name the UTF-8 flag mislabels is the directory's to refuse: a file
+            # read refuses this member when its local name differs from the central
+            # one, and the whole listing only when the central name is the bad one.
+            # Read as unflagged, the member goes on to that check at the end.
+            decoded_name = self._decode_member_name(
+                replace(central, flags=central.flags & ~_ZIP_MASK_UTF8)
+            )
+        stored_as_directory = decoded_name.text.endswith(("/", "\\"))
+        member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
+        name = normalize_member_name(
+            decoded_name.text, member_type, backslash_is_separator=False
+        )
+        method = header.method
+        aes_info = parse_winzip_aes_extra(header.extra) if method == 99 else None
+        if aes_info is not None:
+            algo = _ZIP_COMPRESSION_ALGOS.get(
+                aes_info.actual_method, CompressionAlgorithm.UNKNOWN
+            )
+            compression: tuple[CompressionMethod, ...] = (CompressionMethod(algo=algo),)
+        else:
+            compression = _ZIP_COMPRESSION_TUPLES.get(
+                method, (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
+            )
+        modified, accessed, ntfs_ctime, ut_ctime, _issues = _zip_timestamps(
+            central, name
+        )
+        created, ctime = _zip_created(CreateSystem.UNKNOWN, ntfs_ctime, ut_ctime)
+        deferred = entry.deferred
+        hashes = (
+            {HashAlgorithm.CRC32: crc32_digest(header.crc)}
+            if not deferred
+            and member_type is MemberType.FILE
+            and not (aes_info is not None and aes_info.is_ae2)
+            else {}
+        )
+        return ArchiveMember(
+            type=member_type,
+            name=name,
+            raw_name=decoded_name.raw_name,
+            size=None if deferred else header.file_size,
+            compressed_size=None if deferred else header.compressed_size,
+            compression=compression,
+            hashes=hashes,
+            extra=MemberExtra({"zip.compress_type": method}),
+            modified=modified,
+            accessed=accessed,
+            created=created,
+            ctime=ctime,
+            is_encrypted=_is_encrypted_entry(header.flags, method),
+            _raw=_ZipLocator(
+                index=index,
+                header_offset=entry.offset,
+                compressed_size=header.compressed_size,
+                file_size=header.file_size,
+                crc=header.crc,
+                flags=header.flags,
+                method=method,
+                dos_time=header.dos_time,
+                name=header.name,
+                aes=aes_info,
+                strong_encryption=_uses_strong_encryption(header.flags, header.extra),
+                reparse_fallback=None,
+            ),
+        )
 
     def _read_zipcrypto_header(
         self, raw: BinaryIO, loc: _ZipLocator, member_name: str
@@ -2725,6 +3012,11 @@ class ZipReader(BaseArchiveReader):
         # map, and a duplicate member name can't resolve to the wrong entry.
         loc = member._raw
         assert isinstance(loc, _ZipLocator), "ZIP member is missing its locator"
+        walked = self._salvage
+        if walked is not None and loc.index == walked.cut:
+            # The walk could not get past this member's data: a read fails where the
+            # walk did, as from a pipe.
+            raise self._walked_error(walked, member.name)
         if loc.strong_encryption:
             raise UnsupportedFeatureError(
                 _STRONG_ENCRYPTION_MSG,

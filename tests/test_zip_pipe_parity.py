@@ -12,6 +12,7 @@ the fixtures that reach it.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import struct
 import time
@@ -217,3 +218,112 @@ def test_an_encrypted_directory_writes_nothing_either_way(tmp_path: Path) -> Non
     assert _from_file(bytes(raw), None) is UnsupportedFeatureError
     _assert_same(bytes(raw), None, tmp_path)
     assert not any((tmp_path / "pipe").iterdir())
+
+
+# --- A ZIP with no end record ------------------------------------------------------
+
+
+def _members_zip(*, pipe: bool) -> bytes:
+    """Three deflated members, sized when written to a file, bit 3 when written to a
+    sink that cannot seek."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n in range(3):
+            zf.writestr(f"m{n}.txt", bytes(range(256)) * (n + 2))
+    return bytes(out.getvalue())
+
+
+class NonSeekableSink(io.RawIOBase):
+    """Where stdlib ``zipfile`` writes bit-3 members: it cannot seek back."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+        self._data += b
+        return len(b)
+
+    def getvalue(self) -> bytes:
+        return bytes(self._data)
+
+
+def _no_end_record_params() -> Iterator[pytest.ParameterSet]:
+    """A ZIP cut at each kind of place before its end record, or with bytes that are
+    no ZIP record where the directory or the end record should be.
+
+    The second value says whether the two reads raise in the same words. A bit-3
+    member followed by junk is the exception: the pass decodes it and looks for a
+    descriptor with its CRC, while the file read, which decodes nothing, looks for
+    one followed by a ZIP signature and reaches the end of the file; both fail it."""
+    for kind, data in (
+        ("sized", _members_zip(pipe=False)),
+        ("bit3", _members_zip(pipe=True)),
+    ):
+        directory = data.index(b"PK\x01\x02")
+        second = data.index(b"PK\x03\x04", 4)
+        end = data.rindex(b"PK\x05\x06")
+        shapes = {
+            "before-the-directory": data[:directory],
+            "inside-the-directory": data[: directory + 30],
+            "before-the-end-record": data[:end],
+            "inside-a-local-header": data[: second + 10],
+            "inside-a-member": data[: second + 60],
+            "junk-after-the-members": data[:directory] + b"junk" * 16,
+            "junk-after-the-directory": data[:end] + b"junk" * 16,
+            "junk-past-the-search-window": data[:directory] + b"\x01" * (1 << 20),
+        }
+        for shape, cut in shapes.items():
+            alike = not (kind == "bit3" and shape.startswith("junk-after-the-members"))
+            alike = alike and (kind, shape) != ("bit3", "junk-past-the-search-window")
+            yield pytest.param(cut, alike, id=f"{kind}-{shape}")
+
+
+def _report(data: bytes, *, piped: bool) -> object:
+    source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+    try:
+        with archivey.open_archive(source, streaming=piped) as reader:
+            if piped:
+                # The pass raises the walk's error; the report then holds it.
+                with contextlib.suppress(ArchiveyError):
+                    for _member, _stream in reader.stream_members():
+                        pass
+            report = reader.members_report()
+    except ArchiveyError as exc:
+        return type(exc), str(exc)
+    error = report.error
+    return (
+        [_visible(m) for m in report.members],
+        None if error is None else (type(error), str(error)),
+    )
+
+
+@pytest.mark.parametrize(("data", "alike"), list(_no_end_record_params()))
+def test_a_zip_with_no_end_record_lists_from_a_file_as_from_a_pipe(
+    data: bytes, alike: bool, tmp_path: Path
+) -> None:
+    """The members its local headers hold are listed, then the error the walk met is
+    raised, in the same words; each member reads, and extracts, alike."""
+    from_file = _report(data, piped=False)
+    from_pipe = _report(data, piped=True)
+    assert isinstance(from_file, tuple) and isinstance(from_file[0], list)
+    assert from_file[0], "the members before the cut are listed"
+    assert from_file[1] is not None
+    if alike:
+        assert from_file == from_pipe
+    else:
+        assert isinstance(from_pipe, tuple) and from_pipe[1] is not None
+        assert from_file[0] == from_pipe[0]
+        assert "member #2" in from_file[1][1] and "member #2" in from_pipe[1][1]
+    if alike:
+        _assert_same(data, None, tmp_path)
+        return
+    started = time.time() - 1
+    for side in ("file", "pipe"):
+        _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
+        (tmp_path / side).mkdir(exist_ok=True)
+    tree = _tree(tmp_path / "file", since=started)
+    assert tree and _tree(tmp_path / "pipe", since=started) == tree

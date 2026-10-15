@@ -608,34 +608,39 @@ whose end record the tail search does not find (next section).
 
 The tail search reads the last 65 558 bytes. An archive followed by more trailing data
 than that, or one whose end record and directory are missing (a download cut short, a
-copy that stopped early), has no end record there. Today that is `CorruptionError` at
-open, while the same bytes from a pipe read through the walk above. The maintainer's
-ruling (2026-10-12): when the end record is missing or buried, scan the local headers
-anyway, return the members, then raise as an incomplete TAR does; when the scan reaches
-the end record, update the members from the directory, as a streaming pass does.
+copy that stopped early), has no end record there, while the same bytes from a pipe
+read through the walk above. The maintainer's ruling (2026-10-12): when the end record
+is missing or buried, scan the local headers anyway, return the members, then raise as
+an incomplete TAR does; when the scan reaches the end record, update the members from
+the directory, as a streaming pass does.
 
 When the tail search finds nothing, the reader runs the local-header walk over the
-seekable source, from the stub offset the detector reported (else 0, else the scan for
-a valid local header that §"Other shapes the walk meets" describes). On a seekable
-source the walk seeks over a member's data when its local header states the size, so
-in the common case it reads only the headers; a bit-3 member is read through, as from a
-pipe. Where the walk ends decides the result:
+seekable source from its start (past the stub the detector found, which the reader
+slices off). The walk seeks over a member's data when its local header states the size,
+so in the common case it reads only the headers; a bit-3 member's data is scanned for
+its descriptor, as from a pipe, and nothing is decoded. The walk keeps each member's
+header offset and, for a bit-3 member, its descriptor's CRC and sizes. Where the walk
+ends decides the result, in the words a pipe read uses for the same bytes:
 
 | The walk ends at | Result |
 | --- | --- |
-| A central directory and a valid end record | The archive is whole. Members are updated from the directory as at the end of a streaming pass (§"What only the central directory says"), and the bytes after the end record go through §"Trailing bytes": `ARCHIVE_TRAILING_DATA`, a warning by default. No error (the maintainer, 2026-10-12) |
-| End of file on a member boundary, or inside the directory or end record | Every member found is listed or extracted first, then `TruncatedError`: the directory is required, so its absence is an archive cut short. Members the directory never covered keep what their local headers say (no mode, `create_system` or comment); extraction writes them as regular files |
-| End of file inside a member's data | `TruncatedError` at that member, as for a cut TAR member |
+| A central directory and a valid end record | The archive is whole and is read through its directory, as when the tail search finds the record. The bytes after the end record go through §"Trailing bytes": `ARCHIVE_TRAILING_DATA`, a warning by default. No error (the maintainer, 2026-10-12) |
+| End of file on a member boundary, inside a local header, or inside the directory or end record | Every member found is listed or extracted first, then `TruncatedError`: the directory is required, so its absence is an archive cut short |
+| End of file inside a member's data, or a bit-3 member whose descriptor the scan does not find | That member is listed last, as a pipe read lists it, and the listing then raises the walk's error naming it (`TruncatedError` for a cut); reading it raises the same error |
 | Bytes that are neither a local header, a directory header nor an end record, after a member | The members before them are listed, then `CorruptionError`, as for a rejected TAR header |
-| No local header at the start or within the scan window | `CorruptionError` at open, as today |
+| Bytes that are no ZIP record after a whole directory | The members are listed, then `CorruptionError`: the directory is there, so the archive is damaged rather than cut |
+| Any of these before the first member (no local header at the start, or one cut short) | The walk's error at open, as the pipe read raises it at open |
 
+Members come from their local headers as a pipe read builds them before its directory
+arrives (§"What only the central directory says"): no mode, `create_system` or
+comment, and a bit-3 member's CRC and sizes from its descriptor, which a read checks
+the data against. No directory comes, so they are final: `member_state_final` is true.
 `members()` is complete-or-raise; `members_report()` returns the members found and the
 error; `__iter__` yields them, then raises; `extract_all` writes them, then raises. This
 is the `partial-members-and-errors` model TAR already uses. The listing limits charge
-each member as it arrives. Members yielded before the directory is read have
-`member_state_final` false, as in a forward pass. `member_count` is `None` until the
-end record is read. The fallback runs only when the tail search fails, so a normal
-archive pays nothing for it.
+each member as it arrives, and the walk charges `max_members` on each local header.
+`member_count` is `None`. The fallback runs only when the tail search fails, so a
+normal archive pays nothing for it.
 
 ## What the parser removes
 
@@ -674,7 +679,7 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 | A ZIP from a pipe whose data descriptor understates a STORED member, or whose directory lists two same-name members in the reverse of their file order | Not readable at all (non-seekable source refused) | That member fails at the end of the pass (`FAILED` under `OnError.CONTINUE`, a raise under `STOP`); the seekable read of the same archive writes it. The only on-disk difference between the two modes | DR-5a: only crafted archives have these shapes, and matching would mean buffering every member (ADR 0010). Stage 3 |
 | A member flagged as a Windows reparse point whose data is not a reparse buffer, in a `stream_members()` pass | Yielded as a SYMLINK with no stream, retyped to FILE after the pass: its content is lost | Typed when the pass reaches it, by reading the bounded reparse header ahead and handing back a stream of the whole member, as 7z already does; `members()` already lists it as FILE. From a pipe the reparse bit arrives with the directory, so such a member is written as a file and stays one, and only a real reparse buffer becomes a link (§"What only the central directory says") | DR-5, DR-1. Stage 3 |
 | An end record whose comment and trailing bytes total exactly 65 536 bytes (a maximal comment and one junk byte), on Python 3.13 and later 3.12 releases | `BadZipFile`, so `CorruptionError` at open | Listed; the junk is trailing data. Where stdlib keeps the older window (3.11, early 3.12) it already reads it | The wider window reads everything either stdlib window reads (§"Layout"). Stage 2 |
-| A ZIP followed by more than 64 KiB of other bytes, or with its directory and end record missing, from a seekable source | `CorruptionError` at open, nothing listed | Read by the local-header walk (§"A seekable source whose end record is not in the tail"): a whole archive opens with `ARCHIVE_TRAILING_DATA`; a missing directory lists or extracts the members found, then raises `TruncatedError` | The maintainer's ruling, 2026-10-12. Stage 3 |
+| A ZIP followed by more than 64 KiB of other bytes, or with its directory and end record missing, from a seekable source | `CorruptionError` at open, nothing listed | Read by the local-header walk (§"A seekable source whose end record is not in the tail"): a whole archive opens with `ARCHIVE_TRAILING_DATA`; a missing directory lists or extracts the members found, then raises the walk's error (`TruncatedError` for a cut), in the words a pipe read uses | The maintainer's ruling, 2026-10-12. Stage 3 |
 | Open of an archive with a huge declared directory | All `ZipInfo` built at open | Members built as listed; `ListingLimits` stop the walk | DR-9a, DR-15b |
 
 Nothing else may change. The acceptance bar is the full suite as it stands once the
