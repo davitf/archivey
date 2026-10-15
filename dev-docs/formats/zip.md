@@ -276,8 +276,8 @@ was passed, else with `ArchiveyConfig.zip_unflagged_fallback_encoding` (default 
 which decodes every byte, so no `UnicodeDecodeError` escapes). Both decode with
 `surrogateescape`. The parser hands the reader the stored bytes, so nothing is decoded
 twice. A flagged name that is not valid UTF-8 raises `CorruptionError` at its entry,
-after the members before it (stage 4 of the change decodes it as an unflagged name
-instead). This departs from stdlib's `metadata_encoding` and from
+after the members before it and the members the local headers hold past it (stage 4 of
+the change decodes it as an unflagged name instead). This departs from stdlib's `metadata_encoding` and from
 `unzip -O`, which apply the codec to every unflagged name: a valid UTF-8 name wins over
 `encoding=` in every format (design rules, ruled 2026-10-07), so a legacy `encoding=` fixes
 the legacy names in a mixed archive without garbling its UTF-8 ones.
