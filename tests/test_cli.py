@@ -4496,6 +4496,80 @@ def test_hoist_merges_root_named_like_stem_into_existing_directory(
         assert not (tmp_path / "src (1)").exists()
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("overwrite", ["rename", "replace", "error", "skip"])
+@pytest.mark.parametrize("root", ["foo (1)", "FOO (1)"])
+def test_hoist_moves_a_root_named_like_the_wrappers_aside_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    root: str,
+    overwrite: str,
+    dry_run: bool,
+) -> None:
+    # foo.tar holding "foo (1)/": the wrapper is foo/, and the hoist steps it aside
+    # before the merge. The aside directory must not be the root's destination, or
+    # the root merges into the wrapper itself and loses a path component.
+    # "FOO (1)" is that same entry only on a case-insensitive filesystem: the case
+    # runs everywhere, but only macOS and Windows runs can fail it.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / "foo.tar", {f"{root}/x.txt": b"x"})
+    args = ["x", "--overwrite", overwrite, str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "into foo/" in err
+    assert (f"would move to {root}/" if dry_run else f"moved to {root}/") in err
+    assert "hoist failed" not in err
+    if dry_run:
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["foo.tar"]
+    else:
+        assert (tmp_path / root / "x.txt").read_bytes() == b"x"
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted([root, "foo.tar"])
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("overwrite", ["rename", "replace", "error", "skip"])
+@pytest.mark.parametrize(
+    ("stem", "member", "top"),
+    [("file", "FILE", "FILE"), ("plain", "PLAIN/a", "PLAIN/")],
+)
+def test_hoist_moves_a_root_named_like_the_wrapper_but_for_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stem: str,
+    member: str,
+    top: str,
+    overwrite: str,
+    dry_run: bool,
+) -> None:
+    # file.tar holding the file "FILE" and plain.tar holding the directory "PLAIN/":
+    # the wrapper is file/ or plain/, and the root keeps its own spelling, as a
+    # direct extraction writes it. On a case-insensitive filesystem ./FILE is the
+    # wrapper itself, which is no collision with the operator's data. Runs
+    # everywhere. macOS can fail it through the clash check. Windows can fail it
+    # through the clash check too, and through the in-place test, where paths
+    # compare equal across case (PLAIN/ then lands at ./plain/). Linux cannot,
+    # because the names differ.
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(tmp_path / f"{stem}.tar", {member: b"x"})
+    args = ["x", "--overwrite", overwrite, str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert f"into {stem}/" in err
+    assert (f"would move to {top}" if dry_run else f"moved to {top}") in err
+    assert "keep in" not in err
+    assert "kept in" not in err
+    if dry_run:
+        assert sorted(p.name for p in tmp_path.iterdir()) == [f"{stem}.tar"]
+    else:
+        assert (tmp_path / member).read_bytes() == b"x"
+        listed = sorted(p.name for p in tmp_path.iterdir())
+        assert listed == sorted([top.rstrip("/"), f"{stem}.tar"])
+
+
 def _tar_root_with_file(path: Path, *, explicit_root: bool) -> Path:
     """``foo.tar``-style archive holding ``<stem>/x.txt``, with or without a stored
     ``<stem>/`` directory entry."""

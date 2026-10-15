@@ -178,28 +178,39 @@ inside the entry (`pkg/bin/a -> ../lib/a.so`) means the same thing after the mov
 does not block it. In each of these cases a line says the content was kept in the
 wrapper and why. When it runs, the hoist SHALL produce the same final layout as
 extracting directly into the cwd: directories merge into existing directories, and
-per-file collisions resolve by the overwrite policy. The hoist is a convenience, not a
-guarantee: with no `-d`, the operator accepts wherever the content lands. Before it
-moves anything, the hoist SHALL check the whole merge for a collision the policy
-cannot resolve without deleting the operator's data. Per policy: `rename` resolves
-every collision, writing the archive's entry under the library's `name (N)` spelling;
-`replace` resolves only the archive's file against the operator's file, and replaces
-that one file; `skip` resolves every collision where the archive's entry is not a
-directory, and discards the archive's copy; `error` resolves none. The hoist MUST NOT
-delete anything else the operator had, and MUST NOT remove a directory of the
-operator's under any policy. When the check finds a collision the policy does not resolve, the hoist SHALL move nothing,
-print `kept in <wrapper>/: <path> already exists` naming the first such path, and
-leave the whole root in the wrapper; the run counts as successful (exit `0`) and the
-closing summary names the wrapper. So a direct extraction's `replace` of a file by a
-directory, which deletes the operator's file, is not reproduced: the hoist keeps the
+per-file collisions resolve by the overwrite policy. To move a root whose name differs
+from the wrapper's, the hoist first renames the wrapper to an aside name
+`<wrapper> (N)/`, and that aside directory SHALL NOT be the entry at the root's
+destination: with nothing at `./foo`, `foo.tar` holding `foo (1)/` (or `FOO (1)/` on a
+case-insensitive filesystem) lands at `./foo (1)/` (`./FOO (1)/` for that spelling),
+as a direct extraction puts it, and not in the wrapper. The hoist is a convenience,
+not a guarantee: with no `-d`, the operator accepts wherever the content lands. Before
+it moves anything, the hoist SHALL check the whole merge for a collision the policy
+cannot resolve without deleting the operator's data. The wrapper itself is not the
+operator's data: where the root's destination is the wrapper (`FILE` in `file/` on a
+case-insensitive filesystem), the check SHALL NOT count it, since the wrapper moves
+aside before the merge. Per policy: `rename` resolves every collision, writing the
+archive's entry under the library's `name (N)` spelling; `replace` resolves only the
+archive's file against the operator's file, and replaces that one file; `skip`
+resolves every collision where the archive's entry is not a directory, and discards
+the archive's copy; `error` resolves none. The hoist MUST NOT delete anything else the
+operator had, and MUST NOT remove a directory of the operator's under any policy. When
+the check finds a collision the policy does not resolve, the hoist SHALL move nothing,
+print a line naming the first such path, `kept in <wrapper>/: <path> already exists`,
+and leave the whole root in the wrapper; the run counts as successful (exit `0`) and
+the closing summary names the wrapper. So a direct extraction's `replace` of a file by
+a directory, which deletes the operator's file, is not reproduced: the hoist keeps the
 root instead. atool's `aunpack` keeps the content in its `Unpack-NNNN/` directory the
 same way. A collision that appears after that check (the cwd changed during the move)
 SHALL stop the hoist, leave the unmoved remainder under the wrapper (or under the
 wrapper's aside name `<wrapper> (N)/` when the wrapper's name could not be taken
 back), and exit nonzero; a filesystem error during the move does the same.
-When the container got the plain stem name, a sole root sharing the wrapper's own name
-(`src.tar.gz` containing `src/`) SHALL be flattened in place, not treated as a
-collision, and the wrapper SHALL then take that root's mode and times.
+When the container got the plain stem name, a sole root sharing the wrapper's own
+name, spelled the same (`src.tar.gz` containing `src/`), SHALL be flattened in place,
+not treated as a collision, and the wrapper SHALL then take that root's mode and
+times. A root whose name differs from the wrapper's only in case (`plain.tar`
+containing `PLAIN/`) SHALL be moved like any other root, so it keeps its own spelling
+(`./PLAIN/`) on every platform.
 When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
 the sole root no longer shares its name, and the hoist merges the root into the existing
 `./<archive-stem>/` under the overwrite policy like any other root. A directory stored

@@ -271,6 +271,32 @@ def _free_name(dest: Path, *, is_dir: bool) -> Path:
         n += 1
 
 
+def _same_entry(a: Path, b: Path) -> bool:
+    """Whether ``a`` and ``b`` name the same entry on disk, which the spelling cannot
+    tell on a case-insensitive filesystem (``FILE`` and ``file``). False when either
+    cannot be stat'ed, as when nothing is at it."""
+    try:
+        return os.path.samestat(os.lstat(a), os.lstat(b))
+    except OSError:
+        return False
+
+
+def _off_dest(side: Path, wrapper: Path, dest: Path) -> Path:
+    """Rename the aside directory ``side`` to the next ``<wrapper> (N)`` when it is the
+    entry at ``dest``; return where it is.
+
+    The root's stored name can be the aside name (``foo.tar`` holding ``foo (1)/``),
+    and on a case-insensitive filesystem a different spelling (``FOO (1)/``) is the
+    same entry too, so the filesystem decides, not the string. The next name was free
+    while ``side`` held ``dest``, so it is never ``dest``.
+    """
+    if not _same_entry(side, dest):
+        return side
+    free = _free_name(wrapper, is_dir=True)
+    side.rename(free)
+    return free
+
+
 def _open_up(path: Path) -> int | None:
     """Give the directory at ``path`` owner read, write and search permission for a
     move; return the mode to put back, or ``None`` when nothing was changed (it is
@@ -649,9 +675,12 @@ def maybe_hoist_single_root(
     still succeeds with the content in the wrapper. Such a collision is any collision
     under ``error``, one with a directory on either side under ``replace``, and one
     where our entry is a directory and the operator's is not under ``skip``
-    (:func:`_policy_resolves`). When the sole root shares the wrapper's own name
-    (``src.tar.gz`` containing ``src/``), the child is flattened in place — the
-    wrapper *becomes* the root, so no collision logic applies to it.
+    (:func:`_policy_resolves`). A destination that is the wrapper itself (``FILE`` in
+    ``file/`` on a case-insensitive filesystem) is not a collision, because the
+    wrapper moves aside before the merge. When the sole root shares the wrapper's own
+    name, spelled the same (``src.tar.gz`` containing ``src/``), the child is
+    flattened in place — the wrapper *becomes* the root, so no collision logic
+    applies to it. A root whose name differs only in case is merged like any other.
     """
     if wrapper == Path(".") or wrapper.is_symlink() or not wrapper.is_dir():
         return _HoistResult(wrapper)
@@ -667,7 +696,15 @@ def maybe_hoist_single_root(
         lambda: child.is_dir() and not _disk_links_stay_inside(child),
     )
     dest = wrapper.parent / child.name
-    if reason is None and dest != wrapper:
+    # The sole root shares the wrapper's name, spelled the same, so the wrapper is
+    # removed and the root takes its place under that name; otherwise the root is
+    # merged into the cwd. Strings, not paths: Windows paths compare equal across
+    # case, and a root spelled ``PLAIN`` in ``plain/`` must land at ``./PLAIN``.
+    in_place = dest.name == wrapper.name
+    # On a case-insensitive filesystem a root spelled ``FILE`` in ``file/`` has the
+    # wrapper itself at ``dest``. That is not the operator's data: the wrapper moves
+    # aside before the merge, so the check skips it, as the dry run does.
+    if reason is None and not in_place and not _same_entry(dest, wrapper):
         try:
             clash = _first_clash(
                 child.name,
@@ -688,9 +725,6 @@ def maybe_hoist_single_root(
         return _HoistResult(wrapper)
     result = _HoistResult(dest)
     moved: dict[str, tuple[Path, bool]] = {}
-    # The sole root shares the wrapper's name, so the wrapper is removed and the root
-    # takes its place under that same name; otherwise the root is merged into the cwd.
-    in_place = dest == wrapper
     # Where the remainder is when the hoist stops: the wrapper, unless restoring it
     # failed and the remainder stayed in the aside directory.
     left_in = wrapper
@@ -744,10 +778,13 @@ def maybe_hoist_single_root(
             # ``foo.tar`` extracts into ``foo (1)`` and its root ``foo`` must be
             # renamed). Step it aside so the merge sees the cwd a direct extraction
             # sees. The aside name is ``<wrapper> (N)``, which no rename of the root
-            # spells, as the root's name differs from the wrapper's here.
+            # spells, as the root's name differs from the wrapper's here. The root's
+            # stored name can still be that name, and the merge would then move the
+            # root into the wrapper itself, so :func:`_off_dest` moves it on.
             side = _free_name(wrapper, is_dir=True)
             wrapper.rename(side)
             try:
+                side = _off_dest(side, wrapper, dest)
                 landed = _merge_move(
                     side / child.name, dest, overwrite, result, err, child.name, moved
                 )
@@ -838,12 +875,13 @@ def predict_hoist(
         ),
     )
     dest = wrapper.parent / name
+    in_place = name == wrapper.name  # by spelling, as in the hoist
     entries = report._dry_run_entries
     # ``lexists`` first: with nothing at ``dest`` there is no merge, so the entries
     # are not indexed.
     if (
         reason is None
-        and dest != wrapper
+        and not in_place
         and entries is not None
         and os.path.lexists(dest)
     ):
@@ -859,7 +897,7 @@ def predict_hoist(
         print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
     label = f"{escape_path(dest)}{'/' if is_dir else ''}"
-    if dest == wrapper:
+    if in_place:
         print(f"would remove wrapper; content at {label}", file=err)
     elif os.path.lexists(dest):
         print(
