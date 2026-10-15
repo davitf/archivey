@@ -91,19 +91,6 @@ def _decode_mbi(data: Iterator[int]) -> tuple[int, int]:
     raise CorruptionError("XZ index MBI exceeds 9 bytes")
 
 
-def _encode_mbi(value: int) -> bytes:
-    if value == 0:
-        return b"\x00"
-    result = bytearray()
-    while value > 0:
-        byte = value & 0x7F
-        value >>= 7
-        if value > 0:
-            byte |= 0x80
-        result.append(byte)
-    return bytes(result)
-
-
 @dataclass(slots=True)
 class _XzBlockBounds:
     """One block's place in the file, and what resuming from it needs.
@@ -172,11 +159,6 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
     check = stream_flags[1] & 0x0F
     backward_size_bytes = (backward_size_raw + 1) * 4
     return check, backward_size_bytes
-
-
-def _parse_xz_index(data: bytes) -> list[tuple[int, int]]:
-    """Parse one stream's index into ``(unpadded_size, uncompressed_size)`` records."""
-    return list(_iter_xz_index(data))
 
 
 def _iter_xz_index(data: bytes) -> Iterator[tuple[int, int]]:
@@ -1224,12 +1206,11 @@ def XzDecompressorStream(
     ``initial_index`` is an index scan already made over the same source, used in
     place of a second one (see :class:`PrebuiltIndex`).
 
-    ``stream_cell`` late-binds the constructed stream so ``XzDecoder.recreate`` can
-    read ``_index_built`` — the same coupling the old
-    ``XzDecompressorStream._make_decompressor`` had via ``self``. Fine for XZ;
-    when BGZF (or another indexed codec) needs the same, prefer an explicit
-    seek-table / index-state handle passed into ``make_decoder`` rather than another
-    private-attr cell.
+    ``stream_cell`` late-binds the constructed stream: the ``index_built`` closure
+    that ``make_decoder`` passes to each :class:`XzDecoder` reads the stream's
+    ``_index_built`` through it. Fine for XZ; when another indexed codec needs the
+    same, prefer an explicit seek-table / index-state handle passed into
+    ``make_decoder`` rather than another private-attr cell.
     """
     stream_cell: list[DecompressorStream | None] = [None]
     reported_checks: set[int] = set()

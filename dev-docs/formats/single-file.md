@@ -236,13 +236,19 @@ Where resume points come from, per codec:
 | gzip, zlib, raw DEFLATE, bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
 | LZMA Alone, zstd, LZ4, Brotli | None |
 
-**The rewind report.** A backward seek whose target is more than 1 MiB
-(`REWIND_REDECODE_WARN_BYTES`) past its nearest resume point emits
-`STREAM_REWIND_REDECOMPRESSES`, once per stream. The threshold is absolute, not relative
-to the jump: on a 1 GB single-block `.xz`, seeking from the end back to 900 MB re-decodes
-900 MB for a 100 MB jump, and a relative rule would stay quiet exactly there. For the
-DEFLATE family and bzip2 the message names `rapidgzip`, and suggests installing it only
-when it is absent.
+**The rewind report.** A backward seek emits `STREAM_REWIND_REDECOMPRESSES`, once per
+stream, when the decoded progress it discards reaches 1 MiB
+(`REWIND_REDECODE_WARN_BYTES`). That progress is the position before the seek minus the
+nearest resume point at or before the target, not the target's distance from that
+point: a seek back to a block start still discards everything decoded after it. A
+`RewindWarning` can set `min_redecode_bytes` as a floor on this number, for a carrier
+that re-decodes bytes the stream's own position does not count. The threshold is
+absolute, not relative to the jump: on a 1 GB single-block `.xz`, seeking from the end
+back to 900 MB re-decodes 900 MB for a 100 MB jump, and a relative rule would stay quiet
+exactly there. The message says where decoding restarts: the start of the stream, the
+target when it is a resume point, or the nearest resume point and how far before the
+target it is. For the DEFLATE family and bzip2 it also names `rapidgzip`, and suggests
+installing it only when it is absent.
 
 **Accelerators.** `ArchiveyConfig.use_rapidgzip` (gzip, zlib, raw DEFLATE) and
 `use_indexed_bzip2` (bzip2) are `AcceleratorMode`s. `OFF` never uses `rapidgzip`; `ON`
@@ -406,8 +412,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `member.size` is `None` for gzip, bzip2, zlib, zstd, LZ4, Brotli and `.Z`, and on a pipe for every codec but LZMA Alone | **format** / **archivey** | Most of those formats store no reliable total (§1). zstd and LZ4 frames can declare a content size, which archivey does not read ([`zstd-lz4.md`](zstd-lz4.md) §5) |
 | A file `xz -t` or `zstd -t` refuses reads, with a warning | **archivey** | Bytes after the stream are reported, not refused (§6); `DiagnosticPolicy.STRICT` refuses them |
 | Zero bytes read as an empty `.lzma` | **format** | Eighteen zero bytes are a complete empty LZMA Alone stream, a 13-byte header and 5 bytes of range coder, and the rest is padding (§2.3) |
-| A backward seek is slow, and the log says so | **format** | No resume point before the target (§2.3). Use `stream_members()` or read forward once; for gzip and bzip2, `rapidgzip` |
-| The rewind warning says the codec "has no random-access index" on an `.xz` or `.lz` that has one | **archivey** | The message is chosen by codec, not by whether a resume point was found; on a multi-block `.xz` it is wrong. Tracked internally |
+| A backward seek is slow, and the log says so | **format** | Decoding restarts from the start (no resume point before the target), or from a resume point that is still at least 1 MiB behind the previous position (§2.3). Use `stream_members()` or read forward once; for gzip and bzip2, `rapidgzip`; for xz and lzip, smaller blocks or members |
 | A second `open()` of the member of a pipe raises `StreamNotSeekableError` | **format** | The one pass is spent; buffer the source to re-read it |
 | A file that is not the claimed codec fails at `open_archive`, a damaged one only at the read | **archivey** | Open decodes one byte (§2.2) |
 | `password=` or `encoding=` is accepted and has no effect | **archivey** | Shared behaviour for formats without encryption or stored names |

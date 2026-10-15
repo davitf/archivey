@@ -111,11 +111,11 @@ def _accelerator_backstop_source(
     return source, None
 
 
+_T = TypeVar("_T")
+
 # Given the accelerator's stream after its error, the position delivered so far, and a
 # way to open a fresh view of the source: the points a standard-library takeover may
 # resume from, in ascending order.
-_T = TypeVar("_T")
-
 _ResumePoints = Callable[[BinaryIO, int, Callable[[], BinaryIO]], list[SeekPoint]]
 
 

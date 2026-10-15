@@ -278,6 +278,11 @@ class Decoder(Protocol):
         ...
 
     @property
+    def drains_after_flush(self) -> bool:
+        """True when ``flush`` returned output and more follows through ``feed(b"")``."""
+        ...
+
+    @property
     def pending_error(self) -> BaseException | None: ...
 
     def clear_pending_error(self) -> None:
@@ -883,7 +888,12 @@ class DecompressorStream(ReadOnlyIOStream):
         )
 
     def _find_best_seek_point(self, pos: int) -> SeekPoint:
-        """The last seek point with ``decompressed_offset <= pos``."""
+        """The last seek point with ``decompressed_offset <= pos``.
+
+        It reads the table as it stands. Every point resumes on its own (an XZ block
+        point carries its stream's bounds), so a table that progressive enrichment has
+        only partly filled is safe to use.
+        """
         i = bisect.bisect_right(self._seek_points, SeekPoint(pos, 0)) - 1
         return self._seek_points[i]
 
@@ -968,7 +978,7 @@ class DecompressorStream(ReadOnlyIOStream):
             leftover = self._ingest_decode(self._decoding(self._decoder.flush))
             if self._ended():
                 return self._end_at_trailing_data(leftover)
-            if leftover and getattr(self._decoder, "drains_after_flush", False):
+            if leftover and self._decoder.drains_after_flush:
                 # The decoder took its input whole at compressed EOF and has more
                 # output: keep pulling it through ``feed(b"")``. It reports False
                 # once drained, and the next empty read calls ``flush`` again.
@@ -1338,7 +1348,7 @@ class DecompressorStream(ReadOnlyIOStream):
             # that raised never publishes a size (readall and SEEK_END raise first), so
             # a size here came from an index scan, and a seek at or past the size the
             # index claims is at the end.
-            self._reset_to_seek_point(self._prepare_seek_point(new_pos))
+            self._reset_to_seek_point(self._find_best_seek_point(new_pos))
 
         if self._size is not None and new_pos >= self._size:
             self._buffer.clear()
@@ -1350,13 +1360,13 @@ class DecompressorStream(ReadOnlyIOStream):
             return self._pos
 
         if new_pos < self._pos:
-            self._reset_to_seek_point(self._prepare_seek_point(new_pos))
+            self._reset_to_seek_point(self._find_best_seek_point(new_pos))
         elif new_pos <= self._pos + len(self._buffer):
             del self._buffer[: new_pos - self._pos]
             self._pos = new_pos
             return self._pos
         else:
-            best = self._prepare_seek_point(new_pos)
+            best = self._find_best_seek_point(new_pos)
             if best.decompressed_offset > self._pos:
                 self._reset_to_seek_point(best)
             else:
@@ -1377,14 +1387,6 @@ class DecompressorStream(ReadOnlyIOStream):
 
         self._pos = new_pos
         return self._pos
-
-    def _prepare_seek_point(self, pos: int) -> SeekPoint:
-        """Best resume point for ``pos`` in the table as it stands.
-
-        Every point resumes on its own (an XZ block point carries its stream's bounds),
-        so a table that progressive enrichment has only partly filled is safe to use.
-        """
-        return self._find_best_seek_point(pos)
 
     def tell(self, /) -> int:
         return self._pos
