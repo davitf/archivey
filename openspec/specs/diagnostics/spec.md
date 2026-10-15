@@ -46,7 +46,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `PASSWORD_ARGUMENT_UNUSED` | `UnusedArgumentContext`: `kind="unused_argument"`, `archive_name`, `argument="password"`, `format`, `reason` |
 | `SCAN_DIRECTORY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="directory"` |
 | `SCAN_ENTRY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="entry"` |
-| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","central_directory"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
+| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","zip64_end_of_central_directory","central_directory"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
 | `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
 | `ARCHIVE_UNLISTED_DATA` | `UnlistedDataContext`: `kind="unlisted_data"`, `archive_name`, `format`, `member_name`, `member_id` (the name and id the pass gave the entry before dropping it), `offset` (of its local header), `compressed_size` |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field` ∈ `{"modified","accessed","created","ctime"}` (the `ArchiveMember` attribute the value would have filled, in every format), `source`, `value_repr` |
@@ -76,7 +76,10 @@ which count across the whole set; the message names the volume), and `expected_b
 directory's (`observed_bytes` the record's offset, `expected_bytes` 0), or
 `observed_kind="short"` when its comment length runs past the end of the file
 (`expected_bytes` 22 plus the declared comment length, `observed_bytes` the bytes from
-the record to the end of the file); `"central_directory"` for a ZIP central-directory
+the record to the end of the file); `"zip64_end_of_central_directory"` for a ZIP64 end
+record a locator announces that is missing or does not match it, the classic record
+used instead (`observed_kind="absent"`, `observed_bytes` the locator's offset,
+`expected_bytes` 0); `"central_directory"` for a ZIP central-directory
 entry whose name, extra field or comment length runs past the directory size the end
 record gives, with `observed_kind="nonzero"`, `expected_bytes` that size and
 `observed_bytes` where the entry would end, both counted from the directory's start;

@@ -324,10 +324,12 @@ class ArchiveEofContext(_JsonSafeContext):
       record's offset and ``expected_bytes`` is 0. ``observed_kind="short"``: the
       archive comment length runs past the end of the file; ``expected_bytes`` is
       the record's declared size (22 plus the comment length) and ``observed_bytes``
-      the bytes from the record to the end of the file. ``observed_kind="absent"``:
-      the ZIP64 end record a locator announces is missing or does not match it, and
-      the classic record, none of whose fields needs it, is used instead;
-      ``observed_bytes`` is the locator's offset and ``expected_bytes`` is 0.
+      the bytes from the record to the end of the file.
+    - ``"zip64_end_of_central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the ZIP64
+      end record a locator announces is missing or does not match it, and the classic
+      end record, none of whose fields needs it, is used instead. ``observed_kind`` is
+      ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
+      is 0.
     - ``"central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a ZIP central
       directory entry's name, extra field or comment length runs past the directory
       size the end record gives, and that field is cut short. ``expected_bytes`` is
@@ -761,6 +763,7 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "second_zero_block",
                         "end_of_archive_block",
                         "end_of_central_directory",
+                        "zip64_end_of_central_directory",
                         "central_directory",
                     }
                 ),

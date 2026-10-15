@@ -1652,7 +1652,8 @@ class ZipForwardReader(ZipReader):
         names, so the pass lists what a file read lists and reports the same
         disagreements between the end record and the directory, except where
         ``ForwardTail.end_record`` refuses a record the pass cannot see (passed, or
-        past the bound). Each local entry is matched to its directory
+        past the bound) or lets the classic end record stand in for a ZIP64 record
+        among the members' data. Each local entry is matched to its directory
         entry by offset. The directory is authoritative: a member it describes is
         rebuilt from it, as the seekable read builds it, and the yielded object takes
         every field of that build. The entries are charged against ``max_members``

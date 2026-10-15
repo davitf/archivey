@@ -1399,6 +1399,8 @@ class ZipReader(BaseArchiveReader):
         end = self._end
         if end.zip64_damage is None:
             return
+        # Set only after a whole ZIP64 locator was read right before the classic
+        # record, from a file or a pipe's tail alike.
         locator_offset = end.eocd_offset - ZIP64_LOCATOR_SIZE
         self._diagnostics_collector.emit(
             code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
@@ -1409,7 +1411,7 @@ class ZipReader(BaseArchiveReader):
             context=ArchiveEofContext(
                 archive_name=self._archive_name,
                 format="zip",
-                expected_marker="end_of_central_directory",
+                expected_marker="zip64_end_of_central_directory",
                 expected_bytes=0,
                 observed_bytes=locator_offset,
                 observed_kind="absent",

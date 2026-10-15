@@ -590,8 +590,8 @@ Some writers add ZIP64 end records whether a value needs them or not, so a class
 record often holds every value itself. When the ZIP64 record a locator announces cannot
 be used (missing, not matching the locator, or named past the locator) and no classic
 field holds the ZIP64 sentinel, both reads use the classic record and report
-`ARCHIVE_EOF_MARKER_MISSING` (marker `end_of_central_directory`, `observed_kind`
-`"absent"`, `observed_bytes` the locator's offset); `STRICT` refuses it. Without a
+`ARCHIVE_EOF_MARKER_MISSING` (marker `zip64_end_of_central_directory`,
+`observed_kind` `"absent"`, `observed_bytes` the locator's offset); `STRICT` refuses it. Without a
 ZIP64 record the directory's end is not known from the records, so the parser takes the
 first place, of where the locator names the record, right before the locator and the
 locator itself, that sits `cd_size` bytes after a central header.

@@ -87,7 +87,6 @@ _U64_MAX = 0xFFFF_FFFF_FFFF_FFFF
 # Classic end-record disk fields use 0xFFFF to mean "see the ZIP64 record", not disk
 # 65535.
 _ZIP64_DISK_SENTINEL = 0xFFFF
-_ZIP64_SIZE_SENTINEL = 0xFFFFFFFF
 
 # The directory is read forward in pieces of this size. It trades memory (one piece
 # plus one entry) against the number of reads, each a seek and a read on the shared
@@ -433,9 +432,15 @@ def _directory_end_before_zip64(
     extensible data sits, and at the locator. The first one
     after a central header, ``cd_size`` bytes back, is taken; a directory with no
     entries takes the first.
+
+    Called only after :func:`read_zip64_locator` has read a whole locator, signature
+    checked, right before the classic record: every ``CorruptionError`` out of
+    :func:`_read_zip64_records` comes after that read.
     """
     locator_offset = eocd_offset - ZIP64_LOCATOR_SIZE
-    (record_offset,) = struct.unpack("<Q", read_at(locator_offset + 8, 8))
+    field = read_at(locator_offset + 8, 8)
+    assert len(field) == 8, "a whole ZIP64 locator was read before this"
+    (record_offset,) = struct.unpack("<Q", field)
     places = (
         record_offset,
         locator_offset - ZIP64_EOCD_SIZE,
@@ -453,7 +458,7 @@ def classic_record_saturated(record: bytes) -> bool:
     """Whether any field of the classic end ``record`` holds the ZIP64 sentinel, so its
     value is in the ZIP64 record alone."""
     fields = _EOCD.unpack(record)
-    return _ZIP64_DISK_SENTINEL in fields[1:5] or _ZIP64_SIZE_SENTINEL in fields[5:7]
+    return _ZIP64_DISK_SENTINEL in fields[1:5] or _U32_MAX in fields[5:7]
 
 
 def disk_field_is_split(value: int) -> bool:

@@ -579,7 +579,7 @@ def test_a_classic_end_record_stands_in_for_a_damaged_zip64_record() -> None:
         (diagnostic,) = reader.diagnostics.retained
     assert diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
     assert isinstance(diagnostic.context, ArchiveEofContext)
-    assert diagnostic.context.expected_marker == "end_of_central_directory"
+    assert diagnostic.context.expected_marker == "zip64_end_of_central_directory"
     assert diagnostic.context.observed_kind == "absent"
     assert diagnostic.context.observed_bytes == data.rindex(b"PK\x06\x07")
     assert "ZIP64 end of central directory record not found" in diagnostic.message

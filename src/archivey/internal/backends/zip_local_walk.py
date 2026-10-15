@@ -1278,8 +1278,9 @@ class ForwardTail:
         a non-empty directory among the members' data, which the walk has read past,
         is refused, and so is a ZIP64 end record there, unless the classic record
         needs none of its fields and stands in for it as it does for a file read
-        that finds the ZIP64 record damaged; either in bytes the bound dropped is a
-        ``ResourceLimitError``.
+        that finds the ZIP64 record damaged. Either one in bytes the bound dropped is
+        a ``ResourceLimitError``, with no stand-in: higher listing limits keep those
+        bytes, and the pass then reads the record a file read reads.
 
         Behind more bytes than the search window, the end record is stepped to from
         the directory right after the members while the step stays in the kept
@@ -1319,7 +1320,9 @@ class ForwardTail:
         unseen = None
         if found is not None:
             unseen = self._unseen_zip64_record(found[0])
-            if unseen is not None and classic_record_saturated(found[1]):
+            if unseen is not None and (
+                unseen >= self.members_end or classic_record_saturated(found[1])
+            ):
                 self._refuse_unseen(_ZIP64_RECORD, unseen)
         # Any other failure is the record's own, in the file read's words.
         try:
@@ -1335,8 +1338,8 @@ class ForwardTail:
                 # A record right before the locator: the file read takes the one
                 # the locator names, which this tail did not see.
                 self._refuse_unseen(_ZIP64_RECORD, unseen)
-            # The classic record stands in for a ZIP64 record this tail did not
-            # see, which a file read finds missing or not matching the locator
+            # The classic record stands in for a ZIP64 record among the members'
+            # data, which a file read finds missing or not matching the locator
             # unless crafted member data holds one that matches.
             end = replace(end, zip64_damage=self._unseen_message(_ZIP64_RECORD, unseen))
         if end.cd_size and not self.holds(end.cd_start, end.cd_size):

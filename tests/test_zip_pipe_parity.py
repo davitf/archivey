@@ -55,8 +55,8 @@ _PasswordArg = str | list[str] | None
 # link is refused for its missing target (``LinkTargetNotFoundError``).
 # ``"disk"``: the directory refuses the archive, which a file read finds before
 # writing anything and the pass only after writing every member.
-# The file read is to stop refusing these (design.md; tasks 3.0c and 4.1), which
-# removes the rows.
+# The file read is to stop refusing these (design.md; task 4.1), which removes the
+# rows.
 _DIFFERS: dict[str, str] = {
     "sevenzip/encrypted_link.zip-no-password": "error",
     "sevenzip/encrypted_link.zip-wrong": "error",
@@ -449,9 +449,12 @@ def test_a_whole_zip_streamed_past_its_directory_limit_has_no_report_to_peek() -
 def _with_zip64_records(data: bytes, *, saturated: bool, damage: str) -> bytes:
     """``data`` with ZIP64 end records added before its classic one, damaged:
     ``"record"`` (no ZIP64 signature where the locator points), ``"locator"`` (the
-    locator names an offset past itself) or ``"into-members"`` (it names offset 5).
-    ``saturated`` puts the ZIP64 sentinel in every classic field, so only the ZIP64
-    record holds the values."""
+    locator names an offset past itself), ``"into-members"`` (it names offset 5),
+    ``"lone-locator"`` (no record, the locator naming offset 5, so the directory ends
+    at the locator) or ``"no-directory"`` (``"record"`` with the classic record's
+    directory size one byte long, so no place it names starts at a central header
+    and the classic record cannot stand in). ``saturated`` puts the ZIP64 sentinel in the count, size and
+    offset fields of the classic record, so only the ZIP64 record holds them."""
     eocd = data.rindex(b"PK\x05\x06")
     _sig, _disk, _cd_disk, _here, entries, cd_size, cd_offset, _comment = struct.unpack(
         "<4s4H2LH", data[eocd : eocd + 22]
@@ -469,11 +472,17 @@ def _with_zip64_records(data: bytes, *, saturated: bool, damage: str) -> bytes:
         cd_size,
         cd_offset,
     )
-    record_at = {"record": eocd, "locator": 1 << 40, "into-members": 5}[damage]
-    if damage == "record":
+    record_at = {"locator": 1 << 40, "into-members": 5, "lone-locator": 5}.get(
+        damage, eocd
+    )
+    if damage in ("record", "no-directory"):
         record = b"XXXX" + record[4:]
+    if damage == "lone-locator":
+        record = b""
     locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, record_at, 1)
     classic = bytearray(data[eocd:])
+    if damage == "no-directory":
+        struct.pack_into("<L", classic, 12, cd_size + 1)
     if saturated:
         struct.pack_into(
             "<4HLL", classic, 4, 0, 0, 0xFFFF, 0xFFFF, 2**32 - 1, 2**32 - 1
@@ -484,18 +493,21 @@ def _with_zip64_records(data: bytes, *, saturated: bool, damage: str) -> bytes:
 def _damaged_zip64_params() -> Iterator[pytest.ParameterSet]:
     for kind, pipe in (("sized", False), ("bit3", True)):
         for saturated in (False, True):
-            for damage in ("record", "locator", "into-members"):
-                if saturated and damage == "into-members":
+            for damage in (
+                "record",
+                "locator",
+                "into-members",
+                "lone-locator",
+                "no-directory",
+            ):
+                if saturated and damage not in ("record", "locator"):
                     continue
                 data = _with_zip64_records(
                     _members_zip(pipe=pipe), saturated=saturated, damage=damage
                 )
                 label = "saturated" if saturated else "classic"
-                yield pytest.param(
-                    data,
-                    "ZIP64" if saturated else None,
-                    id=f"{kind}-{label}-{damage}",
-                )
+                raised = "ZIP64" if saturated or damage == "no-directory" else None
+                yield pytest.param(data, raised, id=f"{kind}-{label}-{damage}")
         # A directory that would start before the file: no ZIP64 records at all.
         data = bytearray(_members_zip(pipe=pipe))
         struct.pack_into("<I", data, data.rindex(b"PK\x05\x06") + 12, 0x7FFF_FFF0)

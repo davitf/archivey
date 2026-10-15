@@ -542,7 +542,7 @@ directory's refusals the file read is to drop:
   a damaged directory.
 - Damaged ZIP64 end records no longer refuse the archive in either read. When no
   field of the classic end record holds the ZIP64 sentinel, the classic record is used
-  and `ARCHIVE_EOF_MARKER_MISSING` (marker `end_of_central_directory`,
+  and `ARCHIVE_EOF_MARKER_MISSING` (marker `zip64_end_of_central_directory`,
   `observed_kind="absent"`) reports it. Otherwise the end records cannot be used: the
   file read walks the local headers, lists what they hold and raises the end records'
   error, as the pass does. A locator naming an offset among the members' data reads

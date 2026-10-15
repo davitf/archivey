@@ -532,7 +532,7 @@ When the ZIP64 end record a locator announces cannot be used (no record where th
 locator points or right before it, a record that does not match the locator, or a
 locator naming an offset past itself), and no field of the classic end record holds the
 ZIP64 sentinel, both reads SHALL use the classic record's values and report
-`ARCHIVE_EOF_MARKER_MISSING` with `expected_marker="end_of_central_directory"` and
+`ARCHIVE_EOF_MARKER_MISSING` with `expected_marker="zip64_end_of_central_directory"` and
 `observed_kind="absent"`. The directory SHALL end at the first of these that follows a
 central header: where the locator names the record, right before the locator, at the
 locator. When a classic field holds the sentinel, or no such place exists, a file read
@@ -547,7 +547,9 @@ locator naming another disk SHALL stay refused as a split set.
 | The ZIP64 record's signature damaged, classic fields unsaturated | Three members listed and read; `ARCHIVE_EOF_MARKER_MISSING` |
 | The locator names an offset past itself, classic fields unsaturated | The same |
 | The locator names an offset among the members' data, classic fields unsaturated | The same; the pass's message says it passed those bytes |
-| Any of these with every classic field saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
+| A locator with no ZIP64 record, naming an offset among the members' data; the directory ends at the locator; classic fields unsaturated | The same |
+| The ZIP64 record's signature damaged and the classic directory size one byte long, so no place fits a directory; classic fields unsaturated | Three members as their local headers say, then `CorruptionError`, from a file and a pipe alike |
+| Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
 | A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
 
 ### Requirement: Apply max_members while reading a ZIP directory
