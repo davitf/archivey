@@ -518,12 +518,13 @@ still lands there.
 `_settle_failures_at_end`): a data descriptor the directory contradicts, a local header
 whose CRC, sizes or encryption flag the directory contradicts (not a directory CRC-32 of
 0 the local header's replaces, §5), a same-name pair whose directory order reverses the
-file order, and a directory entry with no local entry. Each fails its member (`CorruptionError`; the reversed
-pair only updates the members in `stream_members()`), and extraction removes what it
-wrote for it. A directory entry pointing at a local header an earlier entry took ends the
-pass with `CorruptionError`. Two headers storing different names fail nothing: the
-member takes the directory's name, and a file or link reports `MEMBER_LOCAL_HEADER_DIFFERS`
-as a file read does when it opens the member (§5); extraction moves what it wrote.
+file order, and a directory entry with no local entry. Each fails its member
+(`CorruptionError`; the reversed pair only updates the members in `stream_members()`),
+and extraction removes what it wrote for it. A directory entry pointing at a local
+header an earlier entry took ends the pass with `CorruptionError`. Two headers storing
+different names fail nothing: the member takes the directory's name, and a file or link
+reports `MEMBER_LOCAL_HEADER_DIFFERS` as a file read does when it opens the member (§5);
+extraction moves what it wrote.
 
 **Where the pass and a file read differ**, each pinned in
 `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first three
@@ -570,10 +571,10 @@ directory's refusals the file read is to drop:
 
 **`zipfile`'s own decoders were never used** — meaning `ZipExtFile`, not the standard library:
 the codec layer still ends at `zlib`, `bz2` and `lzma` for the methods they cover. archivey
-locates the member's raw compressed bytes with
-a bounded LFH parse (the fixed 30 bytes plus the local name and extra lengths, with
-an absurd data-offset cap and a name comparison with the CDH that reports a mismatch), slices the source, and dispatches on the ZIP method id to the
-shared codec layer.
+locates the member's raw compressed bytes with a bounded LFH parse (the fixed 30 bytes
+plus the local name and extra lengths, with an absurd data-offset cap and a name
+comparison with the CDH that reports a mismatch), slices the source, and dispatches on
+the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
