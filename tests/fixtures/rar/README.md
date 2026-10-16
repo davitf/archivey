@@ -100,6 +100,7 @@ so the read takes the named-`unrar` route; stored members never would.
 | --- | --- |
 | `wildcard_names__.rar` | RAR5 `-m3`; padded so members compress; add-order `subdir/aY.txt` then `a*.txt` / `aX.txt` / `b?.txt` / `b1.txt` / `only*.dat` |
 | `wildcard_names_solid__.rar` | RAR5 `-s -m3`; same members and add order |
+| `wildcard_names_one_encrypted__.rar` | RAR5 `-m3`; the nonsolid members, plaintext, then `secret.txt` added with `-ppassword` — the archive has encryption though no glob-named member does |
 | `wildcard_names__rar4.rar` | RAR4 `-ma4 -m3`; same members as the nonsolid RAR5 |
 | `wildcard_dirglob__.rar` | RAR5 `-m3`; `aaa/x.txt`, `dX/x.txt`, `d*/x.txt` — directory-component glob, refused |
 | `wildcard_backslash__.rar` | RAR5 `-m3`; `a/b1.txt` readable; `a\b_TGT.txt` and `a\b*.txt` refused (Windows `unrar` treats `\` as a separator) |
