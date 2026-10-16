@@ -685,6 +685,37 @@ def test_a_shortened_comment_is_not_listed_cut(pipe: bool) -> None:
         assert error is not None and error[0] is CorruptionError
 
 
+@pytest.mark.parametrize("pipe", [False, True], ids=["sized", "bit3"])
+def test_many_signatures_in_names_and_comments_are_not_damage(pipe: bool) -> None:
+    """An intact archive of 120 members, each with ``PK\\x01\\x02`` once in its
+    name and twice in its comment. Each signature fails within a header, so following
+    them never spends the walk's budget: every member lists with its mode and
+    comment, with no error and no diagnostic, from a file and from a pipe."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        for i in range(120):
+            info = zipfile.ZipInfo(f"m{i}PK\x01\x02.txt", (2020, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o640 << 16
+            info.comment = b"PK\x01\x02PK\x01\x02"
+            zf.writestr(info, b"data")
+    data = bytes(out.getvalue())
+    for piped in (False, True):
+        report = _report(data, piped=piped)
+        assert isinstance(report, tuple) and isinstance(report[0], list)
+        members, error = report
+        assert error is None
+        assert len(members) == 120
+        assert {m["mode"] for m in members} == {0o640}
+        assert {m["comment"] for m in members} == {"PK\x01\x02PK\x01\x02"}
+        assert all(m["diagnostics"] == [] for m in members)
+        source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=piped) as reader:
+            for _ in reader.stream_members():
+                pass
+            assert reader.diagnostics.total_count == 0
+
+
 def _three_stored(names: tuple[str, ...]) -> bytearray:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

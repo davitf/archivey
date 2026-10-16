@@ -653,10 +653,11 @@ class CentralDirectoryWalk:
       have cut, and the next entry raises.
 
     Following a signature reads from the bytes in hand and then on. The walk follows
-    at most as many headers in all as the directory could hold, so a directory of
-    crafted names costs one pass over it, not one per name. A signature the walk can
-    no longer follow is damage too: it cannot rule out a swallow, and it does not list
-    a name that may hold other entries' bytes. The directory always ends where the end
+    at most ``cd_size // 4`` headers in all, plus a few: a signature that is part of a
+    name costs one, and a directory holds no more signatures than that, so those alone
+    never spend it, and a directory of crafted names costs one pass over it, not one
+    per name. A signature the walk can no longer follow is damage too: it cannot rule
+    out a swallow, and it does not list a name that may hold other entries' bytes. The directory always ends where the end
     records start (``find_end_record`` derives its start from that), so a file cut
     inside it has lost its end record and never gets here.
 
@@ -705,8 +706,10 @@ class CentralDirectoryWalk:
     ) -> None:
         self._read_at = read_at
         self._end = end
-        # Read for two things: to check a corrected offset, and to check the name of
-        # an entry no central header follows (any archive).
+        # The stored name of the local header an offset in the directory points at,
+        # asked for wherever a length or offset field may be wrong: a corrected
+        # offset, an entry no central header follows, and the first header that a
+        # signature inside an entry's fields chains to (the last two in any archive).
         self._local_name_at = local_name_at
         # Offsets wrap only without ZIP64, which stores them in full.
         self._corrects_offsets = local_name_at is not None and not end.zip64
@@ -808,7 +811,11 @@ class CentralDirectoryWalk:
         pos = 0
         index = 0
         # Headers the walk may still step over following signatures inside fields.
-        follow_budget = cd_size // CENTRAL_HEADER_SIZE + 64
+        # Headers the walk may step over following signatures inside fields. A
+        # signature that is part of a name costs one step, and ``PK\x01\x02`` cannot
+        # overlap itself, so the directory holds at most ``cd_size // 4`` of them:
+        # those alone never spend the budget, and following stays one linear pass.
+        follow_budget = cd_size // 4 + 64
         while pos < cd_size:
             ensure(pos, pos + CENTRAL_HEADER_SIZE)
             off = pos - data_start
@@ -853,9 +860,11 @@ class CentralDirectoryWalk:
                 if swallowed is None:
                     raise CorruptionError(
                         f"ZIP central directory entry #{index}'s name, extra field or "
-                        "comment holds a central directory header, and this "
-                        "directory holds too many such headers for archivey to rule "
-                        "out that a length field swallowed the entries after it"
+                        "comment holds a central directory header, and following "
+                        "the headers such signatures chain to has already stepped "
+                        "over more headers than this directory allows for, so "
+                        "archivey cannot rule out that a length field swallowed "
+                        "the entries after it"
                     )
                 if swallowed:
                     raise CorruptionError(
@@ -965,15 +974,24 @@ class CentralDirectoryWalk:
         name_at = self._local_name_at
         if name_at is None:
             return False, budget
+        # The header starts inside the entry's fields, which ``data`` holds; it and
+        # its name may run on past what was read, up to the directory's end.
         start = self._end.cd_start
-        header = self._read_at(start + pos, CENTRAL_HEADER_SIZE)
-        if len(header) != CENTRAL_HEADER_SIZE:
-            return False, budget
-        fields = _CENTRAL_HEADER.unpack(header)
+        head = data[pos - data_start : pos - data_start + CENTRAL_HEADER_SIZE]
+        if len(head) < CENTRAL_HEADER_SIZE:
+            head += self._read_at(
+                start + pos + len(head), CENTRAL_HEADER_SIZE - len(head)
+            )
+        fields = _CENTRAL_HEADER.unpack(head)
         if fields[18] == _U32_MAX:  # deferred to a ZIP64 field: not checked here
             return False, budget
         offset = fields[18] + base
-        name = self._read_at(start + pos + CENTRAL_HEADER_SIZE, fields[12])
+        name_at_pos = pos + CENTRAL_HEADER_SIZE
+        name = data[name_at_pos - data_start : name_at_pos - data_start + fields[12]]
+        if len(name) < fields[12]:
+            name += self._read_at(
+                start + name_at_pos + len(name), fields[12] - len(name)
+            )
         if not 0 <= offset <= start - LOCAL_HEADER_SIZE - len(name):
             return False, budget
         return name_at(offset) == name, budget

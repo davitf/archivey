@@ -256,7 +256,7 @@ def test_following_signatures_is_bounded_by_the_directory() -> None:
     """Every name holds a header whose lengths jump to the next name's header, and
     the last one jumps past the directory's end, so each follow steps over every fake
     after it before it fails: about 45 000 headers for 300 names. The walk follows at
-    most as many headers in all as the directory could hold, then fails closed: a
+    most a quarter of the directory's size in headers in all, then fails closed: a
     signature it can no longer follow is damage, not a name it lists."""
     count = 300
     # zipfile stops a name at NUL, so the names are written as placeholders and the
@@ -286,11 +286,11 @@ def test_following_signatures_is_bounded_by_the_directory() -> None:
         m.setattr(zip_parser, "_central_entry_size", counting)
         read_at = _read_at(data)
         walk = CentralDirectoryWalk(read_at, find_end_record(read_at, len(data)))
-        with pytest.raises(CorruptionError, match="too many such headers"):
+        with pytest.raises(CorruptionError, match="cannot rule out"):
             for e in walk:
                 seen.append(e.name)
-    assert 0 < len(seen) < 5
-    assert steps <= len(data) // 46 + 64
+    assert 0 < len(seen) < count // 4
+    assert steps <= len(data) // 4 + 64
 
 
 def test_a_swallow_that_leaves_the_count_agreeing_is_damage() -> None:

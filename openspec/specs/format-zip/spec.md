@@ -453,9 +453,10 @@ An entry's lengths are damaged when:
   that reading or the first of those headers points at a local header with its name:
   the lengths swallowed those entries. A member comment holding a whole well-formed
   entry chains too, but points at another member's local header and lists as it is;
-- its name, extra field or comment holds a central header signature, and the walk has
-  already followed as many headers as the directory could hold, so it cannot rule out
-  a swallow;
+- its name, extra field or comment holds a central header signature, and following
+  such signatures has already stepped over more headers than a quarter of the
+  directory's size (a directory holds no more signatures than that, and one that is
+  part of a name costs one header), so the walk cannot rule out a swallow;
 - no central header follows it and the local header at its offset holds another name:
   its name length was made shorter.
 
@@ -481,6 +482,7 @@ next entry raises.
 | First entry's name length cut from 6 to 4 (`m0.t`), from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` from their local headers, then `CorruptionError`; never `m0.t` |
 | First entry's name length grown by exactly the second entry, end record declaring the 2 entries that remain, from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` from their local headers, then `CorruptionError` |
 | First entry's comment length cut from 13 to 8, from a file and from a pipe | Both members listed with comment `None`, never `hello-co`, then `CorruptionError` |
+| 40 members, each with two signatures in its comment and one in its name, from a file and from a pipe | Every member listed with its mode and comment; no error and no diagnostic |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 
 ### Requirement: Read ZIP members whatever version they say they need
