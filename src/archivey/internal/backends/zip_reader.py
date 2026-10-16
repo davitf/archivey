@@ -547,7 +547,9 @@ class _ZipCipher:
     stage: Callable[[bytes], BinaryIO]
     method: int
     codec: Codec
-    #: The stored CRC; None for AE-2, which stores none (the HMAC is the only check).
+    #: The CRC-32 a candidate's plaintext must match: the member's CRC-32 digest
+    #: (:func:`_member_crc_anchor`). ``None`` when the member has none, as for AE-2
+    #: (the HMAC is its check) and a directory whose CRC field is 0.
     crc_anchor: int | None
     is_aes: bool
 
@@ -1932,9 +1934,7 @@ class ZipReader(BaseArchiveReader):
         loc.file_size = file_size
         member.compressed_size = compressed_size
         member.size = file_size
-        if member.type is MemberType.FILE and not (
-            loc.aes is not None and loc.aes.is_ae2
-        ):
+        if _crc_is_digest(member.type, file_size, crc, loc.aes):
             member.hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
 
     def _directory_walk(self) -> CentralDirectoryWalk:
@@ -2211,7 +2211,10 @@ class ZipReader(BaseArchiveReader):
         ``max_members`` (DR-1: absence over a wrong value)."""
         if not self._count_known:
             self._data_bounds()
-        return self._member_count
+        # Under the lock: another thread's pass may have set the bounds and not yet the
+        # count, and it sets both under the lock.
+        with self._index_lock:
+            return self._member_count
 
     def _sniff_unflagged_name(
         self, raw_name: bytes, cp437_decoded: str
@@ -2488,11 +2491,8 @@ class ZipReader(BaseArchiveReader):
         directory_data = member_type is MemberType.DIRECTORY and entry.file_size > 0
         directory_zero_crc = directory_data and entry.crc == 0
         directory_without_anchor = directory_zero_crc and aes_info is None
-        if member_type in (MemberType.FILE, MemberType.SYMLINK) or (
-            directory_data and not directory_zero_crc
-        ):
-            if not is_ae2:
-                hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
+        if _crc_is_digest(member_type, entry.file_size, entry.crc, aes_info):
+            hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
         extra = MemberExtra({"zip.compress_type": method})
         if special is not None:
             # Whatever the type decided above, the key records what the mode said, so
@@ -2885,8 +2885,7 @@ class ZipReader(BaseArchiveReader):
         hashes = (
             {HashAlgorithm.CRC32: crc32_digest(header.crc)}
             if not deferred
-            and member_type is MemberType.FILE
-            and not (aes_info is not None and aes_info.is_ae2)
+            and _crc_is_digest(member_type, header.file_size, header.crc, aes_info)
             else {}
         )
         return ArchiveMember(
@@ -3358,14 +3357,20 @@ class ZipReader(BaseArchiveReader):
         - **One possible password:** accept it on the cheap check. The CRC (or HMAC)
           at EOF is the real test, and a stream abandoned before it reports
           ``ENCRYPTED_MEMBER_UNVERIFIED``.
-        - **Several, STORED ZipCrypto, at least**
+        - **Several, STORED ZipCrypto with a CRC-32 digest, at least**
           :data:`~archivey.internal.password_confirm.PASSWORD_CONFIRM_MIN_VERIFIED_BYTES`
           **long:** nothing but the whole-member CRC can tell them apart; one shared
           ciphertext pass decides (:meth:`_open_stored_confirmed`). A smaller member's
-          CRC cannot confirm a password, so it takes the bounded confirm below.
+          CRC cannot confirm a password, and a member with no digest has none to
+          match, so either takes the bounded confirm below.
         - **Several, otherwise:** each candidate runs a bounded confirm: the CRC when
-          it is in reach, codec rejection for a codec that rejects random input, and
-          for WinZip AES the HMAC, which covers the whole member.
+          the member has a CRC-32 digest and it is in reach, codec rejection for a
+          codec that rejects random input, and for WinZip AES the HMAC, which covers
+          the whole member.
+
+        The CRC a candidate is matched against is the member's CRC-32 digest
+        (:func:`_member_crc_anchor`), the one its read is verified against, not the
+        header's field.
         """
         if loc.method == 99:
             aes = loc.aes
@@ -3383,7 +3388,7 @@ class ZipReader(BaseArchiveReader):
                     aes.actual_method, member.name, suffix=" under WinZip AES"
                 ),
                 stage=self._winzip_aes_stage(loc, aes, member),
-                crc_anchor=None if aes.is_ae2 else loc.crc,
+                crc_anchor=_member_crc_anchor(member),
                 is_aes=True,
             )
         else:
@@ -3391,7 +3396,7 @@ class ZipReader(BaseArchiveReader):
                 method=loc.method,
                 codec=self._member_codec(loc.method, member.name),
                 stage=self._zipcrypto_stage(loc, member),
-                crc_anchor=loc.crc,
+                crc_anchor=_member_crc_anchor(member),
                 is_aes=False,
             )
 
@@ -3416,6 +3421,7 @@ class ZipReader(BaseArchiveReader):
         if (
             not cipher.is_aes
             and cipher.method == 0  # STORED
+            and cipher.crc_anchor is not None
             and min(loc.file_size, loc.compressed_size - ZIPCRYPTO_HEADER_LEN)
             >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
         ):
@@ -3423,8 +3429,10 @@ class ZipReader(BaseArchiveReader):
             # smaller member takes the bounded confirm below, which never promotes it.
             # Both sizes are the archive's word: the declared plaintext and the body
             # the CRC pass will read. ``_open_stored_confirmed`` also checks the bytes
-            # the pass actually covered, for a file that ends early.
-            winner = self._open_stored_confirmed(loc, member)
+            # the pass actually covered, for a file that ends early. A member with no
+            # CRC-32 digest has nothing for that pass to match, and takes the
+            # bounded confirm too.
+            winner = self._open_stored_confirmed(loc, member, cipher.crc_anchor)
             decoded = decode_body(cipher.stage(winner))
             return self._verified_member_stream(decoded, member)
         return self._open_encrypted_confirmed(
@@ -3657,20 +3665,24 @@ class ZipReader(BaseArchiveReader):
         """
         self._raise_translated(exc, member_name, stamp_encryption=False)
 
-    def _open_stored_confirmed(self, loc: _ZipLocator, member: ArchiveMember) -> bytes:
+    def _open_stored_confirmed(
+        self, loc: _ZipLocator, member: ArchiveMember, expected_crc: int
+    ) -> bytes:
         """Resolve the password for a STORED ZipCrypto member, in four phases.
 
         A STORED member has no decompressor to reject a wrong key, and ZipCrypto's 1-byte
         header check admits ~1/256 of wrong passwords, so a full CRC pass over the member's
-        plaintext is the only way to disambiguate. The caller sends only a member whose
-        declared sizes clear ``PASSWORD_CONFIRM_MIN_VERIFIED_BYTES``, and a CRC match
-        over fewer bytes than that (a file that ends early) confirms nothing here either.
+        plaintext is the only way to disambiguate. The caller sends only a member that
+        has a CRC-32 digest, passed as ``expected_crc`` (:func:`_member_crc_anchor`),
+        and whose declared sizes clear ``PASSWORD_CONFIRM_MIN_VERIFIED_BYTES``; a CRC
+        match over fewer bytes than that (a file that ends early) confirms nothing here
+        either.
         To keep that pass single and bounded:
 
         1. **Collect survivors** — run every static candidate through the cheap 1-byte
            check; keep the ~1/256 that pass.
         2. **Disambiguate** — one shared ciphertext pass computes every survivor's plaintext
-           CRC-32 in constant memory; the first CRC match wins.
+           CRC-32 in constant memory; the first to match ``expected_crc`` wins.
         3. **Provider fallback** — if no static candidate won, ask the provider one password
            at a time (cheap check, then a per-candidate CRC pass), until one wins or it stops.
         4. **Resolve outcome** — return the winner, which the caller opens fresh;
@@ -3679,7 +3691,6 @@ class ZipReader(BaseArchiveReader):
         """
         ambiguous_failure: EncryptionError | None = None
         check_byte = _zipcrypto_check_byte(loc)
-        expected_crc = loc.crc & 0xFFFFFFFF
 
         # The same validated view every member open reads through: the local
         # header's name, data offset and overlap are checked before any pass runs.
@@ -4077,6 +4088,42 @@ def _uses_strong_encryption(flags: int, extra: bytes) -> bool:
     )
 
 
+def _crc_is_digest(
+    member_type: MemberType, file_size: int, crc: int, aes: WinZipAesInfo | None
+) -> bool:
+    """Whether a member's CRC-32 field is a digest of its data, to list in
+    ``hashes``: for a file or symlink, and for a directory that declares data
+    unless the field is 0, a directory's conventional value. Never for AE-2, which
+    stores 0 by design and relies on its HMAC. The seekable reader's three
+    producers of ``hashes[CRC32]`` take it from here: the central directory's
+    members, the local headers' and a data descriptor's update, so the read is
+    checked, and several passwords anchored, alike on each.
+
+    The pipe pass (``zip_forward_reader``) keeps its own rule for a bit-3 member:
+    it verifies as it lists, so it lists a descriptor's CRC only once the CRC it
+    computed matched, and a directory, which it gives no stream, gets none until
+    the central directory arrives (``format-zip`` spec, "Two shapes read
+    differently from a pipe")."""
+    if aes is not None and aes.is_ae2:
+        return False
+    if member_type is MemberType.DIRECTORY:
+        return file_size > 0 and crc != 0
+    return member_type in (MemberType.FILE, MemberType.SYMLINK)
+
+
+def _member_crc_anchor(member: ArchiveMember) -> int | None:
+    """The CRC-32 that tells a right password from a wrong one, or ``None``.
+
+    The member's CRC-32 digest, the one its read is checked against, and not the
+    header's CRC field: that field is no digest for an AE-2 member, which stores 0
+    by design, nor for a directory whose field is 0 over declared data
+    (:func:`_crc_is_digest`). Anchoring on it would reject the right password
+    with several candidates where one password reads the member (DR-5).
+    """
+    digest = member.hashes.get(HashAlgorithm.CRC32)
+    return None if digest is None else int.from_bytes(digest, "big")
+
+
 def _zipcrypto_check_byte(loc: _ZipLocator) -> int:
     """The byte a ZipCrypto header's last plaintext byte must equal.
 
@@ -4118,12 +4165,16 @@ class ZipReadBackend(ReadBackend):
             0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP
         ),  # empty archive (EOCD)
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
+        # APPNOTE 8.5.4: PKZIP may write PK00 ahead of the first local header of a set
+        # that ended up as one segment. 7-Zip and unzip read it as an ordinary ZIP.
+        MagicSignature(0, b"PK00PK\x03\x04", ArchiveFormat.ZIP),
     )
-    # Local header only. The other two ZIP magics are not useful search targets inside a
-    # stub window: PK\x05\x06 would precede a local header only for an empty archive, and
-    # PK\x07\x08 is the spanning marker (7-Zip's -sfx -v keeps the stub as a standalone
-    # executable, not concatenated with the volumes). Neither carries fields
-    # SFX_HIT_VALIDATOR can cheaply confirm — see formats/zip.md §2.1.
+    # Local header only. The no-span marker needs no needle of its own: the local-header
+    # search finds it at offset 4. The other two ZIP magics are not useful search
+    # targets inside a stub window: PK\x05\x06 would precede a local header only for an
+    # empty archive, and PK\x07\x08 is the spanning marker (7-Zip's -sfx -v keeps the
+    # stub as a standalone executable, not concatenated with the volumes). Neither
+    # carries fields SFX_HIT_VALIDATOR can cheaply confirm — see formats/zip.md §2.1.
     SFX_MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )

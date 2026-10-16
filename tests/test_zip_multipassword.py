@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import struct
 import tempfile
 import zipfile
 import zlib
@@ -17,6 +18,7 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
+    HashAlgorithm,
     MemberType,
     PasswordRequest,
     open_archive,
@@ -35,9 +37,10 @@ from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
-from tests.conftest import requires_zstd, zstd_backend
+from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
+from tests.zip_aes_fixture import build_aes_zip
 from tests.zipcrypto import (
     build_stored_zipcrypto_zip,
     build_zipcrypto_zip,
@@ -953,3 +956,133 @@ def test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc(
             assert ar.read(NAME) == DATA
         counts = ar.diagnostics.counts
     assert counts[DiagnosticCode.MEMBER_LOCAL_CRC_USED] == 1
+
+
+def _zero_crc_fields(blob: bytes) -> bytes:
+    """``blob`` with the CRC-32 field of its one local header and central entry 0."""
+    raw = bytearray(blob)
+    local = raw.index(b"PK\x03\x04")
+    raw[local + 14 : local + 18] = b"\0\0\0\0"
+    cd = raw.index(b"PK\x01\x02")
+    raw[cd + 16 : cd + 20] = b"\0\0\0\0"
+    return bytes(raw)
+
+
+@pytest.mark.parametrize(
+    "cipher",
+    [
+        pytest.param("zipcrypto", id="zipcrypto"),
+        pytest.param("ae1", id="ae1", marks=requires("cryptography")),
+        pytest.param("ae2", id="ae2", marks=requires("cryptography")),
+    ],
+)
+@pytest.mark.parametrize(
+    "compression",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflated"],
+)
+@pytest.mark.parametrize(
+    "repeat", [5, PASSWORD_CONFIRM_PREFIX_BYTES // 16], ids=["small", "past-prefix"]
+)
+@pytest.mark.parametrize(
+    "passwords",
+    [RIGHT, [RIGHT, b"other"], [b"other", RIGHT]],
+    ids=["one", "right-first", "right-last"],
+)
+def test_a_directory_with_data_and_a_zero_crc_reads_with_any_password_list(
+    cipher: str, compression: int, repeat: int, passwords: PasswordArg
+) -> None:
+    """A directory's CRC-32 field is 0 by convention, so over declared data it is no
+    digest (the member lists no crc32), and AE-2 stores 0 by design. Choosing among
+    several passwords must not match a candidate's plaintext against that 0: the
+    right password reads the bytes with a password list as with one."""
+    data = b"directory data!\n" * repeat
+    name = b"d/"
+    if cipher == "zipcrypto":
+        blob = _zero_crc_fields(
+            build_zipcrypto_zip(
+                RIGHT, name, data, compression=compression, check_byte=0
+            )
+        )
+    else:
+        blob = build_aes_zip(
+            [(name, data)],
+            password=RIGHT,
+            vendor_version=1 if cipher == "ae1" else 2,
+            method=compression,
+        )
+        if cipher == "ae1":
+            blob = _zero_crc_fields(blob)
+
+    def read(password: PasswordArg) -> tuple[bytes, dict[DiagnosticCode, int]]:
+        with open_archive(io.BytesIO(blob), password=password) as ar:
+            member = ar.members()[0]
+            assert member.type is MemberType.DIRECTORY
+            assert HashAlgorithm.CRC32 not in member.hashes
+            with ar.open(member) as stream:
+                got = stream.read()
+            return got, dict(ar.diagnostics.counts)
+
+    got, reported = read(passwords)
+    assert got == data
+    # What the read reports is the same too, not just its bytes.
+    assert reported == read(RIGHT)[1]
+
+
+def _with_descriptor(blob: bytes) -> bytes:
+    """``blob``'s one member moved to bit 3: the local header's CRC and sizes zeroed
+    and a signed data descriptor holding them written after its data."""
+    raw = bytearray(blob)
+    local = raw.index(b"PK\x03\x04")
+    crc, compressed, size = struct.unpack_from("<III", raw, local + 14)
+    struct.pack_into("<III", raw, local + 14, 0, 0, 0)
+    cd = raw.index(b"PK\x01\x02")
+    descriptor = b"PK\x07\x08" + struct.pack("<III", crc, compressed, size)
+    raw[cd:cd] = descriptor
+    end = raw.rindex(b"PK\x05\x06")
+    (offset,) = struct.unpack_from("<I", raw, end + 16)
+    struct.pack_into("<I", raw, end + 16, offset + len(descriptor))
+    return bytes(raw)
+
+
+@pytest.mark.parametrize(
+    "compression",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflated"],
+)
+@pytest.mark.parametrize("deferred", [False, True], ids=["local-crc", "descriptor-crc"])
+def test_a_walked_directory_with_data_is_checked_against_its_crc(
+    compression: int, deferred: bool
+) -> None:
+    """With no central directory the members come from their local headers. A
+    directory there that declares data and stores a real CRC-32, in its local header
+    or in the data descriptor after a bit-3 member's data, carries it as its digest,
+    as from the directory, so a wrong password that passes the check byte ahead of
+    the right one is rejected and the right one reads."""
+    data = b"directory data!\n" * 5
+    if deferred:
+        # Under bit 3 the check byte is the DOS time's high byte, which is 0 here.
+        blob = _with_descriptor(
+            build_zipcrypto_zip(
+                RIGHT,
+                b"d/",
+                data,
+                compression=compression,
+                extra_flags=0x08,
+                check_byte=0,
+            )
+        )
+    else:
+        blob = build_zipcrypto_zip(RIGHT, b"d/", data, compression=compression)
+    wrong = find_check_byte_collision(blob, "d/", RIGHT)
+    walked = blob[: blob.index(b"PK\x01\x02")]
+    with open_archive(io.BytesIO(walked), password=[wrong, RIGHT]) as ar:
+        report = ar.members_report()
+        assert isinstance(report.error, TruncatedError)
+        member = report.members[0]
+        assert member.type is MemberType.DIRECTORY
+        with ar.open(member) as stream:
+            assert stream.read() == data
+        assert member.hashes == {
+            HashAlgorithm.CRC32: zlib.crc32(data).to_bytes(4, "big")
+        }

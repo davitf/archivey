@@ -17,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
+from archivey import (
+    ArchiveFormat,
+    DetectionConfidence,
+    FormatInfo,
+    detect_format,
+    open_archive,
+)
 from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
 from archivey.internal.source import ArchiveSource
@@ -59,6 +65,35 @@ def test_zip_empty_archive_magic() -> None:
     info = detect_format(io.BytesIO(buf.getvalue()))
     assert info.format == ArchiveFormat.ZIP
     assert info.detected_by == "magic"
+
+
+def _with_no_span_marker(data: bytes) -> bytes:
+    """``data`` behind the 4-byte ``PK00`` marker, its directory offsets moved by 4."""
+    out = bytearray(b"PK00" + data)
+    eocd = out.rindex(b"PK\x05\x06")
+    (directory,) = struct.unpack_from("<I", out, eocd + 16)
+    struct.pack_into("<I", out, eocd + 16, directory + 4)
+    at = directory + 4
+    while out[at : at + 4] == b"PK\x01\x02":
+        (offset,) = struct.unpack_from("<I", out, at + 42)
+        struct.pack_into("<I", out, at + 42, offset + 4)
+        name_len, extra_len, comment_len = struct.unpack_from("<HHH", out, at + 28)
+        at += 46 + name_len + extra_len + comment_len
+    return bytes(out)
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_zip_no_span_marker_magic(pipe: bool) -> None:
+    # APPNOTE 8.5.4: PKZIP may write PK00 before the first local header of a set that
+    # ended up as one segment; 7-Zip and unzip read it as an ordinary ZIP.
+    data = _with_no_span_marker(_zip_bytes())
+    info = detect_format(io.BytesIO(data))
+    assert info == FormatInfo(ArchiveFormat.ZIP, DetectionConfidence.CERTAIN, "magic")
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with open_archive(source, streaming=pipe) as archive:
+        assert [(m.name, s.read()) for m, s in archive.stream_members()] == [
+            ("a.txt", b"hello")
+        ]
 
 
 def test_small_archive_still_detected() -> None:
