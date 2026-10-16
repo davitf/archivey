@@ -281,11 +281,12 @@ class MemberVerifier:
         """Record that a read at the read frontier found the end of a size-unknown member.
 
         With ``fill_size``, the member's ``size`` becomes that position when every
-        byte before it was returned in order (the hashing frontier is there), the
-        condition DR-4a keeps a digest under: a seek back keeps it, a jump over bytes
-        no read returned (an index, an accelerator, a forward seek) does not. The
-        decoder's own end checks passed, since an error raises before the empty read
-        that brings us here.
+        byte before it passed the hashers in order (the hashing frontier is there), the
+        condition DR-4a keeps a digest under: a seek back keeps it, and so does a
+        forward seek whose gap must be decoded anyway (``seek`` reads the gap through).
+        A jump over bytes nothing decoded (an index, an accelerator) does not, until a
+        seek back to the frontier and a read on to the end. The decoder's own end
+        checks passed, since an error raises before the empty read that brings us here.
         """
         self._end_seen = self._pos
         member = self._fill_member
@@ -316,6 +317,18 @@ class MemberVerifier:
     def _digest_pending(self) -> bool:
         """True while a digest is still to be checked (none has run, none abandoned)."""
         return bool(self._expected) and not self._digest_checked and not self._abandoned
+
+    @property
+    def _frontier_pending(self) -> bool:
+        """True while the hashing frontier still decides something: a digest, or a fill.
+
+        A size fill waits on the frontier as a digest does (``_note_end_seen``), so the
+        deferred forward seek and the re-check after a later read serve it too.
+        """
+        member = self._fill_member
+        return self._digest_pending or (
+            member is not None and member.size is None and not self._abandoned
+        )
 
     def _end(self) -> int | None:
         """The member's end: its declared size, or where it was seen to end."""
@@ -519,7 +532,9 @@ class MemberVerifier:
         if (
             at_eof
             and self._expected_size is None
-            and self._end_seen is None
+            # A read that skipped bytes may have found the end first: reaching it
+            # again from the frontier is what the fill waits for.
+            and self._end_seen in (None, self._pos)
             and self._pos == self._furthest_read_pos
         ):
             self._note_end_seen()
@@ -607,7 +622,7 @@ class MemberVerifier:
             except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
                 self._abandon()
                 raise
-            if self._concluded and self._digest_pending:
+            if self._concluded and self._frontier_pending:
                 return self._after_conclusion(data, at_eof=True)
             if data:
                 self._record_read(data)
@@ -626,7 +641,7 @@ class MemberVerifier:
             except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
                 self._abandon()
                 raise
-            if self._digest_pending:
+            if self._frontier_pending:
                 return self._after_conclusion(data, at_eof=not data)
             return data
 
@@ -702,7 +717,7 @@ class MemberVerifier:
             # reaching the frontier again would mean a rewind, not a decode forward.
             and (self._pos <= self._hashed_to or due is not None)
             and (end is None or target < end)
-            and self._digest_pending
+            and self._frontier_pending
         ):
             # A report the planning escalated (an index build) is this seek's: it
             # raises once the seek has moved, as the inner's own seek raises it.
@@ -716,8 +731,13 @@ class MemberVerifier:
                 return target
         if due is not None and target is not None:
             # The inner is still where the deferred seek left it, not at ``_pos``: a
-            # relative ``whence`` must not apply to it.
-            offset, whence = target, 0
+            # relative ``whence`` must not apply to it as given. ``SEEK_CUR`` stays
+            # relative to where the inner is, so a target before 0 is the inner's to
+            # clamp or refuse, as it would be with no deferred seek.
+            if whence == 1:
+                offset = target - due[1]
+            else:
+                offset, whence = target, 0
         self._read_through_due = None
         result = inner.seek(offset, whence)
         self.note_seek(result)

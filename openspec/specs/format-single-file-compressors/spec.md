@@ -142,15 +142,18 @@ that reaches the end of the member having returned every byte from its start in 
 and that the decoder finishes without error: `size` becomes that end position, set in
 place on the reader's member object (the one `members()` and `get()` return). This is
 the condition under which a member's digest is kept (`dev-docs/design-rules.md`
-DR-4a): a seek back, or a seek to the current position, keeps the fill. A read that
-stops early or raises, or one that reaches the end after a seek jumped over bytes no
-read returned (an index jump, an accelerator, a forward seek), SHALL leave `size` as it
-is, since the decoder never produced those bytes for this stream; a seek to position 0
-starts over. `.Z` has no end marker or checksum, so a `.Z` cut where no leftover bits
-show it ends cleanly, and its filled `size` is then the length of the cut stream, as
-the data read is. Until the size is filled in, or the
-reader closes, `member_state_final` SHALL be `False` (`archive-data-model`). A copy made
-with `replace()` is never filled. A size the format records SHALL NOT be replaced.
+DR-4a). A seek back keeps the fill, and so does a forward seek whose gap must be
+decoded anyway (every codec here with no seek index): the gap is read through the
+check. A read that stops early or raises SHALL leave `size` as it is, and so SHALL one
+that reaches the end after a seek jumped over bytes nothing decoded (an index jump, an
+accelerator, a seek to an end not yet known), until a seek back to where the reads had
+reached and a read on to the end. The filled `size` is only as good as the codec's end
+check: where that check is best-effort, such as a `.Z` (no end marker or checksum) or
+an accelerated `.gz` (see the rapidgzip caveat), a cut the decoder cannot see ends the
+read cleanly and fills the length of the cut data, as the data read is. Until the size
+is filled in, or the reader closes, `member_state_final` SHALL be `False`
+(`archive-data-model`). A copy made with `replace()` is never filled. A size the format
+records SHALL NOT be replaced.
 
 #### Scenario: size matrix
 
@@ -160,7 +163,9 @@ with `replace()` is never filled. A size the format records SHALL NOT be replace
 | `.bz2` before full decompression | Size is `None` |
 | `.gz` / `.bz2` / `.zz` / `.br` / `.Z` read from the start to EOF with no seek | `size` is the byte count read; `member_state_final` is `True` |
 | Same, read that stops short of EOF, or raises (`TruncatedError`) | `size` stays `None` |
-| Same, read that reaches EOF after a forward seek over bytes no read returned | `size` stays `None` |
+| Same, `read(100)`, `seek(5000)`, read to EOF (the seek decodes the gap anyway) | `size` is the byte count |
+| Same, `seek(0, SEEK_END)`, then read to EOF | `size` stays `None` |
+| Same, then `seek()` back to where the reads had reached, read to EOF | `size` is the byte count |
 | Same, `read(100)`, `seek(50)`, read to EOF | `size` is the byte count |
 | Same, `streaming=True` pass over a pipe, stream read to EOF | `size` is the byte count read |
 | Same, reader closed with the member never read in full | `size` is `None`; `member_state_final` is `True` |
@@ -168,7 +173,7 @@ with `replace()` is never filled. A size the format records SHALL NOT be replace
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None` until a full read fills it; no decode pass is forced |
 | `.xz` / `.lz` opened from another archive's member stream | Size is `None` until a full read fills it; the member is not seeked to its end |
-| `.xz` / `.lz` opened from a stored ZIP entry or a TAR member | Size is `None`, as for any member stream, though that seek would be a slice |
+| `.xz` / `.lz` opened from a stored ZIP entry or a TAR member | Size is `None` until a full read fills it, as for any member stream, though that seek would be a slice |
 | `.gz` from a path or `BytesIO` | `compressed_size` is the source's length |
 | `.gz` from a caller's pipe with a `size` attribute | `compressed_size` is `None` |
 | `.gz` from a member stream that advertises its length, seekable or not | `compressed_size` is that length; no seek to the end |
@@ -190,11 +195,12 @@ these fields from header data because they carry no embedded filename.
 The system SHALL surface the gzip trailer's ISIZE field as `member.extra["gzip.isize"]`
 (an `int`) when the source's end can be reached cheaply, under the same rule as the
 xz index and lzip trailer: a seekable source that is not another archive's member
-stream, too long to be only a gzip header (18 bytes or more). The value is the last four bytes of the file, read
-little-endian. It is the uncompressed size modulo 2^32 only for a file of one gzip
-member with nothing after it; a file of several members (bgzip ends with an empty
-one) or with trailing bytes stores something else, and nothing short of reading the
-whole file tells these apart. It SHALL therefore never fill `member.size`.
+stream, at least 18 bytes long (the shortest header, 10 bytes, plus the 8-byte
+trailer; anything shorter has no trailer to read). The value is the last four bytes of
+the file, read little-endian. It is the uncompressed size modulo 2^32 only for a file
+of one gzip member with nothing after it; a file of several members (bgzip ends with an
+empty one) or with trailing bytes stores something else, and nothing short of reading
+the whole file tells these apart. It SHALL therefore never fill `member.size`.
 
 #### Scenario: gzip metadata matrix
 

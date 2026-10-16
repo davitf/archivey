@@ -715,11 +715,13 @@ yielded.
   absent or out of reach (an `.xz` from a pipe). A
   read that reaches the end having returned every byte from the start, which the
   decoder finishes without error, sets `member.size` on the member `members()`
-  returned. Seeking back is fine. A read that stops early or raises, or that skips
-  bytes with a forward seek, leaves it `None`, as does a copy made with `replace()`.
-  A `.Z` has no end marker or checksum, so for a `.Z` cut where the decoder cannot
-  see it, the filled size is that of the cut data. `member_state_final` reads `False` until the size is filled in or
-  the reader closes.
+  returned. Seeking back is fine, and so is seeking forward on these codecs: the seek
+  decodes the bytes it skips anyway, and they count. A read that stops early or
+  raises leaves it `None`, as does a copy made with `replace()`. The filled size is
+  only as good as the codec's end check: for a `.Z` (no end marker or checksum) or an
+  accelerated `.gz` (see the rapidgzip caveat below), a cut the decoder cannot see
+  fills the size of the cut data. `member_state_final` reads `False` until the size is
+  filled in or the reader closes.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is
   cheap to reach (a path or an in-memory stream; not a pipe or another archive's
   member). It is the size modulo 2^32 only for a file of one gzip member with nothing
@@ -740,10 +742,12 @@ yielded.
   not. Declaring `seekable_members=True` is not required and makes no difference:
   `seekable_members` is about `seek()` on a *member stream*, and the lzip trailer is a
   bounded backward peek. Same for the `.xz` size, read from the stream index. A `.xz`
-  or `.lz` opened from another archive's member stream reports neither the size nor the
-  CRC-32, seekable or not: member streams are excluded as a group. For multi-member
-  lzip the value is derived by combining per-trailer CRCs with each member's
-  uncompressed size so it equals `crc32` of the concatenated payloads.
+  or `.lz` opened from another archive's member stream reads neither the index nor the
+  trailer, seekable or not: member streams are excluded as a group. It never reports
+  the CRC-32, and its size arrives only from a full read, as for the formats that
+  record none. For multi-member lzip the value is derived by combining per-trailer
+  CRCs with each member's uncompressed size so it equals `crc32` of the concatenated
+  payloads.
 - `.lz` is read in lzip format version 1, which every lzip since 1.0 writes. A member
   in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
   wherever it is in the file: a member that starts with the `LZIP` magic is never

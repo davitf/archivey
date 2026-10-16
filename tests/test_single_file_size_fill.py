@@ -98,19 +98,36 @@ def test_partial_read_leaves_size_unknown(tmp_path: Path) -> None:
         assert not member.member_state_final
 
 
-def test_read_after_a_forward_seek_leaves_size_unknown(tmp_path: Path) -> None:
-    """A forward seek jumps over bytes no read returned, so nothing here saw them
-    decoded (DR-4a). A seek back to where reads stopped, or to 0, fills again."""
-    path = _write(tmp_path, "gz", gzip.compress)
+@pytest.mark.parametrize(("suffix", "compress"), _NO_SIZE_CODECS)
+def test_read_after_a_forward_seek_fills(
+    tmp_path: Path, suffix: str, compress: Callable[[bytes], bytes]
+) -> None:
+    """These codecs have no seek index: reaching the target decodes the gap anyway, so
+    the seek reads it through and keeps the fill, as it keeps a digest (DR-4a)."""
+    path = _write(tmp_path, suffix, compress)
     with open_archive(path, seekable_members=True) as reader:
         member = reader.members()[0]
         with reader.open(member) as stream:
             stream.read(100)
             stream.seek(5000)
-            stream.read()
+            assert stream.read() == PAYLOAD[5000:]
+        assert member.size == len(PAYLOAD)
+        assert member.member_state_final
+
+
+def test_seek_to_the_end_then_back_to_the_frontier_fills(tmp_path: Path) -> None:
+    """A seek to the unknown end is passed on, so nothing here read the bytes it
+    skipped. A seek back to where reads stopped, then a read on to the end, fills."""
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            stream.read(100)
+            stream.seek(0, io.SEEK_END)
+            assert stream.read() == b""
             assert member.size is None
-            stream.seek(0)
-            assert stream.read() == PAYLOAD
+            stream.seek(100)
+            assert stream.read() == PAYLOAD[100:]
         assert member.size == len(PAYLOAD)
 
 
@@ -203,7 +220,7 @@ def test_xz_from_a_pipe_fills_size() -> None:
             assert member.size is None
             assert stream is not None
             stream.read()
-            assert member.size == len(PAYLOAD)
+        assert member.size == len(PAYLOAD)
 
 
 def test_gz_inside_a_tar_fills_size_without_isize(tmp_path: Path) -> None:
