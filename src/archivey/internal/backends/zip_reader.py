@@ -347,6 +347,11 @@ _ZIP_BIRTH_TIME_HOSTS: frozenset[CreateSystem] = frozenset(
 _CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
     member.value: member for member in CreateSystem
 }
+# _BACKSLASH_SEPARATOR_SYSTEMS by host byte: an enum member hashes in Python, an int
+# in C, and the listing asks once per member.
+_BACKSLASH_SEPARATOR_HOSTS: frozenset[int] = frozenset(
+    system.value for system in _BACKSLASH_SEPARATOR_SYSTEMS
+)
 
 
 # Raised when a member read finds the reader's handle gone.
@@ -940,6 +945,8 @@ def _zip_created(
     ``_zip_timestamps`` gives it for the other times.
     """
     stored = ut_ctime if ut_ctime is not None else ntfs_ctime
+    if stored is None:
+        return None, None
     if create_system in _ZIP_BIRTH_TIME_HOSTS:
         return stored, None
     return None, stored
@@ -2291,7 +2298,7 @@ class ZipReader(BaseArchiveReader):
             else:
                 has_unicode_path = False
             if not has_unicode_path:
-                return _new_tuple(
+                return _new_tuple(  # pyrefly: ignore[bad-specialization]  # a NamedTuple is a tuple
                     _DecodedName,
                     (raw_name.decode("ascii"), raw_name, None, None, None, None, False),
                 )
@@ -2416,7 +2423,7 @@ class ZipReader(BaseArchiveReader):
             member_type = MemberType.FILE
         # Convert "\\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
-        backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
+        backslash_is_separator = host in _BACKSLASH_SEPARATOR_HOSTS
         name = normalize_member_name(
             name_source, member_type, backslash_is_separator=backslash_is_separator
         )

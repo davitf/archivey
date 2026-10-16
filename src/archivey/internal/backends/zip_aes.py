@@ -117,7 +117,9 @@ def split_extra_fields(extra: bytes) -> tuple[ExtraField, ...]:
         pos = start + size
         # tuple.__new__ directly: the NamedTuple constructor adds a Python call.
         fields.append(
-            _new_tuple(ExtraField, (tag, extra[start:pos], pos <= end_of_blob))
+            _new_tuple(  # pyrefly: ignore[bad-specialization]  # a NamedTuple is a tuple
+                ExtraField, (tag, extra[start:pos], pos <= end_of_blob)
+            )
         )
     return tuple(fields)
 

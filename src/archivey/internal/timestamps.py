@@ -50,7 +50,12 @@ def unix32_to_datetime(seconds: int) -> datetime:
     fail and has no ``None`` case for a caller to handle. ZIP's extended timestamp,
     RAR's Unix times and gzip's MTIME are such fields.
     """
-    return _UNIX_EPOCH + timedelta(seconds=seconds)
+    try:
+        # The C constructor, faster on a listing hot path; some platforms refuse a
+        # time before 1970 (Windows) or past 2038 there, and the sum below does not.
+        return datetime.fromtimestamp(seconds, UTC)
+    except (OverflowError, OSError, ValueError):
+        return _UNIX_EPOCH + timedelta(seconds=seconds)
 
 
 @dataclass(frozen=True)

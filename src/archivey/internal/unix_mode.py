@@ -52,9 +52,11 @@ def is_special_file_mode(mode: int) -> bool:
 def special_file_type(mode: int) -> SpecialFileType | None:
     """The ``extra["special_file_type"]`` value for ``mode``, or ``None`` when the
     mode is not special (:func:`is_special_file_mode`)."""
-    if not is_special_file_mode(mode):
+    # is_special_file_mode, inlined: listings ask this once per member.
+    file_type = mode & UNIX_FILE_TYPE_MASK
+    if file_type in _NOT_SPECIAL:
         return None
-    return _SPECIAL_FILE_TYPES.get(mode & UNIX_FILE_TYPE_MASK, "unknown")
+    return _SPECIAL_FILE_TYPES.get(file_type, "unknown")
 
 
 def special_file_type_from_tar_typeflag(typeflag: bytes) -> SpecialFileType | None:
