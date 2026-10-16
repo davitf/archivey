@@ -396,7 +396,8 @@ def _stream_copy_refused_note(program: str, reason: str) -> str:
     return (
         f"Reading a member that {program} has to read, such as a compressed one, will "
         f"be refused: {program} reads only files, and {reason}. Members archivey "
-        f"reads without {program}, such as stored ones, can still be read."
+        f"reads without {program}, such as stored, unencrypted ones, can still be "
+        f"read."
     )
 
 

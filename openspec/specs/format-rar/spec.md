@@ -431,18 +431,16 @@ reader, not for each attempt: once a copy has been refused, a later read that ne
 SHALL raise the same refusal without writing again. With `max_bytes=0` a member that
 cannot be read directly SHALL be refused, and a member that can SHALL still read.
 
-When the archive is opened from a
-non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
-caveat **at open** (path sources SHALL NOT, except the prefixed file that
-`Read RAR member data with unar` copies): a single stream source SHALL warn
-that reading a member the program has to read (such as a compressed one) will copy
-the whole archive to disk; ordered stream volumes SHALL warn that reading such a member
-will copy every volume
-to a temp directory. The caveat SHALL name the spool limit in force (or say there is
-none), so the caller reads the worst case at open. When the limit already rules the copy
-out — `max_bytes=0`, or a copy whose size is known at open and is over the limit — the
-caveat SHALL say that such a read will be refused, in place of the copy warning. The
-note is a
+When the archive is opened from a non-path stream source, `ar.cost.notes` SHALL
+include a human-readable disk-copy caveat **at open** (path sources SHALL NOT, except
+the prefixed file that `Read RAR member data with unar` copies): a single stream source
+SHALL warn that reading a member the program has to read (such as a compressed one)
+will copy the whole archive to disk; ordered stream volumes SHALL warn that reading
+such a member will copy every volume to a temp directory. The caveat SHALL name the
+spool limit in force (or say there is none), so the caller reads the worst case at
+open. When the limit already rules the copy out — `max_bytes=0`, or a copy whose size
+is known at open and is over the limit — the caveat SHALL say that such a read will be
+refused, in place of the copy warning. The note is a
 static open-time caveat, not an occurrence log:
 it SHALL be present even if only stored members are read, and SHALL NOT appear
 after materialization if it was absent at open. Mixed-password

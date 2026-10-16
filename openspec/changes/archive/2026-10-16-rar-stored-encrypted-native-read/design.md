@@ -85,8 +85,9 @@ the program has to read, such as a compressed one", which is true before and aft
 listing time, and still refuses an encrypted one. Decrypting it there would set
 `link_target`, stop a `SYMLINK_TARGET_UNAVAILABLE` diagnostic that a strict policy
 refuses on, and split RAR from ZIP, which has the same guard. That is a change to public
-behaviour, so it is put to the maintainer separately; this change only corrects the
-comment and the diagnostic text, which claimed the reader cannot decrypt the bytes.
+behaviour, so it is put to the maintainer separately and kept open in the RAR handbook
+(`dev-docs/formats/rar.md` §7); this change only corrects the comment and the diagnostic
+text, which claimed the reader cannot decrypt the bytes.
 
 ### Rejected: decrypt natively, then hand the plaintext to `unrar`
 
