@@ -70,6 +70,8 @@ from archivey.diagnostics import (
     DigestContext,
     LocalHeaderContext,
     MemberHeaderRecordContext,
+    OffsetWrapContext,
+    SizeWrapContext,
     raw_name_to_base64,
 )
 from archivey.exceptions import (
@@ -110,16 +112,20 @@ from archivey.internal.backends.zip_parser import (
     EOCD_SIZE,
     MAX_DATA_OFFSET,
     NO_END_RECORD_MSG,
+    OFFSET_WRAP,
     ZIP64_LOCATOR_SIZE,
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
+    DirectoryOffsetWrapped,
     EndRecord,
     EntryCountMismatch,
-    EntryOverrun,
+    WalkFinding,
+    local_header_at,
     locate_end_record,
     read_end_record,
     read_local_header,
+    written_by_archive_utility,
 )
 from archivey.internal.backends.zipcrypto import (
     ZIPCRYPTO_HEADER_LEN,
@@ -131,6 +137,7 @@ from archivey.internal.backends.zipcrypto import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -181,6 +188,7 @@ from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_ALTERNATE_RAW_NAME,
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SIZE_MOD_2_32,
     EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
     ArchiveInfo,
@@ -204,10 +212,11 @@ if TYPE_CHECKING:
 
     from archivey.internal.streams.streamtools import ReadableStream
 
-# Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
-# default, which maps every byte and therefore never fails). An unflagged comment goes
-# through `_decode_unflagged_comment`, which shares the `encoding=` / fallback step
-# (`_decode_unflagged_legacy`) with the unflagged-name sniff.
+# Decoding of a comment under a set UTF-8 flag its name's bytes do not refute: UTF-8,
+# else cp437 (the ZIP appnote default, which maps every byte and therefore never fails).
+# An unflagged comment, and one whose name was decoded as unflagged because the bytes
+# refute the flag, go through `_decode_unflagged_comment`, which shares the `encoding=`
+# / fallback step (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
@@ -893,6 +902,59 @@ class _ZipLocator:
     #: For an entry flagged as a Windows reparse point, the type it reverts to when
     #: its data is not a link buffer (:func:`_reparse_fallback_type`).
     reparse_fallback: MemberType | None
+    #: For a member whose size is unknown until a read (:func:`_wrapped_size`): the
+    #: stored size and the bounds its real size lies in. ``None`` otherwise.
+    size_unknown: _UnknownSize | None = None
+
+
+#: Deflate's largest expansion: a 258-byte match costs at least two bits.
+_DEFLATE_MAX_RATIO = 1032
+#: ZIP compression methods macOS Archive Utility writes: stored and deflated.
+_ARCHIVE_UTILITY_METHODS = frozenset({0, 8})
+
+
+class _UnknownSize(NamedTuple):
+    """What a read checks a member's length against when the archive stores its size
+    modulo 2³² alone (:func:`_wrapped_size`)."""
+
+    stored: int
+    #: Deflate's upper bound on the size: 1032 times the compressed size.
+    high: int
+
+    def check(self, length: int) -> None:
+        """Refuse a length the stored size or deflate's ratio rules out."""
+        if length % OFFSET_WRAP != self.stored or length > self.high:
+            raise CorruptionError(
+                f"Decompressed content ended after {length} bytes, which the stored "
+                f"size of {self.stored} modulo 2**32 and the compressed size rule out."
+            )
+
+
+def _wrapped_size(entry: CentralEntry) -> tuple[int | None, _UnknownSize | None]:
+    """The size of a member of a macOS Archive Utility ZIP, whose sizes past 4 GiB the
+    archive stores modulo 2³², and its bounds when that leaves it unknown.
+
+    The real size is the stored one plus a multiple of 2³². A stored member's is its
+    compressed size, which the walk measured from the layout, when the two agree
+    modulo 2³². A deflated member's is at most 1032 times its compressed size (a
+    258-byte match takes two bits at the least). When the stored value is the only
+    multiple under that, it is the size. When more fit, the size is unknown: ``None``,
+    with the bound a read checks the length against. No lower bound narrows them:
+    one that real encoders keep (incompressible data shrinks little) does not hold
+    for every valid stream, since empty stored blocks pad one without bound, and a
+    size picked on it could be 4 GiB too large. A stored value over the bound (a
+    damaged entry) stays, and the read fails on it as before.
+    """
+    stored = entry.file_size
+    compressed = entry.compressed_size
+    if entry.method == 0:
+        if compressed % OFFSET_WRAP == stored:
+            return compressed, None
+        return stored, None
+    high = compressed * _DEFLATE_MAX_RATIO
+    if stored + OFFSET_WRAP <= high:
+        return None, _UnknownSize(stored, high)
+    return stored, None
 
 
 def _local_crc_stands_in(
@@ -996,14 +1058,6 @@ class _DataBounds:
         return ordered[above] if above < len(ordered) else self._cd_start
 
 
-def _is_utf8(raw: bytes) -> bool:
-    try:
-        raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
 def _max_members_error(
     max_members: int, counted: str = "ZIP central directory holds"
 ) -> ResourceLimitError:
@@ -1017,9 +1071,10 @@ def _max_members_error(
 
 #: Also the receipt for a seekable source read through its directory. An end record
 #: behind more trailing bytes than its search reads is found by a walk over every local
-#: header at open, reading the data of each bit-3 member (``_walk_past_members``); the
-#: listing stays ``INDEXED``, as RAR's does with its header walk at open. So does a ZIP
-#: with no end record at all, listed from the local headers that walk found.
+#: header at open, reading the data of each bit-3 member (``_walk_past_members``). A ZIP
+#: with no end record at all is listed from the local headers that walk found, and its
+#: listing ends by raising the walk's error. Both stay ``INDEXED``: the walk finds the
+#: index or salvages a damaged archive (``ListingCost`` says why neither changes it).
 _ZIP_COST = CostReceipt(
     listing_cost=ListingCost.INDEXED,
     access_cost=AccessCost.DIRECT,
@@ -1039,7 +1094,12 @@ class _DecodedName(NamedTuple):
     alternate_raw_name: bytes | None
     """The header's bytes, when the Unicode Path field named the entry instead."""
     inferred_encoding: str | None
-    """The codec a sniff chose over the default, for the diagnostic."""
+    """The codec that produced ``text`` when it is not the one the name would
+    otherwise have had (a sniff's choice over the default, or the codec used for a
+    name whose UTF-8 flag the bytes refute), for the diagnostic."""
+    declared_encoding: str | None
+    """``"utf-8"`` when the UTF-8 flag is set over bytes that are not UTF-8, so the
+    name and its comment decode as unflagged ones; ``None`` otherwise."""
     unicode_extra_fault: str | None
     """Why a malformed Unicode Path field was dropped, for the diagnostic."""
 
@@ -1591,7 +1651,7 @@ class ZipReader(BaseArchiveReader):
         if walked is not None:
             yield from self._iter_walked(walked)
             return
-        walk = CentralDirectoryWalk(self._read_at, self._end)
+        walk = self._directory_walk()
         offsets: array[int] = array("q")
         max_members = self._config.listing_limits.max_members
         last: CentralEntry | None = None
@@ -1603,9 +1663,6 @@ class ZipReader(BaseArchiveReader):
                 index = entry.index
                 if max_members is not None and index >= max_members:
                     raise _max_members_error(max_members)
-                # Built before its offset is kept: an entry whose fields cannot be
-                # read (a name flagged UTF-8 that is not) is damage, and its member
-                # is listed from its local header past it (``_past_damage``).
                 member = self._to_member(entry, index)
                 offsets.append(_bound_offset(entry.header_offset))
                 last = entry
@@ -1771,14 +1828,59 @@ class ZipReader(BaseArchiveReader):
         ):
             member.hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
 
+    def _directory_walk(self) -> CentralDirectoryWalk:
+        """A walk over the directory that corrects offsets wrapped past 4 GiB, checked
+        against the local headers in the file."""
+        read_at = self._read_at
+        # The last header read, by offset: the walk asks for a header's name and then
+        # for where its data starts, and the two share one read.
+        last: list[tuple[int, tuple[bytes, int] | None]] = []
+
+        def probe(offset: int) -> tuple[bytes, int] | None:
+            if not last or last[0][0] != offset:
+                last[:] = [(offset, local_header_at(read_at, offset))]
+            return last[0][1]
+
+        def name_at(offset: int) -> bytes | None:
+            found = probe(offset)
+            return None if found is None else found[0]
+
+        def data_start_at(offset: int) -> int | None:
+            found = probe(offset)
+            return None if found is None else found[1]
+
+        return CentralDirectoryWalk(
+            read_at,
+            self._end,
+            local_name_at=name_at,
+            local_data_start_at=data_start_at,
+        )
+
     def _emit_walk_finding(
-        self,
-        finding: EntryCountMismatch | CommentCutShort | EntryOverrun,
-        last: CentralEntry | None,
+        self, finding: WalkFinding, last: CentralEntry | None
     ) -> None:
         """One disagreement between the end record and the central directory."""
         end = self._end
         archive_name = self._archive_name
+        if isinstance(finding, DirectoryOffsetWrapped):
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ARCHIVE_OFFSET_WRAPPED,
+                message=(
+                    f"ZIP end record stores the central directory's offset as "
+                    f"{finding.stored}, but the directory is at {finding.corrected}: "
+                    "the archive was written past 4 GiB without ZIP64, and its offsets "
+                    "were corrected."
+                ),
+                context=OffsetWrapContext(
+                    archive_name=archive_name,
+                    format="zip",
+                    record="central_directory",
+                    stored_offset=finding.stored,
+                    corrected_offset=finding.corrected,
+                ),
+                logger=logger,
+            )
+            return
         if isinstance(finding, EntryCountMismatch):
             record = "ZIP64 end of central directory" if finding.zip64 else "end record"
             message = (
@@ -1839,6 +1941,95 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    def _iter_with_data(
+        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        """Read the whole directory before the first member's data, then go forward.
+
+        The directory is read once and member data in file order after it, so the
+        only backward move after the tail reads is the seek to the first local header,
+        and the overlap guard's bounds are known before any member opens. The walk
+        reads the directory one chunk at a time, so pulling it alongside the data
+        would go back to the tail between members. The listing is final before the
+        first yield, ``is_current`` included. A source that cannot seek is read by
+        ``ZipForwardReader``, which overrides this.
+        """
+        if self._streaming:
+            self._walk_ahead()
+        yield from super()._iter_with_data(copies)
+
+    def _emit_offset_wrapped(
+        self, member: ArchiveMember, entry: CentralEntry, index: int
+    ) -> None:
+        """``ARCHIVE_OFFSET_WRAPPED`` for a member whose local header offset the walk
+        corrected (``CentralDirectoryWalk``)."""
+        # Both offsets as the directory counts them, without the stub's length.
+        stored = entry.stored_offset
+        corrected = stored + entry.offset_correction
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_OFFSET_WRAPPED,
+            message=(
+                f"ZIP member {quoted(member.name)} stores its local header offset as "
+                f"{stored}, but the header is at {corrected}: the archive was written "
+                "past 4 GiB without ZIP64, and the offset was corrected."
+            ),
+            context=OffsetWrapContext(
+                archive_name=self._archive_name,
+                format="zip",
+                member_name=member.name,
+                member_id=index,
+                record="local_header",
+                stored_offset=stored,
+                corrected_offset=corrected,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
+
+    def _emit_size_wrapped(
+        self, member: ArchiveMember, entry: CentralEntry, index: int
+    ) -> None:
+        """``MEMBER_SIZE_WRAPPED`` for a member of a macOS Archive Utility ZIP whose
+        compressed size the walk measured, or whose size :func:`_wrapped_size` moved or
+        left unknown."""
+        stored_compressed = entry.compressed_size - entry.compressed_size_correction
+        size = member.size
+        stored = (
+            f"ZIP member {quoted(member.name)} stores {stored_compressed} bytes "
+            f"decoding to {entry.file_size}"
+        )
+        if size is None:
+            # Nothing was found wrapped: the writer keeps only the low 32 bits, and
+            # the compressed size allows a size past 4 GiB, whatever the archive's.
+            message = (
+                f"{stored}; macOS Archive Utility stores sizes modulo 2**32 and "
+                f"{entry.compressed_size} bytes of deflate can decode to more than "
+                "4 GiB, so the size is unknown until a read counts it."
+            )
+        else:
+            message = (
+                f"{stored}, but it holds {entry.compressed_size} bytes and decodes "
+                f"to {size}: the archive was written past 4 GiB without ZIP64."
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_SIZE_WRAPPED,
+            message=message,
+            context=SizeWrapContext(
+                archive_name=self._archive_name,
+                format="zip",
+                member_name=member.name,
+                member_id=index,
+                stored_compressed_size=stored_compressed,
+                compressed_size=entry.compressed_size,
+                stored_size=entry.file_size,
+                size=size,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
+
     def _set_bounds(self, offsets: array[int], *, count: int | None) -> None:
         """Record the offsets a listing walk read, and what it says of the count.
 
@@ -1857,9 +2048,11 @@ class ZipReader(BaseArchiveReader):
         """The overlap guard's bounds, walking the directory once more if needed.
 
         After a listing that ran to the end (or to damage, or to ``max_members``) the
-        bounds are already known. Otherwise, when a member opens before the listing has
-        finished, an **index pass** reads the directory's entries again, builds no
-        members and keeps only the offsets and the count. It stops where the listing
+        bounds are already known, and every member open comes after one: random access
+        lists before it opens, and a streaming pass walks ahead (``_iter_with_data``).
+        Otherwise, when ``member_count`` is asked for first, an **index pass** reads the
+        directory's entries again, builds no members and keeps only the offsets and the
+        count. It stops where the listing
         walk stops, at damage or at ``max_members``, and keeps the offsets before that
         point (``_DataBounds``).
         """
@@ -1878,18 +2071,13 @@ class ZipReader(BaseArchiveReader):
         Called under ``_index_lock``.
         """
         max_members = self._config.listing_limits.max_members
-        walk = CentralDirectoryWalk(self._read_at, self._end)
+        walk = self._directory_walk()
         offsets: array[int] = array("q")
         try:
             for entry in walk:
                 if max_members is not None and entry.index >= max_members:
                     # The listing raises the limit itself, at the same entry.
                     break
-                if entry.flags & _ZIP_MASK_UTF8 and not _is_utf8(entry.name):
-                    # The listing cannot build this entry's member and stops at it as
-                    # damage (``_decode_member_name``); so does this pass, so both
-                    # list the same members past it (``_past_damage``).
-                    raise CorruptionError("ZIP member name flagged UTF-8 is not")
                 offsets.append(_bound_offset(entry.header_offset))
             else:
                 self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
@@ -1904,8 +2092,8 @@ class ZipReader(BaseArchiveReader):
         except UnsupportedFeatureError:
             # The listing raises it itself, at the same entry.
             pass
-        # Stopped early: an open meanwhile reads with the bounds of the entries before
-        # the stop, as after a listing that met it; the count is unknown.
+        # Stopped early: the bounds are the entries' before the stop, as after a listing
+        # that met it; the count is unknown.
         self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
         self._count_known = True
 
@@ -1933,25 +2121,30 @@ class ZipReader(BaseArchiveReader):
         try:
             utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
-            return self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
+            text, codec = self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
+            # The caller's encoding= is not an inference, nor is the cp437 default.
+            return text, None if codec in (self._encoding, "cp437") else codec
         if utf8_decoded == cp437_decoded:
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
 
     def _decode_unflagged_legacy(
         self, raw: bytes, cp437_decoded: Callable[[], str]
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str]:
         """Decode unflagged bytes that are not valid UTF-8: the caller's ``encoding=``,
         else the configured legacy fallback (default cp437).
 
         ``cp437_decoded`` is called only when the cp437 reading is the answer. Returns
-        ``(text, fallback)`` where ``fallback`` is a configured fallback other than
-        cp437 that was used, else ``None``. A byte the chosen codec does not define
-        survives as a lone surrogate.
+        ``(text, codec)``: ``codec`` is the caller's ``encoding=``, the configured
+        fallback or ``"cp437"``, whichever decoded ``text``. A byte the chosen codec
+        does not define survives as a lone surrogate.
         """
         if self._encoding is not None:
             try:
-                return raw.decode(self._encoding, errors="surrogateescape"), None
+                return (
+                    raw.decode(self._encoding, errors="surrogateescape"),
+                    self._encoding,
+                )
             except UnicodeError:
                 # A codec that refuses the surrogateescape handler outright
                 # (``idna``): fall through to the configured fallback.
@@ -1962,17 +2155,18 @@ class ZipReader(BaseArchiveReader):
             "437",
             "ibm437",
         }:
-            return cp437_decoded(), None
+            return cp437_decoded(), "cp437"
         try:
             return raw.decode(fallback, errors="surrogateescape"), fallback
         except (LookupError, UnicodeError):
             # An unknown fallback encoding name, or a codec that refuses the
             # surrogateescape handler outright (``idna``): keep the cp437 decode
             # rather than fail.
-            return cp437_decoded(), None
+            return cp437_decoded(), "cp437"
 
     def _decode_unflagged_comment(self, raw: bytes) -> str:
-        """Decode a comment with no UTF-8 flag the way an unflagged name is decoded.
+        """Decode a comment with no UTF-8 flag, or one whose name's bytes refute the flag,
+        the way an unflagged name is decoded.
 
         A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
         As for a name, ASCII skips the sniff (UTF-8 and cp437 agree on it), and the
@@ -1994,14 +2188,22 @@ class ZipReader(BaseArchiveReader):
         if is_utf8_flagged:
             try:
                 decoded = raw_name.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                # The flag says UTF-8 and the bytes are not: refused (format-zip spec).
-                # The entries before it are listed, then this raises. The index pass
-                # stops at the same entry (``_index_pass``); a new refusal here needs
-                # the same stop there, or the two give different overlap bounds.
-                raise CorruptionError(
-                    f"Could not decode a ZIP member name: {exc!r}"
-                ) from exc
+            except UnicodeDecodeError:
+                # The flag says UTF-8 and the bytes are not (a code-page name under a
+                # wrong flag): decoded the way an unflagged name that is not UTF-8 is,
+                # and reported (format-zip spec). The Unicode Path field stays unread,
+                # as for any flagged name.
+                text, codec = self._decode_unflagged_legacy(
+                    raw_name, lambda: raw_name.decode("cp437")
+                )
+                return _DecodedName(
+                    text=text,
+                    raw_name=raw_name,
+                    alternate_raw_name=None,
+                    inferred_encoding=codec,
+                    declared_encoding="utf-8",
+                    unicode_extra_fault=None,
+                )
         else:
             decoded = raw_name.decode("cp437")
         name_source = decoded
@@ -2030,8 +2232,9 @@ class ZipReader(BaseArchiveReader):
         # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
         # so cp437 would yield mojibake. With no authoritative signal (flag clear and no
         # Unicode Path field), prefer UTF-8 when the stored bytes are valid UTF-8, else
-        # the caller's encoding= or a configurable legacy fallback. A set flag is honored
-        # as-is. ASCII bytes decode identically under UTF-8 and cp437 — skip the sniff.
+        # the caller's encoding= or a configurable legacy fallback. A set flag over valid
+        # UTF-8 is honored as-is (one the bytes refute returned above). ASCII bytes
+        # decode identically under UTF-8 and cp437 — skip the sniff.
         inferred_encoding: str | None = None
         if not is_utf8_flagged and unicode_name is None and not raw_name.isascii():
             name_source, inferred_encoding = self._sniff_unflagged_name(
@@ -2042,6 +2245,7 @@ class ZipReader(BaseArchiveReader):
             raw_name=raw_name,
             alternate_raw_name=alternate_raw_name,
             inferred_encoding=inferred_encoding,
+            declared_encoding=None,
             unicode_extra_fault=unicode_extra_fault,
         )
 
@@ -2167,12 +2371,30 @@ class ZipReader(BaseArchiveReader):
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
             extra["zip.aes_actual_method"] = aes_info.actual_method
+        size: int | None = entry.file_size
+        size_unknown: _UnknownSize | None = None
+        size_wrapped = False
+        if (
+            entry.method in _ARCHIVE_UTILITY_METHODS
+            and not self._end.zip64
+            and written_by_archive_utility(entry)
+        ):
+            size, size_unknown = _wrapped_size(entry)
+            if size_unknown is not None and not hashes:
+                # An unknown size is filled in only once a read's CRC-32 matches;
+                # with none to check, the stored size stays.
+                size, size_unknown = entry.file_size, None
+            size_wrapped = size != entry.file_size or bool(
+                entry.compressed_size_correction
+            )
+            if size_unknown is not None:
+                extra[EXTRA_SIZE_MOD_2_32] = entry.file_size
         # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
         member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
-            size=entry.file_size,
+            size=size,
             compressed_size=entry.compressed_size,
             compression=compression,
             hashes=hashes,
@@ -2183,7 +2405,7 @@ class ZipReader(BaseArchiveReader):
                 index=index,
                 header_offset=entry.header_offset,
                 compressed_size=entry.compressed_size,
-                file_size=entry.file_size,
+                file_size=entry.file_size if size is None else size,
                 crc=crc,
                 flags=entry.flags,
                 method=method,
@@ -2192,6 +2414,7 @@ class ZipReader(BaseArchiveReader):
                 aes=aes_info,
                 strong_encryption=_uses_strong_encryption(entry.flags, entry.extra),
                 reparse_fallback=reparse_fallback,
+                size_unknown=size_unknown,
             ),
         )
         if modified is not None:
@@ -2210,17 +2433,31 @@ class ZipReader(BaseArchiveReader):
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         if entry.comment:
-            # APPNOTE puts the member comment under the name's UTF-8 flag.
+            # APPNOTE puts the member comment under the name's UTF-8 flag, so a flag
+            # the name's bytes refute is not trusted for the comment either.
             member.comment = (
                 _decode_with_fallback(entry.comment)
                 if entry.flags & _ZIP_MASK_UTF8
+                and decoded_name.declared_encoding is None
                 else self._decode_unflagged_comment(entry.comment)
             )
         member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
         inferred_encoding = decoded_name.inferred_encoding
-        if inferred_encoding is not None:
+        declared_encoding = decoded_name.declared_encoding
+        if inferred_encoding is not None and declared_encoding is not None:
+            self._emit_name_encoding_inferred(
+                member,
+                index,
+                inferred_encoding=inferred_encoding,
+                passed_over=declared_encoding,
+                message=(
+                    f"ZIP member name decoded as {inferred_encoding!r}: its UTF-8 flag "
+                    f"is set but the name is not valid UTF-8: {quoted(member.name)}"
+                ),
+            )
+        elif inferred_encoding is not None:
             # The codec the name would otherwise have had: for a UTF-8 reading, the
             # caller's encoding= or the configured fallback; for a configured fallback,
             # the cp437 APPNOTE default.
@@ -2298,6 +2535,10 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if entry.offset_correction:
+            self._emit_offset_wrapped(member, entry, index)
+        if size_wrapped:
+            self._emit_size_wrapped(member, entry, index)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; read() delivers them.
@@ -2463,18 +2704,7 @@ class ZipReader(BaseArchiveReader):
         """
         header = entry.header
         central = _central_from_local(entry)
-        try:
-            decoded_name = self._decode_member_name(central)
-        except CorruptionError:
-            if not central.flags & _ZIP_MASK_UTF8:
-                raise
-            # A name the UTF-8 flag mislabels is the directory's to refuse: a file
-            # read refuses this member when its local name differs from the central
-            # one, and the whole listing only when the central name is the bad one.
-            # Read as unflagged, the member goes on to that check at the end.
-            decoded_name = self._decode_member_name(
-                replace(central, flags=central.flags & ~_ZIP_MASK_UTF8)
-            )
+        decoded_name = self._decode_member_name(central)
         stored_as_directory = decoded_name.text.endswith(("/", "\\"))
         member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
         name = normalize_member_name(
@@ -2846,6 +3076,12 @@ class ZipReader(BaseArchiveReader):
         hashes = member.hashes
         size = member.size
         if hashes or size is not None:
+            loc = member._raw
+            unknown = (
+                loc.size_unknown
+                if size is None and isinstance(loc, _ZipLocator)
+                else None
+            )
             return self._wrap_member_stream(
                 decoded,
                 member.name,
@@ -2853,9 +3089,15 @@ class ZipReader(BaseArchiveReader):
                 expected_hashes=hashes,
                 expected_size=size,
                 verify_member=member,
+                # A size the archive leaves unknown: the length is checked against
+                # what it stores, and filled in once the CRC-32 matches.
+                end_check=None if unknown is None else unknown.check,
+                fill_size=unknown is not None,
             )
-        # Listed members always carry a size; only a caller's own copy rebuilt with
-        # ``replace(size=None, hashes={})`` gets here, and is then not verified.
+        # A listed member carries a size, or a digest when its size is unknown (with
+        # no CRC-32, ``_to_member`` keeps the stored size); only a caller's own
+        # copy rebuilt with ``replace(size=None, hashes={})`` gets here, and is then
+        # not verified.
         return self._wrap_member_stream(decoded, member.name, size=size)
 
     def _open_codec_member(

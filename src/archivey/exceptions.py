@@ -104,8 +104,7 @@ class ArchiveyError(Exception):
       escapes one of ours a second time. When the exception's own text does not
       describe the archive (``struct.error``, ``IndexError`` from a parser), write that
       description instead and keep the original as ``__cause__``.
-      ``tests/test_escaping.py`` checks this rule and names the one site that still
-      breaks it (a ZIP member name that is not valid UTF-8).
+      ``tests/test_escaping.py`` checks this rule.
 
     Note this is the opposite of the rule for ``logger.*`` calls, whose records the CLI
     does **not** escape: there, ``%r`` is what makes an interpolated name inert and must

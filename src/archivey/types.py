@@ -475,6 +475,12 @@ EXTRA_IS_FILE_COPY: Final = "is_file_copy"
 # legacy bytes are here. Not namespaced, as other formats store a name twice too.
 EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
 
+# Key in ArchiveMember.extra holding the member's size modulo 2**32, when the archive
+# stores only that and ``size`` is None until a read counts it. ZIP sets it for a member
+# of a macOS Archive Utility ZIP whose size past 4 GiB the format cannot settle. Not
+# namespaced: other formats store a 32-bit size too (gzip's ISIZE).
+EXTRA_SIZE_MOD_2_32: Final = "size_mod_2_32"
+
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which carries the method-byte offset instead.
@@ -580,6 +586,11 @@ class MemberExtra(dict[str, object]):
       name, when the archive stores two and ``raw_name`` is the one ``name`` was
       decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra
       field (0x7075), the header's legacy bytes.
+    * ``size_mod_2_32`` (``int``) — ZIP. The member's size modulo 2³², when that is
+      all the archive stores: a large member of a ZIP macOS Archive Utility wrote
+      without ZIP64, whose real size only a read can tell. Set when ``size`` is
+      listed as ``None``; a read to the end checks the length against it and fills
+      in ``size``, and the key stays.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
@@ -623,6 +634,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["special_file_type"], /) -> SpecialFileType: ...
     @overload
     def __getitem__(self, key: Literal["alternate_raw_name"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["size_mod_2_32"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
     @overload

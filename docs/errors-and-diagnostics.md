@@ -208,6 +208,8 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | `MEMBER_SPECIAL_FILE_HAS_DATA` | A member whose mode names a FIFO, device or socket also stores data. It is listed as a `FILE`, because the data stream is the structure and the mode only an attribute: refusing it would hide bytes that every other extractor writes out, and Info-ZIP's `zip -FI` produces exactly this shape when it archives a named pipe's content. The stored type stays in `extra["special_file_type"]` and the context carries it with the size. Advisory: `DiagnosticPolicy.STRICT` does not raise on it. A special-mode entry with **no** data stays `OTHER` and is skipped by extraction. |
 | `MEMBER_LOCAL_NAME_DIFFERS` | A ZIP member's local header, the copy of its entry stored in front of its data, stores other name bytes than the central directory (another code page, or `\` for `/`), and the member is read anyway, as `unzip` reads it. The member keeps the directory's name; the local bytes are in the context's `local_raw_name_base64` (`field="name"`). The report comes when the member's data is first read; a directory never reports it. In `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the member: a tool that trusts the local header shows it under another name. |
 | `MEMBER_LOCAL_CRC_USED` | A ZIP member's central directory stores CRC-32 0 and its local header a real value, given in the context's `local_crc32` (`field="crc32"`). `hashes` holds the local value, the data is checked against it, as `unzip` checks it, and the report comes at listing. Every Adobe AIR package stores `META-INF/AIR/hash` this way. Outside `ARCHIVE_INTEGRITY_CODES`, so `STRICT` reads the member: the data is still checked. |
+| `ARCHIVE_OFFSET_WRAPPED` | A ZIP written past 4 GiB without ZIP64 stores its offsets with the top bits cut off, as macOS Archive Utility (Finder's Compress) does. Archivey corrected one: a member's local header offset (`record="local_header"`, one diagnostic per member) or the end record's offset of the central directory (`record="central_directory"`, once, with no member name). The context carries the stored and the corrected offset. A correction is made only when a local header with the member's name is at the corrected offset, and the member's CRC-32 is still checked when it is read. Advisory: `DiagnosticPolicy.STRICT` does not raise on it, because macOS writes and reads such archives by default. |
+| `MEMBER_SIZE_WRAPPED` | The same macOS archives store a member's sizes with the top bits cut off too: archivey corrected them for a member past 4 GiB, or, for a deflated member over about 4 MB compressed in an archive of any length, could not tell from the listing whether the size passed 4 GiB. Archive Utility marks every entry it writes (version made by Unix 2.1, a data descriptor, the old Info-ZIP `UX` extra field alone), and only such entries are corrected. The compressed size comes from where the member's data really ends, at the next member's local header or the central directory. A stored member's size is its compressed size. A deflated member's size is the stored value plus whichever multiple of 4 GiB deflate's ratio allows: at most 1032 to 1, with no lower bound. When several fit (any deflated member over about 4 MB compressed), `size` is `None` and `extra["size_mod_2_32"]` holds the stored value; a read to the end checks the length against it, then the CRC-32, and only then sets `member.size`; the key stays. The context carries the stored and the corrected sizes, with `size=None` for an unknown one. Advisory, as `ARCHIVE_OFFSET_WRAPPED`. |
 
 #### What is *not* here: per-member extraction outcomes
 
@@ -245,7 +247,7 @@ config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
   report the archive's own bytes or metadata as anomalous — and collects the rest.
 - **`DiagnosticPolicy.PEDANTIC`** raises on everything.
 
-Twelve codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
+Fourteen codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
 is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
 `MEMBER_SELECTOR_UNMATCHED` (argument hygiene — a pipeline passing a password, or one
 list of names, to every call would otherwise raise on every archive they do not fit),
@@ -261,7 +263,9 @@ member would raise),
 are delivered and checked like any file's), `MEMBER_NAME_INVISIBLE_CHARACTER` (a
 zero-width joiner is part of ordinary emoji, so `STRICT` would refuse archives of
 legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set),
-`FORMAT_EXTENSION_CONFLICT` (the file's name is wrong, not its bytes: a tarball
+`ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes ZIPs past 4 GiB this
+way by default and reads them back, and each correction is checked against the
+archive's own bytes and the CRC-32), `FORMAT_EXTENSION_CONFLICT` (the file's name is wrong, not its bytes: a tarball
 saved as `b.gz` opens and reads in full, and the code is still recorded; to refuse such
 files, add the code to `raise_on`), and `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it,
 and the data is still checked, against the local header's CRC-32; its sibling

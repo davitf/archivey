@@ -157,14 +157,13 @@ def format_access_summary(cost: CostReceipt) -> str:
             bits.append("listing requires decompression")
         elif cost.listing_cost is ListingCost.REQUIRES_SCANNING:
             bits.append("listing requires scan")
-        elif cost.listing_cost is ListingCost.INDEXED:
-            bits.append("reading one member may decode earlier members in its block")
+        bits.append("reading one member may decode earlier members in its block")
         if cost.solid_block_count is not None:
             n = cost.solid_block_count
             bits.append(f"{n} solid block{'s' if n != 1 else ''}")
         if cost.stream_capability is StreamCapability.FORWARD_ONLY:
             bits.append("forward-only source")
-        return f"solid ({'; '.join(bits)})" if bits else "solid"
+        return f"solid ({'; '.join(bits)})"
 
     if cost.listing_cost is ListingCost.INDEXED:
         head = "random (indexed)"

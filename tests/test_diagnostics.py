@@ -1018,6 +1018,10 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
         # Adobe AIR writes the shape and the data is checked against the local CRC-32.
         DiagnosticCode.MEMBER_LOCAL_CRC_USED,
+        # macOS writes ZIPs past 4 GiB this way by default; the correction is checked.
+        DiagnosticCode.ARCHIVE_OFFSET_WRAPPED,
+        # The same Mac archives with a member past 4 GiB; length and CRC are checked.
+        DiagnosticCode.MEMBER_SIZE_WRAPPED,
     }
 
 

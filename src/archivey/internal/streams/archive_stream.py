@@ -181,6 +181,8 @@ class ArchiveStream(ReadOnlyIOStream):
         digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
         | None = None,
         verify_member: ArchiveMember | None = None,
+        end_check: Callable[[int], None] | None = None,
+        fill_size: bool = False,
         archive_name: str | None = None,
         verifier: MemberVerifier | None = None,
         member_name: str | None = None,
@@ -237,6 +239,8 @@ class ArchiveStream(ReadOnlyIOStream):
                 member=verify_member,
                 archive_name=archive_name,
                 digest_transforms=digest_transforms,
+                end_check=end_check,
+                fill_size=fill_size,
             )
         if not lazy:
             self._ensure_open()
