@@ -18,8 +18,9 @@ covers them at the switch. `reading.md` covers `access_cost` and `listing_cost`,
 pattern, which `docs/access-and-cost.md` explains. The API reference doesn't link to `reading.md`
 for these types yet. Three limitations the old philosophy page listed have no page here yet:
 archivey doesn't modify archives in place, has no async API before 1.0, and isn't a backup engine by
-itself. They belong on a future limitations or formats page. No check looks at links in this tree,
-so a broken one goes unnoticed.
+itself. They belong on a future limitations or formats page. The platform and threading table in
+`docs/support-matrix.md` has no page here yet, and the pages that linked it no longer do. No check
+looks at links in this tree, so a broken one goes unnoticed.
 
 When this tree replaces `docs/`, three pointers outside it move too. `SECURITY.md` links the known
 limits at `docs/extracting.md`, and `dev-docs/threat-model.md` names `docs/extracting.md` as its

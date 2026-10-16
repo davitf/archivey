@@ -17,9 +17,10 @@ The maintainer also sets the scope, the architecture and the
 [design rules](https://github.com/davitf/archivey/blob/main/dev-docs/design-rules.md) the agents
 follow, and rules on the trade-offs they can't settle from the code. Two examples:
 
-- **When formats disagree.** Archivey follows each format's official tool, such as `unrar` for RAR
-  and GNU tar for TAR, unless being the same across formats matters more. Device files are one such
-  case: every format lists them as "other".
+- **When formats disagree.** Archivey weighs following each format's official tool, such as `unrar`
+  for RAR and GNU tar for TAR, against being the same across formats. Neither wins automatically.
+  Device files that store no data are one case where being the same won: every format lists them as
+  "other".
 - **What counts as damage.** Some problems refuse the archive, and others, which are only unusual,
   are reported as diagnostics.
 
@@ -66,15 +67,17 @@ others miss.
 - **Thousands of tests on every pull request.** They run on Linux with Python 3.11 to 3.14, on macOS
   and Windows with 3.11 and 3.14, on a free-threaded build, with no optional packages installed, and
   with the oldest dependency versions archivey allows.
-- **A test for every corner case.** Every corner case that has been fixed, or that someone worried
-  about, has a test, so it can't quietly come back.
+- **A test for every fix.** Every bug that has been fixed has a test, and so do many corner cases
+  that were only worried about, so a fixed problem can't quietly come back.
 - **One set of test archives, built in every format.** Each test archive is described once and then
-  built by the real tools (7-Zip, RAR, zip, tar and others) in every format that can hold it. Every
-  copy must open, list, read back and extract safely. Hand-built hostile archives sit beside them:
-  path traversal, links that point outside the destination, decompression bombs, and forged sizes
-  and counts.
+  written in every format that can hold it, never by archivey itself: by other libraries (`zipfile`,
+  `tarfile`, py7zr and pycdlib) and, for RAR and encrypted ZIP, by the `rar` and `7z` programs.
+  Every copy must open, list, read back and extract safely. Hand-built hostile archives sit beside
+  them: path traversal, links that point outside the destination, decompression bombs, and forged
+  sizes and counts.
 - **Other libraries as a reference.** Tests check what archivey reads against py7zr, rarfile and
-  unrar. These libraries are used only in tests.
+  `unrar`. Archivey never imports py7zr or rarfile when it runs; `unrar` is also the program it uses
+  to decompress RAR data.
 - **Fuzzing.** Every test archive is cut short, bit-flipped, zeroed and padded, and reading it must
   either succeed or raise an `ArchiveyError`. A coverage-guided fuzzer (Atheris) runs over every
   format's parser and every decoder, briefly on each pull request and for longer every night. It
