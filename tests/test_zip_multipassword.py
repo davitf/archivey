@@ -36,7 +36,7 @@ from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
-from tests.conftest import requires_zstd, zstd_backend
+from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_aes_fixture import build_aes_zip
@@ -968,7 +968,12 @@ def _zero_crc_fields(blob: bytes) -> bytes:
 
 
 @pytest.mark.parametrize(
-    "cipher", ["zipcrypto", "ae1", "ae2"], ids=["zipcrypto", "ae1", "ae2"]
+    "cipher",
+    [
+        pytest.param("zipcrypto", id="zipcrypto"),
+        pytest.param("ae1", id="ae1", marks=requires("cryptography")),
+        pytest.param("ae2", id="ae2", marks=requires("cryptography")),
+    ],
 )
 @pytest.mark.parametrize(
     "compression",
