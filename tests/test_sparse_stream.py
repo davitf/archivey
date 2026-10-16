@@ -6,10 +6,10 @@ import io
 import tarfile
 from pathlib import Path
 from random import Random
+from typing import BinaryIO
 
 import pytest
 
-from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools import SparseStream
 from tests.memory_util import traced_peak
 
@@ -121,37 +121,83 @@ def test_readinto_goes_through_read() -> None:
     assert bytes(buf) == b"\x00\x00ab\x00\x00"
 
 
+def _inner(stored: bytes, seekable: bool) -> BinaryIO:
+    return io.BytesIO(stored) if seekable else io.BufferedReader(_ForwardOnly(stored))
+
+
+class _RaisesAtEnd(io.RawIOBase):
+    """Bytes, then an error of its own on the read that finds none, as the TAR
+    member views raise ``TruncatedError``."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[override]
+        count = self._inner.readinto(b)
+        if len(b) and not count:
+            raise _CutError("the inner stream ended")
+        return count
+
+
+class _CutError(Exception):
+    pass
+
+
 @pytest.mark.parametrize("seekable", [True, False])
-def test_short_stored_data_raises_truncated_after_the_prefix(seekable: bool) -> None:
-    """A cut inside a chunk is a truncation (ADR 0014): a sized read returns the bytes
-    before the cut, holes included, and the next read raises."""
-    stored = b"abcd"
-    inner = io.BytesIO(stored) if seekable else io.BufferedReader(_ForwardOnly(stored))
+def test_a_cut_inside_a_chunk_returns_the_prefix_then_raises(seekable: bool) -> None:
+    """A sized read returns the bytes before the cut, holes included, and the next
+    read raises (ADR 0014). The stream layer raises a builtin; the format reader
+    translates it."""
     # The map names 6 stored bytes; 4 are there.
-    stream = SparseStream(inner, [2, 8], [2, 4], 14)
+    stream = SparseStream(_inner(b"abcd", seekable), [2, 8], [2, 4], 14)
     assert stream.read(100) == b"\x00\x00ab\x00\x00\x00\x00cd"
     assert stream.tell() == 10
-    with pytest.raises(TruncatedError):
+    with pytest.raises(EOFError):
         stream.read(1)
 
 
 @pytest.mark.parametrize("seekable", [True, False])
-def test_short_stored_data_fails_a_whole_read(seekable: bool) -> None:
+def test_a_cut_at_a_chunk_start_returns_the_prefix_then_raises(seekable: bool) -> None:
+    """The stored data ends exactly where a chunk starts: the inner read gets no
+    bytes. The bytes already read, and the hole before the chunk, still come first."""
+    stream = SparseStream(_inner(b"abcd", seekable), [0, 10], [4, 4], 20)
+    assert stream.read(20) == b"abcd" + bytes(6)
+    assert stream.tell() == 10
+    with pytest.raises(EOFError, match="none of the 4 bytes"):
+        stream.read(20)
+
+
+def test_an_inner_error_at_a_chunk_start_comes_after_the_prefix() -> None:
+    """An inner that raises its own error at its end, rather than returning no
+    bytes, gets the same order: the prefix, then that same error."""
+    stream = SparseStream(io.BufferedReader(_RaisesAtEnd(b"ab")), [0, 5], [2, 2], 9)
+    assert stream.read(9) == b"ab" + bytes(3)
+    with pytest.raises(_CutError):
+        stream.read(9)
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_a_cut_fails_a_whole_read(seekable: bool) -> None:
     """A read with no size raises at the cut and returns nothing, as a plain member's
-    does."""
-    inner = io.BytesIO(b"ab") if seekable else io.BufferedReader(_ForwardOnly(b"ab"))
-    stream = SparseStream(inner, [0], [4], 8)
-    with pytest.raises(TruncatedError):
-        stream.read()
+    does, wherever the cut is."""
+    for stored, offsets, lengths in (
+        (b"ab", [0], [4]),
+        (b"abcd", [0, 10], [4, 4]),
+    ):
+        stream = SparseStream(_inner(stored, seekable), offsets, lengths, 20)
+        with pytest.raises(EOFError):
+            stream.read()
 
 
-def test_a_skip_past_the_stored_data_raises_truncated() -> None:
+def test_a_skip_past_the_stored_data_raises() -> None:
     """A forward-only stream skips to a chunk by reading; stored data that ends
-    before the chunk is a truncation, not a builtin ``EOFError``."""
-    inner = io.BufferedReader(_ForwardOnly(b"ab"))
-    stream = SparseStream(inner, [0, 10], [4, 4], 14)
+    before the chunk raises there."""
+    stream = SparseStream(_inner(b"ab", False), [0, 10], [4, 4], 14)
     stream.seek(11)
-    with pytest.raises(TruncatedError):
+    with pytest.raises(EOFError):
         stream.read(1)
 
 

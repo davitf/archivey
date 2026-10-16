@@ -1442,6 +1442,17 @@ class TarReader(BaseArchiveReader):
             return self._decode_name(pax.value, NameSource.PAX, pax.binary)[0]
         return self._decode_name(header, NameSource.HEADER, False)[0]
 
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        # The stream layer (streamtools) raises builtins, never archivey errors. A
+        # sparse member's SparseStream raises EOFError when its stored data ends, and
+        # does so only when the stream under it returned no bytes instead of raising
+        # its own TruncatedError, which names the archive offset.
+        if isinstance(exc, EOFError):
+            return TruncatedError(
+                f"TAR archive is truncated inside a sparse member's data: {exc}"
+            )
+        return None
+
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         with self._translated_errors(member.name):
             return self._open_member_stream(member, defer_sparse_error=False)

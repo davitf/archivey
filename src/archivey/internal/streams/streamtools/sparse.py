@@ -15,11 +15,13 @@ The zeros of a hole are output the archive chooses, and this stream neither coun
 caps them: the output limits (``max_extracted_bytes``, ``max_ratio``) must count above
 it, where the logical bytes are.
 
-Stored data that ends early is a truncation, as for any member stream (ADR 0014): a
-sized ``read(n)`` returns the bytes before the cut, short, and the next read raises
-:class:`~archivey.exceptions.TruncatedError`; a ``read()`` with no size raises and
-returns nothing. The error is the inner stream's own when it raises one, so a format
-reader can name where its archive ends.
+Stored data that ends early follows the member-stream truncation rule (ADR 0014): a
+sized ``read(n)`` returns the logical bytes before the cut, holes included, short, and
+the next read raises; a ``read()`` with no size raises and returns nothing. The error
+is the inner stream's own when it raises one, so a format reader can name where its
+archive ends. An inner that returns ``b""`` instead gets a builtin :class:`EOFError`
+from this stream, which the format reader translates, as for
+:func:`~archivey.internal.streams.streamtools.solid.skip_forward`.
 
 Seeking follows ``io.BytesIO``: any non-negative target is accepted, a read past the
 end returns ``b""``. Over a forward-only inner the stream is forward-only too: reading
@@ -34,7 +36,6 @@ from bisect import bisect_right
 from collections.abc import Sequence
 from typing import BinaryIO
 
-from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     check_read_size,
@@ -85,6 +86,9 @@ class SparseStream(DelegatingStream):
         # inner stream is now.
         self._base = inner.tell() if self._seekable else 0
         self._inner_pos = 0
+        # The inner's error at a cut, held back by a sized read that had bytes to
+        # return first; the next read raises it.
+        self._pending: Exception | None = None
 
     def _raise_if_closed(self) -> None:
         if self.closed:
@@ -103,6 +107,8 @@ class SparseStream(DelegatingStream):
             )
         if target == self._pos:
             return target
+        # The next read starts somewhere else and meets the cut again if it reaches it.
+        self._pending = None
         self._pos = target
         self._chunk_index = self._chunk_index_at(target)
         return target
@@ -120,6 +126,9 @@ class SparseStream(DelegatingStream):
     def read(self, n: int = -1, /) -> bytes:
         self._raise_if_closed()
         n = check_read_size(n)
+        if self._pending is not None:
+            error, self._pending = self._pending, None
+            raise error
         left = self._size - self._pos
         if left <= 0:
             return b""
@@ -127,7 +136,18 @@ class SparseStream(DelegatingStream):
         want = left if whole else min(n, left)
         parts: list[bytes] = []
         while want:
-            part, cut = self._read_some(want)
+            try:
+                part, cut = self._read_some(want)
+            except Exception as exc:
+                # The inner raised, as at a cut on a chunk's first byte, where the
+                # inner read gets nothing. A sized read that already holds bytes,
+                # holes included, returns them first (ADR 0014) and raises this same
+                # error on the next read. The position is still at the failed chunk.
+                # Nothing is converted here, only delayed by one read.
+                if whole or not parts:
+                    raise
+                self._pending = exc
+                break
             parts.append(part)
             want -= len(part)
             if cut and not whole:
@@ -174,21 +194,17 @@ class SparseStream(DelegatingStream):
                 # Chunks are in logical order, so a forward-only inner only ever skips
                 # forward: the reader moved past a chunk's start by a seek. Counted as
                 # it goes, so a skip that raises leaves the position true.
-                try:
-                    skip_forward(
-                        inner, at - self._inner_pos, on_chunk=self._advance_inner
-                    )
-                except EOFError as exc:
-                    raise TruncatedError(
-                        "sparse data ends before a chunk the read skips to"
-                    ) from exc
+                skip_forward(inner, at - self._inner_pos, on_chunk=self._advance_inner)
         # A full-count inner (ADR 0014): a short read is its end, and the caller gets
         # the bytes before it. An inner that returns nothing at its end, rather than
         # raising its own error, gets this one.
         data = inner.read(count)
         self._inner_pos += len(data)
         if not data:
-            raise TruncatedError(f"sparse data ends {count} bytes into a chunk")
+            raise EOFError(
+                f"the stored sparse data ended: none of the {count} bytes read "
+                "from a chunk are there"
+            )
         return data
 
     def _advance_inner(self, count: int) -> None:

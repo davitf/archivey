@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import errno
 import re
+import sys
 import zlib
 from array import array
 from collections.abc import Callable, Mapping
@@ -432,7 +433,23 @@ def _pax_int(records: Mapping[bytes, PaxValue], key: bytes) -> int | None:
         raise CorruptionError(
             f"TAR PAX record {key.decode()} is not a number: {text[:40]!r}"
         )
-    return int(text)
+    return _pax_decimal(key, text)
+
+
+def _pax_decimal(key: bytes, digits: bytes) -> int:
+    """The value of the ASCII decimal ``digits`` of PAX record ``key``.
+
+    ``int()`` refuses a string longer than Python's digit limit with a builtin
+    ``ValueError``, leading zeros included. Those are dropped first, and a number
+    still past the limit is damage: no field holds a value that large."""
+    significant = digits.lstrip(b"0")
+    limit = sys.get_int_max_str_digits()
+    if limit and len(significant) > limit:
+        raise CorruptionError(
+            f"TAR PAX record {key.decode(errors='replace')} is a number of "
+            f"{len(significant)} digits, too large for any field"
+        )
+    return int(significant) if significant else 0
 
 
 def _sparse_major_1_or_more(major: PaxValue | None) -> bool:
@@ -1114,9 +1131,9 @@ class TarWalker:
             if value is not None and value.value.isdigit():
                 # A PAX id that is not a number is ignored, keeping the header's.
                 if key == b"uid":
-                    uid = int(value.value)
+                    uid = _pax_decimal(key, value.value)
                 else:
-                    gid = int(value.value)
+                    gid = _pax_decimal(key, value.value)
 
         data_offset = offset + BLOCKSIZE
         size = stored_size

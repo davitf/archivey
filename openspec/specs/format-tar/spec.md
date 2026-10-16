@@ -92,6 +92,7 @@ in every format; the record name appears only in the message.
 | Old GNU or v7 header with bytes at offsets 345 to 500 (GNU incremental `tar -G` fills `atime` there) | Not joined to the name: `d/f.txt`, not `15262452373/d/f.txt` |
 | PAX global header, then members with no records of their own | Each member's `extra["tar.pax_headers"]` holds the global records, and a later global header does not change it. Changing it raises `TypeError` |
 | PAX sparse 1.0 map holding a number longer than 20 digits | `CorruptionError` while the header is parsed. GNU tar reads each number into a 20-digit buffer and refuses a longer one; this structural bound keeps a number with no newline from growing one buffer for the rest of the archive |
+| PAX `size`, `uid`, `gid`, `GNU.sparse.size` or `GNU.sparse.realsize` of more significant digits than Python's `int()` reads (4300 by default) | `CorruptionError` while the header is parsed, never the builtin `ValueError` of `int()`. Leading zeros do not count |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
 | PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the member attribute it would have filled |
 | PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
@@ -469,8 +470,9 @@ parse (`Reject TAR headers that do not parse`).
 
 A PAX member whose `GNU.sparse.major` is 1 or more SHALL be read as 1.0, whatever its
 minor version and whatever 0.x records (`GNU.sparse.size`, `GNU.sparse.map`,
-`GNU.sparse.offset`, `GNU.sparse.numbytes`) it also carries, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
-a number, with no 0.x map SHALL raise `CorruptionError`, never serve the map as content.
+`GNU.sparse.offset`, `GNU.sparse.numbytes`) it also carries, as GNU tar 1.35 reads it.
+A `GNU.sparse.major` of 0, or one that is not a number, with no 0.x map SHALL raise
+`CorruptionError`, never serve the map as content.
 
 A sparse member's map SHALL be checked before any of its data is returned: when the
 member is opened, or in a streaming pass on its first read, so a consumer that skips
