@@ -603,7 +603,8 @@ their reads fail too.
 ### Requirement: Read members past 4 GiB of a macOS Archive Utility ZIP
 
 The same writer stores a member's sizes modulo 2³² as well. An entry carries its marks
-when its version made by is `0x0315` (Unix, 2.1), general-purpose bit 3 is set, and its
+when its version made by is `0x0315` (Unix, 2.1), general-purpose bit 3 is set and bit 0
+(encryption) clear, and its
 central extra field is one old Info-ZIP Unix (`UX`, `0x5855`) field and nothing else.
 Anyone can copy the marks, so they SHALL only gate the corrections below, each
 checked against the archive's own bytes; under a ZIP64 end record nothing is corrected.
@@ -616,16 +617,17 @@ checked against the archive's own bytes; under a ZIP64 end record nothing is cor
   multiple of 2³², the entry SHALL take it. The entry after a marked one SHALL look
   for its local header at its stored offset plus each multiple of 2³² in turn, from the
   first not below the end of the members before it, and keep the first whose name
-  matches: one more local header read per member in such an archive. A read from a
+  matches; the data start SHALL come from the same local header read. A read from a
   pipe measures from the local headers its pass met.
 - **Size, stored members.** The size SHALL be the compressed size when the two agree
   modulo 2³².
-- **Size, deflated members.** The size SHALL be the stored size plus the multiple of
-  2³² that falls between seven eighths of the compressed size, less 64 bytes (coding
-  every byte as a literal takes nine bits at most) and 1032 times it (a 258-byte match
-  takes two bits at the least). One such value SHALL be the member's size. Several
-  SHALL leave `size` as `None`, with `extra["size_mod_2_32"]` holding the stored size.
-  None (a damaged entry) SHALL keep the stored size, and the read fails on it.
+- **Size, deflated members.** The size is the stored size plus a multiple of 2³² that
+  is at most 1032 times the compressed size (a 258-byte match takes two bits at the
+  least). No lower bound applies, since empty stored blocks pad a valid stream without
+  bound. When only the stored size fits, it SHALL be the member's size. When several
+  fit, `size` SHALL be `None`, with `extra["size_mod_2_32"]` holding the stored size;
+  the key SHALL stay after a read fills `size` in. When none fits (a damaged entry),
+  the stored size SHALL stay, and the read fails on it.
 - A member whose sizes were corrected or left unknown SHALL emit `MEMBER_SIZE_WRAPPED`
   with `SizeWrapContext` (advisory, as `ARCHIVE_OFFSET_WRAPPED`).
 - **Reading a member of unknown size.** A read from a file SHALL decode the member
@@ -642,10 +644,11 @@ checked against the archive's own bytes; under a ZIP64 end record nothing is cor
 | --- | --- |
 | A short member, a stored member of 2³² + 2²⁹ zero bytes, a short member | From a file and a pipe: the large member's size and compressed size are 2³² + 2²⁹, the members after it read, one `MEMBER_SIZE_WRAPPED` and the offset corrections |
 | The same without the `UX` fields | The stored sizes stay and the last member's read fails, as in the previous requirement |
-| A deflated member of 2³² + 100 zero bytes, about 4 MiB compressed | `size` is 2³² + 100 at listing; `DiagnosticPolicy.STRICT` lists it |
-| The same stream padded with empty stored blocks to about 10 MB | `size` is `None` and `extra["size_mod_2_32"]` 100; a read to the end yields 2³² + 100 bytes and fills in `size` |
-| A padded stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
-| A padded stream with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |
+| A deflated member of 2³² + 100 zero bytes, about 4 MiB compressed | `size` is `None` and `extra["size_mod_2_32"]` 100 at listing; `DiagnosticPolicy.STRICT` lists it; a read to the end yields 2³² + 100 bytes and fills in `size`, and the key stays |
+| A deflated member of 100 bytes padded with empty stored blocks to about 1 MB, stored size 100 | `size` is `None`, not 2³² + 100; a read yields 100 bytes and fills in `size` |
+| A deflated member whose stored size is over 1032 times its compressed size | The stored size stays; the read raises `TruncatedError` |
+| A stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
+| A stream of unknown size with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |
 | A small deflated member | Untouched: no diagnostic, no `size_mod_2_32` |
 
 ### Requirement: Apply max_members while reading a ZIP directory

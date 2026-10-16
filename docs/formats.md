@@ -146,9 +146,10 @@ yielded.
   macOS writes such archives by default. A single member over 4 GiB has its sizes
   cut too. Archivey corrects them for entries carrying Archive Utility's marks, with
   `MEMBER_SIZE_WRAPPED`: the compressed size from where the data really ends, and the
-  size from it where deflate's ratio leaves one value. Where it leaves several, `size`
-  is `None` and `extra["size_mod_2_32"]` holds the stored value until a read to the
-  end, checked against it and the CRC-32, fills in `size`.
+  size from it where deflate's ratio leaves one value (members under about 4 MB
+  compressed). Where it leaves several, `size` is `None` and `extra["size_mod_2_32"]`
+  holds the stored value; a read to the end, checked against it and the CRC-32, fills
+  in `size`, and the key stays.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or

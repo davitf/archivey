@@ -587,9 +587,10 @@ class MemberExtra(dict[str, object]):
       decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra
       field (0x7075), the header's legacy bytes.
     * ``size_mod_2_32`` (``int``) — ZIP. The member's size modulo 2³², when that is
-      all the archive stores and ``size`` is ``None``: a member past 4 GiB in a ZIP
-      macOS Archive Utility wrote without ZIP64, whose real size only a read can tell.
-      A read to the end checks the length against it and fills in ``size``.
+      all the archive stores: a large member of a ZIP macOS Archive Utility wrote
+      without ZIP64, whose real size only a read can tell. Set when ``size`` is
+      listed as ``None``; a read to the end checks the length against it and fills
+      in ``size``, and the key stays.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)

@@ -25,7 +25,7 @@ from archivey.diagnostics import (
     OffsetWrapContext,
     SizeWrapContext,
 )
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     find_end_record,
@@ -394,16 +394,15 @@ class _Deflated:
     crc: int
 
 
-def _zeros_deflated(size: int, *, padding: int = 0) -> bytes:
+def _zeros_deflated(size: int) -> bytes:
     """A raw deflate stream of ``size`` zero bytes, built from one compressed MiB
-    repeated, with ``padding`` empty stored blocks before its last block."""
+    repeated."""
     mib = zlib.compressobj(9, zlib.DEFLATED, -15)
     # A full flush ends byte-aligned with no history, so the piece repeats.
     piece = mib.compress(bytes(1 << 20)) + mib.flush(zlib.Z_FULL_FLUSH)
     tail = zlib.compressobj(9, zlib.DEFLATED, -15)
     last = tail.compress(bytes(size % (1 << 20))) + tail.flush()
-    empty_stored_block = b"\x00\x00\x00\xff\xff"
-    return piece * (size >> 20) + empty_stored_block * padding + last
+    return piece * (size >> 20) + last
 
 
 # 2³² + 2²⁹ zero bytes, stored, with its CRC-32 fixed here as ``_BIG``'s is.
@@ -573,19 +572,37 @@ def test_without_the_mac_fields_a_member_over_4_gib_keeps_its_stored_sizes() -> 
             reader.read(members[2])
 
 
-def test_deflate_ratio_settles_a_mac_member_size_past_4_gib() -> None:
-    # 4 MiB of deflate cannot decode to 2³² bytes more than 2³² + 100: one value fits.
-    stream = _zeros_deflated(_HUGE_ZEROS_SIZE)
-    assert len(stream) * 1032 < 2 * _WRAP
-    member = _Deflated(stream, _HUGE_ZEROS_SIZE, _HUGE_ZEROS_CRC)
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with _open(_mac_layout([("zeros.bin", member)]), config=config) as reader:
+def test_a_padded_stream_is_not_given_a_size_past_4_gib() -> None:
+    # 5 MB of deflate could decode to 2³² + 100 bytes, but empty stored blocks make a
+    # valid 5 MB stream of 100 bytes: the size is unknown, not 2³² + 100, and the
+    # read settles it.
+    data = bytes(100)
+    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = b"\x00\x00\x00\xff\xff" * 1_000_000 + pad.compress(data) + pad.flush()
+    member = _Deflated(stream, 100, zlib.crc32(data))
+    with _open(_mac_layout([("padded.bin", member)])) as reader:
         (listed,) = reader.members()
-        assert listed.size == _HUGE_ZEROS_SIZE
-        assert listed.compressed_size == len(stream)
-        (wrap,) = _size_wraps(reader)
-    assert (wrap.stored_size, wrap.size) == (100, _HUGE_ZEROS_SIZE)
-    assert wrap.stored_compressed_size == wrap.compressed_size == len(stream)
+        assert listed.size is None
+        assert reader.read(listed) == data
+        assert listed.size == 100
+        assert listed.extra["size_mod_2_32"] == 100
+
+
+def test_a_stored_size_deflate_cannot_reach_is_kept() -> None:
+    # 100 zero bytes deflate to a few bytes, which cannot decode to the stored million:
+    # a damaged entry. The size stays as stored, nothing is reported, and the read
+    # fails on it.
+    data = bytes(100)
+    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = pad.compress(data) + pad.flush()
+    member = _Deflated(stream, 1_000_000, zlib.crc32(data))
+    with _open(_mac_layout([("damaged.bin", member)])) as reader:
+        (listed,) = reader.members()
+        assert listed.size == 1_000_000
+        assert "size_mod_2_32" not in listed.extra
+        assert _size_wraps(reader) == []
+        with pytest.raises(TruncatedError):
+            reader.read(listed)
 
 
 def test_a_small_mac_member_is_untouched() -> None:
@@ -604,12 +621,13 @@ def test_a_small_mac_member_is_untouched() -> None:
 
 
 def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
-    # Padding with empty stored blocks makes the stream long enough that both 2³² + 100
-    # and 2³³ + 100 fit deflate's ratio, so the listing cannot tell. This test decodes
-    # 4 GiB of zeros.
-    stream = _zeros_deflated(_HUGE_ZEROS_SIZE, padding=2_000_000)
+    # About 4 MiB of deflate can decode to 100 or 2³² + 100 bytes, so the listing
+    # cannot tell, under STRICT too. This test decodes 4 GiB of zeros.
+    stream = _zeros_deflated(_HUGE_ZEROS_SIZE)
     member = _Deflated(stream, _HUGE_ZEROS_SIZE, _HUGE_ZEROS_CRC)
-    with _open(_mac_layout([("zeros.bin", member), ("b.txt", b"bee")])) as reader:
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    layout = _mac_layout([("zeros.bin", member), ("b.txt", b"bee")])
+    with _open(layout, config=config) as reader:
         listed, after = reader.members()
         assert listed.size is None
         assert listed.extra["size_mod_2_32"] == 100
@@ -623,6 +641,8 @@ def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
         with reader.open(listed) as data:
             assert _count(data) == _HUGE_ZEROS_SIZE
         assert listed.size == _HUGE_ZEROS_SIZE
+        # The key says what the archive stored; it stays once the size is known.
+        assert listed.extra["size_mod_2_32"] == 100
         assert reader.read(after) == b"bee"
 
 
@@ -689,3 +709,36 @@ def test_a_pipe_keeps_the_size_it_counted() -> None:
     assert read == data
     assert member.size == 100
     assert member.extra["size_mod_2_32"] == 100
+
+
+def test_a_pipe_descriptor_may_hold_the_full_size_of_a_marked_entry() -> None:
+    # A pass that decoded a deflated member past 4 GiB carries the size it counted;
+    # a marked entry stores it modulo 2³². Without the fingerprint it contradicts.
+    from archivey.internal.backends.zip_forward_reader import _contradicts
+    from archivey.internal.backends.zip_parser import CentralEntry
+
+    def entry(extra: bytes) -> CentralEntry:
+        return CentralEntry(
+            index=0,
+            version_made_by=_MADE_BY,
+            version_needed=20,
+            flags=_BIT3,
+            method=8,
+            dos_time=0,
+            dos_date=0,
+            crc=7,
+            compressed_size=50,
+            file_size=100,
+            header_offset=0,
+            disk_start=0,
+            internal_attr=0,
+            external_attr=0,
+            name=b"a",
+            extra=extra,
+            comment=b"",
+        )
+
+    counted = (7, 50, (1 << 32) + 100)
+    assert not _contradicts(counted, entry(_UX_CENTRAL))
+    assert _contradicts(counted, entry(b""))
+    assert _contradicts((7, 50, (1 << 32) + 101), entry(_UX_CENTRAL))

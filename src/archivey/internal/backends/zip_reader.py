@@ -119,8 +119,7 @@ from archivey.internal.backends.zip_parser import (
     EndRecord,
     EntryCountMismatch,
     WalkFinding,
-    local_data_start_at,
-    local_name_at,
+    local_header_at,
     locate_end_record,
     read_end_record,
     read_local_header,
@@ -915,16 +914,11 @@ class _UnknownSize(NamedTuple):
     modulo 2³² alone (:func:`_wrapped_size`)."""
 
     stored: int
-    low: int
+    #: Deflate's upper bound on the size: 1032 times the compressed size.
     high: int
 
     def check(self, length: int) -> None:
-        """Refuse a length the stored size or deflate's ratio rules out.
-
-        ``low`` is not checked: it holds for the encoders that write these archives,
-        not for every valid stream (empty stored blocks pad one without bound), and
-        the data that decoded is checked by its CRC-32.
-        """
+        """Refuse a length the stored size or deflate's ratio rules out."""
         if length % OFFSET_WRAP != self.stored or length > self.high:
             raise CorruptionError(
                 f"Decompressed content ended after {length} bytes, which the stored "
@@ -937,29 +931,26 @@ def _wrapped_size(entry: CentralEntry) -> tuple[int | None, _UnknownSize | None]
     archive stores modulo 2³², and its bounds when that leaves it unknown.
 
     The real size is the stored one plus a multiple of 2³². A stored member's is its
-    compressed size, which the walk measured from the layout. A deflated member's lies
-    between bounds deflate sets on the compressed size: at most 1032 times it (a
-    258-byte match takes two bits at the least), and at least seven eighths of it, as
-    coding every byte as a literal takes nine bits at most. One multiple in those
-    bounds is the size. Several leave it unknown: ``None``, with the bounds a read
-    checks the length against. None at all (a damaged entry) keeps the stored size,
-    and the read fails on it as before.
+    compressed size, which the walk measured from the layout, when the two agree
+    modulo 2³². A deflated member's is at most 1032 times its compressed size (a
+    258-byte match takes two bits at the least). When the stored value is the only
+    multiple under that, it is the size. When more fit, the size is unknown: ``None``,
+    with the bound a read checks the length against. No lower bound narrows them:
+    one that real encoders keep (incompressible data shrinks little) does not hold
+    for every valid stream, since empty stored blocks pad one without bound, and a
+    size picked on it could be 4 GiB too large. A stored value over the bound (a
+    damaged entry) stays, and the read fails on it as before.
     """
     stored = entry.file_size
     compressed = entry.compressed_size
     if entry.method == 0:
-        low = high = compressed
-    else:
-        low = max(0, compressed * 7 // 8 - 64)
-        high = compressed * _DEFLATE_MAX_RATIO
-    first = stored
-    if low > stored:
-        first += (low - stored + OFFSET_WRAP - 1) // OFFSET_WRAP * OFFSET_WRAP
-    if first > high:
+        if compressed % OFFSET_WRAP == stored:
+            return compressed, None
         return stored, None
-    if first + OFFSET_WRAP <= high:
-        return None, _UnknownSize(stored, low, high)
-    return first, None
+    high = compressed * _DEFLATE_MAX_RATIO
+    if stored + OFFSET_WRAP <= high:
+        return None, _UnknownSize(stored, high)
+    return stored, None
 
 
 def _stored_text(name: bytes) -> str:
@@ -1813,11 +1804,28 @@ class ZipReader(BaseArchiveReader):
         """A walk over the directory that corrects offsets wrapped past 4 GiB, checked
         against the local headers in the file."""
         read_at = self._read_at
+        # The last header read, by offset: the walk asks for a header's name and then
+        # for where its data starts, and the two share one read.
+        last: list[tuple[int, tuple[bytes, int] | None]] = []
+
+        def probe(offset: int) -> tuple[bytes, int] | None:
+            if not last or last[0][0] != offset:
+                last[:] = [(offset, local_header_at(read_at, offset))]
+            return last[0][1]
+
+        def name_at(offset: int) -> bytes | None:
+            found = probe(offset)
+            return None if found is None else found[0]
+
+        def data_start_at(offset: int) -> int | None:
+            found = probe(offset)
+            return None if found is None else found[1]
+
         return CentralDirectoryWalk(
             read_at,
             self._end,
-            local_name_at=lambda offset: local_name_at(read_at, offset),
-            local_data_start_at=lambda offset: local_data_start_at(read_at, offset),
+            local_name_at=name_at,
+            local_data_start_at=data_start_at,
         )
 
     def _emit_walk_finding(
@@ -2300,8 +2308,11 @@ class ZipReader(BaseArchiveReader):
         size: int | None = entry.file_size
         size_unknown: _UnknownSize | None = None
         size_wrapped = False
+        # Only a member with a CRC-32 to check a read against: an unknown size is
+        # filled in only once the CRC matches.
         if (
-            entry.method in _ARCHIVE_UTILITY_METHODS
+            hashes
+            and entry.method in _ARCHIVE_UTILITY_METHODS
             and not self._end.zip64
             and written_by_archive_utility(entry)
         ):
@@ -2920,8 +2931,10 @@ class ZipReader(BaseArchiveReader):
                 end_check=None if unknown is None else unknown.check,
                 fill_size=unknown is not None,
             )
-        # Listed members always carry a size; only a caller's own copy rebuilt with
-        # ``replace(size=None, hashes={})`` gets here, and is then not verified.
+        # A listed member carries a size, or a digest when its size is unknown
+        # (``_wrapped_size`` runs only for members with a CRC-32); only a caller's own
+        # copy rebuilt with ``replace(size=None, hashes={})`` gets here, and is then
+        # not verified.
         return self._wrap_member_stream(decoded, member.name, size=size)
 
     def _open_codec_member(

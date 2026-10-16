@@ -590,15 +590,24 @@ WalkFinding = (
 OFFSET_WRAP = 1 << 32
 
 
-def local_name_at(read_at: ReadAt, offset: int) -> bytes | None:
-    """The stored name of the local header at absolute ``offset``, or ``None`` when no
-    whole local header starts there."""
+def local_header_at(read_at: ReadAt, offset: int) -> tuple[bytes, int] | None:
+    """The stored name of the local header at absolute ``offset`` and where the data
+    after it starts, or ``None`` when no whole local header starts there."""
     fixed = read_at(offset, LOCAL_HEADER_SIZE)
     if len(fixed) != LOCAL_HEADER_SIZE or fixed[:4] != LOCAL_HEADER_SIGNATURE:
         return None
     (name_len,) = struct.unpack_from("<H", fixed, LOCAL_HEADER_SIZE - 4)
     name = read_at(offset + LOCAL_HEADER_SIZE, name_len)
-    return name if len(name) == name_len else None
+    if len(name) != name_len:
+        return None
+    return name, offset + LOCAL_HEADER_SIZE + local_header_variable_length(fixed)
+
+
+def local_name_at(read_at: ReadAt, offset: int) -> bytes | None:
+    """The stored name of the local header at absolute ``offset``, or ``None`` when no
+    whole local header starts there."""
+    found = local_header_at(read_at, offset)
+    return None if found is None else found[0]
 
 
 #: "Version made by" of macOS Archive Utility: host 3 (Unix), APPNOTE version 2.1.
@@ -611,8 +620,9 @@ _SIGNED_DESCRIPTOR_SIZE = 16
 
 def written_by_archive_utility(entry: CentralEntry) -> bool:
     """Whether ``entry`` looks as macOS Archive Utility (Finder's Compress, ``ditto -c
-    -k``) writes every entry: version made by Unix 2.1, a data descriptor (bit 3), and
-    one extra field, the old Info-ZIP ``UX`` field (``0x5855``).
+    -k``) writes every entry: version made by Unix 2.1, a data descriptor (bit 3) and
+    no encryption (bit 0; that writer encrypts nothing), and one extra field, the old
+    Info-ZIP ``UX`` field (``0x5855``).
 
     The caller also requires a classic end record: that writer never writes ZIP64.
     Anyone can copy these fields, so a match only lets a reader try the corrections
@@ -622,20 +632,11 @@ def written_by_archive_utility(entry: CentralEntry) -> bool:
     extra = entry.extra
     return (
         entry.version_made_by == ARCHIVE_UTILITY_MADE_BY
-        and bool(entry.flags & 0x08)
+        and entry.flags & 0x09 == 0x08
         and len(extra) >= 4
         and extra[:2] == _INFOZIP_OLD_UNIX_TAG
         and int.from_bytes(extra[2:4], "little") == len(extra) - 4
     )
-
-
-def local_data_start_at(read_at: ReadAt, offset: int) -> int | None:
-    """Where the data after the local header at absolute ``offset`` starts, or ``None``
-    when no whole local header starts there."""
-    fixed = read_at(offset, LOCAL_HEADER_SIZE)
-    if len(fixed) != LOCAL_HEADER_SIZE or fixed[:4] != LOCAL_HEADER_SIGNATURE:
-        return None
-    return offset + LOCAL_HEADER_SIZE + local_header_variable_length(fixed)
 
 
 class CentralDirectoryWalk:
@@ -682,8 +683,9 @@ class CentralDirectoryWalk:
     entry once it has read the next one. The entry after one whose size may have
     wrapped looks for its local header at its stored offset plus each multiple of 2³²
     in turn, from the first that is not below the end of the members before it, and
-    keeps the first with its name: one more local-header read per member in such
-    an archive. An uncompressed size that wraps is the reader's to settle: only a
+    keeps the first with its name. In such an archive that is one more local header
+    read per member (its fixed part, then its name), when the two callables share it
+    as the reader's do. An uncompressed size that wraps is the reader's to settle: only a
     decode says what it is.
     """
 

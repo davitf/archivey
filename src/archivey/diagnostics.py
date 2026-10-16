@@ -642,9 +642,9 @@ class SizeWrapContext(_JsonSafeContext):
       descriptor end where the next local header starts, or the central directory,
       and that end must be past the stored size's by a multiple of 2³².
     - A stored member's size is its compressed size. A deflated member's size is the
-      stored value plus the multiple of 2³² that deflate's ratio bounds allow (at most
-      1032 to 1, and incompressible data shrinks by little). When the bounds allow
-      several, the size is unknown until a read: ``size`` is ``None`` here and on the
+      stored value plus a multiple of 2³² that deflate's ratio allows (at most 1032 to
+      1; nothing bounds it from below). When it allows several, the size is unknown
+      until a read: ``size`` is ``None`` here and on the
       member, and ``extra["size_mod_2_32"]`` holds the stored value. A read that
       reaches the end checks the length against both, then the CRC-32, and only then
       fills in ``member.size``.
@@ -789,7 +789,7 @@ and the reasons are part of the contract rather than an oversight:
   a local header with the member's name is there, with the CRC-32 still checked.
   ``STRICT`` would refuse an ordinary Mac archive.
 - ``MEMBER_SIZE_WRAPPED`` — the same Mac archives, with a member past 4 GiB. A size is
-  corrected only where the layout or deflate's bounds force it, and an unknown one is
+  corrected only where the layout or deflate's ratio forces it, and an unknown one is
   ``None``, with the length and CRC-32 checked on a read.
 """
 
