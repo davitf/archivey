@@ -1150,7 +1150,11 @@ def test_each_bad_numeric_field_is_named(field: str, start: int, end: int) -> No
 def test_number_cache_is_bounded_and_agrees_with_the_parse() -> None:
     from archivey.internal.backends import tar_parser
 
-    for i in range(tar_parser._NUMBERS_KEPT * 2):
+    cache = tar_parser._cached_number
+    cache.cache_clear()
+    maxsize = cache.cache_info().maxsize
+    assert maxsize is not None
+    for i in range(maxsize * 2):
         mtime = 1_600_000_000 + i
         block = _block(
             patch=lambda h, t=mtime: h.__setitem__(slice(136, 148), _octal(t, 12))
@@ -1158,6 +1162,4 @@ def test_number_cache_is_bounded_and_agrees_with_the_parse() -> None:
         parsed = parse_header_block(block, 0)
         assert isinstance(parsed, HeaderBlock)
         assert parsed.mtime == mtime
-        assert len(tar_parser._numbers) <= tar_parser._NUMBERS_KEPT
-    for raw, value in tar_parser._numbers.items():
-        assert tar_parser.parse_number(raw) == value
+    assert cache.cache_info().currsize <= maxsize

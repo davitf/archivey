@@ -41,6 +41,7 @@ from array import array
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from typing import BinaryIO, cast
 
 from archivey.exceptions import (
@@ -249,20 +250,11 @@ _FIELDS = (
 # The seven numeric fields in _FIELDS order, as raw bytes, in one C call. A test checks
 # that it cuts the same bytes as _FIELDS.
 _split_numbers = struct.Struct("100x8s8s8s12s12s181x8s8s167x").unpack
-# Raw numeric field -> value. Most fields of an archive repeat (mode, ids, the device
-# numbers, often the times), so a dict hit replaces the strip/translate/int. Bounded:
-# cleared when full, so a hostile archive of distinct values costs one dict insert per
-# field and no more memory.
-_numbers: dict[bytes, int] = {}
-_NUMBERS_KEPT = 4096
-
-
-def _parse_and_keep(raw: bytes) -> int:
-    value = parse_number(raw)
-    if len(_numbers) >= _NUMBERS_KEPT:
-        _numbers.clear()
-    _numbers[raw] = value
-    return value
+# Most numeric fields repeat across an archive (mode, ids, the device numbers, often
+# the times), so a cache hit replaces the strip/translate/int. Bounded, so a hostile
+# archive of distinct values costs a cache miss per field and no more memory. Measured
+# per header against a plain dict lookup: the same within noise.
+_cached_number = lru_cache(maxsize=4096)(parse_number)
 
 
 def _field_named(block: bytes) -> str:
@@ -293,12 +285,10 @@ def parse_header_block(
         return RejectedBlock(offset, "the checksum field is not a number")
     if not _checksum_matches(block, stored_sum):
         return RejectedBlock(offset, "bad header checksum")
-    known = _numbers.get  # one get per field: another thread may clear it between two
     try:
-        mode, uid, gid, size, mtime, devmajor, devminor = [
-            _parse_and_keep(raw) if (value := known(raw)) is None else value
-            for raw in _split_numbers(block)
-        ]
+        mode, uid, gid, size, mtime, devmajor, devminor = map(
+            _cached_number, _split_numbers(block)
+        )
     except _BadNumber:
         return RejectedBlock(offset, f"the {_field_named(block)} field is not a number")
     if size < 0:

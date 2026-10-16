@@ -8,9 +8,11 @@ copy-pasted per backend. The answers are ``datetime`` + ``timedelta`` arithmetic
 gives the same value on every platform and raises ``OverflowError`` everywhere for a
 value outside ``datetime``'s range. For a field wide enough to hold such a value that
 guard is the load-bearing part: a hostile timestamp must degrade to ``None`` + a reported
-issue, never sink the whole listing. A 32-bit Unix field cannot hold one, so
-:func:`unix32_to_datetime` has no failure case; it tries the faster
-``datetime.fromtimestamp`` first and falls back to the sum wherever the platform refuses.
+issue, never sink the whole listing. The two Unix helpers try the faster
+``datetime.fromtimestamp`` first (:func:`unix_to_datetime` only for an integer) and fall
+back to the sum wherever the platform refuses. A 32-bit Unix field cannot hold a value
+outside the range, so :func:`unix32_to_datetime`'s fallback cannot fail and it has no
+``None`` case.
 """
 
 from __future__ import annotations
