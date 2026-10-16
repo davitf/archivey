@@ -45,6 +45,7 @@ from archivey.internal.backends.zip_detect import (
     LOCAL_HEADER_SIZE,
     ZIP_MULTI_VOLUME_MSG,
 )
+from archivey.terminal import quoted
 
 #: ``read_at(offset, n)``: up to ``n`` bytes from absolute ``offset``; fewer only at
 #: the end of the source.
@@ -964,10 +965,13 @@ class CentralDirectoryWalk:
             return
         local = name_at(offset)
         if local is not None and local != entry.name:
+            # Stored bytes; the reader decodes names, so these show as UTF-8.
+            local_text = quoted(local.decode("utf-8", "surrogateescape"))
+            central_text = quoted(entry.name.decode("utf-8", "surrogateescape"))
             raise CorruptionError(
                 f"ZIP central directory entry #{entry.index} is not followed by a "
-                f"central directory header, and its local header names it {local!r} "
-                f"where the directory names it {entry.name!r}: a length field is "
+                f"central directory header, and its local header names it {local_text} "
+                f"where the directory names it {central_text}: a length field is "
                 "damaged"
             )
 
