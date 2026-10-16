@@ -173,9 +173,12 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   (its data fails the CRC or HMAC, or the decompressor) does not fail the listing: the
   link is listed without a target, reported with `reason="target_data_damaged"`, and
   opening or extracting it raises the damage. A target stored with a method archivey
-  cannot decode, or whose codec library is not installed, is handled the same way, with
-  `reason="target_data_unsupported"` or `reason="codec_not_installed"`; opening or
+  cannot decode, or that needs an optional library that is not installed (a codec, or
+  `cryptography` for WinZip AES), is handled the same way, with
+  `reason="target_data_unsupported"` or `reason="package_not_installed"`; opening or
   extracting the link raises `UnsupportedFeatureError` or `PackageNotInstalledError`.
+  `DiagnosticPolicy.STRICT` refuses such an archive even when its bytes are intact and
+  the only cause is a missing library, as it does for a link whose password is missing.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small

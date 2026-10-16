@@ -8,9 +8,9 @@ check, only the link is wrong: the listing keeps every member, the link has no
 says why. The fault itself is raised where the
 caller touches the link: opening it, or extracting it.
 
-A target this reader cannot decode at all (an unknown method, a refused variant, a
-codec library that is not installed) is handled the same way, with
-``reason="target_data_unsupported"`` or ``"codec_not_installed"``.
+A target this reader cannot decode at all (an unknown method, a refused variant, an
+optional library the data needs that is not installed) is handled the same way, with
+``reason="target_data_unsupported"`` or ``"package_not_installed"``.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.streams import codecs as codecs_module
+from archivey.internal.streams import crypto as crypto_module
 from archivey.reader import ArchiveReader
 from archivey.types import MemberType, OnError
 from tests.conftest import requires, requires_binary
@@ -343,7 +344,7 @@ def test_rar4_link_target_whose_sizes_disagree_is_refused(
 
 
 # A link target the reader cannot decode (DR-2): an unknown method, a variant it
-# refuses, or a codec library that is not installed. Like damage, this is about the
+# refuses, or an optional library it needs that is not installed. Like damage, this is about the
 # link's own data, so it costs that link its target and nothing else. The reason
 # differs, and opening or extracting the link raises the error the read raised.
 
@@ -411,25 +412,56 @@ def test_undecodable_zip_link_target_in_a_pass(
         assert _reasons(ar) == ["target_data_unsupported"]
 
 
+# (method, whether the zstd backend is hidden, the error, the reason)
+_UNDECODABLE_CASES = [
+    pytest.param(
+        7, False, UnsupportedFeatureError, "target_data_unsupported", id="unsupported"
+    ),
+    pytest.param(
+        93, True, PackageNotInstalledError, "package_not_installed", id="not-installed"
+    ),
+]
+
+
 @pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
+@pytest.mark.parametrize(("method", "hide_zstd", "error", "reason"), _UNDECODABLE_CASES)
 def test_undecodable_zip_link_target_fails_only_that_link_at_extraction(
-    tmp_path: Path, streaming: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    method: int,
+    hide_zstd: bool,
+    error: type[Exception],
+    reason: str,
 ) -> None:
-    blob = _undecodable_zip_symlink(method=7)
+    if hide_zstd:
+        monkeypatch.setattr(codecs_module.deps, "zstd", None)
+    blob = _undecodable_zip_symlink(method=method)
     with open_archive(io.BytesIO(blob), streaming=streaming) as ar:
         report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
-        assert _reasons(ar) == ["target_data_unsupported"]
+        assert _reasons(ar) == [reason]
     by_name = {result.member.name: result for result in report.results}
     assert by_name["target.txt"].status is ExtractionStatus.EXTRACTED
     assert by_name["after.txt"].status is ExtractionStatus.EXTRACTED
     assert by_name["link"].status is ExtractionStatus.FAILED
-    assert isinstance(by_name["link"].error, UnsupportedFeatureError)
+    assert isinstance(by_name["link"].error, error)
     assert not (tmp_path / "out" / "link").is_symlink()
 
 
-def test_undecodable_link_target_under_strict_policy_refuses_the_listing() -> None:
+@pytest.mark.parametrize(("method", "hide_zstd", "error", "reason"), _UNDECODABLE_CASES)
+def test_undecodable_link_target_under_strict_policy_refuses_the_listing(
+    monkeypatch: pytest.MonkeyPatch,
+    method: int,
+    hide_zstd: bool,
+    error: type[Exception],
+    reason: str,
+) -> None:
+    """Strict refuses even when the archive is intact and only a library is missing,
+    as it does for a link whose password is missing."""
+    if hide_zstd:
+        monkeypatch.setattr(codecs_module.deps, "zstd", None)
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    blob = _undecodable_zip_symlink(method=7)
+    blob = _undecodable_zip_symlink(method=method)
     with open_archive(io.BytesIO(blob), config=config) as ar:
         with pytest.raises(DiagnosticRaisedError):
             ar.members()
@@ -445,12 +477,31 @@ def test_zip_link_target_without_its_codec_keeps_the_listing(
     with open_archive(io.BytesIO(blob), streaming=streaming) as ar:
         names = [member.name for member, _ in ar.stream_members()]
         assert names == ["target.txt", "link", "after.txt"]
-        assert _reasons(ar) == ["codec_not_installed"]
+        assert _reasons(ar) == ["package_not_installed"]
     with open_archive(io.BytesIO(blob)) as ar:
         assert ar.get("link").link_target is None
-        assert _reasons(ar) == ["codec_not_installed"]
+        assert _reasons(ar) == ["package_not_installed"]
         with pytest.raises(PackageNotInstalledError):
             ar.open(ar.get("link"))
+
+
+@requires("cryptography")  # to write the fixture; the read then runs without it
+def test_aes_link_target_without_cryptography_keeps_the_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``cryptography`` is the optional library a WinZip AES member's data needs: its
+    absence costs the link its target, as a missing codec does."""
+    blob = build_aes_zip(
+        [(b"link", _TARGET)], password=_PASSWORD, method=0, unix_mode=0o120777
+    )
+    monkeypatch.setattr(crypto_module, "_crypto_available", lambda: False)
+    with open_archive(io.BytesIO(blob), password=_PASSWORD) as ar:
+        (link,) = ar.members()
+        assert link.type is MemberType.SYMLINK
+        assert link.link_target is None
+        assert _reasons(ar) == ["package_not_installed"]
+        with pytest.raises(PackageNotInstalledError, match="cryptography"):
+            ar.open(link)
 
 
 def _undecodable_7z_symlink(tmp_path: Path, method: str) -> bytes:
@@ -495,6 +546,6 @@ def test_7z_link_target_without_its_codec_keeps_the_listing(
     with open_archive(io.BytesIO(blob)) as ar:
         assert sorted(m.name for m in ar.members()) == ["link", "target.txt"]
         assert ar.get("link").link_target is None
-        assert _reasons(ar) == ["codec_not_installed"]
+        assert _reasons(ar) == ["package_not_installed"]
         with pytest.raises(PackageNotInstalledError, match="pyppmd"):
             ar.open(ar.get("link"))

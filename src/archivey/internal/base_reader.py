@@ -159,8 +159,9 @@ UNREADABLE_LINK_TARGET_ERRORS: tuple[type[ArchiveyError], ...] = (
 """What a read of one link's data-stored target may raise without failing the listing.
 
 Damage (``CorruptionError``, and ``TruncatedError`` under it), a method or variant this
-reader does not decode (``UnsupportedFeatureError``), and a codec library that is not
-installed (``PackageNotInstalledError``) are each about that one member's data. Listing
+reader does not decode (``UnsupportedFeatureError``), and an optional library the
+member's data needs that is not installed (``PackageNotInstalledError``: a codec, or
+``cryptography`` for WinZip AES) are each about that one member's data. Listing
 and a data pass leave the link targetless and report it
 (``_report_unreadable_link_target``); opening or extracting the link reads it again and
 raises the error itself. ``EncryptionError`` is not here: the backends catch it where
@@ -875,14 +876,15 @@ class BaseArchiveReader(ArchiveReader):
         A streaming pass resolves links when it ends, after the caller has had the
         member. The read here serves two needs. In ZIP, a reparse point whose data is
         not a link buffer is a file, and the caller needs its stream now (the 7z pass
-        does the same read). In every format that stores the target as data, a damaged
-        one must be reported before the link is handed out. A random-access listing
-        has read it already (the memo, or the damage flag, makes this a no-op).
+        does the same read). In every format that stores the target as data, an
+        unreadable one (damaged, or in a method or codec this install cannot decode)
+        must be reported before the link is handed out. A random-access listing has
+        read it already (the memo, or the unreadable flag, makes this a no-op).
 
-        A damaged target is reported here rather than left to link finalization: a
+        An unreadable target is reported here rather than left to link finalization: a
         pass the caller leaves early, or one a later member stops, never finalizes,
         and a strict policy must refuse before the link is handed out. Finalization
-        skips a link already reported as damaged.
+        skips a link already reported as unreadable.
         """
         if (
             not self._config.read_link_targets
@@ -1465,7 +1467,7 @@ class BaseArchiveReader(ArchiveReader):
         member with it. So the link stays in the list with ``link_target`` unset and
         ``SYMLINK_TARGET_UNAVAILABLE`` says why: ``reason="target_data_damaged"`` for
         damage, ``"target_data_unsupported"`` for a method or variant this reader does
-        not decode, ``"codec_not_installed"`` for a missing optional library. A strict
+        not decode, ``"package_not_installed"`` for a missing optional library. A strict
         policy still refuses the archive, since the code is an integrity one. The memo
         stays unset, so opening or extracting the link reads the target again and
         raises the error itself. ``_link_target_unreadable`` marks it reported, so link
@@ -1475,7 +1477,7 @@ class BaseArchiveReader(ArchiveReader):
         if isinstance(exc, CorruptionError):
             reason = "target_data_damaged"
         elif isinstance(exc, PackageNotInstalledError):
-            reason = "codec_not_installed"
+            reason = "package_not_installed"
         else:
             reason = "target_data_unsupported"
         self._emit_link_target_unavailable(

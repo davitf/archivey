@@ -1649,14 +1649,18 @@ member stops, therefore still reports every damaged target it read, and
 When a backend reads a symlink's target from the member's data and that read raises
 `UnsupportedFeatureError` (a compression method, variant or flag this reader does not
 decode, such as an unknown ZIP method, ZIP general-purpose bit 5, or an LZMA coder with
-`lc + lp` over 4) or `PackageNotInstalledError` (the optional library for the member's
-codec is not installed), the link SHALL be handled as the damaged-target requirement
-says, with one difference: `SYMLINK_TARGET_UNAVAILABLE` SHALL carry
-`reason="target_data_unsupported"` for the first and `reason="codec_not_installed"` for
-the second. Every other member SHALL stay listed, `link_target` SHALL be unset, and
-opening, following or extracting the link SHALL raise the same error the read raised.
-This holds in `members()`, in `stream_members()` in either access mode, and in
-`extract_all()`.
+`lc + lp` over 4) or `PackageNotInstalledError` (an optional library the member's data
+needs is not installed: a codec, or `cryptography` for WinZip AES), the link SHALL be
+handled as the damaged-target requirement says, with one difference:
+`SYMLINK_TARGET_UNAVAILABLE` SHALL carry `reason="target_data_unsupported"` for the first
+and `reason="package_not_installed"` for the second. Every other member SHALL stay
+listed, `link_target` SHALL be unset, and opening, following or extracting the link SHALL
+raise the same error the read raised. This holds in `members()`, in `stream_members()` in
+either access mode, and in `extract_all()`. `SYMLINK_TARGET_UNAVAILABLE` is in
+`ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` SHALL refuse the archive in both
+cases, even an intact archive whose only fault is a missing library, as it already does
+for `reason="password_required"`: strict means every member can be vouched for, and this
+install cannot vouch for that link.
 
 #### Scenario: undecodable link target matrix
 
@@ -1667,4 +1671,6 @@ This holds in `members()`, in `stream_members()` in either access mode, and in
 | Same, `extract_all(on_error=CONTINUE)` in either access mode | Link `FAILED` with `UnsupportedFeatureError`; other members extract |
 | Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
 | 7z symlink in an LZMA `lc=8` folder, `members()` or `stream_members()` | Every member listed; `reason="target_data_unsupported"` |
-| ZIP Zstandard or 7z PPMd symlink with its codec library absent | Every member listed; `reason="codec_not_installed"`; `open()` raises `PackageNotInstalledError` |
+| ZIP Zstandard, ZIP WinZip AES or 7z PPMd symlink with the library it needs absent | Every member listed; `reason="package_not_installed"`; `open()` raises `PackageNotInstalledError` |
+| Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `PackageNotInstalledError`; other members extract |
+| Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError`, though the archive is intact |
