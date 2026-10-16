@@ -18,7 +18,7 @@ default. RAR archives are solid only when created with that option. On a solid a
 reading members by name can decompress the same data again and again. `stream_members`
 decompresses it once.
 
-If your code needs to know whether an archive is solid, `reader.cost` tells you before you read
+If your code needs to know whether an archive is solid, `archive.cost` tells you before you read
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others
 first, and `AccessCost.DIRECT` when archivey can jump straight to it. Its `listing_cost` says what
 listing the members takes. It's `ListingCost.INDEXED` when the archive keeps a list of its members,
