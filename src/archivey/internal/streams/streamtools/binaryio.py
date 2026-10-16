@@ -1049,3 +1049,47 @@ def ensure_bufferedio(obj: object) -> io.BufferedIOBase:
     else:
         raw = BinaryIOWrapper(obj)
     return _NonClosingBufferedReader(raw)
+
+
+class OneReadEachStream(io.BufferedIOBase, BinaryIO):
+    """``source`` as a buffered stream whose reads each make one read of it.
+
+    :func:`ensure_bufferedio` puts a ``BufferedReader`` in front of a raw stream, and
+    that reader reads its source until each read is full. A source that reads ahead
+    in small steps on purpose (the ZIP forward walk's bit-3 member data, which puts
+    back what it read past its end) loses them there; a buffered stream
+    :func:`ensure_bufferedio` takes as it is, so wrapped in this one the steps reach
+    the reader. A read may then be short with more to come, so this is only for a
+    consumer that reads until ``b""``, such as a decoder's input. Closing it leaves
+    ``source`` open.
+
+    ``mode`` and ``name`` are :class:`BinaryIOWrapper`'s: ``typing.BinaryIO`` is in
+    the MRO, and its ``mode`` and ``name`` would answer ``None``.
+    """
+
+    def __init__(self, source: BinaryIO) -> None:
+        super().__init__()
+        self._source = source
+
+    @property
+    def mode(self) -> str:
+        return "rb"
+
+    @property
+    def name(self) -> str:
+        resolved = source_name(self._source)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        return self._source.read(-1 if n is None else n)
+
+    def read1(self, n: int = -1, /) -> bytes:
+        return self.read(n)
+
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        return readinto_via_read(self, b)

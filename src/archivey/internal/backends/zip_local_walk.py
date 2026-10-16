@@ -140,8 +140,17 @@ _DESCRIPTOR_LONGEST = _DESCRIPTOR_LENGTHS[0]
 # Forward reads are made in pieces of this size.
 _READ_CHUNK = 1 << 16
 # The first read ahead into a bit-3 member's data, whose end the walk does not know
-# yet; each later one asks for up to twice as much (``MemberData._read_ahead``).
+# yet (``MemberData._read_ahead``). Small, since what a member reads past its end is
+# read again for the next header, so a tiny member costs about its own bytes; large
+# enough that the descriptor scan, which holds back ``_DESCRIPTOR_LOOKAHEAD`` bytes,
+# hands most of a first step out. Each step that comes back full doubles the next, up
+# to the size the caller asks for, ``_READ_CHUNK`` for the walk's own reads.
 _READ_AHEAD_FIRST = 256
+# How far past the bytes a codec member handed out its descriptor is searched for when
+# it is not right after them (``_CodecData._find_descriptor``): junk up to about this
+# long between the codec's end and the descriptor is passed over, whatever the
+# member's size.
+_DESCRIPTOR_SEARCH_PAST = _READ_CHUNK
 # How much of what a codec member handed out is kept to put back. A codec member's
 # layers read ahead by at most a few of their read sizes: DecompressorStream reads up
 # to 1 MiB at once, and a decrypt stage in front of it a little more.
@@ -598,39 +607,52 @@ class _CodecData(MemberData):
         """
         handed = self._kept_len  # where the bytes handed out end in ``buffer``
         base = self.consumed - handed
-        ahead = self._source.read(_DESCRIPTOR_LOOKAHEAD)
-        at_end = len(ahead) < _DESCRIPTOR_LOOKAHEAD
-        buffer = b"".join([*self._kept, ahead])
+        kept = b"".join(self._kept)
         self._kept.clear()
         self._kept_len = 0
         zip64 = self.entry.zip64
 
-        def match_signed(pos: int) -> DataDescriptor | None:
-            # Damaged data: a signed descriptor whose size fits, whatever its CRC.
-            return match_descriptor(
+        def search(buffer: bytes, at_end: bool) -> tuple[int, DataDescriptor] | None:
+            found = descriptor_by_crc(
                 buffer,
-                pos,
-                compressed_size=base + pos,
-                crc=None,
-                file_size=None,
+                crc=crc,
+                file_size=file_size,
+                base=base,
                 zip64=zip64,
                 at_end=at_end,
-                signed_only=True,
             )
+            at = buffer.find(DATA_DESCRIPTOR_SIGNATURE)
+            while found is None and at >= 0:
+                # Damaged data: a signed descriptor whose size fits, whatever its CRC.
+                descriptor = match_descriptor(
+                    buffer,
+                    at,
+                    compressed_size=base + at,
+                    crc=None,
+                    file_size=None,
+                    zip64=zip64,
+                    at_end=at_end,
+                    signed_only=True,
+                )
+                if descriptor is not None:
+                    found = (at, descriptor)
+                at = buffer.find(DATA_DESCRIPTOR_SIGNATURE, at + 1)
+            return found
 
-        found = descriptor_by_crc(
-            buffer,
-            crc=crc,
-            file_size=file_size,
-            base=base,
-            zip64=zip64,
-            at_end=at_end,
-        )
-        at = buffer.find(DATA_DESCRIPTOR_SIGNATURE)
-        while found is None and at >= 0:
-            if descriptor := match_signed(at):
-                found = (at, descriptor)
-            at = buffer.find(DATA_DESCRIPTOR_SIGNATURE, at + 1)
+        # The descriptor is usually right after the codec's end, in the bytes kept and
+        # the few after them. Junk between the two is searched to
+        # :data:`_DESCRIPTOR_SEARCH_PAST` bytes past what was handed out, however
+        # little the codec's last read took, before the search gives up.
+        ahead = self._source.read(_DESCRIPTOR_LOOKAHEAD)
+        at_end = len(ahead) < _DESCRIPTOR_LOOKAHEAD
+        buffer = kept + ahead
+        found = search(buffer, at_end)
+        if found is None and not at_end:
+            more = self._source.read(_DESCRIPTOR_SEARCH_PAST - len(ahead))
+            ahead += more
+            at_end = len(ahead) < _DESCRIPTOR_SEARCH_PAST
+            buffer = kept + ahead
+            found = search(buffer, at_end)
         if found is None:
             self._source.unread(ahead)
             index = self.entry.index
@@ -668,6 +690,10 @@ class _ScannedData(MemberData):
         self._check_crc = check_crc
         self._buf = bytearray()
         self._crc = 0  # of the bytes handed out
+        # The CRC of the data's first ``_scan_crc_end`` bytes, as ``_find_end`` last
+        # computed it.
+        self._scan_crc = 0
+        self._scan_crc_end = 0
         self._eof = False
         #: Where the data ends in ``_buf``, once the descriptor is found.
         self._end_at: int | None = None
@@ -707,50 +733,61 @@ class _ScannedData(MemberData):
         compressed size already fits.
         """
         buf = self._buf
+        # The CRC of the data up to ``buf[crc_at]``, carried over from the last call
+        # while those bytes are still in ``buf``: the scan runs over bytes pulled in
+        # small steps, and starting it again at ``buf[0]`` each step would cost a pass
+        # over the whole buffer per step.
         crc = self._crc  # of the bytes handed out, then buf[:crc_at]
         crc_at = 0
+        if self._scan_crc_end > self.consumed:
+            crc = self._scan_crc
+            crc_at = self._scan_crc_end - self.consumed
         at = self._search_from
-        while True:
-            after = self._next_signature(buf, at)
-            if after < 0:
-                # A signature can still start in the last three bytes.
-                self._search_from = max(len(buf) - 3, 0)
-                if not self._eof:
+        try:
+            while True:
+                after = self._next_signature(buf, at)
+                if after < 0:
+                    # A signature can still start in the last three bytes.
+                    self._search_from = max(len(buf) - 3, 0)
+                    if not self._eof:
+                        return
+                    after = len(buf)  # the stream ends after the descriptor
+                # This candidate's shapes and every later one's start at or past here.
+                earliest = after - _DESCRIPTOR_LONGEST
+                for length in _DESCRIPTOR_LENGTHS:
+                    pos = after - length
+                    if pos < 0:
+                        continue
+                    size = self.consumed + pos
+                    if not self._size_fits(buf, pos, size):
+                        continue
+                    expect_crc = None
+                    if self._check_crc:
+                        if earliest > crc_at:
+                            crc = zlib.crc32(buf[crc_at:earliest], crc)
+                            crc_at = earliest
+                        expect_crc = zlib.crc32(buf[crc_at:pos], crc)
+                    descriptor = match_descriptor(
+                        buf,
+                        pos,
+                        compressed_size=size,
+                        crc=expect_crc,
+                        # STORED: both sizes are the data's length, unless encryption
+                        # added its header to the compressed one.
+                        file_size=size if self._check_crc else None,
+                        zip64=self.entry.zip64,
+                        at_end=self._eof,
+                    )
+                    if descriptor is not None:
+                        self._end_at = pos
+                        self._descriptor = descriptor
+                        return
+                if after >= len(buf):
                     return
-                after = len(buf)  # the stream ends after the descriptor
-            # This candidate's shapes and every later one's start at or past here.
-            earliest = after - _DESCRIPTOR_LONGEST
-            for length in _DESCRIPTOR_LENGTHS:
-                pos = after - length
-                if pos < 0:
-                    continue
-                size = self.consumed + pos
-                if not self._size_fits(buf, pos, size):
-                    continue
-                expect_crc = None
-                if self._check_crc:
-                    if earliest > crc_at:
-                        crc = zlib.crc32(buf[crc_at:earliest], crc)
-                        crc_at = earliest
-                    expect_crc = zlib.crc32(buf[crc_at:pos], crc)
-                descriptor = match_descriptor(
-                    buf,
-                    pos,
-                    compressed_size=size,
-                    crc=expect_crc,
-                    # STORED: both sizes are the data's length, unless encryption
-                    # added its header to the compressed one.
-                    file_size=size if self._check_crc else None,
-                    zip64=self.entry.zip64,
-                    at_end=self._eof,
-                )
-                if descriptor is not None:
-                    self._end_at = pos
-                    self._descriptor = descriptor
-                    return
-            if after >= len(buf):
-                return
-            at = after + 1
+                at = after + 1
+        finally:
+            self._scan_crc = crc
+            self._scan_crc_end = self.consumed + crc_at
 
     @property
     def found_descriptor(self) -> DataDescriptor | None:
@@ -793,7 +830,10 @@ class _ScannedData(MemberData):
                 self._raise_no_descriptor()
             else:
                 avail = self._avail()
-            if avail > 0 or self._end_at is not None:
+            # ``size`` bytes, or fewer only at the data's end: for a STORED member this
+            # is the caller's stream, whose short read means the end (ADR 0014), and
+            # the steps it is pulled in are small.
+            if avail >= size or self._end_at is not None:
                 take = min(size, avail)
                 out = bytes(self._buf[:take])
                 del self._buf[:take]

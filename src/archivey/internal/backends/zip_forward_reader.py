@@ -25,7 +25,7 @@ from array import array
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
-from typing import TYPE_CHECKING, BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, cast
 
 from archivey.config import ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -111,9 +111,12 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import open_codec_stream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
-from archivey.internal.streams.streamtools import ReadableStream, read_exact
+from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
+    ReadableStream,
+    read_exact,
+)
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
-from archivey.internal.streams.streamtools.binaryio import readinto_via_read
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
@@ -129,9 +132,6 @@ from archivey.types import (
     MemberType,
     crc32_digest,
 )
-
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
 
 # Read size when the pass reads through data nobody asked for.
 _DRAIN_CHUNK = 1 << 16
@@ -610,7 +610,9 @@ class _PassData:
             # has no size to wait for, so it is fed in pieces, in a child process.
             params = replace(params, input_runs_on=True)
         if deferred:
-            source = _OneReadEach(source)
+            # The data reads ahead in small steps (``MemberData._read_ahead``),
+            # which a ``BufferedReader`` in front of the decoder would fill.
+            source = OneReadEachStream(source)
         return open_codec_stream(
             codec,
             source,
@@ -1454,34 +1456,6 @@ class _KeptData(MemberData):
         # Nothing after it to read past: the walk did, and kept the descriptor.
         self._settled = True
         return self._descriptor
-
-
-class _OneReadEach(io.BufferedIOBase, BinaryIO):
-    """``source`` as a buffered stream whose reads each make one read of it.
-
-    A bit-3 codec member's data reads ahead in steps that start small (see
-    ``MemberData._read_ahead``), so a member reads little past its end, and the walk
-    puts little back for the next header. The decoder's stream puts a
-    ``BufferedReader`` in front of a raw stream, which reads its source until each
-    read is full; a buffered stream it takes as it is. Closing this leaves ``source``
-    open.
-    """
-
-    def __init__(self, source: BinaryIO) -> None:
-        super().__init__()
-        self._source = source
-
-    def readable(self) -> bool:
-        return True
-
-    def read(self, n: int | None = -1, /) -> bytes:
-        return self._source.read(-1 if n is None else n)
-
-    def read1(self, n: int = -1, /) -> bytes:
-        return self.read(n)
-
-    def readinto(self, b: WriteableBuffer, /) -> int:
-        return readinto_via_read(self, b)
 
 
 class _SpoolView(ReadOnlyIOStream):
