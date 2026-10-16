@@ -11,11 +11,11 @@ Example::
 
     uv run python benchmarks/tar_listing_baseline.py
 
-Sample run (2026-10-13, Linux x86_64 4-core VM, CPython 3.11, illustrative only)::
+Sample run (2026-10-16, Linux x86_64 4-core VM, CPython 3.11, illustrative only)::
 
-    parse_header_block      7.5 us   (8.9 before the Adler-32 sum)
-    archivey listing      285.0 ms  (8000 members; 290-300 before, within noise)
-    tarfile getmembers    145.0 ms
+    parse_header_block      5.5 us   (8.5 before the one-unpack numeric fields)
+    archivey listing      275.0 ms  (8000 members; 305-330 before)
+    tarfile getmembers    170.0 ms
 """
 
 from __future__ import annotations
