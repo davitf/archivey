@@ -144,8 +144,8 @@ yielded.
   ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.
-- Where a pipe and a file differ, on archives no writer produces: a data descriptor
-  that disagrees with the central directory, a local header the directory contradicts,
+- Where a pipe and a file differ, on archives no writer produces or damaged ones: a
+  data descriptor that disagrees with the central directory, a local header the directory contradicts,
   or two same-named members whose directory order reverses their file order make the
   member fail at the end of the pass (`CorruptionError`), where a read from a file
   writes it.

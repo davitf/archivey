@@ -484,7 +484,12 @@ been read. The full design, row by row, is the `native-zip-reader` change's `des
 decodes to the codec's end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the
 EOS bit, PPMd with its end mark), then finds the data descriptor by the decoded CRC; a
 STORED member ends at a descriptor whose CRC and size match the bytes before it and that
-a ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed
+a ZIP signature follows, signed or not. When none matches whole, one with a single
+damaged field still ends the member (`match_damaged_descriptor`): without its signature,
+two of its CRC, compressed size and uncompressed size agree; with it, its compressed
+size or two fields; with a damaged signature, all three. So one damaged byte in a bit-3
+member's data or descriptor fails that member alone, by its CRC or size check or by the
+directory at the end of the pass, and the members after it are read. An encrypted bit-3 member nobody reads is passed
 the same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA
 member without EOS has no end its codec can find, and its read is
 `UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
@@ -541,6 +546,9 @@ directory's refusals the file read is to drop:
 
 - A data descriptor that understates a STORED member, and the reversed same-name pair,
   fail a member the file read writes.
+- A bit-3 member whose data descriptor has one damaged field fails at the end of the
+  pass, as the directory contradicts the descriptor: the file read never reads the
+  descriptor, and reads the member when its data is intact.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
   where the file read refuses it (DR-3).
 - The first of several inconclusive password candidates wins (§6).

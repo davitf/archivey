@@ -30,6 +30,7 @@ from archivey.internal.backends.zip_local_walk import (
     LocalEntry,
     LocalHeaderWalk,
     MemberData,
+    match_damaged_descriptor,
     match_descriptor,
 )
 from archivey.internal.backends.zip_parser import (
@@ -391,12 +392,31 @@ def test_descriptors_without_their_signature_are_found_by_what_follows() -> None
     assert stored.descriptor.length == 12
 
 
-def test_an_unsigned_descriptor_that_matches_nothing_is_unsupported() -> None:
-    """A descriptor whose sizes do not match the data cannot be told from data: the
-    scan reads to the end record and gives up."""
+def test_an_unsigned_descriptor_with_one_damaged_field_is_found() -> None:
+    """Its CRC and uncompressed size still place it: the member ends there, and the
+    damaged compressed size is returned as stored, for the directory to contradict."""
     raw = bytearray(without_descriptor_signatures(_write(pipe=True)))
     first = raw.index(b"stored " * 50) + len(b"stored " * 50)
     raw[first + 4] ^= 0xFF  # the compressed size's low byte
+    walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    assert data.read() == b"stored " * 50
+    descriptor = data.settle()
+    assert descriptor is not None
+    assert descriptor.file_size == len(b"stored " * 50)
+    assert descriptor.compressed_size == len(b"stored " * 50) ^ 0xFF
+    assert walk.next_entry() is not None
+
+
+def test_an_unsigned_descriptor_that_matches_nothing_is_unsupported() -> None:
+    """A descriptor with two fields that do not match the data cannot be told from
+    data: the scan reads to the end record and gives up."""
+    raw = bytearray(without_descriptor_signatures(_write(pipe=True)))
+    first = raw.index(b"stored " * 50) + len(b"stored " * 50)
+    raw[first + 4] ^= 0xFF  # the compressed size's low byte
+    raw[first + 8] ^= 0xFF  # the uncompressed size's low byte
     walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
     entry = walk.next_entry()
     assert entry is not None
@@ -632,6 +652,58 @@ def test_match_descriptor_needs_a_signature_after_it() -> None:
             at_end, 0, compressed_size=10, crc=7, file_size=20, zip64=False, at_end=True
         )
         is not None
+    )
+
+
+_SIG = DATA_DESCRIPTOR_SIGNATURE
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "taken"),
+    [
+        # Without a signature: two of the CRC (7) and sizes (10, 20) must agree.
+        (struct.pack("<LLL", 8, 10, 20), True),
+        (struct.pack("<LLL", 7, 11, 20), True),
+        (struct.pack("<LLL", 7, 10, 21), True),
+        (struct.pack("<LLL", 8, 11, 20), False),
+        (struct.pack("<LLL", 8, 10, 21), False),
+        # With one: the compressed size alone, or two fields.
+        (_SIG + struct.pack("<LLL", 8, 10, 21), True),
+        (_SIG + struct.pack("<LLL", 7, 11, 20), True),
+        (_SIG + struct.pack("<LLL", 8, 11, 20), False),
+        # With a damaged one: all three fields.
+        (b"PK\x07\x09" + struct.pack("<LLL", 7, 10, 20), True),
+        (b"PK\x07\x09" + struct.pack("<LLL", 8, 10, 20), False),
+    ],
+)
+def test_match_damaged_descriptor_takes_one_damaged_field(
+    descriptor: bytes, taken: bool
+) -> None:
+    buffer = descriptor + b"PK\x03\x04"
+    found = match_damaged_descriptor(
+        buffer, 0, compressed_size=10, crc=7, file_size=20, zip64=False, at_end=False
+    )
+    assert (found is not None) == taken
+    if found is not None:
+        # The fields as stored, so the caller and the directory can judge them.
+        stored = struct.unpack("<LLL", descriptor[-12:])
+        assert (found.crc, found.compressed_size, found.file_size) == stored
+        assert found.length == len(descriptor)
+
+
+def test_match_damaged_descriptor_needs_a_signature_after_it() -> None:
+    buffer = struct.pack("<LLL", 8, 10, 20) + b"junk"
+    assert (
+        match_damaged_descriptor(
+            buffer,
+            0,
+            compressed_size=10,
+            crc=7,
+            file_size=20,
+            zip64=False,
+            at_end=False,
+        )
+        is None
     )
 
 

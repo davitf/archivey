@@ -276,7 +276,7 @@ the directory is then read forward from the same stream with the same entry pars
 | --- | --- |
 | Sizes in the local header (bit 3 clear) | `compressed_size` bytes |
 | Bit 3, a codec with an end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark) | The codec's own end, then the data descriptor: signature optional, 8-byte sizes when the local header has a ZIP64 extra field, else 4-byte. Its CRC and sizes are checked against what was read. If the decode fails, the walk's scan finds the descriptor on the stored bytes, with no key, starting at the last 4 MiB the decode read (the walk's put-back window) and counting the bytes before them; the members after it are read unless the decode ran more than that past the data's end |
-| Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for a local header, central header or end record signature (or the end of the stream), and take a descriptor ending right before it whose CRC and compressed size match the bytes since the data start. Its own `PK\x07\x08` is optional (APPNOTE 4.3.9.3; early PKZIP left it out), so both shapes are tried; libarchive finds only the signed one. None matching by the end record (damage, or bytes between the descriptor and the next header): `UnsupportedFeatureError` |
+| Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for a local header, central header or end record signature (or the end of the stream), and take a descriptor ending right before it whose CRC and compressed size match the bytes since the data start. Its own `PK\x07\x08` is optional (APPNOTE 4.3.9.3; early PKZIP left it out), so both shapes are tried; libarchive finds only the signed one. When none matches whole, a descriptor with one damaged field ends the member: without its signature, two of its CRC and two sizes agree; with it, its compressed size or two fields; with a damaged signature, all three. The member then fails its CRC or size check when read, or the directory check at the end of the pass, and the members after it are read (DR-2). None matching by the end record (more damage, or bytes between the descriptor and the next header): `UnsupportedFeatureError` |
 | Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext. The descriptor's CRC covers the plaintext, so the scan matches on the compressed size and the signature after it only; the CRC (ZipCrypto, AE-1) or the HMAC (AES) then checks the plaintext as for any member |
 | Bit 3, LZMA without the EOS bit | The codec cannot find the end, so the member's read is `UnsupportedFeatureError` in this mode, naming the reason. The walk's scan on the stored bytes then passes it as it does a failed decode, under the same 4 MiB window. A seekable source reads it. (PPMd has no flag for a missing end mark: such a member fails its decode, from a file too, and the scan passes it.) |
 | Bit 3, encrypted, any method but STORED, nobody reads it | The STORED scan, on the ciphertext, matching the compressed size and the signature after it: no key is needed to pass the member, and a short one keeps its ciphertext for a link target as a sized one does. A false match in ciphertext takes a planted signature and size (about 2^-64 per position by chance); a crafted one is the planted-prefix case, caught against the directory |
@@ -323,10 +323,13 @@ until the codec stream ends (a `refuse_input_after_end` stream raises
 over": the descriptor itself is input after the codec's end on every valid member),
 then the walk looks for the descriptor in the last 4 MiB it handed out: the
 four bytes of the decoded data's CRC, with a compressed size equal to their own
-position and a ZIP signature after them. A signed descriptor whose CRC differs (the
-data is damaged) is found by its signature and size, and the reader reports the CRC
-mismatch; an unsigned one cannot be told from the data then, and the walk stops with
-`CorruptionError`.
+position and a ZIP signature after them. A descriptor with one damaged field is found
+as the STORED scan finds one, with the decoded CRC and size as the fields it checks
+(`match_damaged_descriptor`): a signed one by its signature and compressed size, an
+unsigned one by two of its three fields. The reader then reports the CRC or size
+mismatch, or the directory contradicts the descriptor at the end of the pass, and the
+members after it are read. Only a descriptor with more damage than that stops the walk,
+with `CorruptionError`.
 
 Because the descriptor dates the end from its own position, bytes between the codec's
 end and the descriptor count into its compressed size. DR-3's check that nothing
