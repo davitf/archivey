@@ -765,8 +765,10 @@ class ArchiveMember:
 
     A single-file member (``.gz``, ``.bz2``, …) whose format records no size gets
     one from a read: a read from the start to the end that skips no byte, which the
-    decoder finishes without error sets it to the bytes it returned. Until then
-    ``member_state_final`` is ``False``."""
+    decoder finishes without error sets it to the bytes it returned. A large member
+    of a macOS ZIP, whose size the archive stores only modulo 2**32, is listed with
+    ``None`` and filled the same way, by a read whose length and CRC-32 check out.
+    Until then ``member_state_final`` is ``False``."""
 
     compressed_size: int | None = None
     """Compressed size in bytes, or ``None`` if unknown."""

@@ -279,12 +279,15 @@ def test_gzip_isize_from_a_file(tmp_path: Path) -> None:
         assert member.size is None
 
 
-def test_gzip_isize_is_the_size_modulo_2_32(tmp_path: Path) -> None:
-    # A real 4 GiB file is too slow to build here: patch the trailer of a small one.
+def test_gzip_isize_is_the_trailer_value_not_the_size(tmp_path: Path) -> None:
+    # The key holds whatever the last four bytes say, which need not be the size: a
+    # trailer patched to another value shows that value, and never becomes ``size``.
     data = bytearray(gzip.compress(PAYLOAD))
-    data[-4:] = ((len(PAYLOAD) + (1 << 32)) & 0xFFFF_FFFF).to_bytes(4, "little")
+    data[-4:] = (len(PAYLOAD) + 1).to_bytes(4, "little")
     with open_archive(io.BytesIO(bytes(data))) as reader:
-        assert reader.members()[0].extra["gzip.isize"] == len(PAYLOAD)
+        member = reader.members()[0]
+        assert member.extra["gzip.isize"] == len(PAYLOAD) + 1
+        assert member.size is None
 
 
 def test_gzip_isize_covers_only_the_last_member(tmp_path: Path) -> None:
