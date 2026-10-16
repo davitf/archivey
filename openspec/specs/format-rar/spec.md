@@ -34,7 +34,7 @@ The RAR backend SHALL expose these properties:
 | --- | --- |
 | Read dependency (metadata) | None; native RAR 1.5–RAR5 header parser |
 | Read dependency (data) | RARLAB `unrar` or `rar` binary on `PATH` (`unrar` preferred) |
-| Listing cost | O(1); headers parsed natively, no member-data decompression |
+| Listing cost | `REQUIRES_SCANNING`: a header walk at open, parsed natively, no member-data decompression. Also with a quick-open record, which saves seeks but not the walk |
 | Access cost | `SOLID` for solid archives; `DIRECT` otherwise |
 | Supports write | No |
 | Requires seek | Yes |

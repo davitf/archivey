@@ -14,7 +14,18 @@ from enum import Enum
 
 
 class ListingCost(Enum):
-    """How expensive it is to *enumerate* all members (list names + metadata)."""
+    """How expensive it is to *enumerate* all members (list names + metadata).
+
+    The value names how the member list is read through the source the archive was
+    opened on: from an index, by walking member headers, or by decompressing. It does
+    not count the work of finding the index: a ZIP whose end record sits behind a long
+    tail is walked to find its central directory and is still ``INDEXED``. Nor does it
+    say when the work is paid: a backend may do it inside ``open_archive`` and serve
+    ``members()`` from memory (RAR). One format can need different work on different
+    sources: a ZIP read from a pipe is ``REQUIRES_SCANNING``. The value is set per
+    backend and source, so a damaged archive listed by a fallback walk (a ZIP whose
+    directory is gone) keeps its backend's value.
+    """
 
     INDEXED = "indexed"
     """Members can be listed without scanning header-to-header or decompressing payload.
@@ -23,14 +34,16 @@ class ListingCost(Enum):
     single-file compressed stream (gzip, xz, …), whose one member is known from the
     header without decompressing. A filesystem directory is **not** indexed (its walk
     is ``REQUIRES_SCANNING``).
-    RAR is ``INDEXED`` because the reader walks all file headers at open and caches
-    the table — by ``members()`` time the list is already in memory.
     """
 
     REQUIRES_SCANNING = "requires_scanning"
     """No index, but members can be enumerated by seeking/scanning header-to-header
-    without decompressing payload (e.g. an uncompressed tar, or a filesystem directory
-    walk)."""
+    without decompressing payload (e.g. an uncompressed tar, a RAR archive, or a
+    filesystem directory walk).
+
+    RAR walks its headers inside ``open_archive``, so ``members()`` then returns from
+    memory.
+    """
 
     REQUIRES_DECOMPRESSION = "requires_decompression"
     """The stream must be decompressed to reach the member headers (e.g. a compressed tar)."""
