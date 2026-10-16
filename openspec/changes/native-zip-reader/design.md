@@ -831,11 +831,12 @@ One PR each, in order; every PR goes through the review label.
    the backup-scan investigation's §3.3-3.4 status.
 6. **ZIPs over 4 GiB without ZIP64.** macOS Finder writes a classic ZIP past 4 GiB and
    stores every offset modulo 2³². The rule recorded in `IDEAS.md`: offsets must
-   increase, so when one falls below the previous member's end, add 2³² until it does
-   not; the end record's directory offset follows the same rule. It applies only when a
+   increase, so when one falls below the furthest end of the members before it, add
+   2³² until it does not; the end record's directory offset follows the same rule. It applies only when a
    local header with the entry's name sits at the corrected offset, the CRC check stays,
    and a diagnostic records the correction. A single member over 4 GiB (its sizes wrap
-   too) stays out until a real archive from a current Mac settles it. The diagnostic may
+   too), and with it the members after it, which keep their stored offsets, stays out
+   until a real archive from a current Mac settles it. The diagnostic may
    need a new code, which goes to the maintainer. Format-zip spec, handbook §3 and §5,
    `docs/formats.md`, and the `IDEAS.md` item, which this stage closes.
 7. **Methods 1 (Shrink) and 6 (Implode). Deferred until after 0.2.0** (the maintainer,

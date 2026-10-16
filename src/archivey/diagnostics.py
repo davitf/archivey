@@ -83,6 +83,7 @@ class DiagnosticCode(StrEnum):
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
+    ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -145,6 +146,8 @@ DiagnosticCodeStr = Literal[
     "member-special-file-has-data",
     "member_directory_data_ignored",
     "member-directory-data-ignored",
+    "archive_offset_wrapped",
+    "archive-offset-wrapped",
 ]
 
 
@@ -590,6 +593,38 @@ class SpecialFileDataContext(_JsonSafeContext):
     size: int | None = None
 
 
+@dataclass(frozen=True)
+class OffsetWrapContext(_JsonSafeContext):
+    """An offset the archive stores is short of where its record is by a multiple of
+    2³², because the writer stored a 32-bit field past 4 GiB without ZIP64.
+
+    macOS Archive Utility (Finder's Compress, ``ditto -c -k``) writes such ZIPs. The
+    reader adds 2³² to an offset that falls below the furthest end of the members before
+    it, until it no longer does, and keeps the result only when a local header with the
+    member's name starts there; the member's CRC-32 is still checked when it is read.
+    ``record`` says which offset was corrected:
+
+    - ``"local_header"`` — a central directory entry's local header offset.
+      ``member_name`` and ``member_id`` name the member.
+    - ``"central_directory"`` — the end record's offset of the central directory. The
+      archive is reported once, with an empty ``member_name`` and a ``member_id`` of
+      ``None``.
+
+    ``stored_offset`` is the value in the archive and ``corrected_offset`` the one used,
+    both counted as the format counts them (before a self-extractor stub's length is
+    added).
+    """
+
+    kind: Literal["offset_wrap"] = "offset_wrap"
+    archive_name: str | None = None
+    format: str = ""
+    member_name: str = ""
+    member_id: int | None = None
+    record: Literal["local_header", "central_directory"] = "local_header"
+    stored_offset: int = 0
+    corrected_offset: int = 0
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -611,6 +646,7 @@ DiagnosticContext = (
     | StreamRewindContext
     | SelectorUnmatchedContext
     | SpecialFileDataContext
+    | OffsetWrapContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -642,6 +678,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
+        DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
     }
 )
 
@@ -668,7 +705,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eleven codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twelve codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -706,6 +743,10 @@ and the reasons are part of the contract rather than an oversight:
 - ``FORMAT_EXTENSION_CONFLICT`` — reports the file's name, not its bytes: the bytes
   win and the archive reads in full. A tarball saved as ``b.gz`` is an ordinary mistake,
   and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
+- ``ARCHIVE_OFFSET_WRAPPED`` — macOS Archive Utility (Finder's Compress) writes a ZIP
+  past 4 GiB this way by default and reads it back, and a correction is kept only when
+  a local header with the member's name is there, with the CRC-32 still checked.
+  ``STRICT`` would refuse an ordinary Mac archive.
 """
 
 
@@ -1071,6 +1112,7 @@ __all__ = [
     "MemberTimestampContext",
     "NameEncodingContext",
     "NameNormalizationContext",
+    "OffsetWrapContext",
     "OnDiagnostic",
     "ScanRaceContext",
     "SeekIndexContext",

@@ -1680,7 +1680,15 @@ class ZipForwardReader(ZipReader):
         self._end_record = self._end = end
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
-        walk = CentralDirectoryWalk(tail.read_at, end)
+        by_offset = self._by_offset
+
+        def local_name_at(offset: int) -> bytes | None:
+            # The pass has every local header it met; the walk asks for one only to
+            # correct an offset wrapped past 4 GiB.
+            member = by_offset.get(offset)
+            return None if member is None else cast("_ZipLocator", member._raw).name
+
+        walk = CentralDirectoryWalk(tail.read_at, end, local_name_at=local_name_at)
         # Every entry's local header offset, in directory order, and the entries.
         offsets = array("q")
         entries: list[CentralEntry] = []
@@ -1708,7 +1716,6 @@ class ZipForwardReader(ZipReader):
         # A walk that met damage read no count.
         self._entries_read = None if damage is not None else walk.entries_read
         local_offsets = self._local_offsets
-        by_offset = self._by_offset
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
         matched: set[int] = set()
         order: list[ArchiveMember] = []

@@ -69,6 +69,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     MemberHeaderRecordContext,
+    OffsetWrapContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -112,9 +113,11 @@ from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
+    DirectoryOffsetWrapped,
     EndRecord,
     EntryCountMismatch,
-    EntryOverrun,
+    WalkFinding,
+    local_name_at,
     locate_end_record,
     read_end_record,
     read_local_header,
@@ -1564,7 +1567,7 @@ class ZipReader(BaseArchiveReader):
         if walked is not None:
             yield from self._iter_walked(walked)
             return
-        walk = CentralDirectoryWalk(self._read_at, self._end)
+        walk = self._directory_walk()
         offsets: array[int] = array("q")
         max_members = self._config.listing_limits.max_members
         last: CentralEntry | None = None
@@ -1741,14 +1744,41 @@ class ZipReader(BaseArchiveReader):
         ):
             member.hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
 
+    def _directory_walk(self) -> CentralDirectoryWalk:
+        """A walk over the directory that corrects offsets wrapped past 4 GiB, checked
+        against the local headers in the file."""
+        read_at = self._read_at
+        return CentralDirectoryWalk(
+            read_at,
+            self._end,
+            local_name_at=lambda offset: local_name_at(read_at, offset),
+        )
+
     def _emit_walk_finding(
-        self,
-        finding: EntryCountMismatch | CommentCutShort | EntryOverrun,
-        last: CentralEntry | None,
+        self, finding: WalkFinding, last: CentralEntry | None
     ) -> None:
         """One disagreement between the end record and the central directory."""
         end = self._end
         archive_name = self._archive_name
+        if isinstance(finding, DirectoryOffsetWrapped):
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ARCHIVE_OFFSET_WRAPPED,
+                message=(
+                    f"ZIP end record stores the central directory's offset as "
+                    f"{finding.stored}, but the directory is at {finding.corrected}: "
+                    "the archive was written past 4 GiB without ZIP64, and its offsets "
+                    "were corrected."
+                ),
+                context=OffsetWrapContext(
+                    archive_name=archive_name,
+                    format="zip",
+                    record="central_directory",
+                    stored_offset=finding.stored,
+                    corrected_offset=finding.corrected,
+                ),
+                logger=logger,
+            )
+            return
         if isinstance(finding, EntryCountMismatch):
             record = "ZIP64 end of central directory" if finding.zip64 else "end record"
             message = (
@@ -1826,6 +1856,35 @@ class ZipReader(BaseArchiveReader):
             self._walk_ahead()
         yield from super()._iter_with_data(copies)
 
+    def _emit_offset_wrapped(
+        self, member: ArchiveMember, entry: CentralEntry, index: int
+    ) -> None:
+        """``ARCHIVE_OFFSET_WRAPPED`` for a member whose local header offset the walk
+        corrected (``CentralDirectoryWalk``)."""
+        # Both offsets as the directory counts them, without the stub's length.
+        stored = entry.stored_offset
+        corrected = stored + entry.offset_correction
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_OFFSET_WRAPPED,
+            message=(
+                f"ZIP member {quoted(member.name)} stores its local header offset as "
+                f"{stored}, but the header is at {corrected}: the archive was written "
+                "past 4 GiB without ZIP64, and the offset was corrected."
+            ),
+            context=OffsetWrapContext(
+                archive_name=self._archive_name,
+                format="zip",
+                member_name=member.name,
+                member_id=index,
+                record="local_header",
+                stored_offset=stored,
+                corrected_offset=corrected,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
+
     def _set_bounds(self, offsets: array[int], *, count: int | None) -> None:
         """Record the offsets a listing walk read, and what it says of the count.
 
@@ -1867,7 +1926,7 @@ class ZipReader(BaseArchiveReader):
         Called under ``_index_lock``.
         """
         max_members = self._config.listing_limits.max_members
-        walk = CentralDirectoryWalk(self._read_at, self._end)
+        walk = self._directory_walk()
         offsets: array[int] = array("q")
         try:
             for entry in walk:
@@ -2299,6 +2358,8 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if entry.offset_correction:
+            self._emit_offset_wrapped(member, entry, index)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; read() delivers them.
