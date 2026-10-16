@@ -105,3 +105,20 @@ def test_unix32_to_datetime_covers_every_32_bit_value(
     # The extremes of a signed and an unsigned 32-bit field, so no value such a field
     # holds needs a None case.
     assert unix32_to_datetime(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (253_402_300_799, datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)),
+        (253_402_300_800, None),
+        (-62_135_596_800, datetime(1, 1, 1, tzinfo=UTC)),
+        (-62_135_596_801, None),
+    ],
+)
+def test_unix_to_datetime_integer_edges_of_datetime(
+    seconds: int, expected: datetime | None
+) -> None:
+    # An integer takes the fromtimestamp fast path, which must agree with the epoch
+    # sum at the ends of datetime's range, where one or the other refuses.
+    assert unix_to_datetime(seconds) == expected

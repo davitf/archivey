@@ -33,12 +33,20 @@ def unix_to_datetime(seconds: float) -> datetime | None:
     ``gmtime()`` on Windows, which rejects negative values, so a member dated before
     1970 would list with the right date on Linux and macOS and as invalid on Windows.
     Epoch plus ``timedelta`` is the same value on every platform, rounded to the
-    microsecond the same way. (:func:`unix32_to_datetime` does call ``fromtimestamp``,
-    for speed, and falls back to this sum when the platform refuses the value.)
+    microsecond the same way.
     ``timedelta`` raises ``OverflowError`` for a value too large for it or a result
     outside ``datetime``'s range, and ``ValueError`` only for NaN, which a float PAX
     time record can carry; both mean "no valid time".
+
+    An integer (a TAR header's mtime) first tries ``fromtimestamp``, which is faster on
+    a listing hot path and gives the same value for an integer; where the platform
+    refuses it, the sum decides.
     """
+    if type(seconds) is int:
+        try:
+            return datetime.fromtimestamp(seconds, UTC)
+        except (OverflowError, OSError, ValueError):
+            pass
     try:
         return _UNIX_EPOCH + timedelta(seconds=seconds)
     except (OverflowError, ValueError):

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import errno
 import re
+import struct
 import zlib
 from array import array
 from collections.abc import Callable, Mapping
@@ -245,6 +246,34 @@ _FIELDS = (
     ("devmajor", 329, 337),
     ("devminor", 337, 345),
 )
+# The seven numeric fields in _FIELDS order, as raw bytes, in one C call. A test checks
+# that it cuts the same bytes as _FIELDS.
+_split_numbers = struct.Struct("100x8s8s8s12s12s181x8s8s167x").unpack
+# Raw numeric field -> value. Most fields of an archive repeat (mode, ids, the device
+# numbers, often the times), so a dict hit replaces the strip/translate/int. Bounded:
+# cleared when full, so a hostile archive of distinct values costs one dict insert per
+# field and no more memory.
+_numbers: dict[bytes, int] = {}
+_NUMBERS_KEPT = 4096
+
+
+def _parse_and_keep(raw: bytes) -> int:
+    value = parse_number(raw)
+    if len(_numbers) >= _NUMBERS_KEPT:
+        _numbers.clear()
+    _numbers[raw] = value
+    return value
+
+
+def _field_named(block: bytes) -> str:
+    """The name of the first numeric field of ``block`` that is not a number, for the
+    rejection message; only called once the parse has failed."""
+    for field, start, end in _FIELDS:
+        try:
+            parse_number(block[start:end])
+        except _BadNumber:
+            return field
+    raise AssertionError("no field failed")  # pragma: no cover
 
 
 def parse_header_block(
@@ -264,16 +293,18 @@ def parse_header_block(
         return RejectedBlock(offset, "the checksum field is not a number")
     if not _checksum_matches(block, stored_sum):
         return RejectedBlock(offset, "bad header checksum")
-    values: dict[str, int] = {}
-    for field, start, end in _FIELDS:
-        try:
-            values[field] = parse_number(block[start:end])
-        except _BadNumber:
-            return RejectedBlock(offset, f"the {field} field is not a number")
-    if values["size"] < 0:
-        return RejectedBlock(offset, f"negative size {values['size']}")
-    if values["size"] > MAX_OFFSET:
-        return RejectedBlock(offset, f"size {values['size']} is past any file's size")
+    known = _numbers.get  # one get per field: another thread may clear it between two
+    try:
+        mode, uid, gid, size, mtime, devmajor, devminor = [
+            _parse_and_keep(raw) if (value := known(raw)) is None else value
+            for raw in _split_numbers(block)
+        ]
+    except _BadNumber:
+        return RejectedBlock(offset, f"the {_field_named(block)} field is not a number")
+    if size < 0:
+        return RejectedBlock(offset, f"negative size {size}")
+    if size > MAX_OFFSET:
+        return RejectedBlock(offset, f"size {size} is past any file's size")
     typeflag = block[156:157]
     magic = block[257:265]
     name = _cut_nul(block[0:100])
@@ -316,7 +347,13 @@ def parse_header_block(
         sparse_slots=sparse_slots,
         sparse_extended=sparse_extended,
         sparse_realsize=sparse_realsize,
-        **values,
+        mode=mode,
+        uid=uid,
+        gid=gid,
+        size=size,
+        mtime=mtime,
+        devmajor=devmajor,
+        devminor=devminor,
     )
 
 

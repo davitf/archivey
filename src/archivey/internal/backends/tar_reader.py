@@ -45,7 +45,6 @@ fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
 
 from __future__ import annotations
 
-import stat
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
@@ -1358,10 +1357,10 @@ class TarReader(BaseArchiveReader):
             or (entry.old_style_directory and entry.size)
             else None,
             modified=modified,
-            # A GNU base-256 mode field can hold a negative or wider-than-32-bit value,
-            # which stat.S_IMODE refuses with OverflowError. Masked first, as RAR does:
-            # the permission bits are the low twelve, which is what S_IMODE keeps.
-            mode=stat.S_IMODE(entry.header.mode & 0o7777),
+            # The permission bits are the low twelve, which is what stat.S_IMODE
+            # keeps. Masked here rather than through S_IMODE, which refuses the
+            # negative or wider-than-32-bit value a GNU base-256 mode field can hold.
+            mode=entry.header.mode & 0o7777,
             uid=entry.uid,
             gid=entry.gid,
             compression=compression,
@@ -1406,13 +1405,16 @@ class TarReader(BaseArchiveReader):
         # 1.0, which GNU tar writes under ``--format=pax`` with a plain ``0`` typeflag.
         if entry.sparse_format is not None:
             member.is_sparse = True
-        emit_member_name_normalized(
-            self._diagnostics_collector,
-            member=member,
-            presented_name=presented,
-            archive_name=self._archive_name,
-            member_id=index,
-        )
+        # member.name is still ``name``: this is the callee's own early return, kept
+        # here to skip the call for the common unchanged name.
+        if name != presented:
+            emit_member_name_normalized(
+                self._diagnostics_collector,
+                member=member,
+                presented_name=presented,
+                archive_name=self._archive_name,
+                member_id=index,
+            )
         for issue in timestamp_issues:
             self._emit_timestamp_invalid(member, index, issue)
         if inferred:

@@ -1113,3 +1113,51 @@ def test_forward_only_data_stream() -> None:
     with pytest.raises(ValueError):
         stream.read()
     assert walker.open_data(b.span()).read() == b"world"
+
+
+def test_numeric_field_split_matches_the_field_table() -> None:
+    # parse_header_block cuts the numeric fields with one struct unpack; it must cut
+    # the same bytes as the _FIELDS table the error message reads.
+    from archivey.internal.backends import tar_parser
+
+    block = bytes(i % 251 for i in range(BLOCKSIZE))
+    assert tar_parser._split_numbers(block) == tuple(
+        block[start:end] for _, start, end in tar_parser._FIELDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "start", "end"),
+    [
+        ("mode", 100, 108),
+        ("uid", 108, 116),
+        ("gid", 116, 124),
+        ("size", 124, 136),
+        ("mtime", 136, 148),
+        ("devmajor", 329, 337),
+        ("devminor", 337, 345),
+    ],
+)
+def test_each_bad_numeric_field_is_named(field: str, start: int, end: int) -> None:
+    def spoil(h: bytearray) -> None:
+        h[start:end] = b"9" + bytes(end - start - 1)  # 9 is not an octal digit
+
+    parsed = parse_header_block(_block(patch=spoil), 0)
+    assert isinstance(parsed, RejectedBlock)
+    assert parsed.reason == f"the {field} field is not a number"
+
+
+def test_number_cache_is_bounded_and_agrees_with_the_parse() -> None:
+    from archivey.internal.backends import tar_parser
+
+    for i in range(tar_parser._NUMBERS_KEPT * 2):
+        mtime = 1_600_000_000 + i
+        block = _block(
+            patch=lambda h, t=mtime: h.__setitem__(slice(136, 148), _octal(t, 12))
+        )
+        parsed = parse_header_block(block, 0)
+        assert isinstance(parsed, HeaderBlock)
+        assert parsed.mtime == mtime
+        assert len(tar_parser._numbers) <= tar_parser._NUMBERS_KEPT
+    for raw, value in tar_parser._numbers.items():
+        assert tar_parser.parse_number(raw) == value
