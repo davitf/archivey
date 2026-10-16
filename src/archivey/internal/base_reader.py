@@ -242,7 +242,7 @@ def _settle_listing(
 
     ``links_too``: nor will anything read their unread link targets or fill their
     unread size (the reader closed). ``sizes_too``: nor will a read fill their unread
-    size (a ``streaming=True`` pass ended: its members cannot be read again).
+    size (a ``streaming=True`` pass ended or failed: its members cannot be read again).
     """
     for member in members:
         member._listing_pending = False
@@ -1634,8 +1634,9 @@ class BaseArchiveReader(ArchiveReader):
             # The pass has already yielded the prefix, so it cannot be walked again
             # without handing the caller a second object for the same member.
             self._walk_failure = exc
-            # Nothing stamps the prefix now, so it will not change.
-            _settle_listing(self._listed)
+            # Nothing stamps the prefix now, and nothing can read it again, so it will
+            # not change.
+            _settle_listing(self._listed, sizes_too=True)
             return
         # A later call starts over, and ``_iter_members`` yields the same order;
         # ``_pull_member`` replays the positions the failed walk reached onto the same

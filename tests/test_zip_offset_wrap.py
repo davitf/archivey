@@ -817,3 +817,28 @@ def test_a_pipe_descriptor_may_hold_the_full_size_of_a_marked_entry() -> None:
 def _name_at(read_at: ReadAt, offset: int) -> bytes | None:
     found = local_header_at(read_at, offset)
     return None if found is None else found[0]
+
+
+@pytest.mark.parametrize("forward_only", [True, False])
+def test_a_failed_pass_settles_a_size_it_left_unknown(forward_only: bool) -> None:
+    # A listing limit fails the pass after it yielded the member; the pass cannot be
+    # walked again, so nothing can fill the size.
+    from archivey.config import ListingLimits
+    from archivey.exceptions import ResourceLimitError
+
+    layout = _mac_layout([("p.bin", _padded_mac_member(bytes(100))), ("n" * 400, b"x")])
+    source = (
+        _ForwardOnly(layout.segments, layout.size)
+        if forward_only
+        else _Sparse(layout.segments, layout.size)
+    )
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=300))
+    held = []
+    with open_archive(
+        source, format=ArchiveFormat.ZIP, streaming=True, config=config
+    ) as reader:
+        with pytest.raises(ResourceLimitError):
+            for member, _ in reader.stream_members():
+                held.append(member)
+        assert [m.name for m in held] == ["p.bin"]
+        assert held[0].member_state_final is True

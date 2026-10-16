@@ -926,8 +926,8 @@ class ArchiveMember:
     _size_unread: bool = field(default=False, repr=False, compare=False)
     """Set while ``size`` is ``None`` and a full read of the member would fill it in.
 
-    Cleared once a read from the start reaches the end, and when the reader closes.
-    Read it through :attr:`member_state_final`. Not part of the public contract."""
+    Cleared once a read fills the size, when a ``streaming=True`` pass ends or fails
+    (no read can reach the member again), and when the reader closes. Read it through :attr:`member_state_final`. Not part of the public contract."""
     _link_target_absent: bool = field(default=False, repr=False, compare=False)
     """Set when the archive itself records no target for this link.
 
@@ -1044,7 +1044,7 @@ class ArchiveMember:
         """No field of this member will change from here on.
 
         ``False`` while archivey can still update the member in place, which happens in
-        two cases:
+        three cases:
 
         - A member of a listing whose links have not been resolved yet. That listing
           is complete, and the member settled, when a call that resolves links
@@ -1064,12 +1064,17 @@ class ArchiveMember:
           buffer becomes a ``FILE``. :meth:`~archivey.ArchiveReader.open` and
           :meth:`~archivey.ForwardArchiveReader.extract_all` read it when they reach
           the link, on the member they are given, a copy included.
-        - A single-file member (``.gz``, ``.bz2``, …) whose ``size`` is ``None``,
-          until a read from the start to the end that skips no byte fills it in. A read
-          that skips bytes, stops early or fails leaves it ``False``.
+        - A member whose ``size`` is ``None`` until a full read fills it in: a
+          single-file member (``.gz``, ``.bz2``, …) whose format records no size, read
+          from the start to the end without skipping a byte; or a large member of a
+          macOS ZIP whose size the archive stores only modulo 2**32, read to the end
+          with a matching CRC-32. A read that skips bytes, stops early or fails leaves
+          it ``False``.
 
         Everywhere else it is ``True``. Closing the reader makes it ``True`` for every
-        member it listed, since a closed reader updates nothing. A copy made with
+        member it listed, since a closed reader updates nothing. So does the end of a
+        ``streaming=True`` pass, or its failure, for a size no read filled: nothing can
+        read the member again. A copy made with
         :meth:`replace` is never stamped, so only its unread link target can change,
         except the copy a streaming ``extract_all`` hands its ``filter``: it reads
         ``False`` while the walk can still change the member it came from, and the
