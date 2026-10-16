@@ -556,9 +556,10 @@ yielded.
   way; the one exception is a backslash in a RAR5 name written on Windows, which
   `unrar` on Linux and macOS reads as `_`. `unar` selects members by position, so it
   has none of these problems: under the default `rar_decompressor='auto'`, archivey
-  reads such a member with `unar` when one it accepts is installed, unless the member
-  is encrypted (`unar` takes the password on its command line) or `unar` is known to
-  misread the archive. Setting `ArchiveyConfig.rar_decompressor` to `'unar'` reads every
+  reads such a member with `unar` when one it accepts is installed. It does not when
+  the archive has any encryption (`unar` takes the password on its command line), when
+  the archive is a stream or has data before the RAR (`unar` would need a copy of it),
+  or when `unar` is known to misread the archive. Setting `ArchiveyConfig.rar_decompressor` to `'unar'` reads every
   member that way.
 - **Member names.** RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16
   beside an 8-bit copy. A RAR 1.5-4 name that has only the 8-bit bytes does not say

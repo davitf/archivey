@@ -4598,6 +4598,44 @@ def test_auto_keeps_the_unrar_refusal_without_an_accepted_unar(
             archive.read("a*.txt")
 
 
+@requires_binary("unrar", "unar")
+def test_auto_keeps_the_unrar_refusal_when_unar_would_get_the_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The password is resolved per archive, so in an archive with any encryption
+    even a plaintext member's read would put it on unar's command line."""
+    spawned: list[object] = []
+    monkeypatch.setattr(
+        rar_reader, "open_unar_stdout", lambda *a, **k: spawned.append(a)
+    )
+    with open_archive(_fixture("wildcard_names__.rar"), password="s3cret") as archive:
+        monkeypatch.setattr(archive, "_archive_has_encryption", True)
+        with pytest.raises(
+            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
+        ):
+            archive.read("a*.txt")
+    assert spawned == []
+
+
+@requires_binary("unrar", "unar")
+def test_auto_keeps_the_unrar_refusal_when_unar_would_need_a_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prefix before the RAR means unar reads a copy, which the open-time cost
+    notes under unrar do not announce, so the unrar refusal stands."""
+    created = _rar_temp_artifacts(monkeypatch)
+    path = tmp_path / "prefixed.rar"
+    path.write_bytes(
+        b"MZ" + bytes(4094) + _fixture("wildcard_names__.rar").read_bytes()
+    )
+    with open_archive(path) as archive:
+        with pytest.raises(
+            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
+        ):
+            archive.read("a*.txt")
+    assert created == []
+
+
 @requires_binary("unrar")
 def test_glob_concatenation_flag_names_itself_in_the_refusal() -> None:
     """The refusal tells the caller the byte count and the exact flag to set."""
@@ -4761,8 +4799,9 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
 
 
 @requires_binary("unrar")
+@pytest.mark.parametrize("config", [_UNRAR_ONLY, None], ids=["unrar", "auto"])
 def test_refused_glob_open_of_a_stream_source_writes_nothing(
-    monkeypatch: pytest.MonkeyPatch,
+    config: ArchiveyConfig | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A refused ``open()`` must not spool the source to disk on its way to the raise.
 
@@ -4773,6 +4812,8 @@ def test_refused_glob_open_of_a_stream_source_writes_nothing(
     archive (the whole *set*, for volumes) for a read that never happens. That also
     put the two halves of this PR at odds: the concatenation refusal exists to stop
     an unbounded decode, and it was paying an unbounded disk copy to reach the raise.
+    Under ``AUTO`` the unar fallback is not taken for a stream source, since unar
+    would need its own copy, so the refusal stands there too.
     """
     for fixture, member in (
         ("wildcard_names__.rar", "a*.txt"),
@@ -4780,7 +4821,7 @@ def test_refused_glob_open_of_a_stream_source_writes_nothing(
     ):
         created = _rar_temp_artifacts(monkeypatch)
         data = _fixture(fixture).read_bytes()
-        with open_archive(io.BytesIO(data), config=_UNRAR_ONLY) as archive:
+        with open_archive(io.BytesIO(data), config=config) as archive:
             assert member in {m.name for m in archive.members()}
             assert created == []
             with pytest.raises(UnsupportedFeatureError):

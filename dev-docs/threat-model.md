@@ -1016,7 +1016,11 @@ the program that runs is one whose behaviour we have characterized.
 **Mechanism.** `rar_decompressor="auto"` (the default; maintainer 2026-09-26, "auto is
 default") takes RARLAB `unrar` or `rar` when installed and `unar` otherwise, decided once
 at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` gets wrong
-are refused before it runs. `unrar-free`, `7z` and `bsdtar` are never used: their
+are refused before it runs. The other direction has one exception: a member `unrar`
+cannot address by name (a glob mask that also matches earlier members, a glob in a
+directory component, a backslash) is read with an accepted `unar` by index, unless the
+archive has any encryption, is a stream or has a prefix (a copy), or `unar` refuses it
+(`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
@@ -1157,7 +1161,11 @@ and [`docs/gotchas.md`](../docs/gotchas.md).
 `unar` takes a password only on argv, so under `unar` it is visible to other local users
 in `ps` and `/proc/<pid>/cmdline` while the process runs. Accepted by the maintainer
 (2026-09-26, "fine in most cases"). Because `"auto"` is the default, a caller without
-RARLAB installed gets this without choosing it. `RarDecompressor.UNRAR` rules it out.
+RARLAB installed gets this without choosing it. `RarDecompressor.UNRAR` rules it out. A
+caller *with* RARLAB never gets it: the one place `"auto"` reaches for `unar` beside
+`unrar` (a member `unrar` cannot name, `_unar_for_unaddressable`) is refused for any
+archive with encryption, because the password is resolved per archive and a plaintext
+member's read would still hand it over.
 Public: [hardening notes](../docs/extracting.md#hardening-notes-for-callers).
 
 ## 5. Open design gaps

@@ -1224,10 +1224,11 @@ class RarReader(BaseArchiveReader):
         self._unar_path: Path | None = None
         # The unar policy and dictionary costs for members unrar cannot address,
         # built on the first such read under AUTO (:meth:`_unar_for_unaddressable`).
-        # ``False`` once no accepted unar was found.
+        # ``False`` until then, as for ``_archive_check_member``; ``None`` once no
+        # accepted unar was found.
         self._unar_fallback: (
-            tuple[UnarRarPolicy, dict[int, _DictionaryCost]] | Literal[False] | None
-        ) = None
+            tuple[UnarRarPolicy, dict[int, _DictionaryCost]] | None | Literal[False]
+        ) = False
         self._unar_fallback_lock = threading.Lock()
         # Guards the check-then-write in ``_ensure_archive_path``: two concurrent
         # compressed opens used to both see ``None`` and both copy, and close
@@ -1364,17 +1365,15 @@ class RarReader(BaseArchiveReader):
         # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
         # programs allocate differently, so each has a rule. Under ``NONE`` nothing runs
         # and nothing consults this.
-        costs = (
-            [
-                _DictionaryCost(count, count, declarer)
-                for count, declarer in unar_dictionary_costs(self._archive)
-            ]
-            if self._unar_policy is not None
-            else _unrar_dictionary_costs(self._archive)
-        )
-        self._dictionary_costs = {
-            id(member): cost for member, cost in zip(self._members, costs, strict=True)
-        }
+        if self._unar_policy is not None:
+            self._dictionary_costs = self._unar_dictionary_cost_map()
+        else:
+            self._dictionary_costs = {
+                id(member): cost
+                for member, cost in zip(
+                    self._members, _unrar_dictionary_costs(self._archive), strict=True
+                )
+            }
         # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
         # reaches them, and a damaged one would otherwise report nothing under any
         # policy.
@@ -2342,48 +2341,67 @@ class RarReader(BaseArchiveReader):
             )
         return None
 
+    def _unar_dictionary_cost_map(self) -> dict[int, _DictionaryCost]:
+        """Each member's dictionary cost under ``unar``, keyed by ``id(member)``.
+
+        Under ``unar`` the count is the declared size (see
+        :func:`unar_dictionary_costs`), so both fields carry it.
+        """
+        return {
+            id(member): _DictionaryCost(count, count, declarer)
+            for member, (count, declarer) in zip(
+                self._members, unar_dictionary_costs(self._archive), strict=True
+            )
+        }
+
     def _unar_for_unaddressable(
-        self, raw: RarMemberInfo
-    ) -> tuple[UnarRarPolicy, dict[int, _DictionaryCost]] | None:
-        """The ``unar`` policy and dictionary costs for a member ``unrar`` cannot name.
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> tuple[UnarRarPolicy, _DictionaryCost] | None:
+        """The ``unar`` policy and dictionary cost for a member ``unrar`` cannot name.
 
         ``unar`` names entries by index, so a stored name ``unrar`` cannot be given, or
         a glob name that also matches earlier members, costs it nothing. ``AUTO``
         therefore reads such a member with an accepted ``unar`` when one is installed,
-        where it would otherwise refuse it. ``None`` keeps the ``unrar`` refusal: the
-        caller chose ``unrar`` explicitly, no accepted ``unar`` was found, ``unar``
-        refuses the member or the archive too, or the member needs a password, which
-        ``unar`` takes on its command line, where other local users can see it.
+        where it would otherwise refuse it. ``None`` keeps the ``unrar`` refusal when:
+
+        - the caller chose ``unrar`` explicitly, or no accepted ``unar`` was found;
+        - the archive has any encryption, or the member's encryption is unknown. The
+          password is resolved per archive, so even a plaintext member's read would
+          hand it over, and ``unar`` takes it on its command line, where other local
+          users can see it;
+        - ``unar`` would need a copy of the archive (a stream source, or a prefix
+          before the RAR), which the open-time cost notes do not announce under
+          ``unrar``;
+        - ``unar`` refuses the member or the archive too.
         """
         if (
             self._config.rar_decompressor is not RarDecompressor.AUTO
             or self._decompressor is not RarDecompressor.UNRAR
-            or raw.is_encrypted
-            or self._archive.has_header_encryption
+            or self._archive_has_encryption
+            or raw.encryption_unknown
+            or not self._volume_paths
+            or self._origin + self._archive.sfx_offset != 0
             or self._unar_path_refusal() is not None
         ):
             return None
-        # Its own lock: the open path that asks may already hold _materialize_lock.
+        # Not under _materialize_lock: find_unar runs a probe with a timeout (and on
+        # a first call decodes a test archive), which must not hold up the copies.
         with self._unar_fallback_lock:
-            if self._unar_fallback is None:
+            if self._unar_fallback is False:
                 try:
                     find_unar(purpose=UNAR_PURPOSE)
                 except PackageNotInstalledError:
-                    self._unar_fallback = False
+                    self._unar_fallback = None
                 else:
-                    costs = {
-                        id(member): _DictionaryCost(count, count, declarer)
-                        for member, (count, declarer) in zip(
-                            self._members,
-                            unar_dictionary_costs(self._archive),
-                            strict=True,
-                        )
-                    }
-                    self._unar_fallback = (UnarRarPolicy(self._archive), costs)
+                    self._unar_fallback = (
+                        UnarRarPolicy(self._archive),
+                        self._unar_dictionary_cost_map(),
+                    )
             fallback = self._unar_fallback
-        if fallback is False or fallback[0].member_refusal(raw) is not None:
+        if fallback is None or fallback[0].member_refusal(raw) is not None:
             return None
-        return fallback
+        policy, costs = fallback
+        return policy, costs[id(member)]
 
     def _unar_archive_path(self, member: ArchiveMember | None) -> Path:
         """A path ``unar`` can open, in a directory that holds this archive alone.
@@ -4023,12 +4041,12 @@ class RarReader(BaseArchiveReader):
         try:
             spawner = self._unrar_spawner_by_name(member, raw)
         except _UnrarCannotAddress as refusal:
-            fallback = self._unar_for_unaddressable(raw)
+            fallback = self._unar_for_unaddressable(member, raw)
             if fallback is None:
                 raise refusal.error from None
-            policy, costs = fallback
+            policy, cost = fallback
             return self._open_member_with_unar(
-                member, raw, policy, dictionary_cost=costs[id(member)]
+                member, raw, policy, dictionary_cost=cost
             )
         # Picked before anything is copied for ``unrar``: a RAR5 PswCheck rejects a
         # wrong candidate without spooling a stream source to disk. A RAR3/4 candidate

@@ -1084,9 +1084,11 @@ whose mask also matches earlier members, costs it nothing. When
 `ArchiveyConfig.rar_decompressor` is `auto` and resolved to `unrar`, a read that the
 two requirements above would refuse SHALL instead be served by `unar -i <index>`, when
 all of these hold: an accepted `unar` is installed (the same check `auto` uses), the
-member is not encrypted and the archive has no encrypted headers (`unar` takes the
-password on its command line), and `unar` itself would not refuse the member or the
-archive (`Read RAR member data with unar`). Otherwise the `unrar` refusal SHALL be
+archive has no encrypted member or header and the member's encryption is known (the
+password is resolved per archive, and `unar` takes it on its command line), the source
+is a file with nothing before the RAR (so `unar` reads it in place, with no copy the
+open-time cost notes did not announce), and `unar` itself would not refuse the member
+or the archive (`Read RAR member data with unar`). Otherwise the `unrar` refusal SHALL be
 raised unchanged. The dictionary memory check SHALL use `unar`'s rule for that read.
 Every other member SHALL still be read with `unrar`. With `rar_decompressor='unrar'`
 the refusals SHALL stand.
@@ -1100,6 +1102,7 @@ the refusals SHALL stand.
 | The same reads with no accepted `unar` | The `unrar` refusals, unchanged |
 | The same reads with `rar_decompressor='unrar'` | The `unrar` refusals, unchanged |
 | RAR5 solid archive with data after a directory (`unar` refuses it) | The `unrar` refusal, unchanged |
+| An archive with any encrypted member, or a stream source, or a prefix before the RAR | The `unrar` refusal, unchanged; nothing is written to disk |
 
 ### Requirement: Read RAR member data with unar
 
