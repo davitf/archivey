@@ -476,10 +476,10 @@ both) and SHALL report a code with `LocalHeaderContext`:
 - **The name** (`MEMBER_LOCAL_NAME_DIFFERS`, which `STRICT` refuses: a tool that
   trusts the local header shows another name). The local header stores other name
   bytes than the directory: another code page, or `\` where the directory has `/`.
-  Every field comes from the directory, so the member keeps the directory's name. A file read reads a local header only when it
-  opens a member's data, so the report comes then (`field="name"`, the local bytes in
-  `local_raw_name_base64`), once per member; a policy that raises on the code raises on
-  every open. Only a file or link reports it: extraction reads no directory's data, so a
+  Every field comes from the directory, so the member keeps the directory's name. A
+  file read reads a local header only when it opens a member's data, so the report
+  comes then (`field="name"`, the local bytes in `local_raw_name_base64`), once per
+  member; a policy that raises on the code raises on every open. Only a file or link reports it: extraction reads no directory's data, so a
   directory reports nothing, even after a `read()` of data it declares, and nor does the
   pass from a pipe, which reads every local header.
 - **A CRC-32 of 0** (`MEMBER_LOCAL_CRC_USED`, which `STRICT` reads: the data is still
