@@ -881,9 +881,7 @@ def test_a_size_no_zip64_extra_holds_is_corruption(
         LocalHeaderWalk(_Unseekable(raw)).next_entry()
 
 
-def test_an_unheld_all_ones_local_size_is_read_from_a_file_and_refused_from_a_pipe() -> (
-    None
-):
+def test_an_unheld_local_size_reads_by_file() -> None:
     """A file read takes the sizes from the directory and reads such a member; the
     pass has only the local header (``formats/zip.md`` §2.2.2)."""
     buf = io.BytesIO()
