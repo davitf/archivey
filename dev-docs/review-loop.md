@@ -58,7 +58,7 @@ and the review loop, so a watching agent would wait indefinitely for a result.
 [`conflict-notice.yml`](../.github/workflows/conflict-notice.yml) runs whenever `main`
 moves, and hourly. For each conflicted pull request it posts one comment per head commit,
 which wakes the watching session, and takes the `review` label off with a comment saying
-so, unless the label went on in the last ten minutes and its round may already be
+so, unless the label went on in the last 50 minutes and its round may still be
 queued. Merge `main`, push, and add the label again if a round was waiting.
 `scripts/conflict_notice.py` holds the rules.
 

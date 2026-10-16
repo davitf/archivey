@@ -36,9 +36,15 @@ from datetime import UTC, datetime, timedelta
 
 REVIEW_LABEL = "review"
 NO_REVIEW_LABEL = "no-review"
+#: Who the workflow posts as, because it uses `GITHUB_TOKEN`. Posting with another
+#: token would hide every earlier notice from the duplicate check.
 COMMENT_AUTHOR = "github-actions[bot]"
-#: A queued review run reads the label within a minute or two of it being added.
-LABEL_GRACE = timedelta(minutes=10)
+#: How long a freshly added label is left for its own review run. A run that starts at
+#: once reads the label within a minute or two; one queued behind a round in flight on
+#: the same pull request (`review-loop.yml` never cancels one) waits for that round,
+#: which its job caps at 45 minutes. Waiting longer only defers the removal to a later
+#: hourly run; the conflict notice itself is not held back.
+LABEL_GRACE = timedelta(minutes=50)
 
 
 def marker(head_sha: str) -> str:
@@ -109,8 +115,9 @@ def decide(
 
 
 def _gh(*args: str) -> str:
+    # stderr is left to the step log, where gh says why a call failed.
     return subprocess.run(
-        ["gh", *args], check=True, capture_output=True, text=True
+        ["gh", *args], check=True, stdout=subprocess.PIPE, text=True
     ).stdout
 
 
@@ -123,6 +130,17 @@ def _gh_list(path: str) -> list[dict]:
 
 def _parse_time(text: str) -> datetime:
     return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def label_added_at(events: list[dict]) -> datetime | None:
+    """When the ``review`` label was last added, from the issue events API."""
+    added = [
+        _parse_time(e["created_at"])
+        for e in events
+        if e.get("event") == "labeled"
+        and (e.get("label") or {}).get("name") == REVIEW_LABEL
+    ]
+    return max(added, default=None)
 
 
 def _read_pr(repo: str, number: int) -> dict:
@@ -164,28 +182,11 @@ def main(argv: list[str]) -> int:
             if (c.get("user") or {}).get("login") == COMMENT_AUTHOR
         ]
         events = _gh_list(f"repos/{repo}/issues/{number}/events?per_page=100")
-        added = [
-            _parse_time(e["created_at"])
-            for e in events
-            if e.get("event") == "labeled"
-            and (e.get("label") or {}).get("name") == REVIEW_LABEL
-        ]
-        action = decide(pr, bodies, max(added, default=None), now, repo)
+        action = decide(pr, bodies, label_added_at(events), now, repo)
 
-        if action.remove_label:
-            print("  taking the review label off")
-            if not dry_run:
-                subprocess.run(
-                    [
-                        "gh",
-                        "api",
-                        "--method",
-                        "DELETE",
-                        "--silent",
-                        f"repos/{repo}/issues/{number}/labels/{REVIEW_LABEL}",
-                    ],
-                    check=False,
-                )
+        # The comment first: if it fails, the label stays on and the next run tries
+        # both again. Taking the label off first could leave it gone with nothing said,
+        # which reads as a round having started.
         if action.comment:
             print("  commenting:\n" + action.comment)
             if not dry_run:
@@ -198,6 +199,14 @@ def main(argv: list[str]) -> int:
                     "--body",
                     action.comment,
                 )
+        if action.remove_label:
+            print("  taking the review label off")
+            if not dry_run:
+                path = f"repos/{repo}/issues/{number}/labels/{REVIEW_LABEL}"
+                status = subprocess.run(
+                    ["gh", "api", "--method", "DELETE", "--silent", path], check=False
+                ).returncode
+                print(f"  label removal exit status {status}")
         if not action.comment and not action.remove_label:
             print("  nothing to do")
     return 0

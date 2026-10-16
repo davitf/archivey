@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "conflict_notice.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "conflict-notice.yml"
 
 _spec = importlib.util.spec_from_file_location("conflict_notice", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -92,3 +93,43 @@ def test_unknown_label_time_counts_as_old() -> None:
 def test_marker_only_counts_at_the_start_of_a_comment() -> None:
     quoted = f"As the notice said:\n> {notice.marker(HEAD)}"
     assert decide(pr(False), [quoted]).comment.startswith(notice.marker(HEAD))
+
+
+def test_label_time_is_the_latest_review_label_event() -> None:
+    # The shape the issue events API returns.
+    events = [
+        {
+            "event": "labeled",
+            "label": {"name": "review"},
+            "created_at": "2026-10-15T19:27:31Z",
+        },
+        {
+            "event": "unlabeled",
+            "label": {"name": "review"},
+            "created_at": "2026-10-15T19:28:00Z",
+        },
+        {
+            "event": "labeled",
+            "label": {"name": "review"},
+            "created_at": "2026-10-15T20:35:24Z",
+        },
+        {
+            "event": "labeled",
+            "label": {"name": "approved"},
+            "created_at": "2026-10-15T21:00:00Z",
+        },
+        {"event": "head_ref_force_pushed", "created_at": "2026-10-15T22:00:00Z"},
+    ]
+    assert notice.label_added_at(events) == datetime(
+        2026, 10, 15, 20, 35, 24, tzinfo=UTC
+    )
+    assert notice.label_added_at([]) is None
+
+
+def test_the_workflow_posts_as_the_author_the_script_looks_for() -> None:
+    # The duplicate check reads only `COMMENT_AUTHOR`'s comments; any other token would
+    # post as someone else and every run would announce the conflict again.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in text
+    assert "scripts/conflict_notice.py" in text
+    assert notice.COMMENT_AUTHOR == "github-actions[bot]"
