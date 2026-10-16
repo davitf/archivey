@@ -1378,7 +1378,11 @@ def _raw_tar_header(
     return bytes(header)
 
 
-_OLD_STYLE_TYPEFLAGS = [tarfile.AREGTYPE, tarfile.REGTYPE, tarfile.CONTTYPE]
+_OLD_STYLE_TYPEFLAGS = [
+    pytest.param(tarfile.AREGTYPE, id="AREGTYPE"),
+    pytest.param(tarfile.REGTYPE, id="REGTYPE"),
+    pytest.param(tarfile.CONTTYPE, id="CONTTYPE"),
+]
 """The three regular-file typeflags whose ``d/`` entry GNU tar reads as a directory.
 7-Zip agrees for NUL and ``0``; it lists a contiguous ``d/`` as the file ``d``."""
 
@@ -1458,7 +1462,8 @@ def test_old_style_directory_with_data_is_skipped(
 ) -> None:
     # stdlib tarfile turns an AREGTYPE header whose name ends in "/" into a directory
     # and then reads its data blocks as the next header, and lists a REGTYPE one as
-    # the file "d/". GNU tar and 7-Zip list a directory for both and skip the data.
+    # the file "d/". GNU tar lists a directory for all three typeflags and skips the
+    # data; 7-Zip does too for NUL and 0.
     data = _tar_slash_entry_with_data(typeflag)
     assert _stream_all(data, streaming) == [
         ("d/", MemberType.DIRECTORY, None),
@@ -1564,9 +1569,9 @@ def test_old_style_slash_name_without_data_is_a_plain_directory(
 def test_old_style_directory_name_from_extended_header(
     typeflag: bytes, wrapper: str, own_name: str, streaming: bool
 ) -> None:
-    # GNU tar and 7-Zip decide on the final name, after a PAX path or a GNU long name,
-    # whatever the header's own name field holds. stdlib tarfile decides on the own
-    # name field, and only on Pythons without the 2025 fixes.
+    # GNU tar (and 7-Zip, for NUL and 0) decides on the final name, after a PAX path
+    # or a GNU long name, whatever the header's own name field holds. stdlib tarfile
+    # decides on the own name field, and only on Pythons without the 2025 fixes.
     data = _tar_slash_entry_with_data(
         typeflag, own_name=own_name, wrapper=wrapper, final_name="d/"
     )
@@ -1682,7 +1687,8 @@ def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> Non
 def test_old_style_directory_with_data_extracts(
     tmp_path: Path, typeflag: bytes
 ) -> None:
-    # The directory is created and its bytes are not written, as GNU tar and 7-Zip do.
+    # The directory is created and its bytes are not written, as GNU tar does (and
+    # 7-Zip, for NUL and 0).
     data = _tar_slash_entry_with_data(typeflag)
     open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
     assert (tmp_path / "d").is_dir()
@@ -1950,9 +1956,7 @@ def test_dirtype_with_size_then_header_chain_then_junk_is_generic_corruption(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize(
-    "typeflag", _OLD_STYLE_TYPEFLAGS, ids=["AREGTYPE", "REGTYPE", "CONTTYPE"]
-)
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
 def test_old_style_directory_with_data_before_lone_zero_block_lists(
     typeflag: bytes, streaming: bool
 ) -> None:

@@ -662,8 +662,9 @@ class TarEntry:
     pax: Mapping[bytes, PaxValue]
     has_own_pax: bool
     # An AREGTYPE (NUL), REGTYPE (0) or CONTTYPE (7) entry whose final name ends in
-    # "/": a directory, as GNU tar reads it (7-Zip agrees for NUL and 0). Its declared size is a real data area
-    # (the typeflag carries data), which the reader lists and reports.
+    # "/": a directory, as GNU tar reads it (7-Zip agrees for NUL and 0). Its
+    # declared size is a real data area (the typeflag carries data), which the
+    # reader lists and reports.
     old_style_directory: bool
     # Set only for a member type that carries data: sparse records on a link,
     # device, FIFO or directory leave both None.
@@ -1175,8 +1176,8 @@ class TarWalker:
             stored_size -= used
 
         # The final name decides, after any PAX path or GNU long name: a regular-file
-        # typeflag with a name ending in "/" is a pre-POSIX directory entry. GNU tar
-        # (extract.c) reads contiguous ``7`` as a regular file here too.
+        # typeflag with a name ending in "/" is a pre-POSIX directory entry
+        # (``_OLD_STYLE_DIRECTORY_TYPES`` says which typeflags count).
         old_style_directory = typeflag in _OLD_STYLE_DIRECTORY_TYPES and name.endswith(
             b"/"
         )

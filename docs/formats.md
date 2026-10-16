@@ -307,9 +307,10 @@ yielded.
 - `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
 - **An old-style directory that declares data is reported.** A regular-file header
   (typeflag NUL, `0` or contiguous `7`) whose name ends in `/` is a directory, as GNU
-  tar reads it; 7-Zip agrees for NUL and `0`. When its size field is not zero, the directory keeps that `size`,
-  `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction creates the directory and
-  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them.
+  tar reads it; 7-Zip agrees for NUL and `0`. When its size field is not zero, the
+  directory keeps that `size`, `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction
+  creates the directory and skips the blocks as GNU tar does, and `reader.read()` on
+  the directory returns them.
   `DiagnosticPolicy.STRICT` refuses the archive.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros

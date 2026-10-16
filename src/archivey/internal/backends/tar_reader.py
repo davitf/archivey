@@ -1431,8 +1431,8 @@ class TarReader(BaseArchiveReader):
                 ),
             )
         if entry.old_style_directory and entry.size:
-            # GNU tar and 7-Zip create the directory and skip the bytes without a word.
-            # Say so; read() delivers them.
+            # GNU tar creates the directory and skips the bytes without a word (7-Zip
+            # too, for NUL and 0). Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
         return member
 

@@ -85,8 +85,7 @@ in every format; the record name appears only in the message.
 | Neither PAX record | `created is None` and `ctime is None` |
 | `LNKTYPE` entry | `member.type=MemberType.HARDLINK`; `member.link_target=linkname` |
 | `AREGTYPE`, `REGTYPE` or `CONTTYPE` entry `d/` with 15 bytes of data, then a file | `d/` is a `DIRECTORY` with `size` 15, `MEMBER_DIRECTORY_DATA_IGNORED` is reported, `read()` returns the 15 bytes, extraction creates the directory alone; the file after it lists and reads, in both access modes. The same holds when the slash comes from a PAX `path` or a GNU long name |
-| `REGTYPE` entry `d/` with size 0, then a file | `d/` is a `DIRECTORY` with no `size` and nothing is reported |
-| `CONTTYPE` entry `d/` with size 0, then the file `d/f` | `d/` is a `DIRECTORY` and extraction writes `d/f` inside it, in both access modes, as GNU tar 1.35 does |
+| `AREGTYPE`, `REGTYPE` or `CONTTYPE` entry `d/` with size 0, then a file or the file `d/f` | `d/` is a `DIRECTORY` with no `size` and nothing is reported; extraction writes `d/f` inside it, in both access modes, as GNU tar 1.35 does |
 | PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | PAX `path` holding the non-UTF-8 bytes `caf\xe9.txt`, `encoding="latin-1"` | `raw_name == b"caf\xe9.txt"` |
