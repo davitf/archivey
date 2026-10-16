@@ -103,11 +103,14 @@ _PASSWORDS = {
     "encryption_blake2sp.rar": "password",
     "encryption_solid__.rar": "password",
     "encryption_stored__.rar": "password",
+    "encryption_stored_sizes__.rar": "password",
+    "encryption_stored_sizes__rar4.rar": "password",
     "encrypted.rar": "password",
     "encrypted-mixed.rar": "password",
     "encrypted_header__.rar": "header_password",
     "encrypted_header__rar4.rar": "header_password",
     "tinyvol_hp.part1.rar": "header_password",
+    "tinyvol_enc.part1.rar": "password",
 }
 # RAR 2.x-4.x encryption: unar 1.10.1 returns nothing even with the right password.
 _RAR4_ENCRYPTED = {
@@ -116,6 +119,7 @@ _RAR4_ENCRYPTED = {
     "encryption_large__rar4.rar",
     "encryption_large_solid__rar4.rar",
     "encryption_large_stored__rar4.rar",
+    "encryption_stored_sizes__rar4.rar",
 }
 # A RAR5 volume set with encrypted headers: XADMaster 1.10.8 returns nothing.
 _HEADER_ENCRYPTED_VOLUMES = {"tinyvol_hp.part1.rar"}

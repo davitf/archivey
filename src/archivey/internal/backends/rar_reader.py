@@ -15,7 +15,9 @@ Data-open shapes:
 - Solid archive → one ``unrar p`` ALL-pipe + :class:`SolidBlockReader` demux
 - Stored, unencrypted, every part found → direct sliced view (no ``unrar``),
   whatever the solid flag; a split member's part views are joined
-- ``RarDecompressor.NONE`` → only that direct view; every other read is refused
+- Stored, encrypted with AES (RAR 2.9 and later), in one part → the direct view
+  decrypted here (no ``unrar``), when ``cryptography`` is installed
+- ``RarDecompressor.NONE`` → only those direct views; every other read is refused
 - Other non-solid → per-member named ``unrar p -n./…`` opens
 - Stream / non-path sources may be materialized to a temp ``.rar`` so ``unrar``
   can open a real path (and resolve sibling volumes)
@@ -69,6 +71,7 @@ from archivey.internal.backends.rar_copy_sources import FileCopySources
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
     _RAR3_M0,
+    _RAR5_XENC_AES256,
     _RAR5_XREDIR_REPARSE_POINTS,
     RAR3_UOW_NAME,
     RAR5_ID,
@@ -91,6 +94,7 @@ from archivey.internal.backends.rar_parser import (
     mark_missing_next_volume,
     parse_rar_archive,
     parse_rar_volumes,
+    rar5_data_key,
     rar5_hash_key,
 )
 from archivey.internal.backends.rar_unar import (
@@ -158,9 +162,12 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.crypto import (
+    AES_BLOCK_SIZE,
+    CRYPTO_REQUIREMENT,
     AesParams,
     _crypto_available,
     open_aes_decrypt_stage,
+    open_aes_decrypt_stream,
 )
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -245,8 +252,9 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
 
 _NO_DECOMPRESSOR_NOTE = (
     "ArchiveyConfig.rar_decompressor is 'none', so no external program reads RAR "
-    "member data. Reading a compressed or encrypted member, or a member split across "
-    "volumes with a part missing, will be refused."
+    "member data. Reading a compressed member, an encrypted member archivey cannot "
+    "decrypt itself, or a member split across volumes with a part missing, will be "
+    "refused."
 )
 
 
@@ -1370,7 +1378,13 @@ class RarReader(BaseArchiveReader):
         if self._decompressor is RarDecompressor.NONE and any(
             member.is_file
             and not info.is_file_copy()
-            and (info.is_encrypted or not self._is_directly_sliceable(info))
+            and (
+                not self._is_directly_sliceable(info)
+                or (
+                    info.is_encrypted
+                    and not (self._natively_decryptable(info) and _crypto_available())
+                )
+            )
             for member, info in zip(self._members, self._archive.members, strict=True)
         ):
             self._cost_notes = (*self._cost_notes, _NO_DECOMPRESSOR_NOTE)
@@ -2067,7 +2081,7 @@ class RarReader(BaseArchiveReader):
         decoder fails for about two wrong keys in three (one in two when solid), and
         when several candidates survive it, a full decode checked against the
         member's CRC. A stored member has no decoder to object, so its check is the
-        CRC over a native decryption (:meth:`_rar3_stored_check`).
+        CRC over a native decryption (:meth:`_stored_check`).
 
         Only a list is judged this way. One password goes to ``unrar`` unjudged, as
         before: the CRC at the member's end is its check. So does the header
@@ -2123,8 +2137,8 @@ class RarReader(BaseArchiveReader):
         """The bounded probe and the full check for one encrypted RAR3/4 member."""
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
-        if self._rar3_stored_natively_checkable(raw):
-            return (lambda password: self._rar3_stored_check(raw, password)), None
+        if self._stored_natively_checkable(raw):
+            return (lambda password: self._stored_check(raw, password)), None
 
         size = _member_stream_size(member)
         crc = raw.crc32 if not _crc_is_tweaked(raw) else None
@@ -2202,42 +2216,93 @@ class RarReader(BaseArchiveReader):
             else (lambda password: decode_check(password, full_plan)),
         )
 
-    def _rar3_stored_natively_checkable(self, raw: RarMemberInfo) -> bool:
-        """Whether a stored RAR3/4 member's CRC can be checked by decrypting it here.
+    def _natively_decryptable(self, raw: RarMemberInfo) -> bool:
+        """Whether this is a stored, encrypted member archivey can decrypt itself.
 
-        RAR 2.9 and later encrypt file data with AES-128-CBC under a key and IV the
-        password and the member's salt give. A member in one part, with the sizes that
-        cipher implies, is decrypted here; anything else goes to the decoder probe,
+        A stored member's packed bytes are its content once decrypted, so no decoder is
+        needed. RAR 2.9 to 4 encrypt them with AES-128-CBC under a key and IV the
+        password and the member's 8-byte salt give; RAR5 with AES-256-CBC under a key
+        from the password and the member's salt, and the IV in its encryption record.
+        Either way the ciphertext is the plaintext padded to whole 16-byte blocks, so
+        the two sizes must agree with that. Only a member in one part qualifies: each
+        part of a split member has its own encryption record. Whether ``cryptography``
+        is installed is not part of this answer (:meth:`_decrypts_natively`).
+        """
+        if not (
+            raw.is_encrypted
+            and raw.is_stored
+            and not raw.encryption_unknown
+            and not raw.data_parts
+            and _data_is_in_one_place(raw)
+            and raw.compress_size % AES_BLOCK_SIZE == 0
+            and raw.file_size <= raw.compress_size < raw.file_size + AES_BLOCK_SIZE
+        ):
+            return False
+        if self._archive.version == 5:
+            enc = raw.file_encryption
+            return (
+                enc is not None
+                and enc.algo == _RAR5_XENC_AES256
+                and enc.iv is not None
+                and len(enc.iv) == AES_BLOCK_SIZE
+            )
+        return (
+            raw.rar3_salt is not None
+            and raw.extract_version is not None
+            and raw.extract_version >= _RAR3_AES_EXTRACT_VERSION
+        )
+
+    def _decrypts_natively(self, raw: RarMemberInfo) -> bool:
+        """Whether a read of ``raw`` decrypts it here instead of running a program.
+
+        Without ``cryptography``, a program reads it when one is selected. Under
+        ``NONE`` there is none, so the read is still taken here, where it raises
+        ``PackageNotInstalledError`` naming ``cryptography``.
+        """
+        return self._natively_decryptable(raw) and (
+            _crypto_available() or self._decompressor is RarDecompressor.NONE
+        )
+
+    def _stored_data_cipher(
+        self, raw: RarMemberInfo, password: str | bytes
+    ) -> AesParams:
+        """The AES key and IV for a :meth:`_natively_decryptable` member's data."""
+        if self._archive.version == 5:
+            enc = raw.file_encryption
+            assert enc is not None and enc.iv is not None
+            key = rar5_data_key(
+                password, enc.salt, enc.kdf_count, kdf_cache=self._kdf_cache
+            )
+            return AesParams(key=key, iv=enc.iv)
+        assert raw.rar3_salt is not None
+        key, iv = self._kdf_cache.rar3(password, raw.rar3_salt)
+        return AesParams(key=key, iv=iv)
+
+    def _stored_natively_checkable(self, raw: RarMemberInfo) -> bool:
+        """Whether a candidate password for ``raw`` can be judged by decrypting it here.
+
+        The judge is the member's CRC32 over the decrypted bytes
+        (:meth:`_stored_check`); a member that records none goes to the decoder probe,
         as does every member when ``cryptography`` is not installed.
         """
         return (
-            self._archive.version == 4
+            self._natively_decryptable(raw)
             and _crypto_available()
-            and raw.is_stored
-            and raw.rar3_salt is not None
-            and raw.extract_version is not None
-            and raw.extract_version >= _RAR3_AES_EXTRACT_VERSION
             and raw.crc32 is not None
-            and not raw.data_parts
-            and not raw.split_before
-            and not raw.split_after
-            and raw.compress_size % 16 == 0
-            and raw.file_size <= raw.compress_size < raw.file_size + 16
-            and _data_is_reachable(raw)
         )
 
-    def _rar3_stored_check(
+    def _stored_check(
         self, raw: RarMemberInfo, password: bytes
     ) -> tuple[bytes, PasswordConfirmVerdict]:
-        """Judge ``password`` by the CRC of a stored RAR3/4 member it decrypts.
+        """Judge ``password`` by the CRC of a stored member it decrypts.
 
         Every wrong key decrypts a stored member to bytes of the right length, so only
         the CRC can tell them apart; this pass is the full check, with no ``unrar``.
-        Memory is one chunk.
+        A RAR5 CRC the writer tweaked (``ConvertHashToMAC``) is compared after the same
+        transform under this password's HashKey. Memory is one chunk.
         """
-        assert raw.rar3_salt is not None and raw.crc32 is not None
-        key, iv = self._kdf_cache.rar3(password, raw.rar3_salt)
-        stage = open_aes_decrypt_stage(AesParams(key=key, iv=iv))
+        assert raw.crc32 is not None
+        stage = open_aes_decrypt_stage(self._stored_data_cipher(raw, password))
         view = self._direct_view(raw, raw.compress_size)
         crc = 0
         remaining = raw.file_size
@@ -2253,6 +2318,15 @@ class RarReader(BaseArchiveReader):
                 remaining -= len(plain)
         finally:
             view.close()
+        if _crc_is_tweaked(raw):
+            enc = raw.file_encryption
+            assert enc is not None
+            crc = convert_crc_to_mac(
+                crc,
+                rar5_hash_key(
+                    password, enc.salt, enc.kdf_count, kdf_cache=self._kdf_cache
+                ),
+            )
         if crc != raw.crc32 & 0xFFFFFFFF:
             raise _undecodable_with_candidate()
         verdict = (
@@ -4066,9 +4140,81 @@ class RarReader(BaseArchiveReader):
             self._confirm_unsettled_plaintext(raw, member)
             return self._wrap_payload_stream(self._direct_view(raw), member)
 
+        if self._decrypts_natively(raw):
+            return self._open_decrypted_stored(member, raw)
+
         if self._decompressor is RarDecompressor.NONE:
             raise self._no_decompressor_refused(member, raw)
 
+        if not self._natively_decryptable(raw):
+            return self._open_member_with_program(member, raw)
+        # A stored encrypted member ``cryptography`` would have decrypted here: a
+        # missing program is then not the only way to read it, so the error says so.
+        try:
+            return self._open_member_with_program(member, raw)
+        except PackageNotInstalledError as exc:
+            raise PackageNotInstalledError(
+                f"{raw_message_of(exc)} Or install {CRYPTO_REQUIREMENT.name} "
+                f"({CRYPTO_REQUIREMENT.install_hint}): archivey then decrypts this "
+                "stored member itself.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            ) from exc
+
+    def _open_decrypted_stored(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> ArchiveStream:
+        """Serve a :meth:`_natively_decryptable` member by decrypting its stored bytes.
+
+        The password is picked as for an ``unrar`` read: a RAR5 PswCheck rejects a
+        wrong one here, and a RAR3/4 candidate list is judged by the CRC over a
+        decryption (:meth:`_stored_check`). A single RAR3/4 password goes unjudged,
+        as it does to ``unrar``; the digest check at the end of the read is its test,
+        and :meth:`_watch_unverified` reports a read abandoned before it. The stream
+        seeks: CBC restarts from any block, given the block before it.
+        """
+        if not _crypto_available():
+            raise PackageNotInstalledError(
+                CRYPTO_REQUIREMENT.message("decrypting a stored RAR member"),
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        enc = raw.file_encryption
+        password: str | None
+        if enc is not None and _psw_check_usable(enc):
+            password = self._checked_data_password(enc, member)
+        elif self._stored_natively_checkable(raw):
+            password = self._unchecked_data_password(member)
+        else:
+            password = self._unrar_data_password()
+        if password is None:
+            raise EncryptionError(
+                "Password required to read this encrypted member",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        params = self._stored_data_cipher(raw, password)
+        view = self._direct_view(raw, raw.compress_size)
+        with _close_on_error(view):
+            plain = open_aes_decrypt_stream(view, params, owns_inner=True)
+        with _close_on_error(plain):
+            # The ciphertext is padded to whole blocks; the member ends at its
+            # unpacked size, and the padding after it is not content.
+            trimmed: BinaryIO = SlicingStream(
+                plain, length=raw.file_size, owns_inner=True, probe_source_size=False
+            )
+        with _close_on_error(trimmed):
+            watched = self._watch_unverified(trimmed, member)
+        with _close_on_error(watched):
+            return self._wrap_payload_stream(watched, member)
+
+    def _open_member_with_program(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> ArchiveStream:
+        """Serve ``member`` through ``unrar``, or ``unar`` when it is selected."""
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
@@ -4339,10 +4485,12 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> UnsupportedFeatureError:
         """The refusal for a member only an external program can read, under ``NONE``."""
-        if raw.is_encrypted:
-            why = "it is encrypted"
-        elif not raw.is_stored:
+        if not raw.is_stored:
             why = "it is compressed"
+        elif raw.is_encrypted:
+            # Stored but not ``_natively_decryptable``: split across volumes, or the
+            # RAR 2.0 cipher, or sizes or a record the AES decryption cannot use.
+            why = "it is encrypted in a form archivey does not decrypt itself"
         else:
             # A stored member whose parts were not all found: a split member missing
             # its other volumes. Its parts are joined natively when they are present.

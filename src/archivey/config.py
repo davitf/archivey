@@ -84,8 +84,10 @@ class RarDecompressor(Enum):
 
     The native parser lists a RAR archive without either program, except for a
     compressed RAR 1.5-4 comment, which the selected program decodes (without it the
-    comment is ``None``). Otherwise one of them is needed only to read a compressed or
-    encrypted member; stored members are read directly.
+    comment is ``None``). Otherwise one of them is needed only to read a compressed
+    member, or an encrypted one archivey does not decrypt itself. Stored members are read
+    directly; a stored, encrypted member in one part is decrypted by archivey (AES, RAR
+    2.9 and later) when ``cryptography`` is installed, and by the program otherwise.
 
     - ``UNRAR`` — RARLAB ``unrar`` 6.0 or later (or the RARLAB ``rar`` writer). It
       reads every RAR archive, including encrypted ones.
@@ -110,9 +112,11 @@ class RarDecompressor(Enum):
     - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
       run on its archives. Opening and listing work as with the others, and so does
       reading a stored (uncompressed) member that is not encrypted, also when it is
-      split across volumes or sits in a solid archive. A compressed or encrypted
-      member, or a split one with a volume missing, raises ``UnsupportedFeatureError``
-      before anything runs, and a compressed RAR 1.5-4 comment is ``None``.
+      split across volumes or sits in a solid archive, and one that is encrypted, in
+      one part, with ``cryptography`` installed. A compressed member, an encrypted one
+      split across volumes, or a split one with a volume missing, raises
+      ``UnsupportedFeatureError`` before anything runs, and a compressed RAR 1.5-4
+      comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
