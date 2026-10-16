@@ -927,7 +927,8 @@ class ArchiveMember:
     """Set while ``size`` is ``None`` and a full read of the member would fill it in.
 
     Cleared once a read fills the size, when a ``streaming=True`` pass ends or fails
-    (no read can reach the member again), and when the reader closes. Read it through :attr:`member_state_final`. Not part of the public contract."""
+    (no read can reach the member again), and when the reader closes. Read it through
+    :attr:`member_state_final`. Not part of the public contract."""
     _link_target_absent: bool = field(default=False, repr=False, compare=False)
     """Set when the archive itself records no target for this link.
 
