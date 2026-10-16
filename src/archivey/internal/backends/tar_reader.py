@@ -66,6 +66,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     DirectoryDataContext,
+    MemberHeaderRecordContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -85,6 +86,7 @@ from archivey.internal.backends.tar_parser import (
     TarEntry,
     TarSpan,
     TarWalker,
+    shown_value,
     validate_sparse_map,
 )
 from archivey.internal.base_reader import (
@@ -337,8 +339,7 @@ def _pax_time(
     )
     if value is not None:
         return value, None
-    shown = repr(raw[:40]) + ("..." if len(raw) > 40 else "")
-    return None, _tar_time_issue(name, key, shown, pax_record=True)
+    return None, _tar_time_issue(name, key, shown_value(raw), pax_record=True)
 
 
 # The ArchiveMember field each TAR time fills, which is what a timestamp diagnostic
@@ -1438,6 +1439,27 @@ class TarReader(BaseArchiveReader):
                     f"{self._encoding!r} (the stored bytes are valid UTF-8): "
                     f"{quoted(member.name)}"
                 ),
+            )
+        if entry.header.device_number_fault is not None:
+            # GNU tar 1.35 reports the field and lists the device with a garbage
+            # number. Here the numbers are absent, never wrong, and the walk goes on.
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"TAR device {quoted(member.name)}: "
+                    f"{entry.header.device_number_fault}; the member has no device "
+                    "numbers."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="device_numbers",
+                    reason=entry.header.device_number_fault,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=backends_logger,
             )
         if entry.old_style_directory and entry.size:
             # GNU tar and 7-Zip create the directory and skip the bytes without a word.

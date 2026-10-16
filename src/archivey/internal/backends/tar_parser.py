@@ -65,11 +65,20 @@ MAX_OFFSET = 2**63 - 1
 # in. The archive-reading spec sets this weight. A SparseMap holds 16 bytes per entry.
 SPARSE_ENTRY_BYTES = 24
 
-# The most digits one number of a PAX sparse 1.0 map may have. GNU tar reads each into
-# a buffer sized for the largest ``uintmax_t`` (20 digits) and refuses a longer one.
-# Structural, not a policy limit: without it a number with no newline after it would
-# grow one buffer for as long as the archive lasts.
-SPARSE_NUMBER_DIGITS = 20
+# The most significant digits a PAX number may have: 20, the width of the largest
+# ``uintmax_t``. GNU tar reads PAX numbers with ``strtoumax``, so a longer one is out of
+# range, and it reads each number of a sparse 1.0 map into a buffer of this size. Two
+# reasons make it structural, not a policy limit. ``int()`` refuses more than
+# ``sys.int_max_str_digits`` (4300 by default) with a builtin ``ValueError``, so every
+# PAX number is measured before it is converted (``_pax_decimal``, ``_map_number``).
+# And the streaming 1.0 map reader would otherwise grow one buffer for as long as the
+# archive lasts on a number with no newline after it.
+PAX_NUMBER_DIGITS = 20
+
+# The largest PAX ``uid`` or ``gid`` read: ``uid_t`` and ``gid_t`` are 32-bit unsigned
+# on every platform GNU tar ships on, and GNU tar 1.35 reports a larger id ("out of
+# range 0..4294967295") and keeps the header's.
+MAX_PAX_ID = 2**32 - 1
 
 # The read step for data whose size a header declares: an extended header, or the data
 # area a forward-only walk reads through. A declared size is attacker-chosen, so it is
@@ -141,7 +150,9 @@ class HeaderBlock:
     uname: bytes
     gname: bytes
     # ``None`` unless the header is a ustar or GNU device (typeflag 3 or 4): no
-    # other header holds a device number (see ``_DEVICE_NUMBER_TYPES``).
+    # other header holds a device number (see ``_DEVICE_NUMBER_TYPES``). Both are
+    # also ``None`` when such a device's field is not a number, and
+    # ``device_number_fault`` then says which.
     devmajor: int | None
     devminor: int | None
     # Old GNU ``S`` only: the four in-header map slots, whether extension blocks
@@ -149,6 +160,7 @@ class HeaderBlock:
     sparse_slots: tuple[tuple[int, int], ...] = ()
     sparse_extended: bool = False
     sparse_realsize: int = 0
+    device_number_fault: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +277,9 @@ _FIELDS = (
 # The typeflags whose devmajor and devminor fields GNU tar reads: character and block
 # devices, in a ustar or GNU header. For any other header (a FIFO included) GNU tar
 # never parses the two fields, so bytes there that are not a number are no damage.
+# On a device, a field that is not a number does not reject the header either: GNU tar
+# 1.35 reports it, lists the device with a garbage number and reads on. The header
+# leaves both numbers out and names the fault, for the reader to report on the member.
 _DEVICE_NUMBER_TYPES = (b"3", b"4")
 
 
@@ -300,6 +315,7 @@ def parse_header_block(
     name = _cut_nul(block[0:100])
     devmajor: int | None = None
     devminor: int | None = None
+    device_number_fault: str | None = None
     sparse_slots: tuple[tuple[int, int], ...] = ()
     sparse_extended = False
     sparse_realsize = 0
@@ -317,14 +333,18 @@ def parse_header_block(
         uname = _cut_nul(block[265:297])
         gname = _cut_nul(block[297:329])
         if typeflag in _DEVICE_NUMBER_TYPES:
-            try:
-                devmajor = parse_number(block[329:337])
-            except _BadNumber:
-                return RejectedBlock(offset, "the devmajor field is not a number")
-            try:
-                devminor = parse_number(block[337:345])
-            except _BadNumber:
-                return RejectedBlock(offset, "the devminor field is not a number")
+            numbers: list[int] = []
+            for field, start in (("devmajor", 329), ("devminor", 337)):
+                try:
+                    numbers.append(parse_number(block[start : start + 8]))
+                except _BadNumber:
+                    device_number_fault = (
+                        f"the {field} field {shown_value(block[start : start + 8])} "
+                        "is not a number"
+                    )
+                    break
+            else:
+                devmajor, devminor = numbers
     if typeflag == SPARSE_TYPE:
         # The old GNU sparse slots. Read whatever the magic says, as tarfile reads
         # them; GNU tar writes them only in old GNU headers.
@@ -363,6 +383,7 @@ def parse_header_block(
         gname=gname,
         devmajor=devmajor,
         devminor=devminor,
+        device_number_fault=device_number_fault,
         sparse_slots=sparse_slots,
         sparse_extended=sparse_extended,
         sparse_realsize=sparse_realsize,
@@ -473,6 +494,20 @@ def parse_pax_records(data: bytes, *, binary_default: bool) -> PaxRecords:
     return PaxRecords(values, offsets, numbytes)
 
 
+_SHOWN_CHARACTERS = 40
+
+
+def shown_value(value: bytes | str) -> str:
+    """``value`` quoted for a message, cut to 40 characters with ``...`` inside the
+    quotes when longer, so a cut value never reads as a complete one. Bytes that are
+    not ASCII show as backslash escapes."""
+    if isinstance(value, bytes):
+        value = value.decode("ascii", "backslashreplace")
+    if len(value) > _SHOWN_CHARACTERS:
+        value = value[:_SHOWN_CHARACTERS] + "..."
+    return repr(value)
+
+
 def _pax_decimal(text: bytes) -> int | None:
     """A PAX decimal number (ASCII digits only), or ``None`` when ``text`` is not one
     or has more than 20 significant digits, past any ``uintmax_t``.
@@ -485,7 +520,7 @@ def _pax_decimal(text: bytes) -> int | None:
     if not text.isdigit():
         return None
     significant = text.lstrip(b"0")
-    if len(significant) > SPARSE_NUMBER_DIGITS:
+    if len(significant) > PAX_NUMBER_DIGITS:
         return None
     return int(significant) if significant else 0
 
@@ -500,13 +535,13 @@ def _pax_int(records: Mapping[bytes, PaxValue], key: bytes, name: str) -> int | 
     text = entry.value
     if not text.isdigit():
         raise CorruptionError(
-            f"TAR PAX record {key.decode()} is not a number: {text[:40]!r}"
+            f"TAR PAX record {key.decode()} is not a number: {shown_value(text)}"
         )
     value = _pax_decimal(text)
     if value is None or value > MAX_OFFSET:
-        shown = text[:40].decode("ascii") + ("..." if len(text) > 40 else "")
         raise CorruptionError(
-            f"TAR PAX {key.decode()} {shown} of {name} is past any file's size"
+            f"TAR PAX {key.decode()} {shown_value(text)} of {name} is past any "
+            "file's size"
         )
     return value
 
@@ -546,9 +581,9 @@ the cost for the message."""
 
 def _map_number(item: bytes, name: str, what: str) -> int:
     """One decimal number of a PAX sparse map. ``name`` is already quoted."""
-    if not item.isdigit() or len(item) > SPARSE_NUMBER_DIGITS:
+    if not item.isdigit() or len(item) > PAX_NUMBER_DIGITS:
         raise CorruptionError(
-            f"TAR sparse map of {name} ({what}) has a bad number: {item[:40]!r}"
+            f"TAR sparse map of {name} ({what}) has a bad number: {shown_value(item)}"
         )
     value = int(item)
     if value > MAX_OFFSET:
@@ -619,10 +654,10 @@ def read_sparse_map_1_0(
                 item = bytes(buffer[:newline])
                 del buffer[: newline + 1]
                 return _map_number(item, name, "1.0")
-            if len(buffer) > SPARSE_NUMBER_DIGITS:
+            if len(buffer) > PAX_NUMBER_DIGITS:
                 raise CorruptionError(
                     f"TAR sparse map of {name} (1.0) has a number longer than "
-                    f"{SPARSE_NUMBER_DIGITS} digits"
+                    f"{PAX_NUMBER_DIGITS} digits"
                 )
             if consumed + BLOCKSIZE > stored_size:
                 raise CorruptionError(
@@ -651,7 +686,9 @@ def validate_sparse_map(
     ``size`` is the logical size, ``stored`` the bytes the data area holds for the
     chunks (the 1.0 map's own blocks excluded). ``name`` goes into the message as it
     is, so the caller passes it through ``quoted()``. Damage is :class:`CorruptionError`: a
-    negative entry, a chunk past the logical size, or chunks that do not add up to
+    logical size that is negative or past :data:`MAX_OFFSET` (no caller passes a
+    negative one today, since the header and PAX parsers refuse it; the check keeps a
+    future caller from slipping one through), a negative entry, a chunk past the logical size, or chunks that do not add up to
     exactly the stored bytes (more would read the next header as data; fewer leaves
     bytes inside the member that nothing names, DR-3). A map whose chunks are out of
     order or overlap is valid data archivey will not serve: ``tarfile`` stitched such
@@ -1175,13 +1212,14 @@ class TarWalker:
         for key in (b"uid", b"gid") if has_pax else ():
             value = pax(key)
             number = None if value is None else _pax_decimal(value.value)
-            if number is not None:
-                # A PAX id that is not a number, or is out of range, is ignored,
-                # keeping the header's, as GNU tar keeps it.
-                if key == b"uid":
-                    uid = number
-                else:
-                    gid = number
+            if number is None or number > MAX_PAX_ID:
+                # A PAX id that is not a number, or is past uid_t's range, is
+                # ignored and the header's kept, as GNU tar 1.35 keeps it.
+                pass
+            elif key == b"uid":
+                uid = number
+            else:
+                gid = number
 
         data_offset = offset + BLOCKSIZE
         size = stored_size

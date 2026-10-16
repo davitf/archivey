@@ -610,8 +610,11 @@ class MemberExtra(dict[str, object]):
       global ones in force included. Read-only: a change raises ``TypeError``, and
       ``dict(...)`` gives a copy to change. It is a ``dict`` subclass, so
       ``json.dumps`` takes it.
-    * ``tar.devmajor`` (``int``)
-    * ``tar.devminor`` (``int``)
+    * ``tar.devmajor`` (``int``) — set only for a character or block device
+      (typeflag ``3`` or ``4``) in a ustar or GNU header whose field is a number;
+      absent for a FIFO, for a v7 header, and for a device whose field is not a
+      number (that member carries ``MEMBER_HEADER_RECORD_SKIPPED``).
+    * ``tar.devminor`` (``int``) — present exactly when ``tar.devmajor`` is.
     * ``gzip.original_filename`` (``str``)
     * ``gzip.isize`` (``int``) — the gzip trailer's ISIZE field: the last four
       bytes of the file, read only when its end is cheap to reach (not from a

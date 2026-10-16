@@ -194,8 +194,19 @@ that terminator are not read, so `644\0XYZ\0` is 0644 and `12 34\0` is 012, as i
 tar; a byte other than a NUL or a blank right after the digits refuses the header. The
 checksum field is read the same way; the checksum match is what guards the block. A
 field with no digits is 0, as `tarfile` reads it; GNU tar reports a field of only
-blanks and reads it as -1. An old GNU sparse real size that is negative or past
-2**63 - 1 refuses the header, as GNU tar refuses it ("out of off_t range").
+blanks and reads it as -1. A character or block device whose `devmajor` or
+`devminor` is not a number still lists, as in GNU tar, but with no device numbers and
+`MEMBER_HEADER_RECORD_SKIPPED` (`record="device_numbers"`); GNU tar lists it with a
+garbage number.
+
+An old GNU sparse real size that is negative or past 2**63 - 1 refuses the header and
+stops the walk, as an old GNU sparse map slot that cannot be read already does. This is
+archivey's own rule, not GNU tar's: GNU tar 1.35 reports the value ("out of off_t
+range"), lists the member with size 0 and reads on, so it lists the members after it
+and archivey does not. There is no honest size to list, the shape is crafted (no writer
+stores such a value), and DR-5a allows the stricter rule for it. Keeping the member
+listable with no size and a diagnostic would be the same change for every number field
+whose damage ends the walk, which is a larger change than this one.
 
   1. The walk stopped on a header that does not parse (a bad checksum or number field, a
      negative size, PAX records that do not parse, a bad number in an old GNU sparse
@@ -276,9 +287,9 @@ pass.
 | `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime`. A number is what GNU tar 1.35 reads, `-?digits(.digits*)?`; Python float syntax beyond that (`+1000`, `1e3`, `1_000`, blanks, `.5`, `inf`) is not one, and the report quotes the first 40 characters of the value |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
-| `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number, or has more than 20 significant digits, is ignored and the header's value kept, as GNU tar keeps it. A v7 header has no `uname` or `gname`: its bytes 257.. are not fields, and GNU tar reads none there. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
+| `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number, or is past 4294967295 (2**32 - 1, the range of `uid_t` and `gid_t` on every platform GNU tar ships on), is ignored and the header's value kept, as GNU tar 1.35 keeps it. A v7 header has no `uname` or `gname`: its bytes 257.. are not fields, and GNU tar reads none there. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
 | `is_sparse` | True for the old GNU `S` typeflag and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
-| `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for a character or block device (`3`, `4`) in a ustar or GNU header, the only headers GNU tar reads them from; a FIFO or a v7 header has none, and bytes in those fields there are not read |
+| `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for a character or block device (`3`, `4`) in a ustar or GNU header, the only headers GNU tar reads them from; a FIFO or a v7 header has none, and bytes in those fields there are not read. A device whose field is not a number has none either, and carries `MEMBER_HEADER_RECORD_SKIPPED` |
 
 A pass that is the listing (a streaming pass, or a random-access pass with no listing
 call before it) yields every member with `member_state_final=False`, since TAR has no

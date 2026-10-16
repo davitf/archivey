@@ -258,9 +258,19 @@ def test_device_numbers_of_a_device(typeflag: bytes) -> None:
     parsed = parse_header_block(_block(typeflag=typeflag, patch=good), 0)
     assert isinstance(parsed, HeaderBlock)
     assert (parsed.devmajor, parsed.devminor) == (5, 7)
-    bad = _field(329, 345, b"junkjunk" + _octal(7, 8))
-    parsed = parse_header_block(_block(typeflag=typeflag, patch=bad), 0)
-    assert parsed == RejectedBlock(0, "the devmajor field is not a number")
+    # A device number that is not a number does not reject the header: GNU tar
+    # reports it and lists the device. The header names the fault and keeps neither.
+    for bad, field in (
+        (_octal(5, 8) + b"junkjunk", "devminor"),
+        (b"junkjunk" + _octal(7, 8), "devmajor"),
+    ):
+        parsed = parse_header_block(
+            _block(typeflag=typeflag, patch=_field(329, 345, bad)), 0
+        )
+        assert isinstance(parsed, HeaderBlock)
+        assert (parsed.devmajor, parsed.devminor) == (None, None)
+        assert parsed.device_number_fault is not None
+        assert field in parsed.device_number_fault
 
 
 # ------------------------------------------------------------------ header blocks
@@ -1114,17 +1124,33 @@ def test_pax_number_past_any_file_is_damage(key: str) -> None:
     data = _pax(records) + _block(b"a") + _END
     with pytest.raises(CorruptionError):
         _walk(data)
-    with pytest.raises(CorruptionError, match="past any file"):
-        _walk(_pax({"size": "9" * 20}) + _block(b"a") + _END)
+
+
+def test_pax_size_past_max_offset_is_damage() -> None:
+    """A 20-digit PAX size is a number ``_pax_decimal`` reads; past 2**63 - 1 it is
+    no file's size, and the message quotes the value with the cut inside the
+    quotes."""
+    with pytest.raises(CorruptionError, match=f"PAX size '{2**63}' .* past any file"):
+        _walk(_pax({"size": str(2**63)}) + _block(b"a") + _END)
+    with pytest.raises(CorruptionError, match=r"'1{40}\.\.\.'"):
+        _walk(_pax({"size": _LONG_NUMBER}) + _block(b"a") + _END)
 
 
 @pytest.mark.parametrize("key", ["uid", "gid"])
-@pytest.mark.parametrize("value", [_LONG_NUMBER, "9" * 21])
+@pytest.mark.parametrize(
+    "value", [_LONG_NUMBER, "9" * 21, "9" * 20, str(2**32)], ids=lambda v: v[:12]
+)
 def test_pax_id_out_of_range_keeps_the_header_value(key: str, value: str) -> None:
-    """GNU tar reports such an id and keeps the header's, as for an id that is not a
-    number."""
+    """Past 2**32 - 1, uid_t's range, GNU tar 1.35 reports the id ("out of range
+    0..4294967295") and keeps the header's, as for an id that is not a number."""
     (entry,), _ = _walk(_pax({key: value}) + _block(b"a") + _END)
     assert (entry.uid, entry.gid) == (1000, 1000)
+
+
+@pytest.mark.parametrize("key", ["uid", "gid"])
+def test_largest_pax_id_is_read(key: str) -> None:
+    (entry,), _ = _walk(_pax({key: str(2**32 - 1)}) + _block(b"a") + _END)
+    assert getattr(entry, key) == 2**32 - 1
 
 
 def test_pax_numbers_may_have_leading_zeros() -> None:

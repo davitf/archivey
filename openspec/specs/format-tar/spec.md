@@ -56,7 +56,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | `mode` | The header's `mode`, lower 12 bits |
 | `modified` | The header's `mtime` as timezone-aware UTC |
 | PAX `mtime` | Overrides the header's `mtime`, preserving sub-second precision / timezone information |
-| `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number, or has more than 20 significant digits, is ignored) |
+| `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number, or is past 2**32 - 1, the range of `uid_t` and `gid_t`, is ignored and the header's value kept, as GNU tar 1.35 keeps it) |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType`. GNU's dumpdir `D` is a `DIRECTORY` whose contents list, structure GNU tar defines and reads, is skipped with no `size` and no report |
 | device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a volume header, an unknown type) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from the PAX `linkpath`, else the GNU long link name, else the header's `linkname` |
@@ -417,7 +417,7 @@ reads it.
 | Encoding | Read |
 | --- | --- |
 | v7, POSIX ustar (with `prefix`), old GNU | Header fields; checksum as unsigned or signed sum |
-| Numbers | Octal as GNU tar 1.35 reads it: one leading NUL skipped, leading blanks, digits up to the first NUL or blank (bytes after it are not read), no digits is 0; and base-256 with a first byte of `0x80` or `0xFF`. The checksum field is read the same way. `devmajor` and `devminor` are read only for a ustar or GNU character or block device; a v7 header has no `uname`, `gname` or device numbers |
+| Numbers | Octal as GNU tar 1.35 reads it: one leading NUL skipped, leading blanks, digits up to the first NUL or blank (bytes after it are not read), no digits is 0; and base-256 with a first byte of `0x80` or `0xFF`. The checksum field is read the same way. `devmajor` and `devminor` are read only for a ustar or GNU character or block device, where one that is not a number leaves the device listed with no device numbers and `MEMBER_HEADER_RECORD_SKIPPED`; a v7 header has no `uname`, `gname` or device numbers |
 | PAX `x` / `X` / `g` | Length-validated records; globals persist, an empty global value deletes the key |
 | GNU `L` / `K` | Long name and long link name |
 | GNU sparse | Old GNU `S` with extension blocks; PAX 0.0, 0.1 and 1.0 |

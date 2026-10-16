@@ -11,6 +11,7 @@ import logging
 import os
 import random
 import tarfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -3241,6 +3242,7 @@ def test_long_bad_pax_time_is_cut_in_the_report() -> None:
         (diagnostic,) = ar.get("t.txt").diagnostics
         assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
         assert len(diagnostic.message) < 200
+        assert "'" + "9" * 40 + "...'" in diagnostic.message
 
 
 def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
@@ -3599,6 +3601,84 @@ def test_a_sized_fifo_header_is_corruption() -> None:
         pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
     ):
         list(ar.stream_members())
+
+
+def _three_members(middle: Callable[[tarfile.TarFile], None]) -> bytearray:
+    """``a.txt``, the member ``middle`` adds, then ``b.txt``, in a ustar archive."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:", format=tarfile.USTAR_FORMAT) as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 3
+        t.addfile(info, io.BytesIO(b"aaa"))
+        middle(t)
+        info = tarfile.TarInfo("b.txt")
+        info.size = 3
+        t.addfile(info, io.BytesIO(b"bbb"))
+    return bytearray(buf.getvalue())
+
+
+def _patch_header(data: bytearray, offset: int, start: int, value: bytes) -> None:
+    """Write ``value`` at ``start`` in the header at ``offset``, checksum recomputed."""
+    header = offset + start
+    data[header : header + len(value)] = value
+    data[offset + 148 : offset + 156] = b" " * 8
+    checksum = sum(data[offset : offset + 512])
+    data[offset + 148 : offset + 156] = b"%06o\0 " % checksum
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("start", [329, 337], ids=["devmajor", "devminor"])
+def test_device_number_that_is_not_a_number_keeps_the_listing(
+    streaming: bool, start: int
+) -> None:
+    """GNU tar 1.35 reports a device number that is not a number ("Archive contains
+    'junkjunk' where numeric major_t value expected") and lists the device and every
+    member after it. archivey lists them too; the device has no device numbers and
+    says why."""
+
+    def device(t: tarfile.TarFile) -> None:
+        info = tarfile.TarInfo("dev")
+        info.type = tarfile.CHRTYPE
+        info.devmajor, info.devminor = 1, 3
+        t.addfile(info)
+
+    data = _three_members(device)
+    _patch_header(data, 1024, start, b"junkjunk")
+    source = NonSeekableBytesIO(bytes(data)) if streaming else io.BytesIO(bytes(data))
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        members = [member for member, _ in ar.stream_members()]
+        assert [m.name for m in members] == ["a.txt", "dev", "b.txt"]
+        dev = members[1]
+        assert "tar.devmajor" not in dev.extra
+        assert "tar.devminor" not in dev.extra
+        (diagnostic,) = dev.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.record == "device_numbers"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_old_gnu_sparse_realsize_out_of_range_stops_the_walk(streaming: bool) -> None:
+    """archivey's own rule, not GNU tar's: GNU tar 1.35 reports a negative old GNU
+    realsize ("out of off_t range"), lists the member with size 0 and lists
+    ``b.txt``. archivey stops the walk there, as it does for a map slot it cannot
+    read: ``a.txt`` is delivered, then CorruptionError, and nothing lists a size of
+    -1."""
+
+    def sparse(t: tarfile.TarFile) -> None:
+        info = tarfile.TarInfo("sp")
+        t.addfile(info)
+
+    data = _three_members(sparse)
+    data[1024 + 156 : 1024 + 157] = b"S"
+    data[1024 + 257 : 1024 + 265] = b"ustar  \0"
+    _patch_header(data, 1024, 483, b"\xff" * 12)
+    source = NonSeekableBytesIO(bytes(data)) if streaming else io.BytesIO(bytes(data))
+    names = []
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        with pytest.raises(CorruptionError):
+            for member, _ in ar.stream_members():
+                names.append(member.name)
+    assert names == ["a.txt"]
 
 
 def test_other_entries_that_are_not_special_files_get_no_special_file_type() -> None:
