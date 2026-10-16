@@ -82,10 +82,7 @@ directory's (`observed_bytes` the record's offset, `expected_bytes` 0), or
 the record to the end of the file); `"zip64_end_of_central_directory"` for a ZIP64 end
 record a locator announces that is missing or does not match it, the classic record
 used instead (`observed_kind="absent"`, `observed_bytes` the locator's offset,
-`expected_bytes` 0); `"central_directory"` for a ZIP central-directory
-entry whose name, extra field or comment length runs past the directory size the end
-record gives, with `observed_kind="nonzero"`, `expected_bytes` that size and
-`observed_bytes` where the entry would end, both counted from the directory's start;
+`expected_bytes` 0);
 `"zeros_to_eof"` for the trailing-bytes check after an archive's end (a TAR
 trailer, a 7z next header or last packed stream, whichever is later, a RAR
 end-of-archive block, an ISO image's volume space and partitions, or a ZIP end record

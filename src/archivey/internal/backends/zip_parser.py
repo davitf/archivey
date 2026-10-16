@@ -32,7 +32,6 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Literal
 
 from archivey.exceptions import (
     CorruptionError,
@@ -561,17 +560,6 @@ class CommentCutShort:
 
 
 @dataclass(frozen=True, slots=True)
-class EntryOverrun:
-    """An entry whose name, extra field or comment runs past the directory's end."""
-
-    index: int
-    field: Literal["name", "extra field", "comment"]
-    #: Where the entry ends, counted from the directory's start.
-    entry_end: int
-    cd_size: int
-
-
-@dataclass(frozen=True, slots=True)
 class DirectoryOffsetWrapped:
     """The end record stores the directory's offset modulo 2³², and the walk took the
     archive's ``base`` modulo 2³² (:class:`CentralDirectoryWalk`)."""
@@ -582,9 +570,7 @@ class DirectoryOffsetWrapped:
     corrected: int
 
 
-WalkFinding = (
-    EntryCountMismatch | CommentCutShort | EntryOverrun | DirectoryOffsetWrapped
-)
+WalkFinding = EntryCountMismatch | CommentCutShort | DirectoryOffsetWrapped
 
 #: The amount a 32-bit offset field wraps by.
 OFFSET_WRAP = 1 << 32
@@ -636,13 +622,18 @@ class CentralDirectoryWalk:
     """Iterate the central directory forward, one :class:`CentralEntry` at a time.
 
     Reads ``end.cd_size`` bytes from the directory's start in pieces, as stdlib does in
-    one read, and parses an entry only when the iteration asks for it. An entry whose
-    name, extra field or comment runs past ``cd_size`` keeps the bytes before that
-    point and ends the walk, as in stdlib; it is reported in :attr:`findings`.
+    one read, and parses an entry only when the iteration asks for it.
 
     Damage raises ``CorruptionError`` after every entry before it has been yielded: a
     header without its signature, a fixed header that crosses the declared end of the
-    directory, a ZIP64 extra field missing a value the header defers to it. The
+    directory, a ZIP64 extra field missing a value the header defers to it, a name,
+    extra field or comment that runs past the directory's end (stdlib cuts it there),
+    and an entry whose name, extra field or comment holds a central header signature
+    when the entries after it then do not chain to the directory's end or do not add
+    up to the declared count: a length field that swallowed the entries after it. The
+    first entry that holds a signature is checked by counting the entries after it
+    (one read per megabyte of directory); the entries after it are the ones the walk
+    steps over next, so the check runs once per walk. The
     directory always ends where the end records start (``find_end_record`` derives its
     start from that), so a file cut inside it has lost its end record and never gets
     here.
@@ -790,6 +781,7 @@ class CentralDirectoryWalk:
         after_wrappable = False
         pos = 0
         index = 0
+        checked_count = False
         while pos < cd_size:
             ensure(pos, pos + CENTRAL_HEADER_SIZE)
             off = pos - data_start
@@ -804,22 +796,53 @@ class CentralDirectoryWalk:
             extra_at = name_at + name_len
             comment_at = extra_at + extra_len
             entry_end = comment_at + comment_len
+            if entry_end > cd_size:
+                # Cutting the field there would list a wrong name or field, and
+                # whatever entries it swallowed would go missing (DR-1).
+                if extra_at > cd_size:
+                    field = "name"
+                elif comment_at > cd_size:
+                    field = "extra field"
+                else:
+                    field = "comment"
+                raise CorruptionError(
+                    f"ZIP central directory entry #{index} declares a {field} that "
+                    f"runs {entry_end - cd_size} bytes past the central directory's "
+                    "end"
+                )
             ensure(pos, entry_end)
-            # Slices stop at the end of what was read, which never passes cd_size.
             at = name_at - data_start
             name = data[at : at + name_len]
             at += name_len
             extra = data[at : at + extra_len]
             at += extra_len
             comment = data[at : at + comment_len]
-            if entry_end > cd_size:
-                if extra_at > cd_size:
-                    field: Literal["name", "extra field", "comment"] = "name"
-                elif comment_at > cd_size:
-                    field = "extra field"
-                else:
-                    field = "comment"
-                self.findings.append(EntryOverrun(index, field, entry_end, cd_size))
+            if (
+                not checked_count
+                and CENTRAL_HEADER_SIGNATURE
+                in data[name_at - data_start : entry_end - data_start]
+            ):
+                # The entry's lengths may have swallowed the entries after it, and the
+                # walk would list one entry under a name made of their bytes. Settled
+                # once: the entries after this one are the ones the walk steps over
+                # next, so their count does not change.
+                checked_count = True
+                following = self._count_entries(entry_end, cd_size)
+                if following is None:
+                    raise CorruptionError(
+                        f"ZIP central directory entry #{index}'s name, extra field "
+                        "or comment holds a central directory header, and the "
+                        "entries after it do not end where the directory does: a "
+                        "length field swallowed the entries after it"
+                    )
+                if not _count_matches(end, index + 1 + following):
+                    raise CorruptionError(
+                        f"ZIP central directory entry #{index}'s name, extra field "
+                        "or comment holds a central directory header, and the "
+                        f"directory then holds {index + 1 + following} entries "
+                        f"where the end record declares {end.entries_declared}: a "
+                        "length field swallowed the entries after it"
+                    )
 
             entry = _central_entry(fields, name, extra, comment, index=index, base=base)
             # An offset deferred to a ZIP64 extra field is not corrected. The first
@@ -873,12 +896,7 @@ class CentralDirectoryWalk:
             pos = entry_end
 
         self.entries_read = index
-        # A classic record counts in 16 bits. Old 7-Zip versions stored the low 16
-        # bits of a larger count there without writing ZIP64; current 7-Zip
-        # (ZipIn.cpp) accepts that with a "16-bit overflow for number of files in
-        # headers" note rather than a Headers Error, so the comparison is modulo
-        # 65536 too.
-        if end.entries_declared != (index if end.zip64 else index & 0xFFFF):
+        if not _count_matches(end, index):
             self.findings.append(
                 EntryCountMismatch(end.entries_declared, index, end.zip64)
             )
@@ -887,6 +905,32 @@ class CentralDirectoryWalk:
                 CommentCutShort(end.comment_declared, len(end.comment))
             )
 
+    def _count_entries(self, pos: int, cd_size: int) -> int | None:
+        """How many entries the directory chains from ``pos`` (directory-relative) to
+        its end, stepping each fixed header's lengths; ``None`` when a header there has
+        no signature, is cut short, or runs past the end."""
+        read_at = self._read_at
+        start = self._end.cd_start
+        count = 0
+        buffer = b""
+        buffer_at = pos
+        while pos < cd_size:
+            off = pos - buffer_at
+            if len(buffer) - off < CENTRAL_HEADER_SIZE:
+                buffer_at = pos
+                buffer = read_at(start + pos, min(_WALK_CHUNK, cd_size - pos))
+                off = 0
+                if len(buffer) < CENTRAL_HEADER_SIZE:
+                    return None
+            if buffer[off : off + 4] != CENTRAL_HEADER_SIGNATURE:
+                return None
+            name_len, extra_len, comment_len = struct.unpack_from(
+                "<HHH", buffer, off + 28
+            )
+            pos += CENTRAL_HEADER_SIZE + name_len + extra_len + comment_len
+            count += 1
+        return count if pos == cd_size else None
+
     def _header_named(self, offset: int, name: bytes) -> bool:
         """A local header named ``name`` starts at ``offset``, before the directory."""
         name_at_offset = self._local_name_at
@@ -894,6 +938,17 @@ class CentralDirectoryWalk:
         if not 0 <= offset <= self._end.cd_start - LOCAL_HEADER_SIZE - len(name):
             return False
         return name_at_offset(offset) == name
+
+
+def _count_matches(end: EndRecord, count: int) -> bool:
+    """Whether ``count`` entries are what the end record declares.
+
+    A classic record counts in 16 bits. Old 7-Zip versions stored the low 16 bits of
+    a larger count there without writing ZIP64; current 7-Zip (ZipIn.cpp) accepts that
+    with a "16-bit overflow for number of files in headers" note rather than a Headers
+    Error, so the comparison is modulo 65536 too.
+    """
+    return end.entries_declared == (count if end.zip64 else count & 0xFFFF)
 
 
 #: The fixed header's fields as ``_CENTRAL_HEADER`` unpacks them: signature, made-by

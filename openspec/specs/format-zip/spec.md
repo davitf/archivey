@@ -395,12 +395,9 @@ last member so the listing completes, each of:
   there without ZIP64, which current 7-Zip accepts, so its count is compared modulo
   65536;
 - the archive comment length runs past the end of the file
-  (`expected_marker="end_of_central_directory"`, `observed_kind="short"`);
-- a central-directory entry's name, extra field or comment length runs past the
-  directory, so the field is cut at the directory's end
-  (`expected_marker="central_directory"`, `observed_kind="nonzero"`).
+  (`expected_marker="end_of_central_directory"`, `observed_kind="short"`).
 
-None of them SHALL raise under the default policy; `STRICT` refuses the archive.
+Neither SHALL raise under the default policy; `STRICT` refuses the archive.
 Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
 every member.
 
@@ -417,7 +414,6 @@ while 7-Zip searches further back and lists the real members.
 | Classic end record declares 2 or 4 entries, directory holds 3 | All 3 members listed and readable; one `ARCHIVE_EOF_MARKER_MISSING`, `expected_marker="end_of_central_directory"`, `observed_kind="nonzero"`, `observed_bytes` the record's offset |
 | ZIP64 end record declares 5 entries, directory holds 3 | Same, the message naming the ZIP64 record |
 | Comment length 5000, 8 comment bytes in the file | `observed_kind="short"`, `expected_bytes` 5022, `observed_bytes` 30 |
-| Last directory entry's name, extra or comment length runs past the directory | `expected_marker="central_directory"`; the message names the member and the field |
 | Consistent classic or ZIP64 end record | No diagnostic |
 | 65537 entries, classic record only, count 1 (65537 modulo 65536) | All 65537 members listed; no diagnostic |
 | Archive comment holding an end-record signature followed by 30 zero bytes | No members listed; one `EMPTY_ARCHIVE` and no `ARCHIVE_EOF_MARKER_MISSING` |
@@ -427,7 +423,11 @@ while 7-Zip searches further back and lists the real members.
 
 The central directory SHALL be walked as members are listed, so a damaged entry costs
 the directory's fields from it on, not the archive (DR-2). An entry whose signature is
-wrong, or whose 46-byte fixed header the directory cuts short, SHALL make the listing
+wrong, whose 46-byte fixed header the directory cuts short, whose name, extra field or
+comment runs past the directory's end, or whose name, extra field or comment holds a
+central header signature when the entries after it then do not end where the directory
+does or do not add up to the count the end record declares (a length field that
+swallowed the entries after it), SHALL make the listing
 raise `CorruptionError` after the members before it and the members the local headers
 hold past it, which a read from a pipe lists the same way: those keep only what their
 local header holds (no mode, host or comment), and a member the directory already
@@ -439,9 +439,10 @@ a cut as `CorruptionError` and never `TruncatedError` (the end record follows it
 listing limit that walk meets SHALL be raised instead of the damage. A read from a pipe
 raises whatever stops it, as it meets that before the directory, and raises the damage
 ahead of a check a member before it fails. `ArchiveInfo.member_count` SHALL be `None`
-when the walk did not complete. A name, extra field or comment that runs
-past the directory's end can only be the last entry's; it is the end-record mismatch
-above, not damage. A local-header offset past the file's end SHALL raise
+when the walk did not complete. Cutting such a field at the next entry or the
+directory's end, as `zipfile` does, would list a member under a name made of other
+entries' bytes and drop the entries it swallowed (DR-1). A name holding those four
+bytes in a directory whose count agrees lists as it is. A local-header offset past the file's end SHALL raise
 `CorruptionError` when that member opens, never `TruncatedError` (the directory follows
 every local header, so the offset is wrong, not the file cut) and never an untyped error
 for an offset too large to seek to.
@@ -454,6 +455,9 @@ for an offset too large to seek to.
 | A 10-byte header fragment after the second entry, inside the declared directory size | `a.txt`, `b.txt` listed (no third local header), then `CorruptionError` naming a truncated central directory |
 | The first, through `for member in reader` or `extract_all()` | Three members yielded or written, then `CorruptionError` |
 | Second central header's signature overwritten, from a file and from a pipe | The same listing, mode from the directory for the first member only, the same files written |
+| First entry's name, extra or comment length grown by exactly the second entry's size, or by 0x8000, from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` listed from their local headers, the same files written, then `CorruptionError`; never a member named `m0.txtPK\x01\x02…` |
+| Last entry's name, extra or comment length runs past the directory | The members before it from the directory, the last from its local header, then `CorruptionError` naming the field |
+| A member named `a\x01PK\x01\x02.txt`, count agreeing | Listed as it is; no diagnostic |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 
 ### Requirement: Read ZIP members whatever version they say they need

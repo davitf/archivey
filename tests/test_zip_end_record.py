@@ -22,7 +22,7 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
     DiagnosticSummary,
 )
-from archivey.exceptions import DiagnosticRaisedError
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 
 _STRICT = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
 _EOCD = b"PK\x05\x06"
@@ -197,18 +197,17 @@ def test_archive_comment_past_end_of_file_is_reported() -> None:
     [(28, "name"), (30, "extra field"), (32, "comment")],
     ids=["name", "extra", "comment"],
 )
-def test_central_directory_field_past_the_directory_is_reported(
+def test_central_directory_field_past_the_directory_is_damage(
     offset: int, field: str
 ) -> None:
-    names, summary = _list(_last_cd_entry_field(offset, 3000))
-    assert names == ["a.txt", "b.txt", "c.txt"]
-    (context,) = _end_record_contexts(summary)
-    assert context.expected_marker == "central_directory"
-    assert context.observed_kind == "nonzero"
-    assert context.observed_bytes > context.expected_bytes
-    message = summary.retained[0].message
-    assert "'c.txt'" in message
-    assert f"its {field} is cut short" in message
+    """Cutting the field at the directory's end, as stdlib does, would list a wrong
+    name or field: the last entry is listed from its local header, then the damage
+    is raised."""
+    with open_archive(io.BytesIO(_last_cd_entry_field(offset, 3000))) as reader:
+        report = reader.members_report()
+    assert [member.name for member in report.members] == ["a.txt", "b.txt", "c.txt"]
+    assert isinstance(report.error, CorruptionError)
+    assert f"declares a {field} that runs" in str(report.error)
 
 
 def test_decoy_end_record_in_comment_lists_empty() -> None:
@@ -228,14 +227,7 @@ def test_clean_archive_with_comment_reports_nothing() -> None:
     assert summary.total_count == 0
 
 
-@pytest.mark.parametrize(
-    "data",
-    [
-        pytest.param(_with_eocd_count(2), id="count"),
-        pytest.param(_last_cd_entry_field(32, 3000), id="cd-comment"),
-    ],
-)
-def test_end_record_mismatch_refused_under_strict(data: bytes) -> None:
-    with open_archive(io.BytesIO(data), config=_STRICT) as reader:
+def test_end_record_mismatch_refused_under_strict() -> None:
+    with open_archive(io.BytesIO(_with_eocd_count(2)), config=_STRICT) as reader:
         with pytest.raises(DiagnosticRaisedError):
             reader.members()

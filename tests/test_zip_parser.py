@@ -26,7 +26,6 @@ from archivey.internal.backends.zip_parser import (
     CommentCutShort,
     EndRecord,
     EntryCountMismatch,
-    EntryOverrun,
     ReadAt,
     find_end_record,
     local_header_at,
@@ -158,11 +157,66 @@ def test_walk_findings_carry_the_values_the_reader_reports() -> None:
         EntryCountMismatch(declared=5, read=2, zip64=False),
         CommentCutShort(declared=40, available=0),
     ]
-    for offset, field in ((28, "name"), (30, "extra field"), (32, "comment")):
-        end, _entries, walk = _parse(_with_overrun(offset))
-        assert walk.findings == [
-            EntryOverrun(0, field, entry_end=end.cd_size + 30, cd_size=end.cd_size)
-        ], field
+
+
+@pytest.mark.parametrize(
+    ("offset", "field"), [(28, "name"), (30, "extra field"), (32, "comment")]
+)
+def test_a_field_running_past_the_directory_is_damage(offset: int, field: str) -> None:
+    """stdlib cuts the field at the directory's end and lists the cut entry; that
+    lists a wrong name or field, so the walk raises at that entry instead."""
+    with pytest.raises(CorruptionError, match=f"declares a {field} that runs 30 bytes"):
+        _parse(_with_overrun(offset))
+
+
+def _swallowing(field_offset: int, grow: int, entry: int = 0) -> bytes:
+    """Three members; central entry ``entry``'s name (28), extra (30) or comment (32)
+    length grown by ``grow`` bytes."""
+    data = bytearray(_zip({"a.txt": b"1", "b.txt": b"2", "c.txt": b"3"}))
+    at = data.index(b"PK\x01\x02")
+    for _ in range(entry):
+        at = data.index(b"PK\x01\x02", at + 4)
+    old = struct.unpack_from("<H", data, at + field_offset)[0]
+    struct.pack_into("<H", data, at + field_offset, old + grow)
+    return bytes(data)
+
+
+#: One central entry of a one-letter-plus-".txt" name, no extra, no comment.
+_ENTRY = 46 + 5
+
+
+@pytest.mark.parametrize("field_offset", [28, 30, 32], ids=["name", "extra", "comment"])
+@pytest.mark.parametrize("entry", [0, 1])
+def test_a_length_that_swallows_the_next_entry_is_damage(
+    field_offset: int, entry: int
+) -> None:
+    """The entry ends exactly where a later one starts, so every header chains, but
+    the swallowed entry's bytes would be listed as part of this one's name, extra
+    field or comment and the entry itself would be missing. The count says so."""
+    walk = CentralDirectoryWalk(
+        _read_at(data := _swallowing(field_offset, _ENTRY, entry)),
+        find_end_record(_read_at(data), len(data)),
+    )
+    seen = []
+    with pytest.raises(CorruptionError, match="swallowed the entries after it"):
+        for e in walk:
+            seen.append(e.name)
+    assert seen == [b"a.txt", b"b.txt"][:entry]
+
+
+def test_a_length_that_swallows_part_of_the_next_entry_is_damage() -> None:
+    """The entry ends inside the next one: the damage is this entry's, not the
+    header the walk would meet next."""
+    with pytest.raises(CorruptionError, match="do not end where the directory does"):
+        _parse(_swallowing(28, 20))
+
+
+def test_a_name_holding_a_central_signature_lists_when_the_count_agrees() -> None:
+    """The no-false-positive direction: the signature bytes alone are not damage."""
+    data = _zip({"a\x01PK\x01\x02.txt": b"1", "b.txt": b"2"})
+    _end, entries, walk = _parse(data)
+    assert [e.name for e in entries] == [b"a\x01PK\x01\x02.txt", b"b.txt"]
+    assert walk.findings == []
 
 
 def test_no_findings_on_well_formed_fixtures() -> None:
@@ -613,17 +667,13 @@ def test_a_cut_extra_field_does_not_refuse_the_archive() -> None:
     assert entries[0].extra == cut
 
 
-def test_findings_count_comment_and_overrun() -> None:
+def test_findings_count_and_comment() -> None:
     _end, entries, walk = _parse(_with_count_and_comment_lies())
     assert len(entries) == 2
     assert walk.findings == [
         EntryCountMismatch(declared=5, read=2, zip64=False),
         CommentCutShort(declared=40, available=0),
     ]
-
-    _end, entries, walk = _parse(_with_overrun(32))
-    (overrun,) = [f for f in walk.findings if isinstance(f, EntryOverrun)]
-    assert overrun.field == "comment" and overrun.index == 0
 
 
 def test_the_walk_reads_forward_in_large_pieces() -> None:

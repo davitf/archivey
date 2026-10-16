@@ -118,7 +118,6 @@ from archivey.internal.backends.zip_parser import (
     ZIP64_LOCATOR_SIZE,
     CentralDirectoryWalk,
     CentralEntry,
-    CommentCutShort,
     DirectoryOffsetWrapped,
     EndRecord,
     EntryCountMismatch,
@@ -1759,7 +1758,6 @@ class ZipReader(BaseArchiveReader):
         walk = self._directory_walk()
         offsets: array[int] = array("q")
         max_members = self._config.listing_limits.max_members
-        last: CentralEntry | None = None
         try:
             for entry in walk:
                 # The position is passed down because it is the id `_register_member`
@@ -1774,7 +1772,6 @@ class ZipReader(BaseArchiveReader):
                 offsets.append(
                     offset if 0 <= offset <= MAX_DATA_OFFSET else _bound_offset(offset)
                 )
-                last = entry
                 yield member
         except CorruptionError as damage:
             # A directory damaged part way: the members after the damage are the
@@ -1798,7 +1795,7 @@ class ZipReader(BaseArchiveReader):
         # list and test every member, then report the damage; so does this, once the
         # members are out, and a strict policy refuses the archive.
         for finding in walk.findings:
-            self._emit_walk_finding(finding, last)
+            self._emit_walk_finding(finding)
 
     def _past_damage(self, listed: array[int]) -> _PastDamage:
         """The members past a directory damaged after the entries at ``listed``.
@@ -1965,9 +1962,7 @@ class ZipReader(BaseArchiveReader):
             local_data_start_at=data_start_at,
         )
 
-    def _emit_walk_finding(
-        self, finding: WalkFinding, last: CentralEntry | None
-    ) -> None:
+    def _emit_walk_finding(self, finding: WalkFinding) -> None:
         """One disagreement between the end record and the central directory."""
         end = self._end
         archive_name = self._archive_name
@@ -2004,7 +1999,7 @@ class ZipReader(BaseArchiveReader):
                 observed_bytes=end.eocd_offset,
                 observed_kind="nonzero",
             )
-        elif isinstance(finding, CommentCutShort):
+        else:
             message = (
                 f"ZIP archive comment is declared as {finding.declared} bytes, but the "
                 f"file ends {finding.available} bytes after the end record; the "
@@ -2017,31 +2012,6 @@ class ZipReader(BaseArchiveReader):
                 expected_bytes=EOCD_SIZE + finding.declared,
                 observed_bytes=EOCD_SIZE + finding.available,
                 observed_kind="short",
-            )
-        else:
-            # The entry that runs past the directory is always the last one the walk
-            # read, so it is named by archivey's own decode, as the listing names it.
-            # The decode reports nothing, so the member's own diagnostics are not
-            # repeated.
-            name = (
-                quoted(self._decode_member_name(last).text)
-                if last is not None and last.index == finding.index
-                else f"#{finding.index}"
-            )
-            field = finding.field
-            article = "an" if field.startswith("extra") else "a"
-            message = (
-                f"ZIP central directory entry {name} declares {article} {field} that "
-                f"runs {finding.entry_end - finding.cd_size} bytes past the central "
-                f"directory's end; its {field} is cut short."
-            )
-            context = ArchiveEofContext(
-                archive_name=archive_name,
-                format="zip",
-                expected_marker="central_directory",
-                expected_bytes=finding.cd_size,
-                observed_bytes=finding.entry_end,
-                observed_kind="nonzero",
             )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,

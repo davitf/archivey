@@ -1839,9 +1839,8 @@ class ZipForwardReader(ZipReader):
             if member_id in links
         }
         self._report_unlisted(unlisted)
-        last = entries[-1] if entries else None
         for finding in () if damage is not None else walk.findings:
-            self._emit_walk_finding(finding, last)
+            self._emit_walk_finding(finding)
         # The kept bytes end where the stream does, so the last ``trailing`` of them
         # follow the end record and its declared comment.
         trailing = tail.data[len(tail.data) - end.trailing :]

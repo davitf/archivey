@@ -27,6 +27,7 @@ import archivey
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
@@ -576,6 +577,42 @@ def test_a_damaged_directory_reads_from_a_file_as_from_a_pipe(
     assert [m["name"] for m in members] == ["m0.txt", "m1.txt", "m2.txt"]
     assert [m["mode"] for m in members] == [0o751, None, None]
     assert error is not None and "Bad magic number for central directory" in error[1]
+    started = time.time() - 1
+    for side in ("file", "pipe"):
+        _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
+    tree = _tree(tmp_path / "file", since=started)
+    assert len(tree) == 3 and _tree(tmp_path / "pipe", since=started) == tree
+
+
+def _length_overrun_params() -> Iterator[pytest.ParameterSet]:
+    for kind, pipe in (("sized", False), ("bit3", True)):
+        base = _with_modes(pipe=pipe)
+        first = base.index(b"PK\x01\x02")
+        second = base.index(b"PK\x01\x02", first + 4)
+        for at, field in ((28, "name"), (30, "extra"), (32, "comment")):
+            for grow, how in ((second - first, "swallows-next"), (0x8000, "past-end")):
+                data = bytearray(base)
+                old = struct.unpack_from("<H", data, first + at)[0]
+                struct.pack_into("<H", data, first + at, old + grow)
+                yield pytest.param(bytes(data), id=f"{kind}-{field}-{how}")
+
+
+@pytest.mark.parametrize("data", list(_length_overrun_params()))
+def test_a_length_that_swallows_entries_reads_from_a_file_as_from_a_pipe(
+    data: bytes, tmp_path: Path
+) -> None:
+    """The first entry's name, extra or comment length grown past the next entry,
+    or past the directory's end. Cutting the field there listed a member named
+    ``m0.txtPK\\x01\\x02...`` and lost the entries it swallowed, with only a
+    count warning. Both reads now list every member under its local header's name,
+    write the same files, then raise the damage."""
+    from_file = _report(data, piped=False)
+    assert from_file == _report(data, piped=True)
+    assert isinstance(from_file, tuple)
+    members, error = from_file
+    assert isinstance(members, list)
+    assert [m["name"] for m in members] == ["m0.txt", "m1.txt", "m2.txt"]
+    assert error is not None and error[0] is CorruptionError
     started = time.time() - 1
     for side in ("file", "pipe"):
         _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
