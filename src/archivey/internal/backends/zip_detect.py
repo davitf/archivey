@@ -79,6 +79,7 @@ _KNOWN_METHODS = frozenset(
         19,
         20,  # pre-reassignment zstd; APPNOTE keeps it, 93 is the current id
         93,
+        94,  # MP3, written by WinZip for .mp3 members
         95,
         96,
         97,

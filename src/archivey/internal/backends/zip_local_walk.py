@@ -78,6 +78,8 @@ from archivey.internal.backends.zip_parser import (
     find_end_record,
     local_header_from,
     local_header_variable_length,
+    local_stored_sizes,
+    local_zip64_sizes,
     locate_classic_record,
     read_local_header,
     read_zip64_locator,
@@ -95,7 +97,6 @@ _FLAG_DATA_DESCRIPTOR = 0x08
 _METHOD_STORED = 0
 _ZIP64_EXTRA_TAG = 0x0001
 _ZIP64_RECORD = "ZIP64 end of central directory record"
-_U32_MAX = 0xFFFF_FFFF
 
 # What may follow a member's data descriptor: the next member, the directory, the end
 # records when the directory is empty or missing, or the record PKWARE Strong Encryption
@@ -957,11 +958,19 @@ class LocalHeaderWalk:
             header=header,
             zip64=_has_zip64_extra(header.extra),
         )
-        if not entry.deferred and header.compressed_size == _U32_MAX:
-            raise CorruptionError(
-                f"ZIP local header #{self._index} defers its compressed size to a "
-                "ZIP64 extra field that does not hold it"
+        if not entry.deferred:
+            # Whether a field supplied each size, not its value: a field can hold all
+            # ones as a real size. With no other source of sizes, a deferral no field
+            # holds is refused rather than read as a size of 4 GiB.
+            compressed, uncompressed = local_zip64_sizes(
+                header.extra, *local_stored_sizes(fixed)
             )
+            if compressed is None or uncompressed is None:
+                which = "compressed" if compressed is None else "uncompressed"
+                raise CorruptionError(
+                    f"ZIP local header #{self._index} defers its {which} size to "
+                    "a ZIP64 extra field that does not hold it"
+                )
         self._index += 1
         return entry
 
