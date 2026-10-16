@@ -207,9 +207,10 @@ Each idea carries a status:
   `__MACOSX/` in a Finder or `ditto` ZIP) so callers can skip them. Marking by name
   alone was tried and dropped: it adds nothing over a name filter (`docs/formats.md`)
   and also marks a real file called `._x`. A version worth having checks the AppleDouble
-  magic (`00 05 16 07`) at the start of the data. That costs a read per `._` file, and
-  in a TAR the sidecar comes before its file, so a forward pass would hold the small
-  sidecar's data back until it has seen the next member.
+  magic (`00 05 16 07`) at the start of the data. That costs a read of the first bytes
+  of each `._` file, buffered before a forward pass yields it. Also requiring the
+  described file to exist costs more in a TAR, where the sidecar comes before its file:
+  the pass would hold the small sidecar back until it has seen the next member.
 - **Pathlib-like navigation.** *Open idea.* An `ArchivePath` with `/`, `iterdir()`,
   `glob()` and `read_bytes()`, as `zipfile.Path` does.
 - **fsspec integration.** *Open idea.* Expose an opened archive as an fsspec file system,
