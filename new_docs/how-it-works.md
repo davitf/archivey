@@ -70,5 +70,5 @@ already is if the target is ahead. Some formats record where they can be restart
 index of its blocks, so a seek starts decoding at the nearest block before the target. For bzip2
 data, and large DEFLATE data such as gzip files, the `seekable` extra adds an accelerator that marks
 restart points as it reads, and later seeks resume from the nearest one. [Seeking inside a
-member](reading.md#seeking-inside-a-member) says what restarting and the accelerator mean for the
-checksum.
+member](reading.md#seeking-inside-a-member) says what decoding again from the start and the
+accelerator mean for the checksum.
