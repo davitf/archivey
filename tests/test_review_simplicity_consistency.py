@@ -202,8 +202,8 @@ def test_directory_report_peek_returns_none(streaming: bool, tmp_path: Path) -> 
 
     `access-mode-and-cost` used to list "Leading (directory, ISO)" as offering a complete
     report in both modes, which the directory backend never did. The **spec** was the
-    thing that was wrong: a filesystem walk is not an index, and the backend's own
-    `listing_cost=REQUIRES_SCANNING` already said so. The table now has a scan-based row.
+    thing that was wrong: the filesystem walk is lazy, so before it there is nothing to
+    peek at. The table now has a scan-based row.
     """
     from archivey.cost import ListingCost
 
@@ -212,6 +212,21 @@ def test_directory_report_peek_returns_none(streaming: bool, tmp_path: Path) -> 
         assert reader.members_report_if_available() is None
         # The receipt the spec now agrees with.
         assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_rar_scan_at_open_offers_a_report_peek(streaming: bool, tmp_path: Path) -> None:
+    """F6 (guardrail): the "Scan at open (RAR)" row. The peek follows the list held after
+    open, not `listing_cost`: RAR scans, but inside `open_archive`."""
+    from archivey.cost import ListingCost
+
+    path = _archive("basic", "rar", tmp_path)
+    with open_archive(path, streaming=streaming) as reader:
+        assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING
+        report = reader.members_report_if_available()
+        assert report is not None
+        assert report.error is None
+        assert len(report.members) > 0
 
 
 @pytest.mark.parametrize("key", ["iso", "zip", "7z"])
