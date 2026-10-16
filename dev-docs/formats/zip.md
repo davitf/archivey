@@ -482,12 +482,20 @@ are `None`, and `members_report_if_available()` returns `None`, until the direct
 been read. The full design, row by row, is the `native-zip-reader` change's `design.md`
 (§"Streaming: a forward walk over local headers").
 
-**Where a member's data ends.** A sized local header gives it. With bit 3 set the walk
-decodes to the codec's end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the
-EOS bit, PPMd with its end mark), then finds the data descriptor by the decoded CRC; a
-STORED member ends at a descriptor whose CRC and size match the bytes before it and that
-a ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed
-the same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA
+**Where a member's data ends.** A sized local header gives it. With bit 3 set, a member
+the caller reads to its end is decoded to the codec's end marker (DEFLATE, Deflate64,
+bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk finds the
+data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC and
+size match the bytes before it and that a ZIP signature follows, signed or not. A bit-3
+codec member the pass reads past (nobody read it, or the caller stopped early) is
+decoded no further than the byte past the 4096-byte target cap, then the start of a
+reparse buffer (§2.2.1). A member whose codec ends within that is
+checked as a read to its end is. Past it the walk passes the member by the STORED
+member's scan on its stored bytes, matched on the size and the signature after the
+descriptor, since the CRC covers the decoded data: decoding the rest would cost what no
+limit bounds (a 900-byte bzip2 member decodes to 1 GiB). A descriptor planted in the
+data then ends the member early, and the directory catches it at the end of the pass. An encrypted bit-3 member
+nobody reads is passed the same way on its ciphertext, so no key is needed. A bit-3 LZMA
 member without EOS has no end its codec can find, and its read is
 `UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
 its decode, as from a file. A bit-3 codec member whose decode fails or finds no end is
@@ -556,8 +564,8 @@ are shapes only crafted archives have (DR-5a); the rest come from damage, from t
 directory's refusals the file read is to drop, or, for the last one only, from the bound
 the pass puts on the data it keeps for link targets, which an ordinary archive can reach:
 
-- A data descriptor that understates a STORED member, and the reversed same-name pair,
-  fail a member the file read writes.
+- A data descriptor that understates a STORED member, or a bit-3 codec member the pass
+  reads past, and the reversed same-name pair, fail a member the file read writes.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
   where the file read refuses it (DR-3).
 - The first of several inconclusive password candidates wins (§6).
@@ -942,7 +950,10 @@ info, extended attributes, resource fork; no data length).
     the reader, settles it).
     `extra["size_mod_2_32"]` stays after the fill-in, so the member still says the
     archive stored only the low bits. A pipe pass that decoded the member to its end
-    with the directory's CRC-32 keeps the size it counted. davi chose this (option A,
+    with the directory's CRC-32 keeps the size it counted. For a bit-3 member nobody
+    read, that is one whose codec ended within the symlink target cap; past it the
+    pass decodes no further (§2.2 "Where a member's data ends") and `size` stays `None`,
+    as from a file. davi chose this (option A,
     2026-10-15) over decoding such members while listing, which would read a whole
     archive of videos to list it. An entry with no CRC-32 (a directory carrying data)
     has nothing to check a read against, so it keeps the stored size instead of
