@@ -215,6 +215,15 @@ def test_unar_matches_unrar_or_refuses(
             # Without a password, unrar's solid pass reports a later member of the
             # same pipe as truncated; unar's pipe is empty, which says why.
             continue
+        if (
+            password is None
+            and with_unrar[name].startswith("EncryptionError")
+            and got == hashlib.sha256(b"").hexdigest()
+        ):
+            # An empty encrypted member with no password: unrar exits with its
+            # password code, and unar writes the nothing there is to write. Only
+            # without cryptography, which otherwise decrypts it for both.
+            continue
         if (path.name, name) in _UNAR_DROPS and got.startswith(_DROP_ERRORS):
             continue
         assert got == with_unrar[name], name
