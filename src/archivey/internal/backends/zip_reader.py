@@ -1814,12 +1814,13 @@ class ZipReader(BaseArchiveReader):
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Read the whole directory before the first member's data, then go forward.
 
-        A streaming pass on a seekable source would otherwise interleave the listing
-        with the data: the first open runs the index pass (``_data_bounds``), which
-        seeks back to the directory, and a directory longer than one walk chunk keeps
-        drawing the listing from the tail between members. Walking it first leaves one
-        backward move after the tail reads, the seek to the first local header. A
-        source that cannot seek is read by ``ZipForwardReader``, which overrides this.
+        The directory is read once and member data in file order after it, so the
+        only backward move after the tail reads is the seek to the first local header,
+        and the overlap guard's bounds are known before any member opens. The walk
+        reads the directory one chunk at a time, so pulling it alongside the data
+        would go back to the tail between members. The listing is final before the
+        first yield, ``is_current`` included. A source that cannot seek is read by
+        ``ZipForwardReader``, which overrides this.
         """
         if self._streaming:
             self._walk_ahead()

@@ -369,7 +369,8 @@ format, in two cases:
   The listing is complete, and its members settled, when a call that resolves links to
   members returns (`members()`, `members_report()`, `get()`, the end of a
   `stream_members()` pass or of iterating the reader). Before that a later member with
-  the same name can still make it `is_current=False`, and links get
+  the same name can still make it `is_current=False` (except in a streaming pass over
+  a seekable ZIP, which reads the whole central directory first), and links get
   `link_target_member`. A `streaming=True` pass yields every member before that point,
   in every format. A `members_report_if_available()` peek resolves no links, so the
   members it returns read `False` until a later call or pass does. Whether a

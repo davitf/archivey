@@ -41,8 +41,8 @@
 - [x] 2.2 Reader-owned lock; the source is the handle for path sources too.
 - [x] 2.3 Lazy `_iter_members`; `member_count` from a complete walk, `None` when it fails
       or stops at `max_members`.
-- [x] 2.4 Offsets and count collected by the listing walk; the index pass only when a
-      member open or `member_count` comes first; both charge `max_members` (tests:
+- [x] 2.4 Offsets and count collected by the listing walk; the index pass only when
+      `member_count` comes first; both charge `max_members` (tests:
       a listing then an open walks the directory once, counted reads).
 - [x] 2.4a Open refuses a declared entry count over `max_members` when `cd_size` can hold
       it; a count the directory cannot hold stays a finding (tests for both).

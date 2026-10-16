@@ -455,11 +455,12 @@ already on disk, and from `OVERWRITTEN`, which is a member that *was* written th
 and then had its destination taken by a later one), so what lands on disk matches a
 fresh write. A streaming pass has no complete listing to say which entry is last, so
 each member reads `is_current=True` until the pass ends; `member_state_final` says
-whether that can still change. A ZIP read from a seekable source is the exception: its
-pass reads the whole central directory first, so each member is yielded with
-`is_current` already final. A streaming `extract_all()` writes the
-earlier entry, then takes it back when the later one arrives, so a progress callback
-sees it written and the report ends with it `SUPERSEDED`.
+whether that can still change. Such a streaming `extract_all()` writes the earlier
+entry, then takes it back when the later one arrives, so a progress callback sees it
+written and the report ends with it `SUPERSEDED`. A ZIP read from a seekable source is
+the exception: its pass reads the whole central directory first, so each member is
+yielded with `is_current` already final, and `extract_all()` skips the earlier entry
+as random access does.
 
 **Selecting members by name is the one place to be careful.** A name in a selector —
 `extract_all(members=["notes.txt"])`, `stream_members(members=["notes.txt"])` —
