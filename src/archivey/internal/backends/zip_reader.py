@@ -2181,7 +2181,10 @@ class ZipReader(BaseArchiveReader):
         ``max_members`` (DR-1: absence over a wrong value)."""
         if not self._count_known:
             self._data_bounds()
-        return self._member_count
+        # Under the lock: another thread's pass may have set the bounds and not yet the
+        # count, and it sets both under the lock.
+        with self._index_lock:
+            return self._member_count
 
     def _sniff_unflagged_name(
         self, raw_name: bytes, cp437_decoded: str
@@ -4087,12 +4090,16 @@ class ZipReadBackend(ReadBackend):
             0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP
         ),  # empty archive (EOCD)
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
+        # APPNOTE 8.5.4: PKZIP may write PK00 ahead of the first local header of a set
+        # that ended up as one segment. 7-Zip and unzip read it as an ordinary ZIP.
+        MagicSignature(0, b"PK00PK\x03\x04", ArchiveFormat.ZIP),
     )
-    # Local header only. The other two ZIP magics are not useful search targets inside a
-    # stub window: PK\x05\x06 would precede a local header only for an empty archive, and
-    # PK\x07\x08 is the spanning marker (7-Zip's -sfx -v keeps the stub as a standalone
-    # executable, not concatenated with the volumes). Neither carries fields
-    # SFX_HIT_VALIDATOR can cheaply confirm — see formats/zip.md §2.1.
+    # Local header only. The no-span marker needs no needle of its own: the local-header
+    # search finds it at offset 4. The other two ZIP magics are not useful search
+    # targets inside a stub window: PK\x05\x06 would precede a local header only for an
+    # empty archive, and PK\x07\x08 is the spanning marker (7-Zip's -sfx -v keeps the
+    # stub as a standalone executable, not concatenated with the volumes). Neither
+    # carries fields SFX_HIT_VALIDATOR can cheaply confirm — see formats/zip.md §2.1.
     SFX_MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )
