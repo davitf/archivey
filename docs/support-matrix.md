@@ -77,7 +77,7 @@ on 3.15.0rc3t for the last column:
 | --- | --- | --- | --- |
 | `pycdlib` (ISO) | Yes | Yes — covered by CI | Yes — preview CI job |
 | `backports.zstd` | Below 3.14 only | Yes — covered by CI | Not installed: 3.14+ has `compression.zstd` |
-| `lz4` | Yes | Yes — covered by CI | Yes — preview CI job (built from source; no wheel yet) |
+| `lz4` | Yes | Yes — covered by CI | Yes — preview CI job |
 | `tqdm` (CLI progress) | Yes | Yes — covered by CI | Yes — preview CI job |
 | `cryptography` | 3.14+ only | **Cannot install on 3.13t** — its `cffi` dependency rejects free-threaded 3.13 outright ("upgrade to free-threaded 3.14 or newer") | Yes — preview CI job (built from source; no wheel yet) |
 | `rapidgzip` (`[seekable]`) | No | **No** — import re-enables the GIL |
