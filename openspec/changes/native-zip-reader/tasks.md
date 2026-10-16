@@ -275,9 +275,13 @@ each lands with nothing half-done reachable:
 - [x] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).
-- [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
+- [x] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
       same files on disk, except the two divergences `design.md` names (3.3b, 3.3c),
-      which 3.3g tests instead.
+      which 3.3g tests instead. `tests/test_zip_pipe_parity.py` runs every ZIP fixture
+      under each password case; its `_DIFFERS` holds only the two
+      `sevenzip/encrypted_link.zip` rows (no password, wrong password): a link the pass
+      wrote as a file keeps its data's `EncryptionError` where the file read reports
+      `LinkTargetNotFoundError`, with the same files on disk, as `design.md` accepts.
 - [x] 3.4a What follows the members is kept and parsed by `find_end_record` and
       `CentralDirectoryWalk` (`LocalHeaderWalk.read_rest`, `ForwardTail.end_record`),
       bounded by the listing limits: a decoy end record in the comment, an entry
