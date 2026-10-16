@@ -1105,7 +1105,7 @@ def test_a_sparse_stream_eof_error_is_translated(streaming: bool) -> None:
             format=ArchiveFormat.TAR,
             streaming=streaming,
         ) as ar,
-        pytest.raises(TruncatedError, match="sparse member"),
+        pytest.raises(TruncatedError, match="ended early"),
     ):
         for _, stream in ar.stream_members():
             assert stream is not None

@@ -301,9 +301,10 @@ target and the next read returns `b""`, as in every other format. In a streaming
 and in a random-access pass whose walk is still running, the member is read through the
 walk's own stream (`TarWalker.open_data`). A sparse member is a `SparseStream` over
 either: it serves the logical bytes, zeros in the holes, and reads the stored stream only
-inside a chunk. A sparse member cut inside a chunk is a truncation like a plain member's
-cut: a sized read returns the logical bytes before the cut, holes included, and the next
-read raises `TruncatedError`.
+inside a chunk. A sparse member cut in its stored data, wherever the cut lands (inside a
+chunk, at a chunk's first byte, or in the hole before one), is a truncation like a plain
+member's cut: a sized read returns the logical bytes before the cut, holes included, and
+the next read raises `TruncatedError`.
 
 **A sparse map is checked against the member's sizes first.** Every map is parsed during
 the walk, a PAX 1.0 map from the first blocks of the data area, so a map that does not
@@ -602,7 +603,7 @@ ours.
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch | `::test_bad_pax_time_is_reported`, `::test_several_bad_pax_times_on_one_member_are_each_reported`, `::test_pax_mtime_zero_is_the_epoch` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
-| A sparse member cut inside a chunk delivers its prefix, then raises `TruncatedError`, in every encoding and both modes | `::test_a_cut_sparse_member_delivers_its_prefix_then_raises`, `::test_a_cut_sparse_member_read_whole_raises_truncated` |
+| A sparse member cut in its stored data, inside a chunk or at a chunk's first byte, delivers its prefix, then raises `TruncatedError`, in every encoding and both modes | `::test_a_cut_sparse_member_delivers_its_prefix_then_raises`, `::test_a_cut_sparse_member_read_whole_raises_truncated` |
 | A PAX number past `int()`'s digit limit is `CorruptionError`, not `ValueError` | `::test_pax_number_past_the_int_digit_limit_is_corruption`, `::test_pax_number_with_many_leading_zeros_reads` |
 | A PAX member with a major of 1 or more is 1.0 whatever 0.x records it carries | `tests/test_tar_parser.py::test_pax_sparse_major_chooses_1_0_over_0_x_records` |
 | A size field past what the filesystem can seek to is `TruncatedError` naming the offset, from a path, a `BytesIO` and a stream that refuses the seek as ext4 does; another errno propagates | `::test_size_past_filesystem_limit_is_truncation`, `::test_refused_seek_through_open_archive_is_truncation`, `::test_refused_seek_is_truncation_naming_the_offset`, `::test_refused_seek_with_other_errno_propagates` |

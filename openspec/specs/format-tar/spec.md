@@ -497,7 +497,7 @@ slots with `(0, 0)`.
 | Case | Expected |
 | --- | --- |
 | A sparse member | Logical bytes with holes as zeros; never bytes past the member's stored size |
-| A sparse member cut inside a chunk | A sized `read(n)` returns the logical bytes before the cut, short, and the next read raises `TruncatedError`; a `read()` with no size raises `TruncatedError` |
+| A sparse member cut in its stored data, wherever the cut lands (inside a chunk, at a chunk's first byte, or in the hole before one) | A sized `read(n)` returns the logical bytes before the cut, short, and the next read raises `TruncatedError`; a `read()` with no size raises `TruncatedError` |
 | A sparse map out of order or overlapping | `UnsupportedFeatureError` on open |
 | A chunk, empty or not, that ends past the logical size | `CorruptionError` on open |
 | Chunks that add up to more than the member stores | `CorruptionError` on open |

@@ -131,6 +131,7 @@ class _RaisesAtEnd(io.RawIOBase):
 
     def __init__(self, data: bytes) -> None:
         self._inner = io.BytesIO(data)
+        self.raised = 0
 
     def readable(self) -> bool:
         return True
@@ -138,7 +139,8 @@ class _RaisesAtEnd(io.RawIOBase):
     def readinto(self, b) -> int:  # type: ignore[override]
         count = self._inner.readinto(b)
         if len(b) and not count:
-            raise _CutError("the inner stream ended")
+            self.raised += 1
+            raise _CutError(f"the inner stream ended (error {self.raised})")
         return count
 
 
@@ -168,6 +170,35 @@ def test_a_cut_at_a_chunk_start_returns_the_prefix_then_raises(seekable: bool) -
     assert stream.tell() == 10
     with pytest.raises(EOFError, match="none of the 4 bytes"):
         stream.read(20)
+
+
+def test_a_seek_clears_the_held_error() -> None:
+    """A read that returned the prefix holds the cut's error for the next read. A
+    seek elsewhere drops it: the read after the seek starts again and meets the cut
+    when it reaches it. A seek to where the stream already is keeps it."""
+    stream = SparseStream(_inner(b"abcd", True), [0, 10], [4, 4], 20)
+    assert stream.read(20) == b"abcd" + bytes(6)
+    # A seek elsewhere drops it: the prefix reads again, and the error is held again.
+    assert stream.seek(0) == 0
+    assert stream.read(20) == b"abcd" + bytes(6)
+    assert stream.seek(2) == 2
+    # No stale error fires at a position that never met the cut.
+    assert stream.read(3) == b"cd\x00"
+    assert stream.read(20) == bytes(5)
+    with pytest.raises(EOFError):
+        stream.read(20)
+
+
+def test_a_seek_to_the_same_position_keeps_the_held_error() -> None:
+    """The held error is the one the cut raised, not a second one from reading the
+    inner again."""
+    inner = _RaisesAtEnd(b"ab")
+    stream = SparseStream(io.BufferedReader(inner), [0, 5], [2, 2], 9)
+    assert stream.read(9) == b"ab" + bytes(3)
+    assert stream.seek(stream.tell()) == 5
+    with pytest.raises(_CutError, match=r"error 1\)"):
+        stream.read(1)
+    assert inner.raised == 1
 
 
 def test_an_inner_error_at_a_chunk_start_comes_after_the_prefix() -> None:
