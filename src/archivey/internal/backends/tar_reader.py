@@ -463,6 +463,7 @@ class TarReader(BaseArchiveReader):
     # "available without scanning" (listing cost is REQUIRES_SCANNING / REQUIRES_DECOMPRESSION,
     # not INDEXED). Once iterated, the base serves the cached list anyway.
     _MEMBER_LIST_UPFRONT = False
+    _MACOS_SIDECARS = True
 
     def __init__(
         self,

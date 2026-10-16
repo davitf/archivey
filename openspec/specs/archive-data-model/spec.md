@@ -202,6 +202,31 @@ produces it is untested, and so is the behaviour a real one would get.
   needs privileges the runner does not have, so the symlink half is exercised by
   simulating the platform.
 
+### Requirement: Pair macOS AppleDouble sidecars with their members
+
+macOS keeps a file's extended attributes and resource fork in an AppleDouble sidecar
+named `._` plus the file's name: in the same folder in a TAR written by macOS `tar`, and
+in the same folder under `__MACOSX/` in a ZIP written by Finder or `ditto`. A ZIP or
+TAR `FILE` member whose name has that shape SHALL carry
+`extra["macos.resource_of"]`, the name of the member it describes, once a member with
+that name (or that name plus `/`, for a directory) is listed. The pairing SHALL use
+names only, so a listing reads no member data. The sidecar SHALL stay an ordinary
+member: listed, readable, and extracted unless the caller filters it.
+
+Either side may come first: macOS `tar` writes the sidecar before its file, Finder and
+`ditto` after. A sidecar listed first SHALL get the key when its member is listed, in a
+streaming pass as in a listing. A ZIP read from a pipe SHALL pair again under the
+central directory's names.
+
+#### Scenario: sidecars
+
+| Archive | Expected |
+| --- | --- |
+| ZIP: `weird/`, `__MACOSX/._weird`, `weird/file.txt`, `__MACOSX/weird/._file.txt` (seekable or a pipe) | `macos.resource_of` is `weird/` and `weird/file.txt` on the two sidecars |
+| ZIP: `__MACOSX/weird/._gone.txt` with no `weird/gone.txt` | No key |
+| TAR: `dir/._a.txt` before `dir/a.txt`, listed or streamed | `macos.resource_of` is `dir/a.txt` |
+| `._`, a directory `._dir/`, `__MACOSX/a.txt`, `x._a.txt` | No key |
+
 ### Requirement: Compression methods model codec chains
 
 The system SHALL define `CompressionAlgorithm`, frozen `CompressionMethod`, and

@@ -504,3 +504,26 @@ def link_target_name_keys(target_name: str) -> tuple[str, ...]:
     if target_name.endswith("/"):
         return (target_name,)
     return (target_name, target_name + "/")
+
+
+#: The folder a macOS ZIP keeps its AppleDouble sidecars under.
+_MACOSX_FOLDER = "__MACOSX/"
+
+
+def macos_sidecar_target(member: ArchiveMember) -> str | None:
+    """The name of the member a macOS AppleDouble sidecar describes, by name alone.
+
+    A sidecar is a file whose last component is ``._`` plus the described member's
+    name, in the same folder (macOS ``tar``) or the same folder under ``__MACOSX/``
+    (Finder, ``ditto``). ``None`` for any other member. The result carries no
+    trailing ``/``: a directory's sidecar names the directory without it.
+    """
+    if member.type is not MemberType.FILE:
+        return None
+    name = member.name
+    if name.startswith(_MACOSX_FOLDER):
+        name = name[len(_MACOSX_FOLDER) :]
+    folder, _, base = name.rpartition("/")
+    if not base.startswith("._") or len(base) == 2:
+        return None
+    return f"{folder}/{base[2:]}" if folder else base[2:]

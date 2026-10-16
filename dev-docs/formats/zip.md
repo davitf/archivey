@@ -826,6 +826,26 @@ local header with the entry's name at the corrected offset, so a ZIP under 4 GiB
 whose directory is out of file order is untouched (the corrected offset would be past
 the directory, and nothing is read there). `ARCHIVE_OFFSET_WRAPPED` records each one.
 
+**What Finder and `ditto` write besides sizes.** davi's tests on macOS (2026-10-16), a
+folder with relative, absolute, dangling and directory symlinks, a hard link, an
+executable, an xattr, a resource fork, an empty folder and an NFD name:
+
+- Both write only stored directories and deflated files; `ditto
+  --zlibCompressionLevel 0` still writes method 8, with stored blocks inside.
+- Symlinks are Unix-mode entries whose data is the target; the hard link is a second
+  copy. A FIFO hangs `ditto`.
+- Names are UTF-8 without the UTF-8 flag (bit 11), NFD as the filesystem gives them,
+  so every non-ASCII name reports `MEMBER_NAME_ENCODING_INFERRED`. davi chose to keep
+  that diagnostic.
+- Finder writes UTC into the DOS time field and `ditto` local time; both write the
+  real UTC mtime in the `UX` field (`0x5855`).
+- Both write `__MACOSX/<path>/._<name>` AppleDouble sidecars. `ditto` writes one for
+  every entry, symlinks included, plus `__MACOSX/` directory entries, and drops the
+  top folder unless given `--keepParent`. Finder keeps the top folder with its own
+  sidecar and writes none for symlinks. archivey lists sidecars as files, like
+  `unzip`, and marks them with `extra["macos.resource_of"]` (davi, 2026-10-16, project
+  thread; key name his); `ditto -x` folds them back into xattrs instead.
+
 **A member over 4 GiB from macOS.** The same writer stores a member's sizes modulo 2³²
 too, in the directory and the data descriptor alike. davi's tests on macOS (2026-10-15):
 a Finder archive of five 1 GiB random files reads with the offset corrections; a

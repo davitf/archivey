@@ -1981,6 +1981,9 @@ class ZipForwardReader(ZipReader):
         )
         if member.name != old_name:
             self._reindex_name(member, old_name)
+        # The directory's extra replaced the pass's, sidecar pairing included; pair
+        # again under the directory's names.
+        self._pair_macos_sidecar(member)
         if (
             member.type is MemberType.SYMLINK
             and member.link_target is None

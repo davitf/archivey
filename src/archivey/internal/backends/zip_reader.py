@@ -1214,6 +1214,7 @@ class ZipReader(BaseArchiveReader):
 
     _MEMBER_LIST_UPFRONT = True
     _LINK_TARGETS_IN_DATA = True
+    _MACOS_SIDECARS = True
 
     def __init__(
         self,

@@ -86,6 +86,7 @@ from archivey.internal.naming import (
     emit_link_target_controls,
     emit_member_name_controls,
     link_target_name_keys,
+    macos_sidecar_target,
     name_controls_possible,
     resolve_link_target_name,
 )
@@ -128,6 +129,7 @@ from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
+    EXTRA_MACOS_RESOURCE_OF,
     EXTRA_SPECIAL_FILE_TYPE,
     AbortOn,
     AbortOnStr,
@@ -468,6 +470,9 @@ class BaseArchiveReader(ArchiveReader):
     # ZIP read from a pipe, whose central directory comes last)? ``extract_all`` then
     # keeps what it wrote each such member as, and settles it at the end of the pass.
     _REVISES_YIELDED_MEMBERS: bool = False
+    # Can the archive hold macOS AppleDouble sidecars (``._name`` files, under
+    # ``__MACOSX/`` in a ZIP) that the listing pairs with their members?
+    _MACOS_SIDECARS: bool = False
 
     def __init__(
         self,
@@ -550,6 +555,9 @@ class BaseArchiveReader(ArchiveReader):
         # extraction gives each its result.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
         self._listed_by_name: dict[str, list[ArchiveMember]] = {}
+        # Sidecars listed before the member they describe, by that member's name
+        # (``_pair_macos_sidecar``).
+        self._unpaired_sidecars: dict[str, list[ArchiveMember]] = {}
         self._walk_position: int = 0
         self._walk: Iterator[ArchiveMember] | None = None
         self._walk_done: bool = False
@@ -1524,6 +1532,8 @@ class BaseArchiveReader(ArchiveReader):
             self._register_member(position, member)
             self._walk_position = position + 1
             self._index_member_name(member)
+            if self._MACOS_SIDECARS:
+                self._pair_macos_sidecar(member)
             self._listed.append(member)
             return member
         except BaseException as exc:
@@ -1632,6 +1642,7 @@ class BaseArchiveReader(ArchiveReader):
         # (``_ProgressivePassIterator._step_locked``), so it gets those same objects.
         self._listed = []
         self._listed_by_name = {}
+        self._unpaired_sidecars = {}
         self._walk_position = 0
         self._listing_tracker.reset()
 
@@ -2477,6 +2488,30 @@ class BaseArchiveReader(ArchiveReader):
 
     def _index_member_name(self, member: ArchiveMember) -> None:
         self._listed_by_name.setdefault(member.name, []).append(member)
+
+    def _pair_macos_sidecar(self, member: ArchiveMember) -> None:
+        """Set ``extra["macos.resource_of"]`` on the AppleDouble sidecars of ``member``.
+
+        macOS keeps a file's extended attributes and resource fork in a sidecar named
+        ``._`` plus the file's name: next to the file in a TAR, under ``__MACOSX/`` in
+        a ZIP. A sidecar is paired by name only, so a listing reads no data: a file
+        whose last component starts with ``._``, and a member listed under the name
+        it describes. Either can come first (macOS ``tar`` writes the sidecar before
+        the file, ``ditto`` after), so a sidecar listed first waits for its member.
+        """
+        target = macos_sidecar_target(member)
+        if target is not None:
+            described = self._last_by_exact_name(target) or self._last_by_exact_name(
+                target + "/"
+            )
+            if described is not None:
+                member.extra[EXTRA_MACOS_RESOURCE_OF] = described.name
+            else:
+                self._unpaired_sidecars.setdefault(target, []).append(member)
+        if self._unpaired_sidecars:
+            waiting = self._unpaired_sidecars.pop(member.name.rstrip("/"), None)
+            for sidecar in waiting or ():
+                sidecar.extra[EXTRA_MACOS_RESOURCE_OF] = member.name
 
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
         candidates = self._listed_by_name.get(name)

@@ -73,6 +73,15 @@ other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too
 writer that marks itself Unix while storing a birth time (libarchive on Windows) gets
 `ctime`, not `created`, rather than a risk of `st_ctime` in `created`.
 
+A ZIP or TAR made on a Mac often carries AppleDouble sidecars: a `._name` file holding
+the extended attributes and resource fork of `name`, next to it (macOS `tar`) or under
+`__MACOSX/` (Finder, `ditto`). archivey lists them as ordinary files, as `unzip` does,
+and marks each one with `extra["macos.resource_of"]`, the name of the member it
+describes. Leave them out with `"macos.resource_of" not in member.extra`. The pairing
+goes by names only. A sidecar whose member is not in the archive gets no key, and in a
+streaming pass a sidecar listed before its member gets the key when the member is
+listed.
+
 ## Fields that change after a member is returned
 
 `ArchiveMember.member_state_final` is `False` while archivey can still update a member
