@@ -375,7 +375,9 @@ yielded.
       inside its footer (a missing gzip CRC-32, say) does not fail the listing, since
       every member was read whole, but its checksum was never checked: that is
       `DIGEST_UNVERIFIABLE`, which `STRICT` refuses. A stream that fails to decompress
-      past the trailer is reported the same way. The check stops at trailing bytes, and
+      past the trailer is `DIGEST_UNVERIFIABLE` too, worded as "whether the checksum
+      passed cannot be told": the failing bytes may be a further compressed member
+      after the one holding the members. The check stops at trailing bytes, and
       says nothing about the stream's checksum past them: in a concatenated
       `.tar.gz` they are a second gzip member, and the first one's checksum was
       already checked. Junk inside the same gzip member can leave that checksum

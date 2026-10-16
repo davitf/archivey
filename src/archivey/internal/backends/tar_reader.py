@@ -1047,8 +1047,13 @@ class TarReader(BaseArchiveReader):
         ``ARCHIVE_TRAILING_DATA``.
 
         Any other decode failure here (a damaged deflate stream past the trailer, say)
-        also leaves that checksum unreached, so on a codec that can carry one it is
-        ``DIGEST_UNVERIFIABLE`` (``reason="trailing_decode_failed"``), not silence.
+        is ``DIGEST_UNVERIFIABLE`` (``reason="trailing_decode_failed"``) on a codec
+        that can carry a checksum, not silence. It is worded as "cannot be told", not
+        "never reached": the bytes that failed may be in the members' own stream, or
+        in a further compressed member (``cat a.tar.gz b.gz``) whose predecessor's
+        checksum was already checked, and nothing here tells the two apart. A further
+        member that decodes to non-zero bytes before failing is reported as trailing
+        data instead, when those bytes come back from a read that did not fail.
         bzip2 and xz check each block, and neither reports a failed check differently
         from junk after the stream, so on those the failure may be that check itself.
         When the codec had already read to the failure during the last member's read,
@@ -1087,7 +1092,8 @@ class TarReader(BaseArchiveReader):
                 )
                 return
             except ReadError:
-                # The checksum over the members was never reached.
+                # In the members' stream or a further one: whether the checksum over
+                # the members passed cannot be told.
                 self._emit_stream_checksum_unverified(reason="trailing_decode_failed")
                 return
             if not chunk:
@@ -1136,8 +1142,9 @@ class TarReader(BaseArchiveReader):
             )
         else:
             what = (
-                "fails to decode past the end-of-archive marker: the stream's "
-                "checksum, if it carries one, was never reached"
+                "fails to decode past the end-of-archive marker: the failure may be "
+                "in the stream that holds the members or in a further compressed "
+                "member after it, so whether the checksum passed cannot be told"
             )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.DIGEST_UNVERIFIABLE,

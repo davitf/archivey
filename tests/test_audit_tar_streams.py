@@ -775,7 +775,8 @@ def test_concatenated_tar_gz_claims_nothing_about_the_checksum(
     ``DIGEST_UNVERIFIABLE`` here would be false; and the second member's checksum
     covers no listed member. The scan stops at the first non-zero byte, so a second
     archive larger than the 1 MiB bound adds no ``trailing_scan_limit`` report, and
-    random access does not rewind across a megabyte of it either.
+    random access does not rewind across a megabyte of it either. The second archive
+    is intact here; a damaged one is the next test.
     """
     import gzip
 
@@ -792,6 +793,55 @@ def test_concatenated_tar_gz_claims_nothing_about_the_checksum(
             read = [ar.read(m) for m in ar.members()]
         assert read == [b"abc"]
         assert dict(ar.diagnostics.counts) == {DiagnosticCode.ARCHIVE_TRAILING_DATA: 1}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("size", [200, 256 * 1024], ids=["small", "256KiB"])
+def test_damaged_further_gzip_member_is_not_called_unreached(
+    size: int, streaming: bool
+) -> None:
+    """format-tar: ``cat a.tar.gz b.gz``, ``b.gz`` with BFINAL cleared on its only
+    deflate block, so it decodes and then fails on its own footer.
+
+    ``a.tar.gz``'s CRC-32, over the listed members, is checked on the way into
+    ``b.gz`` (flipping it raises), so a report must not say that checksum was never
+    reached. The scan cannot tell this failure from one in the members' own stream,
+    so it reports ``DIGEST_UNVERIFIABLE`` (``trailing_decode_failed``) worded as
+    "cannot be told". Which report comes out depends on ``b.gz``'s size: the codec
+    loses the output of a feed that fails, so a small member gives the digest report,
+    and one decoding past a scan chunk first gives ``ARCHIVE_TRAILING_DATA``
+    (``dev-docs/formats/tar.md`` §6). Neither is silent, and the listing stands.
+    Random access checks the listing only: a later ``read()`` of ``a`` decodes from
+    the start and its read-ahead reaches ``b.gz``'s failure, which raises
+    ``CorruptionError`` on ``main`` too.
+    """
+    import gzip
+
+    from archivey.internal.backends.tar_reader import _TRAILING_SCAN_CHUNK
+
+    second = bytearray(gzip.compress(b"S" * size, mtime=0))
+    assert second[10] & 1, "fixture premise: the first deflate block is final"
+    second[10] &= 0xFE
+    first = gzip.compress(_one_member_tar(b"abc"), mtime=0)
+    with open_archive(
+        io.BytesIO(first + bytes(second)),
+        format=ArchiveFormat.TAR_GZ,
+        streaming=streaming,
+    ) as ar:
+        if streaming:
+            read = [s.read() for _m, s in ar.stream_members() if s is not None]
+            assert read == [b"abc"]
+        else:
+            assert [m.name for m in ar.members()] == ["a"]
+        found = {d.code: d for d in ar.diagnostics.retained}
+    if size < _TRAILING_SCAN_CHUNK:
+        assert set(found) == {DiagnosticCode.DIGEST_UNVERIFIABLE}
+        digest = found[DiagnosticCode.DIGEST_UNVERIFIABLE]
+        assert getattr(digest.context, "reason", None) == "trailing_decode_failed"
+        assert "cannot be told" in digest.message
+        assert "never reached" not in digest.message
+    else:
+        assert set(found) == {DiagnosticCode.ARCHIVE_TRAILING_DATA}
 
 
 def test_gzip_decode_failure_after_trailer_is_not_silent() -> None:
