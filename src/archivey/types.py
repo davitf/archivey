@@ -599,6 +599,12 @@ class MemberExtra(dict[str, object]):
     * ``zip.aes_vendor_version`` (``int``)
     * ``zip.aes_strength`` (``int``)
     * ``zip.aes_actual_method`` (``int``)
+    * ``zip.extra_fields`` (``dict[int, bytes]``) — the central directory extra
+      fields archivey took nothing from, by tag (the first of several with one tag),
+      such as a vendor's own field or one archivey knows but found malformed. Absent
+      when there are none, which is the usual case. When a later version learns to
+      read a field, it leaves this dict. A pass over a pipe sets it once it reaches
+      the central directory, at the end.
     * ``tar.type`` (``bytes``)
     * ``tar.pax_headers`` (``Mapping[str, str]``) — the member's PAX records, the
       global ones in force included. Read-only: a change raises ``TypeError``, and
@@ -652,6 +658,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["zip.aes_strength"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["zip.aes_actual_method"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.extra_fields"], /) -> dict[int, bytes]: ...
     @overload
     def __getitem__(self, key: Literal["tar.type"], /) -> bytes: ...
     @overload

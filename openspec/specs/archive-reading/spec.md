@@ -553,7 +553,9 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 - `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
 - `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
   `dict` value, its `str` / `bytes` keys and values (archive-sized text such as TAR's
-  PAX keywords). Top-level `extra` keys are format-defined literals and are not counted
+  PAX keywords), and 72 bytes for each entry whose key is not text (a ZIP extra
+  field's tag in `zip.extra_fields`, whose count the archive sets and whose value may
+  be empty). Top-level `extra` keys are format-defined literals and are not counted
 - Exclude: `_raw` (apart from a TAR sparse map, below), `hashes`, diagnostics, Python
   object overhead
 
@@ -610,6 +612,7 @@ chain left, not against the member's whole share.
 | Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
 | `extra` holds opaque non-str/bytes object | Not counted, and neither is its top-level key |
 | `extra` holds a dict with a long key (PAX keyword) | The key counts, like its value |
+| `extra["zip.extra_fields"]` holds many empty fields | Each entry counts 72 bytes, so the budget bounds them |
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |

@@ -313,7 +313,9 @@ class ListingLimits:
     (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
     keys are fixed per format and do not count. Non-ASCII text counts four bytes per
     character, so it is an upper bound rather than an exact size. A TAR sparse member's
-    map, which the listing keeps to read the member, counts 24 bytes per entry.
+    map, which the listing keeps to read the member, counts 24 bytes per entry, and
+    each ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its
+    data.
     """
 
     UNLIMITED: ClassVar[ListingLimits]
