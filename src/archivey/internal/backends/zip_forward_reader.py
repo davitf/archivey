@@ -427,9 +427,10 @@ class _PassData:
         if capture is None or want is None:
             return None
         if self._deferred():
-            # Bit-3 data is decoded to its end to find it; the file read reaches
-            # that end only when the data is no longer than the start it reads. A
-            # decode that failed part way was not checked (``_checked``).
+            # Bit-3 data the caller did not read is decoded to the byte past this
+            # start (``_wants_decoded``), as the file read reads it; either reaches
+            # the end only when the data is no longer than the start. A decode that
+            # failed part way was not checked (``_checked``).
             ended = self.verified or (self._checked and self._size <= want)
         else:
             ended = self.verified or self._size >= self.entry.header.file_size
@@ -495,6 +496,16 @@ class _PassData:
             return max(0, MAX_LINK_TARGET_BYTES + 1 - self._size)
         # ``drain`` asks a sized member only of data over the cap.
         return max(0, REPARSE_HEADER_BYTES - self._size)
+
+    def _wants_decoded(self) -> int:
+        """How many more decoded bytes ``drain`` takes of bit-3 codec data: what the
+        capture wants, then the byte past a reparse prefix. The file read's byte past
+        the buffer reaches the end of data no longer than that and checks it
+        (``reparse_prefix``); the pass reaches it only by decoding that byte too."""
+        want = self._wants_prefix()
+        if want or self._capture is None or self._prefix_want is None:
+            return want
+        return max(0, self._prefix_want + 1 - self._size)
 
     def _deferred(self) -> bool:
         return self.entry.deferred
@@ -1185,7 +1196,7 @@ class _PassData:
 
         A bit-3 STORED member is read to its end, which its scan finds. A bit-3 codec
         member is decoded no further than the byte past the target cap, then the start
-        of a reparse buffer. Its codec finds its end only by
+        of a reparse buffer and the byte after it (``_wants_decoded``). Its codec finds its end only by
         decoding all of it, which no limit bounds, so where the decode stops short of
         that end, and where it fails, the walk's scan finds the end on the stored
         bytes, with no key (``_scan_rest``). An encrypted one, STORED or nobody read
@@ -1264,7 +1275,7 @@ class _PassData:
                     # codec finds it, at a cost nothing bounds: a bzip2 member of
                     # 900 bytes decodes to 1 GiB. Only what the capture wants is
                     # decoded; the scan finds where the rest ends.
-                    while (want := self._wants_prefix()) and self._read_chunk(want):
+                    while (want := self._wants_decoded()) and self._read_chunk(want):
                         pass
                     # With bytes still wanted the codec ended first, and the data is
                     # checked below as a read to its end is.

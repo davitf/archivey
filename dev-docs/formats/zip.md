@@ -489,7 +489,7 @@ data descriptor by the decoded CRC; a STORED member ends at a descriptor whose C
 size match the bytes before it and that a ZIP signature follows, signed or not. A bit-3
 codec member the pass reads past (nobody read it, or the caller stopped early) is
 decoded no further than the byte past the 4096-byte target cap, then the start of a
-reparse buffer (§2.2.1). A member whose codec ends within that is
+reparse buffer and the byte after it, as far as a file read reads one (§2.2.1). A member whose codec ends within that is
 checked as a read to its end is. Past it the walk passes the member by the STORED
 member's scan on its stored bytes, matched on the size and the signature after the
 descriptor, since the CRC covers the decoded data: decoding the rest would cost what no
@@ -567,10 +567,6 @@ directory's refusals the file read is to drop:
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
-  For a reparse point whose decode fails more than one byte past its reparse buffer,
-  the file read's bounded read stops before the damage and gives the target; the pass
-  decodes in larger pieces, loses the piece the error ends, and gives none
-  (`test_zip_pipe_reparse.py::test_a_bit3_reparse_buffer_whose_decode_fails_past_it`).
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no

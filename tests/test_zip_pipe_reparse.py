@@ -384,7 +384,7 @@ def test_a_damaged_bit3_reparse_buffer_is_a_link_only_where_the_file_read_says(
 ) -> None:
     """The file read reads one byte past the buffer: data that ends there has its
     CRC checked and a damaged one is no link; longer data is not checked. The pass
-    decodes bit-3 data to its end to find it, and says the same."""
+    decodes a bit-3 member nobody read to the same byte, and says the same."""
     target = "C:\\" + "t" * 1990
     content = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, target, target) + bytes(after)
     sink = _PipeSink()
@@ -446,9 +446,8 @@ def _bit3_deflate_zip(name: str, attributes: int, deflated: bytes, size: int) ->
 def test_a_bit3_reparse_buffer_whose_decode_fails_past_it(after: int) -> None:
     """Decoded data that stops with a codec error ``after`` bytes past the buffer.
     Up to one byte past it, neither read gives a target: the file read's byte past
-    the buffer meets the error. Further on, the file read's bounded read stops before
-    the error and gives the target; the pass decodes in larger pieces, loses the piece
-    the error ends, and gives none (``formats/zip.md`` §2.2.2)."""
+    the buffer meets the error. Further on, both stop before the error and give the
+    target: the pass decodes a member nobody read no further than the file read."""
     target = "C:\\" + "t" * 1990
     content = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, target, target) + bytes(after)
     stage = zlib.compressobj(0, zlib.DEFLATED, -15)
@@ -459,4 +458,4 @@ def test_a_bit3_reparse_buffer_whose_decode_fails_past_it(after: int) -> None:
     )
     from_file = _from_file(data)["link"].link_target
     assert (from_file is None) == (after <= 1)
-    assert _from_pipe(data, read=False)["link"].link_target is None
+    assert _from_pipe(data, read=False)["link"].link_target == from_file
