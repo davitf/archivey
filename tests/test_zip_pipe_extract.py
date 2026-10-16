@@ -550,12 +550,13 @@ def _possible_links(last: tuple[zipfile.ZipInfo, bytes]) -> bytes:
             (_entry("script.sh", mode=0o100755), b"#!/bin/sh\n"),
             (_entry("target.txt"), b"t"),
             (_entry("reparse.bin", host=0), _REPARSE_FILE),
-            (_entry("long.bin", mode=0o100644), _LONG_FILE),
+            (_entry("long.bin", mode=0o100755), _LONG_FILE),
             last,
         ]
     )
 
 
+@posix_modes
 @pytest.mark.parametrize(
     ("last", "options"),
     [
@@ -584,6 +585,8 @@ def test_a_run_stopped_in_the_pass_leaves_no_link_as_a_file(
         )
     assert sorted(p.name for p in tmp_path.iterdir()) == ["long.bin"]
     assert (tmp_path / "long.bin").read_bytes() == _LONG_FILE
+    # The directory's 0o755 never reached it: the member was not settled.
+    assert stat.S_IMODE((tmp_path / "long.bin").stat().st_mode) != 0o755
 
 
 @needs_symlinks

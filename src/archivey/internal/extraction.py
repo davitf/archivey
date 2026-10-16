@@ -1362,7 +1362,9 @@ class ExtractionCoordinator:
             self._run_pass(reader, stream_selector, selected_total)
         except _AbortExtraction as abort:
             # An abort_on trigger fired: no report is returned, and output already
-            # written for earlier members stays on disk (same as OnError.STOP). Nothing
+            # written for earlier members stays on disk (same as OnError.STOP), except
+            # what a revising pass (a ZIP read from a pipe) takes back in ``finally``
+            # below: the files it wrote that could still be links. Nothing
             # partial exists for the triggering member — every trigger fires before its
             # write begins, and FILE writes land atomically in any case.
             raise abort.error from None
@@ -2113,7 +2115,9 @@ class ExtractionCoordinator:
         read reports as an error and extraction never creates.
 
         A file the filesystem refuses to remove stays, with a warning. Nothing is
-        reported for it: a stopped run returns no results.
+        reported for it: a stopped run returns no results. The folders made for these
+        members stay, unlike those ``_unselect_revised_member`` removes: the member was
+        written, so a file read stopped at the same point made and kept them too.
         """
         state = self._state
         for index, handled in state.revisable.items():
