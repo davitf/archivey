@@ -12,6 +12,7 @@ from archivey.cli.format import (
     escape_path,
     format_access_summary,
     format_error_detail,
+    format_field_value,
     format_format_label,
 )
 from archivey.cli.password import resolve_password
@@ -38,6 +39,8 @@ def _line(key: str, value: object, out: TextIO) -> None:
     The comment is the obvious one — arbitrary bytes, up to 64 KiB in a ZIP — but the
     version string and the ``extra`` bag are archive- or backend-derived too, and an
     escape costs nothing on the enums, booleans and integers that make up the rest.
+    The value goes through :func:`~archivey.cli.format.format_field_value`, which
+    ``list --details`` uses too, so ``bytes`` print as ``hex:<digits>`` in both.
     The key is escaped as well: ``extra.<key>`` names come from the open ``extra`` bag.
 
     Two values do not go through here. The archive path goes through
@@ -46,7 +49,7 @@ def _line(key: str, value: object, out: TextIO) -> None:
     through :func:`~archivey.cli.format.format_error_detail`, because archivey's own
     exceptions have already escaped their message.
     """
-    _field(escape_control_chars(key), escape_control_chars(str(value)), out)
+    _field(escape_control_chars(key), format_field_value(value), out)
 
 
 def _print_cost_axes(cost: CostReceipt, out: TextIO) -> None:

@@ -159,6 +159,186 @@ def test_list_digests_names_the_algorithm_by_value(
     assert line.endswith(f"[crc32={crc:08x}]")
 
 
+def test_list_long_adds_packed_size_method_and_crc(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--long`` prints a header, then each member's packed size, space saved, method
+    and CRC."""
+    path = tmp_path / "long.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("big.txt", b"a" * 1000, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("raw.bin", b"xyz", compress_type=zipfile.ZIP_STORED)
+    with zipfile.ZipFile(path) as zf:
+        big = zf.getinfo("big.txt")
+    assert main(["list", "--long", str(path)]) == EXIT_OK
+    header, big_line, raw_line = capsys.readouterr().out.splitlines()
+    assert header.split() == [
+        "ts",
+        "mode",
+        "size",
+        "packed",
+        "saved",
+        "method",
+        "crc32",
+        "modified",
+        "name",
+    ]
+    saved = round(100 * (1000 - big.compress_size) / 1000)
+    assert big_line.split()[2:7] == [
+        "1000",
+        str(big.compress_size),
+        f"{saved}%",
+        "deflate",
+        f"{big.CRC:08x}",
+    ]
+    assert raw_line.split()[2:6] == ["3", "3", "0%", "stored"]
+    # The name column lines up under its header.
+    assert big_line.index("big.txt") == header.index("name")
+
+
+def test_list_details_prints_one_block_per_member(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--details`` prints ``key: value`` blocks, leaving out fields not recorded."""
+    path = tmp_path / "details.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("a.txt", date_time=(2020, 1, 2, 3, 4, 6))
+        info.external_attr = 0o100640 << 16
+        info.create_system = 3
+        info.comment = b"a\x1bnote"
+        zf.writestr(info, b"hello", compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("b.txt", b"x")
+    assert main(["list", "--details", str(path)]) == EXIT_OK
+    first, second = capsys.readouterr().out.split("\n\n")
+    fields = dict(line.split(":", 1) for line in first.splitlines())
+    fields = {k: v.strip() for k, v in fields.items()}
+    assert fields["name"] == "a.txt"
+    assert fields["type"] == "file"
+    assert fields["size"] == "5"
+    assert fields["method"] == "deflate"
+    assert fields["mode"] == "0640 (rw-r-----)"
+    assert fields["host_os"] == "unix"
+    assert fields["modified"].startswith("2020-01-02 03:04:06")
+    assert fields["comment"] == "a\\x1bnote"  # escaped, not a raw ESC
+    assert "uid" not in fields  # ZIP without a Unix extra field records no owner
+    assert second.startswith("name:")
+    assert "b.txt" in second
+
+
+def test_list_long_and_details_on_tar_show_what_tar_does_not_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """TAR stores no packed size or digest, and a directory no method: ``-`` cells in
+    ``--long``; ``--details`` leaves those keys out and prints bytes extras as hex."""
+    src = tmp_path / "src"
+    (src / "d").mkdir(parents=True)
+    (src / "d" / "f.txt").write_bytes(b"hello")
+    path = tmp_path / "t.tar"
+    with tarfile.open(path, "w") as tf:
+        tf.add(src / "d", arcname="d")
+    assert main(["list", "--long", str(path)]) == EXIT_OK
+    header, dir_line, file_line = capsys.readouterr().out.splitlines()
+    assert dir_line.split()[2:7] == ["-", "-", "-", "-", "-"]
+    assert file_line.split()[2:7] == ["5", "-", "-", "stored", "-"]
+    assert file_line.index("d/f.txt") == header.index("name")
+
+    assert main(["list", "--details", str(path)]) == EXIT_OK
+    dir_block, file_block = capsys.readouterr().out.split("\n\n")
+    fields = {
+        k: v.strip() for k, v in (ln.split(":", 1) for ln in file_block.splitlines())
+    }
+    assert "packed_size" not in fields
+    assert "crc32" not in fields
+    assert fields["extra.tar.type"] == "hex:30"  # the typeflag b"0", not "30"
+    assert "method:" not in dir_block
+
+
+def test_long_listing_sizes_columns_to_their_widest_cell() -> None:
+    """A long method chain or a negative saving widens its column for every row."""
+    from archivey.cli.format import format_long_listing
+    from archivey.types import CompressionAlgorithm, CompressionMethod
+
+    chain = tuple(
+        CompressionMethod(a)
+        for a in (
+            CompressionAlgorithm.DELTA,
+            CompressionAlgorithm.BCJ,
+            CompressionAlgorithm.LZMA2,
+        )
+    )
+    members = [
+        ArchiveMember(
+            type=MemberType.FILE,
+            name="one",
+            size=1,
+            compressed_size=13,
+            compression=chain,
+        ),
+        ArchiveMember(type=MemberType.FILE, name="two", size=10, compressed_size=5),
+    ]
+    header, one, two = format_long_listing(members, digests=False, verbose=False)
+    assert "delta+bcj+lzma2" in one
+    assert "-1200%" in one
+    assert one.index("one") == two.index("two") == header.index("name")
+    assert format_long_listing([], digests=False, verbose=False) == []
+
+
+def test_long_listing_keeps_the_digests_and_verbose_suffixes() -> None:
+    """``--digests`` and ``-v`` add to a ``--long`` line what they add to the default one."""
+    from types import SimpleNamespace
+
+    from archivey.cli.format import format_long_listing
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.types import HashAlgorithm
+
+    member = ArchiveMember(
+        type=MemberType.FILE,
+        name="a",
+        size=1,
+        hashes={HashAlgorithm.BLAKE2SP: b"\xab\xcd"},
+        _diagnostics=(
+            SimpleNamespace(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED, message="skipped"
+            ),
+        ),
+    )
+    _, plain = format_long_listing([member], digests=False, verbose=False)
+    _, both = format_long_listing([member], digests=True, verbose=True)
+    assert both == f"{plain}  [blake2sp=abcd]  (skipped)"
+
+
+def test_member_details_raw_name_and_diagnostics() -> None:
+    """``raw_name`` shows when it is not ``name`` in UTF-8, as hex; a diagnostic's
+    message, stored escaped, is not escaped a second time."""
+    from types import SimpleNamespace
+
+    from archivey.cli.format import format_member_details
+    from archivey.diagnostics import DiagnosticCode
+
+    def fields(member: ArchiveMember) -> dict[str, str]:
+        return {
+            k: v.strip()
+            for k, v in (ln.split(":", 1) for ln in format_member_details(member))
+        }
+
+    iso = ArchiveMember(type=MemberType.FILE, name="a.txt", raw_name=b"A.TXT;1")
+    assert fields(iso)["raw_name"] == "hex:" + b"A.TXT;1".hex()
+    same = ArchiveMember(type=MemberType.FILE, name="a.txt", raw_name=b"a.txt")
+    assert "raw_name" not in fields(same)
+
+    code = DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+    damaged = ArchiveMember(
+        type=MemberType.FILE,
+        name="a",
+        _diagnostics=(SimpleNamespace(code=code, message="name a\\x01b"),),
+    )
+    assert fields(damaged)["diagnostic"] == f"{code.value}: name a\\x01b"
+
+
+def test_list_long_and_details_are_exclusive(sample_zip: Path) -> None:
+    assert main(["list", "--long", "--details", str(sample_zip)]) == EXIT_USAGE
+
+
 def test_list_incomplete_members_report_exits_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -194,6 +374,8 @@ def test_list_incomplete_members_report_exits_one(
             patterns=[],
             exclude=[],
             digests=False,
+            long=False,
+            details=False,
             verbose=False,
             password=None,
             track_io=False,

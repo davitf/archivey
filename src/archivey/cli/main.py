@@ -373,7 +373,13 @@ def _selection(args: argparse.Namespace) -> _Selection:
 
 # The runners look their run_* up by name when called, so tests can patch it.
 def _run_list(args: argparse.Namespace, common: _Common) -> int:
-    return run_list(**common, **_selection(args), digests=bool(args.digests))
+    return run_list(
+        **common,
+        **_selection(args),
+        digests=bool(args.digests),
+        long=bool(args.long),
+        details=bool(args.details),
+    )
 
 
 def _run_test(args: argparse.Namespace, common: _Common) -> int:
@@ -492,6 +498,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--digests",
         action="store_true",
         help="show stored member digests (no body read)",
+    )
+    layout = p_list.add_mutually_exclusive_group()
+    layout.add_argument(
+        "--long",
+        action="store_true",
+        help="add packed size, space saved, compression method and CRC-32 columns",
+    )
+    layout.add_argument(
+        "--details",
+        action="store_true",
+        help="print every stored field of each member as key: value lines",
     )
 
     p_test = _add_verb(
