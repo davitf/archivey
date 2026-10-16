@@ -111,12 +111,13 @@ each lands with nothing half-done reachable:
       forward only (question C); a test counts its seeks.
 - [x] 3.0a Before the walk: open a real self-extractor fixture through a pipe under the
       `FAST` and default budgets and record what `payload_offset` comes back as.
-      Info-ZIP's `unzipsfx` stub (about 75 KiB) plus `zip -A`: both budgets report
-      `payload_offset` at the end of the stub, from a pipe and from a file, and the pass
-      reads every member. With 600 000 bytes of padding after the stub, `FAST` finds no
-      archive behind the executable header (from a file as well: detection scans
-      forward only), the default finds it at the right offset, and `format=ZIP` from a
-      pipe finds the first local header itself (`tests/test_sfx.py`).
+      Info-ZIP's `unzipsfx` stub (about 75 KiB on Linux, more on macOS) padded with
+      zeros, plus `zip -A`: with the ZIP at 128 KiB both budgets report it as
+      `payload_offset`, from a pipe and from a file, and the pass reads every member.
+      At 1 MiB `FAST` finds no archive behind the executable header (from a file as
+      well: detection scans forward only), the default finds it at the right offset,
+      and `format=ZIP` from a pipe finds the first local header itself
+      (`tests/test_sfx.py`).
 - [x] 3.0b A seekable source whose end record is not in the last 65 558 bytes runs the
       local-header walk, per `design.md` §"A seekable source whose end record is not in
       the tail": tests first for a ZIP followed by 1 MiB of non-zero bytes (opens, members
