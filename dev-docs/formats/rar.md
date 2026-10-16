@@ -1610,14 +1610,15 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   `unrar` call — one synthetic writer would serve both.
 
 - ~~**Does `ListingCost.INDEXED` mean "cheap" or "already paid"?**~~ Neither: it names
-  the format's layout, so RAR reports `REQUIRES_SCANNING` like TAR (maintainer ruling
-  2026-10-15; general form under DR-10 in [`design-rules.md`](../design-rules.md)).
-  Reasons: the receipt says what listing costs, and for RAR that is a header walk; a
-  later change may make the walk lazy, as TAR's is. Whether a RAR5 archive whose `QO`
-  covers every header should report `INDEXED` is still open: the record saves the seeks
-  (12 reads and 11 seeks instead of 6,011 reads and 3,007 seeks for 3,001 members), not
-  the parse. The maintainer chose to keep one value for every RAR and leave this open
-  (2026-10-16), rather than close it or make the receipt depend on the archive.
+  the work listing needs on the source, so RAR reports `REQUIRES_SCANNING` like TAR
+  (maintainer ruling 2026-10-15; general form under DR-10 in
+  [`design-rules.md`](../design-rules.md)). Reasons: the receipt says what listing costs,
+  and for RAR that is a header walk; a later change may make the walk lazy, as TAR's is.
+  The quick-open case is the next question.
+- **Should a RAR5 archive whose `QO` covers every header report `INDEXED`?** The record
+  saves the seeks (12 reads and 11 seeks instead of 6,011 reads and 3,007 seeks for 3,001
+  members), not the parse. The maintainer chose to keep one value for every RAR and leave
+  this open (2026-10-16), rather than close it or make the receipt depend on the archive.
 - ~~**Should `unar` become an opt-in second engine?**~~ Yes, shipped 2026-09-26 as the
   fallback under the default `"auto"` (§3). It was the one candidate the
   decompressor matrix left open, and Homebrew dropping the `rar` cask is what keeps it open

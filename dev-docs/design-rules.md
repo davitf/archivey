@@ -632,10 +632,11 @@ development, not in production on a different archive (2026-09-29).
 
 **Rulings.** ADR 0003, 0004, 0010. `stream_members()` is never seekable (2026-09-26). The
 gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27). `ListingCost` names the
-work the format's layout needs to list its members, not when it is paid: RAR reports
-`REQUIRES_SCANNING` although it walks its headers inside `open_archive` (2026-10-15). A
-caller reading the receipt learns what a lazy backend would pay, and the value does not
-change when a backend moves the walk. Reopen if callers need "already paid" as its own
+work needed to list the members through the source the archive was opened on, not when
+it is paid: RAR reports `REQUIRES_SCANNING` although it walks its headers inside
+`open_archive` (2026-10-15). A caller reading the receipt learns what a lazy backend
+would pay, and the value does not change when a backend moves the walk; it may differ by
+source, as a piped ZIP's does. Reopen if callers need "already paid" as its own
 signal, or if the RAR5 quick-open case (`formats/rar.md` open questions) is ruled
 `INDEXED`.
 

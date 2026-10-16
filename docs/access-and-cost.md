@@ -48,9 +48,11 @@ Every open archive exposes a machine-readable receipt:
 
 Cost never changes what is *legal* — it describes what your access pattern will *pay*.
 
-`listing_cost` names the work the format's layout needs to list its members, not when
-that work is paid. A backend may do it inside `open_archive`, as RAR does, and then
-serve `members()` from memory.
+`listing_cost` names the work needed to list the members through the source the
+archive was opened on, not when that work is paid. A backend may do it inside
+`open_archive`, as RAR does, and then serve `members()` from memory. The source
+matters: a ZIP from a file reads its central directory (`INDEXED`), while a ZIP from a
+pipe is listed from its local headers (`REQUIRES_SCANNING`).
 
 `StreamCapability` is ordered — `FORWARD_ONLY < SEEKABLE` — because a seekable source
 can serve every read a forward-only one can. That is what lets you compare a source
@@ -62,15 +64,15 @@ of trying the open and catching the failure; see
 ### RAR listing cost
 
 RAR reports `listing_cost=REQUIRES_SCANNING`: the native parser walks the headers and
-builds the member table at open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
-copies of FILE headers stored after the members, with a pointer from MAIN. Listing
-reads QO first, seeks back to after MAIN, and skips FILE headers already in QO.
-Default WinRAR AUTO may omit small files from QO; those still list from their
-local headers. `-qo+` copies every header, so that skip is one seek to QO.
-Unreadable QO falls back to walking every FILE header. With no usable QO there is no central
-directory: each header states its own size, so the parser walks header-to-header,
-seeks past every member's packed data, and open-time cost scales with member
-count. Once open, `members()` / `get()` return from the in-memory table at O(1)
+builds the member table at open, before `members()` is called. RAR5 can carry a **Quick
+Open** record (`QO`) — copies of FILE headers stored after the members, with a pointer
+from MAIN. Listing reads QO first, seeks back to after MAIN, and skips FILE headers
+already in QO. Default WinRAR AUTO may omit small files from QO; those still list from
+their local headers. `-qo+` copies every header, so that skip is one seek to QO.
+Unreadable QO falls back to walking every FILE header. With no usable QO there is no
+central directory: each header states its own size, so the parser walks
+header-to-header, seeks past every member's packed data, and open-time cost scales with
+member count. Once open, `members()` / `get()` return from the in-memory table at O(1)
 cost.
 
 ### ZIP listing cost

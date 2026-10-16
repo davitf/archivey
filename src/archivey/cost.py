@@ -16,8 +16,10 @@ from enum import Enum
 class ListingCost(Enum):
     """How expensive it is to *enumerate* all members (list names + metadata).
 
-    The value names the work the format's layout needs, not when it is paid: a backend
-    may do that work inside ``open_archive`` and serve ``members()`` from memory.
+    The value names the work needed to list the members through the source the archive
+    was opened on, not when that work is paid. A backend may do it inside
+    ``open_archive`` and serve ``members()`` from memory (RAR), and one format can need
+    different work on different sources (a ZIP read from a pipe is ``REQUIRES_SCANNING``).
     """
 
     INDEXED = "indexed"
