@@ -577,6 +577,10 @@ def _gzip_member_at(
 # How many gzip header bytes to peek for cheap metadata (FNAME/mtime). Longer stored names
 # beyond this are simply not surfaced.
 _GZIP_HEADER_PEEK = 512
+# Header (10) + CRC-32 and ISIZE (8): a floor below which a file cannot hold a gzip
+# trailer. Only the last 4 bytes (ISIZE) are used. The smallest real member is 20
+# bytes, since a deflate stream is never empty.
+_GZIP_MIN_MEMBER = 18
 
 
 class GzipCodec(_DeflateFamilyCodec):
@@ -664,10 +668,19 @@ class GzipCodec(_DeflateFamilyCodec):
         return self._eof_truncation(exc, "gzip")
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface gzip's stored filename (FNAME) and mtime.
+        """Surface gzip's stored filename (FNAME), mtime and trailer ISIZE.
 
         RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
         ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
+
+        **ISIZE goes in** ``extra["gzip.isize"]``, **never in** ``member.size``. It is
+        the last four bytes of the file, read only where the end is cheap to reach. In a
+        file of one gzip member with nothing after it, that is the size modulo 2**32. It
+        is not the size of a file of several members (it covers the last one only: a
+        bgzip file ends with an empty member, so it reads 0), nor of a file with bytes
+        after its last member. Like the CRC below, nothing short of a scan of the whole
+        file tells those cases apart. ``member.size`` comes from the first full read
+        instead (the reader's late fill-in).
 
         **The trailer CRC-32 is deliberately never put in** ``member.hashes``. Maintainer
         decision (PR 441); the reasoning, so it is not re-litigated:
@@ -694,6 +707,10 @@ class GzipCodec(_DeflateFamilyCodec):
         header = ctx.peek_header(_GZIP_HEADER_PEEK)
         if len(header) < 10 or not header.startswith(GZIP_MAGIC):
             return
+        # A file shorter than header + trailer has no trailer to read.
+        trailer = ctx.peek_trailer(_GZIP_MIN_MEMBER)
+        if trailer is not None:
+            member.extra["gzip.isize"] = int.from_bytes(trailer[-4:], "little")
         flg = header[3]
         mtime = int.from_bytes(header[4:8], "little")
         if mtime != 0:

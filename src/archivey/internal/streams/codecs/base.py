@@ -265,12 +265,15 @@ class MetadataContext:
     returns the decompressed size from the stream index/trailer when cheaply available
     (else ``None``); ``probe_lzip_index()`` returns
     ``(decompressed_size, combined_crc32)`` from one seekable lzip index scan when
-    available (else ``None``).
+    available (else ``None``); ``peek_trailer(n)`` returns the last ``n`` bytes of the
+    compressed source when it can reach its end cheaply (else ``None``, also for a
+    source shorter than ``n``).
     """
 
     peek_header: Callable[[int], bytes]
     probe_decompressed_size: Callable[[], int | None]
     probe_lzip_index: Callable[[], tuple[int, int] | None]
+    peek_trailer: Callable[[int], bytes | None]
 
 
 class _ProbeSample(io.BytesIO):

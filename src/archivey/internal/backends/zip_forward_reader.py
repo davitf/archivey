@@ -2028,6 +2028,7 @@ class ZipForwardReader(ZipReader):
         except CorruptionError:
             return
         member.size = counted
+        member._size_unread = False
 
     def _reindex_name(self, member: ArchiveMember, old_name: str) -> None:
         listed = self._listed_by_name.get(old_name)

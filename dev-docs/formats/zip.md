@@ -903,7 +903,9 @@ info, extended attributes, resource fork; no data length).
     reaches the end, the length must equal the stored value modulo 2³² and be at most
     1032 times the compressed size, then the CRC-32 must match, and only then does
     `member.size` take the length (`MemberVerifier`'s `end_check` / `fill_size`;
-    `ArchiveMember` is mutable for late-bound fields, as digests are).
+    `ArchiveMember` is mutable for late-bound fields, as digests are). Until then
+    `member_state_final` reads `False` (the end of a `streaming=True` pass, or closing
+    the reader, settles it).
     `extra["size_mod_2_32"]` stays after the fill-in, so the member still says the
     archive stored only the low bits. A pipe pass that decoded the member to its end
     with the directory's CRC-32 keeps the size it counted. davi chose this (option A,

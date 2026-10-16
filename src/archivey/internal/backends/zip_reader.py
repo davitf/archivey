@@ -2497,6 +2497,9 @@ class ZipReader(BaseArchiveReader):
                 size_unknown=size_unknown,
             ),
         )
+        if size_unknown is not None:
+            # A verified full read fills ``size`` in (``fill_size``): not final yet.
+            member._size_unread = True
         if modified is not None:
             member.modified = modified
         if accessed is not None:
@@ -3171,17 +3174,19 @@ class ZipReader(BaseArchiveReader):
                 if size is None and isinstance(loc, _ZipLocator)
                 else None
             )
+            # A size the archive leaves unknown: the length is checked against what
+            # it stores, and filled in once the CRC-32 matches, on the listed member
+            # (a ``replace()`` copy stands for it but is never filled).
+            fill = None if unknown is None else self._own_member(member)
             return self._wrap_member_stream(
                 decoded,
                 member.name,
                 size=size,
                 expected_hashes=hashes,
                 expected_size=size,
-                verify_member=member,
-                # A size the archive leaves unknown: the length is checked against
-                # what it stores, and filled in once the CRC-32 matches.
+                verify_member=member if fill is None else fill,
                 end_check=None if unknown is None else unknown.check,
-                fill_size=unknown is not None,
+                fill_size=fill is not None,
             )
         # A listed member carries a size, or a digest when its size is unknown (with
         # no CRC-32, ``_to_member`` keeps the stored size); only a caller's own

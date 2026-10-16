@@ -235,15 +235,21 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
             seen.add(member.name)
 
 
-def _settle_listing(members: list[ArchiveMember], *, links_too: bool = False) -> None:
+def _settle_listing(
+    members: list[ArchiveMember], *, links_too: bool = False, sizes_too: bool = False
+) -> None:
     """The walk will not update ``members`` again (``member_state_final``).
 
-    ``links_too``: nor will anything read their unread link targets (the reader closed).
+    ``links_too``: nor will anything read their unread link targets or fill their
+    unread size (the reader closed). ``sizes_too``: nor will a read fill their unread
+    size (a ``streaming=True`` pass ended or failed: its members cannot be read again).
     """
     for member in members:
         member._listing_pending = False
         if links_too:
             member._link_target_unread = False
+        if links_too or sizes_too:
+            member._size_unread = False
 
 
 @dataclass(frozen=True)
@@ -1041,8 +1047,12 @@ class BaseArchiveReader(ArchiveReader):
 
         For a member with no ``expected_size``, ``end_check`` is called with its
         length when a read reaches its end, before the digest verdict, and raises to
-        refuse it; ``fill_size`` gives ``verify_member.size`` that length once the
-        digests match.
+        refuse it. ``fill_size=True`` with ``verify_member`` gives
+        ``verify_member.size`` that length: once the digests match, or, with no
+        digest to check, once a read from the start that skips no byte reaches the
+        end cleanly (``MemberVerifier``). It is the late size of a member whose format
+        records none, or records one that cannot be trusted (a macOS ZIP's size
+        modulo 2³²).
         """
         if (inner is None) == (open_fn is None):
             raise TypeError("exactly one of inner or open_fn is required")
@@ -1314,8 +1324,9 @@ class BaseArchiveReader(ArchiveReader):
         members = self._listed
         # Links are resolved to members now, and is_current was stamped when the walk
         # ended, so nothing changes these members from here. Not when the walk ends: a
-        # peek can end it long before a pass resolves its links.
-        _settle_listing(members)
+        # peek can end it long before a pass resolves its links. A streaming pass
+        # ends here too, so no later read can fill a size it left unknown.
+        _settle_listing(members, sizes_too=self._streaming)
         if error is not None:
             self._stamp_error_context(error)
         elif not members:
@@ -1623,8 +1634,9 @@ class BaseArchiveReader(ArchiveReader):
             # The pass has already yielded the prefix, so it cannot be walked again
             # without handing the caller a second object for the same member.
             self._walk_failure = exc
-            # Nothing stamps the prefix now, so it will not change.
-            _settle_listing(self._listed)
+            # Nothing stamps the prefix now, and nothing can read it again, so it will
+            # not change.
+            _settle_listing(self._listed, sizes_too=True)
             return
         # A later call starts over, and ``_iter_members`` yields the same order;
         # ``_pull_member`` replays the positions the failed walk reached onto the same
@@ -1680,6 +1692,21 @@ class BaseArchiveReader(ArchiveReader):
             finally:
                 self._state.fail_materialization()
         self._listing_tracker.assert_within_limits()
+
+    def _own_member(self, member: ArchiveMember) -> ArchiveMember | None:
+        """The listed object ``member`` stands for: itself, or the member a
+        ``replace()`` copy was made from. ``None`` for one this reader did not list.
+
+        A late field a read fills (``size``) goes on this object, never on a copy
+        (``ArchiveMember.replace``).
+        """
+        member_id = member._member_id
+        if member_id is None or member._archive_id != self._archive_id:
+            return None
+        for listed in self._listed:
+            if listed is member or listed._member_id == member_id:
+                return listed
+        return None
 
     def _listed_members(self) -> Iterator[ArchiveMember]:
         """The listed members for a backend's own data pass, then the walk's damage.
