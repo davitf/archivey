@@ -152,12 +152,14 @@ def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> N
 
 def _bit3_with_bad_second_header(*, last_descriptor: bool) -> bytes:
     """Three bit-3 members whose second directory entry is unreadable; without
-    ``last_descriptor`` the last member's data descriptor has no signature, so a walk
-    over the local headers cannot find where its data ends."""
+    ``last_descriptor`` the last member's data descriptor has a damaged signature and
+    CRC, two fields, so a walk over the local headers cannot find where its data
+    ends."""
     data = bytearray(_with_modes(pipe=True))
     if not last_descriptor:
         last = bytes(data).rindex(b"PK\x07\x08")
         data[last : last + 4] = b"ZZZZ"
+        data[last + 4] ^= 0xFF
     second = _central_headers(bytes(data))[1]
     data[second : second + 4] = b"XXXX"
     return bytes(data)

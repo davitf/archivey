@@ -295,13 +295,34 @@ def test_a_signed_descriptor_with_another_crc_is_found_by_its_size() -> None:
     assert after[:2] == (b"next", _BIG)
 
 
-def test_an_unsigned_descriptor_with_another_crc_cannot_be_found() -> None:
+def _unsigned_with_another_crc() -> tuple[_Member, bytearray]:
     method = _METHODS["deflate"].values[0]
     bad = _member(b"bad", method, _SMALL)
     bad = _Member(bad.name, bad.method, bad.flags, bad.data, bad.packed, crc=1234)
-    raw = _streamed_zip([bad, _stored(b"next", b"x")], signed=False)
+    return bad, bytearray(_streamed_zip([bad, _stored(b"next", b"x")], signed=False))
+
+
+def test_an_unsigned_descriptor_with_another_crc_is_found_by_its_sizes() -> None:
+    """Both its sizes still agree, so one damaged field places it (DR-2): the caller
+    judges the CRC, and the next member is read."""
+    bad, raw = _unsigned_with_another_crc()
+    walk = LocalHeaderWalk(_Pipe(bytes(raw)))
+    read = _read_member(walk)
+    assert read is not None
+    descriptor = read[2]
+    assert descriptor is not None
+    assert descriptor.crc == 1234
+    assert descriptor.compressed_size == len(bad.packed)
+    after = _read_member(walk)
+    assert after is not None
+    assert after[:2] == (b"next", b"x")
+
+
+def test_an_unsigned_descriptor_with_two_damaged_fields_cannot_be_found() -> None:
+    bad, raw = _unsigned_with_another_crc()
+    raw[30 + len(bad.name) + len(bad.packed) + 8] ^= 0x01  # the uncompressed size
     with pytest.raises(CorruptionError, match="no data descriptor after member #0"):
-        _read_all(raw)
+        _read_all(bytes(raw))
 
 
 def test_a_stream_cut_after_the_codec_end_is_truncation() -> None:
@@ -320,11 +341,15 @@ def test_a_settle_that_fails_ends_the_walk_with_its_error(signed: bool) -> None:
     if signed:  # cut before the descriptor
         raw = _streamed_zip([first], cut_after=0)
         expected: type[Exception] = TruncatedError
-    else:  # a descriptor that does not match the data
+    else:  # a descriptor with two fields that do not match the data
         first = _Member(
             first.name, first.method, first.flags, first.data, first.packed, crc=1
         )
-        raw = _streamed_zip([first, _stored(b"next", b"x")], signed=False)
+        damaged = bytearray(
+            _streamed_zip([first, _stored(b"next", b"x")], signed=False)
+        )
+        damaged[30 + len(first.name) + len(first.packed) + 8] ^= 0x01
+        raw = bytes(damaged)
         expected = CorruptionError
     walk = LocalHeaderWalk(_Pipe(raw))
     with pytest.raises(expected) as settled:
