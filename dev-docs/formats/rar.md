@@ -12,7 +12,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes |
-| Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1). Otherwise a header-to-header walk cached at open (§1) |
+| Listing cost | `REQUIRES_SCANNING` — a header-to-header walk cached at open (§1). RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3) |
@@ -141,9 +141,10 @@ the whole chain.
 (all RAR3/4; small RAR5; `-qo-`; header-encrypted RAR5) the parser starts at MAIN and
 visits each header in turn, using the declared packed size to seek over the data to the
 next one. That is O(members) seeks — the same shape `ListingCost.REQUIRES_SCANNING` names,
-which is what `tar_reader` reports for uncompressed tar. RAR still reports `INDEXED`
-because the table is cached at open. With a usable `QO`, listing reads those copies
-first, seeks back to after MAIN, and skips matching FILE headers on the walk (§1.1).
+which is what `tar_reader` reports for uncompressed tar, and what RAR reports too: the
+value names the work, not when it is paid (here, at open). With a usable `QO`, listing
+reads those copies first, seeks back to after MAIN, and skips matching FILE headers on
+the walk (§1.1).
 A walk whose last skip lands past the end of the file lists what it found and then
 reports `TruncatedError` as `members_report().error` (`members()` raises it), as TAR
 does for a member whose data runs past the end. **A file that ends part-way through a
@@ -1608,15 +1609,16 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   worth building alongside the machinery for decoding every RAR3 compressed comment in one
   `unrar` call — one synthetic writer would serve both.
 
-- **Does `ListingCost.INDEXED` mean "cheap" or "already paid"?** With a usable RAR5 `QO`,
-  listing reads a real index region (§1.1). Without one, RAR still walks header-to-header
-  and reports `INDEXED`; TAR does that walk and reports `REQUIRES_SCANNING`. Only one of
-  those no-index answers can be right, and which depends on what the enum is for. If it
-  describes the **format's layout**, no-`QO` RAR is `REQUIRES_SCANNING`. If it describes
-  **what a caller experiences from `members()`**, both are `INDEXED`. The docstring gives
-  the second answer for RAR and the first for TAR. This is not RAR's question to settle:
-  it changes `tar_reader` and the enum's documented meaning, and `access-and-cost` is the
-  published page that would have to say which.
+- ~~**Does `ListingCost.INDEXED` mean "cheap" or "already paid"?**~~ Neither: it names
+  how the member list is read on the source, so RAR reports `REQUIRES_SCANNING` like TAR
+  (maintainer ruling 2026-10-15; general form under DR-10 in
+  [`design-rules.md`](../design-rules.md)). Reasons: the receipt says what listing costs,
+  and for RAR that is a header walk; a later change may make the walk lazy, as TAR's is.
+  The quick-open case is the next question.
+- **Should a RAR5 archive whose `QO` covers every header report `INDEXED`?** The record
+  saves the seeks (12 reads and 11 seeks instead of 6,011 reads and 3,007 seeks for 3,001
+  members), not the parse. The maintainer chose to keep one value for every RAR and leave
+  this open (2026-10-16), rather than close it or make the receipt depend on the archive.
 - ~~**Should `unar` become an opt-in second engine?**~~ Yes, shipped 2026-09-26 as the
   fallback under the default `"auto"` (§3). It was the one candidate the
   decompressor matrix left open, and Homebrew dropping the `rar` cask is what keeps it open

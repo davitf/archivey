@@ -1149,6 +1149,8 @@ _NO_OWNER = RarOwner(None, None, None, None)
 class RarReader(BaseArchiveReader):
     """Reads RAR archives: native metadata parse + RARLAB ``unrar`` for data."""
 
+    # The header walk (listing_cost REQUIRES_SCANNING) runs inside open_archive, so the
+    # table exists before members() and the report peek can return it.
     _MEMBER_LIST_UPFRONT = True
     _LINK_TARGETS_IN_DATA = True
 
@@ -4350,7 +4352,9 @@ class RarReader(BaseArchiveReader):
     def _get_archive_info(self) -> ArchiveInfo:
         is_solid = self._archive.is_solid
         cost = CostReceipt(
-            listing_cost=ListingCost.INDEXED,
+            # A header-to-header walk at open; a RAR5 quick-open record saves the
+            # seeks, not the parse.
+            listing_cost=ListingCost.REQUIRES_SCANNING,
             access_cost=AccessCost.SOLID if is_solid else AccessCost.DIRECT,
             stream_capability=StreamCapability.SEEKABLE,
             # RAR solid is one continuous compression context; block count is unknown.

@@ -177,7 +177,9 @@ def _rar(tmp: Path) -> Path:
 _PARAMS.append(
     pytest.param(
         _rar,
-        CostReceipt(ListingCost.INDEXED, AccessCost.DIRECT, StreamCapability.SEEKABLE),
+        CostReceipt(
+            ListingCost.REQUIRES_SCANNING, AccessCost.DIRECT, StreamCapability.SEEKABLE
+        ),
         id="rar",
         marks=pytest.mark.skipif(not _HAVE_UNRAR, reason="unrar binary not installed"),
     )
