@@ -30,7 +30,37 @@ compressed or encrypted RAR members with an outside program. It lists RAR archiv
 (uncompressed) members, by itself.
 
 The preferred program is RARLAB's `unrar` (or `rar`), version 6.0 or later. Archivey also supports
-`unar` 1.10 or later, from The Unarchiver, but it has some limitations. The `unar` packages in
-Debian and Ubuntu have a bug that drops some files, so archivey refuses those versions; install
-`unrar` there instead. If you want to choose the program yourself, set `rar_decompressor` in
-`ArchiveyConfig` to `"unrar"`, `"unar"` or `"none"`.
+`unar` 1.10 or later, from The Unarchiver, but it has some limitations. If you use `unar` with an
+encrypted archive, the password goes on its command line, where other users on the same machine can
+see it while it runs. The `unar` packages in Debian and Ubuntu have a bug that drops some files, so
+archivey refuses those versions; install `unrar` there instead. If you want to choose the program
+yourself, set `rar_decompressor` in `ArchiveyConfig` to `"unrar"`, `"unar"` or `"none"`.
+
+### Getting `unrar`
+
+On Debian and Ubuntu, `sudo apt install unrar` installs RARLAB's program. It's in the non-free
+(Debian) or multiverse (Ubuntu) section, and the `unrar-free` package is a different program that
+archivey doesn't use. Other Linux distributions have a package of RARLAB's UnRAR under a similar
+name.
+
+On Windows, download the command-line UnRAR from [RARLAB](https://www.rarlab.com/rar_add.htm) and
+put `UnRAR.exe` on your `PATH`.
+
+On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
+which builds or downloads RARLAB's program:
+
+```bash
+brew install gromgit/new-life/unrar
+```
+
+If you'd rather not trust that tap, download the UnRAR source from
+[RARLAB](https://www.rarlab.com/rar_add.htm) and build it with Xcode's command-line tools:
+
+```bash
+tar xf unrarsrc-*.tar.gz
+cd unrar
+make
+cp unrar ~/.local/bin/   # or any folder on your PATH
+```
+
+Running `unrar` with no arguments prints its version, so you can check it's 6.0 or later.
