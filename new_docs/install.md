@@ -22,3 +22,15 @@ methods.
 
 Compressed or encrypted RAR files also need an outside program, which no extra can install. The next
 section covers it.
+
+## RAR needs an outside program
+
+RAR is a proprietary format, and there's no self-contained Python decoder for it, so archivey reads
+compressed or encrypted RAR members with an outside program. It lists RAR archives, and reads stored
+(uncompressed) members, by itself.
+
+The preferred program is RARLAB's `unrar` (or `rar`), version 6.0 or later. Archivey also supports
+`unar` 1.10 or later, from The Unarchiver, but it has some limitations. The `unar` packages in
+Debian and Ubuntu have a bug that drops some files, so archivey refuses those versions; install
+`unrar` there instead. If you want to choose the program yourself, set `rar_decompressor` in
+`ArchiveyConfig` to `"unrar"`, `"unar"` or `"none"`.
