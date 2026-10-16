@@ -70,3 +70,24 @@ Running `unrar` with no arguments prints its version, so you can check it's 6.0 
 On macOS, `brew install unar` installs a version archivey accepts. On Debian and Ubuntu, the
 packaged `unar` has the bug described above, so either install `unrar` or build `unar` 1.10.8 from
 [The Unarchiver's source](https://github.com/MacPaw/XADMaster).
+
+## Checking what an install can read
+
+`format_availability()` tells a program at run time whether a format works with what's installed:
+
+```python
+from archivey import FormatSupport, format_availability
+
+availability = format_availability("7z")
+if availability.support is not FormatSupport.FULL:
+    for package in availability.missing:
+        print(package.name, package.install_hint)
+```
+
+`FULL` means the format opens and every compression method it can use is installed. `PARTIAL` means
+it opens and lists, but a member that needs something missing raises `PackageNotInstalledError` when
+you read it; ZIP, 7z and RAR can be partial, RAR when neither `unrar` nor `unar` is usable. `NONE`
+means it can't be opened at all, as with ISO without `pycdlib`. `list_supported_formats()` returns
+every format that is `FULL` or `PARTIAL`.
+
+`cryptography` isn't counted, because only encrypted members need it.
