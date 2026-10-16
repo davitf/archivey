@@ -11,6 +11,7 @@ import io
 import struct
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -389,3 +390,62 @@ def test_a_damaged_bit3_reparse_buffer_is_a_link_only_where_the_file_read_says(
     from_file = _from_file(data)["link"].link_target
     assert (from_file is None) == (after <= 1)
     assert _from_pipe(data, read=False)["link"].link_target == from_file
+
+
+def _bit3_deflate_zip(name: str, attributes: int, deflated: bytes, size: int) -> bytes:
+    """One bit-3 DEFLATE member holding ``deflated`` as it is, with a signed data
+    descriptor stating ``size``, and its directory."""
+    raw_name = name.encode()
+    crc = 0
+    local = struct.pack(
+        "<4sHHHHHIIIHH", b"PK\x03\x04", 20, 0x08, 8, 0, 0x21, 0, 0, 0, len(raw_name), 0
+    )
+    descriptor = struct.pack("<4sIII", b"PK\x07\x08", crc, len(deflated), size)
+    members = local + raw_name + deflated + descriptor
+    central = (
+        struct.pack(
+            "<4sHHHHHHIIIHHHHHII",
+            b"PK\x01\x02",
+            20,
+            20,
+            0x08,
+            8,
+            0,
+            0x21,
+            crc,
+            len(deflated),
+            size,
+            len(raw_name),
+            0,
+            0,
+            0,
+            0,
+            attributes,
+            0,
+        )
+        + raw_name
+    )
+    end = struct.pack(
+        "<4sHHHHIIH", b"PK\x05\x06", 0, 0, 1, 1, len(central), len(members), 0
+    )
+    return members + central + end
+
+
+@pytest.mark.parametrize("after", [0, 1, 2, 3])
+def test_a_bit3_reparse_buffer_whose_decode_fails_past_it(after: int) -> None:
+    """Decoded data that stops with a codec error ``after`` bytes past the buffer.
+    Up to one byte past it, neither read gives a target: the file read's byte past
+    the buffer meets the error. Further on, the file read's bounded read stops before
+    the error and gives the target; the pass decodes in larger pieces, loses the piece
+    the error ends, and gives none (``formats/zip.md`` §2.2.2)."""
+    target = "C:\\" + "t" * 1990
+    content = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, target, target) + bytes(after)
+    stage = zlib.compressobj(0, zlib.DEFLATED, -15)
+    # Stored blocks that are not the last, then a block of the reserved type 3.
+    deflated = stage.compress(content) + stage.flush(zlib.Z_FULL_FLUSH) + b"\x07"
+    data = _bit3_deflate_zip(
+        "link", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, deflated, len(content)
+    )
+    from_file = _from_file(data)["link"].link_target
+    assert (from_file is None) == (after <= 1)
+    assert _from_pipe(data, read=False)["link"].link_target is None

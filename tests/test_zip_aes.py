@@ -1178,3 +1178,5 @@ def test_aes_hmac_mismatch_keeps_withholding_the_last_chunk(forward: bool) -> No
     for _ in range(2):
         with pytest.raises(CorruptionError, match="HMAC mismatch"):
             stage.read(1 << 16)
+    # A zero-length read carries no verdict, as on any ``io`` stream.
+    assert stage.read(0) == b""

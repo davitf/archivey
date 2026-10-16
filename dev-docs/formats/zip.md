@@ -117,8 +117,8 @@ Each stage: who does the work, what is ZIP-specific rather than general, what is
 
 ZIP declares four magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x06` (empty
 archive), `PK\x07\x08` (spanned marker) and `PK00PK\x03\x04` (APPNOTE 8.5.4's no-span
-marker, which PKZIP may write before the first local header of a one-segment set) — and six extensions: `.zip`, `.jar`, `.pyz`,
-`.whl`, `.apk`, `.cbz`. Comic-book aliases: `.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR,
+marker, which PKZIP may write before the first local header of a one-segment set) —
+and six extensions: `.zip`, `.jar`, `.pyz`, `.whl`, `.apk`, `.cbz`. Comic-book aliases: `.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR,
 `.cb7` → 7z. Magic wins; a ZIP named `.cbr` emits `FORMAT_EXTENSION_CONFLICT` (see
 [`rar.md`](rar.md) §2.1).
 
@@ -537,7 +537,7 @@ reports `MEMBER_LOCAL_NAME_DIFFERS` as a file read does when it opens the member
 extraction moves what it wrote.
 
 **Where the pass and a file read differ**, each pinned in
-`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first three
+`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four
 are shapes only crafted archives have (DR-5a); the rest come from damage, or from the
 directory's refusals the file read is to drop:
 
@@ -546,6 +546,10 @@ directory's refusals the file read is to drop:
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
   where the file read refuses it (DR-3).
 - The first of several inconclusive password candidates wins (§6).
+- A local header without bit 3 whose size field holds all ones that no ZIP64 field
+  holds is refused (`CorruptionError`); the file read takes the sizes from the directory
+  and reads the member
+  (`test_zip_local_walk.py::test_an_unheld_all_ones_local_size_is_read_from_a_file_and_refused_from_a_pipe`).
 - Under `on_error="stop"`, a member whose data fails as the pass writes it stops the run,
   though the directory may then not list it. `abort_on` fires before the end of the pass
   decides a member's selection, and the bomb limits count what the pass wrote until it
@@ -555,6 +559,10 @@ directory's refusals the file read is to drop:
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
+  For a reparse point whose decode fails more than one byte past its reparse buffer,
+  the file read's bounded read stops before the damage and gives the target; the pass
+  decodes in larger pieces, loses the piece the error ends, and gives none
+  (`test_zip_pipe_reparse.py::test_a_bit3_reparse_buffer_whose_decode_fails_past_it`).
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no

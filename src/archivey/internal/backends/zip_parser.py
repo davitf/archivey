@@ -1111,6 +1111,13 @@ def local_header_variable_length(fixed: bytes) -> int:
     return name_len + extra_len
 
 
+def local_stored_sizes(fixed: bytes) -> tuple[int, int]:
+    """The compressed and uncompressed sizes the fixed local header ``fixed`` stores in
+    its 32-bit fields, before any ZIP64 extra field replaces them."""
+    fields = _LOCAL_HEADER.unpack(fixed)
+    return fields[8], fields[9]
+
+
 def local_header_from(
     fixed: bytes, variable: bytes, data_start: int, *, zip64_sizes: bool = False
 ) -> LocalHeader:

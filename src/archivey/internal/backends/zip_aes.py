@@ -289,12 +289,12 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
     def read(self, size: int | None = -1) -> bytes:
         if size is None:  # read to EOF, as on any ``io`` stream
             size = -1
-        if self._mac_failed:
-            raise _mac_mismatch()
         # Past the end nothing is left to read, and a position the caller seeked
         # past the end is not a read that reached it: no verdict there.
         if size == 0 or self._overshoot:
             return b""
+        if self._mac_failed:
+            raise _mac_mismatch()
         while size < 0 or len(self._buf) < size:
             if self._cipher_remaining <= 0 and self._authenticated:
                 break
@@ -455,8 +455,6 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
     def read(self, size: int | None = -1) -> bytes:
         if size is None:
             size = -1
-        if self._mac_failed:
-            raise _mac_mismatch()
         if size < 0 and not self._ends_with_data:
             # As the walk's codec data refuses it: the source runs on past the data.
             raise ValueError(
@@ -464,6 +462,8 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
             )
         if size == 0:
             return b""
+        if self._mac_failed:
+            raise _mac_mismatch()
         while (size < 0 or len(self._buf) < size) and not self._ended:
             self._pull()
         if size < 0:

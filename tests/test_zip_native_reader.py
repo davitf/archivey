@@ -916,6 +916,8 @@ def test_member_count_asked_while_the_index_pass_runs_waits_for_its_count(
         second = threading.Thread(target=count, args=("second",))
         second.start()
         second.join(0.5)
+        # Still waiting for the pass: the window the test is about was reached.
+        assert second.is_alive()
         release.set()
         first.join(5)
         second.join(5)
