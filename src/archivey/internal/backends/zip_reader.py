@@ -2255,6 +2255,7 @@ class ZipReader(BaseArchiveReader):
                     inferred_encoding=codec,
                     declared_encoding="utf-8",
                     unicode_extra_fault=None,
+                    unicode_path_used=False,
                 )
         else:
             decoded = raw_name.decode("cp437")
