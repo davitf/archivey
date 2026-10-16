@@ -1817,7 +1817,8 @@ class BaseArchiveReader(ArchiveReader):
             if name_controls_possible(member):
                 self._present_member(idx, member)
             self._walk_presented = idx + 1
-        if member.type is MemberType.SYMLINK and member.link_target == "":
+        is_symlink = member.type is MemberType.SYMLINK
+        if is_symlink and member.link_target == "":
             # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
             # member is typed, so this is the first place every backend's passes share.
             # Emit first and clear after: a strict policy that raises here leaves the
@@ -1828,7 +1829,7 @@ class BaseArchiveReader(ArchiveReader):
         # Settled when its listing resolves links.
         member._listing_pending = True
         if (
-            member.type is MemberType.SYMLINK
+            is_symlink
             and member.link_target is None
             and not member._link_target_resolved
             and self._LINK_TARGETS_IN_DATA

@@ -59,6 +59,9 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
     """
     total = 0
     for value in extra.values():
+        if type(value) is int:
+            # The common value (``zip.compress_type``, ``tar.type``): weighs nothing.
+            continue
         if isinstance(value, dict):
             for nested_key, nested in value.items():
                 key_bytes = (
@@ -74,10 +77,13 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
 
 def member_metadata_bytes(member: ArchiveMember) -> int:
     """Retained metadata weight for one member (listing bomb accounting)."""
-    # Hot path for ZIP/TAR listing: most optional string fields are None.
-    total = _str_retained_bytes(member.name)
-    if member.raw_name is not None:
-        total += len(member.raw_name)
+    # Hot path for every listing: most optional string fields are None, and the
+    # ``_str_retained_bytes`` rule is inlined for the name.
+    name = member.name
+    total = len(name) if name.isascii() else len(name) * 4
+    raw_name = member.raw_name
+    if raw_name is not None:
+        total += len(raw_name)
     comment = member.comment
     if comment is not None:
         total += _str_retained_bytes(comment)
@@ -90,8 +96,9 @@ def member_metadata_bytes(member: ArchiveMember) -> int:
     gname = member.gname
     if gname is not None:
         total += _str_retained_bytes(gname)
-    if member.extra:
-        total += _extra_bytes(member.extra)
+    extra = member.extra
+    if extra:
+        total += _extra_bytes(extra)
     return total
 
 

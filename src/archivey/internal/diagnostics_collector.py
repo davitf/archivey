@@ -220,13 +220,14 @@ class DiagnosticCollector:
         """
         thread_id = threading.get_ident()
         replays = self._replays
-        with self._lock:
-            replays[thread_id] = _Replay(log)
+        # No lock: the entry is keyed by this thread, which is the only one that
+        # writes it, and ``emit`` reads only its own thread's entry. A dict's single
+        # set, get and pop are atomic, free-threaded builds included.
+        replays[thread_id] = _Replay(log)
         try:
             return work()
         finally:
-            with self._lock:
-                replays.pop(thread_id, None)
+            replays.pop(thread_id, None)
 
     def deferring_raises(self) -> _DeferringBlock:
         """Hold back this thread's emit raises until the caller can take them.
