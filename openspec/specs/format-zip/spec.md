@@ -265,6 +265,15 @@ every member it wrote as the pass wrote it: a member whose local header names it
 differently stays under the local header's name, since the pass stops before the
 end-of-pass rename.
 
+The data the pass keeps of short members until the directory says which are links SHALL
+NOT be charged to the listing limits: an archive a file read lists within them SHALL
+list from a pipe too, however many small files it holds. The pass SHALL hold at most
+`max_metadata_bytes` of that data, dropping the longest first; a link whose data was
+dropped SHALL make the pass raise `ResourceLimitError`, a difference from a file read
+that needs a target at least as long as `max_metadata_bytes` of short members' data
+before it. The archive comment SHALL be weighed against `max_metadata_bytes` once the
+pass reads the end record, as a file read weighs it.
+
 #### Scenario: non-seekable read matrix
 
 | Case | Expected |
@@ -273,6 +282,7 @@ end-of-pass rename.
 | Non-seekable ZIP with `streaming=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
 | Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
 | `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
+| A pipe, many small files whose data passes `max_metadata_bytes`, a symlink after them | Lists every member and the link's target, as a file read does |
 | `extract_all()` from a pipe, a Unix symlink member | The link is made at the end of the pass, after the filter runs again on it |
 | Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |
 | Bit-3 LZMA member without the end-of-stream marker | `UnsupportedFeatureError` at that member |

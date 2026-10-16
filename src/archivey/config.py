@@ -316,6 +316,12 @@ class ListingLimits:
     map, which the listing keeps to read the member, counts 24 bytes per entry, and
     each ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its
     data.
+
+    A ZIP read from a stream that cannot seek also keeps the data of each member
+    short enough to be a symlink until its directory says which members are links.
+    That data does not count here; the pass holds at most this many bytes of it,
+    dropping the longest first, and raises ``ResourceLimitError`` only if a link's
+    data was dropped.
     """
 
     UNLIMITED: ClassVar[ListingLimits]

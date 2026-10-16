@@ -512,7 +512,19 @@ order stay the file's. A local entry no directory entry points to is dropped and
 as `ARCHIVE_UNLISTED_DATA`. A reparse-flagged member whose data is not a reparse buffer
 stays a file. `max_members` is charged on the local headers as they are yielded and again
 on the directory's entries, whose text is weighed against `max_metadata_bytes` as it
-arrives.
+arrives. The archive comment is weighed once the end record is read.
+
+**What the pass keeps for link targets.** A symlink's target is its data, and only the
+directory says which members are links, so the pass keeps the data of every member short
+enough to be one (`MAX_LINK_TARGET_BYTES`, 4096 bytes decoded), the ciphertext of an
+unread encrypted one (8 KiB), and a Windows reparse buffer's start of longer data
+(§2.2.1). This is files' data, which a file read never keeps, so it is not charged to the
+listing limits: an archive of 20 000 files of 4 KB lists from a pipe as from a file. It
+is bounded on its own (`ZipForwardReader._hold`): the pass holds at most
+`max_metadata_bytes` of it, on top of the listing, and drops the longest first, since a
+link target is a path and shorter than most files. At the directory it keeps only the
+links' data. A link whose data was dropped raises `ResourceLimitError` at the end of the
+pass.
 
 **Extraction** writes each member as it arrives and settles at the end of the pass
 (`ExtractionCoordinator._settle_revised_members`): modes and owners applied, a member the
@@ -558,6 +570,9 @@ directory's refusals the file read is to drop:
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
+- A symlink whose target is behind `max_metadata_bytes` of short members' data no
+  shorter than it ends the pass with `ResourceLimitError`; the file read lists it
+  (§"What the pass keeps for link targets").
 - A damaged directory lists the directory's entries before the damage and the local
   headers' past it in both reads, then raises; the two write the same files. The pass
   applies the directory to the members it describes before the damage and keeps the
@@ -1084,6 +1099,7 @@ move.
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass; ZipCrypto over Zstd; ZipCrypto seeks; stage output equals stdlib's | `tests/test_zip_multipassword.py` |
 | The STORED CRC pass reads through the same validated local header as the open, so it never runs over a member the open refuses | `tests/test_zip_multipassword.py::test_stored_confirm_reads_through_the_validated_local_header` |
+| From a pipe, short members' data and kept ciphertext are not charged to `max_metadata_bytes`; the longest is dropped first past it, and a dropped link raises; the archive comment is weighed at the end record | `tests/test_zip_pipe.py::test_small_files_data_is_not_charged_to_max_metadata_bytes`, `::test_kept_ciphertext_is_not_charged_to_max_metadata_bytes`, `::test_the_kept_data_drops_the_longest_first`, `::test_the_archive_comment_counts_toward_max_metadata_bytes` |
 | A local name that differs from the directory's, and a central CRC-32 of 0 under a right local one, read from a file and a pipe, strict refusing the name case only; a wrong local CRC-32 and 0 in both still fail; both headers understating the size stays refused | `tests/test_audit_backup_scan.py::test_local_name_in_another_codepage_still_reads` and the tests after it, `tests/test_zip_pipe.py::test_a_name_that_differs_between_the_two_headers_takes_the_directory_name`, `tests/test_zip_pipe_extract.py::test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name`, `tests/test_zip_multipassword.py::test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc` |
 | WinZip AES seeks at every block phase and backward; the HMAC survives seeks, including over bytes a seek skipped and on a `read(n)` ending exactly at the end; a partial read after a seek has no verdict | `tests/test_zip_aes.py::test_aes_decrypt_stream_seeks_at_every_block_phase`, `::test_aes_decrypt_stream_seeks_keep_the_hmac`, `::test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac`, `::test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped`, `::test_aes_decrypt_stream_partial_read_after_seek_has_no_verdict`, `::test_aes_member_seeks`, `tests/test_member_stream_contract.py` (`zip-aes` rows) |
 | A tampered AE-2 DEFLATE member still raises under rapidgzip's own seeks (`AUTO` and `ON`, one password and two) | `tests/test_zip_aes.py::test_aes_hmac_survives_a_seekable_accelerator` |
