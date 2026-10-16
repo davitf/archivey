@@ -1611,8 +1611,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
 
 - ~~**Does `ListingCost.INDEXED` mean "cheap" or "already paid"?**~~ Neither: it names
   the format's layout, so RAR reports `REQUIRES_SCANNING` like TAR (maintainer ruling
-  2026-10-15; general form under DR-10 in
-  [`design-rules.md`](../design-rules.md#dr-10-costly-or-risky-capability-is-declared-and-a-declaration-is-a-guarantee)).
+  2026-10-15; general form under DR-10 in [`design-rules.md`](../design-rules.md)).
   Reasons: the receipt says what listing costs, and for RAR that is a header walk; a
   later change may make the walk lazy, as TAR's is. Whether a RAR5 archive whose `QO`
   covers every header should report `INDEXED` is still open: the record saves the seeks
