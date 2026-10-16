@@ -14,7 +14,9 @@ from typing import Any, BinaryIO, cast
 import pytest
 
 from archivey import (
+    ArchiveyConfig,
     DiagnosticCode,
+    DiagnosticPolicy,
     MemberType,
     PasswordRequest,
     open_archive,
@@ -24,6 +26,7 @@ from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    DiagnosticRaisedError,
     EncryptionError,
     TruncatedError,
 )
@@ -34,6 +37,7 @@ from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
 from tests.conftest import requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.streams_util import NonSeekableBytesIO
 from tests.zipcrypto import (
     build_stored_zipcrypto_zip,
     build_zipcrypto_zip,
@@ -317,13 +321,17 @@ def test_corrupt_encrypted_data_with_multiple_candidates_reports_ambiguity() -> 
             ar.open(NAME)
 
 
-def test_structural_bad_zip_is_corruption_not_password_ambiguity() -> None:
+def test_a_local_name_that_differs_is_reported_once_under_a_password_list() -> None:
+    """The ladder reads the local header once per candidate; the member reads by the
+    directory's name and the disagreement is reported once."""
     blob = bytearray(build_zipcrypto_zip(RIGHT, NAME.encode(), DATA))
     blob[30] ^= 0x01  # local-header name no longer matches the central directory
 
-    with open_archive(io.BytesIO(blob), password=[RIGHT, b"also-wrong"]) as ar:
-        with raises_corruption_not_truncation(match="File name in directory .* differ"):
-            ar.open(NAME)
+    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
+        assert ar.read(NAME) == DATA
+        assert ar.read(NAME) == DATA
+        counts = ar.diagnostics.counts
+    assert counts[DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS] == 1
 
 
 def test_stored_confirm_reads_through_the_validated_local_header(
@@ -332,7 +340,8 @@ def test_stored_confirm_reads_through_the_validated_local_header(
     """The STORED CRC pass never runs over a member the open would refuse (S28-K5).
 
     It used to parse the local header by hand, skipping the name, data-offset and
-    overlap checks, so it decrypted the whole member before the open raised.
+    overlap checks, so it decrypted the whole member before the open raised. A local
+    name that differs is refused only by a policy that raises on it.
     """
     blob = bytearray(
         build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
@@ -346,8 +355,12 @@ def test_stored_confirm_reads_through_the_validated_local_header(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
-    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
-        with raises_corruption_not_truncation(match="differ"):
+    with open_archive(
+        io.BytesIO(blob),
+        password=[b"also-wrong", RIGHT],
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+    ) as ar:
+        with pytest.raises(DiagnosticRaisedError, match="local header stores the name"):
             ar.open(NAME)
     assert passes == []
 
@@ -601,7 +614,9 @@ def test_unrelated_oserror_propagates_and_failed_stream_closes(
 
     with open_archive(io.BytesIO(blob), password=[b"one", b"two"]) as ar:
         # Focused ZIP backend test: the member's raw payload is the failing stream.
-        monkeypatch.setattr(ar, "_raw_member_stream", lambda _info: failed_stream)
+        monkeypatch.setattr(
+            ar, "_raw_member_stream", lambda _info, _member: failed_stream
+        )
         with pytest.raises(OSError, match="source storage unavailable"):
             ar.open(NAME)
 
@@ -631,7 +646,9 @@ def test_source_close_failure_after_prefix_confirm_propagates(
     failed_source = CloseFailingStream()
 
     with open_archive(io.BytesIO(blob), password=[b"one", b"two"]) as ar:
-        monkeypatch.setattr(ar, "_raw_member_stream", lambda _info: failed_source)
+        monkeypatch.setattr(
+            ar, "_raw_member_stream", lambda _info, _member: failed_source
+        )
         with pytest.raises(OSError, match="source close failed"):
             ar.open(NAME)
 
@@ -911,3 +928,28 @@ def test_zipcrypto_stage_matches_stdlib() -> None:
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         expected = zf.read(NAME, pwd=RIGHT)
     assert _read_member(blob, RIGHT) == expected
+
+
+@pytest.mark.parametrize("piped", [False, True], ids=["file", "pipe"])
+def test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc(
+    piped: bool,
+) -> None:
+    """Without bit 3 the ZipCrypto check byte is the CRC-32's high byte. A central
+    CRC-32 of 0 the local header's replaces gives the check byte too, so the right
+    password is accepted."""
+    blob = bytearray(build_zipcrypto_zip(RIGHT, NAME.encode(), DATA))
+    cd = blob.index(b"PK\x01\x02")
+    blob[cd + 16 : cd + 20] = b"\0\0\0\0"
+    source = NonSeekableBytesIO(bytes(blob)) if piped else io.BytesIO(bytes(blob))
+    with open_archive(source, streaming=piped, password=RIGHT) as ar:
+        if piped:
+            read = []
+            for _, stream in ar.stream_members():
+                assert stream is not None
+                read.append(stream.read())
+            assert ar.members_report().error is None
+            assert read == [DATA]
+        else:
+            assert ar.read(NAME) == DATA
+        counts = ar.diagnostics.counts
+    assert counts[DiagnosticCode.MEMBER_LOCAL_CRC_USED] == 1

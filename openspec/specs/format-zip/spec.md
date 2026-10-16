@@ -29,7 +29,7 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Property | Value |
 | --- | --- |
 | Backend dependency | None: archivey's parser for the structure (no `zipfile` import); shared codec layer for member data |
-| Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed |
+| Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed; the local header of a file or link (not WinZip AE-2) whose central CRC-32 is 0 over data is read too (the requirement on headers that disagree) |
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE`; `FORWARD_ONLY` for a non-seekable source |
 | Read source | Seekable in both access modes; non-seekable under `streaming=True` only; no implicit buffering/spooling |
@@ -233,13 +233,17 @@ a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `D
 `FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
 `members_report_if_available()` SHALL return `None` until the directory has been read.
 
-Five things SHALL fail the member they name once the directory has been read: a size
+Four things SHALL fail the member they name once the directory has been read: a size
 or CRC from a data descriptor that differs from the central entry; a local header whose
-CRC, sizes or encryption flag the central entry contradicts; two same-name members
-whose directory order reverses their file order; a directory entry with no local
-entry; and a local header and directory entry that store different names.
+CRC, sizes or encryption flag the central entry contradicts (a central CRC-32 of 0 over
+data against a non-zero local one is none: a file or link takes the local value, and a
+directory keeps no digest, as from a file); two same-name members whose directory
+order reverses their file order; and a directory entry with no local entry.
 `stream_members()` SHALL raise `CorruptionError` at the end of the pass for each but
-the reversed pair, which only updates the members. `extract_all` settles them as
+the reversed pair, which only updates the members. A local header that stores another
+name than the directory entry SHALL NOT fail the member: the member takes the
+directory's name, and a file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a file
+read reports it (the requirement on headers that disagree). `extract_all` settles them as
 `safe-extraction` states. A directory entry pointing at a local header an earlier
 entry already took SHALL end the pass with `CorruptionError`.
 
@@ -254,7 +258,12 @@ read reads it; in `extract_all`, a link member the pass wrote as a file keeps th
 its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
 makes is raised by a file read before anything is written and by the pass after every
-member is written, the files staying on disk.
+member is written, the files staying on disk. A policy that raises on
+`MEMBER_LOCAL_NAME_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the same: a file read raises
+when it lists or opens the member, the pass once it has read the directory, leaving
+every member it wrote as the pass wrote it: a member whose local header names it
+differently stays under the local header's name, since the pass stops before the
+end-of-pass rename.
 
 #### Scenario: non-seekable read matrix
 
@@ -456,6 +465,51 @@ needs is named by its method and flags, which are checked when it opens (DR-4). 
 | --- | --- |
 | Stored member, both headers marking version 8.4 | Listed and read |
 | The same with method 77 | Listed; reading it raises `UnsupportedFeatureError` naming method 77 |
+
+### Requirement: Read ZIP members whose local header disagrees with the directory
+
+The local header repeats most of a member's central directory entry. Two
+disagreements SHALL NOT refuse the member (maintainer ruling 2026-10-10; `unzip` reads
+both) and SHALL report a code with `LocalHeaderContext`:
+
+- **The name** (`MEMBER_LOCAL_NAME_DIFFERS`, which `STRICT` refuses: a tool that trusts
+  the local header shows another name). The local header stores other name bytes than
+  the directory: another code page, or `\` where the directory has `/`. Every field
+  comes from the directory, so the member keeps the directory's name. A file read reads
+  a local header only when it opens a member's data, so the report comes then
+  (`field="name"`, the local bytes in `local_raw_name_base64`), once per member; a
+  policy that raises on the code raises on every open. Only a file or link reports it:
+  extraction reads no directory's data, so a directory reports nothing, even after a
+  `read()` of data it declares, and nor does the pass from a pipe, which reads every
+  local header.
+- **A CRC-32 of 0** (`MEMBER_LOCAL_CRC_USED`, which `STRICT` reads: the data is still
+  checked; maintainer ruling 2026-10-15). The directory stores 0 for a file or link of
+  one byte or more, not WinZip AE-2 (whose HMAC checks the data, above), and the local
+  header, with no data descriptor (bit 3 clear), a non-zero value. Adobe AIR's packager
+  stores `META-INF/AIR/hash` this way. The member's `hashes` and every check of its data
+  (the CRC, the ZipCrypto check byte) take the local value. A file read reads that local
+  header when it lists the member, the only listing-time read of a local header, and
+  reports then (`field="crc32"`, `local_crc32`); a crafted plaintext archive whose every
+  entry stores 0 so costs one positioned read per member while listing. An AE-2 entry
+  costs none and reports nothing. A directory that declares data under a CRC-32 of 0
+  keeps no digest, from a file and a pipe alike (`DIGEST_UNVERIFIABLE`), and reports
+  nothing more.
+
+Both headers understating the size, with a CRC-32 over the longer output, SHALL stay
+refused: the declared size is the bound that stops decoding (DR-9a). A read from a pipe
+SHALL behave as a file read: the same members, data, reports and files on disk.
+
+#### Scenario: headers that disagree
+
+| Archive | Expected |
+| --- | --- |
+| Local name `Patag\x93nia.mp3`, directory `Patag\xf4nia.mp3` | Reads; the member's name from the directory; `MEMBER_LOCAL_NAME_DIFFERS` (`field="name"`) when its data is read |
+| Local name `crack\`, directory `crack/`, with or without declared data | A directory, `crack/`; no report |
+| Directory `crack/` declaring data, its CRC-32 0, the local CRC-32 right | `DIGEST_UNVERIFIABLE` and `MEMBER_DIRECTORY_DATA_IGNORED`, from a file and a pipe alike |
+| Central CRC-32 0, local CRC-32 right | Listed with the local CRC-32 in `hashes`; reads; `MEMBER_LOCAL_CRC_USED` (`field="crc32"`) at listing, also under `DiagnosticPolicy.STRICT` |
+| Central CRC-32 0, local CRC-32 wrong, or 0 in both | `CorruptionError` when read |
+| The first under `DiagnosticPolicy.STRICT`, or the fourth under `DiagnosticPolicy.PEDANTIC` | `DiagnosticRaisedError` |
+| Both headers declare 3.5% less than the data decodes to | `CorruptionError` ("exceeds its declared size") |
 
 ### Requirement: Report bytes after the end of a ZIP archive
 

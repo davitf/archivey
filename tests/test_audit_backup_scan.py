@@ -24,10 +24,22 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ArchiveFormat, ArchiveyConfig, FormatDetectionError
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    FormatDetectionError,
+    MemberType,
+)
+from archivey.diagnostics import LocalHeaderContext, raw_name_to_base64
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from archivey.internal import detection
 from archivey.internal.streams import codecs as codecs_module
+from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires
+from tests.streams_util import NonSeekableBytesIO
+from tests.zip_aes_fixture import build_aes_zip
 
 # --- LZMA Alone: zero runs decode as an endless stream of zero literals. -------------
 #
@@ -238,58 +250,211 @@ def _one_member_zip(
     return lfh + cdh + eocd
 
 
-def _read_only_member(blob: bytes) -> bytes:
-    with archivey.open_archive(io.BytesIO(blob)) as ar:
+def _read_only_member(
+    blob: bytes,
+    *,
+    pipe: bool = False,
+    strict: bool = False,
+    policy: DiagnosticPolicy | None = None,
+) -> bytes:
+    if strict:
+        policy = DiagnosticPolicy.STRICT
+    config = ArchiveyConfig(diagnostic_policy=policy) if policy else ArchiveyConfig()
+    if pipe:
+        with archivey.open_archive(
+            NonSeekableBytesIO(blob), streaming=True, config=config
+        ) as ar:
+            read = []
+            for _, stream in ar.stream_members():
+                assert stream is not None
+                read.append(stream.read())
+            (data,) = read
+            # The directory, which the pass reads after the member, can still fail
+            # it; the report says.
+            assert ar.members_report().error is None
+            return data
+    with archivey.open_archive(io.BytesIO(blob), config=config) as ar:
         (member,) = ar.members()
         with ar.open(member) as stream:
             return stream.read()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ZIP member refused when its local-header name differs from the central "
-        "directory's; unzip warns and uses the central name, 7-Zip reads it. "
-        "Needs a maintainer decision: dev-docs/formats/zip.md documents the check"
-    ),
-)
-def test_local_name_in_another_codepage_still_reads() -> None:
+def _local_header_reports(blob: bytes, *, pipe: bool) -> list[LocalHeaderContext]:
+    """What the member reported about its local header, once its data was read."""
+    source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
+    with archivey.open_archive(source, streaming=pipe) as ar:
+        if pipe:
+            for _, stream in ar.stream_members():
+                assert stream is not None
+                stream.read()
+            (member,) = ar.members_report().members
+        else:
+            (member,) = ar.members()
+            ar.read(member)
+    return [
+        diagnostic.context
+        for diagnostic in member.diagnostics
+        if diagnostic.code
+        in (
+            DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
+            DiagnosticCode.MEMBER_LOCAL_CRC_USED,
+        )
+        and isinstance(diagnostic.context, LocalHeaderContext)
+    ]
+
+
+# Case 1 and 2 of the maintainer's ruling (2026-10-10, ``native-zip-reader`` design.md,
+# question A): read. Case 1 reports ``MEMBER_LOCAL_NAME_DIFFERS``, which STRICT refuses;
+# case 2 reports ``MEMBER_LOCAL_CRC_USED``, which STRICT reads (2026-10-15).
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_local_name_in_another_codepage_still_reads(pipe: bool) -> None:
     # Seen in the scan: the central directory holds 0xF4 (ô in Latin-1/cp1252) and the
     # local header 0x93 (ô in cp437/cp850), both without the UTF-8 flag. Archivey takes
     # every name from the central directory, so the local copy decides nothing else.
     blob = _one_member_zip(
         b"payload", central_name=b"Patag\xf4nia.mp3", local_name=b"Patag\x93nia.mp3"
     )
-    assert _read_only_member(blob) == b"payload"
+    assert _read_only_member(blob, pipe=pipe) == b"payload"
+    (context,) = _local_header_reports(blob, pipe=pipe)
+    assert context.field == "name"
+    assert context.local_raw_name_base64 == raw_name_to_base64(b"Patag\x93nia.mp3")
+    assert context.local_crc32 is None
+    with pytest.raises(DiagnosticRaisedError):
+        _read_only_member(blob, pipe=pipe, strict=True)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ZIP member refused when the central directory's CRC is 0 and the local "
-        "header's is right (Adobe AIR's META-INF/AIR/hash); unzip checks the local "
-        "CRC and passes, 7-Zip reports a headers error. Needs a maintainer decision"
-    ),
-)
-def test_zero_central_crc_with_a_right_local_crc_reads() -> None:
+def _directory_codes(blob: bytes, *, pipe: bool, policy: DiagnosticPolicy) -> list[str]:
+    """The codes the one directory member of ``blob`` carries once a read has gone
+    through its data: ``read()`` from a file, the pass from a pipe."""
+    source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
+    config = ArchiveyConfig(diagnostic_policy=policy)
+    with archivey.open_archive(source, streaming=pipe, config=config) as ar:
+        if pipe:
+            for _ in ar.stream_members():
+                pass
+            report = ar.members_report()
+            assert report.error is None
+            (member,) = report.members
+        else:
+            (member,) = ar.members()
+            if member.size:
+                assert ar.read(member) == b"x" * member.size
+    assert (member.name, member.type) == ("crack/", MemberType.DIRECTORY)
+    return sorted(str(diagnostic.code) for diagnostic in member.diagnostics)
+
+
+@pytest.mark.parametrize("data", [b"", b"x" * 22], ids=["empty", "with-data"])
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_local_name_with_a_backslash_names_a_directory_without_a_report(
+    pipe: bool, data: bytes
+) -> None:
+    # Seen in the scan: ``crack/`` in the directory, ``crack\\`` in the local header.
+    # A directory's name decides nothing its local header could change, and
+    # extraction reads no directory's data, so neither read reports it, even under
+    # a policy that raises on the code, and even when ``read()`` has gone through
+    # declared data.
+    blob = _one_member_zip(data, central_name=b"crack/", local_name=b"crack\\")
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS})
+    codes = _directory_codes(blob, pipe=pipe, policy=policy)
+    assert codes == ([] if not data else ["member_directory_data_ignored"])
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_zero_central_crc_over_directory_data_reads_alike(pipe: bool) -> None:
+    # A directory keeps no digest when its CRC-32 field is 0, whatever the local
+    # header says: the bytes ``read()`` gives are unchecked from a file, and the pass
+    # does not count the local value against the directory's 0.
+    blob = _one_member_zip(b"x" * 22, central_name=b"crack/", central_crc=0)
+    codes = _directory_codes(blob, pipe=pipe, policy=DiagnosticPolicy())
+    assert codes == ["digest_unverifiable", "member_directory_data_ignored"]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_zero_central_crc_with_a_right_local_crc_reads(pipe: bool) -> None:
     # Every .air package in the scan (6) stores ``META-INF/AIR/hash`` this way: the
     # packager writes the 32-byte hash after the central entry was made.
     blob = _one_member_zip(b"h" * 32, central_name=b"META-INF/AIR/hash", central_crc=0)
-    assert _read_only_member(blob) == b"h" * 32
+    assert _read_only_member(blob, pipe=pipe) == b"h" * 32
+    (context,) = _local_header_reports(blob, pipe=pipe)
+    assert (context.field, context.local_crc32) == ("crc32", zlib.crc32(b"h" * 32))
+    assert context.local_raw_name_base64 is None
+    # The data is still checked, against the local value, so STRICT reads it; only a
+    # policy that raises on the code itself refuses it.
+    assert _read_only_member(blob, pipe=pipe, strict=True) == b"h" * 32
+    with pytest.raises(DiagnosticRaisedError):
+        _read_only_member(blob, pipe=pipe, policy=DiagnosticPolicy.PEDANTIC)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ZIP member refused when both headers understate its size and the CRC "
-        "matches the whole decoded stream; unzip ignores the size and passes, 7-Zip "
-        "fails. Needs a maintainer decision: the declared size is a bound archivey "
-        "relies on"
-    ),
-)
-def test_understated_size_with_a_matching_crc_reads() -> None:
+def test_zero_central_crc_reports_the_local_crc_as_the_digest() -> None:
+    """The listing, before any read, carries the value the data is checked against."""
+    blob = _one_member_zip(b"h" * 32, central_name=b"META-INF/AIR/hash", central_crc=0)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        counts = ar.diagnostics.counts
+    assert member.hashes == {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(b"h" * 32))}
+    assert counts[DiagnosticCode.MEMBER_LOCAL_CRC_USED] == 1
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_zero_central_crc_with_a_wrong_local_crc_is_still_corruption(
+    pipe: bool,
+) -> None:
+    # The local value stands in for the directory's 0; the data is still checked.
+    blob = bytearray(
+        _one_member_zip(b"h" * 32, central_name=b"META-INF/AIR/hash", central_crc=0)
+    )
+    blob[14] ^= 0xFF  # the local header's CRC-32
+    with pytest.raises(CorruptionError):
+        _read_only_member(bytes(blob), pipe=pipe)
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_zero_crc_in_both_headers_over_data_is_still_corruption(pipe: bool) -> None:
+    # Nothing stands in: both copies say 0 and the data's CRC-32 is not 0.
+    blob = bytearray(
+        _one_member_zip(b"h" * 32, central_name=b"META-INF/AIR/hash", central_crc=0)
+    )
+    blob[14:18] = b"\0\0\0\0"
+    with pytest.raises(CorruptionError):
+        _read_only_member(bytes(blob), pipe=pipe)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_ae2_zero_central_crc_ignores_a_local_crc(pipe: bool) -> None:
+    """AE-2 stores CRC-32 0 by design and its HMAC checks the data, so a non-zero
+    local CRC-32 stands in for nothing: no digest and no report, from a file or a pipe."""
+    blob = bytearray(build_aes_zip([(b"a.txt", b"h" * 22)], password=b"pw"))
+    assert blob[14:18] == b"\0\0\0\0"  # the local header's CRC-32
+    blob[14:18] = struct.pack("<I", zlib.crc32(b"h" * 22))
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    source = NonSeekableBytesIO(bytes(blob)) if pipe else io.BytesIO(bytes(blob))
+    with archivey.open_archive(
+        source, streaming=pipe, password="pw", config=config
+    ) as ar:
+        if pipe:
+            read = [stream.read() for _, stream in ar.stream_members() if stream]
+            (member,) = ar.members_report().members
+        else:
+            (member,) = ar.members()
+            read = [ar.read(member)]
+        counts = ar.diagnostics.counts
+    assert read == [b"h" * 22]
+    assert member.hashes == {}
+    assert DiagnosticCode.MEMBER_LOCAL_CRC_USED not in counts
+
+
+# Case 3 stays refused: the declared size is the bound that stops decoding (DR-9a).
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_understated_size_with_a_matching_crc_is_refused(pipe: bool) -> None:
     # Seen in the scan: 12 deflated MP3s in one archive (two copies), each declaring
-    # about 3.5% less than it decodes to; the CRC covers the full output.
+    # about 3.5% less than it decodes to; the CRC covers the full output. unzip
+    # ignores the size and passes; 7-Zip fails.
     data = bytes(range(256)) * 400
     blob = _one_member_zip(data, declared_size=len(data) * 965 // 1000, deflate=True)
-    assert _read_only_member(blob) == data
+    with pytest.raises(CorruptionError, match="exceeds its declared size"):
+        _read_only_member(blob, pipe=pipe)

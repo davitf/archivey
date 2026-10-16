@@ -449,8 +449,8 @@ Some things go differently from a pipe, on an archive that is crafted or damaged
 
 - A data descriptor that disagrees with the directory, a local header the directory
   contradicts, two same-named members whose directory order reverses their file order,
-  a directory entry with no member data, and a member whose two headers store different
-  names each fail that member at the end of the pass: `FAILED` with `CorruptionError`
+  and a directory entry with no member data each fail that member at the end of the
+  pass: `FAILED` with `CorruptionError`
   under `on_error="continue"`, raised under `on_error="stop"`. A read from a file writes
   the first two. What the pass wrote for such a member is removed.
 - Under `on_error="stop"`, a member whose data fails as the pass writes it stops the

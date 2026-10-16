@@ -43,8 +43,11 @@ them.
 | **EOCD** — end of central directory | `PK\x05\x06` | 22 fixed bytes plus an optional comment: total entries, the size of the CDH run, `offset_cd` (where that run starts), the disk numbers, the comment length. The only record found by *position* rather than by a pointer |
 
 archivey takes every member field from the CDH and reads the LFH only to locate the data
-(§2.3). It cross-checks the two copies of the name, as bytes, and refuses on a
-mismatch, which was also stdlib's rule.
+(§2.3). Two exceptions read the LFH for more. When the two copies of the name differ, as
+bytes, the member keeps the CDH's name and reports `MEMBER_LOCAL_NAME_DIFFERS`; stdlib
+refused it. When the CDH stores CRC-32 0 for a file or link that is not WinZip AE-2 and
+the LFH a real value, the LFH's is the member's CRC-32, reported as
+`MEMBER_LOCAL_CRC_USED` (§5).
 
 **The index is at the end.** The central directory is authoritative and is found by
 scanning backwards from the last bytes for the EOCD. So:
@@ -519,12 +522,15 @@ still lands there.
 
 **Failures found at the end of the pass** (`_failed_at_end`,
 `_settle_failures_at_end`): a data descriptor the directory contradicts, a local header
-whose CRC, sizes or encryption flag the directory contradicts, a same-name pair whose
-directory order reverses the file order, a directory entry with no local entry, and two
-headers storing different names. Each fails its member (`CorruptionError`; the reversed
-pair only updates the members in `stream_members()`), and extraction removes what it
-wrote for it. A directory entry pointing at a local header an earlier entry took ends the
-pass with `CorruptionError`.
+whose CRC, sizes or encryption flag the directory contradicts (not a central CRC-32 of
+0 over data against a local value, §5), a same-name pair whose directory order reverses the
+file order, and a directory entry with no local entry. Each fails its member
+(`CorruptionError`; the reversed pair only updates the members in `stream_members()`),
+and extraction removes what it wrote for it. A directory entry pointing at a local
+header an earlier entry took ends the pass with `CorruptionError`. Two headers storing
+different names fail nothing: the member takes the directory's name, and a file or link
+reports `MEMBER_LOCAL_NAME_DIFFERS` as a file read does when it opens the member (§5);
+extraction moves what it wrote.
 
 **Where the pass and a file read differ**, each pinned in
 `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first three
@@ -569,10 +575,10 @@ directory's refusals the file read is to drop:
 
 **`zipfile`'s own decoders were never used** — meaning `ZipExtFile`, not the standard library:
 the codec layer still ends at `zlib`, `bz2` and `lzma` for the methods they cover. archivey
-locates the member's raw compressed bytes with
-a bounded LFH parse (the fixed 30 bytes plus the local name and extra lengths, with
-an absurd data-offset cap and a name cross-check against the CDH), slices the source, and dispatches on the ZIP method id to the
-shared codec layer.
+locates the member's raw compressed bytes with a bounded LFH parse (the fixed 30 bytes
+plus the local name and extra lengths, with an absurd data-offset cap and a name
+comparison with the CDH that reports a mismatch), slices the source, and dispatches on
+the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
@@ -950,6 +956,7 @@ ours.
 | A ZIP with a digital signature record (`PK\x05\x05`, APPNOTE 4.3.13) between its directory and its end record is refused with `CorruptionError` ("Bad magic number") | **archivey** | The end record's directory size and offset do not count the record, so its bytes shift where the directory is taken to start, the way prepended data does. stdlib `zipfile` refuses it the same way, and a read from a pipe matches the file read. Few writers produce the record; reading past it is not planned |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
+| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, with every member already written (§2.2.2), and the CRC case is recorded |
 
 ## 6. Decisions
 
@@ -984,7 +991,7 @@ ours.
 | Size corrections report a new code, `MEMBER_SIZE_WRAPPED` with `SizeWrapContext` (davi, 2026-10-16, project thread decision card) | Sizes and offsets are different facts with different fields; one code per fact keeps each context simple to match on | Reusing `ARCHIVE_OFFSET_WRAPPED` with optional size fields on its context; no diagnostic, leaving `size=None` and the extra key as the only trace |
 | No lower deflate bound: only the upper one, 1032 to 1, narrows the size (davi, 2026-10-16, project thread: a lower bound only settles members truly over 4 GiB, and those can as well be over 8 GiB) | Empty stored blocks pad a valid stream without bound, so any lower bound picks a size 4 GiB too large for a padded stream with a matching CRC-32 (seen in review). The upper bound is deflate's own and a read checks it | A lower bound of seven eighths of the compressed size, which holds for real encoders and kept more sizes exact, but reported a wrong size for valid data |
 | `ARCHIVE_OFFSET_WRAPPED` is advisory, outside `ARCHIVE_INTEGRITY_CODES` (davi, 2026-10-15, project thread) | macOS Archive Utility writes a ZIP past 4 GiB this way by default and reads it back, so `STRICT` would refuse an ordinary Mac archive; a correction is kept only when a local header with the member's name is there, and the CRC-32 is still checked, the `MEMBER_SPECIAL_FILE_HAS_DATA` pattern (DR-25). Reopen if a writer other than macOS is found producing wrapped offsets that a correction misreads | The integrity set, under DR-3 (the stored offsets misdescribe where good data sits) |
-| Read a member whose central and local headers disagree on the name, or whose central CRC is 0 while the local CRC is right; keep refusing one whose two headers both understate the size (davi, 2026-10-10) | The first two are found in real archives (another code page or `\` against `/` in the local name; every Adobe AIR package), `unzip` reads both, and archivey takes every field from the central directory, so the local name decides nothing; the data is still checked against the local CRC. The third is refused because the declared size is the bound that stops decoding (DR-9a). Both reads carry a new diagnostic and strict refuses them. Reopen if a real writer produces the third shape at scale. Lands with the native ZIP reader | Refusing all three, which loses archives `unzip` reads; reading the third, which drops the size bound |
+| Read a member whose central and local headers disagree on the name, or whose central CRC is 0 while the local CRC is right; keep refusing one whose two headers both understate the size (davi, 2026-10-10) | The first two are found in real archives (another code page or `\` against `/` in the local name; every Adobe AIR package), `unzip` reads both, and archivey takes every field from the central directory, so the local name decides nothing; the data is still checked against the local CRC. The third is refused because the declared size is the bound that stops decoding (DR-9a). The name case reports `MEMBER_LOCAL_NAME_DIFFERS`, which strict refuses because another tool shows another name; the CRC case reports `MEMBER_LOCAL_CRC_USED`, which strict reads because the data is still checked (davi, 2026-10-15). Both carry `LocalHeaderContext`. Reopen if a real writer produces the third shape at scale. Shipped with stage 5 of the native ZIP reader | Refusing all three, which loses archives `unzip` reads; reading the third, which drops the size bound |
 | Two stored names that decode to the same name stay ordinary duplicates (davi, 2026-10-10) | Once each name decodes on its own, `c3 a9` (valid UTF-8) and `82` (cp437) can both become `é.txt`. The later member supersedes the earlier like any duplicate (`is_current=False`, `SUPERSEDED` on extraction) and the two `raw_name`s differ, so nothing is lost and no new public name is needed. Reopen if a real archive shows a collision a user needs both copies of | A dedicated diagnostic or a renaming rule |
 | Leave LZMA1 `lc + lp` over 4 unsupported | 7-Zip writes it only when asked (`lc=8`). Decoding it needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; a pure-Python LZMA1 decoder (very slow); handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma |
 
@@ -1047,6 +1054,7 @@ move.
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass; ZipCrypto over Zstd; ZipCrypto seeks; stage output equals stdlib's | `tests/test_zip_multipassword.py` |
 | The STORED CRC pass reads through the same validated local header as the open, so it never runs over a member the open refuses | `tests/test_zip_multipassword.py::test_stored_confirm_reads_through_the_validated_local_header` |
+| A local name that differs from the directory's, and a central CRC-32 of 0 under a right local one, read from a file and a pipe, strict refusing the name case only; a wrong local CRC-32 and 0 in both still fail; both headers understating the size stays refused | `tests/test_audit_backup_scan.py::test_local_name_in_another_codepage_still_reads` and the tests after it, `tests/test_zip_pipe.py::test_a_name_that_differs_between_the_two_headers_takes_the_directory_name`, `tests/test_zip_pipe_extract.py::test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name`, `tests/test_zip_multipassword.py::test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc` |
 | WinZip AES seeks at every block phase and backward; the HMAC survives seeks, including over bytes a seek skipped and on a `read(n)` ending exactly at the end; a partial read after a seek has no verdict | `tests/test_zip_aes.py::test_aes_decrypt_stream_seeks_at_every_block_phase`, `::test_aes_decrypt_stream_seeks_keep_the_hmac`, `::test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac`, `::test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped`, `::test_aes_decrypt_stream_partial_read_after_seek_has_no_verdict`, `::test_aes_member_seeks`, `tests/test_member_stream_contract.py` (`zip-aes` rows) |
 | A tampered AE-2 DEFLATE member still raises under rapidgzip's own seeks (`AUTO` and `ON`, one password and two) | `tests/test_zip_aes.py::test_aes_hmac_survives_a_seekable_accelerator` |
 | A lone ZipCrypto password that passed the check byte: a partial read is reported unverified, a read to EOF and extraction are not; a forward seek on a compressed member raises the password-or-damage error, and a seek on a STORED one is reported as `seek` | `tests/test_encrypted_member_unverified.py`, `tests/test_zip_multipassword.py::test_single_colliding_password_fails_a_forward_seek`, `::test_single_colliding_password_stored_seek_reports_unverified` |

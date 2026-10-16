@@ -76,8 +76,8 @@ from archivey.internal.backends.zip_reader import (
     _CandidateFailures,
     _is_candidate_integrity_failure,
     _is_encrypted_entry,
+    _local_crc_stands_in,
     _max_members_error,
-    _stored_text,
     _unconfirmed_resource_limit,
     _unverified_data_error,
     _zipcrypto_check_byte,
@@ -225,7 +225,15 @@ def _header_disagreements(
             else "encrypted in the directory, not in the local header"
         )
     if not flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
-        if crc_used and crc != central.crc:
+        # A central CRC-32 of 0 over data against a local value is no
+        # contradiction, whatever the member's type: a file or link takes the local
+        # value (``_local_crc_for``), and a directory keeps no digest
+        # (``DIGEST_UNVERIFIABLE``), as from a file, which never compares the two.
+        if (
+            crc_used
+            and crc != central.crc
+            and not _local_crc_stands_in(central, flags, crc)
+        ):
             differ.append(f"CRC-32 {crc:08x} against {central.crc:08x}")
         if compressed_size != central.compressed_size:
             differ.append(
@@ -269,17 +277,6 @@ def _missing_error(member: ArchiveMember, offset: int) -> CorruptionError:
         f"ZIP central directory entry {quoted(member.name)} points to offset "
         f"{offset}, where the stream held no local header",
         member_name=member.name,
-        source_format=ArchiveFormat.ZIP,
-    )
-
-
-def _renamed_error(
-    local_name: bytes, central: CentralEntry, member_name: str
-) -> CorruptionError:
-    return CorruptionError(
-        f"File name in directory {quoted(_stored_text(central.name))} and header "
-        f"{quoted(_stored_text(local_name))} differ.",
-        member_name=member_name,
         source_format=ArchiveFormat.ZIP,
     )
 
@@ -1682,10 +1679,11 @@ class ZipForwardReader(ZipReader):
         A local entry no directory entry points to is dropped from the listing and
         reported (``ARCHIVE_UNLISTED_DATA``). Of two members with the same name, the
         later in the directory is current (``_listed_in_index_order``). A member whose
-        data descriptor or local header the directory contradicts, or whose local
-        header names it differently, fails (``_failed_at_end``): the pass raises for
-        the first, after a directory entry with no local entry and two entries for one
-        local entry.
+        local header names it differently takes the directory's name and is reported
+        (``MEMBER_LOCAL_NAME_DIFFERS``), as a file read reports it when it reads that
+        local header. A member whose data descriptor or local header the directory
+        contradicts fails (``_failed_at_end``): the pass raises for the first, after a
+        directory entry with no local entry and two entries for one local entry.
         """
         limits = self._config.listing_limits
         max_members = limits.max_members
@@ -1738,6 +1736,9 @@ class ZipForwardReader(ZipReader):
         self._entries_read = None if damage is not None else walk.entries_read
         local_offsets = self._local_offsets
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
+        # Members whose local header named them differently, by member id: the name
+        # the local header gave.
+        renamed: dict[int, bytes] = {}
         matched: set[int] = set()
         order: list[ArchiveMember] = []
         # Entries pointing at a local header an earlier entry already took (by
@@ -1770,12 +1771,9 @@ class ZipForwardReader(ZipReader):
             central = entries[position]
             local_name = cast("_ZipLocator", member._raw).name
             if central.name != local_name:
-                # The seekable read refuses this member when it reads its local
-                # header; a forward pass has both copies only now.
-                failed.append(
-                    (position, member, _renamed_error(local_name, central, member.name))
-                )
-                continue
+                # Reported once the member has the directory's name, below.
+                assert member._member_id is not None
+                renamed[member._member_id] = local_name
             updates.append((member, central))
             # ``_raw`` still holds the local header's fields: the directory replaces
             # it only in ``_update_from_directory``, after this loop.
@@ -1801,6 +1799,12 @@ class ZipForwardReader(ZipReader):
             unlisted = []
         for member, central in updates:
             self._update_from_directory(member, central)
+            local_name = renamed.get(cast("int", member._member_id))
+            if local_name is not None:
+                # A file or link only, as from a file (``_report_local_name``).
+                self._report_local_name(
+                    cast("_ZipLocator", member._raw), member, local_name
+                )
         if any_missing:
             # A missing entry has a name too, and takes part in last-entry-wins as the
             # seekable read's listing does: a listed copy it follows is not current.
@@ -1865,6 +1869,17 @@ class ZipForwardReader(ZipReader):
         if failed:
             _, _, error = failed[0]
             raise error
+
+    def _local_crc_for(self, entry: CentralEntry) -> int | None:
+        """The seekable read's :meth:`ZipReader._local_crc_for`, from the local header
+        the pass met at ``entry``'s offset rather than a read of it."""
+        member = self._by_offset.get(_bound_offset(entry.header_offset))
+        if member is None:
+            return None
+        local = cast("_ZipLocator", member._raw)
+        if not _local_crc_stands_in(entry, local.flags, local.crc):
+            return None
+        return local.crc
 
     def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:
         """The member a directory entry with no local entry describes, for the end of

@@ -120,26 +120,26 @@ def test_a_member_decoding_short_of_its_size_is_truncation_as_from_a_file() -> N
         _drain(bytes(raw))
 
 
-def test_a_local_name_the_utf8_flag_mislabels_fails_only_its_member() -> None:
-    """The name is checked against the directory's, as from a file, instead of
-    ending the pass before the member."""
+def test_a_local_name_the_utf8_flag_mislabels_reads_by_the_directory_name() -> None:
+    """The name is compared with the directory's as bytes, as from a file, instead of
+    ending the pass before the member, and the directory's name is the member's."""
     raw = _zip()
     flags = struct.unpack_from("<H", raw, 6)[0]
     struct.pack_into("<H", raw, 6, flags | 0x800)
     raw[30] = 0xFF  # the local name's first byte; the central name is untouched
-    message = r"File name in directory .a\.txt. and header .+\.txt. differ"
     with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
-        with pytest.raises(CorruptionError, match=message):
-            archive.read("a.txt")
+        assert archive.read("a.txt") == b"hello world"
     read: list[bytes] = []
-    with pytest.raises(CorruptionError, match=message):
-        with archivey.open_archive(
-            NonSeekableBytesIO(bytes(raw)), streaming=True
-        ) as archive:
-            for _, stream in archive.stream_members():
-                assert stream is not None
-                read.append(stream.read())
+    with archivey.open_archive(
+        NonSeekableBytesIO(bytes(raw)), streaming=True
+    ) as archive:
+        for _, stream in archive.stream_members():
+            assert stream is not None
+            read.append(stream.read())
+        report = archive.members_report()
     assert read == [b"hello world"]
+    assert report.error is None
+    assert [m.name for m in report.members] == ["a.txt"]
 
 
 def test_damage_past_the_prefix_under_a_lone_surviving_password_is_the_codecs(
