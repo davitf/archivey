@@ -496,7 +496,8 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   one local entry each, and yielded before the pass ends; only offsets the directory
   names are read, so the pass yields nothing there the file read does not list. An
   entry whose bytes the bound dropped is `ResourceLimitError`, as a directory there
-  is. A bit-3 STORED member before such bytes still ends the pass (the row above).
+  is. A bit-3 member before such bytes still ends the pass: its descriptor counts
+  only with a ZIP signature after it (the table above).
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
   Writers put both in the same order; when they differ, `is_current` follows the

@@ -518,7 +518,8 @@ arrives.
 after a member that are not a local header and keeps the rest of the stream, as after the
 last member. Bytes a writer left between two members (zeros, junk, a data descriptor after
 a member whose sizes are in its header) and a second archive appended with
-`cat first.zip second.zip` end the walk there. Once the directory has been read, each
+`cat first.zip second.zip` end the walk there (after a bit-3 member they end the pass
+instead, below). Once the directory has been read, each
 member it places in the kept bytes is read from them at the offset it names and yielded
 before the pass ends, as a file read seeks to it. Only the offsets the directory names
 are read there, so the pass yields no member the file read does not list. Of a `cat`, the
@@ -570,11 +571,12 @@ directory's refusals the file read is to drop:
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
-- A bit-3 STORED member followed by bytes that are no ZIP record (a gap before the next
-  member) ends the pass with `UnsupportedFeatureError`: its descriptor counts only when a
-  ZIP signature follows it, which is what stops a descriptor planted inside STORED data.
-  A file read knows its size and reads it. After a sized or a bit-3 codec member the
-  same bytes are read past (§"Bytes after a member that are no local header").
+- A bit-3 member followed by bytes that are no ZIP record (a gap before the next
+  member) ends the pass: its descriptor counts only when a ZIP signature follows it,
+  which is what stops a descriptor planted inside its data. A STORED one is
+  `UnsupportedFeatureError`, a codec one `CorruptionError`. A file read knows its size
+  and reads every member. After a sized member the same bytes are read past
+  (§"Bytes after a member that are no local header").
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.

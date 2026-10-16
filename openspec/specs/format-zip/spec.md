@@ -261,8 +261,8 @@ the first of several inconclusive password candidates wins. It MAY also differ i
 a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
 the pass, losing the members after it, if its decode read more than 4 MiB past the
 data's end; a bit-3 LZMA member without the end-of-stream marker is refused where a file
-read reads it; a bit-3 STORED member followed by bytes that are no ZIP record ends the
-pass with `UnsupportedFeatureError` where a file read reads it; in `extract_all`, a link
+read reads it; a bit-3 member followed by bytes that are no ZIP record ends the pass
+(`UnsupportedFeatureError` when STORED) where a file read reads it; in `extract_all`, a link
 member the pass wrote as a file keeps the error its data read gave (no password:
 `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
@@ -289,7 +289,7 @@ end-of-pass rename.
 | Two same-name members whose directory order reverses their file order | `is_current` from the directory order; `stream_members()` raises nothing |
 | A data descriptor that understates a STORED member, `stream_members()` | `CorruptionError` at the end of the pass |
 | A local entry the directory does not list | Dropped from the listing; `ARCHIVE_UNLISTED_DATA` |
-| Bytes between two sized members, or after a bit-3 codec member's descriptor | Every member read, as from a file |
+| Bytes between a sized member and the next | Every member read, as from a file |
 | `cat first.zip second.zip` | The second archive's members, as from a file; the first's yielded, then dropped with `ARCHIVE_UNLISTED_DATA` |
 | A member the directory places in bytes the listing limits dropped | `ResourceLimitError` |
 | A stub, then an archive with no local header (an empty one), `format=ZIP` | Opens with what the directory lists, as from a file |

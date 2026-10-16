@@ -899,22 +899,23 @@ def _insert(data: bytes, at: int, gap: bytes) -> bytes:
     return bytes(out)
 
 
+def _read_one(data: bytes, *, pipe: bool) -> tuple[list[tuple[str, bytes]], object]:
+    """Each listed member's name and data, and the listing's error."""
+    source = _pipe(data) if pipe else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=True, format="zip") as reader:
+        read = [
+            (m.name, stream.read())
+            for m, stream in reader.stream_members()
+            if stream is not None
+        ]
+        report = reader.members_report()
+    listed = {m.name for m in report.members}
+    return [r for r in read if r[0] in listed], report.error
+
+
 def _read_both(data: bytes) -> list[tuple[list[tuple[str, bytes]], object]]:
-    """Each member's name and data, and the listing's error, from a file and from a
-    pipe."""
-    out = []
-    for pipe in (False, True):
-        source = _pipe(data) if pipe else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=True, format="zip") as reader:
-            read = [
-                (m.name, stream.read())
-                for m, stream in reader.stream_members()
-                if stream is not None
-            ]
-            report = reader.members_report()
-        listed = {m.name for m in report.members}
-        out.append(([r for r in read if r[0] in listed], report.error))
-    return out
+    """:func:`_read_one` from a file, then from a pipe."""
+    return [_read_one(data, pipe=pipe) for pipe in (False, True)]
 
 
 @pytest.mark.parametrize(
@@ -942,14 +943,19 @@ def test_bytes_between_two_members_do_not_end_the_pass(gap: bytes, method: int) 
     assert _read_both(data) == [(expected, None), (expected, None)]
 
 
-def test_bytes_after_a_bit3_codec_member_do_not_end_the_pass() -> None:
-    """A bit-3 DEFLATE member ends at its codec's end and its descriptor; what
-    follows is read as after a sized member."""
-    data = _streamed(_zip([("a.txt", b"one" * 50), ("b.txt", b"two")]))
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_bytes_after_a_bit3_member_still_end_the_pass(method: int) -> None:
+    """A recorded difference: a bit-3 member's descriptor counts only when a ZIP
+    signature follows it, which is what stops a descriptor planted in its data. Bytes
+    between it and the next member leave the pass no end for its data; a file read
+    knows its size and reads every member."""
+    data = _streamed(_zip([("a.txt", b"one" * 50), ("b.txt", b"two")], method=method))
     second = data.index(b"PK\x03\x04", 1)
     data = _insert(data, second, b"\x00" * 16)
     expected = [("a.txt", b"one" * 50), ("b.txt", b"two")]
-    assert _read_both(data) == [(expected, None), (expected, None)]
+    assert _read_one(data, pipe=False) == (expected, None)
+    with pytest.raises((CorruptionError, UnsupportedFeatureError)):
+        _read_one(data, pipe=True)
 
 
 def test_two_concatenated_archives_read_the_second_from_a_pipe(tmp_path: Path) -> None:
