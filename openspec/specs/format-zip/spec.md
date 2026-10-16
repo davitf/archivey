@@ -207,7 +207,8 @@ Zstandard, LZMA with the end-of-stream marker, PPMd with its end mark), followed
 descriptor; a STORED bit-3 member ends at a descriptor whose CRC and size match the
 bytes before it and that a ZIP signature follows. A bit-3 codec member the pass reads
 past (nobody read it to its end) SHALL be decoded no further than the byte past the
-symlink target cap, then the start of a Windows reparse buffer. Where its codec has not ended by then, it ends as a STORED one does, matched on
+symlink target cap, then the start of a Windows reparse buffer and the byte after it,
+as far as a file read reads a reparse point. Where its codec has not ended by then, it ends as a STORED one does, matched on
 its size and the signature after the descriptor: decoding the rest costs what no limit
 bounds. A bit-3 member nobody reads that is encrypted under a codec ends the same way,
 so passing it needs no key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
