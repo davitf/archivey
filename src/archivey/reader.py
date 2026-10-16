@@ -73,8 +73,9 @@ class MemberPass(Iterator[_T]):
     refers to it: a variable, the target of ``with … as``, or a traceback that holds
     the loop's frame while an error is handled. It also outlives the loop on an
     interpreter that does not free it at once, such as PyPy. Close it yourself in
-    those cases. While a paused pass is alive, a default reader refuses its other
-    calls::
+    those cases. While a paused :meth:`~ForwardArchiveReader.stream_members` pass is
+    alive, a default reader refuses its other calls; a pass from iterating a
+    random-access reader holds nothing between members::
 
         with reader.stream_members() as members:
             for member, stream in members:
@@ -104,7 +105,11 @@ class MemberPass(Iterator[_T]):
         except ValueError as exc:
             # A thread entered ``next()`` after the check above. Only that case is
             # translated: a ValueError the pass itself raises reaches the caller.
-            if inspect.getgeneratorstate(self._pass) == inspect.GEN_RUNNING:
+            # The racing next() may have returned already, so the message decides
+            # too; the check above is the one that decides by state.
+            if inspect.getgeneratorstate(
+                self._pass
+            ) == inspect.GEN_RUNNING or exc.args == ("generator already executing",):
                 raise _executing_pass_error() from exc
             raise
 
@@ -123,8 +128,8 @@ class MemberPass(Iterator[_T]):
 def _executing_pass_error() -> ArchiveyUsageError:
     return ArchiveyUsageError(
         "Cannot close a member pass while it is executing: another thread is inside "
-        "next(), or a selector is closing its own pass. Close it once that next() "
-        "call has returned."
+        "next(), or a selector is closing its own pass. Close the pass from outside "
+        "it, once that next() call has returned."
     )
 
 

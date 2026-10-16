@@ -403,7 +403,8 @@ def members_report_if_available(self) -> MemberListReport | None: ...  # report 
 
 `__iter__` SHALL return a `MemberPass` of members (see "Streaming member access" for
 what closing one does). On a streaming reader it is the reader's one pass and holds the
-reader while paused, as a `stream_members()` pass does.
+reader while paused, as a `stream_members()` pass does. On a random-access reader it
+holds nothing between members, so `for m in reader: reader.open(m)` works.
 
 `__iter__` MUST yield in archive order without loading all members into a
 *caller-visible* complete cache before the first yield when a terminal

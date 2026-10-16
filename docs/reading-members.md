@@ -125,10 +125,11 @@ with reader.stream_members() as members:
 data = reader.read("payload.bin")  # the pass has ended
 ```
 
-`members.close()` does the same without the block. The same holds for `for member in
-reader`, which returns a pass of members. On a reader opened with
-`concurrent_members=True`, `open()`, `read()`, `get()`, `members()` and another
-`stream_members()` all work inside the loop, from any thread, on every format.
+`members.close()` does the same without the block. `iter(reader)` returns a pass too, so
+a member loop can be closed or used in a `with` block the same way, but on this reader
+it holds nothing between members: `for m in reader: reader.open(m)` works. On a reader
+opened with `concurrent_members=True`, `open()`, `read()`, `get()`, `members()` and
+another `stream_members()` all work inside the loop, from any thread, on every format.
 `extract_all()` still raises. The pass and the calls beside it share one walk of the
 archive's headers, so a pass nobody gets ahead of costs what it costs on a default
 reader. A call that needs members the pass has not reached yet, such as `members()` in
