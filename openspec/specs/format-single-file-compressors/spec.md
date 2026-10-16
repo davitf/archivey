@@ -151,9 +151,9 @@ reached and a read on to the end. The filled `size` is only as good as the codec
 check: where that check is best-effort, such as a `.Z` (no end marker or checksum) or
 an accelerated `.gz` (see the rapidgzip caveat), a cut the decoder cannot see ends the
 read cleanly and fills the length of the cut data, as the data read is. Until the size
-is filled in, or the reader closes, `member_state_final` SHALL be `False`
-(`archive-data-model`). A copy made with `replace()` is never filled. A size the format
-records SHALL NOT be replaced.
+is filled in, a `streaming=True` pass ends, or the reader closes, `member_state_final`
+SHALL be `False` (`archive-data-model`). A copy made with `replace()` is never filled.
+A size the format records SHALL NOT be replaced.
 
 #### Scenario: size matrix
 

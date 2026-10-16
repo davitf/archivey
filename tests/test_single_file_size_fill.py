@@ -219,6 +219,15 @@ def test_streaming_pass_from_a_pipe_fills_size() -> None:
         assert member.member_state_final
 
 
+def test_a_finished_streaming_pass_settles_an_unread_member(tmp_path: Path) -> None:
+    """A ``streaming=True`` pass cannot read the member again once it ends."""
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path, streaming=True) as reader:
+        members = [member for member, _ in reader.stream_members()]
+        assert [m.size for m in members] == [None]
+        assert members[0].member_state_final
+
+
 def test_extract_all_fills_size(tmp_path: Path) -> None:
     path = _write(tmp_path, "gz", gzip.compress)
     with open_archive(path) as reader:

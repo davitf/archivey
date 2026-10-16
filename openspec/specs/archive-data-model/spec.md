@@ -389,6 +389,7 @@ format, in these cases:
   start to the end that skips no byte fills it in (`format-single-file-compressors`).
   Likewise a ZIP member whose size is unknown because a macOS writer stored it modulo
   2³², until a full read whose length and CRC-32 check out fills it in (`format-zip`).
+  A `streaming=True` pass settles both when it ends: no read can reach them again.
 
 It SHALL be `True` everywhere else. A walk that fails and cannot be resumed settles the
 members it handed out, and closing the reader settles every member it listed. A copy
@@ -414,6 +415,8 @@ fields that change in practice.
 | ZIP symlink under the default | `True` once listed |
 | `.gz` / `.bz2` after `members()` | `False` until a read from the start to EOF that skips no byte sets `size`, then `True`; `True` after the reader closes |
 | `.xz` with a readable index, after `members()` | `True`: the index records the size |
+| macOS ZIP member whose size is unknown (stored modulo 2³²), after `members()` | `False` until a read whose length and CRC-32 check out sets `size`, then `True`; `True` after the reader closes |
+| A `.gz` member, or that ZIP member, `streaming=True`, after the pass | `True`, whether or not a read filled the size |
 | ZIP from a non-seekable source, `streaming=True`, `stream_members()` | Each member reads `False` when yielded, with `mode`, `create_system`, `comment`, `uid` and `gid` `None`; after the pass every member reads `True`, with the directory's fields |
 
 ### Requirement: Member diagnostics attach under the shared budget

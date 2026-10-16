@@ -695,7 +695,10 @@ end record nothing is corrected.
   modulo 2³² and is at most 1032 times the compressed size, then the CRC-32 SHALL be
   checked, and only then SHALL `member.size` take the length. A pipe pass that decoded
   the member to its end with the directory's CRC-32 SHALL keep the size it counted
-  when the directory leaves it unknown.
+  when the directory leaves it unknown. Until its size is filled in, such a member's
+  `member_state_final` SHALL be `False`; it SHALL be `True` once the size is filled
+  in, once a `streaming=True` pass ends (no read can reach the member again), and
+  once the reader closes (`archive-data-model`).
 
 #### Scenario: members past 4 GiB with Archive Utility's marks
 
@@ -704,7 +707,8 @@ end record nothing is corrected.
 | A short member, a stored member of 2³² + 2²⁹ zero bytes, a short member | From a file and a pipe: the large member's size and compressed size are 2³² + 2²⁹, the members after it read, one `MEMBER_SIZE_WRAPPED` and the offset corrections |
 | The same without the `UX` fields | The stored sizes stay and the last member's read fails, as in the previous requirement |
 | A deflated member of 2³² + 100 zero bytes, about 4 MiB compressed | `size` is `None` and `extra["size_mod_2_32"]` 100 at listing; `DiagnosticPolicy.STRICT` lists it; a read to the end yields 2³² + 100 bytes and fills in `size`, and the key stays |
-| A deflated member of 100 bytes padded with empty stored blocks to about 1 MB, stored size 100 | `size` is `None`, not 2³² + 100; a read yields 100 bytes and fills in `size` |
+| A deflated member of 100 bytes padded with empty stored blocks to about 1 MB, stored size 100 | `size` is `None`, not 2³² + 100, and `member_state_final` `False`; a read yields 100 bytes and fills in `size`, and the flag reads `True`; with no read, it reads `True` once the reader closes |
+| The same, `streaming=True` | After the pass the member reads `True`: from a pipe with the size the pass counted, from a seekable source the caller did not read with `size` `None` |
 | A deflated member whose stored size is over 1032 times its compressed size | The stored size stays; the read raises `TruncatedError` |
 | A stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
 | A stream of unknown size with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |

@@ -235,16 +235,20 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
             seen.add(member.name)
 
 
-def _settle_listing(members: list[ArchiveMember], *, links_too: bool = False) -> None:
+def _settle_listing(
+    members: list[ArchiveMember], *, links_too: bool = False, sizes_too: bool = False
+) -> None:
     """The walk will not update ``members`` again (``member_state_final``).
 
     ``links_too``: nor will anything read their unread link targets or fill their
-    unread size (the reader closed).
+    unread size (the reader closed). ``sizes_too``: nor will a read fill their unread
+    size (a ``streaming=True`` pass ended: its members cannot be read again).
     """
     for member in members:
         member._listing_pending = False
         if links_too:
             member._link_target_unread = False
+        if links_too or sizes_too:
             member._size_unread = False
 
 
@@ -1320,8 +1324,9 @@ class BaseArchiveReader(ArchiveReader):
         members = self._listed
         # Links are resolved to members now, and is_current was stamped when the walk
         # ended, so nothing changes these members from here. Not when the walk ends: a
-        # peek can end it long before a pass resolves its links.
-        _settle_listing(members)
+        # peek can end it long before a pass resolves its links. A streaming pass
+        # ends here too, so no later read can fill a size it left unknown.
+        _settle_listing(members, sizes_too=self._streaming)
         if error is not None:
             self._stamp_error_context(error)
         elif not members:

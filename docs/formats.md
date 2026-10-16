@@ -780,7 +780,8 @@ yielded.
   with `replace()`. The filled size is only as good as the codec's end check: for a
   `.Z` (no end marker or checksum) or an accelerated `.gz` (see the rapidgzip caveat
   below), a cut the decoder cannot see fills the size of the cut data.
-  `member_state_final` reads `False` until the size is filled in or the reader closes.
+  `member_state_final` reads `False` until the size is filled in, a `streaming=True`
+  pass ends, or the reader closes.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is
   cheap to reach (a path or an in-memory stream; not a pipe or another archive's
   member). It is the size modulo 2^32 only for a file of one gzip member with nothing
