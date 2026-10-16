@@ -897,7 +897,7 @@ a full `read()` still verifies through the normal path.
 
 | Format | When present | Keys |
 | --- | --- | --- |
-| ZIP | FILE / SYMLINK (central directory) | `crc32` |
+| ZIP | FILE / SYMLINK, and a directory that declares data with a non-zero CRC; from the central directory, or the local header when listed without one; not WinZip AE-2 | `crc32` |
 | 7z | FILE | `crc32` |
 | RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
 | single-file `.lz` | seekable source (one or many members; multi-member value is combined) | `crc32` |
