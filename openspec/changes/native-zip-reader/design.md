@@ -169,14 +169,15 @@ its own, or the directory start. That needs every offset, and the walk is lazy.
 
 The listing walk records each entry's header offset as it goes (8 bytes per entry, in an
 `array('Q')`), so after a listing that ran to the end the offsets and the count are
-already known. Only when a member is opened, or `member_count` is asked for, before the
-listing has finished does the reader run an **index pass**: one more pass over the fixed
-46-byte fields that builds no members and keeps only the offsets and the count. Both
-collections charge `max_members`: the index pass stops past it. Once it has stopped,
-**every** member open raises the listing's `ResourceLimitError`, not only one above the
-stop, because the bound of a member below it could come from an incomplete set of
-offsets. Listing alone never pays for the array beyond the offsets of the members it
-listed.
+already known. A member open always comes after that walk: random access lists first,
+and a streaming pass walks the directory before the first member's data (question C).
+Only when `member_count` is asked for before the listing has finished does the reader
+run an **index pass**: one more pass over the fixed 46-byte fields that builds no
+members and keeps only the offsets and the count. Both collections charge `max_members`:
+the index pass stops past it. Once it has stopped, **every** member open raises the
+listing's `ResourceLimitError`, not only one above the stop, because the bound of a
+member below it could come from an incomplete set of offsets. Listing alone never pays
+for the array beyond the offsets of the members it listed.
 
 `max_members` bounds the array in every mode, so ZIP charges it even under
 `streaming=True`, where listing limits are otherwise off. That moves ZIP into the list

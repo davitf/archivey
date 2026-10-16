@@ -132,6 +132,7 @@ from archivey.internal.backends.zipcrypto import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -1838,6 +1839,23 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    def _iter_with_data(
+        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        """Read the whole directory before the first member's data, then go forward.
+
+        The directory is read once and member data in file order after it, so the
+        only backward move after the tail reads is the seek to the first local header,
+        and the overlap guard's bounds are known before any member opens. The walk
+        reads the directory one chunk at a time, so pulling it alongside the data
+        would go back to the tail between members. The listing is final before the
+        first yield, ``is_current`` included. A source that cannot seek is read by
+        ``ZipForwardReader``, which overrides this.
+        """
+        if self._streaming:
+            self._walk_ahead()
+        yield from super()._iter_with_data(copies)
+
     def _emit_offset_wrapped(
         self, member: ArchiveMember, entry: CentralEntry, index: int
     ) -> None:
@@ -1885,9 +1903,11 @@ class ZipReader(BaseArchiveReader):
         """The overlap guard's bounds, walking the directory once more if needed.
 
         After a listing that ran to the end (or to damage, or to ``max_members``) the
-        bounds are already known. Otherwise, when a member opens before the listing has
-        finished, an **index pass** reads the directory's entries again, builds no
-        members and keeps only the offsets and the count. It stops where the listing
+        bounds are already known, and every member open comes after one: random access
+        lists before it opens, and a streaming pass walks ahead (``_iter_with_data``).
+        Otherwise, when ``member_count`` is asked for first, an **index pass** reads the
+        directory's entries again, builds no members and keeps only the offsets and the
+        count. It stops where the listing
         walk stops, at damage or at ``max_members``, and keeps the offsets before that
         point (``_DataBounds``).
         """
@@ -1927,8 +1947,8 @@ class ZipReader(BaseArchiveReader):
         except UnsupportedFeatureError:
             # The listing raises it itself, at the same entry.
             pass
-        # Stopped early: an open meanwhile reads with the bounds of the entries before
-        # the stop, as after a listing that met it; the count is unknown.
+        # Stopped early: the bounds are the entries' before the stop, as after a listing
+        # that met it; the count is unknown.
         self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
         self._count_known = True
 
