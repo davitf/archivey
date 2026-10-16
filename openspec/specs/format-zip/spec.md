@@ -205,9 +205,13 @@ Each member's data ends where its local header says, or, when bit 3 defers the s
 a data descriptor, where its codec's end marker is (DEFLATE, Deflate64, bzip2,
 Zstandard, LZMA with the end-of-stream marker, PPMd with its end mark), followed by the
 descriptor; a STORED bit-3 member ends at a descriptor whose CRC and size match the
-bytes before it and that a ZIP signature follows. A bit-3 member nobody reads that is
-encrypted under a codec ends the same way, matched on its size, so passing it needs no
-key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
+bytes before it and that a ZIP signature follows. A bit-3 codec member the pass reads
+past (nobody read it to its end) SHALL be decoded no further than a sized member over
+the symlink target cap is: to the byte past the cap, then the start of a Windows reparse
+buffer. Where its codec has not ended by then, it ends as a STORED one does, matched on
+its size and the signature after the descriptor: decoding the rest costs what no limit
+bounds. A bit-3 member nobody reads that is encrypted under a codec ends the same way,
+so passing it needs no key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
 its read SHALL raise `UnsupportedFeatureError`. A bit-3 PPMd member without an end mark
 fails its decode, as from a file. A bit-3 codec member whose decode fails or cannot find
 its end SHALL be passed by the same scan for its descriptor on its stored bytes, with no
@@ -248,7 +252,8 @@ read reports it (the requirement on headers that disagree). `extract_all` settle
 entry already took SHALL end the pass with `CorruptionError`.
 
 The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
-mismatch and the reversed pair fail a member the file read writes; bytes between a bit-3
+mismatch (a STORED member's, or a descriptor planted in the data of a bit-3 codec member
+the pass reads past) and the reversed pair fail a member the file read writes; bytes between a bit-3
 codec member's end and its descriptor, refused from a file, are counted into the member;
 the first of several inconclusive password candidates wins. It MAY also differ in these:
 a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends

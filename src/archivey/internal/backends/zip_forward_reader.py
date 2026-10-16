@@ -479,7 +479,11 @@ class _PassData:
             return 0
         if self._prefix_want is not None:
             return max(0, self._prefix_want - len(capture))
-        # ``drain`` asks only of data over the cap.
+        if self._deferred():
+            # No size to go by: the data is within the target cap only if it ends
+            # by the byte past it.
+            return max(0, MAX_LINK_TARGET_BYTES + 1 - self._size)
+        # ``drain`` asks a sized member only of data over the cap.
         return max(0, REPARSE_HEADER_BYTES - self._size)
 
     def _deferred(self) -> bool:
@@ -1168,13 +1172,15 @@ class _PassData:
         target nobody asked for, and asking a password provider for it: the member may
         turn out to be no link, which only a padded codec stream makes this long.
 
-        A bit-3 member is decoded to its end, which is how its decoded data finds it;
-        where that decode fails, the walk's scan finds the end on the stored bytes,
-        with no key (``_scan_past_failed_decode``). An encrypted one, STORED or
-        nobody read it, is not decoded: the scan finds its end on the ciphertext, and
-        its ciphertext is kept as a sized one's is, if it is short enough to be a
-        link's. One the caller opened is decoded to its end with the key it was
-        opened with.
+        A bit-3 STORED member is read to its end, which its scan finds. A bit-3 codec
+        member is decoded only as far as a sized one is: to the byte past the target
+        cap, then the start of a reparse buffer. Its codec finds its end only by
+        decoding all of it, which no limit bounds, so where the decode stops short of
+        that end, and where it fails, the walk's scan finds the end on the stored
+        bytes, with no key (``_scan_rest``). An encrypted one, STORED or nobody read
+        it, is not decoded: the scan finds its end on the ciphertext, and its
+        ciphertext is kept as a sized one's is, if it is short enough to be a link's.
+        One the caller opened is decoded with the key it was opened with.
         """
         if self.done:
             return
@@ -1239,15 +1245,27 @@ class _PassData:
                 skip = True
         if not skip and deferred and encrypted and self._failure is not None:
             # The caller's read failed inside the data.
-            skip = self._scan_past_failed_decode()
+            skip = self._scan_rest()
         if not skip:
             try:
-                while self._read_chunk(_DRAIN_CHUNK):
-                    pass
+                if self._runs_on():
+                    # Decoding a bit-3 codec member to its end is the only way its
+                    # codec finds it, at a cost nothing bounds: a bzip2 member of
+                    # 900 bytes decodes to 1 GiB. Only what the capture wants is
+                    # decoded; the scan finds where the rest ends.
+                    while (want := self._wants_prefix()) and self._read_chunk(want):
+                        pass
+                    # With bytes still wanted the codec ended first, and the data is
+                    # checked below as a read to its end is.
+                    if not want:
+                        skip = self._scan_rest()
+                else:
+                    while self._read_chunk(_DRAIN_CHUNK):
+                        pass
             except ArchiveyError as exc:
                 failure = self._as_read_failure(exc) if encrypted else exc
                 # Only bit-3 data is decoded to find its end.
-                if not ends_undecoded and not self._scan_past_failed_decode():
+                if not ends_undecoded and not self._scan_rest():
                     # As the member's own read words it.
                     if failure is exc:
                         raise
@@ -1309,13 +1327,15 @@ class _PassData:
             self._capture = None
             self._failure = failure
 
-    def _scan_past_failed_decode(self) -> bool:
-        """Find the end of a bit-3 codec member whose decode failed by the walk's scan
-        on its stored bytes, so the walk goes on as it does past an encrypted one
-        nobody read; the file read fails the member alone. The data is damaged, or a
-        wrong key that passed its check byte decoded garbage; either way the codec's
-        end is not the data's. The scan starts at the last bytes the walk kept
-        (``LocalHeaderWalk.scan_member_data``). False for STORED data, which the
+    def _scan_rest(self) -> bool:
+        """Find the end of a bit-3 codec member by the walk's scan on its stored bytes,
+        so the walk goes on as it does past an encrypted one nobody read: one whose
+        decode failed, or one decoded as far as the capture wants and no further.
+
+        After a failed decode the file read fails the member alone. The data is
+        damaged, or a wrong key that passed its check byte decoded garbage; either way
+        the codec's end is not the data's. The scan starts at the last bytes the walk
+        kept (``LocalHeaderWalk.scan_member_data``). False for STORED data, which the
         walk already scans."""
         if self._method() == 0:
             return False

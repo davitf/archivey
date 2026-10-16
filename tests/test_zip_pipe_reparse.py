@@ -47,6 +47,35 @@ def _zip(entries: list[tuple[str, int, bytes]]) -> bytes:
     return buf.getvalue()
 
 
+def _streamed(data: bytes) -> bytes:
+    """``data``'s members written again to a pipe: bit 3 and a descriptor on each,
+    so the pass finds where each one ends only past its data."""
+    out = _PipeWriter()
+    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w") as dst:
+        for info in src.infolist():
+            dst.writestr(info, src.read(info), compress_type=info.compress_type)
+    assert all(
+        info.flag_bits & 0x08
+        for info in zipfile.ZipFile(io.BytesIO(out.data)).infolist()
+    )
+    return bytes(out.data)
+
+
+class _PipeWriter(io.RawIOBase):
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+        self.data += b
+        return len(b)
+
+
 def _from_file(data: bytes) -> dict[str, ArchiveMember]:
     with archivey.open_archive(io.BytesIO(data)) as reader:
         return {m.name: m for m in reader.members()}
@@ -60,10 +89,14 @@ def _from_pipe(data: bytes, *, read: bool) -> dict[str, ArchiveMember]:
         return {m.name: m for m in reader.members_report().members}
 
 
+@pytest.mark.parametrize("bit3", [False, True], ids=["sized", "bit3"])
 @pytest.mark.parametrize("read", [True, False], ids=["read", "unread"])
-def test_a_reparse_target_at_the_cap_is_kept_from_data_over_it(read: bool) -> None:
+def test_a_reparse_target_at_the_cap_is_kept_from_data_over_it(
+    read: bool, bit3: bool
+) -> None:
     """The UTF-16 buffer of a target at the cap is about four times the cap, so the
-    pass keeps the buffer's start past the cap, as far as the buffer declares."""
+    pass keeps the buffer's start past the cap, as far as the buffer declares. A bit-3
+    member nobody read is decoded that far and no further."""
     at_cap = "a" * MAX_LINK_TARGET_BYTES
     over = "b" * (MAX_LINK_TARGET_BYTES + 1)
     attributes = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
@@ -77,6 +110,8 @@ def test_a_reparse_target_at_the_cap_is_kept_from_data_over_it(read: bool) -> No
             ("over", attributes, _reparse_buffer(IO_REPARSE_TAG_SYMLINK, over, over)),
         ]
     )
+    if bit3:
+        data = _streamed(data)
     piped = _from_pipe(data, read=read)
     from_file = _from_file(data)
     for name in ("at_cap", "over"):
@@ -96,12 +131,16 @@ def test_a_large_reparse_member_with_another_tag_is_a_file(read: bool) -> None:
     assert _from_pipe(data, read=read)["stub"].type is MemberType.FILE
 
 
-def test_a_link_buffer_with_padding_past_it_keeps_its_target() -> None:
-    """Bytes after the declared buffer change no parse, and are not kept."""
+@pytest.mark.parametrize("bit3", [False, True], ids=["sized", "bit3"])
+def test_a_link_buffer_with_padding_past_it_keeps_its_target(bit3: bool) -> None:
+    """Bytes after the declared buffer change no parse, and are not kept. Past a
+    bit-3 member's buffer the walk's scan finds where its data ends."""
     buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
     data = _zip(
         [("link", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, buffer + bytes(1 << 20))]
     )
+    if bit3:
+        data = _streamed(data)
     assert _from_file(data)["link"].link_target == "C:/target"
     assert _from_pipe(data, read=False)["link"].link_target == "C:/target"
 
