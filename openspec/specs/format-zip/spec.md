@@ -603,11 +603,11 @@ their reads fail too.
 ### Requirement: Read members past 4 GiB of a macOS Archive Utility ZIP
 
 The same writer stores a member's sizes modulo 2³² as well. An entry carries its marks
-when its version made by is `0x0315` (Unix, 2.1), general-purpose bit 3 is set and bit 0
-(encryption) clear, and its
-central extra field is one old Info-ZIP Unix (`UX`, `0x5855`) field and nothing else.
-Anyone can copy the marks, so they SHALL only gate the corrections below, each
-checked against the archive's own bytes; under a ZIP64 end record nothing is corrected.
+when its version made by is `0x0315` (Unix, 2.1), general-purpose bit 3 is set and
+bit 0 (encryption) clear, and its central extra field is one old Info-ZIP Unix (`UX`,
+`0x5855`) field and nothing else. Anyone can copy the marks, so they SHALL only gate
+the corrections below, each checked against the archive's own bytes; under a ZIP64
+end record nothing is corrected.
 
 - **Compressed size.** When the directory starts past 4 GiB, the walk SHALL hold back
   each marked entry until it has corrected the next entry's offset, and SHALL measure
@@ -626,10 +626,12 @@ checked against the archive's own bytes; under a ZIP64 end record nothing is cor
   least). No lower bound applies, since empty stored blocks pad a valid stream without
   bound. When only the stored size fits, it SHALL be the member's size. When several
   fit, `size` SHALL be `None`, with `extra["size_mod_2_32"]` holding the stored size;
-  the key SHALL stay after a read fills `size` in. When none fits (a damaged entry),
+  the key SHALL stay after a read fills `size` in. An entry with no CRC-32 SHALL keep
+  the stored size instead of `None`, since nothing can check a read against it. When none fits (a damaged entry),
   the stored size SHALL stay, and the read fails on it.
 - A member whose sizes were corrected or left unknown SHALL emit `MEMBER_SIZE_WRAPPED`
-  with `SizeWrapContext` (advisory, as `ARCHIVE_OFFSET_WRAPPED`).
+  with `SizeWrapContext` (advisory, as `ARCHIVE_OFFSET_WRAPPED`). Its message SHALL say
+  the archive was written past 4 GiB only for a corrected size, not an unknown one.
 - **Reading a member of unknown size.** A read from a file SHALL decode the member
   with no declared size, under the usual limits. Once a read reaches the end, the
   length SHALL be refused with `CorruptionError` unless it equals the stored size
@@ -649,6 +651,7 @@ checked against the archive's own bytes; under a ZIP64 end record nothing is cor
 | A deflated member whose stored size is over 1032 times its compressed size | The stored size stays; the read raises `TruncatedError` |
 | A stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
 | A stream of unknown size with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |
+| A stored entry `d/` with no CRC-32 and 2³² + 2²⁹ bytes of data | Its sizes come from the layout, with one `MEMBER_SIZE_WRAPPED`; the member after it reads |
 | A small deflated member | Untouched: no diagnostic, no `size_mod_2_32` |
 
 ### Requirement: Apply max_members while reading a ZIP directory

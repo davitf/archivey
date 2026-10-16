@@ -28,8 +28,9 @@ from archivey.diagnostics import (
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
+    ReadAt,
     find_end_record,
-    local_name_at,
+    local_header_at,
 )
 from archivey.types import ArchiveFormat
 
@@ -335,7 +336,7 @@ def test_a_directory_out_of_file_order_below_4_gib_is_not_corrected() -> None:
     end = find_end_record(read_at, len(data))
     reads.clear()
     walk = CentralDirectoryWalk(
-        read_at, end, local_name_at=lambda offset: local_name_at(read_at, offset)
+        read_at, end, local_name_at=lambda offset: _name_at(read_at, offset)
     )
     entries = list(walk)
     assert [e.name for e in entries] == [b"b.txt", b"a.txt"]
@@ -583,9 +584,28 @@ def test_a_padded_stream_is_not_given_a_size_past_4_gib() -> None:
     with _open(_mac_layout([("padded.bin", member)])) as reader:
         (listed,) = reader.members()
         assert listed.size is None
+        # Nothing wrapped in this small archive, and the message does not say so.
+        (message,) = [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SIZE_WRAPPED
+        ]
+        assert "unknown until a read" in message
+        assert "written past 4 GiB" not in message
         assert reader.read(listed) == data
         assert listed.size == 100
         assert listed.extra["size_mod_2_32"] == 100
+
+
+def test_a_mac_member_without_a_crc_still_gets_its_layout_sizes() -> None:
+    # A directory entry carrying data has no CRC-32 to check, but its sizes come from
+    # the layout and need none. Nothing is decoded.
+    huge = _Zeros(_HUGE_STORED.size, 0)
+    with _open(_mac_layout([("d/", huge), ("b.txt", b"bee")])) as reader:
+        listed, after = reader.members()
+        assert (listed.size, listed.compressed_size) == (huge.size, huge.size)
+        assert [c.member_name for c in _size_wraps(reader)] == ["d/"]
+        assert reader.read(after) == b"bee"
 
 
 def test_a_stored_size_deflate_cannot_reach_is_kept() -> None:
@@ -624,6 +644,8 @@ def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
     # About 4 MiB of deflate can decode to 100 or 2³² + 100 bytes, so the listing
     # cannot tell, under STRICT too. This test decodes 4 GiB of zeros.
     stream = _zeros_deflated(_HUGE_ZEROS_SIZE)
+    # What the test rests on: deflate's ratio lets the stream reach 2³² + 100.
+    assert 1032 * len(stream) >= _HUGE_ZEROS_SIZE
     member = _Deflated(stream, _HUGE_ZEROS_SIZE, _HUGE_ZEROS_CRC)
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     layout = _mac_layout([("zeros.bin", member), ("b.txt", b"bee")])
@@ -742,3 +764,8 @@ def test_a_pipe_descriptor_may_hold_the_full_size_of_a_marked_entry() -> None:
     assert not _contradicts(counted, entry(_UX_CENTRAL))
     assert _contradicts(counted, entry(b""))
     assert _contradicts((7, 50, (1 << 32) + 101), entry(_UX_CENTRAL))
+
+
+def _name_at(read_at: ReadAt, offset: int) -> bytes | None:
+    found = local_header_at(read_at, offset)
+    return None if found is None else found[0]

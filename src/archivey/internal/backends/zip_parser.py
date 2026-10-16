@@ -603,13 +603,6 @@ def local_header_at(read_at: ReadAt, offset: int) -> tuple[bytes, int] | None:
     return name, offset + LOCAL_HEADER_SIZE + local_header_variable_length(fixed)
 
 
-def local_name_at(read_at: ReadAt, offset: int) -> bytes | None:
-    """The stored name of the local header at absolute ``offset``, or ``None`` when no
-    whole local header starts there."""
-    found = local_header_at(read_at, offset)
-    return None if found is None else found[0]
-
-
 #: "Version made by" of macOS Archive Utility: host 3 (Unix), APPNOTE version 2.1.
 ARCHIVE_UTILITY_MADE_BY = 0x0315
 #: The old Info-ZIP Unix extra field (``UX``): the only one Archive Utility writes.
@@ -685,8 +678,8 @@ class CentralDirectoryWalk:
     in turn, from the first that is not below the end of the members before it, and
     keeps the first with its name. In such an archive that is one more local header
     read per member (its fixed part, then its name), when the two callables share it
-    as the reader's do. An uncompressed size that wraps is the reader's to settle: only a
-    decode says what it is.
+    as the reader's do. An uncompressed size that wraps is the reader's to settle:
+    only a decode says what it is.
     """
 
     def __init__(

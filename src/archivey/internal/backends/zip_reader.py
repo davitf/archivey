@@ -1950,20 +1950,26 @@ class ZipReader(BaseArchiveReader):
         left unknown."""
         stored_compressed = entry.compressed_size - entry.compressed_size_correction
         size = member.size
+        stored = (
+            f"ZIP member {quoted(member.name)} stores {stored_compressed} bytes "
+            f"decoding to {entry.file_size}"
+        )
         if size is None:
-            outcome = (
-                f"its size is the stored {entry.file_size} plus an unknown multiple "
-                "of 2**32 until a read counts it"
+            # Nothing was found wrapped: the writer keeps only the low 32 bits, and
+            # the compressed size allows a size past 4 GiB, whatever the archive's.
+            message = (
+                f"{stored}; macOS Archive Utility stores sizes modulo 2**32 and "
+                f"{entry.compressed_size} bytes of deflate can decode to more than "
+                "4 GiB, so the size is unknown until a read counts it."
             )
         else:
-            outcome = f"it holds {entry.compressed_size} bytes and decodes to {size}"
+            message = (
+                f"{stored}, but it holds {entry.compressed_size} bytes and decodes "
+                f"to {size}: the archive was written past 4 GiB without ZIP64."
+            )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_SIZE_WRAPPED,
-            message=(
-                f"ZIP member {quoted(member.name)} stores {stored_compressed} bytes "
-                f"decoding to {entry.file_size}, but {outcome}: the archive was "
-                "written past 4 GiB without ZIP64."
-            ),
+            message=message,
             context=SizeWrapContext(
                 archive_name=self._archive_name,
                 format="zip",
@@ -2308,15 +2314,16 @@ class ZipReader(BaseArchiveReader):
         size: int | None = entry.file_size
         size_unknown: _UnknownSize | None = None
         size_wrapped = False
-        # Only a member with a CRC-32 to check a read against: an unknown size is
-        # filled in only once the CRC matches.
         if (
-            hashes
-            and entry.method in _ARCHIVE_UTILITY_METHODS
+            entry.method in _ARCHIVE_UTILITY_METHODS
             and not self._end.zip64
             and written_by_archive_utility(entry)
         ):
             size, size_unknown = _wrapped_size(entry)
+            if size_unknown is not None and not hashes:
+                # An unknown size is filled in only once a read's CRC-32 matches;
+                # with none to check, the stored size stays.
+                size, size_unknown = entry.file_size, None
             size_wrapped = size != entry.file_size or bool(
                 entry.compressed_size_correction
             )

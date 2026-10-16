@@ -835,10 +835,11 @@ does not record its length, and the `__MACOSX/._name` sidecar is AppleDouble (Fi
 info, extended attributes, resource fork; no data length).
 
 - **The fingerprint** (`written_by_archive_utility` in `zip_parser.py`): version made by
-  `0x0315` (Unix, 2.1), bit 3 set and bit 0 (encryption) clear (Archive Utility writes
-  16-byte descriptors with their signature, and never encrypts), and the central extra field is exactly one `UX` field. The reader also
-  requires a classic end record, since the writer never writes ZIP64. The `__MACOSX`
-  sidecars usually appear too, but are not required. Anyone can copy these fields, so
+  `0x0315` (Unix, 2.1), bit 3 set and bit 0 (encryption) clear (Archive Utility
+  writes 16-byte descriptors with their signature, and never encrypts), and the
+  central extra field is exactly one `UX` field. The reader also requires a classic
+  end record, since the writer never writes ZIP64. The `__MACOSX` sidecars usually
+  appear too, but are not required. Anyone can copy these fields, so
   the fingerprint only decides whether to try the corrections below. Each is checked
   against the archive's own bytes, and the CRC-32 is still checked on a read.
 - **Compressed size, from the layout.** Only in a directory past 4 GiB can a compressed
@@ -848,10 +849,10 @@ info, extended attributes, resource fork; no data length).
   16-byte descriptor. A length past the stored size by a positive multiple of 2³² is
   taken. The entry after a marked one looks for its header at its stored offset plus
   each multiple of 2³² in turn (from the first not below the members before it) and
-  keeps the first with its name. The walk reads each local header once (its fixed part,
-  then its name) and the data start comes from the same read, so the cost is the
-  header reads a stored offset already needed, only in a marked archive past 4 GiB. A pipe has the data starts of the `UX` local headers its
-  pass met, and measures the same way.
+  keeps the first with its name. The walk reads each local header once (its fixed
+  part, then its name), and the data start comes from the same read, so the cost is
+  one header read per member, only in a marked archive past 4 GiB. A pipe has the data
+  starts of the `UX` local headers its pass met, and measures the same way.
 - **Size, stored members:** the compressed size, when the two agree modulo 2³².
 - **Size, deflated members: deflate's ratio bound.** The real size is the stored size
   plus some multiple of 2³², and the compressed size bounds it from above: a 258-byte
@@ -877,10 +878,15 @@ info, extended attributes, resource fork; no data length).
     archive stored only the low bits. A pipe pass that decoded the member to its end
     with the directory's CRC-32 keeps the size it counted. davi chose this (option A,
     2026-10-15) over decoding such members while listing, which would read a whole
-    archive of videos to list it.
+    archive of videos to list it. An entry with no CRC-32 (a directory carrying data)
+    has nothing to check a read against, so it keeps the stored size instead of
+    `None`; its compressed size, and a stored member's size, still come from the
+    layout, which needs no digest.
   - **None fits:** the stored value is over 1032 times the compressed size, a damaged
     entry. The stored size stays and the read fails on it.
 - Every member whose sizes were corrected or left unknown gets one `MEMBER_SIZE_WRAPPED`
+  (its message says the archive passed 4 GiB only when a size was corrected; an
+  unknown one says only that the size may be past 4 GiB)
   (`SizeWrapContext`: stored and corrected compressed size and size), advisory for the
   same reason as `ARCHIVE_OFFSET_WRAPPED`. A member that needed no change reports
   nothing, so an ordinary Mac archive under 4 GiB costs nothing and says nothing.

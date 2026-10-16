@@ -29,7 +29,7 @@ from archivey.internal.backends.zip_parser import (
     EntryOverrun,
     ReadAt,
     find_end_record,
-    local_name_at,
+    local_header_at,
     read_local_header,
 )
 from tests.corruption_util import raises_corruption_not_truncation
@@ -255,7 +255,7 @@ def test_a_huge_zip64_compressed_size_does_not_stall_the_offset_correction() -> 
     read_at = _read_at(data)
     end = find_end_record(read_at, len(data))
     walk = CentralDirectoryWalk(
-        read_at, end, local_name_at=lambda offset: local_name_at(read_at, offset)
+        read_at, end, local_name_at=lambda offset: _name_at(read_at, offset)
     )
     entries = list(walk)
     assert entries[0].compressed_size == (1 << 64) - 2
@@ -711,3 +711,8 @@ def test_reader_refuses_a_local_header_offset_past_the_file(offset: int) -> None
         assert reader.open("a.txt").read() == b"hello"
         with raises_corruption_not_truncation():
             reader.open("b.txt").read()
+
+
+def _name_at(read_at: ReadAt, offset: int) -> bytes | None:
+    found = local_header_at(read_at, offset)
+    return None if found is None else found[0]
