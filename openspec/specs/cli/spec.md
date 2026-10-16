@@ -120,7 +120,13 @@ a maintainer/debug affordance and MUST NOT add a public library performance API.
 equivalent report path). It SHALL print a human layer-1 member view by default
 (type, size, mtime, mode, encrypted flag, name; link target for links) for every
 recovered member in the report and MUST NOT show digests unless `--digests` is
-set (stored `member.hashes` only; no body read). When the report’s `error` is
+set (stored `member.hashes` only; no body read). `--long` SHALL instead print a
+header line and one line per member that adds packed size, space saved, the
+compression method chain and the stored CRC-32. `--details` SHALL instead print
+one `key: value` block per member, blank-line separated, naming every field the
+member carries (times, owner, host OS, Windows attributes, digests, comment, each
+`extra` key, attached diagnostics) and leaving out fields the format does not
+record. Neither reads a member body; the two flags are mutually exclusive. When the report’s `error` is
 set, `list` SHALL still print the recovered members, SHALL emit a short stderr
 message naming the terminal archive error, and SHALL exit nonzero (`1`). `-v` /
 `--verbose` SHALL surface diagnostics when present.
@@ -266,6 +272,8 @@ other processed statuses are omitted from that line).
 | `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
 | `archivey list <archive>` with recoverable prefix + terminal archive error | Prints recovered members on stdout; stderr names the error; exit `1` |
 | `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
+| `archivey list <archive> --long` | Header plus one line per member with packed size, ratio, method and CRC-32 |
+| `archivey list <archive> --details` | One `key: value` block per member with every stored field |
 | `archivey test <archive>` / `archivey t <archive>` | Fully reads members, verifies stored digests, reports failures |
 | `archivey extract <archive>` / `archivey x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
 | `archivey extract <archive>` where archive has many top-level entries | Extracts into `./<archive-stem>/` (no cwd splatter) |

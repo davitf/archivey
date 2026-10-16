@@ -8,7 +8,13 @@ from datetime import datetime
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.terminal import display_path, escape_control_chars
-from archivey.types import ArchiveFormat, ArchiveMember, MemberType
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveMember,
+    CompressionMethod,
+    HashAlgorithm,
+    MemberType,
+)
 
 _TYPE_MARK = {
     MemberType.FILE: "f",
@@ -143,6 +149,141 @@ def format_member_line(
             line = f"{line}  ({diag})"
 
     return line
+
+
+def format_compression(methods: tuple[CompressionMethod, ...]) -> str:
+    """The member's codec chain, pre-filters first: ``deflate``, ``bcj2+lzma2``.
+
+    A RAR method level shows after a colon (``rar:3``); ``-`` when the format
+    records no method (TAR, ISO).
+    """
+    if not methods:
+        return "-"
+    return "+".join(
+        m.algo.value if m.level is None else f"{m.algo.value}:{m.level}"
+        for m in methods
+    )
+
+
+def format_ratio(member: ArchiveMember) -> str:
+    """Space saved, as ``unzip -v`` prints it: ``75%`` for a member packed to a quarter."""
+    size, packed = member.size, member.compressed_size
+    if size is None or packed is None:
+        return "-"
+    if size == 0:
+        return "0%"
+    return f"{round(100 * (size - packed) / size)}%"
+
+
+def _crc_column(member: ArchiveMember) -> str:
+    crc = member.hashes.get(HashAlgorithm.CRC32)
+    return format_hash_value(crc) if crc is not None else "-"
+
+
+LONG_HEADER = "  ".join(
+    [
+        "ts",
+        f"{'mode':<9}",
+        f"{'size':>10}",
+        f"{'packed':>10}",
+        f"{'ratio':>5}",
+        f"{'method':<10}",
+        f"{'crc32':>8}",
+        f"{'modified':<16}",
+        "name",
+    ]
+)
+
+
+def format_member_long_line(member: ArchiveMember) -> str:
+    """``list --long`` line: the basic line plus packed size, ratio, method and CRC."""
+    mark = _TYPE_MARK.get(member.type, "?")
+    status = "E" if member.is_encrypted else ("~" if not member.is_current else "-")
+    name = escape_member_name(member.name)
+    if member.is_link and member.link_target is not None:
+        name = f"{name} -> {escape_member_name(member.link_target)}"
+    parts = [
+        f"{mark}{status}",
+        format_mode(member.mode),
+        f"{format_size(member.size):>10}",
+        f"{format_size(member.compressed_size):>10}",
+        f"{format_ratio(member):>5}",
+        f"{escape_control_chars(format_compression(member.compression)):<10}",
+        f"{_crc_column(member):>8}",
+        f"{format_mtime(member.modified):<16}",
+        name,
+    ]
+    return "  ".join(parts)
+
+
+def _format_time_detail(dt: datetime | None) -> str | None:
+    return None if dt is None else dt.isoformat(sep=" ")
+
+
+def format_member_details(member: ArchiveMember) -> list[str]:
+    """``list --details`` block: one ``key: value`` line per field the member has.
+
+    Fields the format does not record are left out rather than printed as ``-``, so
+    the block shows what this archive actually stores. Every value is escaped: names,
+    owners, the comment and the ``extra`` bag all come from the archive.
+    """
+    fields: list[tuple[str, object]] = [
+        ("name", member.name),
+        ("type", member.type.value),
+    ]
+    if member.is_link and member.link_target is not None:
+        fields.append(("link_target", member.link_target))
+    fields += [
+        ("size", member.size),
+        ("packed_size", member.compressed_size),
+    ]
+    if member.size is not None and member.compressed_size is not None:
+        fields.append(("ratio", format_ratio(member)))
+    if member.compression:
+        fields.append(("method", format_compression(member.compression)))
+    fields.append(("encrypted", "yes" if member.is_encrypted else "no"))
+    if not member.is_current:
+        fields.append(("current", "no"))
+    if member.is_sparse:
+        fields.append(("sparse", "yes"))
+    fields += [
+        ("modified", _format_time_detail(member.modified)),
+        ("accessed", _format_time_detail(member.accessed)),
+        ("created", _format_time_detail(member.created)),
+        ("ctime", _format_time_detail(member.ctime)),
+    ]
+    if member.mode is not None:
+        fields.append(("mode", f"{member.mode:04o} ({format_mode(member.mode)})"))
+    fields += [
+        ("uid", member.uid),
+        ("gid", member.gid),
+        ("owner", member.uname),
+        ("group", member.gname),
+    ]
+    if member.create_system is not None:
+        fields.append(("host_os", member.create_system.name.lower()))
+    if member.windows_attrs is not None:
+        fields.append(("windows_attrs", f"0x{member.windows_attrs:08x}"))
+    for algo, val in sorted(member.hashes.items()):
+        fields.append((algo.value, format_hash_value(val)))
+    fields.append(("comment", member.comment))
+    for key, value in sorted(member.extra.items()):
+        if isinstance(value, bytes):
+            value = value.hex()
+        fields.append((f"extra.{key}", value))
+
+    shown = [
+        (escape_control_chars(k), escape_control_chars(str(v)))
+        for k, v in fields
+        if v is not None
+    ]
+    # A diagnostic's message is stored escaped already; escaping it again would
+    # double its backslashes.
+    shown += [
+        ("diagnostic", f"{d.code.value}: {d.message}") for d in member.diagnostics
+    ]
+    width = max(len(k) for k, _ in shown) + 1
+    return [f"{key + ':':<{width}} {text}" for key, text in shown]
 
 
 def format_access_summary(cost: CostReceipt) -> str:

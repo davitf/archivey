@@ -159,6 +159,75 @@ def test_list_digests_names_the_algorithm_by_value(
     assert line.endswith(f"[crc32={crc:08x}]")
 
 
+def test_list_long_adds_packed_size_method_and_crc(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--long`` prints a header, then each member's packed size, ratio, method, CRC."""
+    path = tmp_path / "long.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("big.txt", b"a" * 1000, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("raw.bin", b"xyz", compress_type=zipfile.ZIP_STORED)
+    with zipfile.ZipFile(path) as zf:
+        big = zf.getinfo("big.txt")
+    assert main(["list", "--long", str(path)]) == EXIT_OK
+    header, big_line, raw_line = capsys.readouterr().out.splitlines()
+    assert header.split() == [
+        "ts",
+        "mode",
+        "size",
+        "packed",
+        "ratio",
+        "method",
+        "crc32",
+        "modified",
+        "name",
+    ]
+    saved = round(100 * (1000 - big.compress_size) / 1000)
+    assert big_line.split()[2:7] == [
+        "1000",
+        str(big.compress_size),
+        f"{saved}%",
+        "deflate",
+        f"{big.CRC:08x}",
+    ]
+    assert raw_line.split()[2:6] == ["3", "3", "0%", "stored"]
+    # The name column lines up under its header.
+    assert big_line.index("big.txt") == header.index("name")
+
+
+def test_list_details_prints_one_block_per_member(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--details`` prints ``key: value`` blocks, leaving out fields not recorded."""
+    path = tmp_path / "details.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("a.txt", date_time=(2020, 1, 2, 3, 4, 6))
+        info.external_attr = 0o100640 << 16
+        info.create_system = 3
+        info.comment = b"a\x1bnote"
+        zf.writestr(info, b"hello", compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("b.txt", b"x")
+    assert main(["list", "--details", str(path)]) == EXIT_OK
+    first, second = capsys.readouterr().out.split("\n\n")
+    fields = dict(line.split(":", 1) for line in first.splitlines())
+    fields = {k: v.strip() for k, v in fields.items()}
+    assert fields["name"] == "a.txt"
+    assert fields["type"] == "file"
+    assert fields["size"] == "5"
+    assert fields["method"] == "deflate"
+    assert fields["mode"] == "0640 (rw-r-----)"
+    assert fields["host_os"] == "unix"
+    assert fields["modified"].startswith("2020-01-02 03:04:06")
+    assert fields["comment"] == "a\\x1bnote"  # escaped, not a raw ESC
+    assert "uid" not in fields  # ZIP without a Unix extra field records no owner
+    assert second.startswith("name:")
+    assert "b.txt" in second
+
+
+def test_list_long_and_details_are_exclusive(sample_zip: Path) -> None:
+    assert main(["list", "--long", "--details", str(sample_zip)]) == EXIT_USAGE
+
+
 def test_list_incomplete_members_report_exits_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -6,6 +6,8 @@ need `tqdm`, which comes with `[recommended]`; without it the command still runs
 ```bash
 archivey photos.zip                 # same as: archivey list photos.zip
 archivey l photos.zip               # list (alias)
+archivey l --long photos.zip        # add packed size, ratio, method and CRC columns
+archivey l --details photos.zip     # every stored field of each member, key: value
 archivey t photos.zip               # full-read integrity check
 archivey x photos.zip               # safe extract (alias for extract)
 archivey info photos.zip            # format / identity + access cost (alias: detect)

@@ -8,7 +8,12 @@ from typing import TextIO
 from archivey.cli.common import open_for_cli
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
-from archivey.cli.format import format_member_line
+from archivey.cli.format import (
+    LONG_HEADER,
+    format_member_details,
+    format_member_line,
+    format_member_long_line,
+)
 from archivey.cli.password import resolve_password
 from archivey.config import ArchiveyConfig, PasswordInput
 
@@ -19,6 +24,8 @@ def run_list(
     patterns: list[str],
     exclude: list[str],
     digests: bool,
+    long: bool = False,
+    details: bool = False,
     verbose: bool,
     password: str | None,
     track_io: bool,
@@ -39,11 +46,21 @@ def run_list(
         # when the patterns select nothing: the listing itself succeeded. A listing
         # that ends in damage gives no pattern warning; its error is printed below.
         selected = selection.settle_from(report, err=err)
-        for member in selected:
-            print(
-                format_member_line(member, digests=digests, verbose=verbose),
-                file=out,
-            )
+        if long and selected:
+            print(LONG_HEADER, file=out)
+        for index, member in enumerate(selected):
+            if details:
+                if index:
+                    print(file=out)
+                for line in format_member_details(member):
+                    print(line, file=out)
+            elif long:
+                print(format_member_long_line(member), file=out)
+            else:
+                print(
+                    format_member_line(member, digests=digests, verbose=verbose),
+                    file=out,
+                )
         if report.error is not None:
             print(f"archivey: {report.error}", file=err)
             return EXIT_FAIL
