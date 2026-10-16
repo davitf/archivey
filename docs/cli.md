@@ -99,11 +99,14 @@ fails may already have been written when the failure is found. `cat` then prints
 
 `archivey x data.tgz --outer` writes `data.tar` and leaves the source in place, as
 `gunzip -k` does; `-d`, `--overwrite` and `--dry-run` work as for any `.gz`.
-`archivey t data.tar.zst --outer` reads the whole decompressed stream and checks the
-compressor's end-of-stream checksum where it has one, as `gzip -t` and `xz -t` do,
-without looking inside the tar (Brotli and `.Z` carry no checksum). Both need a file
-on disk: for a pipe, use `archivey cat - --outer`. A ZIP, 7z, RAR, ISO or plain tar has
-no compression layer, so `--outer` refuses it, and it takes no member patterns.
+`archivey t data.tar.gz --outer` reads the whole decompressed stream and checks the
+compressor's end-of-stream checksum, as `gzip -t` does, without looking inside the
+tar. gzip, xz, lzip, bzip2 and zlib always carry one, zstd and LZ4 only when the writer
+added it, and Brotli and `.Z` never. As with `cat --outer`, the compressor is detected by
+content, so a raw zlib or Brotli stream is found whatever it is named, with no
+`--probe-content`. Both need a file on disk: for a pipe, use `archivey cat - --outer`.
+A ZIP, 7z, RAR, ISO or plain tar has no compression layer, so `--outer` refuses it, and
+it takes no member patterns or `--exclude`.
 
 ### Passwords
 

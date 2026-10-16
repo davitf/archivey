@@ -188,3 +188,19 @@ def test_outer_finds_the_layer_by_content_whatever_the_name(
     assert code == EXIT_OK, err
     if verb == "extract":
         assert (dest / "weird.name.uncompressed").read_bytes() == b"payload\n"
+
+
+def test_extract_outer_without_dest_writes_the_tar_into_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--outer turns a compressed tar into a single-file archive, so the default
+    destination is the cwd with no ``data/`` wrapper, as for any ``.gz``."""
+    src = tmp_path / "data.tgz"
+    src.write_bytes(gzip.compress(_tar_bytes()))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    code, err = _run(["extract", str(src), "--outer"])
+    assert code == EXIT_OK, err
+    assert os.listdir(cwd) == ["data.tar"]
+    assert (cwd / "data.tar").read_bytes() == _tar_bytes()
