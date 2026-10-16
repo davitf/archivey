@@ -370,7 +370,9 @@ You might expect `encoding=` to decide how every name is decoded. It does not: w
 the archive does not say which encoding a name uses, archivey tries UTF-8 first, in
 every format, and uses your encoding only when the bytes are not valid UTF-8. Your
 encoding takes the place of the format's own fallback (cp437 for ZIP, the writer's code
-page for RAR 1.5-4, escapes for TAR and ISO).
+page for RAR 1.5-4, escapes for TAR and ISO). An encoding that cannot decode a name's
+bytes at all, such as `utf-16` on an odd number of bytes, leaves that name decoded as
+it would be without `encoding=`.
 
 | Where the name comes from | What `encoding=` does |
 | --- | --- |

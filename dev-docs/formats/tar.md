@@ -288,7 +288,11 @@ the caller's codec, as ZIP and RAR 1.5-4 do. A PAX record is decoded strictly as
 first and falls back to the archive codec (with `surrogateescape`) only when that fails,
 so `encoding=` changes a PAX name only when its bytes are not UTF-8. A PAX record under
 `hdrcharset=BINARY`, in its own header or in a global header before it that no later
-global header reset, declares no encoding and is read as a ustar field is.
+global header reset, declares no encoding and is read as a ustar field is. UTF-8 is
+tried before the codec for ASCII too, so an ASCII name never reaches it: `cp037` read
+`abc` as `/ÂÄ`, and `utf-16` failed the open. A codec that fails on bytes that are not
+UTF-8 (`utf-16` on an odd length, `utf-7`, `idna`) gives way to the UTF-8 escape decode,
+as in ZIP, RAR and ISO. `extra["tar.pax_headers"]` decodes each value by the same rule.
 
 ### 2.3 Member data
 

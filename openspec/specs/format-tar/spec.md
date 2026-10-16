@@ -391,6 +391,12 @@ fails it SHALL be decoded with the same archive codec and error handler, so `enc
 (or the UTF-8 default) applies to a PAX record only when its bytes are not UTF-8. A PAX
 record under `hdrcharset=BINARY`, in its own header or in a global header before it that
 no later global header reset, declares no encoding and is decoded as a ustar field is.
+A field of ASCII bytes is valid UTF-8, so `encoding=` never applies to it. A
+caller-passed codec that cannot decode a field's bytes (`utf-16` or `utf-32` on a length
+it cannot split, `utf-7` on a `+` shift, `idna`, which has no `surrogateescape`) SHALL
+NOT fail the open or the listing: the field SHALL decode as with no `encoding=`, as in ZIP,
+RAR and ISO. `extra["tar.pax_headers"]` SHALL decode each record value by the same rule
+as the member's name.
 
 #### Scenario: TAR default name decoding
 
@@ -404,6 +410,8 @@ no later global header reset, declares no encoding and is decoded as a ustar fie
 | PAX `path` record holding the non-UTF-8 bytes `caf\xe9\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
 | The same PAX record, `encoding="latin-1"` | `name == "caféé.txt"` |
 | A global header with `hdrcharset=BINARY`, then a member whose PAX `path` holds UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"`; one `MEMBER_NAME_ENCODING_INFERRED` naming `latin-1`, as under the member's own `hdrcharset=BINARY` |
+| ustar or GNU name, link target and owner stored as ASCII `abc`, `encoding="cp037"`, `"utf-16"` or `"utf-32"` | `name == "abc"`, the others as stored; no diagnostic; never `UnicodeDecodeError` |
+| GNU name stored as Latin-1 `a+caf\xe9.tx` (odd length), `encoding="utf-16"`, `"utf-32"`, `"utf-7"` or `"idna"` | `name == "a+caf\udce9.tx"`, as with no `encoding=` |
 
 ### Requirement: Parse TAR headers natively
 

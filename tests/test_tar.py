@@ -2858,6 +2858,60 @@ def test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding() -> None:
         # name, so which bytes were stored cannot be recovered from it.
 
 
+@pytest.mark.parametrize("fmt", [tarfile.USTAR_FORMAT, tarfile.GNU_FORMAT])
+@pytest.mark.parametrize("encoding", ["cp037", "utf-16", "utf-32", "utf-7", "idna"])
+def test_ascii_header_fields_ignore_an_encoding_that_reads_ascii_differently(
+    fmt: int, encoding: str
+) -> None:
+    """ASCII is valid UTF-8, so ``encoding=`` never applies to it. Decoding with the
+    codec first turned ``abc`` into ``/ÂÄ`` under EBCDIC ``cp037`` and raised
+    ``UnicodeDecodeError`` under ``utf-16`` and ``utf-32``, before the listing began."""
+    data = _one_member_tar("abc", "ascii", fmt, linkname="a+b", owner="root")
+    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+        (member,) = ar.members()
+        assert member.name == "abc"
+        assert member.link_target == "a+b"
+        assert member.uname == member.gname == "root"
+        assert not member.diagnostics
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32", "utf-7", "idna"])
+def test_header_name_the_encoding_cannot_decode_falls_back_to_escapes(
+    encoding: str,
+) -> None:
+    """A codec that fails on bytes that are not UTF-8 (an odd length for UTF-16 or
+    UTF-32, a ``+`` shift for UTF-7, no ``surrogateescape`` for ``idna``) decodes the
+    name as with no ``encoding=``, as ZIP, RAR and ISO do, rather than failing the
+    open."""
+    data = _one_member_tar("a+caf\xe9.tx", "latin-1", tarfile.GNU_FORMAT)
+    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+        (member,) = ar.members()
+        assert member.name == "a+caf\udce9.tx"
+        assert member.raw_name == b"a+caf\xe9.tx"
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32", "utf-7", "idna"])
+def test_pax_value_the_encoding_cannot_decode_falls_back_to_escapes(
+    encoding: str,
+) -> None:
+    raw = b"caf\xe9\xe9.txt"
+    data = _pax_tar_with_non_utf8_path(raw)
+    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+        (member,) = ar.members()
+        assert member.name == "caf\udce9\udce9.txt"
+        assert member.extra["tar.pax_headers"]["path"] == "caf\udce9\udce9.txt"
+
+
+def test_binary_pax_record_text_matches_the_member_name() -> None:
+    """Under ``hdrcharset=BINARY``, ``extra["tar.pax_headers"]`` decodes a valid UTF-8
+    ``path`` as the name does, rather than with ``encoding=``."""
+    data = _binary_pax_tar(global_binary=False)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "caé.txt"
+        assert member.extra["tar.pax_headers"]["path"] == "caé.txt"
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 def test_close_releases_the_codec_stream_when_its_buffer_close_raises(
     tmp_path: Path, streaming: bool

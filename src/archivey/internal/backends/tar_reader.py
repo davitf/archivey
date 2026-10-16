@@ -208,10 +208,6 @@ _HARDLINK_TYPE = b"1"
 # Character and block devices and FIFOs, which carry device numbers.
 _DEVICE_TYPES = frozenset((b"3", b"4", b"6"))
 
-# PAX records whose value is a name: without ``hdrcharset=BINARY`` it is UTF-8, as
-# POSIX says; with it, or for a ustar or GNU field, it has no declared encoding.
-_PAX_NAME_KEYS = frozenset((b"path", b"linkpath", b"uname", b"gname"))
-
 
 def _member_type(entry: TarEntry) -> MemberType:
     typeflag = entry.typeflag
@@ -1232,21 +1228,32 @@ class TarReader(BaseArchiveReader):
         return shared[1]
 
     def _pax_headers_text(self, records: Mapping[bytes, PaxValue]) -> dict[str, str]:
-        """PAX records as text. Keys and values are UTF-8; a name value under
-        ``hdrcharset=BINARY`` uses the archive codec, and any value that is not valid
-        UTF-8 falls back to it, with undecodable bytes kept as surrogates."""
+        """PAX records as text. Keys and values are UTF-8 when their bytes are valid
+        UTF-8, under ``hdrcharset=BINARY`` too, as the member's name is; a value that is
+        not falls back to the archive codec (``_decode_not_utf8``)."""
         text: dict[str, str] = {}
         for key, entry in records.items():
             value = entry.value
-            if key in _PAX_NAME_KEYS and entry.binary:
-                decoded = value.decode(self._codec, "surrogateescape")
-            else:
-                try:
-                    decoded = value.decode("utf-8")
-                except UnicodeDecodeError:
-                    decoded = value.decode(self._codec, "surrogateescape")
+            try:
+                decoded = value.decode("utf-8")
+            except UnicodeDecodeError:
+                decoded = self._decode_not_utf8(value)
             text[key.decode("utf-8", "surrogateescape")] = decoded
         return text
+
+    def _decode_not_utf8(self, raw: bytes) -> str:
+        """Bytes that are not valid UTF-8, decoded with the archive codec: the
+        caller's ``encoding=``, else UTF-8, with undecodable bytes kept as surrogates.
+
+        ``surrogateescape`` can escape only a byte of 0x80 or more, so a codec that
+        does not decode ASCII bytes one by one (``utf-16`` on an odd length, ``utf-7``
+        on a lone ``+``) still fails, and ``idna`` refuses the handler outright. Such a
+        name decodes as it would with no ``encoding=``, as in ZIP, RAR and ISO.
+        """
+        try:
+            return raw.decode(self._codec, "surrogateescape")
+        except UnicodeError:
+            return raw.decode("utf-8", "surrogateescape")
 
     def _decode_name(
         self, raw: bytes, source: NameSource | None, binary: bool
@@ -1260,19 +1267,19 @@ class TarReader(BaseArchiveReader):
         valid UTF-8, else the caller's ``encoding=`` (UTF-8 with surrogateescape by
         default), the rule every format follows.
         """
-        if source is NameSource.PAX and not binary:
-            try:
-                return raw.decode("utf-8"), False
-            except UnicodeDecodeError:
-                return raw.decode(self._codec, "surrogateescape"), False
-        codec_text = raw.decode(self._codec, "surrogateescape")
-        if self._encoding is None or raw.isascii():
-            return codec_text, False
+        # UTF-8 is tried before the codec, ASCII included: ``encoding="cp037"`` would
+        # otherwise turn the ASCII name ``abc`` into ``/ÂÄ``.
         try:
             utf8_text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            return codec_text, False
-        return utf8_text, utf8_text != codec_text
+            return self._decode_not_utf8(raw), False
+        if (
+            self._encoding is None
+            or raw.isascii()
+            or (source is NameSource.PAX and not binary)
+        ):
+            return utf8_text, False
+        return utf8_text, utf8_text != self._decode_not_utf8(raw)
 
     def _to_member(self, entry: TarEntry, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
