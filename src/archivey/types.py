@@ -285,9 +285,7 @@ class FormatSupport(Enum):
     """Tri-state readability of a known format (see ``backend-registry``)."""
 
     FULL = "full"  # backend usable AND every optional codec/tool it can use is present
-    PARTIAL = (
-        "partial"  # opens & lists; common members decode; some optional codec missing
-    )
+    PARTIAL = "partial"  # opens & lists; common members decode; some optional codec or tool missing
     NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
 
 

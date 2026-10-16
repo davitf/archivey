@@ -63,7 +63,9 @@ if availability.support is not FormatSupport.FULL:
 - **`FULL`** — the format opens, and every optional codec it can use is installed.
 - **`PARTIAL`** — the format opens and lists, and members in its common codecs read. A
   member that needs a missing codec raises `PackageNotInstalledError` when you read it.
-  Only ZIP and 7z can be `PARTIAL`.
+  ZIP and 7z are `PARTIAL` when a codec package is missing. RAR is `PARTIAL` when no
+  RARLAB `unrar` or `rar` 6.0 or later is on `PATH`: stored members read, compressed
+  and encrypted ones need the program.
 - **`NONE`** — the format cannot be opened. `open_archive()` raises
   `PackageNotInstalledError` naming the package: ISO without `pycdlib`, `.lz4` without
   `lz4`, `.tar.zst` without a zstd backend. The exception is a source that cannot seek,
@@ -71,8 +73,11 @@ if availability.support is not FormatSupport.FULL:
   `StreamNotSeekableError` first, because the package would not make a pipe readable.
 
 `missing` names each absent package with the `pip install` line that adds it, and is
-empty when support is `FULL`. Two requirements are not counted: `cryptography`, which
-only encrypted members need, and `unrar`, so RAR reports `FULL` whatever is on `PATH`.
+empty when support is `FULL`. For RAR it names `unrar`; to find out,
+`format_availability()` runs each candidate on `PATH` once to read its banner. The
+answer is for the default `rar_decompressor`, so a usable `unar` does not make RAR
+`FULL`. One requirement is not counted: `cryptography`, which only encrypted members
+need.
 `list_supported_formats()` returns every format that is `FULL` or `PARTIAL`. Whether a
 format can be read from a pipe is a separate question, answered by `required_source` on
 [Opening and listing](opening-and-listing.md).

@@ -698,3 +698,87 @@ def test_cache_clear_picks_up_a_dependency_installed_later(
         assert registry_module._optional(name) is installed
     finally:
         registry_module._optional.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# The optional codec lists match the method tables; RAR counts unrar
+# ---------------------------------------------------------------------------
+
+
+def test_container_optional_codecs_match_method_tables() -> None:
+    # The registry keeps its own list of each container's optional member codecs. It
+    # once left LZ4 out of 7z, so 7z reported FULL without ``lz4``. Every codec a
+    # method table uses that needs a package must be on the list, and nothing else.
+    from archivey.internal.backends.sevenzip_methods import _METHODS
+    from archivey.internal.backends.zip_reader import _ZIP_METHOD_CODECS
+    from archivey.internal.registry import _CONTAINER_OPTIONAL_CODECS
+    from archivey.internal.streams.codecs.registry import codec_requirement
+
+    used = {
+        ContainerFormat.SEVEN_Z: {m.codec for m in _METHODS if m.codec is not None},
+        ContainerFormat.ZIP: set(_ZIP_METHOD_CODECS.values()),
+    }
+    for container, codecs in used.items():
+        optional = {c for c in codecs if codec_requirement(c) is not None}
+        assert set(_CONTAINER_OPTIONAL_CODECS[container]) == optional, container
+
+
+def test_7z_partial_without_lz4(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codecs_module.deps, "lz4_frame", None)
+    avail = format_availability(ArchiveFormat.SEVEN_Z)
+    assert avail.support is FormatSupport.PARTIAL
+    assert "lz4" in {m.name for m in avail.missing}
+
+
+def _hide_rarlab_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
+    from archivey.internal.backends import rar_unrar
+
+    def _missing() -> str:
+        raise PackageNotInstalledError("no unrar here")
+
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", _missing)
+
+
+def test_rar_partial_without_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hide_rarlab_unrar(monkeypatch)
+    avail = format_availability(ArchiveFormat.RAR)
+    assert avail.support is FormatSupport.PARTIAL
+    assert [m.name for m in avail.missing] == ["unrar"]
+    assert "apt install unrar" in avail.missing[0].install_hint
+    # PARTIAL still opens and lists, so RAR stays supported.
+    assert ArchiveFormat.RAR in list_supported_formats()
+
+
+def test_rar_partial_with_empty_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The real finder, not a stub: with nothing on PATH there is no unrar or rar.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    avail = format_availability(ArchiveFormat.RAR)
+    assert avail.support is FormatSupport.PARTIAL
+    assert [m.name for m in avail.missing] == ["unrar"]
+
+
+def test_rar_full_with_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
+    from archivey.internal.backends import rar_unrar
+
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/usr/bin/unrar")
+    avail = format_availability(ArchiveFormat.RAR)
+    assert avail.support is FormatSupport.FULL
+    assert avail.missing == ()
+
+
+def test_open_path_does_not_probe_for_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The probe runs a binary, so only the public query pays for it. The open path
+    # (reader_for_format) and list_supported_formats get the same answer without it.
+    from archivey.internal.backends import rar_unrar
+
+    def _fail() -> str:
+        raise AssertionError("probed for unrar")
+
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", _fail)
+    registry = get_registry()
+    support = registry.format_availability(ArchiveFormat.RAR).support
+    assert support is not FormatSupport.NONE
+    registry.reader_for_format(ArchiveFormat.RAR)
+    assert ArchiveFormat.RAR in list_supported_formats()

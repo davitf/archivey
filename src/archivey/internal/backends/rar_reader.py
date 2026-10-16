@@ -109,6 +109,7 @@ from archivey.internal.backends.rar_unrar import (
     find_rarlab_unrar,
     open_unrar_p,
     plan_unrar_mask,
+    rarlab_unrar_missing,
     unrar_mask_keys,
     unrar_mask_selects,
     unrar_member_view,
@@ -199,6 +200,7 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
+    MissingComponent,
     SpecialFileType,
     crc32_digest,
 )
@@ -4613,6 +4615,12 @@ class RarReadBackend(ReadBackend):
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     NON_SEEKABLE_REASON = _NON_SEEKABLE_REASON
     OPTIONAL_DEPENDENCY = None
+
+    @classmethod
+    def missing_programs(cls) -> tuple[MissingComponent, ...]:
+        # Independent of ``rar_decompressor``: the query takes no config, so it answers
+        # for the default ``AUTO``, which uses unrar when one is usable.
+        return rarlab_unrar_missing()
 
     def open_read(
         self,
