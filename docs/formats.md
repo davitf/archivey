@@ -102,22 +102,22 @@ The fields that change in practice:
 
 | Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
-| ZIP | `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| ZIP | `size` of a large macOS member listed `None` (`extra["size_mod_2_32"]`), until a verified full read fills it in; `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
 | ISO | `is_current`, `link_target_member` | none: Rock Ridge carries the target |
 | Directory | `link_target_member` (names never repeat) | none: the target is read with the entry |
-| Single-file (`.gz`, `.xz`, …) | none in practice: one member, no links | none |
+| Single-file (`.gz`, `.xz`, …) | `size`, when the format records none: a full read fills it in, and the flag stays `False` until then ([below](#single-file-compressors)) | none |
 
 `members()`, `members_report()` and `get()` return members that read `True`, unless
-they are unread symlinks. Members read `False` until a call like those, or the end of a
-pass, has resolved the listing's links. A `streaming=True` pass yields every member
-before that, in every format, including the two whose fields do not change in
-practice. A `members_report_if_available()` peek resolves no links, so its members
-read `False` until a later call or pass does. A random-access pass with no listing call
-before it may or may not yield before that point, depending on how the format is
-listed, so read the flag rather than assume. A pass past `ListingLimits` stops stamping
+they are unread symlinks, or single-file or large macOS ZIP members whose `size` a
+full read has not filled in yet. Members read `False` until a call like those, or the
+end of a pass, has resolved the listing's links. A `streaming=True` pass yields every
+member before that, in every format. A `members_report_if_available()` peek resolves
+no links, so its members read `False` until a later call or pass does. A random-access
+pass with no listing call before it may or may not yield before that point, depending
+on how the format is listed, so read the flag rather than assume. A pass past `ListingLimits` stops stamping
 members from that point: a member yielded after it reads `True` with `is_current` as
 yielded.
 
@@ -769,6 +769,23 @@ yielded.
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
+- **`size` arrives with the first full read** when listing left it `None`: always for
+  `.gz`, `.bz2`, `.zz`, `.br` and `.Z`, and for the others when their size field is
+  absent or out of reach (an `.xz` from a pipe). A read that reaches the end having
+  returned every byte from the start, which the decoder finishes without error, sets
+  `member.size` on the member `members()` returned. Seeking back is fine, and so is
+  seeking forward on these codecs: the seek decodes the bytes it skips anyway, and
+  they count. A read that stops early or raises leaves it `None`, as does a copy made
+  with `replace()`. The filled size is only as good as the codec's end check: for a
+  `.Z` (no end marker or checksum) or an accelerated `.gz` (see the rapidgzip caveat
+  below), a cut the decoder cannot see fills the size of the cut data.
+  `member_state_final` reads `False` until the size is filled in, a `streaming=True`
+  pass ends, or the reader closes.
+- `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is
+  cheap to reach (a path or an in-memory stream; not a pipe or another archive's
+  member). It is the size modulo 2^32 only for a file of one gzip member with nothing
+  after it. A file of several members stores the last member's size there (a bgzip
+  file stores 0), so it never becomes `member.size`.
 - `.gz` has **no** `member.hashes` entry, before or after a read. The trailer CRC-32
   covers the whole member only when the file holds one gzip member, and proving that
   at open would mean reading the whole compressed file. The decoder still checks every
@@ -784,10 +801,12 @@ yielded.
   not. Declaring `seekable_members=True` is not required and makes no difference:
   `seekable_members` is about `seek()` on a *member stream*, and the lzip trailer is a
   bounded backward peek. Same for the `.xz` size, read from the stream index. A `.xz`
-  or `.lz` opened from another archive's member stream reports neither the size nor the
-  CRC-32, seekable or not: member streams are excluded as a group. For multi-member
-  lzip the value is derived by combining per-trailer CRCs with each member's
-  uncompressed size so it equals `crc32` of the concatenated payloads.
+  or `.lz` opened from another archive's member stream reads neither the index nor the
+  trailer, seekable or not: member streams are excluded as a group. It never reports
+  the CRC-32, and its size arrives only from a full read, as for the formats that
+  record none. For multi-member lzip the value is derived by combining per-trailer
+  CRCs with each member's uncompressed size so it equals `crc32` of the concatenated
+  payloads.
 - `.lz` is read in lzip format version 1, which every lzip since 1.0 writes. A member
   in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
   wherever it is in the file: a member that starts with the `LZIP` magic is never

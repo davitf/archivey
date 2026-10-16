@@ -363,7 +363,7 @@ point-in-time snapshots.
 
 `ArchiveMember.member_state_final` SHALL be `False` while the library can still update
 the member in place, and `True` from the point it cannot. It SHALL be `False`, in every
-format, in two cases:
+format, in these cases:
 
 - A member of a listing whose links have not been resolved yet, in either access mode.
   The listing is complete, and its members settled, when a call that resolves links to
@@ -385,6 +385,11 @@ format, in two cases:
   library has read that data, whatever the read found. Reading it sets `link_target`,
   and a reparse point whose data is not a link buffer becomes a `FILE`. `open()` and
   `extract_all()` read it on the member object they are given, a copy included.
+- A single-file member whose `size` is `None` after listing, until a read from the
+  start to the end that skips no byte fills it in (`format-single-file-compressors`).
+  Likewise a ZIP member whose size is unknown because a macOS writer stored it modulo
+  2³², until a full read whose length and CRC-32 check out fills it in (`format-zip`).
+  A `streaming=True` pass settles both when it ends: no read can reach them again.
 
 It SHALL be `True` everywhere else. A walk that fails and cannot be resumed settles the
 members it handed out, and closing the reader settles every member it listed. A copy
@@ -400,14 +405,18 @@ fields that change in practice.
 | Case | Expected |
 | --- | --- |
 | Streaming pass over a TAR holding `a.txt` twice, from a file or a pipe | Each member reads `False` when yielded; all read `True` after the pass, and the first `a.txt` reads `is_current=False` |
-| `members()`, `members_report()`, or `stream_members()` after either | Every member reads `True` |
-| Random-access `stream_members()` with no listing call first | 7z (walks as it goes): `False` when yielded, `True` after the pass. ZIP (listing resolved first): `True` when yielded |
+| `members()`, `members_report()`, or `stream_members()` after either | Every member reads `True`, except an unread symlink or a member whose `size` a read has not filled in yet (rows below) |
+| Random-access `stream_members()` with no listing call first | 7z (walks as it goes): `False` when yielded, `True` after the pass. ZIP (listing resolved first): `True` when yielded, except a macOS member whose `size` is unknown (row below) |
 | Peek (`members_report_if_available()`), either access mode | `False` until a later call or pass resolves links to members, then `True` |
 | Pass left early, then the reader closed | `True`: a closed reader updates nothing |
 | Copy made with `replace()` | `True`, unless it is a symlink whose data-stored target is unread: `False` until `open()` reads the target into the copy; one never read stays `False`, after the reader closes too |
 | TAR symlink, either `read_link_targets` | `True`: the header carries the target |
 | ZIP symlink under `read_link_targets=False` | `False` until `open()` or `extract_all()` reads its target, then `True` |
 | ZIP symlink under the default | `True` once listed |
+| `.gz` / `.bz2` after `members()` | `False` until a read from the start to EOF that skips no byte sets `size`, then `True`; `True` after the reader closes |
+| `.xz` with a readable index, after `members()` | `True`: the index records the size |
+| macOS ZIP member whose size is unknown (stored modulo 2³²), after `members()` | `False` until a read whose length and CRC-32 check out sets `size`, then `True`; `True` after the reader closes |
+| A `.gz` member, or that ZIP member, `streaming=True`, after the pass | `True`, whether or not a read filled the size |
 | ZIP from a non-seekable source, `streaming=True`, `stream_members()` | Each member reads `False` when yielded, with `mode`, `create_system`, `comment`, `uid` and `gid` `None`; after the pass every member reads `True`, with the directory's fields |
 
 ### Requirement: Member diagnostics attach under the shared budget

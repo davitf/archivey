@@ -243,7 +243,9 @@ def test_gzip_mtime_surfaced() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_gz_size_is_always_none() -> None:
+def test_gz_size_none_before_full_read() -> None:
+    # The ISIZE trailer is in extra["gzip.isize"], never in size
+    # (test_single_file_size_fill.py).
     with open_archive(io.BytesIO(gzip.compress(b"x" * 1000))) as ar:
         assert ar.members()[0].size is None
 

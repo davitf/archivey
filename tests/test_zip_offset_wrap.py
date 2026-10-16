@@ -652,6 +652,7 @@ def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
     with _open(layout, config=config) as reader:
         listed, after = reader.members()
         assert listed.size is None
+        assert listed.member_state_final is False
         assert listed.extra["size_mod_2_32"] == 100
         assert listed.compressed_size == len(stream)
         (wrap,) = _size_wraps(reader)
@@ -663,18 +664,62 @@ def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
         with reader.open(listed) as data:
             assert _count(data) == _HUGE_ZEROS_SIZE
         assert listed.size == _HUGE_ZEROS_SIZE
+        assert listed.member_state_final is True
         # The key says what the archive stored; it stays once the size is known.
         assert listed.extra["size_mod_2_32"] == 100
         assert reader.read(after) == b"bee"
 
 
+def _padded_mac_member(
+    data: bytes, *, stored: int | None = None, crc: int | None = None
+) -> _Deflated:
+    """``data`` behind 2,000,000 empty stored blocks: about 10 MB of deflate, enough
+    to decode to ``stored + 2**32`` bytes, so a macOS listing cannot tell the size.
+    ``stored`` and ``crc`` default to the true ones."""
+    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
+    return _Deflated(
+        stream,
+        len(data) if stored is None else stored,
+        zlib.crc32(data) if crc is None else crc,
+    )
+
+
+def test_an_unknown_mac_size_is_not_final_until_a_read_fills_it() -> None:
+    data = bytes(range(100))
+    with _open(_mac_layout([("small.bin", _padded_mac_member(data))])) as reader:
+        (listed,) = reader.members()
+        assert listed.size is None
+        assert listed.member_state_final is False
+        assert reader.read(listed) == data
+        assert listed.size == len(data)
+        assert listed.member_state_final is True
+
+
+def test_a_read_of_a_copy_fills_the_listed_member() -> None:
+    data = bytes(range(100))
+    with _open(_mac_layout([("small.bin", _padded_mac_member(data))])) as reader:
+        (listed,) = reader.members()
+        copy = listed.replace(name="renamed.bin")
+        assert reader.read(copy) == data
+        assert copy.size is None
+        assert (listed.size, listed.member_state_final) == (len(data), True)
+        assert reader.get("small.bin").size == len(data)
+
+
+def test_an_unknown_mac_size_is_final_once_the_reader_closes() -> None:
+    data = bytes(range(100))
+    with _open(_mac_layout([("small.bin", _padded_mac_member(data))])) as reader:
+        (listed,) = reader.members()
+        assert listed.member_state_final is False
+    assert listed.size is None
+    assert listed.member_state_final is True
+
+
 def test_a_length_the_stored_size_rules_out_is_refused() -> None:
     # The stream decodes to 101 bytes against a stored 100, padded so that the size
     # is unknown: the read checks the length modulo 2³² and refuses it.
-    data = bytes(101)
-    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
-    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
-    member = _Deflated(stream, 100, zlib.crc32(data))
+    member = _padded_mac_member(bytes(101), stored=100)
     with _open(_mac_layout([("short.bin", member)])) as reader:
         (listed,) = reader.members()
         assert listed.size is None
@@ -685,9 +730,7 @@ def test_a_length_the_stored_size_rules_out_is_refused() -> None:
 
 def test_a_crc_mismatch_leaves_the_size_unknown() -> None:
     data = bytes(100)
-    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
-    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
-    member = _Deflated(stream, 100, zlib.crc32(data) ^ 1)
+    member = _padded_mac_member(data, crc=zlib.crc32(data) ^ 1)
     with _open(_mac_layout([("bad.bin", member)])) as reader:
         (listed,) = reader.members()
         assert listed.size is None
@@ -720,17 +763,33 @@ def test_a_pipe_keeps_the_size_it_counted() -> None:
     # The directory leaves the size unknown; the pass decoded the member to its end
     # with a matching CRC-32, so the member keeps the count, as a file read fills it in.
     data = bytes(100)
-    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
-    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
-    layout = _mac_layout([("p.bin", _Deflated(stream, 100, zlib.crc32(data)))])
+    layout = _mac_layout([("p.bin", _padded_mac_member(data))])
     source = _ForwardOnly(layout.segments, layout.size)
     with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
         ((member, read),) = [
             (member, stream.read()) for member, stream in reader.stream_members()
         ]
+        # The pass is over and filled the size: nothing changes it now.
+        assert member.size == 100
+        assert member.member_state_final is True
     assert read == data
-    assert member.size == 100
     assert member.extra["size_mod_2_32"] == 100
+
+
+@pytest.mark.parametrize("forward_only", [True, False])
+def test_a_finished_pass_settles_a_size_it_left_unknown(forward_only: bool) -> None:
+    # The caller never read the member, and a streaming reader cannot read it again.
+    # From a pipe the pass decodes it anyway and keeps the size it counted.
+    layout = _mac_layout([("p.bin", _padded_mac_member(bytes(100)))])
+    source = (
+        _ForwardOnly(layout.segments, layout.size)
+        if forward_only
+        else _Sparse(layout.segments, layout.size)
+    )
+    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+        members = [member for member, _ in reader.stream_members()]
+        assert [m.size for m in members] == [100 if forward_only else None]
+        assert members[0].member_state_final is True
 
 
 def test_a_pipe_descriptor_may_hold_the_full_size_of_a_marked_entry() -> None:
@@ -769,3 +828,28 @@ def test_a_pipe_descriptor_may_hold_the_full_size_of_a_marked_entry() -> None:
 def _name_at(read_at: ReadAt, offset: int) -> bytes | None:
     found = local_header_at(read_at, offset)
     return None if found is None else found[0]
+
+
+@pytest.mark.parametrize("forward_only", [True, False])
+def test_a_failed_pass_settles_a_size_it_left_unknown(forward_only: bool) -> None:
+    # A listing limit fails the pass after it yielded the member; the pass cannot be
+    # walked again, so nothing can fill the size.
+    from archivey.config import ListingLimits
+    from archivey.exceptions import ResourceLimitError
+
+    layout = _mac_layout([("p.bin", _padded_mac_member(bytes(100))), ("n" * 400, b"x")])
+    source = (
+        _ForwardOnly(layout.segments, layout.size)
+        if forward_only
+        else _Sparse(layout.segments, layout.size)
+    )
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=300))
+    held = []
+    with open_archive(
+        source, format=ArchiveFormat.ZIP, streaming=True, config=config
+    ) as reader:
+        with pytest.raises(ResourceLimitError):
+            for member, _ in reader.stream_members():
+                held.append(member)
+        assert [m.name for m in held] == ["p.bin"]
+        assert held[0].member_state_final is True
