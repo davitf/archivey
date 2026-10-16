@@ -117,7 +117,9 @@ Its other limitations:
   read (`read_link_targets=False`) also reads `False`, in either mode, until `open()`
   or `extract_all()` reads it. So does a single-file member (`.gz`, `.bz2`, …) whose
   format records no size, until a read from its start to its end that skips no byte fills
-  in `size` ([Single-file compressors](formats.md#single-file-compressors)).
+  in `size` ([Single-file compressors](formats.md#single-file-compressors)), and a large
+  member of a macOS ZIP whose size the archive stores only modulo 2³², until a read whose
+  length and CRC-32 check out fills it in ([ZIP](formats.md#zip)).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).

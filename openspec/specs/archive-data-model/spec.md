@@ -405,8 +405,8 @@ fields that change in practice.
 | Case | Expected |
 | --- | --- |
 | Streaming pass over a TAR holding `a.txt` twice, from a file or a pipe | Each member reads `False` when yielded; all read `True` after the pass, and the first `a.txt` reads `is_current=False` |
-| `members()`, `members_report()`, or `stream_members()` after either | Every member reads `True` |
-| Random-access `stream_members()` with no listing call first | 7z (walks as it goes): `False` when yielded, `True` after the pass. ZIP (listing resolved first): `True` when yielded |
+| `members()`, `members_report()`, or `stream_members()` after either | Every member reads `True`, except an unread symlink or a member whose `size` a read has not filled in yet (rows below) |
+| Random-access `stream_members()` with no listing call first | 7z (walks as it goes): `False` when yielded, `True` after the pass. ZIP (listing resolved first): `True` when yielded, except a macOS member whose `size` is unknown (row below) |
 | Peek (`members_report_if_available()`), either access mode | `False` until a later call or pass resolves links to members, then `True` |
 | Pass left early, then the reader closed | `True`: a closed reader updates nothing |
 | Copy made with `replace()` | `True`, unless it is a symlink whose data-stored target is unread: `False` until `open()` reads the target into the copy; one never read stays `False`, after the reader closes too |

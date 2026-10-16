@@ -696,6 +696,17 @@ def test_an_unknown_mac_size_is_not_final_until_a_read_fills_it() -> None:
         assert listed.member_state_final is True
 
 
+def test_a_read_of_a_copy_fills_the_listed_member() -> None:
+    data = bytes(range(100))
+    with _open(_mac_layout([("small.bin", _padded_mac_member(data))])) as reader:
+        (listed,) = reader.members()
+        copy = listed.replace(name="renamed.bin")
+        assert reader.read(copy) == data
+        assert copy.size is None
+        assert (listed.size, listed.member_state_final) == (len(data), True)
+        assert reader.get("small.bin").size == len(data)
+
+
 def test_an_unknown_mac_size_is_final_once_the_reader_closes() -> None:
     data = bytes(range(100))
     with _open(_mac_layout([("small.bin", _padded_mac_member(data))])) as reader:

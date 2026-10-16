@@ -1693,6 +1693,21 @@ class BaseArchiveReader(ArchiveReader):
                 self._state.fail_materialization()
         self._listing_tracker.assert_within_limits()
 
+    def _own_member(self, member: ArchiveMember) -> ArchiveMember | None:
+        """The listed object ``member`` stands for: itself, or the member a
+        ``replace()`` copy was made from. ``None`` for one this reader did not list.
+
+        A late field a read fills (``size``) goes on this object, never on a copy
+        (``ArchiveMember.replace``).
+        """
+        member_id = member._member_id
+        if member_id is None or member._archive_id != self._archive_id:
+            return None
+        for listed in self._listed:
+            if listed is member or listed._member_id == member_id:
+                return listed
+        return None
+
     def _listed_members(self) -> Iterator[ArchiveMember]:
         """The listed members for a backend's own data pass, then the walk's damage.
 
