@@ -794,6 +794,13 @@ order wins. No candidate plaintext may be buffered. The STORED shared pass stays
 ZIP-local, since running every candidate over one pass is a shape the per-candidate probe
 does not model.
 
+The CRC a candidate is confirmed against SHALL be the member's CRC-32 digest
+(`hashes[CRC32]`, the one its read is verified against), not the header's CRC field. A
+member with no CRC-32 digest (AE-2, which stores 0; a directory whose CRC field is 0 over
+declared data) has no CRC anchor: a ZipCrypto one, STORED included, takes the bounded
+confirm, and a WinZip AES one is confirmed by its HMAC. The member then reads with
+several candidates as it does with the one right password.
+
 After confirmation, the reader SHALL open a fresh caller stream with the accepted
 password, promote it to known-good when confirmation reached the member's CRC, and retain
 ordinary read-time integrity checking. An `INCONCLUSIVE` survivor is not promoted: this

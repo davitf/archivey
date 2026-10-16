@@ -17,6 +17,7 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
+    HashAlgorithm,
     MemberType,
     PasswordRequest,
     open_archive,
@@ -38,6 +39,7 @@ from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
 from tests.conftest import requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
+from tests.zip_aes_fixture import build_aes_zip
 from tests.zipcrypto import (
     build_stored_zipcrypto_zip,
     build_zipcrypto_zip,
@@ -953,3 +955,61 @@ def test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc(
             assert ar.read(NAME) == DATA
         counts = ar.diagnostics.counts
     assert counts[DiagnosticCode.MEMBER_LOCAL_CRC_USED] == 1
+
+
+def _zero_crc_fields(blob: bytes) -> bytes:
+    """``blob`` with the CRC-32 field of its one local header and central entry 0."""
+    raw = bytearray(blob)
+    local = raw.index(b"PK\x03\x04")
+    raw[local + 14 : local + 18] = b"\0\0\0\0"
+    cd = raw.index(b"PK\x01\x02")
+    raw[cd + 16 : cd + 20] = b"\0\0\0\0"
+    return bytes(raw)
+
+
+@pytest.mark.parametrize(
+    "cipher", ["zipcrypto", "ae1", "ae2"], ids=["zipcrypto", "ae1", "ae2"]
+)
+@pytest.mark.parametrize(
+    "compression",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflated"],
+)
+@pytest.mark.parametrize(
+    "repeat", [5, PASSWORD_CONFIRM_PREFIX_BYTES // 16], ids=["small", "past-prefix"]
+)
+@pytest.mark.parametrize(
+    "passwords",
+    [RIGHT, [RIGHT, b"other"], [b"other", RIGHT]],
+    ids=["one", "right-first", "right-last"],
+)
+def test_a_directory_with_data_and_a_zero_crc_reads_with_any_password_list(
+    cipher: str, compression: int, repeat: int, passwords: PasswordArg
+) -> None:
+    """A directory's CRC-32 field is 0 by convention, so over declared data it is no
+    digest (the member lists no crc32), and AE-2 stores 0 by design. Choosing among
+    several passwords must not match a candidate's plaintext against that 0: the
+    right password reads the bytes with a password list as with one."""
+    data = b"directory data!\n" * repeat
+    name = b"d/"
+    if cipher == "zipcrypto":
+        blob = _zero_crc_fields(
+            build_zipcrypto_zip(
+                RIGHT, name, data, compression=compression, check_byte=0
+            )
+        )
+    else:
+        blob = build_aes_zip(
+            [(name, data)],
+            password=RIGHT,
+            vendor_version=1 if cipher == "ae1" else 2,
+            method=compression,
+        )
+        if cipher == "ae1":
+            blob = _zero_crc_fields(blob)
+    with open_archive(io.BytesIO(blob), password=passwords) as ar:
+        member = ar.members()[0]
+        assert member.type is MemberType.DIRECTORY
+        assert HashAlgorithm.CRC32 not in member.hashes
+        with ar.open(member) as stream:
+            assert stream.read() == data

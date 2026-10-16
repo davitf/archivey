@@ -651,6 +651,12 @@ has no rejecting codec: the HMAC covers the whole member. A **STORED** ZipCrypto
 has no decompressor, so the only discriminator is the whole-stream CRC — all surviving
 candidates are resolved in one shared ciphertext pass computing each candidate's CRC in
 constant memory, earliest match winning. That cost is irreducible for the format.
+The CRC each candidate is matched against is the member's CRC-32 digest, not the header
+field (`_member_crc_anchor`). A member that lists none — AE-2, and a directory whose CRC
+field is 0 over declared data (§2.2 `type` row) — has no CRC to match: a ZipCrypto one
+skips the shared pass and takes the bounded confirm, a WinZip AES one is confirmed by its
+HMAC. Matching the field's 0 failed every candidate, the right one included, where one
+password read the member.
 
 From a pipe the data goes by once, so there is no second walk. The pass keeps the first
 `PASSWORD_CONFIRM_MAX_INPUT_BYTES` (1 MiB) of the member's data and runs each candidate's
