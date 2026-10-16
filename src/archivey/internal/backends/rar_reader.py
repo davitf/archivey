@@ -2369,9 +2369,11 @@ class RarReader(BaseArchiveReader):
           password is resolved per archive, so even a plaintext member's read would
           hand it over, and ``unar`` takes it on its command line, where other local
           users can see it;
-        - ``unar`` would need a copy of the archive (a stream source, or a prefix
-          before the RAR), which the open-time cost notes do not announce under
-          ``unrar``;
+        - ``unar`` would need a copy of the archive made for it alone: a prefix before
+          the RAR (no open-time note under ``unrar``), or a stream source (a second
+          copy against the ``SpoolLimits`` budget the open-time note described as
+          one). A file source is linked into ``unar``'s directory, and copied only
+          where the system allows no link, as for a chosen ``unar``;
         - ``unar`` refuses the member or the archive too.
         """
         if (

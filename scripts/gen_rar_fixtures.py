@@ -495,6 +495,22 @@ def _build_glob_named(
     print(f"wrote {_shown(out)}")
 
 
+def _build_wildcard_one_encrypted(rar_bin: Path, out: Path) -> None:
+    """The plaintext glob names, then one member added with a password.
+
+    Every glob-named member is plaintext, yet the archive has encryption, so the
+    password resolved for the archive would still reach a program reading one of them.
+    """
+    _build_glob_named(rar_bin, out, _WILDCARD_NAMES, extra=("-m3",))
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "secret.txt").write_bytes(b"secret\n" + _WILDCARD_PAD)
+        _rar_a_update(
+            rar_bin, out, ["secret.txt"], cwd=root, extra=("-m3", "-ppassword")
+        )
+    print(f"wrote {_shown(out)}")
+
+
 def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
     """Live glob member plus ``-ver`` history that the mask would also match.
 
@@ -784,6 +800,9 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         out_dir / "wildcard_backslash__.rar",
         _WILDCARD_BACKSLASH,
         extra=("-m3",),
+    )
+    _build_wildcard_one_encrypted(
+        rar5_bin, out_dir / "wildcard_names_one_encrypted__.rar"
     )
     _build_wildcard_ver(rar5_bin, out_dir / "wildcard_ver__.rar")
     _build_xtime(rar5_bin, out_dir / "xtime__.rar")

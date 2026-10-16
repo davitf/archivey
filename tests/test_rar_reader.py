@@ -4551,14 +4551,17 @@ def test_auto_reads_with_unar_a_member_unrar_cannot_name(
     take it; every other member still goes to unrar.
     """
     unar_indexes: list[list[int]] = []
+    unar_passwords: list[object] = []
     original = rar_reader.open_unar_stdout
 
     def spy(path: Path, indexes: list[int], **kwargs: object):
         unar_indexes.append(list(indexes))
+        unar_passwords.append(kwargs.get("password"))
         return original(path, indexes, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unar_stdout", spy)
-    with open_archive(_fixture(name)) as archive:
+    # A caller's password never reaches unar's command line on this path.
+    with open_archive(_fixture(name), password="s3cret") as archive:
         for member_name, expected in contents.items():
             assert archive.read(member_name) == expected
         streamed = {
@@ -4570,6 +4573,7 @@ def test_auto_reads_with_unar_a_member_unrar_cannot_name(
     refused = {"a*.txt"} if name != "wildcard_dirglob__.rar" else {"d*/x.txt"}
     # One unar run per read of a refused member: the read above and the pass.
     assert len(unar_indexes) == 2 * len(refused)
+    assert unar_passwords == [None] * len(unar_indexes)
 
 
 @requires_binary("unrar", "unar")
@@ -4608,8 +4612,10 @@ def test_auto_keeps_the_unrar_refusal_when_unar_would_get_the_password(
     monkeypatch.setattr(
         rar_reader, "open_unar_stdout", lambda *a, **k: spawned.append(a)
     )
-    with open_archive(_fixture("wildcard_names__.rar"), password="s3cret") as archive:
-        monkeypatch.setattr(archive, "_archive_has_encryption", True)
+    with open_archive(
+        _fixture("wildcard_names_one_encrypted__.rar"), password="password"
+    ) as archive:
+        assert archive.read("secret.txt").startswith(b"secret\n")
         with pytest.raises(
             UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
         ):

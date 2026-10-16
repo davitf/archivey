@@ -28,8 +28,10 @@ is that every format except RAR is a pip install away, and RAR **member data** n
 RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free` or `7z`.
 Listing and metadata work without it, except a compressed comment in a RAR 1.5-4
 archive, which is then `None`. When no RARLAB program is found, archivey uses `unar`
-1.10 or later instead if it is installed. `unar` reads fewer RAR archives and takes the
-password on its command line, where other local users can see it; set
+1.10 or later instead if it is installed. With one found, it still uses `unar` for a
+member whose name `unrar` cannot be given, but never in an archive with encryption.
+`unar` reads fewer RAR archives and takes the password on its command line, where
+other local users can see it; set
 `ArchiveyConfig(rar_decompressor="unrar")` to never use it, or `"none"` to run
 neither program and read only stored members. See [Formats and extras](formats.md#rar).
 
@@ -85,7 +87,8 @@ from inside `UNRAR`. Run the binary with no arguments to check. An older RARLAB 
 is refused at identification, not per member. `7z` and `unrar-free` are never used,
 even if they sit on `PATH` under another name. `unar` 1.10 or later (`brew install unar`
 on macOS, `sudo apt install unar` on Debian and Ubuntu) is used when no RARLAB program
-is found, or always with `ArchiveyConfig(rar_decompressor="unar")`. A `unar` that fails
+is found, for a member whose name `unrar` cannot be given in an archive with no
+encryption, or always with `ArchiveyConfig(rar_decompressor="unar")`. A `unar` that fails
 archivey's one-time RAR5 check is not used: the Debian and Ubuntu packages before
 1.10.8+ds1-10, which includes Ubuntu 22.04 to 26.04, drop some RAR5 members. On those,
 install `unrar`.

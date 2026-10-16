@@ -1086,8 +1086,10 @@ two requirements above would refuse SHALL instead be served by `unar -i <index>`
 all of these hold: an accepted `unar` is installed (the same check `auto` uses), the
 archive has no encrypted member or header and the member's encryption is known (the
 password is resolved per archive, and `unar` takes it on its command line), the source
-is a file with nothing before the RAR (so `unar` reads it in place, with no copy the
-open-time cost notes did not announce), and `unar` itself would not refuse the member
+is a file with nothing before the RAR (`unar` would otherwise need its own copy: a
+prefix has no open-time cost note under `unrar`, and a stream source would be copied a
+second time against the same `SpoolLimits` budget; a file is linked into `unar`'s
+private directory, copied only where the system allows no link), and `unar` itself would not refuse the member
 or the archive (`Read RAR member data with unar`). Otherwise the `unrar` refusal SHALL be
 raised unchanged. The dictionary memory check SHALL use `unar`'s rule for that read.
 Every other member SHALL still be read with `unrar`. With `rar_decompressor='unrar'`

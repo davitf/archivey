@@ -627,9 +627,8 @@ archives under a hard latency budget should turn accelerators off (`use_rapidgzi
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB
 program is installed. With one installed, `"auto"` still reads with `unar` a member whose
 name `unrar` cannot be given, but never in an archive with encryption. Each is found on
-the process `PATH`. `unar` receives a password on
-its command line, where other local users can see it while it runs; select
-`RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
+the process `PATH`. `unar` receives a password on its command line, where other local
+users can see it while it runs; select `RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
 `RarDecompressor.NONE`: archivey then runs neither, and refuses every RAR member it
 cannot read without them (anything compressed, encrypted or solid);
 `extract_all(..., on_error="continue")` then writes the members it can read and records
