@@ -64,3 +64,9 @@ cp unrar ~/.local/bin/   # or any folder on your PATH
 ```
 
 Running `unrar` with no arguments prints its version, so you can check it's 6.0 or later.
+
+### Getting `unar`
+
+On macOS, `brew install unar` installs a version archivey accepts. On Debian and Ubuntu, the
+packaged `unar` has the bug described above, so either install `unrar` or build `unar` 1.10.8 from
+[The Unarchiver's source](https://github.com/MacPaw/XADMaster).
