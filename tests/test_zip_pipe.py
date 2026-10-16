@@ -32,12 +32,13 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     EncryptionError,
+    LinkTargetNotFoundError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.zip_forward_reader import ZipForwardReader
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -522,11 +523,15 @@ def test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind(
     with archivey.open_archive(
         _pipe(data), streaming=True, config=_limited(20_000)
     ) as reader:
-        reader.extract_all(tmp_path, on_error="continue")
+        report = reader.extract_all(tmp_path, on_error="continue")
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         f"f{i:03d}.txt" for i in range(10)
     ]
     assert (tmp_path / "f009.txt").read_bytes() == b"009" * 1000
+    (link,) = [r for r in report.results if r.member.name == "link"]
+    assert link.status is ExtractionStatus.FAILED
+    assert isinstance(link.error, LinkTargetNotFoundError)
+    assert link.path is None
 
 
 @pytest.mark.parametrize("source", ["pipe", "file"])

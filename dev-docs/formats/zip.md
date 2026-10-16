@@ -550,8 +550,9 @@ extraction moves what it wrote.
 
 **Where the pass and a file read differ**, each pinned in
 `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first three
-are shapes only crafted archives have (DR-5a); the rest come from damage, or from the
-directory's refusals the file read is to drop:
+are shapes only crafted archives have (DR-5a); the rest come from damage, from the
+directory's refusals the file read is to drop, or, for the last one only, from the bound
+the pass puts on the data it keeps for link targets, which an ordinary archive can reach:
 
 - A data descriptor that understates a STORED member, and the reversed same-name pair,
   fail a member the file read writes.
@@ -572,9 +573,6 @@ directory's refusals the file read is to drop:
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
-- A symlink whose target is behind `max_metadata_bytes` of short members' data no
-  shorter than it is listed without its target (`target_data_dropped`); the file read
-  lists it (§"What the pass keeps for link targets").
 - A damaged directory lists the directory's entries before the damage and the local
   headers' past it in both reads, then raises; the two write the same files. The pass
   applies the directory to the members it describes before the damage and keeps the
@@ -589,6 +587,9 @@ directory's refusals the file read is to drop:
   words: a file read checks the bytes there, the pass has passed them. One naming
   bytes the pass's listing limits dropped is a `ResourceLimitError` from a pipe, since
   higher limits keep those bytes.
+- A symlink whose target is behind `max_metadata_bytes` of short members' data no
+  shorter than it is listed without its target (`target_data_dropped`); the file read
+  lists it (§"What the pass keeps for link targets").
 
 ### 2.3 Member data
 

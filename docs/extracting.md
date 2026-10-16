@@ -172,7 +172,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   describes in full while reporting success. In ZIP, 7z and RAR3/4, a damaged target
   (its data fails the CRC or HMAC, or the decompressor) does not fail the listing: the
   link is listed without a target, reported with `reason="target_data_damaged"`, and
-  opening or extracting it raises the damage.
+  opening or extracting it raises the damage. A ZIP read from a pipe has one more such
+  case: the pass keeps the data of members short enough to be links until the central
+  directory says which are, at most `max_metadata_bytes` of it, and drops the longest
+  past that. A link whose data was dropped is listed without a target, reported with
+  `reason="target_data_dropped"`, and fails when extracted.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small
@@ -445,7 +449,8 @@ stored as `docs\r.txt`, sees the stored name during the pass, so that member fai
 file of yours that the pass replaces under `overwrite="replace"` is moved aside and put
 back at the end, unless the member still lands there.
 
-Some things go differently from a pipe, on an archive that is crafted or damaged:
+Some things go differently from a pipe. All but the last come only from an archive
+that is crafted or damaged:
 
 - A data descriptor that disagrees with the directory, a local header the directory
   contradicts, two same-named members whose directory order reverses their file order,
@@ -470,6 +475,13 @@ Some things go differently from a pipe, on an archive that is crafted or damaged
   the pass stops there with an error.
 - An LZMA member with no end marker whose sizes come after its data fails with
   `UnsupportedFeatureError` from a pipe; from a file it is written.
+- A symlink that comes after `max_metadata_bytes` of small members' data, each no
+  shorter than its target, fails with `LinkTargetNotFoundError` and is reported with
+  `SYMLINK_TARGET_UNAVAILABLE` (`reason="target_data_dropped"`); from a file it is
+  written. The pass keeps that data until the directory says which members are links,
+  and drops the longest past the limit. Any archive can reach this, though with the
+  default limit it takes about 16 000 files at least as long as the target ahead of
+  the link.
 
 ## Limits
 
