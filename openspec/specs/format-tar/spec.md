@@ -341,32 +341,31 @@ not at its end SHALL emit `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`)
 checksum was never checked. A tail that fails to decode SHALL NOT raise: every member
 was already read whole, and that is not trailing tar data. On a codec with no
 whole-stream checksum it ends the scan silently; on one that can carry a checksum it is
-reported as below. Junk
-after the compressed stream is the codec's to report (`ARCHIVE_TRAILING_DATA`, with the
-codec's name as `format`). A compressed stream that ends before its footer, so that
-the scan's read is truncated, never reached the checksum over the members already
-read: on a codec that can carry one it SHALL emit `DIGEST_UNVERIFIABLE`
-(`reason="trailing_stream_truncated"`). A whole-stream checksum that fails in the scan (gzip
-CRC-32 or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) is not such a
-tail: it covers the members already read, and SHALL raise `CorruptionError`. bzip2 and
-xz check each block, and the last block's check can also be reached in the scan, but
-those codecs report a failed check the same way as junk after the stream. On a
-`.tar.bz2` or `.tar.xz` any other tail that fails to decode may be that failed check.
-On every codec that can carry a whole-stream checksum, a tail that fails to decode in
-any other way (a damaged deflate stream past the trailer, for example) SHALL emit
-`DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`) instead of ending the scan
-silently, and its message SHALL say that whether the checksum over the members passed
-cannot be told, not that it was never reached: the bytes that failed may be in the
-stream that holds the members, or in a further compressed member after it, whose
-predecessor's checksum was already checked. The backend cannot tell the two apart
-(the same reason the scan stops at trailing bytes). When a further member decodes to
-non-zero bytes before it fails, the scan reports `ARCHIVE_TRAILING_DATA` instead,
-because the codec gives up its output only when the read that holds it does not fail;
-which of the two a caller gets then depends on how much that member decodes to.
-Where that check is reached depends on how far the codec has read ahead
-when the last member's bytes are delivered, not on the archive: when it is reached
-during the member read, the read SHALL raise `CorruptionError` instead. Either way the
-failure SHALL NOT pass silently.
+reported as below. Junk after the compressed stream is the codec's to report
+(`ARCHIVE_TRAILING_DATA`, with the codec's name as `format`). A compressed stream that
+ends before its footer, so that the scan's read is truncated, never reached the checksum
+over the members already read: on a codec that can carry one it SHALL emit
+`DIGEST_UNVERIFIABLE` (`reason="trailing_stream_truncated"`). A whole-stream checksum
+that fails in the scan (gzip CRC-32 or ISIZE, zlib Adler-32, zstd or lz4 content
+checksum, lzip CRC-32) is not such a tail: it covers the members already read, and SHALL
+raise `CorruptionError`. bzip2 and xz check each block, and the last block's check can
+also be reached in the scan, but those codecs report a failed check the same way as junk
+after the stream. On a `.tar.bz2` or `.tar.xz` any other tail that fails to decode may
+be that failed check. On every codec that can carry a whole-stream checksum, a tail that
+fails to decode in any other way (a damaged deflate stream past the trailer, for
+example) SHALL emit `DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`) instead of
+ending the scan silently, and its message SHALL say that whether the checksum over the
+members passed cannot be told, not that it was never reached: the bytes that failed may
+be in the stream that holds the members, or in a further compressed member after it,
+whose predecessor's checksum was already checked. The backend cannot tell the two apart
+(the same reason the scan stops at trailing bytes). When a further member fills a whole
+scan chunk (64 KiB) of output in a read that does not fail, the scan sees those bytes
+and reports `ARCHIVE_TRAILING_DATA` instead; a member that fails before filling that
+read gives up its output, so the scan sees only the failure. Which of the two a caller
+gets therefore depends on how much that member decodes to. Where the bzip2 or xz check
+is reached depends on how far the codec has read ahead when the last member's bytes are
+delivered, not on the archive: when it is reached during the member read, the read SHALL
+raise `CorruptionError` instead. Either way the failure SHALL NOT pass silently.
 
 The code is not a truncation: nothing is truncated, the file is *longer* than the
 listing accounts for.

@@ -1052,8 +1052,9 @@ class TarReader(BaseArchiveReader):
         "never reached": the bytes that failed may be in the members' own stream, or
         in a further compressed member (``cat a.tar.gz b.gz``) whose predecessor's
         checksum was already checked, and nothing here tells the two apart. A further
-        member that decodes to non-zero bytes before failing is reported as trailing
-        data instead, when those bytes come back from a read that did not fail.
+        member that fills a whole scan chunk (``_TRAILING_SCAN_CHUNK``) of output
+        in a read that does not fail is reported as trailing data instead; one that
+        fails before that loses its output with the failing read.
         bzip2 and xz check each block, and neither reports a failed check differently
         from junk after the stream, so on those the failure may be that check itself.
         When the codec had already read to the failure during the last member's read,

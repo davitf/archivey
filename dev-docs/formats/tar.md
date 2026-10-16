@@ -213,33 +213,32 @@ that is not a number or a PAX sparse map that does not parse.
      then reported as above.
   3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero
      byte and emit `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar`
-     pads to 10 KiB records. On a compressed tar the tail is decompressed to look at
-     it, and the first non-zero byte ends the scan on every codec: past it the scan
-     cannot tell whether it is still in the listed members' compressed stream (§6). A
-     tail that does not decode never raises; on a codec with no whole-stream checksum
-     it ends the scan silently, and on one that can carry a checksum it is reported as
-     below. Junk after the
-     compressed stream is reported by the codec as `ARCHIVE_TRAILING_DATA`. A stream cut
-     before its footer (`TruncatedError` in the scan) never reached its checksum, so on
-     every codec that can carry one it is `DIGEST_UNVERIFIABLE`
+     pads to 10 KiB records. On a compressed tar the tail is decompressed to look at it,
+     and the first non-zero byte ends the scan on every codec: past it the scan cannot
+     tell whether it is still in the listed members' compressed stream (§6). A tail that
+     does not decode never raises; on a codec with no whole-stream checksum it ends the
+     scan silently, and on one that can carry a checksum it is reported as below. Junk
+     after the compressed stream is reported by the codec as `ARCHIVE_TRAILING_DATA`. A
+     stream cut before its footer (`TruncatedError` in the scan) never reached its
+     checksum, so on every codec that can carry one it is `DIGEST_UNVERIFIABLE`
      (`reason="trailing_stream_truncated"`); a plain `.gz` with the same cut raises
      `TruncatedError` on its read. A whole-stream checksum that fails there (gzip CRC-32
      or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) raises
-     `CorruptionError`: it covers the members already read, and with `tar -b128`
-     padding (64 KiB) the scan is where it is reached. When the scan stops at 1 MiB
-     with the compressed stream still going, that checksum was never checked, and
+     `CorruptionError`: it covers the members already read, and with `tar -b128` padding
+     (64 KiB) the scan is where it is reached. When the scan stops at 1 MiB with the
+     compressed stream still going, that checksum was never checked, and
      `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`) says so. An xz integrity
-     check fails with liblzma's generic "Corrupt input data", and a bzip2 block CRC
-     with the same "Invalid data stream" as any bad bzip2 input; a junk tail gives
-     both too, so on those two a tail that does not decode may be a failed check over
-     the members. On every codec with a checksum, a tail that does not decode in any
-     other way (a damaged deflate stream past the trailer) is `DIGEST_UNVERIFIABLE`
+     check fails with liblzma's generic "Corrupt input data", and a bzip2 block CRC with
+     the same "Invalid data stream" as any bad bzip2 input; a junk tail gives both too,
+     so on those two a tail that does not decode may be a failed check over the members.
+     On every codec with a checksum, a tail that does not decode in any other way (a
+     damaged deflate stream past the trailer) is `DIGEST_UNVERIFIABLE`
      (`reason="trailing_decode_failed"`), worded as "whether the checksum passed cannot
      be told": the failing bytes may be in the members' own stream, or in a further
-     compressed member whose predecessor's checksum already passed (§6).
-     The same check can instead be reached while the last member is read, when the
-     codec has already read to the stream's end; that read raises `CorruptionError`.
-     Which one happens depends on the codec's input chunking, so on member size.
+     compressed member whose predecessor's checksum already passed (§6). The same check
+     can instead be reached while the last member is read, when the codec has already
+     read to the stream's end; that read raises `CorruptionError`. Which one happens
+     depends on the codec's input chunking, so on member size.
 
 **The walk stops at the listing caps.** Listing pulls one header per call and registers
 the member, counting it against `ListingLimits`, before the next header is parsed, so a
@@ -561,7 +560,7 @@ ours.
 | Report trailing data, do not read past it | Two archives in one file is a fact worth reporting, and listing both would present members from an archive the caller did not name | `ignore_zeros=True`, which is how `tar -i` reads concatenated archives |
 | Past trailing data, claim nothing about the compressed stream's checksum | The scan cannot tell where the listed members' compressed stream ends. In `cat a.tar.gz b.tar.gz` the trailing bytes are a second gzip member: the first member's CRC-32 was already checked, and the second's covers no listed member. So the first non-zero byte ends the scan, and `ARCHIVE_TRAILING_DATA` is the whole report. Junk inside the same gzip member as the members can therefore leave its CRC-32 unchecked with no `DIGEST_UNVERIFIABLE`. Reopen with a codec signal for where each compressed member ends, which every decoder (gzip with and without the accelerators, zstd and lz4 frames, lzip, bzip2 and xz streams) would have to give | Reading on to the bound to reach the checksum (tried in PR 851, round 1): it reported a false `trailing_scan_limit` on a valid concatenated `.tar.gz`, raised for damage in the second archive while listing the first, and made random access rewind across up to 1 MiB |
 | A tail that fails to decode is reported as "whether the checksum passed cannot be told", not "never reached" | The scan cannot tell whether the bytes that failed are in the members' own compressed stream or in a further member after it (`cat a.tar.gz b.gz` with `b.gz` damaged), whose predecessor's checksum was already checked; the row above gives the reason. The report also depends on the further member's size: the codec loses the output of a read that fails, so a member decoding a few bytes then failing gives `DIGEST_UNVERIFIABLE`, and one decoding 64 KiB or more first gives `ARCHIVE_TRAILING_DATA`. Making the two agree needs the same codec signal | "Never reached", which is false for the concatenated case (PR 851, round 2). Reading in smaller pieces to catch the further member's first bytes: a small read still feeds the codec its default compressed chunk, so the output lost with a failing feed does not shrink |
-| A compressed stream cut or undecodable after the trailer is `DIGEST_UNVERIFIABLE` (davi, 2026-10-16, project thread) | Every member was read whole, so the listing stands, but the checksum over them was never reached, which is what `DIGEST_UNVERIFIABLE` reports; bzip2 and xz already said so, and a plain `.gz` cut the same way raises `TruncatedError` on read. `STRICT` refuses these archives | Ending the scan quietly, the rule from 2026-09-23 to 2026-10-16: it was chosen so a footer-cut archive would still list, before `DIGEST_UNVERIFIABLE` existed on this path, and left `.tar.gz` silent where `.tar.bz2` and `.tar.xz` reported |
+| A compressed stream cut or undecodable after the trailer is `DIGEST_UNVERIFIABLE` (davi, 2026-10-16, project thread) | Every member was read whole, so the listing stands either way. For a cut stream the checksum over them was never reached; for a tail that does not decode, whether it passed cannot be told, for the reason the row above gives. Both are what `DIGEST_UNVERIFIABLE` reports; bzip2 and xz already said so, and a plain `.gz` cut the same way raises `TruncatedError` on read. `STRICT` refuses these archives | Ending the scan quietly, the rule from 2026-09-23 to 2026-10-16: it was chosen so a footer-cut archive would still list, before `DIGEST_UNVERIFIABLE` existed on this path, and left `.tar.gz` silent where `.tar.bz2` and `.tar.xz` reported |
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
 | Count a sparse member's holes as output (maintainer ruling, 2026-09-25) | Extraction writes them as zeros, so they cost the disk what any decompressed byte costs, and the ratio guard is what protects the disk. Revisit if extraction ever preserves holes, as `tar -x` does, since the disk would then hold only the data | Counting only the data blocks, which would let a few hundred bytes of sparse map fill the disk |
 | Refuse an out-of-order or overlapping sparse map with `UnsupportedFeatureError` (maintainer decision, 2026-10-10) | GNU tar 1.35 reads such a map, so it is valid data that archivey does not serve, and DR-4 types that as unsupported. To serve it, the sparse stream would place chunks out of order, and the streaming path would buffer up to the member's logical size (DR-9). No real writer is known to produce such a map; only crafted archives hold one. Reopen if a real producer writes such maps | Reading the map as GNU tar does, which needs that placement and buffering. `CorruptionError`, as the first version of the check raised, dropped because DR-4 types a layout the reference tool reads as unsupported |
