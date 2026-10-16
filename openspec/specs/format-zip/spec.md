@@ -242,7 +242,7 @@ order reverses their file order; and a directory entry with no local entry.
 `stream_members()` SHALL raise `CorruptionError` at the end of the pass for each but
 the reversed pair, which only updates the members. A local header that stores another
 name than the directory entry SHALL NOT fail the member: the member takes the
-directory's name, and a file or link reports `MEMBER_LOCAL_HEADER_DIFFERS`, as a file
+directory's name, and a file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a file
 read reports it (the requirement on headers that disagree). `extract_all` settles them as
 `safe-extraction` states. A directory entry pointing at a local header an earlier
 entry already took SHALL end the pass with `CorruptionError`.
@@ -259,11 +259,11 @@ its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
 makes (a flagged name that is not valid UTF-8) is raised by a file read before anything
 is written and by the pass after every member is written, the files staying on disk. A
-policy that raises on `MEMBER_LOCAL_HEADER_DIFFERS` is the same: a file read raises when
-it lists or opens the member, the pass once it has read the directory, leaving every
-member it wrote as the pass wrote it: a member whose local header names it differently
-stays under the local header's name, since the pass stops before the end-of-pass
-rename.
+policy that raises on `MEMBER_LOCAL_NAME_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the
+same: a file read raises when it lists or opens the member, the pass once it has read
+the directory, leaving every member it wrote as the pass wrote it: a member whose local
+header names it differently stays under the local header's name, since the pass stops
+before the end-of-pass rename.
 
 #### Scenario: non-seekable read matrix
 
@@ -471,18 +471,19 @@ needs is named by its method and flags, which are checked when it opens (DR-4). 
 
 The local header repeats most of a member's central directory entry. Two
 disagreements SHALL NOT refuse the member (maintainer ruling 2026-10-10; `unzip` reads
-both) and SHALL report `MEMBER_LOCAL_HEADER_DIFFERS` with `LocalHeaderContext`, which
-`STRICT` refuses:
+both) and SHALL report a code with `LocalHeaderContext`:
 
-- **The name.** The local header stores other name bytes than the directory: another
-  code page, or `\` where the directory has `/`. Every field comes from the directory,
-  so the member keeps the directory's name. A file read reads a local header only when it
+- **The name** (`MEMBER_LOCAL_NAME_DIFFERS`, which `STRICT` refuses: a tool that
+  trusts the local header shows another name). The local header stores other name
+  bytes than the directory: another code page, or `\` where the directory has `/`.
+  Every field comes from the directory, so the member keeps the directory's name. A file read reads a local header only when it
   opens a member's data, so the report comes then (`field="name"`, the local bytes in
   `local_raw_name_base64`), once per member; a policy that raises on the code raises on
   every open. Only a file or link reports it: extraction reads no directory's data, so a
   directory reports nothing, even after a `read()` of data it declares, and nor does the
   pass from a pipe, which reads every local header.
-- **A CRC-32 of 0.** The directory stores 0 for a file or link of one byte or more,
+- **A CRC-32 of 0** (`MEMBER_LOCAL_CRC_USED`, which `STRICT` reads: the data is still
+  checked; maintainer ruling 2026-10-15). The directory stores 0 for a file or link of one byte or more,
   not WinZip AE-2 (whose HMAC checks the data, above), and the local header, with no
   data descriptor (bit 3 clear), a non-zero value. Adobe AIR's packager stores
   `META-INF/AIR/hash` this way. The member's `hashes` and every check of its data (the
@@ -502,12 +503,12 @@ SHALL behave as a file read: the same members, data, reports and files on disk.
 
 | Archive | Expected |
 | --- | --- |
-| Local name `Patag\x93nia.mp3`, directory `Patag\xf4nia.mp3` | Reads; the member's name from the directory; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="name"`) when its data is read |
+| Local name `Patag\x93nia.mp3`, directory `Patag\xf4nia.mp3` | Reads; the member's name from the directory; `MEMBER_LOCAL_NAME_DIFFERS` (`field="name"`) when its data is read |
 | Local name `crack\`, directory `crack/`, with or without declared data | A directory, `crack/`; no report |
 | Directory `crack/` declaring data, its CRC-32 0, the local CRC-32 right | `DIGEST_UNVERIFIABLE` and `MEMBER_DIRECTORY_DATA_IGNORED`, from a file and a pipe alike |
-| Central CRC-32 0, local CRC-32 right | Listed with the local CRC-32 in `hashes`; reads; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="crc32"`) at listing |
+| Central CRC-32 0, local CRC-32 right | Listed with the local CRC-32 in `hashes`; reads; `MEMBER_LOCAL_CRC_USED` (`field="crc32"`) at listing, also under `DiagnosticPolicy.STRICT` |
 | Central CRC-32 0, local CRC-32 wrong, or 0 in both | `CorruptionError` when read |
-| Either of the first and third under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` |
+| The first under `DiagnosticPolicy.STRICT`, or the fourth under `DiagnosticPolicy.PEDANTIC` | `DiagnosticRaisedError` |
 | Both headers declare 3.5% less than the data decodes to | `CorruptionError` ("exceeds its declared size") |
 
 ### Requirement: Report bytes after the end of a ZIP archive

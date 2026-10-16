@@ -331,7 +331,7 @@ def test_a_local_name_that_differs_is_reported_once_under_a_password_list() -> N
         assert ar.read(NAME) == DATA
         assert ar.read(NAME) == DATA
         counts = ar.diagnostics.counts
-    assert counts[DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS] == 1
+    assert counts[DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS] == 1
 
 
 def test_stored_confirm_reads_through_the_validated_local_header(
@@ -952,4 +952,4 @@ def test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc(
         else:
             assert ar.read(NAME) == DATA
         counts = ar.diagnostics.counts
-    assert counts[DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS] == 1
+    assert counts[DiagnosticCode.MEMBER_LOCAL_CRC_USED] == 1

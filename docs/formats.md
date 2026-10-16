@@ -127,11 +127,11 @@ yielded.
   member fail at the end of the pass (`CorruptionError`), where a read from a file
   writes it.
 - **A member whose local header disagrees with the central directory on its name, or
-  stores a real CRC-32 where the directory stores 0, is read** and reported as
-  `MEMBER_LOCAL_HEADER_DIFFERS`, from a file and a pipe alike, as `unzip` reads it:
-  the directory's name is used, and the data is checked against the local CRC-32. Adobe
-  AIR packages store `META-INF/AIR/hash` this way. `DiagnosticPolicy.STRICT` refuses
-  both. A member whose two headers both declare less than its data decodes to is
+  stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
+  alike, as `unzip` reads it. The directory's name is used, reported as
+  `MEMBER_LOCAL_NAME_DIFFERS`, which `DiagnosticPolicy.STRICT` refuses. The data is
+  checked against the local CRC-32, reported as `MEMBER_LOCAL_CRC_USED`, which `STRICT`
+  reads: Adobe AIR packages store `META-INF/AIR/hash` this way. A member whose two headers both declare less than its data decodes to is
   refused with `CorruptionError`.
 - **A damaged central directory lists the members before the damage**, and the members
   the local headers hold after it (without the mode, host or comment only the directory

@@ -83,7 +83,8 @@ class DiagnosticCode(StrEnum):
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
-    MEMBER_LOCAL_HEADER_DIFFERS = "member_local_header_differs"
+    MEMBER_LOCAL_NAME_DIFFERS = "member_local_name_differs"
+    MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -144,8 +145,10 @@ DiagnosticCodeStr = Literal[
     "member-selector-unmatched",
     "member_special_file_has_data",
     "member-special-file-has-data",
-    "member_local_header_differs",
-    "member-local-header-differs",
+    "member_local_name_differs",
+    "member-local-name-differs",
+    "member_local_crc_used",
+    "member-local-crc-used",
     "member_directory_data_ignored",
     "member-directory-data-ignored",
 ]
@@ -597,15 +600,15 @@ class LocalHeaderContext(_JsonSafeContext):
     """A ZIP member's local header disagrees with its central directory entry, and the
     member is read anyway.
 
-    ``field`` says on what. ``"name"``: the local header stores other name bytes
+    ``field`` says on what, and matches the code. ``"name"``
+    (``MEMBER_LOCAL_NAME_DIFFERS``): the local header stores other name bytes
     (``local_raw_name_base64``), such as another code page or ``\\`` for ``/``. The
-    member keeps the directory's name, as unzip and 7-Zip read it. ``"crc32"``: the
-    directory stores CRC-32 0 and the local header a non-zero value (``local_crc32``).
-    The data is checked against the local value, as unzip checks it, and ``hashes``
-    holds it. Every Adobe AIR package stores ``META-INF/AIR/hash`` this way.
-
-    In :data:`ARCHIVE_INTEGRITY_CODES`: the two copies of the header contradict each
-    other, so ``STRICT`` refuses the member.
+    member keeps the central directory's name, as unzip and 7-Zip read it; a tool that
+    trusts the local header shows another name, so ``STRICT`` refuses the member.
+    ``"crc32"`` (``MEMBER_LOCAL_CRC_USED``): the central directory stores CRC-32 0 and
+    the local header a non-zero value (``local_crc32``). The data is checked against
+    the local value, as unzip checks it, and ``hashes`` holds it. Every Adobe AIR
+    package stores ``META-INF/AIR/hash`` this way; ``STRICT`` reads it.
     """
 
     kind: Literal["local_header"] = "local_header"
@@ -670,7 +673,8 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
-        DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS: "local_header",
+        DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: "local_header",
+        DiagnosticCode.MEMBER_LOCAL_CRC_USED: "local_header",
     }
 )
 
@@ -693,12 +697,12 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
-        DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
+        DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eleven codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twelve codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -736,6 +740,10 @@ and the reasons are part of the contract rather than an oversight:
 - ``FORMAT_EXTENSION_CONFLICT`` — reports the file's name, not its bytes: the bytes
   win and the archive reads in full. A tarball saved as ``b.gz`` is an ordinary mistake,
   and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
+- ``MEMBER_LOCAL_CRC_USED`` — a common packager (Adobe AIR) writes the shape, and the
+  data is still checked, against the local header's CRC-32, so nothing is left
+  unverified. Its sibling ``MEMBER_LOCAL_NAME_DIFFERS`` is **in** the set: there a tool
+  that trusts the local header shows the member under another name.
 """
 
 
@@ -803,6 +811,8 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 "expected_marker",
                 frozenset({"zeros_to_eof", "end_of_stream"}),
             ),
+            DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: ("field", frozenset({"name"})),
+            DiagnosticCode.MEMBER_LOCAL_CRC_USED: ("field", frozenset({"crc32"})),
         }
     )
 )

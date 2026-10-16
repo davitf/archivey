@@ -1664,7 +1664,7 @@ class ZipForwardReader(ZipReader):
         reported (``ARCHIVE_UNLISTED_DATA``). Of two members with the same name, the
         later in the directory is current (``_listed_in_index_order``). A member whose
         local header names it differently takes the directory's name and is reported
-        (``MEMBER_LOCAL_HEADER_DIFFERS``), as a file read reports it when it reads that
+        (``MEMBER_LOCAL_NAME_DIFFERS``), as a file read reports it when it reads that
         local header. A member whose data descriptor or local header the directory
         contradicts fails (``_failed_at_end``): the pass raises for the first, after a
         directory entry with no local entry and two entries for one local entry.

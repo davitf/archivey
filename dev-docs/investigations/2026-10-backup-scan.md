@@ -117,8 +117,9 @@ declared size first; the extraction limits (`max_ratio`, `max_extracted_bytes`) 
 still apply.
 
 **Status (maintainer ruling 2026-10-10; shipped with stage 5 of the `native-zip-reader`
-change).** 3.3 and 3.4 are read, from a file and from a pipe alike, and report
-`MEMBER_LOCAL_HEADER_DIFFERS`, which `DiagnosticPolicy.STRICT` refuses. In 3.3 the
+change).** 3.3 and 3.4 are read, from a file and from a pipe alike. 3.3 reports
+`MEMBER_LOCAL_NAME_DIFFERS`, which `DiagnosticPolicy.STRICT` refuses; 3.4 reports
+`MEMBER_LOCAL_CRC_USED`, which `STRICT` reads (ruling 2026-10-15). In 3.3 the
 member keeps the central directory's name; a `crack/` directory reports nothing, since
 reading a directory never reads its local header. In 3.4 the local CRC-32 is the
 member's digest and the data is checked against it. 3.5 stays refused with

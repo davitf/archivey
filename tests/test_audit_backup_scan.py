@@ -251,13 +251,15 @@ def _one_member_zip(
 
 
 def _read_only_member(
-    blob: bytes, *, pipe: bool = False, strict: bool = False
+    blob: bytes,
+    *,
+    pipe: bool = False,
+    strict: bool = False,
+    policy: DiagnosticPolicy | None = None,
 ) -> bytes:
-    config = (
-        ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-        if strict
-        else ArchiveyConfig()
-    )
+    if strict:
+        policy = DiagnosticPolicy.STRICT
+    config = ArchiveyConfig(diagnostic_policy=policy) if policy else ArchiveyConfig()
     if pipe:
         with archivey.open_archive(
             NonSeekableBytesIO(blob), streaming=True, config=config
@@ -292,13 +294,18 @@ def _local_header_reports(blob: bytes, *, pipe: bool) -> list[LocalHeaderContext
     return [
         diagnostic.context
         for diagnostic in member.diagnostics
-        if diagnostic.code is DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
+        if diagnostic.code
+        in (
+            DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
+            DiagnosticCode.MEMBER_LOCAL_CRC_USED,
+        )
         and isinstance(diagnostic.context, LocalHeaderContext)
     ]
 
 
 # Case 1 and 2 of the maintainer's ruling (2026-10-10, ``native-zip-reader`` design.md,
-# question A): read, with ``MEMBER_LOCAL_HEADER_DIFFERS``, and refused under STRICT.
+# question A): read. Case 1 reports ``MEMBER_LOCAL_NAME_DIFFERS``, which STRICT refuses;
+# case 2 reports ``MEMBER_LOCAL_CRC_USED``, which STRICT reads (2026-10-15).
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
@@ -349,7 +356,7 @@ def test_local_name_with_a_backslash_names_a_directory_without_a_report(
     # a policy that raises on the code, and even when ``read()`` has gone through
     # declared data.
     blob = _one_member_zip(data, central_name=b"crack/", local_name=b"crack\\")
-    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS})
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS})
     codes = _directory_codes(blob, pipe=pipe, policy=policy)
     assert codes == ([] if not data else ["member_directory_data_ignored"])
 
@@ -373,8 +380,11 @@ def test_zero_central_crc_with_a_right_local_crc_reads(pipe: bool) -> None:
     (context,) = _local_header_reports(blob, pipe=pipe)
     assert (context.field, context.local_crc32) == ("crc32", zlib.crc32(b"h" * 32))
     assert context.local_raw_name_base64 is None
+    # The data is still checked, against the local value, so STRICT reads it; only a
+    # policy that raises on the code itself refuses it.
+    assert _read_only_member(blob, pipe=pipe, strict=True) == b"h" * 32
     with pytest.raises(DiagnosticRaisedError):
-        _read_only_member(blob, pipe=pipe, strict=True)
+        _read_only_member(blob, pipe=pipe, policy=DiagnosticPolicy.PEDANTIC)
 
 
 def test_zero_central_crc_reports_the_local_crc_as_the_digest() -> None:
@@ -384,7 +394,7 @@ def test_zero_central_crc_reports_the_local_crc_as_the_digest() -> None:
         (member,) = ar.members()
         counts = ar.diagnostics.counts
     assert member.hashes == {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(b"h" * 32))}
-    assert counts[DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS] == 1
+    assert counts[DiagnosticCode.MEMBER_LOCAL_CRC_USED] == 1
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
@@ -433,7 +443,7 @@ def test_ae2_zero_central_crc_ignores_a_local_crc(pipe: bool) -> None:
         counts = ar.diagnostics.counts
     assert read == [b"h" * 22]
     assert member.hashes == {}
-    assert DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS not in counts
+    assert DiagnosticCode.MEMBER_LOCAL_CRC_USED not in counts
 
 
 # Case 3 stays refused: the declared size is the bound that stops decoding (DR-9a).

@@ -1492,7 +1492,7 @@ def test_non_utf8_local_header_name_is_reported_as_another_name() -> None:
         assert member.diagnostics == ()
         assert ar.read(member) == b"A" * 200
     (reported,) = member.diagnostics
-    assert reported.code is DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
+    assert reported.code is DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
     assert reported.context.field == "name"
     assert reported.context.local_raw_name_base64 == raw_name_to_base64(b"\xffata.txt")
     assert r"'\xffata.txt'" in reported.message

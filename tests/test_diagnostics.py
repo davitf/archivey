@@ -1016,6 +1016,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
         # The name is wrong, not the bytes: the bytes win and the archive reads in full.
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
+        # Adobe AIR writes the shape and the data is checked against the local CRC-32.
+        DiagnosticCode.MEMBER_LOCAL_CRC_USED,
     }
 
 

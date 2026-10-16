@@ -904,7 +904,7 @@ def _local_crc_stands_in(
     no data descriptor defers (bit 3 clear). 0 is the CRC-32 of no data, so an empty
     member's 0 needs nothing, and a listing reads no local header for one. unzip checks
     the data against the local value and archivey does too, reporting
-    ``MEMBER_LOCAL_HEADER_DIFFERS``. Adobe AIR's packager writes ``META-INF/AIR/hash``
+    ``MEMBER_LOCAL_CRC_USED``. Adobe AIR's packager writes ``META-INF/AIR/hash``
     this way: it fills the local header after the directory entry was made.
     """
     return (
@@ -2377,7 +2377,11 @@ class ZipReader(BaseArchiveReader):
         local_crc32: int | None = None,
     ) -> None:
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
+            code=(
+                DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
+                if field == "name"
+                else DiagnosticCode.MEMBER_LOCAL_CRC_USED
+            ),
             message=message,
             context=LocalHeaderContext(
                 archive_name=self._archive_name,
@@ -2409,7 +2413,7 @@ class ZipReader(BaseArchiveReader):
         """
         if member.type not in (MemberType.FILE, MemberType.SYMLINK):
             return
-        code = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
+        code = DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
         with self._lock:
             first = loc.index not in self._local_names_reported
             self._local_names_reported.add(loc.index)
