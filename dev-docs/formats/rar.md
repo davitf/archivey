@@ -142,8 +142,9 @@ the whole chain.
 visits each header in turn, using the declared packed size to seek over the data to the
 next one. That is O(members) seeks — the same shape `ListingCost.REQUIRES_SCANNING` names,
 which is what `tar_reader` reports for uncompressed tar, and what RAR reports too: the
-value names the work, not when it is paid (here, at open). With a usable `QO`, listing reads those copies
-first, seeks back to after MAIN, and skips matching FILE headers on the walk (§1.1).
+value names the work, not when it is paid (here, at open). With a usable `QO`, listing
+reads those copies first, seeks back to after MAIN, and skips matching FILE headers on
+the walk (§1.1).
 A walk whose last skip lands past the end of the file lists what it found and then
 reports `TruncatedError` as `members_report().error` (`members()` raises it), as TAR
 does for a member whose data runs past the end. **A file that ends part-way through a
@@ -1609,10 +1610,14 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   `unrar` call — one synthetic writer would serve both.
 
 - ~~**Does `ListingCost.INDEXED` mean "cheap" or "already paid"?**~~ Neither: it names
-  the format's layout, so RAR reports `REQUIRES_SCANNING` like TAR (decided 2026-10-15).
-  Whether a RAR5 archive whose `QO` covers every header should report `INDEXED` is still
-  open: the record saves the seeks (12 reads instead of 6,011 for 3,001 members), not the
-  parse.
+  the format's layout, so RAR reports `REQUIRES_SCANNING` like TAR (maintainer ruling
+  2026-10-15; general form under DR-10 in
+  [`design-rules.md`](../design-rules.md#dr-10-costly-or-risky-capability-is-declared-and-a-declaration-is-a-guarantee)).
+  Reasons: the receipt says what listing costs, and for RAR that is a header walk; a
+  later change may make the walk lazy, as TAR's is. Whether a RAR5 archive whose `QO`
+  covers every header should report `INDEXED` is still open: the record saves the seeks
+  (12 reads and 11 seeks instead of 6,011 reads and 3,007 seeks for 3,001 members), not
+  the parse.
 - ~~**Should `unar` become an opt-in second engine?**~~ Yes, shipped 2026-09-26 as the
   fallback under the default `"auto"` (§3). It was the one candidate the
   decompressor matrix left open, and Homebrew dropping the `rar` cask is what keeps it open

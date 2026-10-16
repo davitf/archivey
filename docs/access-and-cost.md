@@ -48,6 +48,10 @@ Every open archive exposes a machine-readable receipt:
 
 Cost never changes what is *legal* — it describes what your access pattern will *pay*.
 
+`listing_cost` names the work the format's layout needs to list its members, not when
+that work is paid. A backend may do it inside `open_archive`, as RAR does, and then
+serve `members()` from memory.
+
 `StreamCapability` is ordered — `FORWARD_ONLY < SEEKABLE` — because a seekable source
 can serve every read a forward-only one can. That is what lets you compare a source
 against a format's stated minimum (`format_availability(fmt).required_source`) instead
@@ -57,8 +61,8 @@ of trying the open and catching the failure; see
 
 ### RAR listing cost
 
-RAR reports `listing_cost=REQUIRES_SCANNING`: the native parser walks the headers
-and builds the member table at open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
+RAR reports `listing_cost=REQUIRES_SCANNING`: the native parser walks the headers and
+builds the member table at open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
 copies of FILE headers stored after the members, with a pointer from MAIN. Listing
 reads QO first, seeks back to after MAIN, and skips FILE headers already in QO.
 Default WinRAR AUTO may omit small files from QO; those still list from their
@@ -78,8 +82,10 @@ the members end, then steps over the directory to the end record. It seeks over 
 member whose local header states its size and reads through one that leaves its size
 to a data descriptor (bit 3, as a writer to a pipe sets it), so that open costs up to
 one read of the file. Each local header counts toward `max_members`. `listing_cost`
-stays `INDEXED`, because the walk only stands in for a damaged layout. The same walk lists the members of an archive whose
-directory is gone, from their local headers.
+stays `INDEXED`, because the members still come from the central directory; the walk
+only finds it. The same walk lists the members of an archive whose directory is gone,
+from their local headers. That archive is damaged, and its listing ends with an error;
+its receipt still describes the format, so it stays `INDEXED` too.
 
 ## Solid archives: prefer one forward pass
 

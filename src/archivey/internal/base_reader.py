@@ -427,10 +427,11 @@ class BaseArchiveReader(ArchiveReader):
     **MUST set** when it differs from the default (``True``):
 
     - ``_MEMBER_LIST_UPFRONT``    — does the backend have a true upfront index (central
-      directory, 7z header, filesystem listing) that yields the full member list
-      *without scanning*? This is the predicate behind :meth:`members_report_if_available`
-      (it returns a report when ``True``, else ``None``). It does **not** gate the
-      access-mode-enforced methods — those key off the ``streaming`` flag alone.
+      directory, 7z header, or a header walk already done at open, as RAR's) that yields
+      the full member list *without a further scan*? This is the predicate behind
+      :meth:`members_report_if_available` (it returns a report when ``True``, else
+      ``None``). It does **not** gate the access-mode-enforced methods — those key off
+      the ``streaming`` flag alone.
 
     Access-mode enforcement (independent of the flag above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise

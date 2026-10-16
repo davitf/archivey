@@ -1149,6 +1149,8 @@ _NO_OWNER = RarOwner(None, None, None, None)
 class RarReader(BaseArchiveReader):
     """Reads RAR archives: native metadata parse + RARLAB ``unrar`` for data."""
 
+    # The header walk (listing_cost REQUIRES_SCANNING) runs inside open_archive, so the
+    # table exists before members() and the report peek can return it.
     _MEMBER_LIST_UPFRONT = True
     _LINK_TARGETS_IN_DATA = True
 

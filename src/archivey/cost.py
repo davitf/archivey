@@ -14,7 +14,11 @@ from enum import Enum
 
 
 class ListingCost(Enum):
-    """How expensive it is to *enumerate* all members (list names + metadata)."""
+    """How expensive it is to *enumerate* all members (list names + metadata).
+
+    The value names the work the format's layout needs, not when it is paid: a backend
+    may do that work inside ``open_archive`` and serve ``members()`` from memory.
+    """
 
     INDEXED = "indexed"
     """Members can be listed without scanning header-to-header or decompressing payload.
@@ -30,8 +34,8 @@ class ListingCost(Enum):
     without decompressing payload (e.g. an uncompressed tar, a RAR archive, or a
     filesystem directory walk).
 
-    The value names the work, not when it is paid: RAR walks its headers inside
-    ``open_archive``, so ``members()`` then returns from memory.
+    RAR walks its headers inside ``open_archive``, so ``members()`` then returns from
+    memory.
     """
 
     REQUIRES_DECOMPRESSION = "requires_decompression"
