@@ -474,8 +474,10 @@ archivey lists the first archive and reports `ARCHIVE_TRAILING_DATA`.
 
 **macOS `tar` writes AppleDouble sidecars.** bsdtar on macOS stores a file's extended
 attributes and resource fork as a `._name` member just before `name`, unless
-`COPYFILE_DISABLE=1` is set. archivey marks it with `extra["macos.resource_of"]` once
-`name` is listed (the ZIP handbook §3 has the Finder and `ditto` shapes).
+`COPYFILE_DISABLE=1` is set. archivey marks it with `extra["macos.resource_of"]` from its
+name alone, so a forward pass's filter sees the key before `name` arrives (the ZIP
+handbook §3 has the Finder and `ditto` shapes). The `__MACOSX/` prefix is dropped here
+too, for a TAR of an extracted Finder ZIP.
 
 **An ISO 9660 image opened as TAR lists empty.** Its first 32 KiB are zeros, which reads
 as an empty tar, and the first non-zero byte after them is reported as trailing data.

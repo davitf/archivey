@@ -76,11 +76,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 A ZIP or TAR made on a Mac often carries AppleDouble sidecars: a `._name` file holding
 the extended attributes and resource fork of `name`, next to it (macOS `tar`) or under
 `__MACOSX/` (Finder, `ditto`). archivey lists them as ordinary files, as `unzip` does,
-and marks each one with `extra["macos.resource_of"]`, the name of the member it
-describes. Leave them out with `"macos.resource_of" not in member.extra`. The pairing
-goes by names only. A sidecar whose member is not in the archive gets no key, and in a
-streaming pass a sidecar listed before its member gets the key when the member is
-listed.
+and marks each one with `extra["macos.resource_of"]`, the path it describes with no
+trailing `/` (`dir` for the sidecar of `dir/`). Leave them out with
+`"macos.resource_of" not in member.extra`. The sidecar's name alone decides, so the key
+is already set when a pass returns the sidecar, even when its file comes later or is
+missing from the archive; a name shaped like a sidecar's (`._notes` next to `notes`)
+gets the key whatever wrote it.
 
 ## Fields that change after a member is returned
 
@@ -90,7 +91,7 @@ The fields that change in practice:
 
 | Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
-| ZIP | `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| ZIP | `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields, and the `extra` bag | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |

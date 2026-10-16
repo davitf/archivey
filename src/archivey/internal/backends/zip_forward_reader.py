@@ -1973,6 +1973,9 @@ class ZipForwardReader(ZipReader):
             setattr(member, f.name, getattr(fresh, f.name))
         self._keep_counted_size(member, counted, counted_hashes)
         member._diagnostics = member._diagnostics + fresh._diagnostics
+        # The directory's extra replaced the pass's, the sidecar mark included; mark
+        # again under the directory's name before the delta is weighed.
+        self._mark_macos_sidecar(member)
         # The directory adds what no local header holds (a comment, its own extra
         # field); the limits weigh it when the pass is published, as they weigh the
         # seekable read's members when it lists them.
@@ -1981,9 +1984,6 @@ class ZipForwardReader(ZipReader):
         )
         if member.name != old_name:
             self._reindex_name(member, old_name)
-        # The directory's extra replaced the pass's, sidecar pairing included; pair
-        # again under the directory's names.
-        self._pair_macos_sidecar(member)
         if (
             member.type is MemberType.SYMLINK
             and member.link_target is None

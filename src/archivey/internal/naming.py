@@ -511,12 +511,17 @@ _MACOSX_FOLDER = "__MACOSX/"
 
 
 def macos_sidecar_target(member: ArchiveMember) -> str | None:
-    """The name of the member a macOS AppleDouble sidecar describes, by name alone.
+    """The path a macOS AppleDouble sidecar describes, by its name alone.
 
     A sidecar is a file whose last component is ``._`` plus the described member's
     name, in the same folder (macOS ``tar``) or the same folder under ``__MACOSX/``
     (Finder, ``ditto``). ``None`` for any other member. The result carries no
-    trailing ``/``: a directory's sidecar names the directory without it.
+    trailing ``/``: a directory's sidecar names the directory without it, since the
+    name cannot tell a directory's sidecar from a file's.
+
+    The ``__MACOSX/`` prefix is dropped in a TAR too: a TAR of an extracted Finder
+    ZIP holds ``__MACOSX/._a.txt`` beside ``a.txt``, and that sidecar describes
+    ``a.txt``. A TAR folder that is really named ``__MACOSX`` is the rarer case.
     """
     if member.type is not MemberType.FILE:
         return None

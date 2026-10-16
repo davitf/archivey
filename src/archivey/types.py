@@ -481,9 +481,9 @@ EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
 # namespaced: other formats store a 32-bit size too (gzip's ISIZE).
 EXTRA_SIZE_MOD_2_32: Final = "size_mod_2_32"
 
-# Key in ArchiveMember.extra naming the member a macOS AppleDouble sidecar describes:
+# Key in ArchiveMember.extra naming the path a macOS AppleDouble sidecar describes:
 # a ``._name`` file next to it (macOS tar) or under ``__MACOSX/`` (Finder, ditto), set
-# on the sidecar when both are listed. ZIP and TAR.
+# from the sidecar's name alone as it is listed. ZIP and TAR.
 EXTRA_MACOS_RESOURCE_OF: Final = "macos.resource_of"
 
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
@@ -597,14 +597,14 @@ class MemberExtra(dict[str, object]):
       listed as ``None``; a read to the end checks the length against it and fills
       in ``size``, and the key stays.
     * ``macos.resource_of`` (``str``) — ZIP, TAR. On a macOS AppleDouble sidecar,
-      the name of the member it describes. macOS keeps a file's extended attributes
-      and resource fork in a file named ``._`` plus the file's name: next to it in a
-      TAR, under ``__MACOSX/`` in a ZIP. A ``._name`` file is paired by name only,
-      when a member it describes is listed, so callers can leave sidecars out with
-      ``"macos.resource_of" not in member.extra``. The sidecar is still an ordinary
-      member, extracted as a file unless filtered. In a streaming pass, a sidecar
-      listed before its member (macOS ``tar`` writes it first) gets the key when
-      that member is listed.
+      the path it describes, with no trailing ``/`` (``dir`` for a directory's
+      sidecar). macOS keeps a file's extended attributes and resource fork in a file
+      named ``._`` plus the file's name: next to it in a TAR, under ``__MACOSX/`` in
+      a ZIP. The sidecar's name alone decides, so the key is there when the member
+      is returned, in every pass, and callers can leave sidecars out with
+      ``"macos.resource_of" not in member.extra``. The path may name no member: a
+      sidecar can outlive its file. The sidecar is still an ordinary member,
+      extracted as a file unless filtered.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
