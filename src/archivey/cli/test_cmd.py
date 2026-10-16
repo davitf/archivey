@@ -90,7 +90,7 @@ def run_test(
         member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
-            # count as FAIL and still reach the summary (F4). Once the generator raises,
+            # count as FAIL and still reach the summary (F4). Once the pass raises,
             # further next() yields StopIteration — remaining members are lost (library
             # limitation for solid / poisoned streams); report them as "not tested" (P8).
             # The ``with`` ends the pass here, deterministically, whatever leaves the

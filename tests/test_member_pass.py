@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import io
+import threading
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 
 import pytest
 
@@ -67,3 +68,59 @@ def test_a_pass_closes_on_a_streaming_reader_too() -> None:
             member, stream = next(members)
             assert member.name == "a.txt"
         assert stream is not None and stream.closed
+        # The streaming reader has one pass: after closing it only members_report()
+        # works, and another pass is still refused.
+        assert [m.name for m in reader.members_report().members] == ["a.txt", "b.txt"]
+        with pytest.raises(ArchiveyUsageError):
+            next(reader.stream_members())
+
+
+def test_iterating_a_streaming_reader_returns_a_closable_pass() -> None:
+    with open_archive(_zip(), streaming=True) as reader:
+        members = iter(reader)
+        assert isinstance(members, MemberPass)
+        assert next(members).name == "a.txt"
+        with pytest.raises(ArchiveyUsageError, match="__iter__"):
+            reader.members_report()
+        members.close()
+        assert len(reader.members_report().members) == 2
+
+
+def test_closing_a_pass_another_thread_is_advancing_raises_usage_error() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking(_member: object) -> bool:
+        entered.set()
+        release.wait(10)
+        return True
+
+    with open_archive(_zip(), concurrent_members=True) as reader:
+        members = reader.stream_members(blocking)
+        got: list[str] = []
+        worker = threading.Thread(target=lambda: got.append(next(members)[0].name))
+        worker.start()
+        try:
+            assert entered.wait(10)
+            with pytest.raises(ArchiveyUsageError, match="another thread"):
+                members.close()
+        finally:
+            release.set()
+            worker.join(10)
+        assert got == ["a.txt"]
+        members.close()
+        assert reader.read("b.txt") == b"second"
+
+
+def test_a_value_error_from_the_pass_itself_is_not_translated() -> None:
+    def failing() -> Generator[int, None, None]:
+        try:
+            yield 1
+        finally:
+            raise ValueError("from the pass")
+
+    members = MemberPass(failing())
+    next(members)
+    with pytest.raises(ValueError, match="from the pass") as info:
+        members.close()
+    assert not isinstance(info.value, ArchiveyUsageError)

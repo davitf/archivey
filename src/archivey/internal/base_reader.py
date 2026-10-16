@@ -2808,7 +2808,10 @@ class BaseArchiveReader(ArchiveReader):
             return counter
         return source
 
-    def __iter__(self) -> Iterator[ArchiveMember]:
+    def __iter__(self) -> MemberPass[ArchiveMember]:
+        return MemberPass(self._iter_pass())
+
+    def _iter_pass(self) -> Generator[ArchiveMember, None, None]:
         self._state.require_open("__iter__")
         if self._streaming:
             token = self._state.acquire_pass("__iter__")
@@ -3154,7 +3157,7 @@ class BaseArchiveReader(ArchiveReader):
         members: MemberSelectorArg = None,
         *,
         file_copy_streams: bool = True,
-    ) -> MemberPass:
+    ) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
         The yielded stream is owned by the iterator: advancing closes/invalidates the

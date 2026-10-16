@@ -6,12 +6,13 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Generator, Iterator
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, TypeVar
 
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
+from archivey.exceptions import ArchiveyUsageError
 from archivey.types import (
     AbortOn,
     AbortOnStr,
@@ -47,20 +48,31 @@ MemberSelector = MemberSelectorArg
 """
 
 
-class MemberPass(Iterator["tuple[ArchiveMember, ArchiveStream | None]"]):
-    """The pass :meth:`~ForwardArchiveReader.stream_members` returns: an iterator of
-    ``(member, stream)`` pairs that can also be closed, directly or by a ``with`` block.
+_T = TypeVar("_T")
 
-    Iterate it as any iterator. Closing it ends the pass early: the current member
-    stream is closed, and the reader accepts other calls again. Closing an ended pass
-    does nothing, and advancing a closed one ends the iteration.
+
+class MemberPass(Iterator[_T]):
+    """A pass over an archive's members: an iterator that can also be closed, directly
+    or by a ``with`` block.
+
+    :meth:`~ForwardArchiveReader.stream_members` returns one that yields
+    ``(member, stream)`` pairs, and iterating the reader returns one that yields
+    members. Iterate it as any iterator. Closing it ends the pass early and releases
+    the reader: the current member stream, if any, is closed, and a random-access
+    reader accepts other calls again. A streaming reader has only the one pass, so
+    after closing it only :meth:`~ForwardArchiveReader.members_report` works (it
+    finishes the walk) and another pass still raises ``ArchiveyUsageError``. Closing
+    an ended pass does nothing, and advancing a closed one ends the iteration. Closing
+    a pass while another thread is advancing it raises ``ArchiveyUsageError`` and
+    leaves the pass running.
 
     A pass that runs to its end ends on its own, and so, on CPython, does one a
-    ``for`` loop leaves with ``break``. Close it yourself when the pass can outlive the
-    loop: when it is kept in a variable, when an exception leaves the loop (the
-    traceback keeps the pass alive while the error is handled), or on an interpreter
-    that does not free it at once, such as PyPy. While a paused pass is alive, a
-    default reader refuses its other calls::
+    ``for`` loop leaves with ``break``. Otherwise a pass stays alive while anything
+    refers to it: a variable, the target of ``with … as``, or a traceback that holds
+    the loop's frame while an error is handled. It also outlives the loop on an
+    interpreter that does not free it at once, such as PyPy. Close it yourself in
+    those cases. While a paused pass is alive, a default reader refuses its other
+    calls::
 
         with reader.stream_members() as members:
             for member, stream in members:
@@ -70,20 +82,30 @@ class MemberPass(Iterator["tuple[ArchiveMember, ArchiveStream | None]"]):
 
     __slots__ = ("_pass",)
 
-    def __init__(
-        self, items: Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]
-    ) -> None:
+    def __init__(self, items: Generator[_T, None, None]) -> None:
         self._pass = items
 
     def __iter__(self) -> Self:
         return self
 
-    def __next__(self) -> tuple[ArchiveMember, ArchiveStream | None]:
+    def __next__(self) -> _T:
         return next(self._pass)
 
     def close(self) -> None:
-        """End the pass: close the current member stream and release the reader."""
-        self._pass.close()
+        """End the pass: close the current member stream and release the reader.
+
+        Raises ``ArchiveyUsageError`` when another thread is advancing the pass."""
+        try:
+            self._pass.close()
+        except ValueError as exc:
+            # Another thread is inside ``next()``. Only that case is translated: a
+            # ValueError the pass itself raises on close reaches the caller unchanged.
+            if exc.args == ("generator already executing",):
+                raise ArchiveyUsageError(
+                    "Cannot close a member pass while another thread is advancing it. "
+                    "Close it once that next() call has returned."
+                ) from exc
+            raise
 
     def __enter__(self) -> Self:
         return self
@@ -163,8 +185,13 @@ class ForwardArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def __iter__(self) -> Iterator[ArchiveMember]:
-        """Iterate members in archive order (served from cache once materialized)."""
+    def __iter__(self) -> MemberPass[ArchiveMember]:
+        """Iterate members in archive order (served from cache once materialized).
+
+        Returns a :class:`MemberPass` of members. On a streaming reader it is the
+        reader's one pass and holds the reader while paused, as a
+        :meth:`stream_members` pass does; close it, or use it in a ``with`` block, to
+        end it early. On a random-access reader it holds nothing between members."""
         ...
 
     @abstractmethod
@@ -222,7 +249,7 @@ class ForwardArchiveReader(ABC):
     @abstractmethod
     def stream_members(
         self, members: MemberSelector = None, *, file_copy_streams: bool = True
-    ) -> MemberPass:
+    ) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
         ``members`` is an optional selector: a predicate, any iterable of names or
         members (read once, so a generator works), or ``None`` for all. The yielded
@@ -316,9 +343,9 @@ class ForwardArchiveReader(ABC):
         no-op. The archive's own source is released after the last of them, never
         underneath a stream still reading through it.
 
-        A :class:`MemberPass` from :meth:`stream_members` (or a streaming reader's
-        iteration) that is still alive does not stop the close: the reader closes, and
-        advancing that pass afterwards raises ``ArchiveyUsageError``.
+        A :class:`MemberPass`, from :meth:`stream_members` or from iterating a
+        streaming reader, that is still alive does not stop the close: the reader
+        closes, and advancing that pass afterwards raises ``ArchiveyUsageError``.
 
         Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
         ...

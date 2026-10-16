@@ -41,7 +41,10 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 costing time. If you plan to read an archive in one pass, setting it catches that mistake,
 even on an ordinary file. You get one pass, through `stream_members` or `extract_all`, and it
 is used up even if you leave the loop early. Inside a `stream_members` loop, `open`, `read` and
-`members()` raise even without `streaming=True`, since the pass is still using the archive. With
+`members()` raise even without `streaming=True`, since the pass is still using the archive. A
+pass you leave with `break` ends at once on CPython. One kept in a variable, or one an exception
+left, holds the archive until you close it, so use it in a `with` block when the loop can stop
+early: `with archive.stream_members() as members:` ends the pass at the end of the block. With
 [`concurrent_members=True`](#several-members-at-once) they work, from any thread, on every format.
 `extract_all` still can't run while a pass is going.
 Streams from the pass never seek.

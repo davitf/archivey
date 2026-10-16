@@ -111,7 +111,21 @@ same loop written around `open()` would hand you the target's contents. Read
 
 A `stream_members()` pass owns the reader while it runs. Calling `open()`,
 `members()` or another pass inside the loop raises `ArchiveyUsageError` rather than
-quietly disturbing the pass. On a reader opened with `concurrent_members=True`,
+quietly disturbing the pass. Leaving the loop with `break` frees the reader on
+CPython, but a pass kept in a variable, or one an exception left (the traceback keeps
+it alive while the error is handled), holds the reader until it is closed. Use the
+pass in a `with` block to end it at a known point:
+
+```python
+with reader.stream_members() as members:
+    for member, stream in members:
+        if member.name == "manifest.json":
+            manifest = stream.read()
+            break
+data = reader.read("payload.bin")  # the pass has ended
+```
+
+`members.close()` does the same without the block. On a reader opened with `concurrent_members=True`,
 `open()`, `read()`, `get()`, `members()` and another `stream_members()` all work
 inside the loop, from any thread, on every format. `extract_all()` still raises.
 The pass and the calls beside it share one walk of the archive's headers, so a pass
@@ -188,6 +202,7 @@ streams still open on it, the same way `zipfile.ZipFile.close()` and
 closed file. The same goes for a `stream_members()` iterator that is still alive when
 the reader closes, for example one kept in a variable or wrapped in `enumerate()`: the
 close succeeds, and advancing the iterator afterwards raises `ArchiveyUsageError`.
+Call `close()` on the pass, or use it in a `with` block, to end it before the reader.
 Nesting `with` blocks is still the clearest way to write it, and it means you never
 depend on the order:
 
