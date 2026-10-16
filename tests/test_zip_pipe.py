@@ -287,8 +287,8 @@ _AFTER_DAMAGE = [("b.txt", b"fine"), ("c.txt", b"also fine")]
 def _with_damaged_descriptor(method: int, *, signed: bool, field: str) -> bytes:
     """A bit-3 ``bad.bin`` with one byte of ``field`` flipped, then two members.
 
-    ``field`` is ``"data"`` (the first byte of the member's data), or ``"signature"``,
-    ``"crc"``, ``"csize"`` or ``"usize"`` of its data descriptor.
+    ``field`` is ``"data"`` (a byte in the middle of a STORED member's data), or
+    ``"signature"``, ``"crc"``, ``"csize"`` or ``"usize"`` of its data descriptor.
     """
     data = _streamed(
         _zip([("bad.bin", _DAMAGED_PAYLOAD), *_AFTER_DAMAGE], method=method)
@@ -301,7 +301,9 @@ def _with_damaged_descriptor(method: int, *, signed: bool, field: str) -> bytes:
     name_len, extra_len = struct.unpack_from("<HH", out, 26)
     start = 30 + name_len + extra_len
     if field == "data":
-        out[start + 40 if method == zipfile.ZIP_STORED else start] ^= 0x01
+        # Damaged DEFLATE data fails its decode instead, which another test covers.
+        assert method == zipfile.ZIP_STORED
+        out[start + len(_DAMAGED_PAYLOAD) // 2] ^= 0x01
         return bytes(out)
     descriptor = start + info.compress_size
     body = descriptor + 4 if signed else descriptor
@@ -317,7 +319,9 @@ def _with_damaged_descriptor(method: int, *, signed: bool, field: str) -> bytes:
 
 _DAMAGED_DESCRIPTORS = [
     pytest.param(method, signed, field, id=f"{label}-{shape}-{field}")
-    for method, label in ((zipfile.ZIP_STORED, "stored"), (zipfile.ZIP_DEFLATED, "deflated"))
+    for method, label in (
+        (zipfile.ZIP_STORED, "stored"), (zipfile.ZIP_DEFLATED, "deflated")
+    )
     for signed, shape in ((True, "signed"), (False, "unsigned"))
     for field in ("data", "signature", "crc", "csize", "usize")
     if not (field == "signature" and not signed)

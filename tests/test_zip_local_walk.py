@@ -692,6 +692,55 @@ def test_match_damaged_descriptor_takes_one_damaged_field(
         assert found.length == len(descriptor)
 
 
+@pytest.mark.parametrize("signed", [True, False], ids=["signed", "unsigned"])
+def test_match_damaged_descriptor_reads_8_byte_sizes(signed: bool) -> None:
+    """A ZIP64 shape: 8-byte sizes, the uncompressed one damaged."""
+    csize, usize = 2**32 + 10, 2**32 + 20
+    descriptor = (_SIG if signed else b"") + struct.pack("<LQQ", 7, csize, usize + 1)
+    found = match_damaged_descriptor(
+        descriptor + b"PK\x03\x04",
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=True,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.crc, found.compressed_size, found.file_size) == (7, csize, usize + 1)
+    assert found.length == len(descriptor)
+
+
+def test_match_damaged_descriptor_gives_back_full_sizes_past_4_gib() -> None:
+    """A 4-byte shape past 4 GiB: the size that agrees modulo 2**32 comes back whole,
+    the damaged one as stored."""
+    csize, usize = 2**32 + 10, 2**32 + 20
+    descriptor = struct.pack("<LLL", 8, csize & 0xFFFFFFFF, usize & 0xFFFFFFFF)
+    found = match_damaged_descriptor(
+        descriptor + b"PK\x03\x04",
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=False,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.crc, found.compressed_size, found.file_size) == (8, csize, usize)
+    damaged = struct.pack("<LLL", 7, csize & 0xFFFFFFFF, (usize + 1) & 0xFFFFFFFF)
+    found = match_damaged_descriptor(
+        damaged + b"PK\x03\x04",
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=False,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.compressed_size, found.file_size) == (csize, (usize + 1) & 0xFFFFFFFF)
+
+
 def test_match_damaged_descriptor_needs_a_signature_after_it() -> None:
     buffer = struct.pack("<LLL", 8, 10, 20) + b"junk"
     assert (

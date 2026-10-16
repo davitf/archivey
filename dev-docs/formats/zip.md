@@ -491,10 +491,10 @@ damaged field still ends the member (`match_damaged_descriptor`): without its si
 two of its CRC, compressed size and uncompressed size agree; with it, its compressed
 size or two fields; with a damaged signature, all three. So one damaged byte in a bit-3
 member's data or descriptor fails that member alone, by its CRC or size check or by the
-directory at the end of the pass, and the members after it are read. An encrypted bit-3 member nobody reads is passed
-the same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA
-member without EOS has no end its codec can find, and its read is
-`UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
+directory at the end of the pass, and the members after it are read. An encrypted bit-3
+member nobody reads is passed the same way on its ciphertext, matched on the size, so no
+key is needed. A bit-3 LZMA member without EOS has no end its codec can find, and its
+read is `UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
 its decode, as from a file. A bit-3 codec member whose decode fails or finds no end is
 passed by the same scan on its stored bytes. The scan starts at the bytes the walk kept
 of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into the
@@ -548,9 +548,6 @@ directory's refusals the file read is to drop:
 
 - A data descriptor that understates a STORED member, and the reversed same-name pair,
   fail a member the file read writes.
-- A bit-3 member whose data descriptor has one damaged field fails at the end of the
-  pass, as the directory contradicts the descriptor: the file read never reads the
-  descriptor, and reads the member when its data is intact.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
   where the file read refuses it (DR-3).
 - The first of several inconclusive password candidates wins (§6).
@@ -571,6 +568,9 @@ directory's refusals the file read is to drop:
   the file read's bounded read stops before the damage and gives the target; the pass
   decodes in larger pieces, loses the piece the error ends, and gives none
   (`test_zip_pipe_reparse.py::test_a_bit3_reparse_buffer_whose_decode_fails_past_it`).
+- A bit-3 member whose data descriptor has one damaged field fails at the end of the
+  pass, as the directory contradicts the descriptor: the file read never reads the
+  descriptor, and reads the member when its data is intact.
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no
@@ -985,7 +985,7 @@ ours.
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | A ZIP from a pipe opens only with `streaming=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
-| From a pipe, a few crafted shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
+| From a pipe, a few crafted or damaged shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
 | A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_ENCODING_INFERRED`, and `DiagnosticPolicy.STRICT` refuses it | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `declared_encoding` is `"utf-8"` and its `inferred_encoding` the codec used (§2.2) |
 | A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
