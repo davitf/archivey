@@ -797,11 +797,12 @@ The returned `MemberPass` SHALL be an iterator of `(member, stream)` pairs that 
 SHALL end it at once, as closing a generator does: the last yielded stream is closed and
 the pass releases the reader. Closing does not give a streaming reader a second pass:
 `__iter__`, `stream_members()` and `extract_all()` still raise, and `members_report()`
-finishes the interrupted walk. Closing an ended or closed pass SHALL do
-nothing, and advancing a closed pass SHALL end the iteration. Closing a pass that is
-executing (another thread inside `next()`, or a selector closing its own pass) SHALL
-raise `ArchiveyUsageError` and leave the pass running, as `reader.close()` does; a
-`ValueError` the pass itself raises on close SHALL reach the caller unchanged. A plain `for` loop over a pass SHALL behave as before.
+finishes the interrupted walk. Closing an ended or closed pass SHALL do nothing, and
+advancing a closed pass SHALL end the iteration. Closing a pass that is executing
+(another thread inside `next()`, or a selector closing its own pass) SHALL raise
+`ArchiveyUsageError` and leave the pass running, as `reader.close()` does; a
+`ValueError` the pass itself raises on close SHALL reach the caller unchanged. A plain
+`for` loop over a pass SHALL behave as before.
 
 #### Scenario: stream_members matrix
 
