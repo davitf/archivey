@@ -528,11 +528,14 @@ yields no member the file read does not list. Of a `cat`, the first archive's me
 are yielded as the walk meets them; the file read lists only the second's, so they are
 dropped and reported as `ARCHIVE_UNLISTED_DATA`. A member the directory places in bytes
 the listing limits dropped ends the pass with `ResourceLimitError`: higher limits keep
-them. So does a member whose turn comes after the members read from the kept bytes have
-consumed as many bytes as are held (their data overlaps), so they consume the kept bytes
-at most twice, not once each. A stub with no local header in the scan's 2 MiB window,
-ending within it on an end record, is read the same way, so an empty archive, or one
-whose members are gone, behind a stub opens as from a file.
+them. Overlapping entries are a different case, malformed input that no limit relieves.
+Every byte an attempt there consumes is counted, a member read or a local header that
+fails to parse, and once the count reaches the bytes held, the next entry ends the pass
+with `CorruptionError` before it is read, so the kept bytes are consumed at most twice,
+not once each. A local header that is there and does not parse fails its entry at the
+end of the pass, with the parse error as the reason. A stub with no local header in the
+scan's 2 MiB window, ending within it on an end record, is read the same way, so an
+empty archive, or one whose members are gone, behind a stub opens as from a file.
 
 **Extraction** writes each member as it arrives and settles at the end of the pass
 (`ExtractionCoordinator._settle_revised_members`): modes and owners applied, a member the

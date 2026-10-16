@@ -13,7 +13,7 @@ import random
 import struct
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -1018,6 +1018,41 @@ def _overlapping_held_members(n: int) -> bytes:
             "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, 0, 0, 0, 7, 0
         )
         body += names[-1]
+    size = len(_with_directory(body, names, offsets))
+    # Each held header's data runs from its data start to the end of the stream.
+    for offset, name in zip(offsets[1:], names[1:], strict=True):
+        data_start = offset + 30 + len(name)
+        struct.pack_into("<II", body, offset + 18, size - data_start, size - data_start)
+    return _with_directory(body, names, offsets)
+
+
+def _rejected_held_headers(n: int) -> bytes:
+    """One sized member, four bytes that end the walk, then ``n`` local headers 30
+    bytes apart that do not parse: each names a 65 535-byte name, read over the
+    headers after it, and declares 4 GiB sizes with no ZIP64 extra field. Padding
+    keeps the last name inside the stream, and a directory names them all."""
+    body = bytearray(
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, zlib.crc32(b"x"), 1, 1, 1, 0
+        )
+        + b"axJUNK"
+    )
+    offsets = [0]
+    names = [b"a"]
+    for i in range(n):
+        offsets.append(len(body))
+        names.append(b"h%06d" % i)
+        body += struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50, 20, 0, 0, 0, 0x21, 0, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF, 0,
+        )  # fmt: skip
+    body += b"\x00" * (0xFFFF + 64)
+    return _with_directory(body, names, offsets)
+
+
+def _with_directory(body: bytearray, names: list[bytes], offsets: list[int]) -> bytes:
+    """``body`` with a directory naming each of ``names`` at its offset; the first
+    is the one-byte STORED ``a``."""
     cd = bytearray()
     for name, offset in zip(names, offsets, strict=True):
         crc, size = (zlib.crc32(b"x"), 1) if offset == 0 else (0, 0)
@@ -1026,40 +1061,69 @@ def _overlapping_held_members(n: int) -> bytes:
             0x02014B50, 20, 20, 0, 0, 0, 0x21, crc, size, size,
             len(name), 0, 0, 0, 0, 0, offset,
         ) + name  # fmt: skip
+    count = len(names)
     end = struct.pack(
-        "<IHHHHIIH", 0x06054B50, 0, 0, n + 1, n + 1, len(cd), len(body), 0
+        "<IHHHHIIH", 0x06054B50, 0, 0, count, count, len(cd), len(body), 0
     )
-    size = len(body) + len(cd) + len(end)
-    # Each held header's data runs from its data start to the end of the stream.
-    for offset, name in zip(offsets[1:], names[1:], strict=True):
-        data_start = offset + 30 + len(name)
-        struct.pack_into("<II", body, offset + 18, size - data_start, size - data_start)
     return bytes(body + cd + end)
 
 
-def test_held_members_read_the_kept_bytes_about_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Members whose data overlaps would each read on to the end of the stream, so
-    reading them all costs the stream's length times their number. The pass stops
-    once the members it read from the kept bytes have consumed as many bytes as it
-    holds, before it starts the next one."""
-    data = _overlapping_held_members(1000)
-    read = 0
+def _count_held_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """A one-item list holding how many bytes the walks over held members read."""
+    read = [0]
     original = zip_local_walk._HeldBytes.read
 
     def counting(self: zip_local_walk._HeldBytes, n: int = -1, /) -> bytes:
-        nonlocal read
         chunk = original(self, n)
-        read += len(chunk)
+        read[0] += len(chunk)
         return chunk
 
     monkeypatch.setattr(zip_local_walk._HeldBytes, "read", counting)
-    with archivey.open_archive(_pipe(data), streaming=True, format="zip") as reader:
-        with pytest.raises(ResourceLimitError, match="held"):
+    return read
+
+
+@pytest.mark.parametrize(
+    "limits", [ListingLimits(), ListingLimits.UNLIMITED], ids=["default", "unlimited"]
+)
+@pytest.mark.parametrize(
+    "build", [_overlapping_held_members, _rejected_held_headers],
+    ids=["overlapping-data", "rejected-headers"],
+)  # fmt: skip
+def test_held_entries_read_the_kept_bytes_at_most_twice(
+    monkeypatch: pytest.MonkeyPatch,
+    build: Callable[[int], bytes],
+    limits: ListingLimits,
+) -> None:
+    """Entries whose bytes overlap would each read on past the next ones: members
+    whose data runs to the end of the stream, or local headers whose names run
+    over the headers after them and then do not parse. Every byte an attempt reads
+    is counted, and once the count reaches the bytes held the next entry is
+    refused before it is read. Overlap is malformed input, so the refusal is
+    ``CorruptionError`` at any listing limit."""
+    data = build(1000)
+    read = _count_held_reads(monkeypatch)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with archivey.open_archive(
+        _pipe(data), streaming=True, format="zip", config=config
+    ) as reader:
+        with pytest.raises(CorruptionError, match="overlap"):
             for _ in reader.stream_members():
                 pass
-    assert read <= 4 * len(data)
+    assert read[0] <= 2 * len(data)
+
+
+def test_a_held_local_header_that_does_not_parse_says_why() -> None:
+    """A local header is there but does not parse: its entry fails, naming the
+    parse error rather than saying the stream held none."""
+    data = _rejected_held_headers(1)
+    with archivey.open_archive(_pipe(data), streaming=True, format="zip") as reader:
+        report = reader.members_report()
+    assert [m.name for m in report.members] == ["a"]
+    error = report.error
+    assert isinstance(error, CorruptionError)
+    assert "held no local header" not in str(error)
+    assert "did not parse" in str(error)
+    assert isinstance(error.__cause__, CorruptionError)
 
 
 def test_a_held_member_is_numbered_after_the_walked_ones() -> None:

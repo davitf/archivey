@@ -273,13 +273,26 @@ def _descriptor_error(
     )
 
 
-def _missing_error(member: ArchiveMember, offset: int) -> CorruptionError:
-    return CorruptionError(
+def _missing_error(
+    member: ArchiveMember, offset: int, rejected: ArchiveyError | None = None
+) -> CorruptionError:
+    """The failure of a directory entry with no local entry: none at ``offset``, or
+    one there that did not parse (``rejected``, chained as the cause)."""
+    if rejected is None:
+        return CorruptionError(
+            f"ZIP central directory entry {quoted(member.name)} points to offset "
+            f"{offset}, where the stream held no local header",
+            member_name=member.name,
+            source_format=ArchiveFormat.ZIP,
+        )
+    error = CorruptionError(
         f"ZIP central directory entry {quoted(member.name)} points to offset "
-        f"{offset}, where the stream held no local header",
+        f"{offset}, where the local header did not parse: {rejected.message}",
         member_name=member.name,
         source_format=ArchiveFormat.ZIP,
     )
+    error.__cause__ = rejected
+    return error
 
 
 def _declared_reparse_buffer(header: bytes) -> int:
@@ -1561,6 +1574,9 @@ class ZipForwardReader(ZipReader):
                     source_format=ArchiveFormat.ZIP,
                 )
         self._pass_data: _PassData | None = None
+        # Local header offset -> why the header the directory names there, in the
+        # bytes kept after the walk, did not parse (``_walk_held_members``).
+        self._rejected_headers: dict[int, ArchiveyError] = {}
         # How many local headers the walk has met: the next member's index, and
         # what ``max_members`` is charged on. Reset where the walk starts
         # (``_iter_members``).
@@ -1661,12 +1677,16 @@ class ZipForwardReader(ZipReader):
         dropped is ``ResourceLimitError``, as a directory there is
         (``ForwardTail.end_record``): higher limits keep those bytes.
 
-        Each member is read from its offset to its data's end, which nothing keeps
-        short of the end of the stream, so members whose data overlaps would read
-        the kept bytes once each. What the members consume is counted, and once it
-        reaches the bytes held, a further member is ``ResourceLimitError`` before it
-        is read: members a writer laid out apart never consume that much, and
-        together the members consume the kept bytes at most twice.
+        Each entry is read from its offset to its data's end, or as far as its
+        local header got before it failed to parse, and nothing keeps that short
+        of the end of the stream, so entries whose bytes overlap would read the
+        kept bytes once each. Every byte each attempt reads is counted, however it
+        ends, and once the count reaches the bytes held, the next entry is
+        ``CorruptionError`` before it is read: entries a writer laid out apart never
+        take that much, so their bytes overlap, and no limit would relieve it.
+        Together the attempts read the kept bytes at most twice. A local header
+        that is there and does not parse fails its entry at the end of the pass,
+        with the parse error as the reason (``_rejected_headers``).
 
         The directory walk has run by then, so its callbacks never see these
         members: ``local_name_at`` cannot correct a held member's offset wrapped
@@ -1686,12 +1706,11 @@ class ZipForwardReader(ZipReader):
             }
             for offset in sorted(held_offsets - self._local_offsets):
                 if consumed >= budget:
-                    raise ResourceLimitError(
-                        "ZIP members the central directory places after the "
-                        f"members a forward read walked ({tail.after}) have "
-                        f"consumed the {budget} bytes it held after them, so "
-                        "their data overlaps; a forward read reads those bytes "
-                        "once",
+                    raise CorruptionError(
+                        "ZIP central directory places entries after the members a "
+                        f"forward read walked ({tail.after}) whose bytes overlap: "
+                        f"reading them has taken the {budget} bytes held there, "
+                        "and entries a writer laid out apart never do",
                         archive_name=self._archive_name,
                         source_format=ArchiveFormat.ZIP,
                     )
@@ -1710,17 +1729,22 @@ class ZipForwardReader(ZipReader):
                     held, offset=offset, find_start=False, index=self._local_count
                 )
                 try:
-                    with self._translated_errors():
-                        entry = self._walker.next_entry()
-                except ArchiveyError:
-                    # No local header there: the entry fails as missing, as from
-                    # a file.
-                    entry = None
-                if entry is None:
-                    continue
-                yield self._begin_member(entry)
-                self._leave_member()
-                consumed += self._walker.source.offset - offset
+                    try:
+                        with self._translated_errors():
+                            entry = self._walker.next_entry()
+                    except ArchiveyError as exc:
+                        # A local header there that does not parse: the entry fails
+                        # at the end of the pass, with this as the reason.
+                        self._rejected_headers[offset] = exc
+                        continue
+                    if entry is None:
+                        # Other bytes: the entry fails as missing, as from a file.
+                        continue
+                    yield self._begin_member(entry)
+                    self._leave_member()
+                finally:
+                    # Every byte this attempt read counts, however it ended.
+                    consumed += self._walker.source.offset - offset
         finally:
             self._walker = main
 
@@ -1854,7 +1878,11 @@ class ZipForwardReader(ZipReader):
                     (
                         position,
                         missing,
-                        _missing_error(missing, entries[position].header_offset),
+                        _missing_error(
+                            missing,
+                            entries[position].header_offset,
+                            self._rejected_headers.get(offset),
+                        ),
                     )
                 )
                 placed.append(missing)
@@ -1951,6 +1979,7 @@ class ZipForwardReader(ZipReader):
         self._local_offsets = set()
         self._mac_data_starts = {}
         self._descriptors = {}
+        self._rejected_headers = {}
         if damage is not None:
             # The listing's error, as from a file; a member that fails a check of its
             # own fails at the end of the pass (``_failed_at_end``).

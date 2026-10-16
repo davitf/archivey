@@ -232,9 +232,12 @@ entry points to SHALL be dropped from the listing and reported as
 are no local header and keep the rest of the stream; a directory entry that points into
 the kept bytes (bytes a writer left between two members, or a second archive appended
 with `cat`) SHALL be read from them at that offset and yielded before the pass ends, and
-no other local header there SHALL be read. One whose bytes the listing limits dropped,
-or one reached after such members have consumed as many bytes as the pass holds, SHALL
-end the pass with `ResourceLimitError`. A stub with no local header within `SFX_MAX`,
+no other local header there SHALL be read. One whose bytes the listing limits dropped
+SHALL end the pass with `ResourceLimitError`. Every byte each attempt there consumes,
+a member read or a local header that fails to parse, SHALL be counted, and an entry
+reached once the count equals the bytes the pass holds SHALL end the pass with
+`CorruptionError` before it is read. A local header there that does not parse SHALL
+fail its entry at the end of the pass with the parse error as its cause. A stub with no local header within `SFX_MAX`,
 the stream ending there on an end record, SHALL be read as the tail, so an archive with
 no local header behind a stub lists as from a file. A member flagged as a Windows
 reparse point whose data is not a reparse buffer stays a file. The cost receipt SHALL
@@ -294,6 +297,7 @@ end-of-pass rename.
 | Bytes between a sized member and the next | Every member read, as from a file |
 | `cat first.zip second.zip` | The second archive's members, as from a file; the first's yielded, then dropped with `ARCHIVE_UNLISTED_DATA` |
 | A member the directory places in bytes the listing limits dropped | `ResourceLimitError` |
+| Entries placed in the kept bytes whose data or headers overlap, at any listing limits | `CorruptionError` once they have consumed the bytes held |
 | A stub, then an archive with no local header (an empty one), `format=ZIP` | Opens with what the directory lists, as from a file |
 | `reader.info` during the pass, then after it | `member_count` and `comment` `None`, then the directory's |
 

@@ -356,11 +356,12 @@ archive declares.
   (a member declaring more than the archive holds raises `TruncatedError` at the first
   short read), and that ZIP walk reads through the data of every member whose local
   header leaves its size to a data descriptor, up to one read of the file. The pipe
-  pass also reads the members its directory places in the bytes it kept after the
-  walk stopped (a gap between members, a second archive appended); what they consume
-  is counted against the bytes held, and past that the next one is
-  `ResourceLimitError` before it is read, so overlapping members cost at most two
-  more reads of the kept bytes, not one per member.
+  pass also reads the entries its directory places in the bytes it kept after the
+  walk stopped (a gap between members, a second archive appended). Every byte each
+  attempt consumes there, a member read or a local header that fails to parse, is
+  counted against the bytes held, and past that the next entry is `CorruptionError`
+  before it is read (entries a writer laid out never overlap), so the attempts
+  consume the kept bytes at most twice, not once per entry.
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
@@ -1076,10 +1077,10 @@ Every limit caps bytes, entries or key-derivation rounds, not time. Worst cases 
 a 7z BCJ2 `main` stream made only of branch candidates decodes at 1.8 MB/s in pure
 Python (26 MB/s on a real executable), and LZMA2 compresses that stream to almost
 nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folder
-costs folder size times candidates. A ZIP read from a pipe is linear in its input: it
-reads the stream once and the bytes kept after its members at most twice more, however
-many members its directory names there ([Resource use is bounded](#resource-use-is-bounded)).
-A "work per output byte" limit for BCJ2 was
+costs folder size times candidates. A ZIP read from a pipe consumes the stream once,
+and the entries its directory places in the bytes kept after its members consume
+those at most twice more, however many it names there
+([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit for BCJ2 was
 considered and not added: no other codec has one, and `ExtractionLimits` still bounds
 the amount, only the rate is lower. Callers who need a time bound run archivey in a
 worker they can kill. Public: [known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
