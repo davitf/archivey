@@ -51,6 +51,7 @@ from archivey.exceptions import (
     EncryptionError,
     LinkTargetNotFoundError,
     LinkTargetNotFoundReason,
+    PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
@@ -149,6 +150,22 @@ from archivey.types import (
     OverwritePolicyStr,
     TrailerSignature,
 )
+
+UNREADABLE_LINK_TARGET_ERRORS: tuple[type[ArchiveyError], ...] = (
+    CorruptionError,
+    UnsupportedFeatureError,
+    PackageNotInstalledError,
+)
+"""What a read of one link's data-stored target may raise without failing the listing.
+
+Damage (``CorruptionError``, and ``TruncatedError`` under it), a method or variant this
+reader does not decode (``UnsupportedFeatureError``), and a codec library that is not
+installed (``PackageNotInstalledError``) are each about that one member's data. Listing
+and a data pass leave the link targetless and report it
+(``_report_unreadable_link_target``); opening or extracting the link reads it again and
+raises the error itself. ``EncryptionError`` is not here: the backends catch it where
+they read and report it with its own reason.
+"""
 
 MAX_LINK_TARGET_BYTES = 4096
 """Longest symlink target, in stored bytes, that a reader accepts from member data.
@@ -871,13 +888,13 @@ class BaseArchiveReader(ArchiveReader):
             not self._config.read_link_targets
             or member.type is not MemberType.SYMLINK
             # Already read and reported; reading it again would only re-raise.
-            or member._link_target_damaged
+            or member._link_target_unreadable
         ):
             return
         try:
             self._read_link_target_on_request(member)
-        except CorruptionError as exc:
-            self._report_damaged_link_target(member, exc)
+        except UNREADABLE_LINK_TARGET_ERRORS as exc:
+            self._report_unreadable_link_target(member, exc)
 
     def _lazy_member_stream(
         self,
@@ -1355,10 +1372,11 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
 
-        A ``CorruptionError`` / ``TruncatedError`` reading one link's target leaves
-        that link targetless and reported (``_report_damaged_link_target``), and the
-        others resolve. Past that, when ``error is not None`` (incomplete listing /
-        terminal pass damage), a secondary fault of those types is swallowed so the
+        A ``CorruptionError`` / ``TruncatedError``, an ``UnsupportedFeatureError`` or a
+        ``PackageNotInstalledError`` reading one link's target leaves that link
+        targetless and reported (``_report_unreadable_link_target``), and the others
+        resolve. Past that, when ``error is not None`` (incomplete listing /
+        terminal pass damage), a secondary ``CorruptionError`` is swallowed so the
         recovered prefix stays publishable. When ``error is None`` (clean EOF / complete
         listing), it propagates.
 
@@ -1394,15 +1412,15 @@ class BaseArchiveReader(ArchiveReader):
                     and member.link_target is None
                     and not member._link_target_resolved
                     # A pass that read it first has reported it already.
-                    and not member._link_target_damaged
+                    and not member._link_target_unreadable
                 ]
                 if unread:
                     self._prepare_link_target_reads(unread)
                 for member in unread:
                     try:
                         self._resolve_link_target(member)
-                    except CorruptionError as exc:
-                        self._report_damaged_link_target(member, exc)
+                    except UNREADABLE_LINK_TARGET_ERRORS as exc:
+                        self._report_unreadable_link_target(member, exc)
                         continue
                     if member.link_target is not None:
                         self._listing_tracker.account_link_target(member.link_target)
@@ -1437,23 +1455,32 @@ class BaseArchiveReader(ArchiveReader):
             if error is None:
                 raise
 
-    def _report_damaged_link_target(
-        self, member: ArchiveMember, exc: CorruptionError
+    def _report_unreadable_link_target(
+        self, member: ArchiveMember, exc: ArchiveyError
     ) -> None:
-        """Leave a link whose target data is damaged listed, targetless, and reported.
+        """Leave a link whose target data cannot be read listed, targetless, and reported.
 
-        One damaged member does not make the rest of the listing wrong, and a listing
-        that raised would take every other member with it. So the link stays in the
-        list with ``link_target`` unset and ``SYMLINK_TARGET_UNAVAILABLE``
-        (``reason="target_data_damaged"``) says why; a strict policy still refuses the
-        archive, since the code is an integrity one. The memo stays unset, so opening
-        or extracting the link reads the target again and raises the fault itself.
-        ``_link_target_damaged`` marks it reported, so link finalization after a
-        ``stream_members()`` pass that read it first does not report it twice.
+        ``exc`` is one of ``UNREADABLE_LINK_TARGET_ERRORS``. One member's data says
+        nothing about the others, and a listing that raised would take every other
+        member with it. So the link stays in the list with ``link_target`` unset and
+        ``SYMLINK_TARGET_UNAVAILABLE`` says why: ``reason="target_data_damaged"`` for
+        damage, ``"target_data_unsupported"`` for a method or variant this reader does
+        not decode, ``"codec_not_installed"`` for a missing optional library. A strict
+        policy still refuses the archive, since the code is an integrity one. The memo
+        stays unset, so opening or extracting the link reads the target again and
+        raises the error itself. ``_link_target_unreadable`` marks it reported, so link
+        finalization after a ``stream_members()`` pass that read it first does not
+        report it twice.
         """
+        if isinstance(exc, CorruptionError):
+            reason = "target_data_damaged"
+        elif isinstance(exc, PackageNotInstalledError):
+            reason = "codec_not_installed"
+        else:
+            reason = "target_data_unsupported"
         self._emit_link_target_unavailable(
             member,
-            reason="target_data_damaged",
+            reason=reason,
             message=(
                 f"The symlink target of {quoted(member.name)} could not be read: "
                 f"{raw_message_of(exc).rstrip('.')}. Leaving link_target unset."
@@ -1463,7 +1490,7 @@ class BaseArchiveReader(ArchiveReader):
             target_in_archive=True,
         )
         # After the emit: if a strict policy raises there, the next look reports again.
-        member._link_target_damaged = True
+        member._link_target_unreadable = True
 
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Hook: ``members`` are about to have their data-stored targets read.
@@ -1935,9 +1962,10 @@ class BaseArchiveReader(ArchiveReader):
             return
         try:
             self._ensure_link_target(member)
-        except CorruptionError:
-            # Damaged target data stays damaged: a later read raises the same fault
-            # and sets nothing, so the member will not change.
+        except UNREADABLE_LINK_TARGET_ERRORS:
+            # Damaged target data stays damaged, and a method or codec this install
+            # cannot decode stays undecodable: a later read raises the same error and
+            # sets nothing, so the member will not change.
             member._link_target_unread = False
             raise
         if member.type is MemberType.SYMLINK and member.link_target == "":
@@ -1953,10 +1981,10 @@ class BaseArchiveReader(ArchiveReader):
             archive_name=self._archive_name,
         )
         # After, not before: a hook that raised did not look and come back empty, it
-        # never finished. `_finalize_links` reports a CorruptionError / TruncatedError
-        # here and lists the link without a target, so marking it resolved on the way
-        # out would trade the real fault for a generic "Link target is unknown" when the
-        # caller opens or extracts the link.
+        # never finished. `_finalize_links` reports an unreadable target (damage, an
+        # unsupported method, a missing codec) here and lists the link without a
+        # target, so marking it resolved on the way out would trade the real error for
+        # a generic "Link target is unknown" when the caller opens or extracts the link.
         # A backend that catches EncryptionError returns normally, so the repeated-read
         # case this memo exists for is still covered.
         member._link_target_resolved = True

@@ -438,7 +438,7 @@ size must equal its packed size, since a stored target is its packed bytes; a he
 that declares more would have the read run into the next header. Then the bytes are held
 to the member's data CRC32, since the header CRC does not cover the data. On either
 mismatch the read raises `CorruptionError`, and it is reported as ZIP and 7z report a
-damaged target (`_report_damaged_link_target`): by the listing, or by a
+damaged target (`_report_unreadable_link_target`): by the listing, or by a
 `stream_members()` pass when it reaches the link (solid or not; the read goes straight
 to the archive, not through the `unrar` pipe), and once only. The link stays
 listed with `link_target` unset, `SYMLINK_TARGET_UNAVAILABLE` carries

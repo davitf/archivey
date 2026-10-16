@@ -80,7 +80,11 @@ from archivey.internal.backends.sevenzip_pipeline import (
     encoded_header_needs_password,
     open_folder_pipeline,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    UNREADABLE_LINK_TARGET_ERRORS,
+    BaseArchiveReader,
+    ReadBackend,
+)
 from archivey.internal.config import (
     KeyDerivationBudget,
     StreamConfig,
@@ -822,17 +826,17 @@ class SevenZipReader(BaseArchiveReader):
             self._config.read_link_targets
             and member.link_target is None
             and not member._link_target_resolved
-            # A random-access listing has read and reported this damage already.
-            and not member._link_target_damaged
+            # A random-access listing has read and reported this failure already.
+            and not member._link_target_unreadable
         ):
             content = self._capture_link_data(member, opener, in_pass=True)
             member_id = member._member_id
             kept = None if member_id is None else self._link_data.get(member_id)
-            if isinstance(kept, CorruptionError):
+            if isinstance(kept, UNREADABLE_LINK_TARGET_ERRORS):
                 # Reported now, as the base pass does: a pass left early never
                 # finalizes, and a strict policy must refuse before the link is
                 # handed out. Finalization skips the flagged member.
-                self._report_damaged_link_target(member, kept)
+                self._report_unreadable_link_target(member, kept)
             return content
         self._pass_link = (member, opener, threading.current_thread())
         return None
