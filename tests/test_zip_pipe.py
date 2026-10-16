@@ -579,9 +579,9 @@ def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict(
         with pytest.raises(DiagnosticRaisedError, match="local header stores"):
             reader.members_report()
     # Extraction stops where each read finds it: a file read at the member, the pass
-    # at the directory, every member written and the renamed one still under the
-    # local header's name, as the end-of-pass rename never ran.
-    for piped, expected in ((False, ["a.txt"]), (True, ["a.txt", "b.txt"])):
+    # at the directory. The pass never learned which members are links, so it takes
+    # back every file it wrote that could be one (all of them here).
+    for piped, expected in ((False, ["a.txt"]), (True, [])):
         dest = tmp_path / ("pipe" if piped else "file")
         source = _pipe(bytes(data)) if piped else io.BytesIO(bytes(data))
         with pytest.raises(DiagnosticRaisedError):

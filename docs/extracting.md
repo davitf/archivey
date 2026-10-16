@@ -445,6 +445,13 @@ stored as `docs\r.txt`, sees the stored name during the pass, so that member fai
 file of yours that the pass replaces under `overwrite="replace"` is moved aside and put
 back at the end, unless the member still lands there.
 
+If the run stops (`abort_on`, `on_error="stop"`, a limit) before the end of the pass
+has settled a member, it never learns whether that member is a link, and a link the pass
+wrote is still a file holding its target. So the run removes each such file whose
+content could be a link's: 4096 bytes or less, or starting with the tag of a Windows
+symlink or junction. The longer files stay, with no permissions applied. From a file,
+the same stop keeps every member written before it.
+
 Some things go differently from a pipe, on an archive that is crafted or damaged:
 
 - A data descriptor that disagrees with the directory, a local header the directory

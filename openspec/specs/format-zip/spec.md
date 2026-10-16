@@ -258,12 +258,15 @@ read reads it; in `extract_all`, a link member the pass wrote as a file keeps th
 its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
 makes is raised by a file read before anything is written and by the pass after every
-member is written, the files staying on disk. A policy that raises on
-`MEMBER_LOCAL_NAME_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the same: a file read raises
-when it lists or opens the member, the pass once it has read the directory, leaving
-every member it wrote as the pass wrote it: a member whose local header names it
-differently stays under the local header's name, since the pass stops before the
-end-of-pass rename.
+member is written. A policy that raises on `MEMBER_LOCAL_NAME_DIFFERS` or
+`MEMBER_LOCAL_CRC_USED` is the same: a file read raises when it lists or opens the
+member, the pass once it has read the directory. A run the pass stops before the end of
+the pass, for these or any other reason, never learns which members are links: it SHALL
+remove every file it wrote whose data could be a link's (4096 bytes or less, or starting
+with a Windows symlink or junction reparse tag), so no link is left on disk as a file
+holding its target. The longer files stay as the pass wrote them, with no mode applied:
+a member whose local header names it differently stays under the local header's name,
+since the pass stops before the end-of-pass rename.
 
 #### Scenario: non-seekable read matrix
 
@@ -274,6 +277,7 @@ end-of-pass rename.
 | Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
 | `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
 | `extract_all()` from a pipe, a Unix symlink member | The link is made at the end of the pass, after the filter runs again on it |
+| `extract_all()` from a pipe that stops before the end of the pass (`abort_on`, `on_error="stop"`, a limit) | Every file the pass wrote whose data could be a link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag) is removed; a longer file stays, with no mode applied |
 | Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |
 | Bit-3 LZMA member without the end-of-stream marker | `UnsupportedFeatureError` at that member |
 | Bit-3 PPMd member, `max_ppmd_in_process_input=None` | `ResourceLimitError` |

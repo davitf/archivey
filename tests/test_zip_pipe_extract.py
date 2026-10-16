@@ -536,6 +536,112 @@ def test_a_run_stopped_while_settling_keeps_what_it_settled(tmp_path: Path) -> N
         assert (tmp_path / where / "docs/r.txt").read_bytes() == b"read me"
 
 
+# A Windows symlink reparse buffer's header, padded past the target cap: as data, a
+# member the directory may still make a link at any length.
+_REPARSE_FILE = struct.pack("<IHH", 0xA000000C, 12, 0) + b"\0" * 6000
+_LONG_FILE = b"L" * 6000
+
+
+def _possible_links(last: tuple[zipfile.ZipInfo, bytes]) -> bytes:
+    return _zip(
+        [
+            (_entry("abs_link", mode=0o120777), b"/etc/passwd"),
+            (_entry("rel_link", mode=0o120777), b"target.txt"),
+            (_entry("script.sh", mode=0o100755), b"#!/bin/sh\n"),
+            (_entry("target.txt"), b"t"),
+            (_entry("reparse.bin", host=0), _REPARSE_FILE),
+            (_entry("long.bin", mode=0o100644), _LONG_FILE),
+            last,
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("last", "options"),
+    [
+        (
+            (_entry("bomb.bin"), b"\0" * 100_000),
+            {"limits": ExtractionLimits(max_extracted_bytes=50_000)},
+        ),
+        ((_entry("../evil"), b"Z"), {"abort_on": ["blocked_member"]}),
+    ],
+    ids=["limit", "abort_on"],
+)
+def test_a_run_stopped_in_the_pass_leaves_no_link_as_a_file(
+    last: tuple[zipfile.ZipInfo, bytes], options: dict[str, object], tmp_path: Path
+) -> None:
+    """The run stops before the directory says which members are links, so every
+    file the pass wrote whose data could be a link's is taken back: one within the
+    target cap, or one that starts with a Windows link's reparse tag. A longer file
+    stays, though its mode was never applied."""
+    with pytest.raises(ArchiveyError):
+        _extract(
+            _possible_links(last),
+            tmp_path,
+            piped=True,
+            policy="trusted",
+            **options,
+        )
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["long.bin"]
+    assert (tmp_path / "long.bin").read_bytes() == _LONG_FILE
+
+
+@needs_symlinks
+def test_a_run_stopped_while_settling_takes_back_what_it_had_not_settled(
+    tmp_path: Path,
+) -> None:
+    """The directory makes ``evil`` a link out of the destination, which stops the
+    run as the end of the pass settles it: the members settled before it stay, links
+    made, and the files written for the members after it that may be links are taken
+    back. A file read stops at ``evil`` too, before writing those."""
+    data = _zip(
+        [
+            (_entry("rel_link", mode=0o120777), b"target.txt"),
+            (_entry("target.txt", mode=0o100600), b"t"),
+            (_entry("long.bin", mode=0o100755), _LONG_FILE),
+            (_entry("evil", mode=0o120777), b"../../etc/passwd"),
+            (_entry("late_link", mode=0o120777), b"target.txt"),
+            (_entry("late.txt", mode=0o100644), b"late"),
+        ]
+    )
+    for where, piped in (("file", False), ("pipe", True)):
+        with pytest.raises(ArchiveyError):
+            _extract(data, tmp_path / where, piped=piped, abort_on=["blocked_member"])
+    tree = _tree(tmp_path / "file", times=False)
+    assert _tree(tmp_path / "pipe", times=False) == tree
+    assert tree == {
+        "long.bin": (_LONG_FILE, 0o755),
+        "rel_link": ("symlink", "target.txt"),
+        "target.txt": (b"t", 0o600),
+    }
+
+
+def test_a_file_that_may_be_a_link_and_cannot_be_removed_stays_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    refused = tmp_path / "rel_link"
+    real_unlink = os.unlink
+
+    def unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(os.fspath(path)) == refused:  # type: ignore[arg-type]
+            raise PermissionError(13, "Access is denied", os.fspath(path))  # type: ignore[arg-type]
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    with pytest.raises(ArchiveyError):
+        _extract(
+            _possible_links((_entry("../evil"), b"Z")),
+            tmp_path,
+            piped=True,
+            abort_on=["blocked_member"],
+            policy="trusted",
+        )
+    monkeypatch.undo()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["long.bin", "rel_link"]
+    assert "rel_link" in caplog.text
+    assert "symlink" in caplog.text
+
+
 @pytest.mark.parametrize("overwrite", ["replace", "skip"])
 def test_a_member_the_list_takes_in_the_end_replaces_the_callers_file(
     overwrite: str, tmp_path: Path
