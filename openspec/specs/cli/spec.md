@@ -613,6 +613,7 @@ The worked cases are in `tests/test_cli_outer.py`.
 | Case | Expected |
 | --- | --- |
 | `archivey x data.tgz --outer` | Writes `data.tar` |
+| `archivey t weird.name --outer` on zlib bytes | Found by content; `1 OK` |
 | `archivey t a.tar --outer` | Exit `1`; message names `tar` and says to leave out `--outer` |
 | `archivey x a.tar.gz --outer a.txt` | Usage error, exit `2` |
 

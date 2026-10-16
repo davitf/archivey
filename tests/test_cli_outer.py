@@ -8,6 +8,7 @@ import lzma
 import os
 import sys
 import tarfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -172,3 +173,18 @@ def test_exclude_alone_is_named_in_the_refusal(tmp_path: Path) -> None:
     code, err = _run(["test", str(src), "--outer", "--exclude", "x*"])
     assert code == EXIT_USAGE
     assert "takes no member patterns or --exclude" in err
+
+
+@pytest.mark.parametrize("verb", ["extract", "test"])
+def test_outer_finds_the_layer_by_content_whatever_the_name(
+    tmp_path: Path, verb: str
+) -> None:
+    """zlib has no magic: only a content probe finds it, as cat --outer's does."""
+    src = tmp_path / "weird.name"
+    src.write_bytes(zlib.compress(b"payload\n"))
+    dest = tmp_path / "out"
+    flags = ["-d", str(dest)] if verb == "extract" else []
+    code, err = _run([verb, str(src), "--outer", *flags])
+    assert code == EXIT_OK, err
+    if verb == "extract":
+        assert (dest / "weird.name.uncompressed").read_bytes() == b"payload\n"
