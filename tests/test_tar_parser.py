@@ -1056,13 +1056,16 @@ def test_pax_sparse_1_0_map_is_charged_during_the_walk() -> None:
         _walk(data, budget=(4096, 4096))
 
 
-def _pax_1_0_member(major: str, minor: str) -> bytes:
+def _pax_1_0_member(
+    major: str, minor: str, extra: dict[str, str] | None = None
+) -> bytes:
     map_text = _data(b"1\n10\n3\n")
     records = {
         "GNU.sparse.major": major,
         "GNU.sparse.minor": minor,
         "GNU.sparse.name": "real",
         "GNU.sparse.realsize": "20",
+        **(extra or {}),
     }
     return (
         _pax(records)
@@ -1082,6 +1085,36 @@ def test_pax_sparse_later_versions_read_as_1_0(major: str, minor: str) -> None:
         20,
         3,
     )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"GNU.sparse.size": "20"},
+        {"GNU.sparse.map": "10,3"},
+        {"GNU.sparse.offset": "10", "GNU.sparse.numbytes": "3"},
+    ],
+    ids=["0.0-size", "0.1-map", "0.0-map"],
+)
+def test_pax_sparse_major_chooses_1_0_over_0_x_records(extra: dict[str, str]) -> None:
+    """The major version chooses the encoding, not which records are present: GNU
+    tar 1.35 reads a member with major 1 as 1.0 whatever 0.x records it carries."""
+    (entry,), _ = _walk(_pax_1_0_member("1", "0", extra))
+    assert (entry.sparse_format, entry.size, entry.stored_size) == (
+        SparseFormat.PAX_1_0,
+        20,
+        3,
+    )
+    assert entry.sparse is not None
+    assert list(zip(entry.sparse.offsets, entry.sparse.lengths, strict=True)) == [
+        (10, 3)
+    ]
+
+
+def test_pax_sparse_major_of_many_digits_reads_as_1_0() -> None:
+    """A major past Python's int() digit limit is still a version of 1 or more."""
+    (entry,), _ = _walk(_pax_1_0_member("0" * 5000 + "1", "0"))
+    assert entry.sparse_format is SparseFormat.PAX_1_0
 
 
 @pytest.mark.parametrize("major", ["0", "x", ""])
