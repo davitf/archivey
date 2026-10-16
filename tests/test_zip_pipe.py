@@ -12,6 +12,7 @@ import dataclasses
 import io
 import random
 import struct
+import tracemalloc
 import zipfile
 import zlib
 from collections.abc import Callable, Iterator
@@ -1117,6 +1118,55 @@ def test_held_entries_read_the_kept_bytes_at_most_twice(
             for _ in reader.stream_members():
                 pass
     assert read[0] <= 2 * len(data)
+
+
+def _cheap_rejected_held_headers(n: int, *, header: bool = True) -> bytes:
+    """``n`` 30-byte local headers after the walk's end that fail to parse after
+    their fixed part (4 GiB sizes, no ZIP64 extra field), or, without ``header``,
+    the same number of bytes holding no local header."""
+    body = bytearray(
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, zlib.crc32(b"x"), 1, 1, 1, 0
+        )
+        + b"axJUNK"
+    )
+    offsets = [0]
+    names = [b"a"]
+    for i in range(n):
+        offsets.append(len(body))
+        names.append(b"h%06d" % i)
+        if header:
+            body += struct.pack(
+                "<IHHHHHIIIHH",
+                0x04034B50, 20, 0, 0, 0, 0x21, 0, 0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0,
+            )  # fmt: skip
+        else:
+            body += b"QQQQ" + b"\x00" * 26
+    return _with_directory(body, names, offsets)
+
+
+def test_a_rejected_held_header_keeps_no_frames() -> None:
+    """Each rejected header's error is kept until the end of the pass, for its
+    entry's failure; its traceback would keep the parse's frames alive, one chain
+    per entry. The pass holds no more for rejected headers than for entries with
+    no header at all, give or take the error objects."""
+    n = 2000
+
+    def peak(data: bytes) -> int:
+        tracemalloc.start()
+        try:
+            with archivey.open_archive(
+                _pipe(data), streaming=True, format="zip"
+            ) as reader:
+                report = reader.members_report()
+            assert isinstance(report.error, CorruptionError)
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    rejected = peak(_cheap_rejected_held_headers(n))
+    missing = peak(_cheap_rejected_held_headers(n, header=False))
+    assert rejected - missing < n * 2048
 
 
 def test_a_held_local_header_that_does_not_parse_says_why() -> None:

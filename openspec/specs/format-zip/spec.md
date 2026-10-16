@@ -223,30 +223,29 @@ password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").
 
 `stream_members()` SHALL yield each member with what its local header gives: `mode`,
-`create_system` and `comment` are `None`, `uid` and `gid` are `None` even when the
-local extra field carries them, the type is `FILE` or `DIRECTORY` from the
-name (a name ending in `\` is a `DIRECTORY`), and `member_state_final` is `False`
-(`archive-data-model`). Once the directory has been read, before the pass ends, each
-member SHALL be updated in place from its directory entry, matched by offset, as the
-same archive read from a file lists it, and `is_current` SHALL follow the directory
-order; member ids and listing order stay those of the file. A local entry no directory
-entry points to SHALL be dropped from the listing and reported as
-`ARCHIVE_UNLISTED_DATA`. The walk SHALL stop at the first bytes after a member that
-are no local header and keep the rest of the stream; a directory entry that points into
-the kept bytes (bytes a writer left between two members, or a second archive appended
-with `cat`) SHALL be read from them at that offset and yielded before the pass ends, and
-no other local header there SHALL be read. One whose bytes the listing limits dropped
-SHALL end the pass with `ResourceLimitError`. Every byte each attempt there consumes,
-a member read or a local header that fails to parse, SHALL be counted, and an entry
-reached once the count equals the bytes the pass holds SHALL end the pass with
-`CorruptionError` before it is read. A local header there that does not parse SHALL
-fail its entry at the end of the pass with the parse error as its cause. A stub with no local header within `SFX_MAX`,
-the stream ending there on an end record, SHALL be read as the tail, so an archive with
-no local header behind a stub lists as from a file. A member flagged as a Windows
-reparse point whose data is not a reparse buffer stays a file. The cost receipt SHALL
-be `REQUIRES_SCANNING`, `DIRECT`, `FORWARD_ONLY`; `member_count` and `comment` SHALL be
-`None` and `members_report_if_available()` SHALL return `None` until the directory has
-been read.
+`create_system` and `comment` are `None`, `uid` and `gid` are `None` even when the local
+extra field carries them, the type is `FILE` or `DIRECTORY` from the name (a name ending
+in `\` is a `DIRECTORY`), and `member_state_final` is `False` (`archive-data-model`).
+Once the directory has been read, before the pass ends, each member SHALL be updated in
+place from its directory entry, matched by offset, as the same archive read from a file
+lists it, and `is_current` SHALL follow the directory order; member ids and listing
+order stay those of the file. A local entry no directory entry points to SHALL be
+dropped from the listing and reported as `ARCHIVE_UNLISTED_DATA`. The walk SHALL stop at
+the first bytes after a member that are no local header and keep the rest of the stream;
+a directory entry that points into the kept bytes (bytes a writer left between two
+members, or a second archive appended with `cat`) SHALL be read from them at that offset
+and yielded before the pass ends, and no other local header there SHALL be read. One
+whose bytes the listing limits dropped SHALL end the pass with `ResourceLimitError`.
+Every byte each attempt there consumes, a member read or a local header that fails to
+parse, SHALL be counted, and an entry reached once the count equals the bytes the pass
+holds SHALL end the pass with `CorruptionError` before it is read. A local header there
+that does not parse SHALL fail its entry at the end of the pass with the parse error as
+its cause. A stub with no local header within `SFX_MAX`, the stream ending there on an
+end record, SHALL be read as the tail, so an archive with no local header behind a stub
+lists as from a file. A member flagged as a Windows reparse point whose data is not a
+reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
+`FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
+`members_report_if_available()` SHALL return `None` until the directory has been read.
 
 Four things SHALL fail the member they name once the directory has been read: a size
 or CRC from a data descriptor that differs from the central entry; a local header whose
@@ -264,24 +263,23 @@ entry already took SHALL end the pass with `CorruptionError`.
 
 The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
 mismatch (a STORED member's, or a descriptor planted in the data of a bit-3 codec member
-the pass reads past) and the reversed pair fail a member the file read writes; bytes between a bit-3
-codec member's end and its descriptor, refused from a file, are counted into the member;
-the first of several inconclusive password candidates wins. It MAY also differ in these:
-a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
-the pass, losing the members after it, if its decode read more than 4 MiB past the
-data's end; a bit-3 LZMA member without the end-of-stream marker is refused where a file
-read reads it; a bit-3 member followed by bytes that are no ZIP record ends the pass
-(`UnsupportedFeatureError` when STORED) where a file read reads it; in `extract_all`, a link
-member the pass wrote as a file keeps the error its data read gave (no password:
-`EncryptionError`, where the file read reports
-`LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
-makes is raised by a file read before anything is written and by the pass after every
-member is written, the files staying on disk. A policy that raises on
-`MEMBER_LOCAL_NAME_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the same: a file read raises
-when it lists or opens the member, the pass once it has read the directory, leaving
-every member it wrote as the pass wrote it: a member whose local header names it
-differently stays under the local header's name, since the pass stops before the
-end-of-pass rename.
+the pass reads past) and the reversed pair fail a member the file read writes; bytes
+between a bit-3 codec member's end and its descriptor, refused from a file, are counted
+into the member; the first of several inconclusive password candidates wins. It MAY also
+differ in these: a damaged bit-3 codec member can fail with another `CorruptionError`
+subclass, and ends the pass, losing the members after it, if its decode read more than 4
+MiB past the data's end; a bit-3 LZMA member without the end-of-stream marker is refused
+where a file read reads it; a bit-3 member followed by bytes that are no ZIP record ends
+the pass (`UnsupportedFeatureError` when STORED) where a file read reads it; in
+`extract_all`, a link member the pass wrote as a file keeps the error its data read gave
+(no password: `EncryptionError`, where the file read reports `LinkTargetNotFoundError`);
+and an archive-wide refusal the directory or end record makes is raised by a file read
+before anything is written and by the pass after every member is written, the files
+staying on disk. A policy that raises on `MEMBER_LOCAL_NAME_DIFFERS` or
+`MEMBER_LOCAL_CRC_USED` is the same: a file read raises when it lists or opens the
+member, the pass once it has read the directory, leaving every member it wrote as the
+pass wrote it: a member whose local header names it differently stays under the local
+header's name, since the pass stops before the end-of-pass rename.
 
 #### Scenario: non-seekable read matrix
 

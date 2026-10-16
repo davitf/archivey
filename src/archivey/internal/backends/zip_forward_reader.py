@@ -295,6 +295,18 @@ def _missing_error(
     return error
 
 
+def _without_frames(exc: ArchiveyError) -> ArchiveyError:
+    """``exc`` with no traceback on it or on the errors chained to it, to keep for a
+    report: a traceback keeps its frames and their locals alive."""
+    visited: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in visited:
+        visited.add(id(link))
+        link.__traceback__ = None
+        link = link.__cause__ or link.__context__
+    return exc
+
+
 def _declared_reparse_buffer(header: bytes) -> int:
     """The length of a Windows reparse buffer starting with ``header``: the header
     and the payload a link tag declares. The file read reads one byte more
@@ -1595,7 +1607,8 @@ class ZipForwardReader(ZipReader):
                 )
         self._pass_data: _PassData | None = None
         # Local header offset -> why the header the directory names there, in the
-        # bytes kept after the walk, did not parse (``_walk_held_members``).
+        # bytes kept after the walk, did not parse (``_walk_held_members``): the
+        # error alone, its frames dropped. Cleared at the end of the pass.
         self._rejected_headers: dict[int, ArchiveyError] = {}
         # How many local headers the walk has met: the next member's index, and
         # what ``max_members`` is charged on. Reset where the walk starts
@@ -1755,7 +1768,7 @@ class ZipForwardReader(ZipReader):
                     except ArchiveyError as exc:
                         # A local header there that does not parse: the entry fails
                         # at the end of the pass, with this as the reason.
-                        self._rejected_headers[offset] = exc
+                        self._rejected_headers[offset] = _without_frames(exc)
                         continue
                     if entry is None:
                         # Other bytes: the entry fails as missing, as from a file.
