@@ -899,7 +899,7 @@ def _new_unix_owner(data: bytes, complete: bool) -> _ZipOwner:
 # Only fields a writer could produce are cached (19 bytes at most: version, two sizes,
 # two 8-byte ids): hashing a long hostile field costs more than parsing it, and the
 # cache would keep its bytes for the life of the process.
-_NEW_UNIX_CACHED_LEN = 32
+_NEW_UNIX_CACHED_LEN = 19
 _cached_new_unix_owner = lru_cache(maxsize=64)(_new_unix_owner)
 
 

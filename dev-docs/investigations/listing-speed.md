@@ -4,9 +4,24 @@ A profile of `open_archive(p).members()` on large archives of small members, tak
 speeding up the native ZIP reader's listing (PR 845). It records where the time goes after
 that PR, so the next listing-performance change starts from it rather than from a fresh
 profile. Wall times are from one Linux x86_64 4-core VM, CPython 3.12; the shares are what
-to compare, not the absolute numbers. Re-measure with
+to compare, not the absolute numbers.
+
+The totals re-measure with
 [`benchmarks/zip_listing_baseline.py`](../../benchmarks/zip_listing_baseline.py) and
-[`benchmarks/tar_listing_baseline.py`](../../benchmarks/tar_listing_baseline.py).
+[`benchmarks/tar_listing_baseline.py`](../../benchmarks/tar_listing_baseline.py). The
+splits below came from one-off measurements that no script in the repo repeats, each the
+fastest of 11-21 runs on the same 20 000-member archives (the TAR and 7z ones built from
+the `zip -r` tree with `tar cf` and `7z a`):
+
+- the ZIP parts by subtraction: the directory walk alone (`ZipReader._directory_walk`),
+  `_to_member` over the walked entries, and a full listing whose member iterator
+  returns members built beforehand, which leaves the shared per-member work;
+- each helper's share inside `_to_member` by replacing it with a constant-returning stub
+  and timing again, with `cProfile` to find the candidates;
+- garbage collection as the listing time with `gc.enable()` minus with `gc.disable()`.
+
+The stream open and close cost in the last section comes from an earlier investigation
+of reading stored members (2026-10-12), not from these runs.
 
 ## ZIP: four parts
 
