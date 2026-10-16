@@ -53,7 +53,8 @@ AI makes mistakes, so every change is reviewed before it's merged.
 
 Even then, problems and cases nobody thought of creep in. So agents also review the whole codebase
 rather than one change, each time with one goal, such as finding bugs, finding dead, redundant or
-unclear code, or evaluating the public API. One such review of extraction and every backend found
-about 40 bugs. Each got a test that reproduced it first. Most were fixed in the same pull request
-([PR 512](https://github.com/davitf/archivey/pull/512)), and the rest stayed in the test suite as
-expected failures until later work fixed them.
+unclear code, or evaluating the public API. The first of them read every file and posted its
+findings as comments on [PR 315](https://github.com/davitf/archivey/pull/315). One such review of
+extraction and every backend found about 40 bugs. Each got a test that reproduced it first. Most
+were fixed in the same pull request ([PR 512](https://github.com/davitf/archivey/pull/512)), and the
+rest stayed in the test suite as expected failures until later work fixed them.
