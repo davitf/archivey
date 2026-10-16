@@ -1,6 +1,6 @@
 """``validate_code_context`` on codes that share a context kind.
 
-Five context kinds each serve more than one code, told apart by one context field
+Six context kinds each serve more than one code, told apart by one context field
 (``diagnostics`` §"Complete initial warning taxonomy": "typed context distinguishes
 variants"). The kind match alone accepts a mismatched pairing, so every such code
 must also check its field.
