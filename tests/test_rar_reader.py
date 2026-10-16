@@ -4603,24 +4603,36 @@ def test_auto_keeps_the_unrar_refusal_without_an_accepted_unar(
 
 
 @requires_binary("unrar", "unar")
-def test_auto_keeps_the_unrar_refusal_when_unar_would_get_the_password(
+def test_plaintext_members_of_an_encrypted_archive_get_no_password(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The password is resolved per archive, so in an archive with any encryption
-    even a plaintext member's read would put it on unar's command line."""
-    spawned: list[object] = []
-    monkeypatch.setattr(
-        rar_reader, "open_unar_stdout", lambda *a, **k: spawned.append(a)
-    )
+    """A spawn that reads one member gets a password only when that member needs one.
+
+    The archive is non-solid and its one encrypted member comes last, so the
+    plaintext members are read with no password, by unrar and, for the glob name
+    unrar cannot address, by unar. Only the encrypted member's read carries it.
+    """
+    passwords: list[tuple[str, object]] = []
+    original_unar = rar_reader.open_unar_stdout
+    original_unrar = rar_reader.open_unrar_p
+
+    def unar_spy(path: Path, indexes: list[int], **kwargs: object):
+        passwords.append(("unar", kwargs.get("password")))
+        return original_unar(path, indexes, **kwargs)  # type: ignore[arg-type]
+
+    def unrar_spy(path: Path, **kwargs: object):
+        passwords.append(("unrar", kwargs.get("password")))
+        return original_unrar(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unar_stdout", unar_spy)
+    monkeypatch.setattr(rar_reader, "open_unrar_p", unrar_spy)
     with open_archive(
         _fixture("wildcard_names_one_encrypted__.rar"), password="password"
     ) as archive:
+        assert archive.read("aX.txt").startswith(b"other-aX\n")
+        assert archive.read("a*.txt").startswith(b"target-star\n")
         assert archive.read("secret.txt").startswith(b"secret\n")
-        with pytest.raises(
-            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ):
-            archive.read("a*.txt")
-    assert spawned == []
+    assert passwords == [("unrar", None), ("unar", None), ("unrar", "password")]
 
 
 @requires_binary("unrar", "unar")

@@ -1019,7 +1019,7 @@ at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` get
 are refused before it runs. The other direction has one exception: a member `unrar`
 cannot address by name (a glob mask that also matches earlier members, a glob in a
 directory component, a backslash) is read with an accepted `unar` by index, unless the
-archive has any encryption, is a stream or has a prefix (a copy), or `unar` refuses it
+read needs a password, the archive is a stream or has a prefix (a copy), or `unar` refuses it
 (`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
@@ -1164,8 +1164,9 @@ in `ps` and `/proc/<pid>/cmdline` while the process runs. Accepted by the mainta
 RARLAB installed gets this without choosing it. `RarDecompressor.UNRAR` rules it out. A
 caller *with* RARLAB never gets it: the one place `"auto"` reaches for `unar` beside
 `unrar` (a member `unrar` cannot name, `_unar_for_unaddressable`) is refused for any
-archive with encryption, because the password is resolved per archive and a plaintext
-member's read would still hand it over.
+read that needs a password. A read that needs none gets none, from `unrar` or `unar`
+(`_member_needs_password`): the member and the headers are plaintext, and in a solid
+archive no encrypted member comes before it.
 Public: [hardening notes](../docs/extracting.md#hardening-notes-for-callers).
 
 ## 5. Open design gaps

@@ -498,8 +498,8 @@ def _build_glob_named(
 def _build_wildcard_one_encrypted(rar_bin: Path, out: Path) -> None:
     """The plaintext glob names, then one member added with a password.
 
-    Every glob-named member is plaintext, yet the archive has encryption, so the
-    password resolved for the archive would still reach a program reading one of them.
+    Every glob-named member is plaintext, yet the archive has encryption: a read of
+    one of them must hand ``unrar`` or ``unar`` no password.
     """
     _build_glob_named(rar_bin, out, _WILDCARD_NAMES, extra=("-m3",))
     with tempfile.TemporaryDirectory() as td:

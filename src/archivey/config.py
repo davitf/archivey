@@ -101,8 +101,8 @@ class RarDecompressor(Enum):
       whose glob name also matches earlier members
       (``rar_allow_glob_member_concatenation``), is read with ``unar`` when an
       accepted one is installed, because ``unar`` selects members by index. That
-      applies only to an archive with no encryption at all, read from a file with
-      nothing before the RAR (so ``unar`` gets no password and no copy), and to a
+      applies only to a read that needs no password, from a file with nothing
+      before the RAR (so ``unar`` gets no password and no copy), and to a
       member ``unar`` reads correctly; otherwise the ``unrar`` refusal stands. With
       neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
       This is the default. On a machine with ``unar`` and no RARLAB program, it means

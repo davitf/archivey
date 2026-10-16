@@ -1312,6 +1312,18 @@ class RarReader(BaseArchiveReader):
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
+        # Members a solid decode reaches only through an encrypted (or possibly
+        # encrypted) one: everything after the first such member. Read by
+        # ``_member_needs_password``.
+        self._behind_encryption: set[int] = set()
+        if self._archive.is_solid:
+            seen_encrypted = False
+            for info in self._archive.members:
+                if seen_encrypted:
+                    self._behind_encryption.add(id(info))
+                seen_encrypted = (
+                    seen_encrypted or info.is_encrypted or info.encryption_unknown
+                )
         if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
         # Built once from the parse, and only when the caller chose unar: it holds the
@@ -1947,18 +1959,37 @@ class RarReader(BaseArchiveReader):
         self._checked_passwords[key] = found
         return found
 
-    def _member_data_password(self, member: ArchiveMember) -> str | None:
-        """The password to hand the ``unrar`` spawn that reads ``member``.
+    def _member_needs_password(self, raw: RarMemberInfo) -> bool:
+        """Whether a spawn reading only this member has any use for a password.
 
+        It does when the headers are encrypted (the program cannot list without it),
+        when the member is encrypted or its encryption is unknown, and in a solid
+        archive when an encrypted member comes before it: the decode runs through
+        that member's data first. Otherwise no password is handed over, so the
+        caller's password reaches ``unrar`` or ``unar`` only for a read that uses it.
+        """
+        return (
+            self._archive.has_header_encryption
+            or raw.is_encrypted
+            or raw.encryption_unknown
+            or id(raw) in self._behind_encryption
+        )
+
+    def _member_data_password(self, member: ArchiveMember) -> str | None:
+        """The password to hand the ``unrar`` or ``unar`` spawn that reads ``member``.
+
+        ``None`` for a member that needs none (:meth:`_member_needs_password`).
         ``unrar`` takes one password and cannot try a list, so a candidate list is
         resolved here. A RAR5 member carries a PswCheck, so its password is picked
-        per member, before ``unrar`` runs. A plain member of a solid archive may sit
-        behind encrypted ones and needs their password; a plain member of a non-solid
-        one needs none worth resolving. An encrypted member without a usable check
-        (RAR3/4) is judged by decoding it (:meth:`_unchecked_data_password`).
+        per member, before ``unrar`` runs. A plain member of a solid archive behind
+        an encrypted one needs that member's password. An encrypted member without a
+        usable check (RAR3/4) is judged by decoding it
+        (:meth:`_unchecked_data_password`).
         """
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
+        if not self._member_needs_password(raw):
+            return None
         enc = raw.file_encryption
         if enc is not None and _psw_check_usable(enc):
             return self._checked_data_password(enc, member)
@@ -2365,10 +2396,10 @@ class RarReader(BaseArchiveReader):
         where it would otherwise refuse it. ``None`` keeps the ``unrar`` refusal when:
 
         - the caller chose ``unrar`` explicitly, or no accepted ``unar`` was found;
-        - the archive has any encryption, or the member's encryption is unknown. The
-          password is resolved per archive, so even a plaintext member's read would
-          hand it over, and ``unar`` takes it on its command line, where other local
-          users can see it;
+        - the read needs a password (:meth:`_member_needs_password`): ``unar`` takes
+          it on its command line, where other local users can see it. A plaintext
+          member of a non-solid archive, or one no encrypted member precedes in a
+          solid one, needs none, and ``unar`` gets none;
         - ``unar`` would need a copy of the archive made for it alone: a prefix before
           the RAR (no open-time note under ``unrar``), or a stream source (a second
           copy against the ``SpoolLimits`` budget the open-time note described as
@@ -2379,8 +2410,7 @@ class RarReader(BaseArchiveReader):
         if (
             self._config.rar_decompressor is not RarDecompressor.AUTO
             or self._decompressor is not RarDecompressor.UNRAR
-            or self._archive_has_encryption
-            or raw.encryption_unknown
+            or self._member_needs_password(raw)
             or not self._volume_paths
             or self._origin + self._archive.sfx_offset != 0
             or self._unar_path_refusal() is not None

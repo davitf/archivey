@@ -1084,8 +1084,8 @@ whose mask also matches earlier members, costs it nothing. When
 `ArchiveyConfig.rar_decompressor` is `auto` and resolved to `unrar`, a read that the
 two requirements above would refuse SHALL instead be served by `unar -i <index>`, when
 all of these hold: an accepted `unar` is installed (the same check `auto` uses), the
-archive has no encrypted member or header and the member's encryption is known (the
-password is resolved per archive, and `unar` takes it on its command line), the source
+read needs no password (see "A spawn gets a password only when the read needs one";
+`unar` takes it on its command line), the source
 is a file with nothing before the RAR (`unar` would otherwise need its own copy: a
 prefix has no open-time cost note under `unrar`, and a stream source would be copied a
 second time against the same `SpoolLimits` budget; a file is linked into `unar`'s
@@ -1104,7 +1104,28 @@ the refusals SHALL stand.
 | The same reads with no accepted `unar` | The `unrar` refusals, unchanged |
 | The same reads with `rar_decompressor='unrar'` | The `unrar` refusals, unchanged |
 | RAR5 solid archive with data after a directory (`unar` refuses it) | The `unrar` refusal, unchanged |
-| An archive with any encrypted member, or a stream source, or a prefix before the RAR | The `unrar` refusal, unchanged; nothing is written to disk |
+| A read that needs a password, or a stream source, or a prefix before the RAR | The `unrar` refusal, unchanged; nothing is written to disk |
+| A plaintext member of a non-solid archive whose last member is encrypted | Read with `unar`, which gets no password |
+
+### Requirement: A spawn gets a password only when the read needs one
+
+An `unrar` or `unar` process started to read one member SHALL receive a password only
+when that read needs one: the archive's headers are encrypted, the member is encrypted
+or its encryption is unknown, or the archive is solid and an encrypted member (or one
+whose encryption is unknown) comes before it. Otherwise the process SHALL be started
+with no password, whatever the caller supplied. A process that decodes the whole
+archive (a solid `stream_members()` pass) SHALL receive one when any member is
+encrypted.
+
+#### Scenario: Passwords per read
+
+| Case | Expected |
+| --- | --- |
+| Non-solid archive, caller password, plaintext member read with `unrar` | `unrar` gets no password |
+| The same archive, its encrypted member | `unrar` gets the password |
+| Header-encrypted archive, any member | The password |
+| Solid archive, plaintext member after an encrypted one | The password |
+| Solid archive, plaintext member before every encrypted one | No password |
 
 ### Requirement: Read RAR member data with unar
 

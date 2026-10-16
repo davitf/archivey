@@ -557,7 +557,7 @@ yielded.
   `unrar` on Linux and macOS reads as `_`. `unar` selects members by position, so it
   has none of these problems: under the default `rar_decompressor='auto'`, archivey
   reads such a member with `unar` when one it accepts is installed. It does not when
-  the archive has any encryption (`unar` takes the password on its command line), when
+  the read needs a password (`unar` takes it on its command line), when
   the archive is a stream or has data before the RAR (`unar` would need its own copy
   of it), or when `unar` is known to misread the archive. Setting
   `ArchiveyConfig.rar_decompressor` to `'unar'` reads every member that way.

@@ -164,7 +164,7 @@ in pure Python rather than delegating to a third-party parser, and the same read
 interface covers every other format you handle. One RAR difference: `rarfile` will use
 `unar` or `7z` for member data if that is what is on `PATH`; archivey uses RARLAB
 `unrar` or `rar`, then `unar` when no RARLAB program is installed (or, with one, for a
-member `unrar` cannot name in an archive with no encryption), and never `7z`.
+member `unrar` cannot name that needs no password), and never `7z`.
 Under `unar` it refuses the reads `unar` gets wrong, and the password goes on `unar`'s
 command line ([Formats and extras](formats.md#rar)). Set
 `ArchiveyConfig(rar_decompressor="unrar")` to never use `unar`.
