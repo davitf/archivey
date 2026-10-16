@@ -48,11 +48,14 @@ Every open archive exposes a machine-readable receipt:
 
 Cost never changes what is *legal* — it describes what your access pattern will *pay*.
 
-`listing_cost` names the work needed to list the members through the source the
-archive was opened on, not when that work is paid. A backend may do it inside
-`open_archive`, as RAR does, and then serve `members()` from memory. The source
-matters: a ZIP from a file reads its central directory (`INDEXED`), while a ZIP from a
-pipe is listed from its local headers (`REQUIRES_SCANNING`).
+`listing_cost` names how the member list is read through the source the archive was
+opened on: from an index, by walking member headers, or by decompressing. It does not
+count the work of finding the index, and it does not say when the work is paid: a
+backend may do it inside `open_archive`, as RAR does, and then serve `members()` from
+memory. The source matters: a ZIP from a file reads its central directory (`INDEXED`),
+while a ZIP from a pipe is listed from its local headers (`REQUIRES_SCANNING`). The
+value is set per backend and source, so a damaged archive listed by a fallback walk
+keeps its backend's value.
 
 `StreamCapability` is ordered — `FORWARD_ONLY < SEEKABLE` — because a seekable source
 can serve every read a forward-only one can. That is what lets you compare a source
@@ -83,11 +86,10 @@ is not there, and the reader walks every local header from the start to find whe
 the members end, then steps over the directory to the end record. It seeks over a
 member whose local header states its size and reads through one that leaves its size
 to a data descriptor (bit 3, as a writer to a pipe sets it), so that open costs up to
-one read of the file. Each local header counts toward `max_members`. `listing_cost`
-stays `INDEXED`, because the members still come from the central directory; the walk
-only finds it. The same walk lists the members of an archive whose directory is gone,
-from their local headers. That archive is damaged, and its listing ends with an error;
-its receipt still describes the format, so it stays `INDEXED` too.
+one read of the file. Each local header counts toward `max_members`. The members still
+come from the central directory, so `listing_cost` is `INDEXED`. The same walk lists
+the members of an archive whose directory is gone, from their local headers. That
+archive is damaged, and its listing ends with an error.
 
 ## Solid archives: prefer one forward pass
 

@@ -16,10 +16,15 @@ from enum import Enum
 class ListingCost(Enum):
     """How expensive it is to *enumerate* all members (list names + metadata).
 
-    The value names the work needed to list the members through the source the archive
-    was opened on, not when that work is paid. A backend may do it inside
-    ``open_archive`` and serve ``members()`` from memory (RAR), and one format can need
-    different work on different sources (a ZIP read from a pipe is ``REQUIRES_SCANNING``).
+    The value names how the member list is read through the source the archive was
+    opened on: from an index, by walking member headers, or by decompressing. It does
+    not count the work of finding the index: a ZIP whose end record sits behind a long
+    tail is walked to find its central directory and is still ``INDEXED``. Nor does it
+    say when the work is paid: a backend may do it inside ``open_archive`` and serve
+    ``members()`` from memory (RAR). One format can need different work on different
+    sources: a ZIP read from a pipe is ``REQUIRES_SCANNING``. The value is set per
+    backend and source, so a damaged archive listed by a fallback walk (a ZIP whose
+    directory is gone) keeps its backend's value.
     """
 
     INDEXED = "indexed"

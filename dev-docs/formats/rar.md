@@ -1610,7 +1610,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   `unrar` call — one synthetic writer would serve both.
 
 - ~~**Does `ListingCost.INDEXED` mean "cheap" or "already paid"?**~~ Neither: it names
-  the work listing needs on the source, so RAR reports `REQUIRES_SCANNING` like TAR
+  how the member list is read on the source, so RAR reports `REQUIRES_SCANNING` like TAR
   (maintainer ruling 2026-10-15; general form under DR-10 in
   [`design-rules.md`](../design-rules.md)). Reasons: the receipt says what listing costs,
   and for RAR that is a header walk; a later change may make the walk lazy, as TAR's is.

@@ -1048,11 +1048,10 @@ def _max_members_error(
 
 #: Also the receipt for a seekable source read through its directory. An end record
 #: behind more trailing bytes than its search reads is found by a walk over every local
-#: header at open, reading the data of each bit-3 member (``_walk_past_members``); the
-#: listing stays ``INDEXED`` because the members still come from the central directory,
-#: and the walk only finds it. A ZIP with no end record at all is listed from the local
-#: headers that walk found; it keeps ``INDEXED`` too, as the receipt describes the
-#: format, and that archive is damaged: its listing ends by raising the walk's error.
+#: header at open, reading the data of each bit-3 member (``_walk_past_members``). A ZIP
+#: with no end record at all is listed from the local headers that walk found, and its
+#: listing ends by raising the walk's error. Both stay ``INDEXED``: the walk finds the
+#: index or salvages a damaged archive (``ListingCost`` says why neither changes it).
 _ZIP_COST = CostReceipt(
     listing_cost=ListingCost.INDEXED,
     access_cost=AccessCost.DIRECT,
