@@ -1173,8 +1173,8 @@ class _PassData:
         turn out to be no link, which only a padded codec stream makes this long.
 
         A bit-3 STORED member is read to its end, which its scan finds. A bit-3 codec
-        member is decoded only as far as a sized one is: to the byte past the target
-        cap, then the start of a reparse buffer. Its codec finds its end only by
+        member is decoded no further than the byte past the target cap, then the start
+        of a reparse buffer. Its codec finds its end only by
         decoding all of it, which no limit bounds, so where the decode stops short of
         that end, and where it fails, the walk's scan finds the end on the stored
         bytes, with no key (``_scan_rest``). An encrypted one, STORED or nobody read

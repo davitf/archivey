@@ -30,6 +30,7 @@ from archivey.types import ArchiveMember, MemberType
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_windows_reparse import _reparse_buffer
+from tests.test_zip_pipe import _streamed
 from tests.zipcrypto import build_zipcrypto_zip
 
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
@@ -45,35 +46,6 @@ def _zip(entries: list[tuple[str, int, bytes]]) -> bytes:
             info.compress_type = zipfile.ZIP_DEFLATED
             zf.writestr(info, data)
     return buf.getvalue()
-
-
-def _streamed(data: bytes) -> bytes:
-    """``data``'s members written again to a pipe: bit 3 and a descriptor on each,
-    so the pass finds where each one ends only past its data."""
-    out = _PipeWriter()
-    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w") as dst:
-        for info in src.infolist():
-            dst.writestr(info, src.read(info), compress_type=info.compress_type)
-    assert all(
-        info.flag_bits & 0x08
-        for info in zipfile.ZipFile(io.BytesIO(out.data)).infolist()
-    )
-    return bytes(out.data)
-
-
-class _PipeWriter(io.RawIOBase):
-    def __init__(self) -> None:
-        self.data = bytearray()
-
-    def writable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return False
-
-    def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
-        self.data += b
-        return len(b)
 
 
 def _from_file(data: bytes) -> dict[str, ArchiveMember]:

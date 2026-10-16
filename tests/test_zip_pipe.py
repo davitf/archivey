@@ -76,6 +76,8 @@ def _streamed(data: bytes) -> bytes:
         dst.comment = src.comment
         for info in src.infolist():
             dst.writestr(info, src.read(info), compress_type=info.compress_type)
+    with zipfile.ZipFile(io.BytesIO(out.data)) as written:
+        assert all(info.flag_bits & 0x08 for info in written.infolist())
     return bytes(out.data)
 
 

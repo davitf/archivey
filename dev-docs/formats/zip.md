@@ -486,8 +486,8 @@ bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk 
 data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC and
 size match the bytes before it and that a ZIP signature follows, signed or not. A bit-3
 codec member the pass reads past (nobody read it, or the caller stopped early) is
-decoded only as far as a sized one is: to the byte past the 4096-byte target cap, then
-the start of a reparse buffer (§2.2.1). A member whose codec ends within that is
+decoded no further than the byte past the 4096-byte target cap, then the start of a
+reparse buffer (§2.2.1). A member whose codec ends within that is
 checked as a read to its end is. Past it the walk passes the member by the STORED
 member's scan on its stored bytes, matched on the size and the signature after the
 descriptor, since the CRC covers the decoded data: decoding the rest would cost what no
@@ -916,7 +916,10 @@ info, extended attributes, resource fork; no data length).
     the reader, settles it).
     `extra["size_mod_2_32"]` stays after the fill-in, so the member still says the
     archive stored only the low bits. A pipe pass that decoded the member to its end
-    with the directory's CRC-32 keeps the size it counted. davi chose this (option A,
+    with the directory's CRC-32 keeps the size it counted. For a bit-3 member nobody
+    read, that is one whose codec ended within the symlink target cap; past it the
+    pass decodes no further (§2.2 "Where a member's data ends") and `size` stays `None`,
+    as from a file. davi chose this (option A,
     2026-10-15) over decoding such members while listing, which would read a whole
     archive of videos to list it. An entry with no CRC-32 (a directory carrying data)
     has nothing to check a read against, so it keeps the stored size instead of
