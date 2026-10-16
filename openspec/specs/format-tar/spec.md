@@ -468,7 +468,8 @@ GNU tar refuses too. An old GNU map that does not parse is a header that does no
 parse (`Reject TAR headers that do not parse`).
 
 A PAX member whose `GNU.sparse.major` is 1 or more SHALL be read as 1.0, whatever its
-minor version, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
+minor version and whatever 0.x records (`GNU.sparse.size`, `GNU.sparse.map`,
+`GNU.sparse.offset`, `GNU.sparse.numbytes`) it also carries, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
 a number, with no 0.x map SHALL raise `CorruptionError`, never serve the map as content.
 
 A sparse member's map SHALL be checked before any of its data is returned: when the
@@ -494,6 +495,7 @@ slots with `(0, 0)`.
 | Case | Expected |
 | --- | --- |
 | A sparse member | Logical bytes with holes as zeros; never bytes past the member's stored size |
+| A sparse member cut inside a chunk | A sized `read(n)` returns the logical bytes before the cut, short, and the next read raises `TruncatedError`; a `read()` with no size raises `TruncatedError` |
 | A sparse map out of order or overlapping | `UnsupportedFeatureError` on open |
 | A chunk, empty or not, that ends past the logical size | `CorruptionError` on open |
 | Chunks that add up to more than the member stores | `CorruptionError` on open |
@@ -504,5 +506,6 @@ slots with `(0, 0)`.
 | A PAX 0.1 map holding a number past 2**63 - 1 | `CorruptionError` during the listing |
 | An old GNU extension block with a number that does not parse | The walk stops on a rejected header, as `Detect truncated TAR archives` classifies it |
 | `GNU.sparse.major=2`, `GNU.sparse.minor=0` with a 1.0 map | Read as 1.0 |
+| `GNU.sparse.major=1` with a 1.0 map and a `GNU.sparse.size` or `GNU.sparse.map` record too | Read as 1.0, at the `GNU.sparse.realsize` |
 | `GNU.sparse.major=0` with no 0.x map | `CorruptionError` during the listing |
 | A PAX 1.0 map of more entries than the budget allows | `ResourceLimitError` during the listing, before the entries are read |

@@ -9,6 +9,7 @@ from random import Random
 
 import pytest
 
+from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools import SparseStream
 from tests.memory_util import traced_peak
 
@@ -120,10 +121,38 @@ def test_readinto_goes_through_read() -> None:
     assert bytes(buf) == b"\x00\x00ab\x00\x00"
 
 
-def test_short_stored_data_is_an_eof_error() -> None:
-    stream = SparseStream(io.BytesIO(b"ab"), [0], [4], 8)
-    with pytest.raises(EOFError):
+@pytest.mark.parametrize("seekable", [True, False])
+def test_short_stored_data_raises_truncated_after_the_prefix(seekable: bool) -> None:
+    """A cut inside a chunk is a truncation (ADR 0014): a sized read returns the bytes
+    before the cut, holes included, and the next read raises."""
+    stored = b"abcd"
+    inner = io.BytesIO(stored) if seekable else io.BufferedReader(_ForwardOnly(stored))
+    # The map names 6 stored bytes; 4 are there.
+    stream = SparseStream(inner, [2, 8], [2, 4], 14)
+    assert stream.read(100) == b"\x00\x00ab\x00\x00\x00\x00cd"
+    assert stream.tell() == 10
+    with pytest.raises(TruncatedError):
+        stream.read(1)
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_short_stored_data_fails_a_whole_read(seekable: bool) -> None:
+    """A read with no size raises at the cut and returns nothing, as a plain member's
+    does."""
+    inner = io.BytesIO(b"ab") if seekable else io.BufferedReader(_ForwardOnly(b"ab"))
+    stream = SparseStream(inner, [0], [4], 8)
+    with pytest.raises(TruncatedError):
         stream.read()
+
+
+def test_a_skip_past_the_stored_data_raises_truncated() -> None:
+    """A forward-only stream skips to a chunk by reading; stored data that ends
+    before the chunk is a truncation, not a builtin ``EOFError``."""
+    inner = io.BufferedReader(_ForwardOnly(b"ab"))
+    stream = SparseStream(inner, [0, 10], [4, 4], 14)
+    stream.seek(11)
+    with pytest.raises(TruncatedError):
+        stream.read(1)
 
 
 def test_a_huge_logical_size_costs_nothing_until_a_hole_is_read() -> None:

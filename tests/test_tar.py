@@ -1032,6 +1032,92 @@ def test_pax_sparse_member_is_reported_sparse(build: Any) -> None:
         assert ar.read(member) == bytes(100) + b"hello" + bytes(895)
 
 
+def _cut_sparse_tar(encoding: str) -> tuple[bytes, bytes]:
+    """A one-member sparse tar cut two bytes into its stored data, and the logical
+    bytes before the cut."""
+    if encoding == "old-gnu":
+        data, chunk, before = _tar_sparse_gnu(1000), b"xyz", b""
+    else:
+        build = {
+            "pax-0.0": lambda: _tar_sparse_pax_0_x(0),
+            "pax-0.1": lambda: _tar_sparse_pax_0_x(1),
+            "pax-1.0": _tar_sparse_pax_1_0,
+        }[encoding]
+        data, chunk, before = build(), b"hello", bytes(100)
+    at = data.index(chunk) + 2
+    return data[:at], before + chunk[:2]
+
+
+_SPARSE_ENCODINGS = ["old-gnu", "pax-0.0", "pax-0.1", "pax-1.0"]
+
+
+# How a test opens the cut archive: random access, or a streaming pass over a seekable
+# source or a pipe.
+_SPARSE_CUT_OPENS = {
+    "random": (io.BytesIO, False),
+    "stream-seekable": (io.BytesIO, True),
+    "stream-pipe": (NonSeekableBytesIO, True),
+}
+
+
+@pytest.mark.parametrize("opening", sorted(_SPARSE_CUT_OPENS))
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_a_cut_sparse_member_delivers_its_prefix_then_raises(
+    encoding: str, opening: str
+) -> None:
+    """A sparse member cut inside a chunk is a truncation, as a plain member's cut
+    is: sized reads deliver the logical bytes before the cut, holes included, and
+    the next read raises ``TruncatedError``, never a builtin ``EOFError``."""
+    cut, prefix = _cut_sparse_tar(encoding)
+    source, streaming = _SPARSE_CUT_OPENS[opening]
+    got = bytearray()
+    with open_archive(source(cut), format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        streams = (
+            (s for _, s in ar.stream_members())
+            if streaming
+            else iter([ar.open(next(iter(ar)))])
+        )
+        with pytest.raises(TruncatedError):
+            for stream in streams:
+                assert stream is not None
+                while block := stream.read(7):
+                    got += block
+    assert bytes(got) == prefix
+
+
+@pytest.mark.parametrize("opening", sorted(_SPARSE_CUT_OPENS))
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_a_cut_sparse_member_read_whole_raises_truncated(
+    encoding: str, opening: str
+) -> None:
+    cut, _ = _cut_sparse_tar(encoding)
+    source, streaming = _SPARSE_CUT_OPENS[opening]
+    with (
+        open_archive(source(cut), format=ArchiveFormat.TAR, streaming=streaming) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        if streaming:
+            for _, stream in ar.stream_members():
+                assert stream is not None
+                stream.read()
+        else:
+            ar.read(next(iter(ar)))
+
+
+@pytest.mark.parametrize("opening", sorted(_SPARSE_CUT_OPENS))
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_a_cut_sparse_member_fails_extract_all_with_truncated(
+    encoding: str, opening: str, tmp_path: Path
+) -> None:
+    cut, _ = _cut_sparse_tar(encoding)
+    source, streaming = _SPARSE_CUT_OPENS[opening]
+    with (
+        open_archive(source(cut), format=ArchiveFormat.TAR, streaming=streaming) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        ar.extract_all(tmp_path / "out")
+
+
 def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
     # The compressed path classifies the end the same way, with no backward seek.
     import gzip
