@@ -1246,9 +1246,12 @@ class TarReader(BaseArchiveReader):
         caller's ``encoding=``, else UTF-8, with undecodable bytes kept as surrogates.
 
         ``surrogateescape`` can escape only a byte of 0x80 or more, so a codec that
-        does not decode ASCII bytes one by one (``utf-16`` on an odd length, ``utf-7``
-        on a lone ``+``) still fails, and ``idna`` refuses the handler outright. Such a
-        name decodes as it would with no ``encoding=``, as in ZIP, RAR and ISO.
+        does not read ASCII bytes as ASCII can still fail: ``utf-16`` on an odd byte
+        count, ``utf-32`` on a code point out of range, ``utf-7`` on a ``+`` shift
+        that ends badly; ``idna`` refuses the handler outright. Such a name decodes as
+        it would with no ``encoding=``, as in ZIP, RAR and ISO.
+
+        ``_decode_name`` also passes valid UTF-8 here, only to compare readings.
         """
         try:
             return raw.decode(self._codec, "surrogateescape")
@@ -1279,6 +1282,10 @@ class TarReader(BaseArchiveReader):
             or (source is NameSource.PAX and not binary)
         ):
             return utf8_text, False
+        # Through the helper, not the codec: a codec that cannot decode these bytes
+        # (``idna``, ``utf-16`` on an odd byte count) must not fail the listing, and
+        # would not have named the member, so its fallback reading equals the UTF-8
+        # one and nothing is reported, as RAR's ``_utf8_over_encoding`` does.
         return utf8_text, utf8_text != self._decode_not_utf8(raw)
 
     def _to_member(self, entry: TarEntry, index: int) -> ArchiveMember:

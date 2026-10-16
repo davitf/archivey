@@ -291,8 +291,8 @@ so `encoding=` changes a PAX name only when its bytes are not UTF-8. A PAX recor
 global header reset, declares no encoding and is read as a ustar field is. UTF-8 is
 tried before the codec for ASCII too, so an ASCII name never reaches it: `cp037` read
 `abc` as `/ÂÄ`, and `utf-16` failed the open. A codec that fails on bytes that are not
-UTF-8 (`utf-16` on an odd length, `utf-7`, `idna`) gives way to the UTF-8 escape decode,
-as in ZIP, RAR and ISO. `extra["tar.pax_headers"]` decodes each value by the same rule.
+UTF-8 (`utf-16` on an odd byte count, `utf-7` on a bad `+` shift, `idna`) gives way to
+the UTF-8 escape decode, as in ZIP, RAR and ISO, and nothing is reported. `extra["tar.pax_headers"]` decodes each value by the same rule.
 
 ### 2.3 Member data
 
@@ -539,6 +539,7 @@ ours.
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **archivey** | The pass keeps one list of members for `members_report()`; the walker keeps nothing behind it (§2.2) |
 | `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
+| `encoding=` is accepted and changes nothing at all (`utf-16`, `idna`) | **archivey** | Where the codec cannot decode a field's stored bytes, the field decodes as with no `encoding=`, with no diagnostic, as ZIP and ISO do; a codec that cannot read ASCII as ASCII fails on most names (§2.2) |
 
 ## 6. Decisions
 

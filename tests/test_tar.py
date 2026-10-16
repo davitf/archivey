@@ -2879,10 +2879,10 @@ def test_ascii_header_fields_ignore_an_encoding_that_reads_ascii_differently(
 def test_header_name_the_encoding_cannot_decode_falls_back_to_escapes(
     encoding: str,
 ) -> None:
-    """A codec that fails on bytes that are not UTF-8 (an odd length for UTF-16 or
-    UTF-32, a ``+`` shift for UTF-7, no ``surrogateescape`` for ``idna``) decodes the
-    name as with no ``encoding=``, as ZIP, RAR and ISO do, rather than failing the
-    open."""
+    """A codec that fails on bytes that are not UTF-8 (``utf-16`` on an odd byte
+    count, ``utf-32`` on a code point out of range, ``utf-7`` on a bad ``+`` shift,
+    ``idna``, which has no ``surrogateescape``) decodes the name as with no
+    ``encoding=``, as ZIP, RAR and ISO do, rather than failing the open."""
     data = _one_member_tar("a+caf\xe9.tx", "latin-1", tarfile.GNU_FORMAT)
     with open_archive(io.BytesIO(data), encoding=encoding) as ar:
         (member,) = ar.members()
@@ -2894,12 +2894,28 @@ def test_header_name_the_encoding_cannot_decode_falls_back_to_escapes(
 def test_pax_value_the_encoding_cannot_decode_falls_back_to_escapes(
     encoding: str,
 ) -> None:
-    raw = b"caf\xe9\xe9.txt"
+    # Each codec fails on these bytes; the "+" is what makes utf-7 fail.
+    raw = b"a+f\xe9\xe9.txt"
     data = _pax_tar_with_non_utf8_path(raw)
     with open_archive(io.BytesIO(data), encoding=encoding) as ar:
         (member,) = ar.members()
-        assert member.name == "caf\udce9\udce9.txt"
-        assert member.extra["tar.pax_headers"]["path"] == "caf\udce9\udce9.txt"
+        assert member.name == "a+f\udce9\udce9.txt"
+        assert member.extra["tar.pax_headers"]["path"] == "a+f\udce9\udce9.txt"
+
+
+@pytest.mark.parametrize("fmt", [tarfile.USTAR_FORMAT, tarfile.GNU_FORMAT])
+@pytest.mark.parametrize("encoding", ["utf-16", "idna"])
+def test_utf8_name_under_an_encoding_that_cannot_decode_it(
+    fmt: int, encoding: str
+) -> None:
+    """A valid UTF-8 name is UTF-8, and the check whether ``encoding=`` would have
+    read it differently must not fail when that codec cannot decode the bytes at all.
+    Such a codec would not have named the member, so nothing is reported."""
+    data = _one_member_tar("café.txt", "utf-8", fmt)
+    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+        (member,) = ar.members()
+        assert member.name == "café.txt"
+        assert not member.diagnostics
 
 
 def test_binary_pax_record_text_matches_the_member_name() -> None:
