@@ -214,8 +214,15 @@ that is not a number or a PAX sparse map that does not parse.
   3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero
      byte and emit `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar`
      pads to 10 KiB records. On a compressed tar the tail is decompressed to look at
-     it, and a tail that does not decode (a truncated footer, junk after the compressed
-     stream) ends the scan with no diagnostic. A whole-stream checksum that fails there (gzip CRC-32
+     it. When the codec can carry a whole-stream checksum, the scan reads on after the
+     first non-zero byte, within the same 1 MiB, so the checksum is reached however long
+     the trailing bytes are; before, a short tail reached it through read-ahead and a
+     long one did not. A tail that does not decode ends the scan without an error. Junk after the
+     compressed stream is reported by the codec as `ARCHIVE_TRAILING_DATA`. A stream cut
+     before its footer (`TruncatedError` in the scan) never reached its checksum, so on
+     every codec that can carry one it is `DIGEST_UNVERIFIABLE`
+     (`reason="trailing_stream_truncated"`); a plain `.gz` with the same cut raises
+     `TruncatedError` on its read. A whole-stream checksum that fails there (gzip CRC-32
      or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) raises
      `CorruptionError`: it covers the members already read, and with `tar -b128`
      padding (64 KiB) the scan is where it is reached. When the scan stops at 1 MiB
@@ -223,8 +230,10 @@ that is not a number or a PAX sparse map that does not parse.
      `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`) says so. An xz integrity
      check fails with liblzma's generic "Corrupt input data", and a bzip2 block CRC
      with the same "Invalid data stream" as any bad bzip2 input; a junk tail gives
-     both too. So on those two a tail that does not decode is `DIGEST_UNVERIFIABLE`
-     (`reason="trailing_decode_failed"`): it may be a failed check over the members.
+     both too, so on those two a tail that does not decode may be a failed check over
+     the members. On every codec with a checksum, a tail that does not decode in any
+     other way (a damaged deflate stream past the trailer) never reached the checksum,
+     so it is `DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`).
      The same check can instead be reached while the last member is read, when the
      codec has already read to the stream's end; that read raises `CorruptionError`.
      Which one happens depends on the codec's input chunking, so on member size.
@@ -605,7 +614,7 @@ ours.
 | `extract_all` writes the salvageable members, then raises, in both modes | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |
 | `extract_all` on `.tar.gz`/`.bz2`/`.xz` decodes once; limits still bind | `::test_extract_compressed_tar_decodes_once`, `::test_extract_enforces_listing_limits_as_members_arrive` |
 | Truncation inside member data raises during iteration | `::test_truncated_tar_raises` |
-| Trailing data reported, bounded, quiet on an undecodable tail; zeros pass | `tests/test_review_simplicity_consistency.py::test_trailing_data_is_reported`, `::test_trailing_data_scan_is_bounded`, `::test_compressed_tail_that_will_not_decode_ends_the_scan_quietly`, `::test_zero_padding_after_the_trailer_still_passes`, `::test_wrong_explicit_format_on_iso_reports_trailing_data` |
+| Trailing data reported, bounded, no error on an undecodable tail; zeros pass | `tests/test_review_simplicity_consistency.py::test_trailing_data_is_reported`, `::test_trailing_data_scan_is_bounded`, `::test_compressed_tail_that_will_not_decode_ends_the_scan_without_error`, `::test_zero_padding_after_the_trailer_still_passes`, `::test_wrong_explicit_format_on_iso_reports_trailing_data` |
 | Zero-filled files are empty tars; detection refuses them | `::test_legitimately_empty_tar_stays_valid`, `::test_every_block_aligned_zero_length_is_a_valid_empty_tar`, `::test_zero_filled_dot_tar_opens_empty_via_extension`, `::test_content_detection_refuses_a_zero_filled_file` |
 | A PAX header's size does not drive an allocation (O15); a chain of extended headers draws on one budget, charged before each read | `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`, `::test_extended_header_over_the_metadata_cap_is_refused_unread`; `tests/test_tar_parser.py::test_extended_header_is_charged_before_it_is_read`, `::test_extended_header_chain_shares_one_budget` |
 | The parser reads each header encoding and refuses each damaged one; the walk ends cleanly on an extended header before the end marker and with `TruncatedError` on one at the end of the stream | `tests/test_tar_parser.py` (a table per encoding and per rejection reason), `::test_extended_header_before_the_end_marker_ends_the_walk`, `::test_extended_header_at_the_end_of_the_stream_is_truncation`; fuzzed by `tests/fuzz_tar_parser.py` |

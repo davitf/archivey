@@ -24,6 +24,8 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ContainerFormat,
+    DiagnosticPolicy,
+    DiagnosticRaisedError,
     ListingLimits,
     StreamFormat,
     open_archive,
@@ -706,6 +708,152 @@ def test_compressed_tar_stream_checksum_after_trailer_is_not_dropped(
     else:
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(bytes(compressed))
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(clean)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("codec", "cut"),
+    [
+        # gzip's footer is 8 bytes; zstd's and lz4's content checksums are 4.
+        ("gz", 1),
+        ("gz", 4),
+        ("gz", 8),
+        pytest.param("zst", 1, marks=requires_zstd()),
+        pytest.param("zst", 4, marks=requires_zstd()),
+        pytest.param("lz4", 1, marks=requires("lz4")),
+        pytest.param("lz4", 4, marks=requires("lz4")),
+    ],
+)
+def test_compressed_tar_cut_after_trailer_is_unverifiable(
+    codec: str, cut: int, streaming: bool
+) -> None:
+    """format-tar: a compressed stream cut after the tar trailer never reaches its
+    checksum, so the members already read are unchecked, and DIGEST_UNVERIFIABLE
+    (``reason="trailing_stream_truncated"``) says so, as it does on bzip2 and xz.
+
+    The cut lands in the footer (gzip CRC-32 and ISIZE, the zstd and lz4 content
+    checksums; a longer cut reaches the data and raises ``TruncatedError``), so every
+    member decodes whole and still reads under the default
+    policy; ``DiagnosticPolicy.STRICT`` refuses the archive. A plain ``.gz`` with the
+    same cut raises ``TruncatedError`` on its read.
+    """
+    payload = random.Random(1).randbytes(20_000)
+    data = _stored_codec(codec, _one_member_tar(payload))[:-cut]
+    fmt = _CODEC_FORMATS[codec]
+    with open_archive(io.BytesIO(data), format=fmt, streaming=streaming) as ar:
+        read = [
+            stream.read()
+            for _member, stream in ar.stream_members()
+            if stream is not None
+        ]
+        assert read == [payload]
+        reasons = [
+            d.context.reason  # type: ignore[union-attr]
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        ]
+        assert reasons == ["trailing_stream_truncated"]
+        assert set(ar.diagnostics.counts) == {DiagnosticCode.DIGEST_UNVERIFIABLE}
+
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(
+            io.BytesIO(data), format=fmt, streaming=streaming, config=strict
+        ) as ar:
+            _drain(ar)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "tail", [100, 300_000, 2 * 2**20], ids=["short", "300KB", "past-bound"]
+)
+@pytest.mark.parametrize(
+    "codec",
+    [
+        "gz",
+        pytest.param("zst", marks=requires_zstd()),
+        pytest.param("lz4", marks=requires("lz4")),
+    ],
+)
+def test_trailing_junk_does_not_hide_the_stream_checksum(
+    codec: str, tail: int, streaming: bool
+) -> None:
+    """format-tar: non-zero bytes after the tar trailer, inside the compressed stream,
+    are reported as ``ARCHIVE_TRAILING_DATA``, and the scan then reads on, within its
+    1 MiB bound, to the stream's checksum over the members. A flipped member byte
+    raises whether the junk is short or long; past the bound the checksum is never
+    reached, and ``DIGEST_UNVERIFIABLE`` (``"trailing_scan_limit"``) says so. Before,
+    the scan stopped at the first non-zero byte, so the outcome depended on how far
+    the codec happened to read ahead.
+    """
+    payload = random.Random(1).randbytes(20_000)
+    junk = b"JUNK" + random.Random(2).randbytes(tail)
+    clean = _stored_codec(codec, _one_member_tar(payload) + junk)
+    damaged = bytearray(clean)
+    at = damaged.find(payload[1000:1100])
+    assert at >= 0, "fixture premise: the member body is stored verbatim"
+    damaged[at + 50] ^= 0x01
+    fmt = _CODEC_FORMATS[codec]
+
+    def _drained(data: bytes) -> dict[str, list[str | None]]:
+        with open_archive(io.BytesIO(data), format=fmt, streaming=streaming) as ar:
+            _drain(ar)
+            found: dict[str, list[str | None]] = {}
+            for d in ar.diagnostics.retained:
+                found.setdefault(d.code.name, []).append(
+                    getattr(d.context, "reason", None)
+                )
+            return found
+
+    clean_found = _drained(clean)
+    assert len(clean_found["ARCHIVE_TRAILING_DATA"]) == 1
+    if tail < 2**20:
+        assert "DIGEST_UNVERIFIABLE" not in clean_found
+        with pytest.raises(CorruptionError):
+            _drained(bytes(damaged))
+    else:
+        assert clean_found["DIGEST_UNVERIFIABLE"] == ["trailing_scan_limit"]
+        assert _drained(bytes(damaged))["DIGEST_UNVERIFIABLE"] == [
+            "trailing_scan_limit"
+        ]
+
+
+def test_gzip_decode_failure_after_trailer_is_not_silent() -> None:
+    """format-tar: a deflate stream that fails past the tar trailer never reaches the
+    gzip CRC-32, so the scan reports ``DIGEST_UNVERIFIABLE``
+    (``reason="trailing_decode_failed"``), as it does on bzip2 and xz. The fixture
+    clears BFINAL on the only deflate block: every tar byte decodes, then the decoder
+    reads the gzip footer as a block header and fails. ``gzip -t`` fails on it.
+
+    In a stream pass the member is delivered before the failure, so the scan reports
+    it. In random access a member read may reach the failure through the codec's
+    read-ahead and raise ``CorruptionError`` instead; either way it is not silent.
+    """
+    import gzip
+
+    data = bytearray(gzip.compress(_one_member_tar(b"EVIL DATA\n"), mtime=0))
+    assert data[10] & 1, "fixture premise: the first deflate block is final"
+    data[10] &= 0xFE
+
+    with open_archive(
+        io.BytesIO(bytes(data)), format=ArchiveFormat.TAR_GZ, streaming=True
+    ) as ar:
+        read = [s.read() for _m, s in ar.stream_members() if s is not None]
+        assert read == [b"EVIL DATA\n"]
+        reasons = [
+            getattr(d.context, "reason", None)
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        ]
+        assert reasons == ["trailing_decode_failed"]
+
+    try:
+        with open_archive(io.BytesIO(bytes(data)), format=ArchiveFormat.TAR_GZ) as ar:
+            for member in ar.members():
+                ar.read(member)
+            assert DiagnosticCode.DIGEST_UNVERIFIABLE in ar.diagnostics.counts
+    except CorruptionError:
+        pass
 
 
 def _bad_last_block_check(codec: str, raw: bytes) -> tuple[bytes, bytes]:

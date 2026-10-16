@@ -371,9 +371,14 @@ yielded.
       byte further out goes unseen; on a compressed tar that 1 MiB is decompressed to
       inspect it. Bytes after the compressed stream itself (after the gzip or xz stream
       ends) are reported the same way, with the codec's name as `format`; see
-      [Single-file compressors](#single-file-compressors). A tail that does not
-      decompress (a missing gzip footer) ends the check quietly rather than failing the
-      listing.
+      [Single-file compressors](#single-file-compressors). A compressed stream cut
+      inside its footer (a missing gzip CRC-32, say) does not fail the listing, since
+      every member was read whole, but its checksum was never checked: that is
+      `DIGEST_UNVERIFIABLE`, which `STRICT` refuses. A stream that fails to decompress
+      past the trailer is reported the same way. After trailing bytes inside the
+      compressed stream, the check reads on, within the same 1 MiB, to the stream's
+      checksum, so a damaged member raises `CorruptionError` however long those bytes
+      are.
     - Truncation *inside* a member's data always raises `TruncatedError`, whatever the
       policy: in a listing or a pass when the walk reaches the cut, and from a member
       stream on the read that reaches it. A read with a size returns the bytes before the
