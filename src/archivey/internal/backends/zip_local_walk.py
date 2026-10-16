@@ -889,14 +889,23 @@ class LocalHeaderWalk:
         sig = self.source.peek(4)
         if sig in _OPENS_STREAM or not self._find_start:
             return
-        if not self._scan_for_local_header():
-            raise CorruptionError(
-                f"no ZIP local header at the start of the stream or within its first "
-                f"{SFX_MAX} bytes"
-            )
+        window = self._scan_for_local_header()
+        if window is None:
+            return
+        if EOCD_SIGNATURE in window:
+            # No local header, but an end record: an empty archive, or one whose
+            # members are gone, behind a stub. The stub and the archive are read
+            # whole by ``read_rest``, as a file read finds the end record behind it.
+            self.source.unread(window)
+            return
+        raise CorruptionError(
+            f"no ZIP local header at the start of the stream or within its first "
+            f"{SFX_MAX} bytes"
+        )
 
-    def _scan_for_local_header(self) -> bool:
-        """Move to the first local header the detector's validator accepts.
+    def _scan_for_local_header(self) -> bytearray | None:
+        """Move to the first local header the detector's validator accepts, and
+        return ``None``; with none in the window, return the bytes read.
 
         A candidate counts only when its signature lies wholly inside the first
         :data:`SFX_MAX` bytes, as ``sfx.scan_for_magic`` requires; one near the end
@@ -928,15 +937,15 @@ class LocalHeaderWalk:
 
                 if validate_zip_local_header(peek_more, None) is HitOutcome.VALID:
                     self.source.unread(window[pos:])
-                    return True
+                    return None
                 searched = pos + 1
                 continue
             searched = max(len(window) - len(LOCAL_HEADER_SIGNATURE) + 1, 0)
             if len(window) >= SFX_MAX:
-                return False
+                return window
             more = self.source.read(min(_READ_CHUNK, SFX_MAX - len(window)))
             if not more:
-                return False
+                return window
             window.extend(more)
 
     def _read_local_header(self) -> LocalEntry:
@@ -1209,6 +1218,27 @@ def local_entry_at(read_at: ReadAt, index: int, offset: int) -> LocalEntry:
     )
 
 
+class _HeldBytes(ReadOnlyIOStream):
+    """Bytes already in memory, read once from the front without a copy of the
+    whole (:meth:`ForwardTail.held_from`)."""
+
+    def __init__(self, *parts: memoryview) -> None:
+        super().__init__()
+        self._parts = deque(part for part in parts if part)
+
+    def read(self, n: int = -1, /) -> bytes:
+        out = bytearray()
+        while self._parts and (n < 0 or len(out) < n):
+            part = self._parts[0]
+            take = len(part) if n < 0 else min(len(part), n - len(out))
+            out += part[:take]
+            if take == len(part):
+                self._parts.popleft()
+            else:
+                self._parts[0] = part[take:]
+        return bytes(out)
+
+
 @dataclass(frozen=True, slots=True)
 class ForwardTail:
     """The bytes after a forward walk's last member, up to the end of the stream:
@@ -1269,6 +1299,28 @@ class ForwardTail:
             if lo < hi:
                 out[lo - offset : hi - offset] = kept[lo - at : hi - at]
         return bytes(out)
+
+    def held_from(self, offset: int) -> BinaryIO | None:
+        """The bytes from stream ``offset`` to the end of the stream, read forward,
+        or ``None`` when this tail does not hold all of them.
+
+        For a local entry the directory places after the members (bytes between two
+        members ended the walk, or a second archive follows the first): a walk
+        started here reads it as the walk reads any other. Bytes before the
+        members' end were passed, and the bound may have dropped some after it.
+        """
+        if offset < self.members_end or offset > self.size:
+            return None
+        view = memoryview(self.data)
+        if offset >= self.start:
+            return _HeldBytes(view[offset - self.start :])
+        head_end = self.members_end + len(self.head)
+        if offset >= head_end or head_end < self.start:
+            return None
+        return _HeldBytes(
+            memoryview(self.head)[offset - self.members_end :],
+            view[head_end - self.start :],
+        )
 
     def end_record(self) -> EndRecord:
         """The end record the seekable read would use.

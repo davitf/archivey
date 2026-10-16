@@ -514,6 +514,21 @@ stays a file. `max_members` is charged on the local headers as they are yielded 
 on the directory's entries, whose text is weighed against `max_metadata_bytes` as it
 arrives.
 
+**Bytes after a member that are no local header.** The walk stops at the first bytes
+after a member that are not a local header and keeps the rest of the stream, as after the
+last member. Bytes a writer left between two members (zeros, junk, a data descriptor after
+a member whose sizes are in its header) and a second archive appended with
+`cat first.zip second.zip` end the walk there. Once the directory has been read, each
+member it places in the kept bytes is read from them at the offset it names and yielded
+before the pass ends, as a file read seeks to it. Only the offsets the directory names
+are read there, so the pass yields no member the file read does not list. Of a `cat`, the
+first archive's members are yielded as the walk meets them; the file read lists only the
+second's, so they are dropped and reported as `ARCHIVE_UNLISTED_DATA`. A member the
+directory places in bytes the listing limits dropped ends the pass with
+`ResourceLimitError`: higher limits keep them. A stub with no local header in the scan's
+2 MiB window but an end record in it is read the same way, so an empty archive, or one
+whose members are gone, behind a stub opens as from a file.
+
 **Extraction** writes each member as it arrives and settles at the end of the pass
 (`ExtractionCoordinator._settle_revised_members`): modes and owners applied, a member the
 directory makes a symlink turned into a link after the `filter` and policy run again on
@@ -555,6 +570,11 @@ directory's refusals the file read is to drop:
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
+- A bit-3 STORED member followed by bytes that are no ZIP record (a gap before the next
+  member) ends the pass with `UnsupportedFeatureError`: its descriptor counts only when a
+  ZIP signature follows it, which is what stops a descriptor planted inside STORED data.
+  A file read knows its size and reads it. After a sized or a bit-3 codec member the
+  same bytes are read past (§"Bytes after a member that are no local header").
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.

@@ -22,7 +22,7 @@ import io
 import sys
 import zlib
 from array import array
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
 from typing import BinaryIO, Literal, cast
@@ -50,6 +50,7 @@ from archivey.internal.backends.zip_aes import (
 from archivey.internal.backends.zip_local_walk import (
     _CODEC_RETAIN,
     DataDescriptor,
+    ForwardTail,
     LocalEntry,
     LocalHeaderWalk,
     MemberData,
@@ -1549,6 +1550,8 @@ class ZipForwardReader(ZipReader):
                     source_format=ArchiveFormat.ZIP,
                 )
         self._pass_data: _PassData | None = None
+        # How many local headers the walk has met.
+        self._local_count = 0
         # Local header offset -> the member built from it, for the directory to
         # update in place at the end.
         self._by_offset: dict[int, ArchiveMember] = {}
@@ -1588,43 +1591,94 @@ class ZipForwardReader(ZipReader):
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         walker = self._walker
-        max_members = self._config.listing_limits.max_members
-        index = 0
         entry = self._first_entry
         self._first_entry = None
         while True:
-            if index:
+            if self._local_count:
                 self._leave_member()
                 with self._translated_errors():
                     entry = walker.next_entry()
             if entry is None:
                 break
-            if max_members is not None and index >= max_members:
-                error = _max_members_error(max_members, "ZIP local headers name")
-                self._stamp_error_context(error)
-                raise error
-            member = self._local_member(entry, index)
-            aes = cast("_ZipLocator", member._raw).aes
-            self._pass_data = _PassData(
-                self,
+            yield self._begin_member(entry)
+        yield from self._read_directory()
+
+    def _begin_member(self, entry: LocalEntry) -> ArchiveMember:
+        """The member ``entry`` describes, its data open on the walk at it."""
+        max_members = self._config.listing_limits.max_members
+        index = self._local_count
+        if max_members is not None and index >= max_members:
+            error = _max_members_error(max_members, "ZIP local headers name")
+            self._stamp_error_context(error)
+            raise error
+        member = self._local_member(entry, index)
+        aes = cast("_ZipLocator", member._raw).aes
+        self._pass_data = _PassData(
+            self,
+            entry,
+            member,
+            self._walker.member_data(
                 entry,
-                member,
-                walker.member_data(
-                    entry,
-                    encrypted=_is_encrypted_entry(
-                        entry.header.flags, entry.header.method
-                    ),
-                    # WinZip AES names the real method in its extra field.
-                    stored=None if aes is None else aes.actual_method == 0,
-                ),
-            )
-            self._by_offset[entry.offset] = member
-            self._local_offsets.add(entry.offset)
-            if entry.deferred and entry.header.extra[:2] == b"UX":
-                self._mac_data_starts[entry.offset] = entry.header.data_start
-            yield member
-            index += 1
-        self._read_directory()
+                encrypted=_is_encrypted_entry(entry.header.flags, entry.header.method),
+                # WinZip AES names the real method in its extra field.
+                stored=None if aes is None else aes.actual_method == 0,
+            ),
+        )
+        self._by_offset[entry.offset] = member
+        self._local_offsets.add(entry.offset)
+        if entry.deferred and entry.header.extra[:2] == b"UX":
+            self._mac_data_starts[entry.offset] = entry.header.data_start
+        self._local_count = index + 1
+        return member
+
+    def _walk_held_members(
+        self, tail: ForwardTail, offsets: Iterable[int]
+    ) -> Iterator[ArchiveMember]:
+        """Yield the members the directory places after the walk's end, read from
+        the bytes the pass kept there.
+
+        The walk ends at the first bytes after a member that are no local header:
+        the directory, or bytes between two members (a gap a writer left, a stray
+        data descriptor), or a first archive's directory with a second archive
+        after it (``cat a.zip b.zip``). A file read seeks to each offset the
+        directory names, so the pass reads each such member from the kept bytes
+        the same way, at those offsets only: no local header the directory does
+        not name is read there. A directory entry whose local header the bound
+        dropped is ``ResourceLimitError``, as a directory there is
+        (``ForwardTail.end_record``): higher limits keep those bytes.
+        """
+        main = self._walker
+        try:
+            for offset in sorted(set(offsets) - self._local_offsets):
+                if not tail.members_end <= offset < tail.size:
+                    # Among the members' data, which the walk read as such, or past
+                    # the end of the stream: no local header is there.
+                    continue
+                held = tail.held_from(offset)
+                if held is None:
+                    raise ResourceLimitError(
+                        "ZIP central directory places a local header at stream "
+                        f"offset {offset}, past the members a forward read walked "
+                        f"({tail.after}), and the {tail.size - offset} bytes from "
+                        "there to the end of the stream are more than it holds "
+                        "within the listing limits",
+                        archive_name=self._archive_name,
+                        source_format=ArchiveFormat.ZIP,
+                    )
+                self._walker = LocalHeaderWalk(held, offset=offset, find_start=False)
+                try:
+                    with self._translated_errors():
+                        entry = self._walker.next_entry()
+                except ArchiveyError:
+                    # No local header there: the entry fails as missing, as from
+                    # a file.
+                    entry = None
+                if entry is None:
+                    continue
+                yield self._begin_member(entry)
+                self._leave_member()
+        finally:
+            self._walker = main
 
     def _leave_member(self) -> None:
         """Read past the data of the member the walk is at, before the next header."""
@@ -1656,7 +1710,7 @@ class ZipForwardReader(ZipReader):
 
     # -- the directory -------------------------------------------------------------
 
-    def _read_directory(self) -> None:
+    def _read_directory(self) -> Iterator[ArchiveMember]:
         """Read the directory and end records, and update the members in place.
 
         The bytes after the last member are kept up to ``_tail_bound`` (``read_rest``)
@@ -1732,6 +1786,7 @@ class ZipForwardReader(ZipReader):
                     entries.append(central)
         except CorruptionError as exc:
             damage = exc
+        yield from self._walk_held_members(tail, offsets)
         # A walk that met damage read no count.
         self._entries_read = None if damage is not None else walk.entries_read
         local_offsets = self._local_offsets

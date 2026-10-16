@@ -228,8 +228,15 @@ member SHALL be updated in place from its directory entry, matched by offset, as
 same archive read from a file lists it, and `is_current` SHALL follow the directory
 order; member ids and listing order stay those of the file. A local entry no directory
 entry points to SHALL be dropped from the listing and reported as
-`ARCHIVE_UNLISTED_DATA`. A member flagged as a Windows reparse point whose data is not
-a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
+`ARCHIVE_UNLISTED_DATA`. The walk SHALL stop at the first bytes after a member that
+are no local header and keep the rest of the stream; a directory entry that points into
+the kept bytes (bytes a writer left between two members, or a second archive appended
+with `cat`) SHALL be read from them at that offset and yielded before the pass ends, and
+no other local header there SHALL be read. One whose bytes the listing limits dropped
+SHALL end the pass with `ResourceLimitError`. A stub with no local header within
+`SFX_MAX` but an end record there SHALL be read as the tail, so an archive with no local
+header behind a stub lists as from a file. A member flagged as a Windows reparse point
+whose data is not a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
 `FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
 `members_report_if_available()` SHALL return `None` until the directory has been read.
 
@@ -254,8 +261,10 @@ the first of several inconclusive password candidates wins. It MAY also differ i
 a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
 the pass, losing the members after it, if its decode read more than 4 MiB past the
 data's end; a bit-3 LZMA member without the end-of-stream marker is refused where a file
-read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
-its data read gave (no password: `EncryptionError`, where the file read reports
+read reads it; a bit-3 STORED member followed by bytes that are no ZIP record ends the
+pass with `UnsupportedFeatureError` where a file read reads it; in `extract_all`, a link
+member the pass wrote as a file keeps the error its data read gave (no password:
+`EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
 makes is raised by a file read before anything is written and by the pass after every
 member is written, the files staying on disk. A policy that raises on
@@ -280,6 +289,10 @@ end-of-pass rename.
 | Two same-name members whose directory order reverses their file order | `is_current` from the directory order; `stream_members()` raises nothing |
 | A data descriptor that understates a STORED member, `stream_members()` | `CorruptionError` at the end of the pass |
 | A local entry the directory does not list | Dropped from the listing; `ARCHIVE_UNLISTED_DATA` |
+| Bytes between two sized members, or after a bit-3 codec member's descriptor | Every member read, as from a file |
+| `cat first.zip second.zip` | The second archive's members, as from a file; the first's yielded, then dropped with `ARCHIVE_UNLISTED_DATA` |
+| A member the directory places in bytes the listing limits dropped | `ResourceLimitError` |
+| A stub, then an archive with no local header (an empty one), `format=ZIP` | Opens with what the directory lists, as from a file |
 | `reader.info` during the pass, then after it | `member_count` and `comment` `None`, then the directory's |
 
 ### Requirement: Map ZIP member metadata to ArchiveMember

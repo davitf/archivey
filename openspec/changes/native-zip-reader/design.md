@@ -456,7 +456,9 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   offset was given, the walk scans forward for a local header that the detector's ZIP
   hit validator (`validate_zip_local_header`) accepts, within the same 2 MiB window
   (`SFX_MAX`), and starts there. Nothing found in the window is `CorruptionError`
-  naming the reason. In the seekable read a missed stub costs nothing, because `base`
+  naming the reason, unless the window holds an end record: then the stub and what
+  follows go to the tail, as for an archive whose members are gone, and an empty
+  archive behind a stub opens as from a file. In the seekable read a missed stub costs nothing, because `base`
   recovers the offsets; the forward walk has no end record to recover them from until
   the end.
 - Everything after the last member is kept and parsed by the seekable read's own code:
@@ -486,6 +488,15 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   set (a descriptor counts only when a ZIP signature follows it, which is what stops a
   planted one inside STORED data). Recognising an APK signing block by its own size
   fields would cover the second; it is not done.
+- Bytes after a member that are no local header, before the next member: a gap a
+  writer left, a data descriptor after a member whose sizes are in its header, or the
+  directory and end record of a first archive with a second appended (`cat`). The
+  walk stops there and keeps the rest as the tail. Once the directory has been read,
+  each entry pointing into the kept tail is read from it at that offset, a walk of
+  one local entry each, and yielded before the pass ends; only offsets the directory
+  names are read, so the pass yields nothing there the file read does not list. An
+  entry whose bytes the bound dropped is `ResourceLimitError`, as a directory there
+  is. A bit-3 STORED member before such bytes still ends the pass (the row above).
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
   Writers put both in the same order; when they differ, `is_current` follows the

@@ -878,6 +878,133 @@ def test_an_unlisted_local_entry_is_refused_under_strict() -> None:
             reader.members_report()
 
 
+# -- Bytes after a member that are no local header -----------------------------------
+
+
+def _insert(data: bytes, at: int, gap: bytes) -> bytes:
+    """``data`` with ``gap`` inserted at offset ``at``, between two members, and the
+    directory's offsets moved to match, as a writer that left the bytes there
+    records them."""
+    out = bytearray(data[:at] + gap + data[at:])
+    eocd = out.rindex(b"PK\x05\x06")
+    count, _, cd_offset = struct.unpack_from("<HII", out, eocd + 10)
+    cd = cd_offset + len(gap)
+    struct.pack_into("<I", out, eocd + 16, cd)
+    for _ in range(count):
+        (offset,) = struct.unpack_from("<I", out, cd + 42)
+        if offset >= at:
+            struct.pack_into("<I", out, cd + 42, offset + len(gap))
+        name_len, extra_len, comment_len = struct.unpack_from("<HHH", out, cd + 28)
+        cd += 46 + name_len + extra_len + comment_len
+    return bytes(out)
+
+
+def _read_both(data: bytes) -> list[tuple[list[tuple[str, bytes]], object]]:
+    """Each member's name and data, and the listing's error, from a file and from a
+    pipe."""
+    out = []
+    for pipe in (False, True):
+        source = _pipe(data) if pipe else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=True, format="zip") as reader:
+            read = [
+                (m.name, stream.read())
+                for m, stream in reader.stream_members()
+                if stream is not None
+            ]
+            report = reader.members_report()
+        listed = {m.name for m in report.members}
+        out.append(([r for r in read if r[0] in listed], report.error))
+    return out
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        pytest.param(b"\x00" * 16, id="zeros"),
+        pytest.param(b"junkjunk", id="junk"),
+        # A descriptor a writer appended to a member whose sizes are in its header.
+        pytest.param(b"PK\x07\x08" + b"\x00" * 12, id="stray-descriptor"),
+        pytest.param(b"PK\x01\x02junk", id="directory-signature"),
+        pytest.param(b"PK\x05\x06" + b"\x00" * 18, id="end-record-signature"),
+    ],
+)
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_bytes_between_two_members_do_not_end_the_pass(gap: bytes, method: int) -> None:
+    """The walk stops at bytes after a member that are no local header, and keeps
+    what follows. The members the directory places there are read from those bytes,
+    as a file read seeks to them."""
+    data = _zip(
+        [("a.txt", b"one"), ("b.txt", b"two"), ("c.txt", b"three")], method=method
+    )
+    second = data.index(b"PK\x03\x04", 1)
+    data = _insert(data, second, gap)
+    expected = [("a.txt", b"one"), ("b.txt", b"two"), ("c.txt", b"three")]
+    assert _read_both(data) == [(expected, None), (expected, None)]
+
+
+def test_bytes_after_a_bit3_codec_member_do_not_end_the_pass() -> None:
+    """A bit-3 DEFLATE member ends at its codec's end and its descriptor; what
+    follows is read as after a sized member."""
+    data = _streamed(_zip([("a.txt", b"one" * 50), ("b.txt", b"two")]))
+    second = data.index(b"PK\x03\x04", 1)
+    data = _insert(data, second, b"\x00" * 16)
+    expected = [("a.txt", b"one" * 50), ("b.txt", b"two")]
+    assert _read_both(data) == [(expected, None), (expected, None)]
+
+
+def test_two_concatenated_archives_read_the_second_from_a_pipe(tmp_path: Path) -> None:
+    """``cat first.zip second.zip``: a file read takes the last end record and the
+    second archive's members, as ``unzip`` does. The pass reads the first archive's
+    members as it meets them, then the second's from the bytes it kept after them;
+    the first's are not in the listing, and are reported."""
+    first = _zip([("a.txt", b"one"), ("b.txt", b"two")])
+    second = _zip([("c.txt", b"three"), ("d.txt", b"four")])
+    data = first + second
+    expected = [("c.txt", b"three"), ("d.txt", b"four")]
+    assert _read_both(data) == [(expected, None), (expected, None)]
+    report = _listing(data, pipe=True)
+    assert [c.member_name for c in _unlisted(report)] == ["a.txt", "b.txt"]
+    for pipe in (False, True):
+        dest = tmp_path / str(pipe)
+        source = _pipe(data) if pipe else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=True, format="zip") as reader:
+            reader.extract_all(dest)
+        assert sorted(p.name for p in dest.iterdir()) == ["c.txt", "d.txt"]
+
+
+def test_a_member_past_the_bytes_the_pass_holds_is_a_resource_limit() -> None:
+    """The second archive's first member runs into the bytes the listing limits
+    drop: higher limits keep them, so the pass refuses with ``ResourceLimitError``,
+    as for a directory there."""
+    first = _zip([("a.txt", b"one")], method=zipfile.ZIP_STORED)
+    second = _zip(
+        [("c.txt", random.Random(0).randbytes(1 << 20)), ("d.txt", b"four")],
+        method=zipfile.ZIP_STORED,
+    )
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_members=4, max_metadata_bytes=200)
+    )
+    with archivey.open_archive(
+        _pipe(first + second), streaming=True, format="zip", config=config
+    ) as reader:
+        with pytest.raises(ResourceLimitError, match="past the members"):
+            for _ in reader.stream_members():
+                pass
+
+
+def test_a_stub_before_an_archive_with_no_local_header_opens_empty() -> None:
+    """No local header within the stub scan's window, but an end record: as from a
+    file, the archive opens with what its directory lists."""
+    empty = io.BytesIO()
+    zipfile.ZipFile(empty, "w").close()
+    data = b"MZ" + b"\x00" * 5000 + empty.getvalue()
+    for pipe in (False, True):
+        source = _pipe(data) if pipe else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=True, format="zip") as reader:
+            report = reader.members_report()
+        assert (list(report.members), report.error) == ([], None)
+
+
 def test_the_later_copy_in_the_directory_is_current() -> None:
     """Two members of one name whose directory order reverses their file order: the
     one the directory lists last is current, as from a file, and the pass raises
