@@ -1032,6 +1032,119 @@ def test_pax_sparse_member_is_reported_sparse(build: Any) -> None:
         assert ar.read(member) == bytes(100) + b"hello" + bytes(895)
 
 
+def _cut_sparse_tar(encoding: str, into: int = 2) -> tuple[bytes, bytes]:
+    """A one-member sparse tar cut ``into`` bytes into its stored data, and the
+    logical bytes before the cut."""
+    if encoding == "old-gnu":
+        data, chunk, before = _tar_sparse_gnu(1000), b"xyz", b""
+    else:
+        build = {
+            "pax-0.0": lambda: _tar_sparse_pax_0_x(0),
+            "pax-0.1": lambda: _tar_sparse_pax_0_x(1),
+            "pax-1.0": _tar_sparse_pax_1_0,
+        }[encoding]
+        data, chunk, before = build(), b"hello", bytes(100)
+    at = data.index(chunk) + into
+    return data[:at], before + chunk[:into]
+
+
+_SPARSE_ENCODINGS = ["old-gnu", "pax-0.0", "pax-0.1", "pax-1.0"]
+
+
+# How a test opens the cut archive: random access, or a streaming pass over a seekable
+# source or a pipe.
+_SPARSE_CUT_OPENS = {
+    "random": (io.BytesIO, False),
+    "stream-seekable": (io.BytesIO, True),
+    "stream-pipe": (NonSeekableBytesIO, True),
+}
+
+
+@pytest.mark.parametrize("read_size", [7, 1000])
+@pytest.mark.parametrize("into", [0, 2], ids=["at-chunk-start", "inside-chunk"])
+@pytest.mark.parametrize("opening", sorted(_SPARSE_CUT_OPENS))
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_a_cut_sparse_member_delivers_its_prefix_then_raises(
+    encoding: str, opening: str, into: int, read_size: int
+) -> None:
+    """A sparse member cut in its stored data is a truncation, as a plain member's
+    cut is: sized reads deliver the logical bytes before the cut, holes included,
+    and the next read raises ``TruncatedError``, never a builtin ``EOFError``. A cut
+    at a chunk's first byte keeps the hole before it too."""
+    cut, prefix = _cut_sparse_tar(encoding, into)
+    source, streaming = _SPARSE_CUT_OPENS[opening]
+    got = bytearray()
+    with open_archive(source(cut), format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        streams = (
+            (s for _, s in ar.stream_members())
+            if streaming
+            else iter([ar.open(next(iter(ar)))])
+        )
+        with pytest.raises(TruncatedError):
+            for stream in streams:
+                assert stream is not None
+                while block := stream.read(read_size):
+                    got += block
+    assert bytes(got) == prefix
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_sparse_stream_eof_error_is_translated(streaming: bool) -> None:
+    """The stream layer raises builtins only. When ``SparseStream`` raises its
+    ``EOFError`` (the stream under it returned no bytes rather than raising), the
+    TAR reader turns it into ``TruncatedError``."""
+    from archivey.internal.streams.streamtools import SparseStream
+
+    def ended(self: Any, at: int, count: int) -> bytes:
+        raise EOFError("the stored sparse data ended")
+
+    with (
+        mock.patch.object(SparseStream, "_read_stored", ended),
+        open_archive(
+            io.BytesIO(_tar_sparse_pax_1_0()),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+        ) as ar,
+        pytest.raises(TruncatedError, match="ended early"),
+    ):
+        for _, stream in ar.stream_members():
+            assert stream is not None
+            stream.read()
+
+
+@pytest.mark.parametrize("opening", sorted(_SPARSE_CUT_OPENS))
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_a_cut_sparse_member_read_whole_raises_truncated(
+    encoding: str, opening: str
+) -> None:
+    cut, _ = _cut_sparse_tar(encoding)
+    source, streaming = _SPARSE_CUT_OPENS[opening]
+    with (
+        open_archive(source(cut), format=ArchiveFormat.TAR, streaming=streaming) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        if streaming:
+            for _, stream in ar.stream_members():
+                assert stream is not None
+                stream.read()
+        else:
+            ar.read(next(iter(ar)))
+
+
+@pytest.mark.parametrize("opening", sorted(_SPARSE_CUT_OPENS))
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_a_cut_sparse_member_fails_extract_all_with_truncated(
+    encoding: str, opening: str, tmp_path: Path
+) -> None:
+    cut, _ = _cut_sparse_tar(encoding)
+    source, streaming = _SPARSE_CUT_OPENS[opening]
+    with (
+        open_archive(source(cut), format=ArchiveFormat.TAR, streaming=streaming) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        ar.extract_all(tmp_path / "out")
+
+
 def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
     # The compressed path classifies the end the same way, with no backward seek.
     import gzip
@@ -3483,6 +3596,61 @@ def test_pax_id_that_is_not_a_number_keeps_the_header_value() -> None:
     with open_archive(io.BytesIO(buf.getvalue())) as reader:
         (member,) = reader.members()
     assert (member.uid, member.gid) == (7, 12)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "records",
+    [
+        {"size": "1" * 5000},
+        {"uid": "1" * 5000},
+        {"gid": "1" * 5000},
+        {"GNU.sparse.major": "1", "GNU.sparse.realsize": "1" * 5000},
+        {"GNU.sparse.size": "1" * 5000, "GNU.sparse.map": "0,1"},
+    ],
+    ids=["size", "uid", "gid", "sparse-realsize", "sparse-size"],
+)
+def test_pax_number_past_the_int_digit_limit_is_corruption(
+    records: dict[str, str], streaming: bool
+) -> None:
+    """``int()`` refuses a string of more than 4300 digits with a builtin
+    ``ValueError``. A PAX number that long is damage, typed as such."""
+    body = b"x" * 512
+    head = b"".join(_pax_record(key, value) for key, value in records.items())
+    xhdr = tarfile.TarInfo("./PaxHeaders/a")
+    xhdr.type = tarfile.XHDTYPE
+    xhdr.size = len(head)
+    member = tarfile.TarInfo("a")
+    member.size = len(body)
+    data = b"".join(
+        [
+            xhdr.tobuf(format=tarfile.USTAR_FORMAT),
+            head + bytes(-len(head) % 512),
+            member.tobuf(format=tarfile.USTAR_FORMAT),
+            body,
+            bytes(1024),
+        ]
+    )
+    with (
+        pytest.raises(CorruptionError, match="digits"),
+        open_archive(
+            io.BytesIO(data), format=ArchiveFormat.TAR, streaming=streaming
+        ) as ar,
+    ):
+        for _ in ar:
+            pass
+
+
+def test_pax_number_with_many_leading_zeros_reads() -> None:
+    """Leading zeros do not count against the digit limit: the value is small."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("a")
+        info.pax_headers = {"uid": "0" * 5000 + "12"}
+        tf.addfile(info)
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        (member,) = reader.members()
+    assert member.uid == 12
 
 
 @pytest.mark.parametrize(
