@@ -8,8 +8,6 @@ this list:
 
 - Every ZIP claim in the tree, once the native ZIP reader is complete: damaged or missing end
   records, and bytes after the archive, are expected to change.
-- `install.md` says RAR is `PARTIAL` when neither `unrar` nor `unar` is usable, a code fix in
-  progress.
 
 `migrating.md`, `philosophy.md`, `how-it-works.md`, `how-it-is-built.md` and `acknowledgements.md`
 aren't linked from `index.md` yet; the site navigation covers them at the switch. `reading.md`

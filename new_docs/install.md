@@ -73,24 +73,10 @@ packaged `unar` has the bug described above, so either install `unrar` or build 
 
 ## Checking what an install can read
 
-`format_availability()` tells a program at run time whether a format works with what's installed:
-
-```python
-from archivey import FormatSupport, format_availability
-
-availability = format_availability("7z")
-if availability.support is not FormatSupport.FULL:
-    for package in availability.missing:
-        print(package.name, package.install_hint)
-```
-
-`FULL` means the format opens and every compression method it can use is installed. `PARTIAL` means
-it opens and lists, but a member that needs something missing raises `PackageNotInstalledError` when
-you read it; ZIP, 7z and RAR can be partial, RAR when neither `unrar` nor `unar` is usable. `NONE`
-means it can't be opened at all, as with ISO without `pycdlib`. `list_supported_formats()` returns
-every format that is `FULL` or `PARTIAL`.
-
-`cryptography` isn't counted, because only encrypted members need it.
+If your program needs to know at run time which formats work with what's installed,
+[`format_availability()`](api.md#archivey.format_availability) says whether a format is fully
+supported, partly supported (it opens, but some members need a missing package) or not available,
+and which packages would add the rest.
 
 ## Python versions and platforms
 
