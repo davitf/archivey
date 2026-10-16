@@ -249,7 +249,9 @@ def _is_usable_stem(stem: str) -> bool:
 
 
 # The one-word spellings of a compressed tar. Decompressing one gives a tar, so the
-# single-file name replaces the suffix with ``.tar``, as ``gzip -d`` and ``xz -d`` do.
+# single-file name replaces the suffix with ``.tar``, as ``gzip -d`` and ``xz -d`` do
+# (the keys). The tar reader's extension table reads the codecs too (the values), so
+# one map serves detection by name and naming.
 COMPRESSED_TAR_SHORT_SUFFIXES: dict[str, StreamFormat] = {
     ".tgz": StreamFormat.GZIP,
     ".tbz2": StreamFormat.BZIP2,

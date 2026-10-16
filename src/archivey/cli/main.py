@@ -532,7 +532,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "test only the compression layer, as gzip -t does: read the whole "
-            "decompressed stream (the tar of a .tar.gz) and check its trailer"
+            "decompressed stream (the tar of a .tar.gz) and check its checksum, "
+            "where the compressor has one"
         ),
     )
     _add_filter_args(p_test)

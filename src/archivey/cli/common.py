@@ -7,6 +7,7 @@ import stat
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
@@ -14,7 +15,7 @@ from archivey import detect_format, open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.cli.format import format_format_label
-from archivey.config import ArchiveyConfig, PasswordInput
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, PasswordInput
 from archivey.exceptions import StreamNotSeekableError
 
 # The one internal import in the CLI, allowlisted in tests/test_cli_uses_public_api.py:
@@ -60,7 +61,7 @@ def outer_format(
     reject_stdin_token(archive)
     shown = display_path(archive)
     if os.path.isdir(archive):
-        refuse_outer_directory(shown)
+        raise outer_directory_error(shown)
     if is_read_once(archive):
         # Detecting the format reads the start of the pipe, and the open after it
         # would not see those bytes again.
@@ -69,12 +70,45 @@ def outer_format(
             f"'archivey cat --outer' to decompress a pipe",
             code=EXIT_USAGE,
         )
-    fmt = detect_format(archive, config=config).format
-    if fmt.container == ContainerFormat.RAW_STREAM:
+    # Every content probe runs, as open_stream's detection does for cat --outer: the
+    # flag says the source is a compressed stream, so a probe only says which codec.
+    probing = replace(config or DEFAULT_ARCHIVEY_CONFIG, always_probe_content=True)
+    fmt = detect_format(archive, config=probing).format
+    outer = outer_layer_format(fmt)
+    if outer is None:
+        raise no_compression_layer(shown, fmt, verb=verb)
+    return outer
+
+
+def outer_layer_format(fmt: ArchiveFormat) -> ArchiveFormat | None:
+    """The single-file format of ``fmt``'s compression layer, or ``None``.
+
+    The same rule as the library's ``outer_stream_format``, which decides what
+    ``open_stream`` (and so ``cat --outer``) accepts; it is internal, so the CLI keeps
+    this copy, and ``tests/test_cli_outer.py`` pins the two to the same answer for
+    every ``ArchiveFormat``.
+    """
+    if fmt.container is ContainerFormat.RAW_STREAM:
         return fmt
-    if fmt.container == ContainerFormat.TAR and fmt.stream != StreamFormat.UNCOMPRESSED:
+    if (
+        fmt.container is ContainerFormat.TAR
+        and fmt.stream is not StreamFormat.UNCOMPRESSED
+    ):
         return ArchiveFormat(ContainerFormat.RAW_STREAM, fmt.stream)
-    raise no_compression_layer(shown, fmt, verb=verb)
+    return None
+
+
+def refuse_outer_selection(
+    patterns: list[str], exclude: list[str], *, verb: str
+) -> None:
+    """``--outer`` takes the whole stream: member patterns or ``--exclude`` are usage
+    errors. ``verb`` is what the verb does with the stream (``writes``, ``tests``)."""
+    if patterns or exclude:
+        raise CliError(
+            f"--outer {verb} the whole decompressed stream; it takes no member "
+            "patterns or --exclude",
+            code=EXIT_USAGE,
+        )
 
 
 def outer_format_for(
@@ -86,18 +120,13 @@ def outer_format_for(
     verb: str,
 ) -> ArchiveFormat:
     """:func:`outer_format` for ``extract`` and ``test``, which take patterns too."""
-    if patterns or exclude:
-        raise CliError(
-            f"--outer {verb}s the whole decompressed stream; it takes no member "
-            "patterns",
-            code=EXIT_USAGE,
-        )
+    refuse_outer_selection(patterns, exclude, verb=f"{verb}s")
     return outer_format(archive, config=config, verb=verb)
 
 
-def refuse_outer_directory(shown: str) -> None:
-    """``--outer`` on a directory: a usage error naming the CLI's view of it."""
-    raise CliError(
+def outer_directory_error(shown: str) -> CliError:
+    """The usage error for ``--outer`` on a directory, naming the CLI's view of it."""
+    return CliError(
         f"--outer: {shown} is a directory, which has no compression layer",
         code=EXIT_USAGE,
     )

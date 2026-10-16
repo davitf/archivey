@@ -597,8 +597,8 @@ layer removed, as one file, as `gunzip -k` and `unxz -k` do: the tar of a `.tar.
 (`format-single-file-compressors`). It SHALL open the source as that single compressed
 file, so `-d`, the default destination, `--overwrite`, `--policy`, `--dry-run` and the
 report behave as for any single-file archive. `archivey test ARCHIVE --outer` SHALL read
-the whole decompressed stream and check the codec's own trailer, as `gzip -t` and
-`xz -t` do, and report it as one member.
+the whole decompressed stream, check the codec's end-of-stream check where it has one
+(Brotli and `.Z` have none), as `gzip -t` and `xz -t` do, and report it as one member.
 
 As for `cat --outer`, the layer SHALL be found by content whatever the file is named;
 on a container with no compression layer the run SHALL exit `1` with a message that

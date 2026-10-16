@@ -10,7 +10,8 @@ from archivey import open_stream
 from archivey.cli.common import (
     no_compression_layer,
     open_for_cli,
-    refuse_outer_directory,
+    outer_directory_error,
+    refuse_outer_selection,
     reject_stdin_token,
 )
 from archivey.cli.errors import CliError
@@ -73,12 +74,7 @@ def run_cat(
         # help, since there is no standard input behind that path either.
         raise CliError("no standard input to read the archive from", code=EXIT_USAGE)
     if outer:
-        if patterns or exclude:
-            raise CliError(
-                "--outer writes the whole decompressed stream; it takes no member "
-                "patterns",
-                code=EXIT_USAGE,
-            )
+        refuse_outer_selection(patterns, exclude, verb="writes")
         if track_io:
             raise CliError(
                 "--track-io counts member reads; it does not apply with --outer",
@@ -116,7 +112,7 @@ def _cat_outer(
         if os.path.isdir(archive):
             # The library refuses a directory too (caught below), but its message
             # points at open_archive(); this one names the CLI's view of it.
-            refuse_outer_directory(shown)
+            raise outer_directory_error(shown)
     try:
         stream = open_stream(source, config=config)
     except ArchiveyUsageError as exc:

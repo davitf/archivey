@@ -55,9 +55,10 @@ Four properties generate most of this page.
 **One stream, one member, no directory.** There is no member table to read, so listing
 costs nothing and cannot be wrong about what exists. The member's name is not in the
 stream, except for gzip's optional `FNAME`, so archivey takes it from the outside: the
-source's filename with the codec extension removed (`notes.txt.gz` → `notes.txt`), the
-filename plus `.uncompressed` when the extension is not a codec's, and `data` for a stream
-with no name. Its type is always `FILE`, and extraction writes one file.
+source's filename with the codec extension removed (`notes.txt.gz` → `notes.txt`), a
+one-word compressed-tar suffix replaced with `.tar` (`data.tgz` → `data.tar`, as `gzip -d`
+and `xz -d` name it), the filename plus `.uncompressed` when the extension is not a
+codec's, and `data` for a stream with no name. Its type is always `FILE`, and extraction writes one file.
 
 **What is known about the content is at the end of the stream, if anywhere.** gzip ends
 each member with a CRC-32 and the size mod 2³²; xz ends each stream with an index of block

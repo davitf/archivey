@@ -13,8 +13,11 @@ from pathlib import Path
 
 import pytest
 
+from archivey.cli.common import outer_layer_format
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.main import main
+from archivey.internal.format_args import outer_stream_format
+from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 
 
 def _tar_bytes() -> bytes:
@@ -53,15 +56,28 @@ def test_extract_outer_writes_the_tar_inside(
     assert (dest / written).read_bytes() == _tar_bytes()
 
 
+@pytest.mark.parametrize(
+    "flags",
+    [[], ["--dry-run"]],
+    ids=["default-dest", "dry-run"],
+)
 def test_extract_outer_on_a_single_compressed_file_matches_plain_extract(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]
 ) -> None:
+    """No -d goes through the default-destination choice, which reads the reader's
+    format; --outer changes that format, so both spellings are compared whole."""
     src = tmp_path / "notes.txt.gz"
     src.write_bytes(gzip.compress(b"notes\n"))
-    for flags, dest in (([], "plain"), (["--outer"], "outer")):
-        code, err = _run(["extract", str(src), *flags, "-d", str(tmp_path / dest)])
-        assert code == EXIT_OK, err
-        assert (tmp_path / dest / "notes.txt").read_bytes() == b"notes\n"
+    results = {}
+    for name, outer in (("plain", []), ("outer", ["--outer"])):
+        cwd = tmp_path / name
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        results[name] = (_run(["extract", str(src), *outer, *flags]), os.listdir(cwd))
+    assert results["outer"] == results["plain"]
+    (code, err), written = results["outer"]
+    assert code == EXIT_OK, err
+    assert written == ([] if flags else ["notes.txt"])
 
 
 def test_extract_outer_keeps_the_overwrite_policy(tmp_path: Path) -> None:
@@ -133,3 +149,26 @@ def test_outer_on_a_pipe_points_at_cat(tmp_path: Path) -> None:
     code, err = _run(["extract", str(fifo), "--outer", "-d", str(tmp_path / "o")])
     assert code == EXIT_USAGE
     assert "archivey cat --outer" in err
+
+
+@pytest.mark.parametrize("container", list(ContainerFormat))
+@pytest.mark.parametrize("stream", list(StreamFormat))
+def test_outer_rule_matches_what_open_stream_accepts(
+    container: ContainerFormat, stream: StreamFormat
+) -> None:
+    """extract/test --outer and cat --outer (open_stream) peel the same formats."""
+    fmt = ArchiveFormat(container, stream)
+    outer = outer_layer_format(fmt)
+    codec = outer_stream_format(fmt)
+    if codec is None:
+        assert outer is None
+    else:
+        assert outer == ArchiveFormat(ContainerFormat.RAW_STREAM, codec)
+
+
+def test_exclude_alone_is_named_in_the_refusal(tmp_path: Path) -> None:
+    src = tmp_path / "data.tar.gz"
+    src.write_bytes(gzip.compress(_tar_bytes()))
+    code, err = _run(["test", str(src), "--outer", "--exclude", "x*"])
+    assert code == EXIT_USAGE
+    assert "takes no member patterns or --exclude" in err

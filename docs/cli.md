@@ -87,11 +87,6 @@ so one command decompresses whatever arrives:
 curl -s URL | archivey cat - --outer | tar t
 ```
 
-`extract` and `test` take `--outer` too. `archivey x data.tgz --outer` writes `data.tar`
-and leaves the source in place, as `gunzip -k` does. `archivey t data.tar.zst --outer`
-reads the whole decompressed stream and checks the compressor's own checksum, as
-`zstd -t` does, without looking inside the tar.
-
 From a pipe, the archive is read in one forward pass, with the same format limits as an
 archive piped to the other verbs (see the notes below). A redirect from a regular file
 (`archivey cat - < a.zip`) can seek, so every format reads.
@@ -99,6 +94,16 @@ archive piped to the other verbs (see the notes below). A redirect from a regula
 The bytes reach stdout as they are decoded, so some or all of a member whose checksum
 fails may already have been written when the failure is found. `cat` then prints the error, stops, and exits
 `1`, as `zcat` does. Check the exit code before you trust the output.
+
+### Removing only the compression layer
+
+`archivey x data.tgz --outer` writes `data.tar` and leaves the source in place, as
+`gunzip -k` does; `-d`, `--overwrite` and `--dry-run` work as for any `.gz`.
+`archivey t data.tar.zst --outer` reads the whole decompressed stream and checks the
+compressor's end-of-stream checksum where it has one, as `gzip -t` and `xz -t` do,
+without looking inside the tar (Brotli and `.Z` carry no checksum). Both need a file
+on disk: for a pipe, use `archivey cat - --outer`. A ZIP, 7z, RAR, ISO or plain tar has
+no compression layer, so `--outer` refuses it, and it takes no member patterns.
 
 ### Passwords
 
