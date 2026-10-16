@@ -8,8 +8,6 @@ this list:
 
 - Every ZIP claim in the tree, once the native ZIP reader is complete: damaged or missing end
   records, and bytes after the archive, are expected to change.
-- `reading.md` "Solid archives" names RAR as `ListingCost.REQUIRES_SCANNING`. RAR still reports
-  `INDEXED` until the approved code change lands; check the sentence then.
 
 Pages linked from these but not written yet: `install.md`. `install.md` should say why RAR needs an
 outside program (RARLAB doesn't publish the compression format, and the UnRAR licence forbids
