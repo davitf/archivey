@@ -243,13 +243,16 @@ not found" and 7-Zip with "Headers Error". So the walk treats three shapes as da
   agrees, leaves the entry listed from the directory with its mode, but without its
   comment: one of its lengths is wrong, and the comment, its last field, may be cut.
 
-Following a signature reads the bytes the walk holds, then on. A signature that is part
-of a name costs one header, and the four bytes cannot overlap, so a directory holds at
-most a quarter of its size in signatures. The walk follows at most that many headers in
-all, plus a few: signatures alone never spend it, and crafted names cost one pass over
-the directory, not one per name. Past that it fails closed: an entry holding a signature
-it can no longer follow is damage, since a swallow cannot be ruled out. Only chains that
-run on through many headers, again and again, get there.
+Whether the headers from a directory position chain to its end depends on the
+directory's bytes alone, so the walk remembers each position a chain steps onto past its
+first header, with the answer, and a later chain stops there. Each such header is
+stepped over once per walk, and the reads past the walk's own go through one buffer: a
+directory of crafted chains costs about one more pass over it, however many signatures
+point into them. A signature that is part of a name fails at its first header and
+spends nothing. Two budgets bound the rest: headers remembered, as many as the
+directory could hold, and bytes read, twice the directory. Past either, the walk fails
+closed: an entry holding a signature it can no longer follow is damage, since a swallow
+cannot be ruled out.
 A local header that the file cuts short means the
 directory pointed at the wrong place (the directory follows every local header), so it
 is `CorruptionError` too, never `TruncatedError`.

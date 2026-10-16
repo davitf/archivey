@@ -652,12 +652,13 @@ class CentralDirectoryWalk:
       same name, the entry is yielded without its comment, which a wrong length may
       have cut, and the next entry raises.
 
-    Following a signature reads from the bytes in hand and then on. The walk follows
-    at most ``cd_size // 4`` headers in all, plus a few: a signature that is part of a
-    name costs one, and a directory holds no more signatures than that, so those alone
-    never spend it, and a directory of crafted names costs one pass over it, not one
-    per name. A signature the walk can no longer follow is damage too: it cannot rule
-    out a swallow, and it does not list a name that may hold other entries' bytes. The directory always ends where the end
+    Following a signature (:class:`_ChainFollower`) remembers every position a chain
+    steps onto past its first header, so each such header is stepped over once per
+    walk, and it reads past the walk's own bytes through one buffer, at most twice the
+    directory. A signature that is part of a name fails at its first header and costs
+    nothing past it. A signature the walk can no longer follow, once a budget is
+    spent, is damage too: it cannot rule out a swallow, and it does not list a name
+    that may hold other entries' bytes. The directory always ends where the end
     records start (``find_end_record`` derives its start from that), so a file cut
     inside it has lost its end record and never gets here.
 
@@ -810,12 +811,7 @@ class CentralDirectoryWalk:
         after_wrappable = False
         pos = 0
         index = 0
-        # Headers the walk may still step over following signatures inside fields.
-        # Headers the walk may step over following signatures inside fields. A
-        # signature that is part of a name costs one step, and ``PK\x01\x02`` cannot
-        # overlap itself, so the directory holds at most ``cd_size // 4`` of them:
-        # those alone never spend the budget, and following stays one linear pass.
-        follow_budget = cd_size // 4 + 64
+        follower = _ChainFollower(read_at, end)
         while pos < cd_size:
             ensure(pos, pos + CENTRAL_HEADER_SIZE)
             off = pos - data_start
@@ -854,15 +850,15 @@ class CentralDirectoryWalk:
                 CENTRAL_HEADER_SIGNATURE, name_at - data_start, entry_end - data_start
             )
             while found >= 0:
-                swallowed, follow_budget = self._swallowed(
-                    data, data_start, found + data_start, index, base, follow_budget
+                swallowed = self._swallowed(
+                    follower, data, data_start, found + data_start, index, base
                 )
                 if swallowed is None:
                     raise CorruptionError(
                         f"ZIP central directory entry #{index}'s name, extra field or "
                         "comment holds a central directory header, and following "
-                        "the headers such signatures chain to has already stepped "
-                        "over more headers than this directory allows for, so "
+                        "the headers such signatures chain to has already read or "
+                        "stepped over more than this directory allows for, so "
                         "archivey cannot rule out that a length field swallowed "
                         "the entries after it"
                     )
@@ -948,16 +944,16 @@ class CentralDirectoryWalk:
 
     def _swallowed(
         self,
+        follower: _ChainFollower,
         data: bytes,
         data_start: int,
         pos: int,
         index: int,
         base: int,
-        budget: int,
-    ) -> tuple[bool | None, int]:
+    ) -> bool | None:
         """Whether the central header signature at ``pos`` (directory-relative), inside
-        entry ``index``'s fields, starts entries that entry swallowed, and the budget
-        left; ``None`` when the budget runs out first.
+        entry ``index``'s fields, starts entries that entry swallowed; ``None`` when the
+        follower's budget runs out first.
 
         The headers must chain from ``pos`` exactly to the directory's end, and then
         one more thing must agree with that reading: the end record's count, or the
@@ -966,26 +962,23 @@ class CentralDirectoryWalk:
         and a comment can hold a whole well-formed entry whose offset points at a local
         header with another name. A count that merely disagrees is
         :class:`EntryCountMismatch`."""
-        chained, budget, count = self._chain_to_end(data, data_start, pos, budget)
-        if not chained:
-            return chained, budget
+        count = follower.headers_to_end(data, data_start, pos)
+        if count is None or count < 0:
+            return None if count is None else False
         if _count_matches(self._end, index + 1 + count):
-            return True, budget
+            return True
         name_at = self._local_name_at
         if name_at is None:
-            return False, budget
-        # The header starts inside the entry's fields, which ``data`` holds; it and
-        # its name may run on past what was read, up to the directory's end.
-        start = self._end.cd_start
-        head = data[pos - data_start : pos - data_start + CENTRAL_HEADER_SIZE]
-        if len(head) < CENTRAL_HEADER_SIZE:
-            head += self._read_at(
-                start + pos + len(head), CENTRAL_HEADER_SIZE - len(head)
-            )
+            return False
+        # The chain just read this header to step over it, so all 46 bytes are in
+        # ``data`` or the follower's buffer.
+        head = follower.header_at(data, data_start, pos)
+        assert head is not None and len(head) == CENTRAL_HEADER_SIZE
         fields = _CENTRAL_HEADER.unpack(head)
         if fields[18] == _U32_MAX:  # deferred to a ZIP64 field: not checked here
-            return False, budget
+            return False
         offset = fields[18] + base
+        start = self._end.cd_start
         name_at_pos = pos + CENTRAL_HEADER_SIZE
         name = data[name_at_pos - data_start : name_at_pos - data_start + fields[12]]
         if len(name) < fields[12]:
@@ -993,39 +986,8 @@ class CentralDirectoryWalk:
                 start + name_at_pos + len(name), fields[12] - len(name)
             )
         if not 0 <= offset <= start - LOCAL_HEADER_SIZE - len(name):
-            return False, budget
-        return name_at(offset) == name, budget
-
-    def _chain_to_end(
-        self, data: bytes, data_start: int, pos: int, budget: int
-    ) -> tuple[bool | None, int, int]:
-        """Whether central headers chain from ``pos`` (directory-relative) exactly to
-        the directory's end, the budget left and the headers stepped over; ``None``
-        when the budget runs out first. Reads ``data`` (directory bytes from
-        ``data_start``) first, then the directory past it."""
-        end = self._end
-        cd_size = end.cd_size
-        buffer = data
-        buffer_at = data_start
-        count = 0
-        while pos < cd_size:
-            if budget <= 0:
-                return None, 0, count
-            off = pos - buffer_at
-            if len(buffer) - off < CENTRAL_HEADER_SIZE:
-                buffer_at = pos
-                buffer = self._read_at(
-                    end.cd_start + pos, min(_WALK_CHUNK, cd_size - pos)
-                )
-                off = 0
-                if len(buffer) < CENTRAL_HEADER_SIZE:
-                    return False, budget, count
-            if buffer[off : off + 4] != CENTRAL_HEADER_SIGNATURE:
-                return False, budget, count
-            pos += _central_entry_size(buffer, off)
-            budget -= 1
-            count += 1
-        return pos == cd_size, budget, count
+            return False
+        return name_at(offset) == name
 
     def _check_cut_name(self, entry: CentralEntry) -> None:
         """Raise for ``entry``, which no header follows, when the local header at its
@@ -1056,6 +1018,94 @@ class CentralDirectoryWalk:
         if not 0 <= offset <= self._end.cd_start - LOCAL_HEADER_SIZE - len(name):
             return False
         return name_at_offset(offset) == name
+
+
+class _ChainFollower:
+    """Follows the central headers that a signature inside an entry's fields chains
+    to, for one walk, at a cost linear in the directory's size.
+
+    Whether the headers from a directory position chain to the directory's end
+    depends on the directory's bytes alone, so each position a chain steps onto past
+    its first header is remembered with its answer, and a later chain that reaches
+    one stops there. The first header, the signature itself, is not remembered:
+    the walk finds each signature once. So each header past a first one is stepped
+    over once per walk, and the reads this needs go through one buffer kept across
+    follows.
+
+    Two budgets bound what a crafted directory can make it do, and when either runs
+    out the walk cannot rule out a swallow and raises:
+
+    - headers stepped over past a first one, and so remembered: as many as the
+      directory could hold (``cd_size // 46``), plus a few. A signature that is part
+      of a name fails at its first header and spends none of it;
+    - bytes read past the walk's own: twice the directory, plus two pieces.
+    """
+
+    def __init__(self, read_at: ReadAt, end: EndRecord) -> None:
+        self._read_at = read_at
+        self._cd_start = end.cd_start
+        self._cd_size = end.cd_size
+        #: Headers from a position to the directory's end, or -1 when they do not
+        #: chain to it.
+        self._known: dict[int, int] = {}
+        self._steps_left = end.cd_size // CENTRAL_HEADER_SIZE + 64
+        self._bytes_left = 2 * end.cd_size + 2 * _WALK_CHUNK
+        self._buffer = b""
+        self._buffer_at = 0
+
+    def header_at(self, data: bytes, data_start: int, pos: int) -> bytes | None:
+        """The fixed header at directory-relative ``pos``: from the walk's ``data``,
+        this follower's buffer or a read; shorter than 46 bytes when the directory
+        ends first, ``None`` when the byte budget is spent."""
+        end = pos + CENTRAL_HEADER_SIZE
+        if end > self._cd_size:
+            return b""
+        if data_start <= pos and end <= data_start + len(data):
+            return data[pos - data_start : end - data_start]
+        at = self._buffer_at
+        if not (at <= pos and end <= at + len(self._buffer)):
+            if self._bytes_left <= 0:
+                return None
+            self._buffer = self._read_at(
+                self._cd_start + pos, min(_WALK_CHUNK, self._cd_size - pos)
+            )
+            self._buffer_at = at = pos
+            self._bytes_left -= len(self._buffer)
+        return self._buffer[pos - at : end - at]
+
+    def headers_to_end(self, data: bytes, data_start: int, pos: int) -> int | None:
+        """How many central headers chain from ``pos`` exactly to the directory's end,
+        the one at ``pos`` included; -1 when they do not, ``None`` when a budget runs
+        out first."""
+        cd_size = self._cd_size
+        known = self._known
+        path: list[int] = []
+        while True:
+            if pos >= cd_size:
+                rest = 0 if pos == cd_size else -1
+                break
+            if path and pos in known:
+                rest = known[pos]
+                break
+            head = self.header_at(data, data_start, pos)
+            if head is None:
+                return None
+            if len(head) < CENTRAL_HEADER_SIZE or head[:4] != CENTRAL_HEADER_SIGNATURE:
+                rest = -1
+                break
+            if path:
+                self._steps_left -= 1
+                if self._steps_left < 0:
+                    return None
+            path.append(pos)
+            pos += _central_entry_size(head, 0)
+        if not path:
+            return -1
+        # Remember every position past the first, with its own count.
+        total = len(path)
+        for i in range(1, total):
+            known[path[i]] = -1 if rest < 0 else total - i + rest
+        return -1 if rest < 0 else total + rest
 
 
 def _central_entry_size(buffer: bytes, offset: int) -> int:

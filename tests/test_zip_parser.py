@@ -21,6 +21,7 @@ from archivey import open_archive
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
 from archivey.internal.backends import zip_parser
 from archivey.internal.backends.zip_parser import (
+    CENTRAL_HEADER_SIZE,
     CentralDirectoryWalk,
     CentralEntry,
     CommentCutShort,
@@ -252,13 +253,10 @@ def test_a_signature_in_a_name_reads_no_more_than_the_walk() -> None:
     assert calls == [1 << 20]
 
 
-def test_following_signatures_is_bounded_by_the_directory() -> None:
-    """Every name holds a header whose lengths jump to the next name's header, and
-    the last one jumps past the directory's end, so each follow steps over every fake
-    after it before it fails: about 45 000 headers for 300 names. The walk follows at
-    most a quarter of the directory's size in headers in all, then fails closed: a
-    signature it can no longer follow is damage, not a name it lists."""
-    count = 300
+def _parallel_fakes(count: int) -> bytes:
+    """``count`` entries, each name holding a fake header whose lengths jump to the
+    next name's fake; the last one jumps past the directory's end, so every chain
+    steps over every fake after it before it fails."""
     # zipfile stops a name at NUL, so the names are written as placeholders and the
     # fake headers patched into the directory's copies.
     placeholder = b"X" * 46
@@ -272,7 +270,15 @@ def test_following_signatures_is_bounded_by_the_directory() -> None:
     raw = bytearray(buf.getvalue())
     cd = raw.index(b"PK\x01\x02")
     raw[cd:] = raw[cd:].replace(placeholder, fake)
-    data = bytes(raw)
+    return bytes(raw)
+
+
+def test_following_signatures_steps_over_each_header_once() -> None:
+    """300 chains that each run through every later fake would step over about
+    45 000 headers if each were followed afresh. A position a chain has stepped onto
+    is remembered, so each fake is stepped over about once and every entry lists."""
+    count = 300
+    data = _parallel_fakes(count)
     steps = 0
     original = zip_parser._central_entry_size
 
@@ -281,16 +287,73 @@ def test_following_signatures_is_bounded_by_the_directory() -> None:
         steps += 1
         return original(buffer, offset)
 
-    seen = []
     with pytest.MonkeyPatch.context() as m:
         m.setattr(zip_parser, "_central_entry_size", counting)
-        read_at = _read_at(data)
-        walk = CentralDirectoryWalk(read_at, find_end_record(read_at, len(data)))
-        with pytest.raises(CorruptionError, match="cannot rule out"):
-            for e in walk:
-                seen.append(e.name)
-    assert 0 < len(seen) < count // 4
-    assert steps <= len(data) // 4 + 64
+        _end, entries, _walk = _parse(data)
+    assert len(entries) == count
+    assert steps <= 2 * count + 64
+
+
+def test_a_follow_that_spends_its_budget_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the header budget spent, a signature the walk can no longer follow is
+    damage, not a name it lists: a swallow cannot be ruled out."""
+    original = zip_parser._ChainFollower.__init__
+
+    def small(self: zip_parser._ChainFollower, read_at: ReadAt, end: EndRecord) -> None:
+        original(self, read_at, end)
+        self._steps_left = 10
+
+    monkeypatch.setattr(zip_parser._ChainFollower, "__init__", small)
+    with pytest.raises(CorruptionError, match="cannot rule out"):
+        _parse(_parallel_fakes(300))
+
+
+def test_following_many_deep_chains_reads_the_directory_a_few_times() -> None:
+    """Each member's comment holds a rung, a fake header whose size reaches the next
+    member's rung, and more fakes every 4 KiB whose sizes land on that next rung, so
+    every signature chains through every later member before it fails. Following
+    each from scratch would read the rest of the directory once per signature
+    (quadratic in its size). The bytes the walk reads stay within a few times the
+    directory's size."""
+    count = 50
+    comment_len = 60_000
+    names = [f"m{i:05d}.txt" for i in range(count)]
+    entry = CENTRAL_HEADER_SIZE + len(names[0]) + comment_len
+
+    def fake(size: int) -> bytes:
+        return (
+            b"PK\x01\x02"
+            + bytes(24)
+            + struct.pack("<3H", 0, 0, size - CENTRAL_HEADER_SIZE)
+            + bytes(12)
+        )
+
+    comment = bytearray(comment_len)
+    for at in range(0, comment_len - CENTRAL_HEADER_SIZE, 4096):
+        comment[at : at + CENTRAL_HEADER_SIZE] = fake(entry - at)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in names:
+            info = zipfile.ZipInfo(name)
+            info.comment = bytes(comment)
+            zf.writestr(info, b"")
+    data = buf.getvalue()
+    read = 0
+    base = _read_at(data)
+
+    def counting(offset: int, n: int) -> bytes:
+        nonlocal read
+        piece = base(offset, n)
+        read += len(piece)
+        return piece
+
+    end = find_end_record(counting, len(data))
+    assert end.cd_size == count * entry
+    read = 0
+    assert len(list(CentralDirectoryWalk(counting, end))) == count
+    assert read <= 4 * end.cd_size + (4 << 20), read
 
 
 def test_a_swallow_that_leaves_the_count_agreeing_is_damage() -> None:
