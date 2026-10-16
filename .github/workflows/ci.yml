@@ -614,7 +614,7 @@ jobs:
   # native packages have no PyPy wheel and one failed build would hide what does install;
   # the "Install what installs" step writes the outcome per package to the job summary.
   pypy:
-    name: pypy / py${{ matrix.python }} (trial, allowed to fail)
+    name: ${{ matrix.python }} (trial, allowed to fail)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     continue-on-error: true
