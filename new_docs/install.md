@@ -77,8 +77,8 @@ or build `unar` 1.10.8 from [The Unarchiver's source](https://github.com/MacPaw/
 If your program needs to know at run time which formats work with what's installed,
 [`format_availability()`](api.md#archivey.format_availability) says whether a format is fully
 supported, partly supported (it opens, but some members need a missing package) or not available,
-and which packages would add the rest. It doesn't count `cryptography`, which only encrypted members
-need, or the RAR programs.
+and which packages would add the rest. RAR counts as partly supported without RARLAB's `unrar`, even
+when `unar` is installed. `cryptography` isn't counted, because only encrypted members need it.
 
 ## Python versions and platforms
 
