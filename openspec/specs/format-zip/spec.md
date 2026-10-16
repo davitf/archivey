@@ -473,27 +473,28 @@ The local header repeats most of a member's central directory entry. Two
 disagreements SHALL NOT refuse the member (maintainer ruling 2026-10-10; `unzip` reads
 both) and SHALL report a code with `LocalHeaderContext`:
 
-- **The name** (`MEMBER_LOCAL_NAME_DIFFERS`, which `STRICT` refuses: a tool that
-  trusts the local header shows another name). The local header stores other name
-  bytes than the directory: another code page, or `\` where the directory has `/`.
-  Every field comes from the directory, so the member keeps the directory's name. A
-  file read reads a local header only when it opens a member's data, so the report
-  comes then (`field="name"`, the local bytes in `local_raw_name_base64`), once per
-  member; a policy that raises on the code raises on every open. Only a file or link reports it: extraction reads no directory's data, so a
-  directory reports nothing, even after a `read()` of data it declares, and nor does the
-  pass from a pipe, which reads every local header.
+- **The name** (`MEMBER_LOCAL_NAME_DIFFERS`, which `STRICT` refuses: a tool that trusts
+  the local header shows another name). The local header stores other name bytes than
+  the directory: another code page, or `\` where the directory has `/`. Every field
+  comes from the directory, so the member keeps the directory's name. A file read reads
+  a local header only when it opens a member's data, so the report comes then
+  (`field="name"`, the local bytes in `local_raw_name_base64`), once per member; a
+  policy that raises on the code raises on every open. Only a file or link reports it:
+  extraction reads no directory's data, so a directory reports nothing, even after a
+  `read()` of data it declares, and nor does the pass from a pipe, which reads every
+  local header.
 - **A CRC-32 of 0** (`MEMBER_LOCAL_CRC_USED`, which `STRICT` reads: the data is still
-  checked; maintainer ruling 2026-10-15). The directory stores 0 for a file or link of one byte or more,
-  not WinZip AE-2 (whose HMAC checks the data, above), and the local header, with no
-  data descriptor (bit 3 clear), a non-zero value. Adobe AIR's packager stores
-  `META-INF/AIR/hash` this way. The member's `hashes` and every check of its data (the
-  CRC, the ZipCrypto check byte) take the local value. A file read reads that local
+  checked; maintainer ruling 2026-10-15). The directory stores 0 for a file or link of
+  one byte or more, not WinZip AE-2 (whose HMAC checks the data, above), and the local
+  header, with no data descriptor (bit 3 clear), a non-zero value. Adobe AIR's packager
+  stores `META-INF/AIR/hash` this way. The member's `hashes` and every check of its data
+  (the CRC, the ZipCrypto check byte) take the local value. A file read reads that local
   header when it lists the member, the only listing-time read of a local header, and
-  reports then (`field="crc32"`, `local_crc32`); a crafted plaintext archive whose
-  every entry stores 0 so costs one positioned read per member while listing. An AE-2
-  entry costs none and reports nothing. A directory that declares data under a CRC-32
-  of 0 keeps no digest, from a file and a pipe alike (`DIGEST_UNVERIFIABLE`), and
-  reports nothing more.
+  reports then (`field="crc32"`, `local_crc32`); a crafted plaintext archive whose every
+  entry stores 0 so costs one positioned read per member while listing. An AE-2 entry
+  costs none and reports nothing. A directory that declares data under a CRC-32 of 0
+  keeps no digest, from a file and a pipe alike (`DIGEST_UNVERIFIABLE`), and reports
+  nothing more.
 
 Both headers understating the size, with a CRC-32 over the longer output, SHALL stay
 refused: the declared size is the bound that stops decoding (DR-9a). A read from a pipe
