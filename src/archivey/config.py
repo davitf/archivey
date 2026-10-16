@@ -320,8 +320,8 @@ class ListingLimits:
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
     That data does not count here; the pass holds at most this many bytes of it,
-    dropping the longest first, and raises ``ResourceLimitError`` only if a link's
-    data was dropped.
+    dropping the longest first. A link whose data was dropped is listed without its
+    target and reports ``SYMLINK_TARGET_UNAVAILABLE``.
     """
 
     UNLIMITED: ClassVar[ListingLimits]

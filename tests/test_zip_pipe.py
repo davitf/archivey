@@ -475,10 +475,10 @@ def test_kept_ciphertext_is_not_charged_to_max_metadata_bytes() -> None:
 
 def test_the_kept_data_drops_the_longest_first() -> None:
     """The pass holds at most ``max_metadata_bytes`` of short members' data, and drops
-    the longest first: link targets are paths, shorter than most files. A link whose
-    data was dropped fails its listing with ``ResourceLimitError``, where the file read
-    lists it: only a target at least as long as the ``max_metadata_bytes`` of data
-    before it is lost so."""
+    the longest first: link targets are paths, shorter than most files. Only a target
+    at least as long as the ``max_metadata_bytes`` of data before it is lost so; the
+    link is then listed without it and says why, and the rest of the listing stands,
+    where the file read lists the target."""
     short = _small_files_then_link(10, 3000, "f000.txt")
     with archivey.open_archive(
         _pipe(short), streaming=True, config=_limited(20_000)
@@ -493,9 +493,40 @@ def test_the_kept_data_drops_the_longest_first() -> None:
     with archivey.open_archive(
         _pipe(long), streaming=True, config=_limited(20_000)
     ) as reader:
-        with pytest.raises(ResourceLimitError, match=r"max_metadata_bytes=20000.*link"):
-            for _ in reader.stream_members():
-                pass
+        for _ in reader.stream_members():
+            pass
+        members = reader.members_report().members
+        assert len(members) == 11
+        link = members[-1]
+        assert (link.name, link.type, link.link_target) == (
+            "link",
+            MemberType.SYMLINK,
+            None,
+        )
+        assert _link_target_reasons(reader) == ["target_data_dropped"]
+        (message,) = [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        assert "max_metadata_bytes=20000" in message
+
+
+def test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind(
+    tmp_path: Path,
+) -> None:
+    """The pass writes the link's data as a file before the directory makes it a
+    link. With the target dropped, the end of the pass takes that file back and
+    fails the link alone, as for any link whose target the read cannot reach."""
+    data = _small_files_then_link(10, 3000, "d/" * 1750)
+    with archivey.open_archive(
+        _pipe(data), streaming=True, config=_limited(20_000)
+    ) as reader:
+        reader.extract_all(tmp_path, on_error="continue")
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        f"f{i:03d}.txt" for i in range(10)
+    ]
+    assert (tmp_path / "f009.txt").read_bytes() == b"009" * 1000
 
 
 @pytest.mark.parametrize("source", ["pipe", "file"])

@@ -1675,8 +1675,8 @@ class ZipForwardReader(ZipReader):
         the listing, which a file read's never holds), on top of what the listing
         holds. Real link targets are paths, far shorter than most files, so the
         longest data goes first: a link loses its target only behind
-        ``max_metadata_bytes`` of kept data no longer than its own, and its target's
-        read then raises ``ResourceLimitError`` (``_link_target_opener``).
+        ``max_metadata_bytes`` of kept data no longer than its own, and is then listed
+        without one (``_ensure_link_target``).
         """
         budget = self._config.listing_limits.max_metadata_bytes
         if budget is None:
@@ -1729,8 +1729,8 @@ class ZipForwardReader(ZipReader):
             end = tail.end_record()
         self._end_record = self._end = end
         # Weighed now that it is known, as a file read weighs it before the first
-        # member (``_account_archive_comment``).
-        self._listing_tracker.account_archive_comment(self._archive_comment())
+        # member.
+        self._account_archive_comment()
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
         by_offset = self._by_offset
@@ -2124,6 +2124,35 @@ class ZipForwardReader(ZipReader):
             )
         return self._wrap_member_stream(stream, member.name, size=member.size)
 
+    def _ensure_link_target(self, member: ArchiveMember) -> None:
+        member_id = member._member_id
+        if (
+            member.type is not MemberType.SYMLINK
+            or member.link_target is not None
+            or member_id is None
+            or self._uncaptured.get(member_id) != _DROPPED
+        ):
+            super()._ensure_link_target(member)
+            return
+        # ``_hold`` dropped the data to stay within the bound. The archive is not
+        # damaged and a file read lists the target, so the link is listed without
+        # one and says why, as for any target the read cannot reach; the rest of
+        # the listing stands.
+        budget = self._config.listing_limits.max_metadata_bytes
+        assert budget is not None, "data is dropped only under a budget"
+        self._emit_link_target_unavailable(
+            member,
+            reason="target_data_dropped",
+            message=(
+                f"The symlink target of {quoted(member.name)} was not kept: reading "
+                "from a stream that cannot seek, the pass holds at most "
+                f"max_metadata_bytes={budget} of the data of members short enough "
+                "to be links until the directory says which are, and dropped this "
+                "member's data as the longest; leaving link_target unset."
+            ),
+            target_in_archive=True,
+        )
+
     def _link_target_opener(
         self, member: ArchiveMember
     ) -> Callable[[], AbstractContextManager[ReadableStream]]:
@@ -2150,14 +2179,6 @@ class ZipForwardReader(ZipReader):
                 return CorruptionError(
                     f"The data of symlink {quoted(member.name)} failed its check as "
                     "the pass read it"
-                )
-            if why == _DROPPED:
-                budget = self._config.listing_limits.max_metadata_bytes
-                return ResourceLimitError(
-                    f"Listing limit reached: max_metadata_bytes={budget} (the pass "
-                    f"dropped the data of {quoted(member.name)}, which the directory "
-                    "makes a symlink, to hold no more than this of the short members' "
-                    "data it keeps until the directory says which are links)"
                 )
             if isinstance(why, int):
                 # A target report takes a CorruptionError: the pass cannot read what
@@ -2189,7 +2210,10 @@ class ZipForwardReader(ZipReader):
 
     def _account_archive_comment(self) -> None:
         # The walk starts before the end record is read: ``_read_directory`` weighs
-        # the comment once it is.
+        # the comment once it is. The base call at the start of the walk has to be
+        # suppressed, not passed through with no comment: the tracker latches the
+        # comment as counted on its first call, even for ``None``, so the later one
+        # would weigh nothing.
         if self._end_record is not None:
             super()._account_archive_comment()
 

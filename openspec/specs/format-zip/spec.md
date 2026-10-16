@@ -267,11 +267,13 @@ end-of-pass rename.
 
 The data the pass keeps of short members until the directory says which are links SHALL
 NOT be charged to the listing limits: an archive a file read lists within them SHALL
-list from a pipe too, however many small files it holds. The pass SHALL hold at most
+list from a pipe too, however many small files it holds, except that a link whose own
+data was dropped (below) is listed without its target. The pass SHALL hold at most
 `max_metadata_bytes` of that data, dropping the longest first; a link whose data was
-dropped SHALL make the pass raise `ResourceLimitError`, a difference from a file read
-that needs a target at least as long as `max_metadata_bytes` of short members' data
-before it. The archive comment SHALL be weighed against `max_metadata_bytes` once the
+dropped SHALL be listed with `link_target` unset and `SYMLINK_TARGET_UNAVAILABLE`
+with reason `"target_data_dropped"`, and the rest of the listing SHALL stand. This
+differs from a file read only for a target at least as long as `max_metadata_bytes` of
+short members' data before it. The archive comment SHALL be weighed against `max_metadata_bytes` once the
 pass reads the end record, as a file read weighs it.
 
 #### Scenario: non-seekable read matrix
