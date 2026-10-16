@@ -1616,7 +1616,8 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   later change may make the walk lazy, as TAR's is. Whether a RAR5 archive whose `QO`
   covers every header should report `INDEXED` is still open: the record saves the seeks
   (12 reads and 11 seeks instead of 6,011 reads and 3,007 seeks for 3,001 members), not
-  the parse.
+  the parse. The maintainer chose to keep one value for every RAR and leave this open
+  (2026-10-16), rather than close it or make the receipt depend on the archive.
 - ~~**Should `unar` become an opt-in second engine?**~~ Yes, shipped 2026-09-26 as the
   fallback under the default `"auto"` (§3). It was the one candidate the
   decompressor matrix left open, and Homebrew dropping the `rar` cask is what keeps it open
