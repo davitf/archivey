@@ -90,3 +90,21 @@ others miss.
   model](https://github.com/davitf/archivey/blob/main/dev-docs/threat-model.md) has the rest.
 - **Bugs found in other libraries.** Comparing decoders turned up a use-after-free in pyppmd, three
   decoder bugs in pybcj and a hang in py7zr. Archivey avoids or works around each one.
+
+## What this makes practical
+
+AI lets the maintainer build a better library, faster. It changes what is practical to do.
+
+- **Breadth.** Archivey reads ZIP, TAR, 7z, RAR and ISO archives and ten single-file compression
+  formats. That includes encrypted archives, multi-volume sets, self-extracting executables and
+  archives inside archives. Each of these has corner cases that libraries usually leave unsupported.
+  Here most of them have a test.
+- **Hostile input.** Agents are good at the tedious question "what if this field is wrong?", asked
+  of every field in every format. Many entries in the threat model are attacks the maintainer
+  wouldn't have thought of alone. Two examples are a 7z archive that sizes a memory allocation from
+  a count nobody checked, and a password check where the archive chooses how much work each attempt
+  costs.
+- **Review as routine.** Reviewing every change from zero, and reading the whole codebase again and
+  again, would take a team of people. With agents, both are part of the normal workflow.
+- **Measurement over memory.** Claims about speed, memory use and seeks are measured, and the
+  benchmarks above catch a change that makes them worse.

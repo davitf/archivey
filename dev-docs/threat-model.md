@@ -873,7 +873,7 @@ namespace, that drops a directory extent or UDF File Entry already scheduled; va
 trees never revisit one.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
-OSS-Fuzz is [after the first release](#oss-fuzz).
+OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
 Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
@@ -1183,9 +1183,9 @@ on the shared `max_decode_input` allowance and be measured before this is settle
 
 ### OSS-Fuzz
 
-Onboarding comes after the first release. The bar for calling archivey safe (threat
-model, adversarial corpus, coverage-guided fuzzing, disclosure process) is met without
-it.
+Onboarding waits until archivey has more users, since OSS-Fuzz expects a project with a
+real user base. The bar for calling archivey safe (threat model, adversarial corpus,
+coverage-guided fuzzing, disclosure process) is met without it.
 
 ### Bounded recursion helper
 
