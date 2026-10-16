@@ -123,7 +123,7 @@ from archivey.internal.windows_reparse import (
     parse_reparse_data,
     reparse_payload_length,
 )
-from archivey.reader import ArchiveReader
+from archivey.reader import ArchiveReader, MemberPass
 from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -2835,7 +2835,10 @@ class BaseArchiveReader(ArchiveReader):
             return counter
         return source
 
-    def __iter__(self) -> Iterator[ArchiveMember]:
+    def __iter__(self) -> MemberPass[ArchiveMember]:
+        return MemberPass(self._iter_pass())
+
+    def _iter_pass(self) -> Generator[ArchiveMember, None, None]:
         self._state.require_open("__iter__")
         if self._streaming:
             token = self._state.acquire_pass("__iter__")
@@ -3181,7 +3184,7 @@ class BaseArchiveReader(ArchiveReader):
         members: MemberSelectorArg = None,
         *,
         file_copy_streams: bool = True,
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
         The yielded stream is owned by the iterator: advancing closes/invalidates the
@@ -3194,11 +3197,13 @@ class BaseArchiveReader(ArchiveReader):
                 "stream_members(file_copy_streams=…) takes True or False, but got "
                 f"{describe_value(file_copy_streams)}."
             )
-        return self._stream_members(members, FileCopyPass(streams=file_copy_streams))
+        return MemberPass(
+            self._stream_members(members, FileCopyPass(streams=file_copy_streams))
+        )
 
     def _stream_members(
         self, members: MemberSelectorArg, copies: FileCopyPass
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
         """``stream_members()`` with the file-copy handling given whole.
 
         The extraction coordinator calls this directly, to pass ``keep_source``.
@@ -3223,7 +3228,7 @@ class BaseArchiveReader(ArchiveReader):
         selector: Callable[[ArchiveMember], bool] | None,
         report: CollectionSelector | None = None,
         copies: FileCopyPass = DEFAULT_FILE_COPY_PASS,
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
         try:

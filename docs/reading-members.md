@@ -111,17 +111,33 @@ same loop written around `open()` would hand you the target's contents. Read
 
 A `stream_members()` pass owns the reader while it runs. Calling `open()`,
 `members()` or another pass inside the loop raises `ArchiveyUsageError` rather than
-quietly disturbing the pass. On a reader opened with `concurrent_members=True`,
-`open()`, `read()`, `get()`, `members()` and another `stream_members()` all work
-inside the loop, from any thread, on every format. `extract_all()` still raises.
-The pass and the calls beside it share one walk of the archive's headers, so a pass
-nobody gets ahead of costs what it costs on a default reader. A call that needs
-members the pass has not reached yet, such as `members()` in the first iteration,
-reads ahead for it; on a compressed tar the pass's later reads then decode again
-from an earlier point and report `STREAM_REWIND_REDECOMPRESSES`, as calling
-`members()` and then `read()` does. A compressed tar's member streams also share
-one decoder, so reading two of them interleaved makes each read decode again from an
-earlier point. That is slower, but the bytes are still correct.
+quietly disturbing the pass. Leaving the loop with `break` frees the reader on
+CPython, but a pass kept in a variable, or one an exception left (the traceback keeps
+it alive while the error is handled), holds the reader until it is closed. Use the
+pass in a `with` block to end it at a known point:
+
+```python
+with reader.stream_members() as members:
+    for member, stream in members:
+        if member.name == "manifest.json" and stream is not None:
+            manifest = stream.read()
+            break
+data = reader.read("payload.bin")  # the pass has ended
+```
+
+`members.close()` does the same without the block. `iter(reader)` returns a pass too, so
+a member loop can be closed or used in a `with` block the same way, but on this reader
+it holds nothing between members: `for m in reader: reader.open(m)` works. On a reader
+opened with `concurrent_members=True`, `open()`, `read()`, `get()`, `members()` and
+another `stream_members()` all work inside the loop, from any thread, on every format.
+`extract_all()` still raises. The pass and the calls beside it share one walk of the
+archive's headers, so a pass nobody gets ahead of costs what it costs on a default
+reader. A call that needs members the pass has not reached yet, such as `members()` in
+the first iteration, reads ahead for it; on a compressed tar the pass's later reads then
+decode again from an earlier point and report `STREAM_REWIND_REDECOMPRESSES`, as calling
+`members()` and then `read()` does. A compressed tar's member streams also share one
+decoder, so reading two of them interleaved makes each read decode again from an earlier
+point. That is slower, but the bytes are still correct.
 
 ## What a read gives you back
 
@@ -188,6 +204,7 @@ streams still open on it, the same way `zipfile.ZipFile.close()` and
 closed file. The same goes for a `stream_members()` iterator that is still alive when
 the reader closes, for example one kept in a variable or wrapped in `enumerate()`: the
 close succeeds, and advancing the iterator afterwards raises `ArchiveyUsageError`.
+Call `close()` on the pass, or use it in a `with` block, to end it before the reader.
 Nesting `with` blocks is still the clearest way to write it, and it means you never
 depend on the order:
 
@@ -209,7 +226,8 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 methods — `members()`, `get()`, `open()`, `read()` — raise
 `ArchiveyUsageError`. What you have instead is `__iter__`, `stream_members()`
 and `extract_all()`, and you get **one** of them: the first consumes the source, even
-if you `break` out early.
+if you `break` out early. Closing a pass early frees the reader for `members_report()`,
+which finishes the walk, but not for a second pass.
 
 A type checker catches the random-access calls before you run the code:
 `open_archive(..., streaming=True)` is typed to return `ForwardArchiveReader`, which

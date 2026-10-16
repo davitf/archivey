@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import MemberPass, open_archive
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.filters import MemberSelection
 from archivey.cli.main import main
@@ -431,10 +431,13 @@ def test_a_damaged_index_still_counts_the_untested_members(
 
     def _dies_after_first(
         self: BaseArchiveReader, *args: object, **kwargs: object
-    ) -> Iterator[object]:
-        members = original(self, *args, **kwargs)  # type: ignore[arg-type]
-        yield next(members)
-        raise ReadError("simulated stream failure")
+    ) -> MemberPass:
+        def _gen() -> Iterator[object]:
+            members = original(self, *args, **kwargs)  # type: ignore[arg-type]
+            yield next(members)
+            raise ReadError("simulated stream failure")
+
+        return MemberPass(_gen())  # type: ignore[arg-type]
 
     monkeypatch.setattr(BaseArchiveReader, "stream_members", _dies_after_first)
     assert main(["t", str(archive)]) == EXIT_FAIL

@@ -68,7 +68,7 @@ _OPEN_ARCHIVE_TYPING_SAMPLE = """\
 from typing import assert_type
 
 import archivey
-from archivey import ArchiveReader, ForwardArchiveReader
+from archivey import ArchiveReader, ForwardArchiveReader, MemberPass
 
 
 def check(flag: bool) -> None:
@@ -79,6 +79,16 @@ def check(flag: bool) -> None:
     with archivey.open_archive("a.zip") as full:
         assert_type(full, ArchiveReader)
         full.members()
+        with full.stream_members() as members:
+            assert_type(
+                members,
+                MemberPass[tuple[archivey.ArchiveMember, archivey.ArchiveStream | None]],
+            )
+            for member, stream in members:
+                assert_type(member, archivey.ArchiveMember)
+                assert_type(stream, archivey.ArchiveStream | None)
+        with iter(full) as each:
+            assert_type(each, MemberPass[archivey.ArchiveMember])
     with archivey.open_archive("a.zip", streaming=True) as forward:
         assert_type(forward, ForwardArchiveReader)
         forward.members()

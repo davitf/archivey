@@ -86,7 +86,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.filters import sanitize_names
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.reader import ArchiveReader, ForwardArchiveReader, MemberSelector
+from archivey.reader import (
+    ArchiveReader,
+    ForwardArchiveReader,
+    MemberPass,
+    MemberSelector,
+)
 from archivey.types import (
     AbortOn,
     ArchiveFormat,
@@ -155,6 +160,7 @@ __all__ = [
     "MissingComponent",
     "ArchiveReader",
     "ForwardArchiveReader",
+    "MemberPass",
     "ArchiveStream",
     "ArchiveFormat",
     "ContainerFormat",

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import sys
-from contextlib import closing
 from typing import TextIO, cast
 
 from archivey import ArchiveReader, ExtractionProgress
-from archivey.cli.common import closable, open_for_cli
+from archivey.cli.common import open_for_cli
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
@@ -91,14 +90,14 @@ def run_test(
         member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
-            # count as FAIL and still reach the summary (F4). Once the generator raises,
+            # count as FAIL and still reach the summary (F4). Once the pass raises,
             # further next() yields StopIteration — remaining members are lost (library
             # limitation for solid / poisoned streams); report them as "not tested" (P8).
-            # ``closing`` ends the pass here, deterministically, whatever leaves the
+            # The ``with`` ends the pass here, deterministically, whatever leaves the
             # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
             # pass for ``reader.close()`` or the garbage collector to end while the
             # error travels up to ``main()``.
-            with closing(closable(reader.stream_members(pred))) as it:
+            with reader.stream_members(pred) as it:
                 while True:
                     try:
                         member, stream = next(it)

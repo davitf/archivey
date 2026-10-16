@@ -27,6 +27,7 @@ Authoritative contracts: `openspec/specs/`.
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
+::: archivey.MemberPass
 ::: archivey.MemberSelector
 
 ## Data model
