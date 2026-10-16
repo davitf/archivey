@@ -213,15 +213,15 @@ from archivey.types import (
 
 def _single_disk_copy_note(program: str) -> str:
     return (
-        "Reading a compressed member will copy the whole archive to disk so "
-        f"{program} can read it."
+        f"Reading a member that {program} has to read, such as a compressed one, will "
+        f"copy the whole archive to disk so {program} can read it."
     )
 
 
 def _stream_volumes_disk_copy_note(program: str) -> str:
     return (
-        "Reading a compressed member will copy every volume to a temp directory "
-        f"so {program} can read them."
+        f"Reading a member that {program} has to read, such as a compressed one, will "
+        f"copy every volume to a temp directory so {program} can read them."
     )
 
 
@@ -394,9 +394,9 @@ def _link_file(src: Path, dest: Path) -> None:
 
 def _stream_copy_refused_note(program: str, reason: str) -> str:
     return (
-        f"Reading a compressed member will be refused: {program} reads only files, "
-        f"and {reason}. Members archivey reads without {program}, such as stored, "
-        "unencrypted members, can still be read."
+        f"Reading a member that {program} has to read, such as a compressed one, will "
+        f"be refused: {program} reads only files, and {reason}. Members archivey "
+        f"reads without {program}, such as stored ones, can still be read."
     )
 
 
@@ -3813,15 +3813,13 @@ class RarReader(BaseArchiveReader):
         # Only the last of these is the archive recording no target; the other three
         # are targets this direct read cannot reach, and the member keeps the
         # per-member failure it had before `LINK_TARGET_UNAVAILABLE` existed. The
-        # encrypted one is a limit of reading the bytes straight out of the archive
-        # rather than a missing password: this path never decrypts, so a correct
-        # password does not change its answer, and claiming one was needed would name
-        # a fix that does not work.
+        # encrypted one is a limit of this listing read rather than a missing
+        # password: it never decrypts, even a stored target ``open()`` would decrypt
+        # (``_natively_decryptable``), so a correct password does not change its
+        # answer, and claiming one was needed would name a fix that does not work.
         if raw.is_encrypted:
             reason = "target_data_encrypted"
-            detail = (
-                "its data is encrypted and this reader does not decrypt it in place"
-            )
+            detail = "its data is encrypted, and listing does not decrypt link targets"
             in_archive = True
         elif not _data_is_reachable(raw):
             reason = "target_data_split_across_volumes"

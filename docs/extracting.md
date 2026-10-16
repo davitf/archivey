@@ -630,7 +630,8 @@ name `unrar` cannot be given, but never for a member that needs a password. Each
 the process `PATH`. `unar` receives a password on its command line, where other local
 users can see it while it runs; select `RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
 `RarDecompressor.NONE`: archivey then runs neither, and refuses every RAR member it
-cannot read without them (anything compressed, and encrypted members split across volumes);
+cannot read without them (anything compressed, encrypted members split across volumes,
+and, without `cryptography`, every encrypted member);
 `extract_all(..., on_error="continue")` then writes the members it can read and records
 the rest. Keep these tools updated; treat their availability and behaviour as part of
 your deployment’s trust boundary.

@@ -143,8 +143,9 @@ When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
 caveat **at open** (path sources SHALL NOT, except the prefixed file that
 `Read RAR member data with unar` copies): a single stream source SHALL warn
-that reading a compressed member will copy the whole archive to disk; ordered
-stream volumes SHALL warn that reading a compressed member will copy every volume
+that reading a member the program has to read (such as a compressed one) will copy
+the whole archive to disk; ordered stream volumes SHALL warn that reading such a member
+will copy every volume
 to a temp directory. The caveat SHALL name the spool limit in force (or say there is
 none), so the caller reads the worst case at open. When the limit already rules the copy
 out — `max_bytes=0`, or a copy whose size is known at open and is over the limit — the
@@ -165,9 +166,9 @@ desynchronize sizes).
 | Repeated random opens in solid RAR | Each open is its own `unrar p` decode from archive start; no tempdir cache, and the re-decode is reported as `RewindWarning.min_redecode_bytes` |
 | `extract_all()` | The same `stream_members()` pass as any other caller, plus a second pass when a selected hardlink's source was excluded and must be re-read; no `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
-| Single non-path stream, at open | `ar.cost.notes` warns a compressed read will copy to disk and names the spool limit; nothing is written yet |
-| Ordered stream volumes, at open | `ar.cost.notes` warns a compressed read will copy every volume and names the spool limit; nothing is written yet |
-| Stream source at open, `max_bytes=0` or a known size over the limit | `ar.cost.notes` says a compressed read will be refused and promises no copy |
+| Single non-path stream, at open | `ar.cost.notes` warns a read the program serves (such as a compressed one) will copy to disk and names the spool limit; nothing is written yet |
+| Ordered stream volumes, at open | `ar.cost.notes` warns a read the program serves will copy every volume and names the spool limit; nothing is written yet |
+| Stream source at open, `max_bytes=0` or a known size over the limit | `ar.cost.notes` says a read the program serves will be refused and promises no copy |
 | Ordered stream volumes, listing only | No temp directory is created |
 | Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
 | Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |

@@ -121,6 +121,8 @@ _RAR4_ENCRYPTED = {
     "encryption_large_stored__rar4.rar",
     "encryption_stored_sizes__rar4.rar",
 }
+# Encrypted members of zero bytes.
+_EMPTY_ENCRYPTED = {("encryption_stored_sizes__.rar", "size_0.bin")}
 # A RAR5 volume set with encrypted headers: XADMaster 1.10.8 returns nothing.
 _HEADER_ENCRYPTED_VOLUMES = {"tinyvol_hp.part1.rar"}
 
@@ -217,6 +219,7 @@ def test_unar_matches_unrar_or_refuses(
             continue
         if (
             password is None
+            and (path.name, name) in _EMPTY_ENCRYPTED
             and with_unrar[name].startswith("EncryptionError")
             and got == hashlib.sha256(b"").hexdigest()
         ):

@@ -229,6 +229,7 @@ def test_split_member_reads_through_unrar() -> None:
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
+@requires("cryptography")
 @requires_binary("unrar")
 @pytest.mark.parametrize("path", [_RAR5, _RAR4], ids=["rar5", "rar4"])
 def test_bytes_match_unrar(path: Path) -> None:
@@ -243,3 +244,19 @@ def test_bytes_match_unrar(path: Path) -> None:
                     capture_output=True,
                 ).stdout
             )
+
+
+def test_split_member_reports_the_last_parts_tweaked_crc() -> None:
+    """The merged member takes the last part's encryption record with its digest.
+
+    That record says the CRC is tweaked, so it is not a plaintext digest and is kept
+    in ``extra`` instead of ``hashes``. With the first part's record it was published
+    as a plaintext CRC32 that no content matches.
+    """
+    with open_archive(
+        _RAR / "tinyvol_enc.part1.rar", config=_NONE, password="password"
+    ) as archive:
+        member = archive.get("payload.bin")
+        assert member is not None
+        assert member.hashes == {}
+        assert member.extra["rar.tweaked_crc32"] == 0x1DF2A612

@@ -471,7 +471,8 @@ yielded.
   so at open. `"unrar"` and `"unar"` use only that program. `"none"` runs no program
   at all, for when you don't want `unrar` or `unar` run on your archives: listing still
   works, and so does reading a stored (uncompressed) member, also when it is split
-  across volumes or sits in a solid archive, or when it is encrypted and in one part.
+  across volumes or sits in a solid archive, or when it is encrypted and in one part
+  (that one needs `cryptography`, and raises `PackageNotInstalledError` without it).
   A compressed member, an encrypted one split across volumes, or a split one with a
   volume missing, raises
   `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so at open.

@@ -115,8 +115,9 @@ class RarDecompressor(Enum):
       split across volumes or sits in a solid archive, and one that is encrypted, in
       one part, with ``cryptography`` installed. A compressed member, an encrypted one
       split across volumes, or a split one with a volume missing, raises
-      ``UnsupportedFeatureError`` before anything runs, and a compressed RAR 1.5-4
-      comment is ``None``.
+      ``UnsupportedFeatureError`` before anything runs. A stored, encrypted member in
+      one part raises ``PackageNotInstalledError`` naming ``cryptography`` when that
+      package is missing. A compressed RAR 1.5-4 comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
