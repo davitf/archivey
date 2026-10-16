@@ -142,6 +142,21 @@ def test_read_after_a_seek_back_fills(tmp_path: Path) -> None:
         assert member.size == len(PAYLOAD)
 
 
+def test_relative_seek_before_0_after_a_deferred_seek_clamps(tmp_path: Path) -> None:
+    """``seek(1500)`` is deferred, so the inner is still at 100: a ``SEEK_CUR`` from
+    1500 that lands before 0 clamps there, as with no deferred seek, and the fill
+    still holds."""
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            stream.read(100)
+            stream.seek(1500)
+            assert stream.seek(-1700, io.SEEK_CUR) == 0
+            assert stream.read() == PAYLOAD
+        assert member.size == len(PAYLOAD)
+
+
 def test_seek_to_the_current_position_still_fills(tmp_path: Path) -> None:
     path = _write(tmp_path, "gz", gzip.compress)
     with open_archive(path, seekable_members=True) as reader:

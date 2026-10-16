@@ -387,6 +387,8 @@ format, in these cases:
   `extract_all()` read it on the member object they are given, a copy included.
 - A single-file member whose `size` is `None` after listing, until a read from the
   start to the end that skips no byte fills it in (`format-single-file-compressors`).
+  Likewise a ZIP member whose size is unknown because a macOS writer stored it modulo
+  2³², until a full read whose length and CRC-32 check out fills it in (`format-zip`).
 
 It SHALL be `True` everywhere else. A walk that fails and cannot be resumed settles the
 members it handed out, and closing the reader settles every member it listed. A copy

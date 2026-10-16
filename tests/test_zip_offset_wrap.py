@@ -652,6 +652,7 @@ def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
     with _open(layout, config=config) as reader:
         listed, after = reader.members()
         assert listed.size is None
+        assert listed.member_state_final is False
         assert listed.extra["size_mod_2_32"] == 100
         assert listed.compressed_size == len(stream)
         (wrap,) = _size_wraps(reader)
@@ -663,9 +664,37 @@ def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
         with reader.open(listed) as data:
             assert _count(data) == _HUGE_ZEROS_SIZE
         assert listed.size == _HUGE_ZEROS_SIZE
+        assert listed.member_state_final is True
         # The key says what the archive stored; it stays once the size is known.
         assert listed.extra["size_mod_2_32"] == 100
         assert reader.read(after) == b"bee"
+
+
+def _padded_mac_member(data: bytes) -> _Deflated:
+    """Padded with empty stored blocks so its size could be ``len(data) + 2**32``."""
+    pad = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = b"\x00\x00\x00\xff\xff" * 2_000_000 + pad.compress(data) + pad.flush()
+    return _Deflated(stream, len(data), zlib.crc32(data))
+
+
+def test_an_unknown_mac_size_is_not_final_until_a_read_fills_it() -> None:
+    data = bytes(range(100))
+    with _open(_mac_layout([("small.bin", _padded_mac_member(data))])) as reader:
+        (listed,) = reader.members()
+        assert listed.size is None
+        assert listed.member_state_final is False
+        assert reader.read(listed) == data
+        assert listed.size == len(data)
+        assert listed.member_state_final is True
+
+
+def test_an_unknown_mac_size_is_final_once_the_reader_closes() -> None:
+    data = bytes(range(100))
+    with _open(_mac_layout([("small.bin", _padded_mac_member(data))])) as reader:
+        (listed,) = reader.members()
+        assert listed.member_state_final is False
+    assert listed.size is None
+    assert listed.member_state_final is True
 
 
 def test_a_length_the_stored_size_rules_out_is_refused() -> None:

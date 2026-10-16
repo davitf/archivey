@@ -2497,6 +2497,9 @@ class ZipReader(BaseArchiveReader):
                 size_unknown=size_unknown,
             ),
         )
+        if size_unknown is not None:
+            # A verified full read fills ``size`` in (``fill_size``): not final yet.
+            member._size_unread = True
         if modified is not None:
             member.modified = modified
         if accessed is not None:

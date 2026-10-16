@@ -1047,7 +1047,8 @@ class BaseArchiveReader(ArchiveReader):
         ``verify_member.size`` that length: once the digests match, or, with no
         digest to check, once a read from the start that skips no byte reaches the
         end cleanly (``MemberVerifier``). It is the late size of a member whose format
-        records none.
+        records none, or records one that cannot be trusted (a macOS ZIP's size
+        modulo 2³²).
         """
         if (inner is None) == (open_fn is None):
             raise TypeError("exactly one of inner or open_fn is required")

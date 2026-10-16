@@ -102,7 +102,7 @@ The fields that change in practice:
 
 | Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
-| ZIP | `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| ZIP | `size` of a large macOS member listed `None` (`extra["size_mod_2_32"]`), until a verified full read fills it in; `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
@@ -111,8 +111,8 @@ The fields that change in practice:
 | Single-file (`.gz`, `.xz`, …) | `size`, when the format records none: a full read fills it in, and the flag stays `False` until then ([below](#single-file-compressors)) | none |
 
 `members()`, `members_report()` and `get()` return members that read `True`, unless
-they are unread symlinks or single-file members whose `size` a full read has not
-filled in yet. Members read `False` until a call like those, or the end of a
+they are unread symlinks, or single-file or large macOS ZIP members whose `size` a
+full read has not filled in yet. Members read `False` until a call like those, or the end of a
 pass, has resolved the listing's links. A `streaming=True` pass yields every member
 before that, in every format, including the two whose fields do not change in
 practice. A `members_report_if_available()` peek resolves no links, so its members
@@ -772,16 +772,15 @@ yielded.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
 - **`size` arrives with the first full read** when listing left it `None`: always for
   `.gz`, `.bz2`, `.zz`, `.br` and `.Z`, and for the others when their size field is
-  absent or out of reach (an `.xz` from a pipe). A
-  read that reaches the end having returned every byte from the start, which the
-  decoder finishes without error, sets `member.size` on the member `members()`
-  returned. Seeking back is fine, and so is seeking forward on these codecs: the seek
-  decodes the bytes it skips anyway, and they count. A read that stops early or
-  raises leaves it `None`, as does a copy made with `replace()`. The filled size is
-  only as good as the codec's end check: for a `.Z` (no end marker or checksum) or an
-  accelerated `.gz` (see the rapidgzip caveat below), a cut the decoder cannot see
-  fills the size of the cut data. `member_state_final` reads `False` until the size is
-  filled in or the reader closes.
+  absent or out of reach (an `.xz` from a pipe). A read that reaches the end having
+  returned every byte from the start, which the decoder finishes without error, sets
+  `member.size` on the member `members()` returned. Seeking back is fine, and so is
+  seeking forward on these codecs: the seek decodes the bytes it skips anyway, and
+  they count. A read that stops early or raises leaves it `None`, as does a copy made
+  with `replace()`. The filled size is only as good as the codec's end check: for a
+  `.Z` (no end marker or checksum) or an accelerated `.gz` (see the rapidgzip caveat
+  below), a cut the decoder cannot see fills the size of the cut data.
+  `member_state_final` reads `False` until the size is filled in or the reader closes.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is
   cheap to reach (a path or an in-memory stream; not a pipe or another archive's
   member). It is the size modulo 2^32 only for a file of one gzip member with nothing

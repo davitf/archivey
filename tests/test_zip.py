@@ -3049,3 +3049,19 @@ def test_directory_data_is_refused_by_strict(tmp_path: Path) -> None:
     with open_archive(jar_only, config=config) as ar:
         assert [m.name for m in ar.members()] == ["jar/", "jar/f.txt"]
         assert not ar.diagnostics.retained
+
+
+def test_relative_seek_before_0_after_a_deferred_seek_clamps() -> None:
+    """A forward seek on a deflated member is deferred (the gap is decoded anyway), so
+    the inner is still at 0. A ``SEEK_CUR`` from the target that lands before 0 clamps
+    there, as ``io.BytesIO`` does, rather than reporting the archive as corrupt."""
+    data = bytes(range(256)) * 20
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.bin", data)
+    buf.seek(0)
+    with open_archive(buf, seekable_members=True) as reader:
+        with reader.open("a.bin") as stream:
+            stream.seek(100)
+            assert stream.seek(-500, io.SEEK_CUR) == 0
+            assert stream.read() == data

@@ -337,7 +337,11 @@ class MemberVerifier:
         """
         member = self._fill_member
         return self._digest_pending or (
-            member is not None and member.size is None and not self._abandoned
+            member is not None
+            # A member with a digest is filled by the digest verdict alone.
+            and not self._expected
+            and member.size is None
+            and not self._abandoned
         )
 
     def _end(self) -> int | None:
