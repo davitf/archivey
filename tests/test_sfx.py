@@ -1112,6 +1112,11 @@ def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() 
         validate_zip_local_header(_peek_view(_header(method=20)), None)
         is HitOutcome.VALID
     )
+    # 94 is MP3, which WinZip writes for .mp3 members.
+    assert (
+        validate_zip_local_header(_peek_view(_header(method=94)), None)
+        is HitOutcome.VALID
+    )
     assert (
         validate_zip_local_header(_peek_view(_header(version=0)), None)
         is HitOutcome.NOT_THIS_FORMAT
