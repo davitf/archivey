@@ -571,7 +571,12 @@ class _CodecData(MemberData):
         the codec's end and the descriptor count into its compressed size: the check
         a sized member gets, that nothing follows the codec's end (DR-3), is not
         available here, and such a member reads from a pipe where it fails from a
-        file. A crafted shape only, so DR-5a lets the two reads differ. As with the
+        file. A crafted shape only, so DR-5a lets the two reads differ. The mirror
+        shape differs the same way: a stream whose last bytes are the descriptor's
+        first ones is cut short at the stated size from a file (``TruncatedError``),
+        and here the descriptor is found inside the bytes the codec used. Refusing
+        it needs every codec to say exactly where its input ended (Deflate64 and
+        PPMd cannot), through the decrypt stages. As with the
         stored scan, a planted descriptor for a prefix ends the member early, and the
         walk reads on from inside its data; the central entry's size and CRC catch it
         at the end of the pass.

@@ -1603,6 +1603,31 @@ def test_entries_sharing_one_local_header_read_only_once() -> None:
             ar.read(second)
 
 
+@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
+def test_an_overlapping_entry_with_another_name_reports_only_the_overlap(
+    strict: bool,
+) -> None:
+    # The second directory entry points at the first entry's local header, which
+    # stores another name. The overlap guard refuses the read before the name
+    # check runs: no MEMBER_LOCAL_NAME_DIFFERS for a read that does not go ahead,
+    # and STRICT raises the overlap, not the name difference.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as z:
+        for name in ("m0.txt", "m1.txt", "m2.txt"):
+            z.writestr(name, name.encode())
+    raw = bytearray(buf.getvalue())
+    second = raw.index(b"PK\x01\x02", raw.index(b"PK\x01\x02") + 4)
+    struct.pack_into("<I", raw, second + 42, 0)
+    policy = DiagnosticPolicy.STRICT if strict else DiagnosticPolicy()
+    config = ArchiveyConfig(diagnostic_policy=policy)
+    with open_archive(io.BytesIO(bytes(raw)), config=config) as ar:
+        m1 = ar.members()[1]
+        assert m1.name == "m1.txt"
+        with raises_corruption_not_truncation(match="Overlapped entries"):
+            ar.read(m1)
+        assert DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS not in ar.diagnostics.counts
+
+
 # ---------------------------------------------------------------------------
 # Encrypted symlink targets and explicit metadata encoding
 # ---------------------------------------------------------------------------

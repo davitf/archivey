@@ -33,6 +33,7 @@ from archivey.exceptions import (
     DiagnosticRaisedError,
     EncryptionError,
     ResourceLimitError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_local_walk
@@ -1367,3 +1368,31 @@ def test_a_bit3_ppmd_member_with_no_end_mark_fails_as_from_a_file() -> None:
     seen = _pipe_reads(data)
     assert seen["p.bin"] is CorruptionError
     assert seen["b.txt"] == b"after"
+
+
+def test_a_bit3_codec_stream_that_runs_into_its_descriptor_reads_only_from_a_pipe() -> (
+    None
+):
+    """A recorded difference (``dev-docs/formats/zip.md`` §2.2.2). The deflate
+    stream's last byte is the ``P`` of the descriptor's signature, so the codec needs
+    one byte more than the compressed size the descriptor and the directory state.
+    A file read bounds the stream at that size and raises ``TruncatedError``. The
+    pass does not know where the codec ended; it finds the descriptor by the decoded
+    CRC and size, and serves the data, which that CRC verifies."""
+    content = b"xyz" * 200
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = compressor.compress(content) + compressor.flush()
+    check = zlib.decompressobj(-15)
+    assert check.decompress(stream[:-1] + b"PK\x07\x08") == content
+    assert check.eof
+    assert check.unused_data == b"K\x07\x08"
+    tail = zlib.compressobj(9, zlib.DEFLATED, -15)
+    after = tail.compress(b"after") + tail.flush()
+    data = _bit3_deflate_zip(
+        [("a.txt", stream[:-1], content), ("b.txt", after, b"after")]
+    )
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        with pytest.raises(TruncatedError):
+            reader.read("a.txt")
+        assert reader.read("b.txt") == b"after"
+    assert _pipe_reads(data) == {"a.txt": content, "b.txt": b"after"}

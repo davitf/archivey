@@ -802,6 +802,9 @@ found after it dates the member's end from its own position, so junk between the
 counts into the member's compressed size: refused from a file (DR-3), accepted from a
 pipe (DR-5a; the native ZIP reader's `design.md`, "Where a member's data ends"). Only a
 crafted archive has that shape; the decoded data is still checked against the CRC.
+The mirror shape, a codec stream that runs on into its descriptor, is refused from a
+file (`TruncatedError`) and read from a pipe, with the same CRC check
+(`dev-docs/formats/zip.md` §2.2.2).
 
 **Tests.**
 `tests/test_codecs.py::test_verify_mismatch_raises_at_eof_without_losing_final_chunk`,

@@ -253,8 +253,9 @@ codec member's end and its descriptor, refused from a file, are counted into the
 the first of several inconclusive password candidates wins. It MAY also differ in these:
 a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
 the pass, losing the members after it, if its decode read more than 4 MiB past the
-data's end; a bit-3 LZMA member without the end-of-stream marker is refused where a file
-read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
+data's end; a bit-3 codec member whose stream runs on into its descriptor reads, where a
+file read raises `TruncatedError` at the stated compressed size; a bit-3 LZMA member
+without the end-of-stream marker is refused where a file read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
 its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
 makes is raised by a file read before anything is written and by the pass after every
