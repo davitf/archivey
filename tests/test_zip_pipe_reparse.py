@@ -31,6 +31,7 @@ from archivey.types import ArchiveMember, MemberType
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_windows_reparse import _reparse_buffer
+from tests.test_zip_pipe import _streamed
 from tests.zipcrypto import build_zipcrypto_zip
 
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
@@ -61,10 +62,14 @@ def _from_pipe(data: bytes, *, read: bool) -> dict[str, ArchiveMember]:
         return {m.name: m for m in reader.members_report().members}
 
 
+@pytest.mark.parametrize("bit3", [False, True], ids=["sized", "bit3"])
 @pytest.mark.parametrize("read", [True, False], ids=["read", "unread"])
-def test_a_reparse_target_at_the_cap_is_kept_from_data_over_it(read: bool) -> None:
+def test_a_reparse_target_at_the_cap_is_kept_from_data_over_it(
+    read: bool, bit3: bool
+) -> None:
     """The UTF-16 buffer of a target at the cap is about four times the cap, so the
-    pass keeps the buffer's start past the cap, as far as the buffer declares."""
+    pass keeps the buffer's start past the cap, as far as the buffer declares. A bit-3
+    member nobody read is decoded that far and no further."""
     at_cap = "a" * MAX_LINK_TARGET_BYTES
     over = "b" * (MAX_LINK_TARGET_BYTES + 1)
     attributes = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
@@ -78,6 +83,8 @@ def test_a_reparse_target_at_the_cap_is_kept_from_data_over_it(read: bool) -> No
             ("over", attributes, _reparse_buffer(IO_REPARSE_TAG_SYMLINK, over, over)),
         ]
     )
+    if bit3:
+        data = _streamed(data)
     piped = _from_pipe(data, read=read)
     from_file = _from_file(data)
     for name in ("at_cap", "over"):
@@ -97,12 +104,16 @@ def test_a_large_reparse_member_with_another_tag_is_a_file(read: bool) -> None:
     assert _from_pipe(data, read=read)["stub"].type is MemberType.FILE
 
 
-def test_a_link_buffer_with_padding_past_it_keeps_its_target() -> None:
-    """Bytes after the declared buffer change no parse, and are not kept."""
+@pytest.mark.parametrize("bit3", [False, True], ids=["sized", "bit3"])
+def test_a_link_buffer_with_padding_past_it_keeps_its_target(bit3: bool) -> None:
+    """Bytes after the declared buffer change no parse, and are not kept. Past a
+    bit-3 member's buffer the walk's scan finds where its data ends."""
     buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
     data = _zip(
         [("link", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, buffer + bytes(1 << 20))]
     )
+    if bit3:
+        data = _streamed(data)
     assert _from_file(data)["link"].link_target == "C:/target"
     assert _from_pipe(data, read=False)["link"].link_target == "C:/target"
 

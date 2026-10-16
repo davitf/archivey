@@ -7,6 +7,7 @@ the end of the pass.
 
 from __future__ import annotations
 
+import bz2
 import dataclasses
 import io
 import random
@@ -36,8 +37,12 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends import zip_local_walk
-from archivey.internal.backends.zip_forward_reader import ZipForwardReader
+from archivey.internal.backends import zip_forward_reader, zip_local_walk
+from archivey.internal.backends.zip_forward_reader import (
+    _MAX_REPARSE_PREFIX,
+    ZipForwardReader,
+)
+from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.types import ArchiveMember, MemberType
 from tests.sample_archives import (
     CORPUS,
@@ -72,6 +77,8 @@ def _streamed(data: bytes) -> bytes:
         dst.comment = src.comment
         for info in src.infolist():
             dst.writestr(info, src.read(info), compress_type=info.compress_type)
+    with zipfile.ZipFile(io.BytesIO(out.data)) as written:
+        assert all(info.flag_bits & 0x08 for info in written.infolist())
     return bytes(out.data)
 
 
@@ -1400,3 +1407,95 @@ def test_a_bit3_codec_stream_that_runs_into_its_descriptor_reads_only_from_a_pip
             reader.read("a.txt")
         assert reader.read("b.txt") == b"after"
     assert _pipe_reads(data) == {"a.txt": content, "b.txt": b"after"}
+
+
+def _zeros_bit3_zip(size: int, method: int) -> bytes:
+    """A bit-3 member ``bomb.bin`` of ``size`` zero bytes under ``method`` (DEFLATE
+    or bzip2), then a short bit-3 DEFLATE member ``b.txt``."""
+    if method == 12:
+        compressor = bz2.BZ2Compressor(9)
+        packed = compressor.compress(bytes(size)) + compressor.flush()
+    else:
+        deflate = zlib.compressobj(9, zlib.DEFLATED, -15)
+        packed = deflate.compress(bytes(size)) + deflate.flush()
+    second = zlib.compressobj(9, zlib.DEFLATED, -15)
+    tail = second.compress(b"after") + second.flush()
+    return _bit3_deflate_zip(
+        [("bomb.bin", packed, bytes(size)), ("b.txt", tail, b"after")],
+        methods={"bomb.bin": method},
+    )
+
+
+@pytest.mark.parametrize("method", [8, 12], ids=["deflate", "bzip2"])
+@pytest.mark.parametrize("read_first", [None, 10], ids=["unread", "read-10"])
+def test_the_pass_decodes_a_bit3_member_it_reads_past_only_as_far_as_a_link_needs(
+    monkeypatch: pytest.MonkeyPatch, method: int, read_first: int | None
+) -> None:
+    """Its codec finds a bit-3 member's end only by decoding all of it, which no limit
+    bounds: a bzip2 member of a few hundred bytes decodes to a gigabyte. The pass
+    decodes what tells a link target or a reparse buffer's start, whether or not the
+    caller began a read, and the walk's scan finds where the rest ends, as for an
+    encrypted member nobody read. The listing is a file read's."""
+    size = 16 << 20
+    data = _zeros_bit3_zip(size, method)
+    decoded: dict[str, int] = {}
+    read_chunk = zip_forward_reader._PassData._read_chunk
+
+    def counting(self: zip_forward_reader._PassData, n: int) -> bytes:
+        chunk = read_chunk(self, n)
+        decoded[self.member.name] = decoded.get(self.member.name, 0) + len(chunk)
+        return chunk
+
+    monkeypatch.setattr(zip_forward_reader._PassData, "_read_chunk", counting)
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            if member.name == "b.txt":
+                assert stream.read() == b"after"
+            elif read_first is not None:
+                assert stream.read(read_first) == bytes(read_first)
+        listing = reader.members_report().members
+    # The byte past the target cap, and the start of a reparse buffer after it.
+    assert decoded["bomb.bin"] <= MAX_LINK_TARGET_BYTES + 1 + _MAX_REPARSE_PREFIX
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        from_file = reader.members()
+    assert [_visible(m) for m in listing] == [_visible(m) for m in from_file]
+    assert listing[0].size == size
+
+
+def test_a_descriptor_planted_in_a_bit3_member_nobody_read_fails_it() -> None:
+    """The scan matches a descriptor on its size and the signature after it, as on
+    ciphertext: one planted in a DEFLATE stored block ends the member early, and the
+    directory catches it at the end of the pass (DR-5a). Read to its end, the codec
+    finds the real end, as from a file."""
+    prefix = b"x" * 100
+    # The stored block's 5-byte header comes before the prefix.
+    planted = struct.pack("<IIII", 0x08074B50, 0, 5 + len(prefix), len(prefix))
+    content = prefix + planted + b"PK\x03\x04" + bytes(26) + b"y" * 10_000
+    deflate = zlib.compressobj(0, zlib.DEFLATED, -15)
+    packed = deflate.compress(content) + deflate.flush()
+    assert packed[5 : 5 + len(prefix)] == prefix
+    second = zlib.compressobj(9, zlib.DEFLATED, -15)
+    tail = second.compress(b"after") + second.flush()
+    data = _bit3_deflate_zip([("a.bin", packed, content), ("b.txt", tail, b"after")])
+    from_file, _ = _seekable_view(data, read=False)
+    assert [m["name"] for m in from_file] == ["a.bin", "b.txt"]
+    assert _pipe_reads(data) == {"a.bin": content, "b.txt": b"after"}
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        with pytest.raises(CorruptionError, match="data descriptor after its data"):
+            for _ in reader.stream_members():
+                pass
+
+
+@pytest.mark.parametrize("read", [True, False], ids=["read", "unread"])
+def test_a_bit3_link_the_pass_reads_past_keeps_its_target(read: bool) -> None:
+    """Data within the target cap is decoded to its end and checked: the codec ends
+    within what the pass decodes to tell a link target."""
+    data = _streamed(_symlink_zip())
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        for _, stream in reader.stream_members():
+            if read and stream is not None:
+                stream.read()
+        members = {m.name: m for m in reader.members_report().members}
+    assert members["link"].type is MemberType.SYMLINK
+    assert members["link"].link_target == "a.txt"
