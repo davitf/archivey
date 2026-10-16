@@ -168,6 +168,12 @@ def derive_winzip_aes_keys(
     return enc_key, auth_key, pw_verify
 
 
+def _mac_mismatch() -> CorruptionError:
+    return CorruptionError(
+        "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
+    )
+
+
 class WinZipAesDecryptStream(ReadOnlyIOStream):
     """Decrypt an AE ciphertext body and verify the trailing HMAC-SHA1(10).
 
@@ -214,6 +220,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._hmac = hmac.new(auth_key, digestmod=hashlib.sha1)
         self._hashed = 0  # length of the ciphertext prefix the HMAC has taken in
         self._authenticated = False
+        self._mac_failed = False
         self._cipher_len = cipher_len
         # The plaintext length, exactly (CTR adds no bytes). ``source_byte_size`` reads
         # it, so the codec layer's accelerator threshold and source bound see the true
@@ -275,13 +282,15 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._authenticated = True
         expected = self._hmac.digest()[:_HMAC_LEN]
         if not hmac.compare_digest(mac, expected):
-            raise CorruptionError(
-                "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
-            )
+            # Every later read raises too: the last chunk it withheld stays withheld.
+            self._mac_failed = True
+            raise _mac_mismatch()
 
     def read(self, size: int | None = -1) -> bytes:
         if size is None:  # read to EOF, as on any ``io`` stream
             size = -1
+        if self._mac_failed:
+            raise _mac_mismatch()
         # Past the end nothing is left to read, and a position the caller seeked
         # past the end is not a read that reached it: no verdict there.
         if size == 0 or self._overshoot:
@@ -388,6 +397,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._read = len(read_ahead)
         self._buf = bytearray()
         self._ended = False
+        self._mac_failed = False
 
     def _pull(self) -> None:
         chunk = self._source.read(FORWARD_READ)
@@ -410,9 +420,9 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
 
     def _check_mac(self, mac: bytes) -> None:
         if not hmac.compare_digest(mac, self._hmac.digest()[:_HMAC_LEN]):
-            raise CorruptionError(
-                "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
-            )
+            # Every later read raises too: the last chunk it withheld stays withheld.
+            self._mac_failed = True
+            raise _mac_mismatch()
 
     def readall(self) -> bytes:
         # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.
@@ -445,6 +455,8 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
     def read(self, size: int | None = -1) -> bytes:
         if size is None:
             size = -1
+        if self._mac_failed:
+            raise _mac_mismatch()
         if size < 0 and not self._ends_with_data:
             # As the walk's codec data refuses it: the source runs on past the data.
             raise ValueError(

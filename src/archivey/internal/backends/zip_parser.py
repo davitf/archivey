@@ -1153,29 +1153,48 @@ def local_header_from(
 
 
 def _local_sizes(extra: bytes, compressed_size: int, file_size: int) -> tuple[int, int]:
+    """The two sizes after a local ZIP64 extra field replaces the deferred ones; a
+    deferred size no field holds stays all ones (see :func:`local_zip64_sizes`)."""
+    compressed, size = local_zip64_sizes(extra, compressed_size, file_size)
+    return (
+        _U32_MAX if compressed is None else compressed,
+        _U32_MAX if size is None else size,
+    )
+
+
+def local_zip64_sizes(
+    extra: bytes, compressed_size: int, file_size: int
+) -> tuple[int | None, int | None]:
     """The two sizes after a local ZIP64 extra field replaces the deferred ones.
 
     In a local header the field holds both sizes, uncompressed first, whichever is
     deferred (APPNOTE 4.5.3). A field shorter than that holds the deferred ones in the
-    central directory's order. A deferred size no field holds stays all ones.
+    central directory's order. A deferred size no field holds is ``None``: a field can
+    hold all ones as a real size, so the value alone does not tell.
     """
+    compressed: int | None = compressed_size
+    size: int | None = file_size
     if compressed_size != _U32_MAX and file_size != _U32_MAX:
-        return compressed_size, file_size
+        return compressed, size
+    if compressed_size == _U32_MAX:
+        compressed = None
+    if file_size == _U32_MAX:
+        size = None
     for field in iter_extra_fields(extra):
         if field.tag != _ZIP64_EXTRA_TAG:
             continue
         data = field.data
         if len(data) >= 16:
             if file_size == _U32_MAX:
-                file_size = int.from_bytes(data[:8], "little")
+                size = int.from_bytes(data[:8], "little")
             if compressed_size == _U32_MAX:
-                compressed_size = int.from_bytes(data[8:16], "little")
+                compressed = int.from_bytes(data[8:16], "little")
         else:
             cursor = 0
             if file_size == _U32_MAX and len(data) >= 8:
-                file_size = int.from_bytes(data[:8], "little")
+                size = int.from_bytes(data[:8], "little")
                 cursor = 8
             if compressed_size == _U32_MAX and len(data) >= cursor + 8:
-                compressed_size = int.from_bytes(data[cursor : cursor + 8], "little")
+                compressed = int.from_bytes(data[cursor : cursor + 8], "little")
         break
-    return compressed_size, file_size
+    return compressed, size

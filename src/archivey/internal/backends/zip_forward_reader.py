@@ -420,9 +420,12 @@ class _PassData:
         want = self._prefix_want
         if capture is None or want is None:
             return None
-        ended = self.verified or (
-            not self._deferred() and self._size >= self.entry.header.file_size
-        )
+        if self._deferred():
+            # Bit-3 data is decoded to its end to find it; the file read reaches
+            # that end only when the data is no longer than the start it reads.
+            ended = self.verified or (self.done and self._size <= want)
+        else:
+            ended = self.verified or self._size >= self.entry.header.file_size
         if ended and not self.verified:
             # Read to its end and failed its check, as the file read's byte past the
             # buffer finds.

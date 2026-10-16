@@ -2211,6 +2211,10 @@ class ZipReader(BaseArchiveReader):
         ``max_members`` (DR-1: absence over a wrong value)."""
         if not self._count_known:
             self._data_bounds()
+            # Another thread's pass may have set the bounds and not yet the count:
+            # it sets both under the lock.
+            with self._index_lock:
+                return self._member_count
         return self._member_count
 
     def _sniff_unflagged_name(
@@ -4117,6 +4121,9 @@ class ZipReadBackend(ReadBackend):
             0, b"\x50\x4b\x05\x06", ArchiveFormat.ZIP
         ),  # empty archive (EOCD)
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
+        # APPNOTE 8.5.4: PKZIP may write PK00 ahead of the first local header of a set
+        # that ended up as one segment. 7-Zip and unzip read it as an ordinary ZIP.
+        MagicSignature(0, b"PK00PK\x03\x04", ArchiveFormat.ZIP),
     )
     # Local header only. The other two ZIP magics are not useful search targets inside a
     # stub window: PK\x05\x06 would precede a local header only for an empty archive, and

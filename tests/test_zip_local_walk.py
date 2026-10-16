@@ -816,3 +816,51 @@ def test_past_the_bound_the_head_is_kept_only_for_a_directory_after_the_members(
     assert tail.head == b"\x01" * 4
     with pytest.raises(CorruptionError, match="are not a ZIP header"):
         tail.end_record()
+
+
+def _zip64_local_header(extra_sizes: bytes) -> bytes:
+    """A STORED local header whose 32-bit sizes are all ones, with a ZIP64 extra field
+    holding ``extra_sizes``; no data follows."""
+    name = b"big.bin"
+    extra = (
+        struct.pack("<HH", 0x0001, len(extra_sizes)) + extra_sizes
+        if extra_sizes
+        else b""
+    )
+    fixed = struct.pack(
+        "<4sHHHHHIIIHH",
+        b"PK\x03\x04",
+        45,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0xFFFF_FFFF,
+        0xFFFF_FFFF,
+        len(name),
+        len(extra),
+    )
+    return fixed + name + extra
+
+
+@pytest.mark.parametrize("size", [0xFFFF_FFFE, 0xFFFF_FFFF, 0x1_0000_0000])
+def test_a_zip64_extra_size_of_all_ones_is_a_real_size(size: int) -> None:
+    # zipfile writes exactly this header for a STORED member of 4294967295 bytes: the
+    # extra field holds all ones as the size, which is not a deferral.
+    raw = _zip64_local_header(struct.pack("<QQ", size, size))
+    entry = LocalHeaderWalk(_Unseekable(raw)).next_entry()
+    assert entry is not None
+    assert entry.header.compressed_size == size
+    assert entry.header.file_size == size
+
+
+@pytest.mark.parametrize(
+    "extra_sizes", [b"", struct.pack("<Q", 5)], ids=["no-extra", "file-size-only"]
+)
+def test_a_compressed_size_no_zip64_extra_holds_is_corruption(
+    extra_sizes: bytes,
+) -> None:
+    raw = _zip64_local_header(extra_sizes)
+    with pytest.raises(CorruptionError, match="does not hold it"):
+        LocalHeaderWalk(_Unseekable(raw)).next_entry()

@@ -344,3 +344,48 @@ def test_a_reparse_buffer_the_caller_read_to_a_failed_crc_is_no_link() -> None:
             with pytest.raises(archivey.CorruptionError):
                 stream.read()
         assert reader.members_report().members[0].link_target is None
+
+
+class _PipeSink(io.RawIOBase):
+    """Somewhere ``zipfile`` writes as to a pipe: each member gets a data descriptor."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+        self.data += b
+        return len(b)
+
+    def tell(self) -> int:
+        return len(self.data)
+
+
+@pytest.mark.parametrize("after", [0, 1, 2])
+def test_a_damaged_bit3_reparse_buffer_is_a_link_only_where_the_file_read_says(
+    after: int,
+) -> None:
+    """The file read reads one byte past the buffer: data that ends there has its
+    CRC checked and a damaged one is no link; longer data is not checked. The pass
+    decodes bit-3 data to its end to find it, and says the same."""
+    target = "C:\\" + "t" * 1990
+    content = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, target, target) + bytes(after)
+    sink = _PipeSink()
+    with zipfile.ZipFile(sink, "w") as zf:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 0
+        info.external_attr = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+        # Level 0 stores the bytes as they are, so one target byte can be changed.
+        zf.writestr(info, content, compress_type=zipfile.ZIP_DEFLATED, compresslevel=0)
+        zf.writestr("z", b"zz")
+    raw = bytearray(sink.data)
+    raw[raw.index(b"t\x00" * 4) + 100] = ord("u")
+    data = bytes(raw)
+    from_file = _from_file(data)["link"].link_target
+    assert (from_file is None) == (after <= 1)
+    assert _from_pipe(data, read=False)["link"].link_target == from_file

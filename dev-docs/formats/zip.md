@@ -115,14 +115,16 @@ Each stage: who does the work, what is ZIP-specific rather than general, what is
 
 ### 2.1 Identify
 
-ZIP declares three magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x06` (empty
-archive) and `PK\x07\x08` (spanned marker) — and six extensions: `.zip`, `.jar`, `.pyz`,
+ZIP declares four magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x06` (empty
+archive), `PK\x07\x08` (spanned marker) and `PK00PK\x03\x04` (APPNOTE 8.5.4's no-span
+marker, which PKZIP may write before the first local header of a one-segment set) — and six extensions: `.zip`, `.jar`, `.pyz`,
 `.whl`, `.apk`, `.cbz`. Comic-book aliases: `.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR,
 `.cb7` → 7z. Magic wins; a ZIP named `.cbr` emits `FORMAT_EXTENSION_CONFLICT` (see
 [`rar.md`](rar.md) §2.1).
 
 When searching a prefixed archive for a ZIP, archivey looks only for the local header
-(`PK\x03\x04`). The other two magics are not useful search targets: `PK\x05\x06` would
+(`PK\x03\x04`). The no-span marker is just a local header with 4 bytes in front, so that
+search finds it. The other two magics are not useful search targets: `PK\x05\x06` would
 appear before a local header only for an empty archive, and `PK\x07\x08` is the spanning
 marker — 7-Zip's own `-sfx -v` writes the stub as a standalone executable and the volumes
 as separate `.zip.NNN` files, so a concatenated stub-plus-spanned-ZIP is not the shape that

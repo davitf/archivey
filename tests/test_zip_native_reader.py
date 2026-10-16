@@ -18,6 +18,7 @@ from __future__ import annotations
 import gc
 import io
 import struct
+import threading
 import tracemalloc
 import zipfile
 from collections.abc import Callable
@@ -37,6 +38,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_parser
+from archivey.internal.backends.zip_reader import ZipReader
 from archivey.types import ArchiveFormat, HashAlgorithm
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
@@ -879,6 +881,45 @@ def test_member_count_before_any_listing_runs_the_index_pass(
         assert reader.info.member_count == 3
         assert len(reader.members()) == 3
     assert walks == [1, 1]
+
+
+def test_member_count_asked_while_the_index_pass_runs_waits_for_its_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pass records the bounds before the count; a second thread that sees the
+    bounds then waits for the count instead of reading ``None``."""
+    stored = threading.Event()
+    release = threading.Event()
+
+    def get_bounds(self: ZipReader) -> object:
+        return self.__dict__.get("_held_bounds")
+
+    def set_bounds(self: ZipReader, value: object) -> None:
+        self.__dict__["_held_bounds"] = value
+        if value is not None:
+            # The index pass: hold it between its bounds and its count.
+            stored.set()
+            release.wait(5)
+
+    monkeypatch.setattr(
+        ZipReader, "_bounds", property(get_bounds, set_bounds), raising=False
+    )
+    counts: dict[str, int | None] = {}
+    with open_archive(io.BytesIO(_zip())) as reader:
+
+        def count(name: str) -> None:
+            counts[name] = reader.info.member_count
+
+        first = threading.Thread(target=count, args=("first",))
+        first.start()
+        assert stored.wait(5)
+        second = threading.Thread(target=count, args=("second",))
+        second.start()
+        second.join(0.5)
+        release.set()
+        first.join(5)
+        second.join(5)
+    assert counts == {"first": 3, "second": 3}
 
 
 # --- A listed member keeps a locator, not the directory entry -----------------------
