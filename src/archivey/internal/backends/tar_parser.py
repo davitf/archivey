@@ -140,8 +140,10 @@ class HeaderBlock:
     linkname: bytes
     uname: bytes
     gname: bytes
-    devmajor: int
-    devminor: int
+    # ``None`` unless the header is a ustar or GNU device (typeflag 3 or 4): no
+    # other header holds a device number (see ``_DEVICE_NUMBER_TYPES``).
+    devmajor: int | None
+    devminor: int | None
     # Old GNU ``S`` only: the four in-header map slots, whether extension blocks
     # follow, and the logical size.
     sparse_slots: tuple[tuple[int, int], ...] = ()
@@ -173,7 +175,13 @@ def _cut_nul(field: bytes) -> bytes:
     return field if end < 0 else field[:end]
 
 
-_OCTAL_DIGITS = b"01234567"
+# C ``isspace`` in the C locale, which is what GNU tar skips and stops at.
+_BLANKS = rb" \t\n\v\f\r"
+# An octal header field after its optional leading NUL: blanks, digits, then a NUL, a
+# blank or the end of the field. The bytes after that terminator are not read.
+_OCTAL_FIELD = re.compile(
+    rb"[" + _BLANKS + rb"]*([0-7]*)(?:[\x00" + _BLANKS + rb"]|\Z)"
+)
 _HIGH_BYTES = bytes(range(0x80, 0x100))
 _ZERO_BLOCK = bytes(BLOCKSIZE)
 
@@ -181,9 +189,17 @@ _ZERO_BLOCK = bytes(BLOCKSIZE)
 def parse_number(field: bytes) -> int:
     """A numeric header field: octal or GNU base-256.
 
-    Octal may have leading spaces and ends at a space or NUL, as GNU tar and every
-    writer store it; an empty field is 0. Base-256 is flagged by the first byte:
-    ``0x80`` positive, ``0xFF`` negative (two's complement over the field).
+    Octal is read the way GNU tar 1.35 reads it (``from_header``): one leading NUL is
+    skipped (an old writer of unknown vintage put one there when the previous field
+    overflowed), then leading blanks, then octal digits up to the first byte that is
+    not one. That byte must be a NUL or a blank, or the end of the field; whatever
+    follows it is ignored, as GNU tar ignores it (``tarfile`` too, after a NUL). A
+    field with no digits is 0, as ``tarfile`` reads it (GNU tar reports a field of
+    only blanks and reads it as -1). Base-256 is flagged by the first byte: ``0x80`` positive,
+    ``0xFF`` negative (two's complement over the field).
+
+    Every field, the checksum included, is read this way: GNU tar reads the checksum
+    with the same function, and the checksum itself is what guards the header.
 
     The base-256 form is ``tarfile``'s, on purpose: GNU tar takes any first byte with
     the high bit set and counts its low seven bits in the value, so a field starting
@@ -199,10 +215,12 @@ def parse_number(field: bytes) -> int:
         if first == 0xFF:
             value -= 1 << (8 * (len(field) - 1))
         return value
-    # Leading spaces, octal digits, then spaces or NULs to the end of the field.
-    digits = field.lstrip(b" ").rstrip(b" \x00")
-    if digits.translate(None, _OCTAL_DIGITS):
+    # The leading NUL is skipped whenever it is there (``where += !*where``), never
+    # matched as the terminator of an empty number: "\0junk" is not a number.
+    match = _OCTAL_FIELD.match(field, 1 if first == 0 else 0)
+    if match is None:
         raise _BadNumber(field)
+    digits = match.group(1)
     return int(digits, 8) if digits else 0
 
 
@@ -242,9 +260,12 @@ _FIELDS = (
     ("gid", 116, 124),
     ("size", 124, 136),
     ("mtime", 136, 148),
-    ("devmajor", 329, 337),
-    ("devminor", 337, 345),
 )
+
+# The typeflags whose devmajor and devminor fields GNU tar reads: character and block
+# devices, in a ustar or GNU header. For any other header (a FIFO included) GNU tar
+# never parses the two fields, so bytes there that are not a number are no damage.
+_DEVICE_NUMBER_TYPES = (b"3", b"4")
 
 
 def parse_header_block(
@@ -277,6 +298,8 @@ def parse_header_block(
     typeflag = block[156:157]
     magic = block[257:265]
     name = _cut_nul(block[0:100])
+    devmajor: int | None = None
+    devminor: int | None = None
     sparse_slots: tuple[tuple[int, int], ...] = ()
     sparse_extended = False
     sparse_realsize = 0
@@ -286,6 +309,22 @@ def parse_header_block(
         header_format = HeaderFormat.USTAR
     else:
         header_format = HeaderFormat.V7
+    if header_format is HeaderFormat.V7:
+        # A v7 header ends at byte 257: uname, gname and the device numbers are
+        # ustar fields, and GNU tar reads none of them from a v7 header.
+        uname = gname = b""
+    else:
+        uname = _cut_nul(block[265:297])
+        gname = _cut_nul(block[297:329])
+        if typeflag in _DEVICE_NUMBER_TYPES:
+            try:
+                devmajor = parse_number(block[329:337])
+            except _BadNumber:
+                return RejectedBlock(offset, "the devmajor field is not a number")
+            try:
+                devminor = parse_number(block[337:345])
+            except _BadNumber:
+                return RejectedBlock(offset, "the devminor field is not a number")
     if typeflag == SPARSE_TYPE:
         # The old GNU sparse slots. Read whatever the magic says, as tarfile reads
         # them; GNU tar writes them only in old GNU headers.
@@ -296,6 +335,15 @@ def parse_header_block(
             return RejectedBlock(
                 offset,
                 "an old GNU sparse field is not a number or past any file's size",
+            )
+        if not 0 <= sparse_realsize <= MAX_OFFSET:
+            # GNU tar 1.35: "Archive value -1 is out of off_t range". Listed, it
+            # would be the member's size; a negative one with an empty map read
+            # as an empty file.
+            return RejectedBlock(
+                offset,
+                f"old GNU sparse real size {sparse_realsize} is negative or past "
+                "any file's size",
             )
         sparse_extended = block[482] != 0
     elif header_format is HeaderFormat.USTAR:
@@ -311,8 +359,10 @@ def parse_header_block(
         name=name,
         typeflag=typeflag,
         linkname=_cut_nul(block[157:257]),
-        uname=_cut_nul(block[265:297]),
-        gname=_cut_nul(block[297:329]),
+        uname=uname,
+        gname=gname,
+        devmajor=devmajor,
+        devminor=devminor,
         sparse_slots=sparse_slots,
         sparse_extended=sparse_extended,
         sparse_realsize=sparse_realsize,
@@ -423,7 +473,27 @@ def parse_pax_records(data: bytes, *, binary_default: bool) -> PaxRecords:
     return PaxRecords(values, offsets, numbytes)
 
 
-def _pax_int(records: Mapping[bytes, PaxValue], key: bytes) -> int | None:
+def _pax_decimal(text: bytes) -> int | None:
+    """A PAX decimal number (ASCII digits only), or ``None`` when ``text`` is not one
+    or has more than 20 significant digits, past any ``uintmax_t``.
+
+    The digit count is checked before ``int()``, which refuses more than 4300 digits
+    with a builtin ``ValueError`` (``sys.int_max_str_digits``). GNU tar reads the
+    value with ``strtoumax``: leading zeros are allowed, and a longer number is out
+    of range.
+    """
+    if not text.isdigit():
+        return None
+    significant = text.lstrip(b"0")
+    if len(significant) > SPARSE_NUMBER_DIGITS:
+        return None
+    return int(significant) if significant else 0
+
+
+def _pax_int(records: Mapping[bytes, PaxValue], key: bytes, name: str) -> int | None:
+    """The PAX record ``key`` as a size or offset, or ``None`` when it is absent or
+    empty. ``name`` is the member's, already quoted. A value that is not a number,
+    or one past :data:`MAX_OFFSET`, is :class:`CorruptionError`."""
     entry = records.get(key)
     if entry is None or not entry.value:
         return None
@@ -432,7 +502,13 @@ def _pax_int(records: Mapping[bytes, PaxValue], key: bytes) -> int | None:
         raise CorruptionError(
             f"TAR PAX record {key.decode()} is not a number: {text[:40]!r}"
         )
-    return int(text)
+    value = _pax_decimal(text)
+    if value is None or value > MAX_OFFSET:
+        shown = text[:40].decode("ascii") + ("..." if len(text) > 40 else "")
+        raise CorruptionError(
+            f"TAR PAX {key.decode()} {shown} of {name} is past any file's size"
+        )
+    return value
 
 
 # ------------------------------------------------------------------------ sparse maps
@@ -584,10 +660,10 @@ def validate_sparse_map(
     only when the map has no damage. An empty entry is exempt from the order check:
     GNU tar ends a map with ``(realsize, 0)`` when the file ends in a hole.
     """
-    if size > MAX_OFFSET:
+    if not 0 <= size <= MAX_OFFSET:
         return CorruptionError(
             f"TAR sparse member {name} has a logical size of {size} bytes, "
-            "past any file's size"
+            "negative or past any file's size"
         )
     total = 0
     previous_end = 0
@@ -1088,24 +1164,24 @@ class TarWalker:
 
         stored_size = header.size
         pax_size = (
-            _pax_int(merged, b"size") if has_pax and pax(b"size") is not None else None
+            _pax_int(merged, b"size", charge.name)
+            if has_pax and pax(b"size") is not None
+            else None
         )
         if pax_size is not None:
-            if pax_size > MAX_OFFSET:
-                raise CorruptionError(
-                    f"TAR PAX size {pax_size} of {charge.name} is past any file's size"
-                )
             stored_size = pax_size
 
         uid, gid = header.uid, header.gid
         for key in (b"uid", b"gid") if has_pax else ():
             value = pax(key)
-            if value is not None and value.value.isdigit():
-                # A PAX id that is not a number is ignored, keeping the header's.
+            number = None if value is None else _pax_decimal(value.value)
+            if number is not None:
+                # A PAX id that is not a number, or is out of range, is ignored,
+                # keeping the header's, as GNU tar keeps it.
                 if key == b"uid":
-                    uid = int(value.value)
+                    uid = number
                 else:
-                    gid = int(value.value)
+                    gid = number
 
         data_offset = offset + BLOCKSIZE
         size = stored_size
@@ -1132,11 +1208,11 @@ class TarWalker:
             sparse = sparse_map_0_1(
                 merged[b"GNU.sparse.map"].value, charge.name, charge
             )
-            size = _pax_int(merged, b"GNU.sparse.size") or 0
+            size = _pax_int(merged, b"GNU.sparse.size", charge.name) or 0
         elif b"GNU.sparse.size" in own or own_sparse[0]:
             sparse_format = SparseFormat.PAX_0_0
             sparse = sparse_map_0_0(*own_sparse, charge.name, charge)
-            size = _pax_int(merged, b"GNU.sparse.size") or 0
+            size = _pax_int(merged, b"GNU.sparse.size", charge.name) or 0
         elif b"GNU.sparse.major" in own or b"GNU.sparse.realsize" in own:
             # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the
             # minor (measured with 1.1, 1.5, 2.0 and 9.9), and refuses a major of 0,
@@ -1146,7 +1222,8 @@ class TarWalker:
             # read as a plain file, as GNU tar reads it.) Read as a plain file, the
             # member would serve its map blocks as content.
             major = merged.get(b"GNU.sparse.major")
-            if major is None or not (major.value.isdigit() and int(major.value) >= 1):
+            major_number = None if major is None else _pax_decimal(major.value)
+            if major_number is None or major_number < 1:
                 version = (
                     "(none)"
                     if major is None
@@ -1157,7 +1234,7 @@ class TarWalker:
                     f"{version} and no sparse map"
                 )
             sparse_format = SparseFormat.PAX_1_0
-            size = _pax_int(merged, b"GNU.sparse.realsize") or 0
+            size = _pax_int(merged, b"GNU.sparse.realsize", charge.name) or 0
             # The map is the first blocks of the data area. It is read here, as
             # tarfile and GNU tar read it, so a bad map fails the listing as in the
             # other encodings and its entries count against this member's budget.

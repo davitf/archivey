@@ -3198,6 +3198,51 @@ def test_several_bad_pax_times_on_one_member_are_each_reported(
         assert fields == ["accessed", "created", "ctime"]
 
 
+def _pax_mtime_archive(raw: str) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("t.txt")
+        info.pax_headers = {"mtime": raw}
+        tf.addfile(info, io.BytesIO(b""))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["+1000", "1e3", "1_000", " 1000", "1000 ", ".5", "-.5", "0x10", "inf", "\u0663"],
+)
+def test_pax_time_in_python_float_syntax_is_reported(raw: str) -> None:
+    """GNU tar 1.35 reads a PAX time as ``-?digits(.digits*)?`` and reports anything
+    else ("Malformed extended header: invalid mtime"). ``float()`` accepts more, and
+    ``1e3`` or ``1_000`` must not list as 00:16:40."""
+    with open_archive(io.BytesIO(_pax_mtime_archive(raw))) as ar:
+        member = ar.get("t.txt")
+        assert member.modified is None
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1000", datetime(1970, 1, 1, 0, 16, 40, tzinfo=UTC)),
+        ("1000.", datetime(1970, 1, 1, 0, 16, 40, tzinfo=UTC)),
+        ("01000.5", datetime(1970, 1, 1, 0, 16, 40, 500000, tzinfo=UTC)),
+        ("-1000", datetime(1969, 12, 31, 23, 43, 20, tzinfo=UTC)),
+    ],
+)
+def test_pax_time_in_gnu_tar_syntax_is_read(raw: str, expected: datetime) -> None:
+    with open_archive(io.BytesIO(_pax_mtime_archive(raw))) as ar:
+        assert ar.get("t.txt").modified == expected
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+
+
+def test_long_bad_pax_time_is_cut_in_the_report() -> None:
+    with open_archive(io.BytesIO(_pax_mtime_archive("9" * 5000))) as ar:
+        (diagnostic,) = ar.get("t.txt").diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        assert len(diagnostic.message) < 200
+
+
 def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
     path = tmp_path / "epoch.tar"
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
@@ -3512,6 +3557,13 @@ def test_special_entries_are_other_and_name_their_type(
         by_name = {m.name: m for m in ar.members()}
         assert by_name["dev"].type is MemberType.OTHER
         assert by_name["dev"].extra["special_file_type"] == special
+        # Only a character or block device holds a device number; GNU tar reads
+        # none for a FIFO.
+        if typeflag == tarfile.FIFOTYPE:
+            assert "tar.devmajor" not in by_name["dev"].extra
+        else:
+            assert by_name["dev"].extra["tar.devmajor"] == 1
+            assert by_name["dev"].extra["tar.devminor"] == 3
         assert "special_file_type" not in by_name["reg.txt"].extra
         codes = [d.code for d in ar.diagnostics.retained]
         assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes

@@ -183,7 +183,19 @@ member; the walk ends on the zero block as usual, as GNU tar 1.35 lists such an 
 with no diagnostic. Damage inside one member's headers is not a `TarEnd` and raises
 during iteration: `TruncatedError` when the stream ends inside a header, an extended
 header's data or right after an extended header, and `CorruptionError` for a PAX `size`
-that is not a number or a PAX sparse map that does not parse.
+(or `GNU.sparse.size`, `GNU.sparse.realsize`) that is not a number or is past
+2**63 - 1, or a PAX sparse map that does not parse. The digit count is checked before
+the number is converted, so a value of thousands of digits is that same refusal.
+
+**Header numbers.** An octal field is read as GNU tar 1.35's `from_header` reads it:
+one leading NUL skipped (an old writer put it there when the previous field
+overflowed), leading blanks, then digits up to the first NUL or blank. The bytes after
+that terminator are not read, so `644\0XYZ\0` is 0644 and `12 34\0` is 012, as in GNU
+tar; a byte other than a NUL or a blank right after the digits refuses the header. The
+checksum field is read the same way; the checksum match is what guards the block. A
+field with no digits is 0, as `tarfile` reads it; GNU tar reports a field of only
+blanks and reads it as -1. An old GNU sparse real size that is negative or past
+2**63 - 1 refuses the header, as GNU tar refuses it ("out of off_t range").
 
   1. The walk stopped on a header that does not parse (a bad checksum or number field, a
      negative size, PAX records that do not parse, a bad number in an old GNU sparse
@@ -261,12 +273,12 @@ pass.
 | `link_target` | The link name as stored (a PAX `linkpath`, else a GNU long link name, else the header's `linkname`), decoded as below, for symlinks and hardlinks; the walker drops a link name on any other type before keeping it. A hardlink stores an archive path, so a tar made from `./d` stores `./d/b` while the member it names is listed as `d/b`. `link_target_member` is the resolved one |
 | `size` | The logical size for a file, which for a sparse member is the size its sparse records declare, not the bytes stored. `None` for everything else. `compressed_size` is never set |
 | `modified` | The PAX `mtime` record when there is one, parsed once with its fraction, else the header's `mtime`. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number: it lists as `None`, not as the Unix epoch |
-| `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime` |
+| `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime`. A number is what GNU tar 1.35 reads, `-?digits(.digits*)?`; Python float syntax beyond that (`+1000`, `1e3`, `1_000`, blanks, `.5`, `inf`) is not one, and the report quotes the first 40 characters of the value |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
-| `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number is ignored and the header's value kept, as GNU tar keeps it. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
+| `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number, or has more than 20 significant digits, is ignored and the header's value kept, as GNU tar keeps it. A v7 header has no `uname` or `gname`: its bytes 257.. are not fields, and GNU tar reads none there. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
 | `is_sparse` | True for the old GNU `S` typeflag and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
-| `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for device members |
+| `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for a character or block device (`3`, `4`) in a ustar or GNU header, the only headers GNU tar reads them from; a FIFO or a v7 header has none, and bytes in those fields there are not read |
 
 A pass that is the listing (a streaming pass, or a random-access pass with no listing
 call before it) yields every member with `member_state_final=False`, since TAR has no

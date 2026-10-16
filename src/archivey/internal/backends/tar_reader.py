@@ -45,6 +45,7 @@ fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
 
 from __future__ import annotations
 
+import re
 import stat
 import threading
 from collections.abc import Iterator, Mapping
@@ -205,8 +206,6 @@ _DIRECTORY_TYPES = frozenset((b"5", b"D"))
 
 _SYMLINK_TYPE = b"2"
 _HARDLINK_TYPE = b"1"
-# Character and block devices and FIFOs, which carry device numbers.
-_DEVICE_TYPES = frozenset((b"3", b"4", b"6"))
 
 # PAX records whose value is a name: without ``hdrcharset=BINARY`` it is UTF-8, as
 # POSIX says; with it, or for a ustar or GNU field, it has no declared encoding.
@@ -308,6 +307,11 @@ def _pax_text(entry: TarEntry, key: bytes) -> str | None:
     return value.value.decode("utf-8", "surrogateescape")
 
 
+# A PAX time as GNU tar 1.35 reads it (``decode_timespec``): an optional minus, ASCII
+# digits, then an optional point and more digits.
+_PAX_TIME = re.compile(r"-?[0-9]+(?:\.[0-9]*)?")
+
+
 def _pax_time(
     entry: TarEntry, key: str, name: str
 ) -> tuple[datetime | None, TimestampIssue | None]:
@@ -319,19 +323,22 @@ def _pax_time(
     Returns ``(None, None)`` when the record is absent, and ``(None, TimestampIssue)``
     when it is present but not a number or outside ``datetime``'s range, so a bad
     record is reported the same way as a bad header ``mtime``.
+
+    A number is what GNU tar 1.35 accepts: an optional ``-``, ASCII digits, then
+    optionally a ``.`` and more digits (``1000.`` included). Python float syntax
+    beyond that (``+1``, ``1e3``, ``1_000``, blanks, ``.5``, ``inf``) is reported,
+    as GNU tar reports it ("invalid mtime").
     """
     raw = _pax_text(entry, key.encode())
     if raw is None:
         return None, None
-    try:
-        seconds = float(raw)
-    except ValueError:
-        value = None
-    else:
-        value = unix_to_datetime(seconds)
+    value = (
+        unix_to_datetime(float(raw)) if _PAX_TIME.fullmatch(raw) is not None else None
+    )
     if value is not None:
         return value, None
-    return None, _tar_time_issue(name, key, repr(raw), pax_record=True)
+    shown = repr(raw[:40]) + ("..." if len(raw) > 40 else "")
+    return None, _tar_time_issue(name, key, shown, pax_record=True)
 
 
 # The ArchiveMember field each TAR time fills, which is what a timestamp diagnostic
@@ -1341,7 +1348,9 @@ class TarReader(BaseArchiveReader):
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if entry.pax:
             extra["tar.pax_headers"] = self._extra_pax_headers(entry)
-        if entry.typeflag in _DEVICE_TYPES:
+        if entry.header.devmajor is not None and entry.header.devminor is not None:
+            # Set for a ustar or GNU character or block device only: a FIFO or a v7
+            # header holds no device number, and GNU tar reads none there.
             extra["tar.devmajor"] = entry.header.devmajor
             extra["tar.devminor"] = entry.header.devminor
 
