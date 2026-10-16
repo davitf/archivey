@@ -126,9 +126,10 @@ def test_zip_walk_charges_max_members_when_the_declared_count_lies() -> None:
 
 
 def test_zip_members_before_the_limit_read_when_opened_first() -> None:
-    """A streaming pass reads each member as it is yielded, so the index pass runs
-    before the listing reaches the limit. It stops at the same entry and keeps the
-    offsets before it, so the members inside the limit read, as after damage."""
+    """A streaming pass walks the directory before the first member's data and meets
+    the limit there. The walk keeps the offsets before that entry, so the members
+    inside the limit are yielded and read, as after damage, and the limit raises
+    where the pass reaches it."""
     data = bytearray(_zip_with_members([f"f{i}.txt" for i in range(5)]))
     eocd = data.rindex(b"PK\x05\x06")
     struct.pack_into("<HH", data, eocd + 8, 1, 1)

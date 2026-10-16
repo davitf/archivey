@@ -14,6 +14,7 @@ would have stayed green through that, so the cases below assert the *members*.
 from __future__ import annotations
 
 import io
+import shutil
 import struct
 import subprocess
 import zipapp
@@ -2075,3 +2076,73 @@ def test_tight_scan_budget_bounds_the_validator_read_past_the_window(
     # The window, the allowance past it, and the trailer block the cheap tier reads.
     assert receipt.unique_bytes_read <= 2 * budget.max_scan_bytes + trailer_allowance()
     assert within_budget(receipt, budget)
+
+
+# --- A real self-extractor, from a file and through a pipe ---------------------------
+
+
+def _unzipsfx_archive(tmp_path: Path, payload_at: int) -> bytes:
+    """Info-ZIP's own self-extractor: the ``unzipsfx`` stub, zero bytes up to
+    ``payload_at``, a ZIP, then ``zip -A`` to move the offsets past the stub.
+
+    The stub's size depends on the platform's build (about 75 KiB on Linux, a universal
+    Mach-O on macOS), so the test is skipped where it alone reaches ``payload_at``.
+    """
+    unzipsfx = shutil.which("unzipsfx")
+    assert unzipsfx is not None  # requires_binary
+    stub = Path(unzipsfx).read_bytes()
+    if len(stub) >= payload_at:
+        pytest.skip(f"this unzipsfx is {len(stub)} bytes, past offset {payload_at}")
+    with zipfile.ZipFile(tmp_path / "base.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in _FILES.items():
+            zf.writestr(name, data)
+    sfx = tmp_path / "sfx"
+    padding = bytes(payload_at - len(stub))
+    sfx.write_bytes(stub + padding + (tmp_path / "base.zip").read_bytes())
+    subprocess.run(["zip", "-qA", str(sfx)], check=True)
+    return sfx.read_bytes()
+
+
+@requires_binary("unzipsfx", "zip")
+@pytest.mark.parametrize("source", ["file", "pipe"])
+@pytest.mark.parametrize(
+    "budget", [FAST_BUDGET, BALANCED_BUDGET], ids=["fast", "default"]
+)
+def test_an_unzipsfx_self_extractor_streams_from_its_payload_offset(
+    tmp_path: Path, budget: DetectionBudget, source: str
+) -> None:
+    # 128 KiB is inside both scan windows.
+    data = _unzipsfx_archive(tmp_path, payload_at=128 << 10)
+    src = NonSeekableBytesIO(data) if source == "pipe" else io.BytesIO(data)
+    config = ArchiveyConfig(detection_budget=budget)
+    with open_archive(src, streaming=True, config=config) as reader:
+        assert reader.format_info is not None
+        assert reader.format_info.payload_offset == 128 << 10
+        read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
+    assert read == _FILES
+
+
+@requires_binary("unzipsfx", "zip")
+@pytest.mark.parametrize("source", ["file", "pipe"])
+def test_a_self_extractor_past_the_fast_window_needs_the_default_or_a_named_format(
+    tmp_path: Path, source: str
+) -> None:
+    # 1 MiB is past FAST's 256 KiB scan and inside the default 2 MiB one.
+    data = _unzipsfx_archive(tmp_path, payload_at=1 << 20)
+
+    def src() -> io.RawIOBase | io.BytesIO:
+        return NonSeekableBytesIO(data) if source == "pipe" else io.BytesIO(data)
+
+    with pytest.raises(FormatDetectionError, match="executable header"):
+        open_archive(
+            src(), streaming=True, config=ArchiveyConfig(detection_budget=FAST_BUDGET)
+        )
+    with open_archive(src(), streaming=True) as reader:
+        assert reader.format_info is not None
+        assert reader.format_info.payload_offset == 1 << 20
+        read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
+    assert read == _FILES
+    # Naming the format skips detection; the walk finds the first local header itself.
+    with open_archive(src(), streaming=True, format=ArchiveFormat.ZIP) as reader:
+        read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
+    assert read == _FILES

@@ -117,6 +117,10 @@ still apply.
 
 ## 4. ZIP local headers not where the central directory says
 
+**Status: the ZIP over 4 GiB is read** since stage 6 of the `native-zip-reader` OpenSpec
+change, by the rule below, with `ARCHIVE_OFFSET_WRAPPED` reported per corrected offset
+([`formats/zip.md`](../formats/zip.md) §3).
+
 `ZipReader._local_data_region` refused 4 183 members with a stdlib-style `BadZipFile`. The
 name mismatch of §3.3 accounts for 4 of them. The rest:
 

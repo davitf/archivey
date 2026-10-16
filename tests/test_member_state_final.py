@@ -102,14 +102,19 @@ def test_a_tar_listing_is_final_when_returned(tmp_path: Path) -> None:
 
 @pytest.mark.filterwarnings("ignore:Duplicate name:UserWarning")
 def test_a_streaming_zip_pass_settles_its_members_when_it_ends(tmp_path: Path) -> None:
-    """A seekable ZIP read with ``streaming=True`` is a forward pass too."""
+    """A seekable ZIP read with ``streaming=True`` is a forward pass too. It reads the
+    whole directory before the first member, so ``is_current`` is final at yield;
+    ``member_state_final`` still reads false until the pass ends."""
     path = tmp_path / "dup.zip"
     _zip(path, _DUPLICATES)
     with open_archive(path, streaming=True) as reader:
-        seen = [(m, m.member_state_final) for m, _ in reader.stream_members()]
-    assert [final for _, final in seen] == [False, False, False]
-    assert [m.member_state_final for m, _ in seen] == [True, True, True]
-    assert [m.is_current for m, _ in seen] == [False, True, True]
+        seen = [
+            (m, m.member_state_final, m.is_current) for m, _ in reader.stream_members()
+        ]
+    assert [final for _, final, _ in seen] == [False, False, False]
+    assert [current for _, _, current in seen] == [False, True, True]
+    assert [m.member_state_final for m, _, _ in seen] == [True, True, True]
+    assert [m.is_current for m, _, _ in seen] == [False, True, True]
 
 
 def test_a_pass_refused_by_the_listing_limits_settles_what_it_yielded(

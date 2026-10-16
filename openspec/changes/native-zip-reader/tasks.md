@@ -41,8 +41,8 @@
 - [x] 2.2 Reader-owned lock; the source is the handle for path sources too.
 - [x] 2.3 Lazy `_iter_members`; `member_count` from a complete walk, `None` when it fails
       or stops at `max_members`.
-- [x] 2.4 Offsets and count collected by the listing walk; the index pass only when a
-      member open or `member_count` comes first; both charge `max_members` (tests:
+- [x] 2.4 Offsets and count collected by the listing walk; the index pass only when
+      `member_count` comes first; both charge `max_members` (tests:
       a listing then an open walks the directory once, counted reads).
 - [x] 2.4a Open refuses a declared entry count over `max_members` when `cd_size` can hold
       it; a count the directory cannot hold stays a finding (tests for both).
@@ -63,7 +63,19 @@
       `ArchiveEofContext` docstring for `"zeros_to_eof"`; `docs/gotchas.md` (trailing
       data, open pipe); `dev-docs/formats/zip.md` §2.2, §5, §6; `dev-docs/IDEAS.md`;
       `docs/formats.md`.
-- [ ] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
+- [x] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
+      Every test passes in all three configurations (2026-10-16); the run still
+      exited 1, because the all-lowest leg's coverage combine then failed on local
+      coverage data ("Can't combine statement coverage data with branch data"), not on
+      a test. Against the commit before the switch
+      (the stdlib-backed reader), median of nine runs on one machine: listing 20 000
+      members takes 430-440 ms against 348-350 ms (`zipfile` alone, 50-58 ms), about
+      a quarter slower; a streaming pass over them 680-700 ms against 746 ms; the
+      harness's 64-member `zip_open_list` 1.6 ms against 1.4-2.1 ms. Reading and
+      extracting the harness's 64 × 256 KiB archive costs 63-69 ms against 57-64 ms;
+      the harness counts fewer source seeks for every ZIP case (`zip_read_all` 133
+      against 205). Most of the listing time is building each member
+      (`ZipReader._to_member`).
 
 ## 3. Streaming (PRs 3a, 3b, 3c)
 
@@ -98,10 +110,17 @@ each lands with nothing half-done reachable:
   (3.4b); 3b3e3 keeps a Windows reparse buffer longer than the link cap (3.4c). 3b3e4
   opens the gate, adds the fixture test (3.4) and the docs.
 
-- [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
+- [x] 3.0 A seekable source under `streaming=True` reads the directory first, then
       forward only (question C); a test counts its seeks.
-- [ ] 3.0a Before the walk: open a real self-extractor fixture through a pipe under the
+- [x] 3.0a Before the walk: open a real self-extractor fixture through a pipe under the
       `FAST` and default budgets and record what `payload_offset` comes back as.
+      Info-ZIP's `unzipsfx` stub (about 75 KiB on Linux, more on macOS) padded with
+      zeros, plus `zip -A`: with the ZIP at 128 KiB both budgets report it as
+      `payload_offset`, from a pipe and from a file, and the pass reads every member.
+      At 1 MiB `FAST` finds no archive behind the executable header (from a file as
+      well: detection scans forward only), the default finds it at the right offset,
+      and `format=ZIP` from a pipe finds the first local header itself
+      (`tests/test_sfx.py`).
 - [x] 3.0b A seekable source whose end record is not in the last 65 558 bytes runs the
       local-header walk, per `design.md` §"A seekable source whose end record is not in
       the tail": tests first for a ZIP followed by 1 MiB of non-zero bytes (opens, members
@@ -260,9 +279,13 @@ each lands with nothing half-done reachable:
 - [x] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
       seekable source and the members a forward pass keeps (tests: a directory over
       the limit refuses in both).
-- [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
+- [x] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
       same files on disk, except the two divergences `design.md` names (3.3b, 3.3c),
-      which 3.3g tests instead.
+      which 3.3g tests instead. `tests/test_zip_pipe_parity.py` runs every ZIP fixture
+      under each password case; its `_DIFFERS` holds only the two
+      `sevenzip/encrypted_link.zip` rows (no password, wrong password): a link the pass
+      wrote as a file keeps its data's `EncryptionError` where the file read reports
+      `LinkTargetNotFoundError`, with the same files on disk, as `design.md` accepts.
 - [x] 3.4a What follows the members is kept and parsed by `find_end_record` and
       `CentralDirectoryWalk` (`LocalHeaderWalk.read_rest`, `ForwardTail.end_record`),
       bounded by the listing limits: a decoy end record in the comment, an entry
@@ -341,11 +364,15 @@ each lands with nothing half-done reachable:
 
 ## 6. ZIPs over 4 GiB without ZIP64 (PR 6)
 
-- [ ] 6.1 Offset correction in `CentralDirectoryWalk`, gated on a matching local header
+- [x] 6.1 Offset correction in `CentralDirectoryWalk`, gated on a matching local header
       at the corrected offset; CRC kept; diagnostic.
-- [ ] 6.2 Test with a small archive whose stored offsets are reduced by 2³².
-- [ ] 6.3 Format-zip spec, handbook §3 and §5, `docs/formats.md`; close the `IDEAS.md`
+- [x] 6.2 Test with a small archive whose stored offsets are reduced by 2³².
+- [x] 6.3 Format-zip spec, handbook §3 and §5, `docs/formats.md`; close the `IDEAS.md`
       item.
+- [x] 6.4 A member over 4 GiB under Archive Utility's fingerprint: compressed size from
+      the layout, size from deflate's ratio bound or unknown until a verified read
+      (`MEMBER_SIZE_WRAPPED`, `extra["size_mod_2_32"]`); from a file and a pipe.
+      The new names go to the maintainer before merging.
 
 ## 7. Shrink and Implode (deferred until after 0.2.0, maintainer 2026-10-13)
 

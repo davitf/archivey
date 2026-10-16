@@ -169,14 +169,15 @@ its own, or the directory start. That needs every offset, and the walk is lazy.
 
 The listing walk records each entry's header offset as it goes (8 bytes per entry, in an
 `array('Q')`), so after a listing that ran to the end the offsets and the count are
-already known. Only when a member is opened, or `member_count` is asked for, before the
-listing has finished does the reader run an **index pass**: one more pass over the fixed
-46-byte fields that builds no members and keeps only the offsets and the count. Both
-collections charge `max_members`: the index pass stops past it. Once it has stopped,
-**every** member open raises the listing's `ResourceLimitError`, not only one above the
-stop, because the bound of a member below it could come from an incomplete set of
-offsets. Listing alone never pays for the array beyond the offsets of the members it
-listed.
+already known. A member open always comes after that walk: random access lists first,
+and a streaming pass walks the directory before the first member's data (question C).
+Only when `member_count` is asked for before the listing has finished does the reader
+run an **index pass**: one more pass over the fixed 46-byte fields that builds no
+members and keeps only the offsets and the count. Both collections charge `max_members`:
+the index pass stops past it. Once it has stopped, **every** member open raises the
+listing's `ResourceLimitError`, not only one above the stop, because the bound of a
+member below it could come from an incomplete set of offsets. Listing alone never pays
+for the array beyond the offsets of the members it listed.
 
 `max_members` bounds the array in every mode, so ZIP charges it even under
 `streaming=True`, where listing limits are otherwise off. That moves ZIP into the list
@@ -830,11 +831,14 @@ One PR each, in order; every PR goes through the review label.
    the backup-scan investigation's §3.3-3.4 status.
 6. **ZIPs over 4 GiB without ZIP64.** macOS Finder writes a classic ZIP past 4 GiB and
    stores every offset modulo 2³². The rule recorded in `IDEAS.md`: offsets must
-   increase, so when one falls below the previous member's end, add 2³² until it does
-   not; the end record's directory offset follows the same rule. It applies only when a
+   increase, so when one falls below the furthest end of the members before it, add
+   2³² until it does not; the end record's directory offset follows the same rule. It applies only when a
    local header with the entry's name sits at the corrected offset, the CRC check stays,
-   and a diagnostic records the correction. A single member over 4 GiB (its sizes wrap
-   too) stays out until a real archive from a current Mac settles it. The diagnostic may
+   and a diagnostic records the correction. A single member over 4 GiB wraps its sizes
+   too. davi's tests on a current Mac (2026-10-15) settled it, as stage 6b: under the
+   writer's fingerprint the compressed size comes from the layout and the size from
+   deflate's ratio bound, or stays unknown (`None`, `extra["size_mod_2_32"]`) until a
+   verified read fills it in (handbook §3). The diagnostic may
    need a new code, which goes to the maintainer. Format-zip spec, handbook §3 and §5,
    `docs/formats.md`, and the `IDEAS.md` item, which this stage closes.
 7. **Methods 1 (Shrink) and 6 (Implode). Deferred until after 0.2.0** (the maintainer,

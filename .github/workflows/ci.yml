@@ -534,9 +534,9 @@ jobs:
   #     behind a python_version >= '3.14' marker, where it keeps the GIL disabled.
   # Revisit both lists on 3.14t. See docs/support-matrix.md.
   #
-  # 3.15t is the 3.15 prerelease, allowed to fail like the 3.15 test leg. No wheels for
-  # lz4 or cryptography on it yet (2026-10-08), so both build from source; cryptography
-  # keeps the GIL disabled there, as on 3.14t.
+  # 3.15t is the 3.15 prerelease, allowed to fail like the 3.15 test leg. No lz4 wheel
+  # for it yet (2026-10-08), so lz4 builds from source; cryptography ships cp315 abi3t
+  # wheels since 50.0 and keeps the GIL disabled there, as on 3.14t.
   free-threaded-concurrency:
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
