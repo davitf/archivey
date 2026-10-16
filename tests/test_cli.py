@@ -2541,6 +2541,23 @@ def test_format_access_summary() -> None:
     assert "solid (" in format_access_summary(solid)
     assert "1 solid block" in format_access_summary(solid)
 
+    # The re-decode note is about access_cost, so every listing cost keeps it (a solid
+    # RAR lists by scanning).
+    note = "reading one member may decode earlier members in its block"
+    for listing in ListingCost:
+        receipt = CostReceipt(
+            listing_cost=listing,
+            access_cost=AccessCost.SOLID,
+            stream_capability=StreamCapability.SEEKABLE,
+        )
+        assert note in format_access_summary(receipt), listing
+    scanned = CostReceipt(
+        listing_cost=ListingCost.REQUIRES_SCANNING,
+        access_cost=AccessCost.SOLID,
+        stream_capability=StreamCapability.SEEKABLE,
+    )
+    assert format_access_summary(scanned) == (f"solid (listing requires scan; {note})")
+
 
 def test_list_escapes_control_bytes_in_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
