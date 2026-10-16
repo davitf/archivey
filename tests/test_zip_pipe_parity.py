@@ -599,6 +599,12 @@ def _length_overrun_params() -> Iterator[pytest.ParameterSet]:
         data = bytearray(base)
         struct.pack_into("<H", data, first + 28, 4)  # "m0.txt" listed as "m0.t"
         yield pytest.param(bytes(data), id=f"{kind}-name-shortened")
+        # The swallow leaves the count agreeing with the entries that remain.
+        data = bytearray(base)
+        struct.pack_into("<H", data, first + 28, 6 + second - first)
+        eocd = data.rindex(b"PK\x05\x06")
+        struct.pack_into("<HH", data, eocd + 8, 2, 2)
+        yield pytest.param(bytes(data), id=f"{kind}-name-swallows-next-count-agrees")
 
 
 @pytest.mark.parametrize("data", list(_length_overrun_params()))
@@ -654,6 +660,29 @@ def test_a_signature_in_a_name_with_a_wrong_count_reads_alike(pipe: bool) -> Non
             assert list(reader.diagnostics.counts) == [
                 DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
             ]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sized", "bit3"])
+def test_a_shortened_comment_is_not_listed_cut(pipe: bool) -> None:
+    """Entry 0's comment length cut from 13 to 8: its name agrees with its local
+    header, so it lists from the directory, but no central header follows it, so its
+    lengths are wrong and its comment may be cut. Neither read lists ``hello-co``."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        for name in ("m0.txt", "m1.txt"):
+            info = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+            info.comment = b"hello-comment"
+            zf.writestr(info, b"data")
+    data = bytearray(out.getvalue())
+    first = data.index(b"PK\x01\x02")
+    struct.pack_into("<H", data, first + 32, 8)
+    for piped in (False, True):
+        report = _report(bytes(data), piped=piped)
+        assert isinstance(report, tuple) and isinstance(report[0], list)
+        members, error = report
+        assert [m["name"] for m in members] == ["m0.txt", "m1.txt"]
+        assert [m["comment"] for m in members] == [None, None]
+        assert error is not None and error[0] is CorruptionError
 
 
 def _three_stored(names: tuple[str, ...]) -> bytearray:

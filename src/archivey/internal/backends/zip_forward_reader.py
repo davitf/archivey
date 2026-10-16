@@ -1708,8 +1708,9 @@ class ZipForwardReader(ZipReader):
         by_offset = self._by_offset
 
         def local_name_at(offset: int) -> bytes | None:
-            # The pass has every local header it met; the walk asks for one only to
-            # correct an offset wrapped past 4 GiB.
+            # The pass has every local header it met. The walk asks for one to check
+            # an offset it corrects past 4 GiB, and to check the name of an entry no
+            # central header follows (a name length made shorter), in any archive.
             member = by_offset.get(offset)
             return None if member is None else cast("_ZipLocator", member._raw).name
 

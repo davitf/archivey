@@ -230,17 +230,25 @@ not found" and 7-Zip with "Headers Error". So the walk treats three shapes as da
 
 - an entry whose fields run past the directory's end;
 - an entry whose name, extra field or comment holds a central header signature from
-  which the headers chain to the directory's end in exactly the entries the end record
-  declares after it. A signature that does not chain so is part of the name, and a
-  wrong count alone stays the count warning below;
+  which the headers chain exactly to the directory's end, when either the declared
+  count fits that reading or the first of those headers points at a local header with
+  its name. The count alone cannot decide: a swallow can leave it agreeing with the
+  entries that remain (then `unzip` and 7-Zip list the swallowing name without an
+  error; archivey takes DR-1's side), and a member comment can hold a whole
+  well-formed entry, which chains too but points at another member's local header. A
+  signature that does not chain so is part of the name, and a wrong count alone stays
+  the count warning below;
 - an entry no header follows whose local header holds another name: its name length
   was made shorter. A next entry with a damaged signature, where the local header
-  agrees, leaves the entry listed from the directory with its mode.
+  agrees, leaves the entry listed from the directory with its mode, but without its
+  comment: one of its lengths is wrong, and the comment, its last field, may be cut.
 
-Following a signature reads the bytes the walk holds, then on, for at most the entries
-the end record declares after the entry, and the walk stops following once it has
-stepped over as many headers as the directory could hold, so crafted names cost one pass
-over the directory, not one per name. A local header that the file cuts short means the
+Following a signature reads the bytes the walk holds, then on. The walk follows at most
+as many headers in all as the directory could hold, so crafted names cost one pass over
+the directory, not one per name. Past that it fails closed: an entry holding a signature
+it can no longer follow is damage, since a swallow cannot be ruled out. Only a crafted
+directory gets there; a signature that is part of a name fails within a header or two.
+A local header that the file cuts short means the
 directory pointed at the wrong place (the directory follows every local header), so it
 is `CorruptionError` too, never `TruncatedError`.
 
@@ -1018,7 +1026,7 @@ ours.
 | archivey's own parser for the end record, central directory and local headers ([ADR 0020](../decisions/0020-native-zip-reader.md), superseding [0006](../decisions/0006-stdlib-zipfile.md)) | Zero-dependency still. Stdlib parsed the whole directory at open before `ListingLimits` saw a member, lost the archive over one damaged entry, varied by Python version and was reached through private names and exception text; the parser lists lazily, lists up to damage, and behaves the same everywhere | Stdlib `zipfile` (ADR 0006); `python-libarchive-c`, faster and broader at the cost of a native dependency |
 | Report bytes after the end record as `ARCHIVE_TRAILING_DATA` | DR-3: the TAR, 7z, RAR and ISO rule. 7-Zip warns on any tail; zero padding stays silent here as there | Ignoring the tail, as Info-ZIP `unzip` and stdlib do |
 | Refuse at open an end record declaring more entries than `max_members` | Every walk keeps an offset per entry for the overlap guard, so the count bounds memory in every mode (DR-15b); the directory must be 46 bytes per declared entry, so a wrong count field alone does not refuse a small archive | Charging only on `members()`, which left a streaming pass unbounded |
-| A central entry whose fields run past the directory's end, hold the headers after it (they chain from a signature inside to the end in the declared count), or whose name is shorter than its local header's with no header after it, is damage (§2.2) | Cutting the field, as stdlib does, listed a member named after the swallowed entries' bytes and dropped those entries with only a count warning, where a pipe listed every member (DR-1, DR-5); `unzip` and 7-Zip both stop with an error. As damage, both reads list every member from the local headers and raise | Cutting at the directory's end (the native reader's first choice); treating a signature with a wrong count as damage, which refuses an intact directory over a name and a count field |
+| A central entry whose fields run past the directory's end, hold the headers after it (they chain from a signature inside exactly to the end), or whose name is shorter than its local header's with no header after it, is damage (§2.2) | Cutting the field, as stdlib does, listed a member named after the swallowed entries' bytes and dropped those entries with only a count warning, where a pipe listed every member (DR-1, DR-5); `unzip` and 7-Zip both stop with an error. As damage, both reads list every member from the local headers and raise | Cutting at the directory's end (the native reader's first choice); treating a signature with a wrong count as damage, which refuses an intact directory over a name and a count field |
 | Read members whatever "version needed" says | DR-4: the method and flags say what a member needs; 7-Zip reads such members | Stdlib's refusal of the whole archive above 6.3 |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Read a non-seekable source forward over the local headers under `streaming=True`, and refuse it under `streaming=False`, rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for; the local headers make one forward pass possible (the maintainer, 2026-10-10) | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |

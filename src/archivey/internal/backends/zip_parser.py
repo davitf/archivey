@@ -484,9 +484,10 @@ def disk_field_is_split(value: int) -> bool:
 class CentralEntry:
     """One central directory header, with its ZIP64 extra field applied.
 
-    Read-only by convention, not ``frozen``: a frozen dataclass sets each of its fields
-    through ``object.__setattr__``, three times the cost of construction, and the walk
-    builds one per member.
+    Read-only by convention outside the walk, not ``frozen``: a frozen dataclass sets
+    each of its fields through ``object.__setattr__``, three times the cost of
+    construction, and the walk builds one per member. The walk itself corrects
+    offsets and sizes and drops a comment it cannot trust before it yields the entry.
     """
 
     #: Position in the directory, from 0.
@@ -637,22 +638,27 @@ class CentralDirectoryWalk:
     - a name, extra field or comment that runs past the directory's end (stdlib cuts it
       there);
     - a name, extra field or comment that swallowed the entries after it: it holds a
-      central header signature from which the headers chain to the directory's end,
-      in exactly the entries the end record declares after this one. A signature that
-      does not chain so is part of the name, and a wrong count alone is the
-      :class:`EntryCountMismatch` finding;
+      central header signature from which the headers chain exactly to the
+      directory's end, and either the end record's count fits that reading or the
+      first of those headers points at a local header with its name
+      (``local_name_at``). Neither alone is enough: a swallow can leave the count
+      agreeing with the entries that remain, and a comment can hold a whole entry
+      whose offset points at another member. A signature that does not chain so is
+      part of the name, and a wrong count alone is the :class:`EntryCountMismatch`
+      finding;
     - a name made shorter: no header starts where the entry ends, and the local header
       at the entry's offset (``local_name_at``) holds another name. The entry is not
-      yielded, so the reader lists it from that header. With no such header, or the same
-      name, the entry is yielded and the next one raises.
+      yielded, so the reader lists it from that header. With no such header, or the
+      same name, the entry is yielded without its comment, which a wrong length may
+      have cut, and the next entry raises.
 
-    Following a signature reads from the bytes in hand and then on, at most as many
-    headers as the end record declares after the entry, and the walk stops following
-    once it has stepped over as many headers as the directory could hold, so a
-    directory of crafted names costs one pass over it, not one per name. The
-    directory always ends where the end records start (``find_end_record`` derives its
-    start from that), so a file cut inside it has lost its end record and never gets
-    here.
+    Following a signature reads from the bytes in hand and then on. The walk follows
+    at most as many headers in all as the directory could hold, so a directory of
+    crafted names costs one pass over it, not one per name. A signature the walk can
+    no longer follow is damage too: it cannot rule out a swallow, and it does not list
+    a name that may hold other entries' bytes. The directory always ends where the end
+    records start (``find_end_record`` derives its start from that), so a file cut
+    inside it has lost its end record and never gets here.
 
     Each ``iter()`` walks again from the start. :attr:`findings` is complete once an
     iteration has ended without raising, and is reset when the next one starts.
@@ -699,13 +705,15 @@ class CentralDirectoryWalk:
     ) -> None:
         self._read_at = read_at
         self._end = end
-        self._local_name_at = None if end.zip64 else local_name_at
-        # The name check for a shortened name holds for ZIP64 too.
-        self._local_name_for_check = local_name_at
+        # Read for two things: to check a corrected offset, and to check the name of
+        # an entry no central header follows (any archive).
+        self._local_name_at = local_name_at
+        # Offsets wrap only without ZIP64, which stores them in full.
+        self._corrects_offsets = local_name_at is not None and not end.zip64
         # Sizes can wrap only in a directory past 4 GiB.
         self._local_data_start_at = (
             local_data_start_at
-            if self._local_name_at is not None and end.cd_start >= OFFSET_WRAP
+            if self._corrects_offsets and end.cd_start >= OFFSET_WRAP
             else None
         )
         self.findings: list[WalkFinding] = []
@@ -784,7 +792,7 @@ class CentralDirectoryWalk:
                 have += len(piece)
             data = b"".join(pieces)
 
-        name_at_offset = self._local_name_at
+        name_at_offset = self._local_name_at if self._corrects_offsets else None
         # ``base`` modulo 2³², tried once, on the first entry, when ``base`` is past it.
         wrapped_base = (
             base & _U32_MAX
@@ -835,25 +843,29 @@ class CentralDirectoryWalk:
             extra = data[at : at + extra_len]
             at += extra_len
             comment = data[at : at + comment_len]
-            if follow_budget > 0:
-                found = data.find(
-                    CENTRAL_HEADER_SIGNATURE,
-                    name_at - data_start,
-                    entry_end - data_start,
+            found = data.find(
+                CENTRAL_HEADER_SIGNATURE, name_at - data_start, entry_end - data_start
+            )
+            while found >= 0:
+                swallowed, follow_budget = self._swallowed(
+                    data, data_start, found + data_start, index, base, follow_budget
                 )
-                while found >= 0 and follow_budget > 0:
-                    swallowed, follow_budget = self._chains_to_end(
-                        data, data_start, found + data_start, index, follow_budget
+                if swallowed is None:
+                    raise CorruptionError(
+                        f"ZIP central directory entry #{index}'s name, extra field or "
+                        "comment holds a central directory header, and this "
+                        "directory holds too many such headers for archivey to rule "
+                        "out that a length field swallowed the entries after it"
                     )
-                    if swallowed:
-                        raise CorruptionError(
-                            f"ZIP central directory entry #{index}'s name, extra "
-                            "field or comment holds the central directory headers "
-                            "after it: a length field swallowed them"
-                        )
-                    found = data.find(
-                        CENTRAL_HEADER_SIGNATURE, found + 1, entry_end - data_start
+                if swallowed:
+                    raise CorruptionError(
+                        f"ZIP central directory entry #{index}'s name, extra field or "
+                        "comment holds the central directory headers after it: a "
+                        "length field swallowed them"
                     )
+                found = data.find(
+                    CENTRAL_HEADER_SIGNATURE, found + 1, entry_end - data_start
+                )
 
             entry = _central_entry(fields, name, extra, comment, index=index, base=base)
             # An offset deferred to a ZIP64 extra field is not corrected. The first
@@ -907,6 +919,10 @@ class CentralDirectoryWalk:
                 at = entry_end - data_start
                 if data[at : at + 4] != CENTRAL_HEADER_SIGNATURE:
                     self._check_cut_name(entry)
+                    # The name agrees, but a length is wrong: the comment, the
+                    # entry's last field, may be cut. The extra field is checked
+                    # field by field where it is read.
+                    entry.comment = b""
             yield entry
             index += 1
             pos = entry_end
@@ -921,22 +937,62 @@ class CentralDirectoryWalk:
                 CommentCutShort(end.comment_declared, len(end.comment))
             )
 
-    def _chains_to_end(
-        self, data: bytes, data_start: int, pos: int, index: int, budget: int
-    ) -> tuple[bool, int]:
-        """Whether central headers chain from ``pos`` (directory-relative) to the
-        directory's end in exactly the entries the end record declares after entry
-        ``index``, and the budget left. Reads ``data`` (directory bytes from
+    def _swallowed(
+        self,
+        data: bytes,
+        data_start: int,
+        pos: int,
+        index: int,
+        base: int,
+        budget: int,
+    ) -> tuple[bool | None, int]:
+        """Whether the central header signature at ``pos`` (directory-relative), inside
+        entry ``index``'s fields, starts entries that entry swallowed, and the budget
+        left; ``None`` when the budget runs out first.
+
+        The headers must chain from ``pos`` exactly to the directory's end, and then
+        one more thing must agree with that reading: the end record's count, or the
+        local header the first of them points at, which holds its name. Either can
+        fail alone: a swallow can leave the count agreeing with the entries that remain,
+        and a comment can hold a whole well-formed entry whose offset points at a local
+        header with another name. A count that merely disagrees is
+        :class:`EntryCountMismatch`."""
+        chained, budget, count = self._chain_to_end(data, data_start, pos, budget)
+        if not chained:
+            return chained, budget
+        if _count_matches(self._end, index + 1 + count):
+            return True, budget
+        name_at = self._local_name_at
+        if name_at is None:
+            return False, budget
+        start = self._end.cd_start
+        header = self._read_at(start + pos, CENTRAL_HEADER_SIZE)
+        if len(header) != CENTRAL_HEADER_SIZE:
+            return False, budget
+        fields = _CENTRAL_HEADER.unpack(header)
+        if fields[18] == _U32_MAX:  # deferred to a ZIP64 field: not checked here
+            return False, budget
+        offset = fields[18] + base
+        name = self._read_at(start + pos + CENTRAL_HEADER_SIZE, fields[12])
+        if not 0 <= offset <= start - LOCAL_HEADER_SIZE - len(name):
+            return False, budget
+        return name_at(offset) == name, budget
+
+    def _chain_to_end(
+        self, data: bytes, data_start: int, pos: int, budget: int
+    ) -> tuple[bool | None, int, int]:
+        """Whether central headers chain from ``pos`` (directory-relative) exactly to
+        the directory's end, the budget left and the headers stepped over; ``None``
+        when the budget runs out first. Reads ``data`` (directory bytes from
         ``data_start``) first, then the directory past it."""
         end = self._end
         cd_size = end.cd_size
-        left = end.entries_declared - index - 1
-        if not end.zip64:
-            # A classic count is compared modulo 65536: the fewest it can mean.
-            left &= 0xFFFF
         buffer = data
         buffer_at = data_start
-        while left > 0 and budget > 0 and pos < cd_size:
+        count = 0
+        while pos < cd_size:
+            if budget <= 0:
+                return None, 0, count
             off = pos - buffer_at
             if len(buffer) - off < CENTRAL_HEADER_SIZE:
                 buffer_at = pos
@@ -945,19 +1001,19 @@ class CentralDirectoryWalk:
                 )
                 off = 0
                 if len(buffer) < CENTRAL_HEADER_SIZE:
-                    break
+                    return False, budget, count
             if buffer[off : off + 4] != CENTRAL_HEADER_SIGNATURE:
-                break
+                return False, budget, count
             pos += _central_entry_size(buffer, off)
-            left -= 1
             budget -= 1
-        return left == 0 and pos == cd_size, budget
+            count += 1
+        return pos == cd_size, budget, count
 
     def _check_cut_name(self, entry: CentralEntry) -> None:
         """Raise for ``entry``, which no header follows, when the local header at its
         offset holds another name: its name length was made shorter, and its name is
         cut. With no local header there, or the same name, the next entry raises."""
-        name_at = self._local_name_for_check
+        name_at = self._local_name_at
         if name_at is None:
             return
         offset = entry.header_offset

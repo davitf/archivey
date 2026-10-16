@@ -1935,8 +1935,9 @@ class ZipReader(BaseArchiveReader):
             member.hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
 
     def _directory_walk(self) -> CentralDirectoryWalk:
-        """A walk over the directory that corrects offsets wrapped past 4 GiB, checked
-        against the local headers in the file."""
+        """A walk over the directory that reads the local headers in the file for two
+        checks: an offset it corrects past 4 GiB, and the name of an entry no central
+        header follows (a name length made shorter)."""
         read_at = self._read_at
         # The last header read, by offset: the walk asks for a header's name and then
         # for where its data starts, and the two share one read.

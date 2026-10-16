@@ -445,8 +445,13 @@ An entry's lengths are damaged when:
 
 - its name, extra field or comment runs past the directory's end;
 - its name, extra field or comment holds a central header signature from which the
-  headers chain to the directory's end in exactly the entries the end record declares
-  after it: the lengths swallowed those entries;
+  headers chain exactly to the directory's end, and either the end record's count fits
+  that reading or the first of those headers points at a local header with its name:
+  the lengths swallowed those entries. A member comment holding a whole well-formed
+  entry chains too, but points at another member's local header and lists as it is;
+- its name, extra field or comment holds a central header signature, and the walk has
+  already followed as many headers as the directory could hold, so it cannot rule out
+  a swallow;
 - no central header follows it and the local header at its offset holds another name:
   its name length was made shorter.
 
@@ -454,7 +459,8 @@ Cutting the field, as `zipfile` does, would list a member under a cut name or on
 of other entries' bytes and drop the entries it swallowed (DR-1). A signature from which
 the headers do not chain so is part of the name, and a wrong count alone stays the
 end-record finding above. An entry no header follows whose local header holds the same
-name, or none, is listed, and the next entry raises.
+name, or none, is listed without its comment, which a wrong length may have cut, and the
+next entry raises.
 
 #### Scenario: damaged directory
 
@@ -469,6 +475,8 @@ name, or none, is listed, and the next entry raises.
 | A member named `a\x01PK\x01\x02.txt`, count agreeing | Listed as it is; no diagnostic |
 | A member named `a\x01PK\x01\x02.txt`, end record declaring one entry too many, from a file and from a pipe | Both members listed with their mode; one `ARCHIVE_EOF_MARKER_MISSING` for the count |
 | First entry's name length cut from 6 to 4 (`m0.t`), from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` from their local headers, then `CorruptionError`; never `m0.t` |
+| First entry's name length grown by exactly the second entry, end record declaring the 2 entries that remain, from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` from their local headers, then `CorruptionError` |
+| First entry's comment length cut from 13 to 8, from a file and from a pipe | Both members listed with comment `None`, never `hello-co`, then `CorruptionError` |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 
 ### Requirement: Read ZIP members whatever version they say they need

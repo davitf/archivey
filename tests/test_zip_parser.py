@@ -253,10 +253,11 @@ def test_a_signature_in_a_name_reads_no_more_than_the_walk() -> None:
 
 
 def test_following_signatures_is_bounded_by_the_directory() -> None:
-    """Every name holds a header whose lengths jump to the next entry, so each one
-    chains to the directory's end and would be followed in full; the count does not
-    match, so none is damage. The walk follows at most as many headers as the
-    directory could hold in all, not that many per name (about 45 000 here)."""
+    """Every name holds a header whose lengths jump to the next name's header, and
+    the last one jumps past the directory's end, so each follow steps over every fake
+    after it before it fails: about 45 000 headers for 300 names. The walk follows at
+    most as many headers in all as the directory could hold, then fails closed: a
+    signature it can no longer follow is damage, not a name it lists."""
     count = 300
     # zipfile stops a name at NUL, so the names are written as placeholders and the
     # fake headers patched into the directory's copies.
@@ -265,16 +266,13 @@ def test_following_signatures_is_bounded_by_the_directory() -> None:
     with zipfile.ZipFile(buf, "w") as zf:
         for i in range(count):
             zf.writestr(f"n{placeholder.decode()}{i:04d}", b"")
-    # A fake header whose name length takes it to the end of the entry's name.
-    fake = b"PK\x01\x02" + bytes(24) + struct.pack("<3H", 4, 0, 0) + bytes(12)
+    # Each name is 51 bytes, so a fake with a 51-byte name ends where the next fake
+    # starts, one entry on.
+    fake = b"PK\x01\x02" + bytes(24) + struct.pack("<3H", 51, 0, 0) + bytes(12)
     raw = bytearray(buf.getvalue())
     cd = raw.index(b"PK\x01\x02")
     raw[cd:] = raw[cd:].replace(placeholder, fake)
-    buf = io.BytesIO(bytes(raw))
-    data = bytearray(buf.getvalue())
-    eocd = data.rindex(b"PK\x05\x06")
-    struct.pack_into("<HH", data, eocd + 8, count + 5, count + 5)
-    data = bytes(data)
+    data = bytes(raw)
     steps = 0
     original = zip_parser._central_entry_size
 
@@ -283,11 +281,60 @@ def test_following_signatures_is_bounded_by_the_directory() -> None:
         steps += 1
         return original(buffer, offset)
 
+    seen = []
     with pytest.MonkeyPatch.context() as m:
         m.setattr(zip_parser, "_central_entry_size", counting)
-        _end, entries, _walk = _parse(data)
-    assert len(entries) == count
-    assert 0 < steps <= len(data) // 46 + 64
+        read_at = _read_at(data)
+        walk = CentralDirectoryWalk(read_at, find_end_record(read_at, len(data)))
+        with pytest.raises(CorruptionError, match="too many such headers"):
+            for e in walk:
+                seen.append(e.name)
+    assert 0 < len(seen) < 5
+    assert steps <= len(data) // 46 + 64
+
+
+def test_a_swallow_that_leaves_the_count_agreeing_is_damage() -> None:
+    """Entry 0 swallows entry 1 and the end record declares the two entries that
+    remain: the count agrees, yet the name would hold entry 1's bytes. The swallowed
+    header points at a local header with its name, which settles it; without the
+    local headers to ask, the agreeing count leaves the swallow unseen."""
+    data = bytearray(_swallowing(28, _ENTRY))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 2, 2)
+    read_at = _read_at(bytes(data))
+    end = find_end_record(read_at, len(data))
+    walk = CentralDirectoryWalk(
+        read_at,
+        end,
+        local_name_at=lambda offset: (local_header_at(read_at, offset) or (None,))[0],
+    )
+    with pytest.raises(CorruptionError, match="a length field swallowed them"):
+        list(walk)
+    assert len(list(CentralDirectoryWalk(read_at, end))) == 2
+
+
+def test_an_entry_no_header_follows_loses_its_comment() -> None:
+    """Its name agrees with its local header, so it is yielded, but its comment
+    length may be the damaged one: the comment is dropped, not cut."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in ("m0.txt", "m1.txt"):
+            info = zipfile.ZipInfo(name)
+            info.comment = b"hello-comment"
+            zf.writestr(info, b"data")
+    data = bytearray(buf.getvalue())
+    struct.pack_into("<H", data, data.index(b"PK\x01\x02") + 32, 8)
+    read_at = _read_at(bytes(data))
+    walk = CentralDirectoryWalk(
+        read_at,
+        find_end_record(read_at, len(data)),
+        local_name_at=lambda offset: (local_header_at(read_at, offset) or (None,))[0],
+    )
+    seen = []
+    with pytest.raises(CorruptionError):
+        for e in walk:
+            seen.append((e.name, e.comment))
+    assert seen == [(b"m0.txt", b"")]
 
 
 def test_a_shortened_name_is_damage_when_its_local_header_disagrees() -> None:
