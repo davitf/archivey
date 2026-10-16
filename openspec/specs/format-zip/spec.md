@@ -205,9 +205,12 @@ Each member's data ends where its local header says, or, when bit 3 defers the s
 a data descriptor, where its codec's end marker is (DEFLATE, Deflate64, bzip2,
 Zstandard, LZMA with the end-of-stream marker, PPMd with its end mark), followed by the
 descriptor; a STORED bit-3 member ends at a descriptor whose CRC and size match the
-bytes before it and that a ZIP signature follows. A bit-3 member nobody reads that is
-encrypted under a codec ends the same way, matched on its size, so passing it needs no
-key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
+bytes before it and that a ZIP signature follows. A bit-3 codec member the pass reads
+past (nobody read it to its end) SHALL be decoded no further than the byte past the
+symlink target cap, then the start of a Windows reparse buffer. Where its codec has not ended by then, it ends as a STORED one does, matched on
+its size and the signature after the descriptor: decoding the rest costs what no limit
+bounds. A bit-3 member nobody reads that is encrypted under a codec ends the same way,
+so passing it needs no key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
 its read SHALL raise `UnsupportedFeatureError`. A bit-3 PPMd member without an end mark
 fails its decode, as from a file. A bit-3 codec member whose decode fails or cannot find
 its end SHALL be passed by the same scan for its descriptor on its stored bytes, with no
@@ -260,7 +263,8 @@ read reports it (the requirement on headers that disagree). `extract_all` settle
 entry already took SHALL end the pass with `CorruptionError`.
 
 The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
-mismatch and the reversed pair fail a member the file read writes; bytes between a bit-3
+mismatch (a STORED member's, or a descriptor planted in the data of a bit-3 codec member
+the pass reads past) and the reversed pair fail a member the file read writes; bytes between a bit-3
 codec member's end and its descriptor, refused from a file, are counted into the member;
 the first of several inconclusive password candidates wins. It MAY also differ in these:
 a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
@@ -719,7 +723,9 @@ end record nothing is corrected.
   modulo 2³² and is at most 1032 times the compressed size, then the CRC-32 SHALL be
   checked, and only then SHALL `member.size` take the length. A pipe pass that decoded
   the member to its end with the directory's CRC-32 SHALL keep the size it counted
-  when the directory leaves it unknown. Until its size is filled in, such a member's
+  when the directory leaves it unknown; for a bit-3 member it reads past, that is one
+  whose codec ended within the symlink target cap, and one whose data runs past the
+  cap keeps `size` `None`, as from a file. Until its size is filled in, such a member's
   `member_state_final` SHALL be `False`; it SHALL be `True` once the size is filled
   in, once a `streaming=True` pass ends (no read can reach the member again), and
   once the reader closes (`archive-data-model`).
@@ -733,6 +739,7 @@ end record nothing is corrected.
 | A deflated member of 2³² + 100 zero bytes, about 4 MiB compressed | `size` is `None` and `extra["size_mod_2_32"]` 100 at listing; `DiagnosticPolicy.STRICT` lists it; a read to the end yields 2³² + 100 bytes and fills in `size`, and the key stays |
 | A deflated member of 100 bytes padded with empty stored blocks to about 10 MB, stored size 100 | `size` is `None`, not 2³² + 100, and `member_state_final` `False`; a read yields 100 bytes and fills in `size`, and the flag reads `True`; with no read, it reads `True` once the reader closes |
 | The same, `streaming=True` | After the pass the member reads `True`: from a pipe with the size the pass counted, from a seekable source the caller did not read with `size` `None` |
+| The same with 5000 bytes, past the symlink target cap, `streaming=True` from a pipe, not read | After the pass the member reads `True` with `size` `None`, as from a file: the pass decoded it only to the byte past the cap |
 | A deflated member whose stored size is over 1032 times its compressed size | The stored size stays; the read raises `TruncatedError` |
 | A stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
 | A stream of unknown size with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |
