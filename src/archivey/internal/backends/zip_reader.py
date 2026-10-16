@@ -2938,8 +2938,8 @@ class ZipReader(BaseArchiveReader):
                 end_check=None if unknown is None else unknown.check,
                 fill_size=unknown is not None,
             )
-        # A listed member carries a size, or a digest when its size is unknown
-        # (``_wrapped_size`` runs only for members with a CRC-32); only a caller's own
+        # A listed member carries a size, or a digest when its size is unknown (with
+        # no CRC-32, ``_to_member`` keeps the stored size); only a caller's own
         # copy rebuilt with ``replace(size=None, hashes={})`` gets here, and is then
         # not verified.
         return self._wrap_member_stream(decoded, member.name, size=size)

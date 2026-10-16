@@ -788,9 +788,11 @@ and the reasons are part of the contract rather than an oversight:
   past 4 GiB this way by default and reads it back, and a correction is kept only when
   a local header with the member's name is there, with the CRC-32 still checked.
   ``STRICT`` would refuse an ordinary Mac archive.
-- ``MEMBER_SIZE_WRAPPED`` — the same Mac archives, with a member past 4 GiB. A size is
-  corrected only where the layout or deflate's ratio forces it, and an unknown one is
-  ``None``, with the length and CRC-32 checked on a read.
+- ``MEMBER_SIZE_WRAPPED`` — the same Mac archives: a member past 4 GiB, or a deflated
+  one over about 4 MB compressed in an archive of any length, whose size only a read
+  can tell. A size is corrected only where the layout or deflate's ratio forces it,
+  and an unknown one is ``None``, with the length and CRC-32 checked on a read.
+  ``STRICT`` would refuse ordinary Mac archives.
 """
 
 

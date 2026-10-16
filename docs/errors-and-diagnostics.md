@@ -245,7 +245,7 @@ config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
   report the archive's own bytes or metadata as anomalous — and collects the rest.
 - **`DiagnosticPolicy.PEDANTIC`** raises on everything.
 
-Twelve codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
+Thirteen codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
 is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
 `MEMBER_SELECTOR_UNMATCHED` (argument hygiene — a pipeline passing a password, or one
 list of names, to every call would otherwise raise on every archive they do not fit),

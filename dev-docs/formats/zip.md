@@ -885,11 +885,12 @@ info, extended attributes, resource fork; no data length).
   - **None fits:** the stored value is over 1032 times the compressed size, a damaged
     entry. The stored size stays and the read fails on it.
 - Every member whose sizes were corrected or left unknown gets one `MEMBER_SIZE_WRAPPED`
-  (its message says the archive passed 4 GiB only when a size was corrected; an
-  unknown one says only that the size may be past 4 GiB)
   (`SizeWrapContext`: stored and corrected compressed size and size), advisory for the
-  same reason as `ARCHIVE_OFFSET_WRAPPED`. A member that needed no change reports
-  nothing, so an ordinary Mac archive under 4 GiB costs nothing and says nothing.
+  same reason as `ARCHIVE_OFFSET_WRAPPED`. Its message says the archive passed 4 GiB
+  only when a size was corrected; an unknown one says only that the size may be past
+  4 GiB. A member under about 4.16 MB compressed is untouched and reports nothing. A
+  larger deflated member lists `size=None` and reports one even in an archive under
+  4 GiB, since only a read tells.
 - Archive Utility writes only stored and deflated members; another method under the
   fingerprint keeps its stored sizes.
 

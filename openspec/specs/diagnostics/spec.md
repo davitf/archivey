@@ -540,9 +540,10 @@ archives of legitimately named files; `ARCHIVE_OFFSET_WRAPPED` because macOS Arc
 Utility writes a ZIP past 4 GiB with its offsets cut to 32 bits by default and reads
 it back, and each correction is kept only when a local header with the member's name
 is there, with the CRC-32 still checked, so `STRICT` would refuse an ordinary Mac
-archive; `MEMBER_SIZE_WRAPPED` for the same archives with a member past 4 GiB, whose
-sizes are corrected only where the layout or deflate's ratio forces a value, with the
-length and CRC-32 checked on a read; and `FORMAT_EXTENSION_CONFLICT` because it
+archive; `MEMBER_SIZE_WRAPPED` for the same archives with a member past 4 GiB or a
+deflated member over about 4 MB compressed in an archive of any length, whose sizes
+are corrected only where the layout or deflate's ratio forces a value, with the length
+and CRC-32 checked on a read; and `FORMAT_EXTENSION_CONFLICT` because it
 reports the file's name, which lies outside the archive, not the archive's bytes: the
 bytes win and the archive reads in full, so `STRICT` would refuse a well-formed tarball
 saved as `b.gz`. The code is still recorded, and a caller who wants the refusal adds it
