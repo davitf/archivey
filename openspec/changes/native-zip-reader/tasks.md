@@ -63,7 +63,16 @@
       `ArchiveEofContext` docstring for `"zeros_to_eof"`; `docs/gotchas.md` (trailing
       data, open pipe); `dev-docs/formats/zip.md` §2.2, §5, §6; `dev-docs/IDEAS.md`;
       `docs/formats.md`.
-- [ ] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
+- [x] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
+      All three configurations pass (2026-10-16). Against the commit before the switch
+      (the stdlib-backed reader), median of nine runs on one machine: listing 20 000
+      members takes 430-440 ms against 348-350 ms (`zipfile` alone, 50-58 ms), about
+      a quarter slower; a streaming pass over them 680-700 ms against 746 ms; the
+      harness's 64-member `zip_open_list` 1.6 ms against 1.4-2.1 ms. Reading and
+      extracting the harness's 64 × 256 KiB archive costs 63-69 ms against 57-64 ms;
+      the harness counts fewer source seeks for every ZIP case (`zip_read_all` 133
+      against 205). Most of the listing time is building each member
+      (`ZipReader._to_member`).
 
 ## 3. Streaming (PRs 3a, 3b, 3c)
 
