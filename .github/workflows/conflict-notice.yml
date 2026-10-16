@@ -1,0 +1,90 @@
+name: Conflict notice
+
+# Says so on a pull request when it stops merging cleanly into `main`.
+#
+# GitHub creates no `pull_request` workflow run while a pull request has a merge
+# conflict: a push to the branch starts no CI, and adding the `review` label starts no
+# review round. Nothing fails and nothing is posted, so the agent watching the pull
+# request waits for a closing comment or a CI result that never comes. PRs 826 and 835
+# each sat for about eleven hours that way.
+#
+# This workflow runs when `main` moves, which is what usually causes a conflict, and
+# hourly as a backstop. For each open pull request from this repository that GitHub
+# reports as conflicted, it posts one comment per head commit: a comment is a pull
+# request event, so it wakes the watching session where the silence did not. It also
+# takes the `review` label off, because a label left on would make adding it again
+# after the merge raise no event (`dev-docs/review-loop.md` §How it works).
+#
+# The comment's first line is `<!-- archivey-merge-conflict head=<sha> -->`; a head
+# that already has one is not commented on again, however often `main` moves.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+# A newer push to main makes an older scan's answers stale, so let it replace it.
+concurrency:
+  group: conflict-notice
+  cancel-in-progress: true
+
+jobs:
+  notice:
+    name: Flag conflicted pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Comment on conflicted pull requests
+        run: |
+          set -euo pipefail
+          # GitHub recomputes mergeability in the background after the base moves and
+          # reports `null` until it has; reading a pull request also asks for it.
+          if [ "${{ github.event_name }}" = push ]; then sleep 30; fi
+
+          # Same-repository pull requests only: a fork's branch is not ours to merge
+          # into. `no-review` marks the review hub, whose diff is the whole repository.
+          gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            --jq '.[] | select(.head.repo.full_name == env.REPO)
+                      | select(all(.labels[]; .name != "no-review")) | .number' \
+            > /tmp/prs.txt
+
+          while read -r pr; do
+            mergeable=null
+            for attempt in 1 2 3 4 5 6; do
+              gh api "repos/$REPO/pulls/$pr" > /tmp/pr.json
+              mergeable=$(jq -r '.mergeable' /tmp/pr.json)
+              [ "$mergeable" != null ] && break
+              sleep 10
+            done
+            echo "#$pr mergeable=$mergeable"
+            [ "$mergeable" = false ] || continue
+
+            head=$(jq -r '.head.sha' /tmp/pr.json)
+            marker="<!-- archivey-merge-conflict head=$head -->"
+            if gh api "repos/$REPO/issues/$pr/comments" --paginate \
+                --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+                | grep -qF "$marker"; then
+              echo "  already flagged at $head"
+              continue
+            fi
+
+            label_note=""
+            if jq -e 'any(.labels[]; .name == "review")' /tmp/pr.json > /dev/null; then
+              gh api --method DELETE "repos/$REPO/issues/$pr/labels/review" --silent || true
+              label_note=$'\n\nThe `review` label was on it and no round could start, so it has been taken off. Add it again after the merge.'
+            fi
+
+            body="$marker"$'\n'"**This pull request conflicts with \`main\`.** GitHub runs no workflow on a conflicted pull request, so CI and the review loop stay silent until it merges cleanly. Merge \`main\` into the branch, resolve the conflict and push.$label_note"
+            gh pr comment "$pr" --repo "$REPO" --body "$body"
+            echo "  flagged at $head"
+          done < /tmp/prs.txt

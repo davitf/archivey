@@ -388,7 +388,8 @@ Reply once per round, not once per fix.
 closing comment says which: when it asks for them, run `scripts/review_prep.py` over the
 fixes (§5), then add the `review` label after your final push, which starts the next
 round of the [review loop](../../../dev-docs/review-loop.md). It is the last thing you
-do — a commit pushed after it may not be in what gets reviewed.
+do — a commit pushed after it may not be in what gets reviewed. If the branch conflicts
+with `main`, merge `main` first: a conflicted pull request runs no CI and no round.
 
 From a shell it is `gh pr edit <number> --add-label review`. The MCP label-set trap, and
 what a label still on the PR minutes later means:

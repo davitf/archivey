@@ -53,6 +53,13 @@ label. Adding a label that is already there raises no event, so every later requ
 nothing too. Resolve the conflict or merge `main`, then remove the label and add it
 again.
 
+**A conflict is announced on the pull request.** Nothing fails when a conflict stops CI
+and the review loop, so a watching agent would wait indefinitely for a result.
+[`conflict-notice.yml`](../.github/workflows/conflict-notice.yml) runs whenever `main`
+moves, and hourly. For each conflicted pull request it posts one comment per head commit,
+which wakes the watching session, and takes the `review` label off. Merge `main`, push,
+and add the label again if a round was waiting.
+
 **The outcome shows as a label.** A finished round leaves one label saying how it
 ended, and takes off any other of the four:
 
