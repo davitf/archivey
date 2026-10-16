@@ -321,10 +321,10 @@ configuration. The first non-zero byte in that window SHALL emit
 `ARCHIVE_TRAILING_DATA` under ordinary diagnostic disposition, with no escalation of
 its own: a warning by default, `DiagnosticRaisedError` after delivery when the code
 resolves to `RAISE` (as under `DiagnosticPolicy.STRICT`), a count alone under
-`IGNORE`. On a compressed tar whose codec can carry a whole-stream checksum, the scan
-SHALL then read on, within the same bound, until the stream ends, so that checksum
-over the members is reached whatever the length of the trailing bytes; on any other
-tar the first non-zero byte ends the scan.
+`IGNORE`. The first non-zero byte SHALL end the scan, on a compressed tar too: past
+it the backend cannot tell whether the bytes are still in the stream that holds the
+members (a concatenated `.tar.gz` is a second gzip member, whose checksum covers none
+of them), so it SHALL NOT emit `DIGEST_UNVERIFIABLE` for that stream either way.
 
 The check SHALL run only after a complete two-block null trailer has been confirmed, or
 after the damaged-second-block diagnostic has been emitted. It SHALL NOT run after an
@@ -377,8 +377,7 @@ listing accounts for.
 | A real ISO opened as TAR | Empty listing plus `ARCHIVE_TRAILING_DATA`: its zeros stop at 32768 | Raises |
 | Missing / short trailer | `ARCHIVE_EOF_MARKER_MISSING`; the scan does not run | Raises on that code |
 | `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
-| `.tar.gz` / `.tar.zst` / `.tar.lz4`, junk inside the stream after the trailer and a member byte damaged, stream end within 1 MiB of the trailer | `ARCHIVE_TRAILING_DATA`, then `CorruptionError` from the checksum | `DiagnosticRaisedError` (the trailing-data diagnostic is raised first) |
-| The same, stream end more than 1 MiB past the trailer | `ARCHIVE_TRAILING_DATA` and `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`) | `DiagnosticRaisedError` |
+| `cat a.tar.gz b.tar.gz`, whatever the size of `b.tar` | `ARCHIVE_TRAILING_DATA` only; `a.tar` is listed | `DiagnosticRaisedError` |
 | `.tar.gz`, the deflate stream failing to decode after the trailer | `DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`), or `CorruptionError` from a member read that reaches the failure | Raises |
 | `.tar.gz`, junk after the gzip stream | `ARCHIVE_TRAILING_DATA` (`format` is the codec) | `DiagnosticRaisedError` |
 | `.tar.gz` / `.tar.zst` / `.tar.lz4`, the stream cut inside its footer (the members whole) | `DIGEST_UNVERIFIABLE` (`reason="trailing_stream_truncated"`) | Raises on `DIGEST_UNVERIFIABLE` |

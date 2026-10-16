@@ -1054,15 +1054,18 @@ class TarReader(BaseArchiveReader):
         When the codec had already read to the failure during the last member's read,
         it fails there instead, as ``CorruptionError`` from that read.
 
-        Trailing non-zero bytes do not end the scan on such a codec: after reporting
-        them it reads on, within the same bound, to reach the stream's checksum. So a
-        checksum failure raises whether the trailing bytes are short or long.
+        The first non-zero byte ends the scan, on every codec. Reading on to the
+        stream's checksum would look more thorough, but nothing here says where the
+        listed members' compressed stream ends: in a concatenated ``.tar.gz`` the
+        trailing bytes are a second gzip member, whose checksum covers none of the
+        listed members, while the first member's was already checked on the way in.
+        So past trailing bytes the scan claims nothing about the checksum either way;
+        ``ARCHIVE_TRAILING_DATA`` is the report, and ``STRICT`` refuses it.
 
         When the scan stops at its bound with the compressed stream not yet at its end,
         that checksum was never checked, and ``DIGEST_UNVERIFIABLE`` says so.
         """
         offset = 0
-        reported_trailing_data = False
         while offset <= _MAX_TRAILING_SCAN:
             # One byte past the bound, to learn whether the stream ended there.
             want = min(_TRAILING_SCAN_CHUNK, _MAX_TRAILING_SCAN - offset) or 1
@@ -1070,8 +1073,11 @@ class TarReader(BaseArchiveReader):
                 with self._translated_errors(), self._walk_guard():
                     chunk = stream.read(want)
             except _StreamChecksumError:
-                # The codec's whole-stream checksum covers the members already read,
-                # so this is damage to them, not a tail that failed to decode.
+                # Nothing non-zero has come out since the trailer, so the stream this
+                # checksum covers holds the members already read: this is damage to
+                # them, not a tail that failed to decode. (A codec's read-ahead can
+                # also check a short further member whose output this read has not
+                # returned yet; that is attributed to the members too.)
                 raise
             except TruncatedError:
                 # The compressed stream ends before its footer, so the checksum it
@@ -1089,18 +1095,12 @@ class TarReader(BaseArchiveReader):
             if offset == _MAX_TRAILING_SCAN:
                 self._emit_stream_checksum_unverified(reason="trailing_scan_limit")
                 return
-            if not reported_trailing_data:
-                stripped = chunk.lstrip(b"\x00")
-                if stripped:
-                    self._emit_trailing_data(
-                        observed_bytes=offset + (len(chunk) - len(stripped))
-                    )
-                    reported_trailing_data = True
-                    if self._format.stream not in _STREAMS_WITH_CHECKSUM:
-                        return
-                    # Read on, within the same bound, to reach the stream checksum
-                    # over the members, so its outcome does not depend on how long
-                    # the trailing bytes are.
+            stripped = chunk.lstrip(b"\x00")
+            if stripped:
+                self._emit_trailing_data(
+                    observed_bytes=offset + (len(chunk) - len(stripped))
+                )
+                return
             offset += len(chunk)
 
     def _emit_stream_checksum_unverified(self, *, reason: str) -> None:
@@ -1110,8 +1110,9 @@ class TarReader(BaseArchiveReader):
         before the stream's end, ``"trailing_stream_truncated"`` when the compressed
         stream ended before its footer, and ``"trailing_decode_failed"`` when the
         tail failed to decode in another way (see
-        :meth:`_verify_nothing_but_zeros_to_eof`). Only for a codec that can carry such a checksum; the zstd, lz4 and xz ones are
-        optional, so the message says "if it carries one".
+        :meth:`_verify_nothing_but_zeros_to_eof`). Only for a codec that can carry
+        such a checksum; the zstd, lz4 and xz ones are optional, so the message says
+        "if it carries one".
         """
         stream = self._format.stream
         if stream not in _STREAMS_WITH_CHECKSUM:

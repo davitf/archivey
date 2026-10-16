@@ -375,10 +375,12 @@ yielded.
       inside its footer (a missing gzip CRC-32, say) does not fail the listing, since
       every member was read whole, but its checksum was never checked: that is
       `DIGEST_UNVERIFIABLE`, which `STRICT` refuses. A stream that fails to decompress
-      past the trailer is reported the same way. After trailing bytes inside the
-      compressed stream, the check reads on, within the same 1 MiB, to the stream's
-      checksum, so a damaged member raises `CorruptionError` however long those bytes
-      are.
+      past the trailer is reported the same way. The check stops at trailing bytes, and
+      says nothing about the stream's checksum past them: in a concatenated
+      `.tar.gz` they are a second gzip member, and the first one's checksum was
+      already checked. Junk inside the same gzip member can leave that checksum
+      unchecked, so treat `ARCHIVE_TRAILING_DATA` on a compressed tar as "the members
+      may not have been checked" too.
     - Truncation *inside* a member's data always raises `TruncatedError`, whatever the
       policy: in a listing or a pass when the walk reaches the cut, and from a member
       stream on the read that reaches it. A read with a size returns the bytes before the
