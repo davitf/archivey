@@ -563,6 +563,43 @@ SHALL stay refused as a split set.
 | Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
 | A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
 
+### Requirement: Read ZIPs written past 4 GiB without ZIP64
+
+macOS Archive Utility (Finder's Compress, `ditto -c -k`) writes a classic ZIP past
+4 GiB and stores every offset modulo 2³², the end record's offset of the central
+directory too. When the end record is classic, a read from a file and a read from a
+pipe SHALL correct such offsets as they walk the directory. The members lie in
+directory order, so an entry whose stored local header offset falls below the end of
+an entry before it (its corrected offset, the 30-byte fixed local header and its
+compressed size; the furthest such end) SHALL get 2³² added until it no longer does.
+The directory's own offset wraps the same way, which makes the stub length the end
+record implies (`base`) a multiple of 2³² larger than the real one: the walk SHALL
+take that length modulo 2³². A correction SHALL be kept only when a local header
+whose name equals the entry's starts at the corrected offset before the directory (for
+the directory's offset, the first entry's header at its offset with the smaller
+length); otherwise the stored offset stays and the member fails as it would without
+the correction. A read from a pipe checks the name against the local headers its pass
+met. An offset from a ZIP64 extra field, and any offset under a ZIP64 end record,
+SHALL NOT be corrected. Each kept correction SHALL emit `ARCHIVE_OFFSET_WRAPPED` with
+`OffsetWrapContext`: one per member (`record="local_header"`), and one for the
+directory (`record="central_directory"`, no member). The member's CRC-32 SHALL be
+checked as for any member. A member whose own sizes pass 4 GiB is out of scope: its
+sizes wrap too, and nothing in the archive says by how much, so its read SHALL raise
+at the declared size. When its compressed size wraps, its end falls a multiple of 2³²
+short, so the members after it keep their stored offsets and their reads fail too;
+when only its uncompressed size wraps, the members after it read.
+
+#### Scenario: offsets wrapped past 4 GiB
+
+| Archive (a sparse layout, nothing stored past the headers and short members) | Expected, from a file and from a pipe |
+| --- | --- |
+| A member of 2³² − 16 bytes, then two short members and the directory past 4 GiB, every offset stored modulo 2³² | Three members listed; the two short ones read with matching CRCs; `ARCHIVE_OFFSET_WRAPPED` twice with `record="local_header"`, then once with `record="central_directory"` |
+| Every member below 4 GiB, the last one ending past it, so only the directory's offset wraps | Members listed and read; one `ARCHIVE_OFFSET_WRAPPED` with `record="central_directory"` |
+| The first case with the directory naming one short member differently from its local header | From a file: that member keeps its stored offset and its read raises `CorruptionError`; the other is corrected. From a pipe: the directory entry points at no local header the pass met, so the pass raises `CorruptionError` at the directory, as for any such entry, and reports the unmatched local header as `ARCHIVE_UNLISTED_DATA` |
+| A member of 2³² + 2²⁹ bytes, sizes and offsets stored modulo 2³², then a short member | Both listed and the directory's offset corrected; the short member after the large one keeps its stored offset and its read raises `CorruptionError` (out of scope, see above) |
+| A ZIP under 4 GiB whose directory lists members out of file order | No correction and no extra read: every corrected offset would be past the directory |
+| The first case under `DiagnosticPolicy.STRICT` | Reads as above; the `ARCHIVE_OFFSET_WRAPPED` diagnostics are recorded, not raised |
+
 ### Requirement: Apply max_members while reading a ZIP directory
 
 `ListingLimits.max_members` SHALL be charged as the central directory is walked, in

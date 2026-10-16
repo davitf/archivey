@@ -341,10 +341,10 @@ each lands with nothing half-done reachable:
 
 ## 6. ZIPs over 4 GiB without ZIP64 (PR 6)
 
-- [ ] 6.1 Offset correction in `CentralDirectoryWalk`, gated on a matching local header
+- [x] 6.1 Offset correction in `CentralDirectoryWalk`, gated on a matching local header
       at the corrected offset; CRC kept; diagnostic.
-- [ ] 6.2 Test with a small archive whose stored offsets are reduced by 2³².
-- [ ] 6.3 Format-zip spec, handbook §3 and §5, `docs/formats.md`; close the `IDEAS.md`
+- [x] 6.2 Test with a small archive whose stored offsets are reduced by 2³².
+- [x] 6.3 Format-zip spec, handbook §3 and §5, `docs/formats.md`; close the `IDEAS.md`
       item.
 
 ## 7. Shrink and Implode (deferred until after 0.2.0, maintainer 2026-10-13)

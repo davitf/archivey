@@ -136,6 +136,17 @@ yielded.
   value itself and the directory's end can be placed (`ARCHIVE_EOF_MARKER_MISSING`);
   otherwise the members the local headers hold are listed, then `CorruptionError` is
   raised.
+- **A ZIP over 4 GiB that macOS wrote without ZIP64** reads. Finder's Compress (macOS
+  Archive Utility, `ditto -c -k`) stores every offset past 4 GiB with its top bits cut
+  off, so 7-Zip and Python's `zipfile` fail on such an archive. Archivey puts back the
+  missing multiple of 4 GiB where an offset falls below the furthest end of the
+  members before it, but only when a local header with the member's name is at the
+  corrected offset; the member's CRC-32 is still checked. Each correction emits
+  `ARCHIVE_OFFSET_WRAPPED`, which `DiagnosticPolicy.STRICT` does not raise on, since
+  macOS writes such archives by default. A single member over 4 GiB in such an
+  archive raises when read, at its cut size. When it is over 4 GiB even compressed,
+  the members after it are not read either, because their offsets cannot be
+  corrected past it.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or
