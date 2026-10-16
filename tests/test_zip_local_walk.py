@@ -18,6 +18,7 @@ from typing import BinaryIO
 
 import pytest
 
+import archivey
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -871,3 +872,82 @@ def test_past_the_bound_the_head_is_kept_only_for_a_directory_after_the_members(
     assert tail.head == b"\x01" * 4
     with pytest.raises(CorruptionError, match="are not a ZIP header"):
         tail.end_record()
+
+
+def _zip64_local_header(
+    extra_sizes: bytes,
+    *,
+    compressed_size: int = 0xFFFF_FFFF,
+    file_size: int = 0xFFFF_FFFF,
+) -> bytes:
+    """A STORED local header with the given 32-bit sizes (all ones by default) and a
+    ZIP64 extra field holding ``extra_sizes``; no data follows."""
+    name = b"big.bin"
+    extra = (
+        struct.pack("<HH", 0x0001, len(extra_sizes)) + extra_sizes
+        if extra_sizes
+        else b""
+    )
+    fixed = struct.pack(
+        "<4sHHHHHIIIHH",
+        b"PK\x03\x04",
+        45,
+        0,
+        0,
+        0,
+        0,
+        0,
+        compressed_size,
+        file_size,
+        len(name),
+        len(extra),
+    )
+    return fixed + name + extra
+
+
+@pytest.mark.parametrize("size", [0xFFFF_FFFE, 0xFFFF_FFFF, 0x1_0000_0000])
+def test_a_zip64_extra_size_of_all_ones_is_a_real_size(size: int) -> None:
+    # zipfile writes exactly this header for a STORED member of 4294967295 bytes: the
+    # extra field holds all ones as the size, which is not a deferral.
+    raw = _zip64_local_header(struct.pack("<QQ", size, size))
+    entry = LocalHeaderWalk(_Unseekable(raw)).next_entry()
+    assert entry is not None
+    assert entry.header.compressed_size == size
+    assert entry.header.file_size == size
+
+
+@pytest.mark.parametrize(
+    ("extra_sizes", "sizes", "which"),
+    [
+        (b"", {}, "compressed"),
+        (struct.pack("<Q", 5), {}, "compressed"),
+        (b"", {"compressed_size": 5}, "uncompressed"),
+        (b"", {"file_size": 5}, "compressed"),
+    ],
+    ids=["no-extra", "file-size-only", "uncompressed-alone", "compressed-alone"],
+)
+def test_a_size_no_zip64_extra_holds_is_corruption(
+    extra_sizes: bytes, sizes: dict[str, int], which: str
+) -> None:
+    raw = _zip64_local_header(extra_sizes, **sizes)
+    with pytest.raises(
+        CorruptionError, match=f"defers its {which} size .* does not hold"
+    ):
+        LocalHeaderWalk(_Unseekable(raw)).next_entry()
+
+
+def test_an_unheld_local_size_reads_by_file() -> None:
+    """A file read takes the sizes from the directory and reads such a member; the
+    pass has only the local header (``formats/zip.md`` §2.2.2)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", b"hello " * 10)
+    raw = bytearray(buf.getvalue())
+    struct.pack_into("<I", raw, 22, 0xFFFF_FFFF)  # the local uncompressed size
+    data = bytes(raw)
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        assert reader.read("a.txt") == b"hello " * 10
+    with pytest.raises(CorruptionError, match="uncompressed size"):
+        with archivey.open_archive(_Unseekable(data), streaming=True) as reader:
+            for _ in reader.stream_members():
+                pass
