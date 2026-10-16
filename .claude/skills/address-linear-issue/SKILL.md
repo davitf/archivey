@@ -112,8 +112,11 @@ What that changes for this session:
 - **Stop pushing once you have added the label.** A push after it may land after
   the review has read the branch, and then nothing reviews it until someone adds
   the label again.
+- **Merge `main` first if the branch conflicts with it.** A conflicted pull
+  request runs no CI and no review round, and the label does nothing.
 - **Check the label came off.** Still on a few minutes later means no round
-  started; `review-loop.md` says what to do.
+  started; `review-loop.md` says what to do. A conflict that appears later is
+  announced by a comment on the pull request; merge `main` when one arrives.
 
 If the loop is not available — no GitHub Actions, or a fork, where the workflow
 has no secrets — say so and stop rather than reviewing your own work. A review
