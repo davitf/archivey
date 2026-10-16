@@ -165,7 +165,7 @@ def test_walk_findings_carry_the_values_the_reader_reports() -> None:
 def test_a_field_running_past_the_directory_is_damage(offset: int, field: str) -> None:
     """stdlib cuts the field at the directory's end and lists the cut entry; that
     lists a wrong name or field, so the walk raises at that entry instead."""
-    with pytest.raises(CorruptionError, match=f"declares a {field} that runs 30 bytes"):
+    with pytest.raises(CorruptionError, match=f"'s {field} runs 30 bytes"):
         _parse(_with_overrun(offset))
 
 
@@ -198,7 +198,7 @@ def test_a_length_that_swallows_the_next_entry_is_damage(
         find_end_record(_read_at(data), len(data)),
     )
     seen = []
-    with pytest.raises(CorruptionError, match="swallowed the entries after it"):
+    with pytest.raises(CorruptionError, match="a length field swallowed them"):
         for e in walk:
             seen.append(e.name)
     assert seen == [b"a.txt", b"b.txt"][:entry]
@@ -207,7 +207,7 @@ def test_a_length_that_swallows_the_next_entry_is_damage(
 def test_a_length_that_swallows_part_of_the_next_entry_is_damage() -> None:
     """The entry ends inside the next one: the damage is this entry's, not the
     header the walk would meet next."""
-    with pytest.raises(CorruptionError, match="do not end where the directory does"):
+    with pytest.raises(CorruptionError, match="a length field swallowed them"):
         _parse(_swallowing(28, 20))
 
 
@@ -217,6 +217,106 @@ def test_a_name_holding_a_central_signature_lists_when_the_count_agrees() -> Non
     _end, entries, walk = _parse(data)
     assert [e.name for e in entries] == [b"a\x01PK\x01\x02.txt", b"b.txt"]
     assert walk.findings == []
+
+
+def test_a_name_holding_a_central_signature_with_a_wrong_count_is_a_finding() -> None:
+    """A signature inside a name with a count that disagrees: the headers do not
+    chain from the signature, so nothing was swallowed and the count is reported as
+    for any other archive, not raised as damage."""
+    data = bytearray(_zip({"a\x01PK\x01\x02.txt": b"1", "b.txt": b"2"}))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 3, 3)
+    _end, entries, walk = _parse(bytes(data))
+    assert [e.name for e in entries] == [b"a\x01PK\x01\x02.txt", b"b.txt"]
+    assert walk.findings == [EntryCountMismatch(declared=3, read=2, zip64=False)]
+
+
+def test_a_signature_in_a_name_reads_no_more_than_the_walk() -> None:
+    """Following a signature that does not chain stops at the bytes after it, which
+    the walk already holds: the first entry costs the one piece the walk reads."""
+    names = {"sig\x01PK\x01\x02.txt": b""} | {
+        f"member-{i:05d}.txt": b"" for i in range(20_000)
+    }
+    data = _zip(names)
+    calls: list[int] = []
+    base = _read_at(data)
+
+    def counting(offset: int, n: int) -> bytes:
+        calls.append(n)
+        return base(offset, n)
+
+    end = find_end_record(counting, len(data))
+    assert end.cd_size > 1 << 20
+    calls.clear()
+    assert next(iter(CentralDirectoryWalk(counting, end))).name.startswith(b"sig")
+    assert calls == [1 << 20]
+
+
+def test_following_signatures_is_bounded_by_the_directory() -> None:
+    """Every name holds a header whose lengths jump to the next entry, so each one
+    chains to the directory's end and would be followed in full; the count does not
+    match, so none is damage. The walk follows at most as many headers as the
+    directory could hold in all, not that many per name (about 45 000 here)."""
+    count = 300
+    # zipfile stops a name at NUL, so the names are written as placeholders and the
+    # fake headers patched into the directory's copies.
+    placeholder = b"X" * 46
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(count):
+            zf.writestr(f"n{placeholder.decode()}{i:04d}", b"")
+    # A fake header whose name length takes it to the end of the entry's name.
+    fake = b"PK\x01\x02" + bytes(24) + struct.pack("<3H", 4, 0, 0) + bytes(12)
+    raw = bytearray(buf.getvalue())
+    cd = raw.index(b"PK\x01\x02")
+    raw[cd:] = raw[cd:].replace(placeholder, fake)
+    buf = io.BytesIO(bytes(raw))
+    data = bytearray(buf.getvalue())
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, count + 5, count + 5)
+    data = bytes(data)
+    steps = 0
+    original = zip_parser._central_entry_size
+
+    def counting(buffer: bytes, offset: int) -> int:
+        nonlocal steps
+        steps += 1
+        return original(buffer, offset)
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(zip_parser, "_central_entry_size", counting)
+        _end, entries, _walk = _parse(data)
+    assert len(entries) == count
+    assert 0 < steps <= len(data) // 46 + 64
+
+
+def test_a_shortened_name_is_damage_when_its_local_header_disagrees() -> None:
+    """The name length made shorter: no header follows the entry, and the local
+    header at its offset names it in full. The entry is not yielded with its cut
+    name; a damaged next signature, where the local header agrees, still yields
+    the entry before it."""
+    data = bytearray(_zip({"m0.txt": b"1", "m1.txt": b"2", "m2.txt": b"3"}))
+    cd = data.index(b"PK\x01\x02")
+    shortened = bytearray(data)
+    struct.pack_into("<H", shortened, cd + 28, 4)
+    for blob, seen_before in ((shortened, []), (data, [b"m0.txt"])):
+        if blob is data:
+            second = data.index(b"PK\x01\x02", cd + 4)
+            blob = bytearray(data)
+            blob[second : second + 4] = b"XXXX"
+        read_at = _read_at(bytes(blob))
+        walk = CentralDirectoryWalk(
+            read_at,
+            find_end_record(read_at, len(blob)),
+            local_name_at=lambda offset, r=read_at: (
+                local_header_at(r, offset) or (None,)
+            )[0],
+        )
+        seen = []
+        with pytest.raises(CorruptionError):
+            for e in walk:
+                seen.append(e.name)
+        assert seen == seen_before
 
 
 def test_no_findings_on_well_formed_fixtures() -> None:

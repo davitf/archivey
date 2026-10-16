@@ -108,11 +108,10 @@ ZIP64 extra field (`0x0001`) in turn, as stdlib does, reading values in the orde
 APPNOTE gives: a value still all ones after one field is read again from the next (an
 uncompressed size of `0xFFFFFFFF` or 64-bit all ones, a compressed size or header
 offset of `0xFFFFFFFF`), and the disk number is read once, from the first field with
-four bytes left after the other values. It stops at `cd_size` bytes, as stdlib does. A name, extra
-or comment that runs past that point is damage, not cut as stdlib cuts it, and so is
-the first entry whose fields hold a central header signature when the entries after it
-then do not chain to `cd_size` or do not add up to the declared count: a length that
-swallowed the entries after it (`dev-docs/formats/zip.md` §2.2).
+four bytes left after the other values. It stops at `cd_size` bytes, as stdlib does.
+A name, extra or comment that runs past that point is damage, not cut as stdlib cuts
+it, and so are fields that hold the entries after them and a name made shorter
+(`dev-docs/formats/zip.md` §2.2).
 
 The walk takes no limit and no charge callback. An entry's variable fields are three
 16-bit lengths, so the most one entry can make the parser hold is 46 + 3 × 65 535 bytes,
@@ -926,7 +925,7 @@ and `is_current`; for a data-stored link: the target).
 | Parse lazily, member by member | `ListingLimits` see each member as it is read; open does no work proportional to the archive (DR-15b); a damaged entry costs only the entries after it (DR-2) | Parsing the whole directory at open, as stdlib does |
 | Parser returns bytes; the reader decodes | Name decoding is policy (`encoding=`, fallback, diagnostics) that already lives in the reader and is shared in shape with RAR and TAR | Decoding in the parser, which is how stdlib ended up refusing whole archives |
 | Keep stdlib's end-record search and `concat` rule | Prefixed archives and decoy signatures in comments resolve exactly as today (on newer Pythons one more archive opens, below), and the differential test can compare against stdlib | 7-Zip's search, which differs on crafted inputs and would change detection results |
-| Stop the walk at `cd_size`; an entry whose fields run past it, or swallow the entries after it, is damage | Cutting the field listed a member named after the swallowed entries' bytes and dropped those entries, with only a count warning, where a pipe listed them all (DR-1, DR-5); as damage, both reads list every member from the local headers and raise | Cutting the field at `cd_size` as stdlib does (the earlier choice); reading the field from past the directory, which changes names on crafted input |
+| Stop the walk at `cd_size`; an entry whose fields run past it, or hold the entries after it, is damage | Cutting the field listed a member named after the swallowed entries' bytes and dropped those entries, with only a count warning, where a pipe listed them all (DR-1, DR-5); as damage, both reads list every member from the local headers and raise | Cutting the field at `cd_size` as stdlib does (the earlier choice); reading the field from past the directory, which changes names on crafted input |
 | Apply central-only fields at the end of a forward pass | Matches seekable extraction on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive does (a symlink becomes a file: DR-1); spooling the archive to find the directory first |
 | Positioned reads through a `read_at(offset, n)` callable for the directory walk | The walk is lazy, so it runs between reads of member data on the same handle; a positioned read under the reader's lock leaves the handle where the member stream needs it, and the parser stays free of locking | A `LockedStream` over the handle, which serialises each call but shares one position, so every walk read would need a seek and a read as one locked step, which is `read_at` |
 | The forward walk reads a `BinaryIO` and counts what it consumed | The same shape as `TarWalker` on a forward-only stream; no new reader type | A separate `ForwardReader` class |

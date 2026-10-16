@@ -207,7 +207,7 @@ def test_central_directory_field_past_the_directory_is_damage(
         report = reader.members_report()
     assert [member.name for member in report.members] == ["a.txt", "b.txt", "c.txt"]
     assert isinstance(report.error, CorruptionError)
-    assert f"declares a {field} that runs" in str(report.error)
+    assert f"'s {field} runs" in str(report.error)
 
 
 def test_decoy_end_record_in_comment_lists_empty() -> None:

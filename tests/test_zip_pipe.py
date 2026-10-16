@@ -465,7 +465,7 @@ def test_a_field_running_past_the_directory_is_damage_as_from_a_file(
     struct.pack_into("<H", data, last + at, 3000)
     yielded = []
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        with pytest.raises(CorruptionError, match=f"declares a {field} that runs"):
+        with pytest.raises(CorruptionError, match=f"'s {field} runs"):
             for member, _ in reader.stream_members():
                 yielded.append(member.name)
     assert yielded == ["a.txt", "b.txt"]

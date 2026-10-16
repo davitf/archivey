@@ -25,6 +25,7 @@ import pytest
 
 import archivey
 from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -595,17 +596,20 @@ def _length_overrun_params() -> Iterator[pytest.ParameterSet]:
                 old = struct.unpack_from("<H", data, first + at)[0]
                 struct.pack_into("<H", data, first + at, old + grow)
                 yield pytest.param(bytes(data), id=f"{kind}-{field}-{how}")
+        data = bytearray(base)
+        struct.pack_into("<H", data, first + 28, 4)  # "m0.txt" listed as "m0.t"
+        yield pytest.param(bytes(data), id=f"{kind}-name-shortened")
 
 
 @pytest.mark.parametrize("data", list(_length_overrun_params()))
-def test_a_length_that_swallows_entries_reads_from_a_file_as_from_a_pipe(
+def test_a_damaged_length_reads_from_a_file_as_from_a_pipe(
     data: bytes, tmp_path: Path
 ) -> None:
-    """The first entry's name, extra or comment length grown past the next entry,
-    or past the directory's end. Cutting the field there listed a member named
-    ``m0.txtPK\\x01\\x02...`` and lost the entries it swallowed, with only a
-    count warning. Both reads now list every member under its local header's name,
-    write the same files, then raise the damage."""
+    """The first entry's name, extra or comment length grown past the next entry or
+    past the directory's end, or its name length cut short. Cutting the field listed
+    a member named ``m0.txtPK\\x01\\x02...`` (or ``m0.t``) and lost the entries
+    it swallowed, with only a count warning. Both reads list every member under its
+    local header's name, write the same files, then raise the damage."""
     from_file = _report(data, piped=False)
     assert from_file == _report(data, piped=True)
     assert isinstance(from_file, tuple)
@@ -618,6 +622,38 @@ def test_a_length_that_swallows_entries_reads_from_a_file_as_from_a_pipe(
         _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
     tree = _tree(tmp_path / "file", since=started)
     assert len(tree) == 3 and _tree(tmp_path / "pipe", since=started) == tree
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sized", "bit3"])
+def test_a_signature_in_a_name_with_a_wrong_count_reads_alike(pipe: bool) -> None:
+    """A name holding ``PK\\x01\\x02`` in a directory whose end record declares one
+    entry too many: nothing was swallowed, so both reads list both members with the
+    directory's mode and report the count, as for any other wrong count."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        for name in ("a\x01PK\x01\x02.txt", "b.txt"):
+            info = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o640 << 16
+            zf.writestr(info, b"data")
+    data = bytearray(out.getvalue())
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 3, 3)
+    from_file = _report(bytes(data), piped=False)
+    assert from_file == _report(bytes(data), piped=True)
+    assert isinstance(from_file, tuple) and isinstance(from_file[0], list)
+    members, error = from_file
+    assert error is None
+    assert [m["name"] for m in members] == ["a\x01PK\x01\x02.txt", "b.txt"]
+    assert [m["mode"] for m in members] == [0o640, 0o640]
+    for piped in (False, True):
+        source = NonSeekableBytesIO(bytes(data)) if piped else io.BytesIO(bytes(data))
+        with archivey.open_archive(source, streaming=piped) as reader:
+            for _ in reader.stream_members():
+                pass
+            assert list(reader.diagnostics.counts) == [
+                DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+            ]
 
 
 def _three_stored(names: tuple[str, ...]) -> bytearray:

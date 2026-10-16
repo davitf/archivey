@@ -423,29 +423,38 @@ while 7-Zip searches further back and lists the real members.
 
 The central directory SHALL be walked as members are listed, so a damaged entry costs
 the directory's fields from it on, not the archive (DR-2). An entry whose signature is
-wrong, whose 46-byte fixed header the directory cuts short, whose name, extra field or
-comment runs past the directory's end, or whose name, extra field or comment holds a
-central header signature when the entries after it then do not end where the directory
-does or do not add up to the count the end record declares (a length field that
-swallowed the entries after it), SHALL make the listing
-raise `CorruptionError` after the members before it and the members the local headers
-hold past it, which a read from a pipe lists the same way: those keep only what their
-local header holds (no mode, host or comment), and a member the directory already
-listed, by offset, is not listed again. `members()` raises, `members_report()` returns
-those members with the error, iteration yields them and then raises, and `extract_all()`
-writes them and then raises. Every listed member SHALL read, except one whose data the
-walk over the local headers could not get past: its read SHALL raise that walk's error,
-a cut as `CorruptionError` and never `TruncatedError` (the end record follows it). A
-listing limit that walk meets SHALL be raised instead of the damage. A read from a pipe
-raises whatever stops it, as it meets that before the directory, and raises the damage
-ahead of a check a member before it fails. `ArchiveInfo.member_count` SHALL be `None`
-when the walk did not complete. Cutting such a field at the next entry or the
-directory's end, as `zipfile` does, would list a member under a name made of other
-entries' bytes and drop the entries it swallowed (DR-1). A name holding those four
-bytes in a directory whose count agrees lists as it is. A local-header offset past the file's end SHALL raise
-`CorruptionError` when that member opens, never `TruncatedError` (the directory follows
-every local header, so the offset is wrong, not the file cut) and never an untyped error
-for an offset too large to seek to.
+wrong, whose 46-byte fixed header the directory cuts short, or whose lengths are damaged
+SHALL make the listing raise `CorruptionError` after the members before it and the
+members the local headers hold past it, which a read from a pipe lists the same way:
+those keep only what their local header holds (no mode, host or comment), and a member
+the directory already listed, by offset, is not listed again. `members()` raises,
+`members_report()` returns those members with the error, iteration yields them and then
+raises, and `extract_all()` writes them and then raises. Every listed member SHALL read,
+except one whose data the walk over the local headers could not get past: its read SHALL
+raise that walk's error, a cut as `CorruptionError` and never `TruncatedError` (the end
+record follows it). A listing limit that walk meets SHALL be raised instead of the
+damage. A read from a pipe raises whatever stops it, as it meets that before the
+directory, and raises the damage ahead of a check a member before it fails.
+`ArchiveInfo.member_count` SHALL be `None` when the walk did not complete. A
+local-header offset past the file's end SHALL raise `CorruptionError` when that member
+opens, never `TruncatedError` (the directory follows every local header, so the offset
+is wrong, not the file cut) and never an untyped error for an offset too large to seek
+to.
+
+An entry's lengths are damaged when:
+
+- its name, extra field or comment runs past the directory's end;
+- its name, extra field or comment holds a central header signature from which the
+  headers chain to the directory's end in exactly the entries the end record declares
+  after it: the lengths swallowed those entries;
+- no central header follows it and the local header at its offset holds another name:
+  its name length was made shorter.
+
+Cutting the field, as `zipfile` does, would list a member under a cut name or one made
+of other entries' bytes and drop the entries it swallowed (DR-1). A signature from which
+the headers do not chain so is part of the name, and a wrong count alone stays the
+end-record finding above. An entry no header follows whose local header holds the same
+name, or none, is listed, and the next entry raises.
 
 #### Scenario: damaged directory
 
@@ -458,6 +467,8 @@ for an offset too large to seek to.
 | First entry's name, extra or comment length grown by exactly the second entry's size, or by 0x8000, from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` listed from their local headers, the same files written, then `CorruptionError`; never a member named `m0.txtPK\x01\x02…` |
 | Last entry's name, extra or comment length runs past the directory | The members before it from the directory, the last from its local header, then `CorruptionError` naming the field |
 | A member named `a\x01PK\x01\x02.txt`, count agreeing | Listed as it is; no diagnostic |
+| A member named `a\x01PK\x01\x02.txt`, end record declaring one entry too many, from a file and from a pipe | Both members listed with their mode; one `ARCHIVE_EOF_MARKER_MISSING` for the count |
+| First entry's name length cut from 6 to 4 (`m0.t`), from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` from their local headers, then `CorruptionError`; never `m0.t` |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 
 ### Requirement: Read ZIP members whatever version they say they need

@@ -343,10 +343,6 @@ class ArchiveEofContext(_JsonSafeContext):
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
       ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
       is 0.
-    - ``"central_directory"`` — no longer emitted. It reported a ZIP central
-      directory entry whose name, extra field or comment ran past the directory; that
-      entry is now damage (``CorruptionError``), since cutting the field there lists a
-      wrong name and drops the entries it swallowed.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
       archive's end within the first MiB past it, so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
@@ -886,7 +882,6 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "end_of_archive_block",
                         "end_of_central_directory",
                         "zip64_end_of_central_directory",
-                        "central_directory",
                     }
                 ),
             ),

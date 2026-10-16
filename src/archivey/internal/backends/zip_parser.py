@@ -77,7 +77,12 @@ STRONG_ENCRYPTED_DIRECTORY_MSG = (
 _EOCD = struct.Struct("<4s4H2LH")
 _ZIP64_LOCATOR = struct.Struct("<4sLQL")
 _ZIP64_EOCD = struct.Struct("<4sQ2H2L4Q")
-_CENTRAL_HEADER = struct.Struct("<4s4B4HL2L5H2L")
+#: A central header's fixed fields up to its name, extra and comment lengths.
+_CENTRAL_HEAD = "<4s4B4HL2L"
+_CENTRAL_HEADER = struct.Struct(_CENTRAL_HEAD + "5H2L")
+#: Where those three lengths start: ``_CENTRAL_HEADER`` fields 12 to 14.
+_CENTRAL_LENGTHS_AT = struct.calcsize(_CENTRAL_HEAD)
+_CENTRAL_LENGTHS = struct.Struct("<3H")
 _LOCAL_HEADER = struct.Struct("<4s2B4HL2L2H")
 
 _ZIP64_EXTRA_TAG = 0x0001
@@ -326,8 +331,7 @@ def step_over_directory(
             header = fixed(pos, CENTRAL_HEADER_SIZE)
             if len(header) != CENTRAL_HEADER_SIZE:
                 return None, pos
-            name_len, extra_len, comment_len = struct.unpack_from("<3H", header, 28)
-            pos += CENTRAL_HEADER_SIZE + name_len + extra_len + comment_len
+            pos += _central_entry_size(header, 0)
         elif sig == ZIP64_EOCD_SIGNATURE:
             header = fixed(pos, 12)
             if len(header) != 12:
@@ -626,14 +630,25 @@ class CentralDirectoryWalk:
 
     Damage raises ``CorruptionError`` after every entry before it has been yielded: a
     header without its signature, a fixed header that crosses the declared end of the
-    directory, a ZIP64 extra field missing a value the header defers to it, a name,
-    extra field or comment that runs past the directory's end (stdlib cuts it there),
-    and an entry whose name, extra field or comment holds a central header signature
-    when the entries after it then do not chain to the directory's end or do not add
-    up to the declared count: a length field that swallowed the entries after it. The
-    first entry that holds a signature is checked by counting the entries after it
-    (one read per megabyte of directory); the entries after it are the ones the walk
-    steps over next, so the check runs once per walk. The
+    directory, a ZIP64 extra field missing a value the header defers to it, and a
+    length field that does not match the entries around it:
+
+    - a name, extra field or comment that runs past the directory's end (stdlib cuts it
+      there);
+    - a name, extra field or comment that swallowed the entries after it: it holds a
+      central header signature from which the headers chain to the directory's end,
+      in exactly the entries the end record declares after this one. A signature that
+      does not chain so is part of the name, and a wrong count alone is the
+      :class:`EntryCountMismatch` finding;
+    - a name made shorter: no header starts where the entry ends, and the local header
+      at the entry's offset (``local_name_at``) holds another name. The entry is not
+      yielded, so the reader lists it from that header. With no such header, or the same
+      name, the entry is yielded and the next one raises.
+
+    Following a signature reads from the bytes in hand and then on, at most as many
+    headers as the end record declares after the entry, and the walk stops following
+    once it has stepped over as many headers as the directory could hold, so a
+    directory of crafted names costs one pass over it, not one per name. The
     directory always ends where the end records start (``find_end_record`` derives its
     start from that), so a file cut inside it has lost its end record and never gets
     here.
@@ -684,6 +699,8 @@ class CentralDirectoryWalk:
         self._read_at = read_at
         self._end = end
         self._local_name_at = None if end.zip64 else local_name_at
+        # The name check for a shortened name holds for ZIP64 too.
+        self._local_name_for_check = local_name_at
         # Sizes can wrap only in a directory past 4 GiB.
         self._local_data_start_at = (
             local_data_start_at
@@ -781,7 +798,8 @@ class CentralDirectoryWalk:
         after_wrappable = False
         pos = 0
         index = 0
-        checked_count = False
+        # Headers the walk may still step over following signatures inside fields.
+        follow_budget = cd_size // CENTRAL_HEADER_SIZE + 64
         while pos < cd_size:
             ensure(pos, pos + CENTRAL_HEADER_SIZE)
             off = pos - data_start
@@ -806,9 +824,8 @@ class CentralDirectoryWalk:
                 else:
                     field = "comment"
                 raise CorruptionError(
-                    f"ZIP central directory entry #{index} declares a {field} that "
-                    f"runs {entry_end - cd_size} bytes past the central directory's "
-                    "end"
+                    f"ZIP central directory entry #{index}'s {field} runs "
+                    f"{entry_end - cd_size} bytes past the central directory's end"
                 )
             ensure(pos, entry_end)
             at = name_at - data_start
@@ -817,31 +834,24 @@ class CentralDirectoryWalk:
             extra = data[at : at + extra_len]
             at += extra_len
             comment = data[at : at + comment_len]
-            if (
-                not checked_count
-                and CENTRAL_HEADER_SIGNATURE
-                in data[name_at - data_start : entry_end - data_start]
-            ):
-                # The entry's lengths may have swallowed the entries after it, and the
-                # walk would list one entry under a name made of their bytes. Settled
-                # once: the entries after this one are the ones the walk steps over
-                # next, so their count does not change.
-                checked_count = True
-                following = self._count_entries(entry_end, cd_size)
-                if following is None:
-                    raise CorruptionError(
-                        f"ZIP central directory entry #{index}'s name, extra field "
-                        "or comment holds a central directory header, and the "
-                        "entries after it do not end where the directory does: a "
-                        "length field swallowed the entries after it"
+            if follow_budget > 0:
+                found = data.find(
+                    CENTRAL_HEADER_SIGNATURE,
+                    name_at - data_start,
+                    entry_end - data_start,
+                )
+                while found >= 0 and follow_budget > 0:
+                    swallowed, follow_budget = self._chains_to_end(
+                        data, data_start, found + data_start, index, follow_budget
                     )
-                if not _count_matches(end, index + 1 + following):
-                    raise CorruptionError(
-                        f"ZIP central directory entry #{index}'s name, extra field "
-                        "or comment holds a central directory header, and the "
-                        f"directory then holds {index + 1 + following} entries "
-                        f"where the end record declares {end.entries_declared}: a "
-                        "length field swallowed the entries after it"
+                    if swallowed:
+                        raise CorruptionError(
+                            f"ZIP central directory entry #{index}'s name, extra "
+                            "field or comment holds the central directory headers "
+                            "after it: a length field swallowed them"
+                        )
+                    found = data.find(
+                        CENTRAL_HEADER_SIGNATURE, found + 1, entry_end - data_start
                     )
 
             entry = _central_entry(fields, name, extra, comment, index=index, base=base)
@@ -891,6 +901,11 @@ class CentralDirectoryWalk:
                 if member_end > previous_end:
                     previous_end = member_end
             wrapped_base = None
+            if entry_end < cd_size:
+                ensure(pos, entry_end + 4)
+                at = entry_end - data_start
+                if data[at : at + 4] != CENTRAL_HEADER_SIGNATURE:
+                    self._check_cut_name(entry)
             yield entry
             index += 1
             pos = entry_end
@@ -905,31 +920,56 @@ class CentralDirectoryWalk:
                 CommentCutShort(end.comment_declared, len(end.comment))
             )
 
-    def _count_entries(self, pos: int, cd_size: int) -> int | None:
-        """How many entries the directory chains from ``pos`` (directory-relative) to
-        its end, stepping each fixed header's lengths; ``None`` when a header there has
-        no signature, is cut short, or runs past the end."""
-        read_at = self._read_at
-        start = self._end.cd_start
-        count = 0
-        buffer = b""
-        buffer_at = pos
-        while pos < cd_size:
+    def _chains_to_end(
+        self, data: bytes, data_start: int, pos: int, index: int, budget: int
+    ) -> tuple[bool, int]:
+        """Whether central headers chain from ``pos`` (directory-relative) to the
+        directory's end in exactly the entries the end record declares after entry
+        ``index``, and the budget left. Reads ``data`` (directory bytes from
+        ``data_start``) first, then the directory past it."""
+        end = self._end
+        cd_size = end.cd_size
+        left = end.entries_declared - index - 1
+        if not end.zip64:
+            # A classic count is compared modulo 65536: the fewest it can mean.
+            left &= 0xFFFF
+        buffer = data
+        buffer_at = data_start
+        while left > 0 and budget > 0 and pos < cd_size:
             off = pos - buffer_at
             if len(buffer) - off < CENTRAL_HEADER_SIZE:
                 buffer_at = pos
-                buffer = read_at(start + pos, min(_WALK_CHUNK, cd_size - pos))
+                buffer = self._read_at(
+                    end.cd_start + pos, min(_WALK_CHUNK, cd_size - pos)
+                )
                 off = 0
                 if len(buffer) < CENTRAL_HEADER_SIZE:
-                    return None
+                    break
             if buffer[off : off + 4] != CENTRAL_HEADER_SIGNATURE:
-                return None
-            name_len, extra_len, comment_len = struct.unpack_from(
-                "<HHH", buffer, off + 28
+                break
+            pos += _central_entry_size(buffer, off)
+            left -= 1
+            budget -= 1
+        return left == 0 and pos == cd_size, budget
+
+    def _check_cut_name(self, entry: CentralEntry) -> None:
+        """Raise for ``entry``, which no header follows, when the local header at its
+        offset holds another name: its name length was made shorter, and its name is
+        cut. With no local header there, or the same name, the next entry raises."""
+        name_at = self._local_name_for_check
+        if name_at is None:
+            return
+        offset = entry.header_offset
+        if not 0 <= offset <= self._end.cd_start - LOCAL_HEADER_SIZE:
+            return
+        local = name_at(offset)
+        if local is not None and local != entry.name:
+            raise CorruptionError(
+                f"ZIP central directory entry #{entry.index} is not followed by a "
+                f"central directory header, and its local header names it {local!r} "
+                f"where the directory names it {entry.name!r}: a length field is "
+                "damaged"
             )
-            pos += CENTRAL_HEADER_SIZE + name_len + extra_len + comment_len
-            count += 1
-        return count if pos == cd_size else None
 
     def _header_named(self, offset: int, name: bytes) -> bool:
         """A local header named ``name`` starts at ``offset``, before the directory."""
@@ -938,6 +978,14 @@ class CentralDirectoryWalk:
         if not 0 <= offset <= self._end.cd_start - LOCAL_HEADER_SIZE - len(name):
             return False
         return name_at_offset(offset) == name
+
+
+def _central_entry_size(buffer: bytes, offset: int) -> int:
+    """The size of the central header at ``offset`` in ``buffer``: its fixed part
+    and the name, extra field and comment its lengths declare."""
+    return CENTRAL_HEADER_SIZE + sum(
+        _CENTRAL_LENGTHS.unpack_from(buffer, offset + _CENTRAL_LENGTHS_AT)
+    )
 
 
 def _count_matches(end: EndRecord, count: int) -> bool:
