@@ -253,8 +253,8 @@ data's end; a bit-3 LZMA member without the end-of-stream marker is refused wher
 read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
 its data read gave (no password: `EncryptionError`, where the file read reports
 `LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
-makes (a flagged name that is not valid UTF-8) is raised by a file read before anything
-is written and by the pass after every member is written, the files staying on disk.
+makes is raised by a file read before anything is written and by the pass after every
+member is written, the files staying on disk.
 
 #### Scenario: non-seekable read matrix
 
@@ -427,8 +427,7 @@ a cut as `CorruptionError` and never `TruncatedError` (the end record follows it
 listing limit that walk meets SHALL be raised instead of the damage. A read from a pipe
 raises whatever stops it, as it meets that before the directory, and raises the damage
 ahead of a check a member before it fails. `ArchiveInfo.member_count` SHALL be `None`
-when the walk did not complete. A UTF-8-flagged name that is not valid UTF-8 SHALL raise
-`CorruptionError` the same way, at its entry. A name, extra field or comment that runs
+when the walk did not complete. A name, extra field or comment that runs
 past the directory's end can only be the last entry's; it is the end-record mismatch
 above, not damage. A local-header offset past the file's end SHALL raise
 `CorruptionError` when that member opens, never `TruncatedError` (the directory follows
@@ -564,11 +563,102 @@ SHALL stay refused as a split set.
 | Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
 | A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
 
+### Requirement: Read ZIPs written past 4 GiB without ZIP64
+
+macOS Archive Utility (Finder's Compress, `ditto -c -k`) writes a classic ZIP past
+4 GiB and stores every offset modulo 2³², the end record's offset of the central
+directory too. When the end record is classic, a read from a file and a read from a
+pipe SHALL correct such offsets as they walk the directory. The members lie in
+directory order, so an entry whose stored local header offset falls below the end of
+an entry before it (its corrected offset, the 30-byte fixed local header and its
+compressed size; the furthest such end) SHALL get 2³² added until it no longer does.
+The directory's own offset wraps the same way, which makes the stub length the end
+record implies (`base`) a multiple of 2³² larger than the real one: the walk SHALL
+take that length modulo 2³². A correction SHALL be kept only when a local header
+whose name equals the entry's starts at the corrected offset before the directory (for
+the directory's offset, the first entry's header at its offset with the smaller
+length); otherwise the stored offset stays and the member fails as it would without
+the correction. A read from a pipe checks the name against the local headers its pass
+met. An offset from a ZIP64 extra field, and any offset under a ZIP64 end record,
+SHALL NOT be corrected. Each kept correction SHALL emit `ARCHIVE_OFFSET_WRAPPED` with
+`OffsetWrapContext`: one per member (`record="local_header"`), and one for the
+directory (`record="central_directory"`, no member). The member's CRC-32 SHALL be
+checked as for any member. A member whose own sizes pass 4 GiB wraps its sizes too;
+the next requirement corrects them for the entries that writer marks. Without those
+marks its read raises at the declared size, and when its compressed size wraps, its end
+falls a multiple of 2³² short, so the members after it keep their stored offsets and
+their reads fail too.
+
+#### Scenario: offsets wrapped past 4 GiB
+
+| Archive (a sparse layout, nothing stored past the headers and short members) | Expected, from a file and from a pipe |
+| --- | --- |
+| A member of 2³² − 16 bytes, then two short members and the directory past 4 GiB, every offset stored modulo 2³² | Three members listed; the two short ones read with matching CRCs; `ARCHIVE_OFFSET_WRAPPED` twice with `record="local_header"`, then once with `record="central_directory"` |
+| Every member below 4 GiB, the last one ending past it, so only the directory's offset wraps | Members listed and read; one `ARCHIVE_OFFSET_WRAPPED` with `record="central_directory"` |
+| The first case with the directory naming one short member differently from its local header | From a file: that member keeps its stored offset and its read raises `CorruptionError`; the other is corrected. From a pipe: the directory entry points at no local header the pass met, so the pass raises `CorruptionError` at the directory, as for any such entry, and reports the unmatched local header as `ARCHIVE_UNLISTED_DATA` |
+| A member of 2³² + 2²⁹ bytes, sizes and offsets stored modulo 2³², then a short member, without Archive Utility's marks | Both listed and the directory's offset corrected; the short member after the large one keeps its stored offset and its read raises `CorruptionError` |
+| A ZIP under 4 GiB whose directory lists members out of file order | No correction and no extra read: every corrected offset would be past the directory |
+| The first case under `DiagnosticPolicy.STRICT` | Reads as above; the `ARCHIVE_OFFSET_WRAPPED` diagnostics are recorded, not raised |
+
+### Requirement: Read members past 4 GiB of a macOS Archive Utility ZIP
+
+The same writer stores a member's sizes modulo 2³² as well. An entry carries its marks
+when its version made by is `0x0315` (Unix, 2.1), general-purpose bit 3 is set and
+bit 0 (encryption) clear, and its central extra field is one old Info-ZIP Unix (`UX`,
+`0x5855`) field and nothing else. Anyone can copy the marks, so they SHALL only gate
+the corrections below, each checked against the archive's own bytes; under a ZIP64
+end record nothing is corrected.
+
+- **Compressed size.** When the directory starts past 4 GiB, the walk SHALL hold back
+  each marked entry until it has corrected the next entry's offset, and SHALL measure
+  the marked entry's data from its local header's data start to the next entry's
+  local header, or to the directory for the last entry, less the 16-byte signed data
+  descriptor. When that length exceeds the stored compressed size by a positive
+  multiple of 2³², the entry SHALL take it. The entry after a marked one SHALL look
+  for its local header at its stored offset plus each multiple of 2³² in turn, from the
+  first not below the end of the members before it, and keep the first whose name
+  matches; the data start SHALL come from the same local header read. A read from a
+  pipe measures from the local headers its pass met.
+- **Size, stored members.** The size SHALL be the compressed size when the two agree
+  modulo 2³².
+- **Size, deflated members.** The size is the stored size plus a multiple of 2³² that
+  is at most 1032 times the compressed size (a 258-byte match takes two bits at the
+  least). No lower bound applies, since empty stored blocks pad a valid stream without
+  bound. When only the stored size fits, it SHALL be the member's size. When several
+  fit, `size` SHALL be `None`, with `extra["size_mod_2_32"]` holding the stored size;
+  the key SHALL stay after a read fills `size` in. An entry with no CRC-32 SHALL keep
+  the stored size instead of `None`, since nothing can check a read against it. When none fits (a damaged entry),
+  the stored size SHALL stay, and the read fails on it.
+- A member whose sizes were corrected or left unknown SHALL emit `MEMBER_SIZE_WRAPPED`
+  with `SizeWrapContext` (advisory, as `ARCHIVE_OFFSET_WRAPPED`). Its message SHALL say
+  the archive was written past 4 GiB only for a corrected size, not an unknown one.
+- **Reading a member of unknown size.** A read from a file SHALL decode the member
+  with no declared size, under the usual limits. Once a read reaches the end, the
+  length SHALL be refused with `CorruptionError` unless it equals the stored size
+  modulo 2³² and is at most 1032 times the compressed size, then the CRC-32 SHALL be
+  checked, and only then SHALL `member.size` take the length. A pipe pass that decoded
+  the member to its end with the directory's CRC-32 SHALL keep the size it counted
+  when the directory leaves it unknown.
+
+#### Scenario: members past 4 GiB with Archive Utility's marks
+
+| Archive (a sparse layout; every entry marked) | Expected |
+| --- | --- |
+| A short member, a stored member of 2³² + 2²⁹ zero bytes, a short member | From a file and a pipe: the large member's size and compressed size are 2³² + 2²⁹, the members after it read, one `MEMBER_SIZE_WRAPPED` and the offset corrections |
+| The same without the `UX` fields | The stored sizes stay and the last member's read fails, as in the previous requirement |
+| A deflated member of 2³² + 100 zero bytes, about 4 MiB compressed | `size` is `None` and `extra["size_mod_2_32"]` 100 at listing; `DiagnosticPolicy.STRICT` lists it; a read to the end yields 2³² + 100 bytes and fills in `size`, and the key stays |
+| A deflated member of 100 bytes padded with empty stored blocks to about 1 MB, stored size 100 | `size` is `None`, not 2³² + 100; a read yields 100 bytes and fills in `size` |
+| A deflated member whose stored size is over 1032 times its compressed size | The stored size stays; the read raises `TruncatedError` |
+| A stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
+| A stream of unknown size with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |
+| A stored entry `d/` with no CRC-32 and 2³² + 2²⁹ bytes of data | Its sizes come from the layout, with one `MEMBER_SIZE_WRAPPED`; the member after it reads |
+| A small deflated member | Untouched: no diagnostic, no `size_mod_2_32` |
+
 ### Requirement: Apply max_members while reading a ZIP directory
 
 `ListingLimits.max_members` SHALL be charged as the central directory is walked, in
-every access mode and by every walk (the listing, and the index pass a member open or
-`member_count` runs when it comes first), so `stream_members()` and iteration are not
+every access mode and by every walk (the listing, and the index pass `member_count`
+runs when it comes first), so `stream_members()` and iteration are not
 an escape hatch. An end record that declares more entries than `max_members`, in a
 directory at least 46 bytes per declared entry long, SHALL be refused at
 `open_archive` with `ResourceLimitError`. A declared count the directory cannot hold is
@@ -709,7 +799,12 @@ back to the caller's `encoding=` when one was passed, else to a configurable leg
 (default cp437, per APPNOTE). The caller's `encoding=` and the configured fallback SHALL
 decode with `surrogateescape`; a codec that refuses that handler (`idna`) gives way to the
 next one, and cp437 decodes every byte. This sniff SHALL apply only in the absence of an
-authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8. When the sniff
+authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8 when the bytes are
+valid UTF-8. A name whose bit 11 is set over bytes that are not valid UTF-8 SHALL decode
+as an unflagged name that is not valid UTF-8 does (the caller's `encoding=`, else the
+configured fallback, with no Unicode Path field consulted), and SHALL emit
+`MEMBER_NAME_ENCODING_INFERRED` with `inferred_encoding` the codec used and
+`declared_encoding="utf-8"`, whether or not the caller passed `encoding=`. When the sniff
 selects an encoding archivey chose over the cp437 default — UTF-8, or a configured fallback
 other than cp437 — the backend SHALL emit a `diagnostics` warning identifying the member,
 the chosen encoding and the encoding it passed over (the caller's `encoding=` or the
@@ -751,14 +846,17 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 
 #### Scenario: Authoritative signal disables the sniff
 
-- **WHEN** bit 11 is set
+- **WHEN** bit 11 is set and the name is valid UTF-8
 - **THEN** the name is decoded as UTF-8, with no sniff and no override diagnostic
 
-#### Scenario: A flagged name that is not UTF-8
+#### Scenario: A set flag the bytes refute
 
-- **WHEN** bit 11 is set and the stored name is not valid UTF-8
-- **THEN** the listing raises `CorruptionError` at that entry, after the members before
-  it
+- **WHEN** bit 11 is set and the name is not valid UTF-8 (`caf\xe9.txt`), from a file or
+  from a pipe
+- **THEN** the archive lists every member, the name decodes as `cafΘ.txt` (cp437), or
+  as `café.txt` under `encoding="cp1252"`, `raw_name` keeps the stored bytes, and
+  `MEMBER_NAME_ENCODING_INFERRED` records the codec used with
+  `declared_encoding="utf-8"`; `DiagnosticPolicy.STRICT` refuses the archive
 
 #### Scenario: Unicode Path extra field
 
@@ -774,17 +872,24 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 ### Requirement: Decode ZIP comments as unflagged names are decoded
 
 APPNOTE puts a member comment under the same bit 11 as its name, and gives the archive
-comment no flag. A member comment whose bit 11 is clear, and the archive comment, SHALL
-decode as an unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
+comment no flag. A member comment whose bit 11 is clear or set over a name that is not
+valid UTF-8 (a flag the name's bytes refute), and the archive comment, SHALL decode as an
+unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
 `encoding=`, else `zip_unflagged_fallback_encoding` (default cp437). The `encoding=` and
 fallback steps SHALL be the ones a name uses. A byte the chosen codec leaves undefined
-SHALL survive as a lone surrogate, as it does in a name. A member comment whose bit 11 is
-set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and SHALL
-ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
+SHALL survive as a lone surrogate, as it does in a name. Any other member comment whose
+bit 11 is set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and
+SHALL ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
 `MEMBER_NAME_ENCODING_INFERRED`.
 
 #### Scenario: A flagged member comment ignores `encoding=`
 
-- **WHEN** a member with bit 11 set has a comment whose bytes are not valid UTF-8, and
-  the archive is opened with `encoding="cp1251"`
+- **WHEN** a member with bit 11 set and a valid UTF-8 name has a comment whose bytes are
+  not valid UTF-8, and the archive is opened with `encoding="cp1251"`
 - **THEN** the comment is the cp437 reading of the bytes, not the cp1251 one
+
+#### Scenario: A flag the name refutes does not cover the comment
+
+- **WHEN** a member with bit 11 set has the name `caf\xe9.txt` and the comment
+  `caf\xe9ine`, and the archive is opened with `encoding="cp1252"`
+- **THEN** the name is `café.txt` and the comment `caféine`, both decoded as unflagged

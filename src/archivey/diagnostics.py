@@ -83,6 +83,8 @@ class DiagnosticCode(StrEnum):
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
+    ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
+    MEMBER_SIZE_WRAPPED = "member_size_wrapped"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -145,6 +147,10 @@ DiagnosticCodeStr = Literal[
     "member-special-file-has-data",
     "member_directory_data_ignored",
     "member-directory-data-ignored",
+    "archive_offset_wrapped",
+    "archive-offset-wrapped",
+    "member_size_wrapped",
+    "member-size-wrapped",
 ]
 
 
@@ -167,8 +173,9 @@ class NameEncodingContext(_JsonSafeContext):
 
     ``inferred_encoding`` decodes ``raw_name_base64`` to ``member_name``.
     ``declared_encoding`` is the encoding the name would otherwise have had: the
-    caller's ``encoding=`` or the format's fallback when UTF-8 was inferred, and ZIP's
-    cp437 default when a configured fallback was used. Both encoding fields are empty
+    caller's ``encoding=`` or the format's fallback when UTF-8 was inferred, ZIP's
+    cp437 default when a configured fallback was used, and ``"utf-8"`` when a ZIP name's
+    UTF-8 flag is set over bytes that are not UTF-8. Both encoding fields are empty
     when no decode of the stored bytes produced the name: ISO takes a Rock Ridge name
     that is not UTF-8 from the file's Joliet record instead.
     """
@@ -589,6 +596,74 @@ class SpecialFileDataContext(_JsonSafeContext):
     size: int | None = None
 
 
+@dataclass(frozen=True)
+class OffsetWrapContext(_JsonSafeContext):
+    """An offset the archive stores is short of where its record is by a multiple of
+    2³², because the writer stored a 32-bit field past 4 GiB without ZIP64.
+
+    macOS Archive Utility (Finder's Compress, ``ditto -c -k``) writes such ZIPs. The
+    reader adds 2³² to an offset that falls below the furthest end of the members before
+    it, until it no longer does, and keeps the result only when a local header with the
+    member's name starts there; the member's CRC-32 is still checked when it is read.
+    ``record`` says which offset was corrected:
+
+    - ``"local_header"`` — a central directory entry's local header offset.
+      ``member_name`` and ``member_id`` name the member.
+    - ``"central_directory"`` — the end record's offset of the central directory. The
+      archive is reported once, with an empty ``member_name`` and a ``member_id`` of
+      ``None``.
+
+    ``stored_offset`` is the value in the archive and ``corrected_offset`` the one used,
+    both counted as the format counts them (before a self-extractor stub's length is
+    added).
+    """
+
+    kind: Literal["offset_wrap"] = "offset_wrap"
+    archive_name: str | None = None
+    format: str = ""
+    member_name: str = ""
+    member_id: int | None = None
+    record: Literal["local_header", "central_directory"] = "local_header"
+    stored_offset: int = 0
+    corrected_offset: int = 0
+
+
+@dataclass(frozen=True)
+class SizeWrapContext(_JsonSafeContext):
+    """A ZIP member's stored sizes are its real sizes modulo 2³², because the writer
+    stored 32-bit fields for a member past 4 GiB without ZIP64.
+
+    macOS Archive Utility (Finder's Compress, ``ditto -c -k``) writes such ZIPs. The
+    reader corrects sizes only for an entry that carries that writer's fields (version
+    made by Unix 2.1, a data descriptor, only the ``0x5855`` extra field) in an archive
+    with no ZIP64 records:
+
+    - The compressed size is measured from the layout: the member's data and data
+      descriptor end where the next local header starts, or the central directory,
+      and that end must be past the stored size's by a multiple of 2³².
+    - A stored member's size is its compressed size. A deflated member's size is the
+      stored value plus a multiple of 2³² that deflate's ratio allows (at most 1032 to
+      1; nothing bounds it from below). When it allows several, the size is unknown
+      until a read: ``size`` is ``None`` here and on the
+      member, and ``extra["size_mod_2_32"]`` holds the stored value. A read that
+      reaches the end checks the length against both, then the CRC-32, and only then
+      fills in ``member.size``.
+
+    ``stored_*`` are the values in the archive; ``compressed_size`` and ``size`` the
+    ones the member carries.
+    """
+
+    kind: Literal["size_wrap"] = "size_wrap"
+    archive_name: str | None = None
+    format: str = ""
+    member_name: str = ""
+    member_id: int | None = None
+    stored_compressed_size: int = 0
+    compressed_size: int = 0
+    stored_size: int = 0
+    size: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -610,6 +685,8 @@ DiagnosticContext = (
     | StreamRewindContext
     | SelectorUnmatchedContext
     | SpecialFileDataContext
+    | OffsetWrapContext
+    | SizeWrapContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -641,6 +718,8 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
+        DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
+        DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
     }
 )
 
@@ -667,7 +746,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eleven codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Thirteen codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -705,6 +784,15 @@ and the reasons are part of the contract rather than an oversight:
 - ``FORMAT_EXTENSION_CONFLICT`` — reports the file's name, not its bytes: the bytes
   win and the archive reads in full. A tarball saved as ``b.gz`` is an ordinary mistake,
   and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
+- ``ARCHIVE_OFFSET_WRAPPED`` — macOS Archive Utility (Finder's Compress) writes a ZIP
+  past 4 GiB this way by default and reads it back, and a correction is kept only when
+  a local header with the member's name is there, with the CRC-32 still checked.
+  ``STRICT`` would refuse an ordinary Mac archive.
+- ``MEMBER_SIZE_WRAPPED`` — the same Mac archives: a member past 4 GiB, or a deflated
+  one over about 4 MB compressed in an archive of any length, whose size only a read
+  can tell. A size is corrected only where the layout or deflate's ratio forces it,
+  and an unknown one is ``None``, with the length and CRC-32 checked on a read.
+  ``STRICT`` would refuse ordinary Mac archives.
 """
 
 
@@ -1070,10 +1158,12 @@ __all__ = [
     "MemberTimestampContext",
     "NameEncodingContext",
     "NameNormalizationContext",
+    "OffsetWrapContext",
     "OnDiagnostic",
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",
+    "SizeWrapContext",
     "SpecialFileDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",

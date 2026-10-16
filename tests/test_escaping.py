@@ -259,13 +259,7 @@ _EXCEPTION_WORDS = {"e", "exc", "err", "error", "cause", "caused", "fault", "exc
 
 # Sites that may still show a caught exception as its repr, keyed by
 # (module, enclosing function, interpolated expression) so a moved line keeps its entry.
-_EXCEPTION_REPR_ALLOWED = {
-    # The ``UnicodeDecodeError`` repr carries the raw name bytes as a bytes literal; its
-    # plain text would not show them. The message constructor escapes that literal a
-    # second time (``b'\\x80'``), so it does not arrive intact either. Reworded with
-    # the ZIP reader's native rewrite, not here.
-    ("internal/backends/zip_reader.py", "_decode_member_name", "exc"),
-}
+_EXCEPTION_REPR_ALLOWED: set[tuple[str, str, str]] = set()
 
 
 def _is_exception_named(expr: str) -> bool:

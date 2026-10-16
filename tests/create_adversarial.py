@@ -7,8 +7,8 @@ tree.
 
 The case names describe what the format actually says:
 
-* invalid/WTF-8/overlong ZIP names have general-purpose bit 11 set in *both* headers and
-  therefore genuinely claim UTF-8;
+* invalid/WTF-8/overlong ZIP names have general-purpose bit 11 set in *both* headers, so
+  the flag claims UTF-8 and the bytes are not: they decode as an unflagged name would;
 * an unflagged high-byte ZIP name and comment are explicitly CP437 fallback cases, not
   mislabeled "invalid UTF-8";
 * TAR invalid bytes exercise tarfile's documented UTF-8+surrogateescape path;
@@ -217,14 +217,12 @@ def _tar_splice(base: bytes, token: bytes, replacement: bytes) -> bytes:
 # --- corpus manifest --------------------------------------------------------------
 
 
-OpenOutcome = Literal["success", "corruption"]
 ExtractOutcome = Literal[
     "success",
     "path_traversal",
     "symlink_escape",
     "filesystem_name_refusal",
     "deceptive_name",
-    "not_reached",
 ]
 
 
@@ -240,9 +238,16 @@ class Adversarial:
     expected_link_target: str | None = None
     expected_comment: str | None = None
     utf8_flag: bool = False
-    open_outcome: OpenOutcome = "success"
     extract_outcome: ExtractOutcome = "success"
     warning_text: str | None = None
+
+
+def _is_utf8(raw: bytes) -> bool:
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def _zip_name_case(
@@ -250,14 +255,11 @@ def _zip_name_case(
     key: str,
     *,
     utf8: bool,
-    open_outcome: OpenOutcome = "success",
     extract_outcome: ExtractOutcome = "success",
     warning_text: str | None = None,
 ) -> Adversarial:
     raw = _padded(_HOSTILE[key], len(_NAME))
-    decoded = (
-        raw.decode("utf-8" if utf8 else "cp437") if open_outcome == "success" else None
-    )
+    decoded = raw.decode("utf-8" if utf8 and _is_utf8(raw) else "cp437")
     return Adversarial(
         id=case_id,
         fmt="zip",
@@ -267,9 +269,8 @@ def _zip_name_case(
         field="name",
         stored_name=raw,
         expected_name=decoded,
-        expected_raw_name=raw if decoded is not None else None,
+        expected_raw_name=raw,
         utf8_flag=utf8,
-        open_outcome=open_outcome,
         extract_outcome=extract_outcome,
         warning_text=warning_text,
     )
@@ -308,22 +309,19 @@ CORPUS: tuple[Adversarial, ...] = (
         "zip-name-wtf8-flagged",
         "lone_surrogate",
         utf8=True,
-        open_outcome="corruption",
-        extract_outcome="not_reached",
+        warning_text="UTF-8 flag is set",
     ),
     _zip_name_case(
         "zip-name-invalid-utf8-flagged",
         "invalid_utf8",
         utf8=True,
-        open_outcome="corruption",
-        extract_outcome="not_reached",
+        warning_text="UTF-8 flag is set",
     ),
     _zip_name_case(
         "zip-name-overlong-utf8-flagged",
         "overlong",
         utf8=True,
-        open_outcome="corruption",
-        extract_outcome="not_reached",
+        warning_text="UTF-8 flag is set",
     ),
     _zip_name_case(
         "zip-name-rtl-override",

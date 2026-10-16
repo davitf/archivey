@@ -502,7 +502,9 @@ class CentralEntry:
     crc: int
     compressed_size: int
     file_size: int
-    #: Absolute position of the local header: the stored offset plus ``EndRecord.base``.
+    #: Absolute position of the local header: the stored offset plus ``EndRecord.base``,
+    #: and plus ``offset_correction`` and minus a wrapped ``base``'s excess when the walk
+    #: corrects offsets wrapped past 4 GiB (:class:`CentralDirectoryWalk`).
     header_offset: int
     disk_start: int
     internal_attr: int
@@ -511,6 +513,15 @@ class CentralEntry:
     name: bytes
     extra: bytes
     comment: bytes
+    #: What :class:`CentralDirectoryWalk` added to the stored offset because the
+    #: archive was written past 4 GiB without ZIP64 (a multiple of 2³²); 0 otherwise.
+    offset_correction: int = 0
+    #: The offset field as stored, when ``offset_correction`` is not 0.
+    stored_offset: int = 0
+    #: What :class:`CentralDirectoryWalk` added to the stored compressed size because
+    #: the member's data runs a multiple of 2³² past it (macOS Archive Utility,
+    #: :func:`written_by_archive_utility`); 0 otherwise.
+    compressed_size_correction: int = 0
 
     @property
     def create_system(self) -> int:
@@ -560,7 +571,65 @@ class EntryOverrun:
     cd_size: int
 
 
-WalkFinding = EntryCountMismatch | CommentCutShort | EntryOverrun
+@dataclass(frozen=True, slots=True)
+class DirectoryOffsetWrapped:
+    """The end record stores the directory's offset modulo 2³², and the walk took the
+    archive's ``base`` modulo 2³² (:class:`CentralDirectoryWalk`)."""
+
+    #: The directory offset the end record stores.
+    stored: int
+    #: The offset the directory is at, without ``base``.
+    corrected: int
+
+
+WalkFinding = (
+    EntryCountMismatch | CommentCutShort | EntryOverrun | DirectoryOffsetWrapped
+)
+
+#: The amount a 32-bit offset field wraps by.
+OFFSET_WRAP = 1 << 32
+
+
+def local_header_at(read_at: ReadAt, offset: int) -> tuple[bytes, int] | None:
+    """The stored name of the local header at absolute ``offset`` and where the data
+    after it starts, or ``None`` when no whole local header starts there."""
+    fixed = read_at(offset, LOCAL_HEADER_SIZE)
+    if len(fixed) != LOCAL_HEADER_SIZE or fixed[:4] != LOCAL_HEADER_SIGNATURE:
+        return None
+    (name_len,) = struct.unpack_from("<H", fixed, LOCAL_HEADER_SIZE - 4)
+    name = read_at(offset + LOCAL_HEADER_SIZE, name_len)
+    if len(name) != name_len:
+        return None
+    return name, offset + LOCAL_HEADER_SIZE + local_header_variable_length(fixed)
+
+
+#: "Version made by" of macOS Archive Utility: host 3 (Unix), APPNOTE version 2.1.
+ARCHIVE_UTILITY_MADE_BY = 0x0315
+#: The old Info-ZIP Unix extra field (``UX``): the only one Archive Utility writes.
+_INFOZIP_OLD_UNIX_TAG = b"UX"
+#: A data descriptor with its signature and 4-byte sizes, as Archive Utility writes it.
+_SIGNED_DESCRIPTOR_SIZE = 16
+
+
+def written_by_archive_utility(entry: CentralEntry) -> bool:
+    """Whether ``entry`` looks as macOS Archive Utility (Finder's Compress, ``ditto -c
+    -k``) writes every entry: version made by Unix 2.1, a data descriptor (bit 3) and
+    no encryption (bit 0; that writer encrypts nothing), and one extra field, the old
+    Info-ZIP ``UX`` field (``0x5855``).
+
+    The caller also requires a classic end record: that writer never writes ZIP64.
+    Anyone can copy these fields, so a match only lets a reader try the corrections
+    for sizes and offsets that writer wraps modulo 2³². Each correction is still
+    checked against the archive's own bytes.
+    """
+    extra = entry.extra
+    return (
+        entry.version_made_by == ARCHIVE_UTILITY_MADE_BY
+        and entry.flags & 0x09 == 0x08
+        and len(extra) >= 4
+        and extra[:2] == _INFOZIP_OLD_UNIX_TAG
+        and int.from_bytes(extra[2:4], "little") == len(extra) - 4
+    )
 
 
 class CentralDirectoryWalk:
@@ -580,15 +649,104 @@ class CentralDirectoryWalk:
 
     Each ``iter()`` walks again from the start. :attr:`findings` is complete once an
     iteration has ended without raising, and is reset when the next one starts.
+
+    **Offsets past 4 GiB without ZIP64.** macOS Archive Utility (Finder's Compress,
+    ``ditto -c -k``) writes a classic ZIP past 4 GiB and stores every offset modulo
+    2³². With ``local_name_at`` (the stored name of the local header at an absolute
+    offset, ``None`` when there is none) and a classic end record, the walk undoes
+    that wrap. The members lie in directory order, so an entry whose offset falls
+    below the end of an entry before it (its offset, the fixed local header and its
+    compressed size; the furthest such end) gets 2³² added until it does not. The
+    directory's own offset wraps the same way, and then ``base`` holds a multiple of
+    2³²: the walk takes ``base`` modulo 2³² instead. Each correction is kept only when
+    a local header with the entry's name starts at the corrected offset, before the
+    directory (for the directory's offset, the first entry's header at its offset with
+    the smaller ``base``). Otherwise the entry keeps the stored offset, as without the
+    correction, and its read fails as it did. A kept correction is in
+    :attr:`CentralEntry.offset_correction`, or in :attr:`findings` for the directory.
+    An offset from a ZIP64 extra field is never corrected.
+
+    **Compressed sizes past 4 GiB.** Sizes wrap too. With ``local_data_start_at``
+    (where the data after the local header at an offset starts) and a directory past
+    4 GiB, an entry :func:`written_by_archive_utility` describes has its compressed
+    size measured from the layout. Its data and 16-byte signed data descriptor end
+    where the next entry's local header starts, or the directory for the last one.
+    When that end is past the stored size's by a multiple of 2³², the size takes that
+    multiple (:attr:`CentralEntry.compressed_size_correction`). The walk yields such an
+    entry once it has read the next one. The entry after one whose size may have
+    wrapped looks for its local header at its stored offset plus each multiple of 2³²
+    in turn, from the first that is not below the end of the members before it, and
+    keeps the first with its name. In such an archive that is one more local header
+    read per member (its fixed part, then its name), when the two callables share it
+    as the reader's do. An uncompressed size that wraps is the reader's to settle:
+    only a decode says what it is.
     """
 
-    def __init__(self, read_at: ReadAt, end: EndRecord) -> None:
+    def __init__(
+        self,
+        read_at: ReadAt,
+        end: EndRecord,
+        *,
+        local_name_at: Callable[[int], bytes | None] | None = None,
+        local_data_start_at: Callable[[int], int | None] | None = None,
+    ) -> None:
         self._read_at = read_at
         self._end = end
+        self._local_name_at = None if end.zip64 else local_name_at
+        # Sizes can wrap only in a directory past 4 GiB.
+        self._local_data_start_at = (
+            local_data_start_at
+            if self._local_name_at is not None and end.cd_start >= OFFSET_WRAP
+            else None
+        )
         self.findings: list[WalkFinding] = []
         self.entries_read: int | None = None
 
     def __iter__(self) -> Iterator[CentralEntry]:
+        start_at = self._local_data_start_at
+        if start_at is None:
+            yield from self._entries()
+            return
+        # An entry whose compressed size may have wrapped, held back until the next
+        # entry's offset says where its data ends, with where its data starts.
+        pending: tuple[CentralEntry, int] | None = None
+        try:
+            for entry in self._entries():
+                if pending is not None:
+                    held, held_start = pending
+                    pending = None
+                    self._settle_compressed_size(held, held_start, entry.header_offset)
+                    yield held
+                data_start = (
+                    start_at(entry.header_offset)
+                    if written_by_archive_utility(entry)
+                    else None
+                )
+                if data_start is None:
+                    yield entry
+                else:
+                    pending = (entry, data_start)
+        except Exception:
+            # Every entry before damage is yielded before it raises.
+            if pending is not None:
+                yield pending[0]
+            raise
+        if pending is not None:
+            self._settle_compressed_size(*pending, self._end.cd_start)
+            yield pending[0]
+
+    def _settle_compressed_size(
+        self, entry: CentralEntry, data_start: int, data_end: int
+    ) -> None:
+        """Take the multiple of 2³² that ``entry``'s compressed size lost, when its data
+        and signed data descriptor run from ``data_start`` to ``data_end`` (the next
+        local header, or the directory), that far past the stored size."""
+        gap = data_end - _SIGNED_DESCRIPTOR_SIZE - data_start - entry.compressed_size
+        if gap > 0 and not gap & _U32_MAX:
+            entry.compressed_size += gap
+            entry.compressed_size_correction = gap
+
+    def _entries(self) -> Iterator[CentralEntry]:
         end = self._end
         self.findings = []
         self.entries_read = None
@@ -617,6 +775,19 @@ class CentralDirectoryWalk:
                 have += len(piece)
             data = b"".join(pieces)
 
+        name_at_offset = self._local_name_at
+        # ``base`` modulo 2³², tried once, on the first entry, when ``base`` is past it.
+        wrapped_base = (
+            base & _U32_MAX
+            if name_at_offset is not None and base >= OFFSET_WRAP
+            else None
+        )
+        # Where the members before this entry end at the earliest: the furthest end, so
+        # an entry left uncorrected does not hide the wrap from the entries after it.
+        previous_end = 0
+        # Whether the entry before may hold a compressed size that wrapped, which moves
+        # this one's offset by a multiple of 2³² that ``previous_end`` cannot show.
+        after_wrappable = False
         pos = 0
         index = 0
         while pos < cd_size:
@@ -650,7 +821,54 @@ class CentralDirectoryWalk:
                     field = "comment"
                 self.findings.append(EntryOverrun(index, field, entry_end, cd_size))
 
-            yield _central_entry(fields, name, extra, comment, index=index, base=base)
+            entry = _central_entry(fields, name, extra, comment, index=index, base=base)
+            # An offset deferred to a ZIP64 extra field is not corrected. The first
+            # entry always gets the one try at ``base``: an offset that needs ZIP64
+            # puts the directory past 4 GiB, which saturates the end record's own
+            # offset field, and such an end record is ZIP64 (no correction at all).
+            if name_at_offset is not None:
+                if fields[18] != _U32_MAX:
+                    offset = entry.header_offset
+                    if wrapped_base is not None:
+                        shift = base - wrapped_base
+                        if self._header_named(offset - shift, name):
+                            base = wrapped_base
+                            entry.header_offset = offset - shift
+                            self.findings.append(
+                                DirectoryOffsetWrapped(
+                                    end.cd_offset, end.cd_offset + shift
+                                )
+                            )
+                    elif offset < previous_end or after_wrappable:
+                        # The fewest 2³² steps that reach ``previous_end``,
+                        # counted rather than stepped: a ZIP64 extra field can
+                        # declare a compressed size near 2⁶⁴.
+                        steps = max(0, (previous_end - offset + _U32_MAX) >> 32)
+                        corrected = offset + (steps << 32)
+                        if after_wrappable:
+                            # Then each further multiple, up to the directory.
+                            while not self._header_named(corrected, name):
+                                corrected += OFFSET_WRAP
+                                if corrected >= end.cd_start:
+                                    corrected = offset
+                                    break
+                        elif not self._header_named(corrected, name):
+                            corrected = offset
+                        if corrected != offset:
+                            entry.header_offset = corrected
+                            entry.offset_correction = corrected - offset
+                            entry.stored_offset = fields[18]
+                after_wrappable = (
+                    self._local_data_start_at is not None
+                    and written_by_archive_utility(entry)
+                )
+                member_end = (
+                    entry.header_offset + LOCAL_HEADER_SIZE + entry.compressed_size
+                )
+                if member_end > previous_end:
+                    previous_end = member_end
+            wrapped_base = None
+            yield entry
             index += 1
             pos = entry_end
 
@@ -668,6 +886,14 @@ class CentralDirectoryWalk:
             self.findings.append(
                 CommentCutShort(end.comment_declared, len(end.comment))
             )
+
+    def _header_named(self, offset: int, name: bytes) -> bool:
+        """A local header named ``name`` starts at ``offset``, before the directory."""
+        name_at_offset = self._local_name_at
+        assert name_at_offset is not None
+        if not 0 <= offset <= self._end.cd_start - LOCAL_HEADER_SIZE - len(name):
+            return False
+        return name_at_offset(offset) == name
 
 
 #: The fixed header's fields as ``_CENTRAL_HEADER`` unpacks them: signature, made-by
