@@ -139,9 +139,12 @@ _DESCRIPTOR_LENGTHS = (24, 20, 16, 12)
 _DESCRIPTOR_LONGEST = _DESCRIPTOR_LENGTHS[0]
 # Forward reads are made in pieces of this size.
 _READ_CHUNK = 1 << 16
+# The first read ahead into a bit-3 member's data, whose end the walk does not know
+# yet; each later one asks for up to twice as much (``MemberData._read_ahead``).
+_READ_AHEAD_FIRST = 256
 # How much of what a codec member handed out is kept to put back. A codec member's
 # layers read ahead by at most a few of their read sizes: DecompressorStream reads up
-# to 1 MiB at once and a BufferedReader in front of it a little more.
+# to 1 MiB at once, and a decrypt stage in front of it a little more.
 _CODEC_RETAIN = 4 << 20
 # The end record and its comment, the longest tail a stream can end with after the
 # directory: kept by the descriptor scan to tell a whole archive after the member
@@ -373,6 +376,7 @@ class MemberData(ReadOnlyIOStream):
         #: its descriptor); empty until then and on any other member.
         self.passed_over = b""
         self._settled = False
+        self._ahead = _READ_AHEAD_FIRST
 
     def read(self, n: int = -1, /) -> bytes:
         if self._settled:
@@ -386,6 +390,21 @@ class MemberData(ReadOnlyIOStream):
 
     def _read_some(self, size: int) -> bytes:
         raise NotImplementedError
+
+    def _read_ahead(self, size: int) -> bytes:
+        """Up to ``size`` bytes more from the stream, for data whose end is not known.
+
+        What is read past the data's end is put back for the next header and read
+        again, so the first read asks for :data:`_READ_AHEAD_FIRST` bytes and each
+        one that got all it asked for doubles the next. A member then reads past its
+        end by about its own length at most, not by a whole read size: many small
+        bit-3 members cost about their own bytes, not a read size each.
+        """
+        want = min(size, self._ahead)
+        data = self._source.read(want)
+        if want == self._ahead and len(data) == want:
+            self._ahead *= 2
+        return data
 
     @property
     def found_descriptor(self) -> DataDescriptor | None:
@@ -520,7 +539,7 @@ class _CodecData(MemberData):
         return EOCD_SIGNATURE in b"".join(self._kept)
 
     def _read_some(self, size: int) -> bytes:
-        data = self._source.read(size)
+        data = self._read_ahead(size)
         if data:
             self.consumed += len(data)
             self._kept.append(data)
@@ -659,7 +678,7 @@ class _ScannedData(MemberData):
         self._tail = bytearray()
 
     def _pull(self) -> bool:
-        data = self._source.read(_READ_CHUNK)
+        data = self._read_ahead(_READ_CHUNK)
         if not data:
             self._eof = True
             return False

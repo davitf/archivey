@@ -1367,3 +1367,40 @@ def test_a_bit3_ppmd_member_with_no_end_mark_fails_as_from_a_file() -> None:
     seen = _pipe_reads(data)
     assert seen["p.bin"] is CorruptionError
     assert seen["b.txt"] == b"after"
+
+
+@pytest.mark.parametrize("read", [True, False], ids=["read", "skipped"])
+@pytest.mark.parametrize(
+    "method", [zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED], ids=["deflate", "stored"]
+)
+def test_many_small_bit3_members_pass_about_their_own_bytes(
+    method: int, read: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bit-3 member's end is found only by reading past it, and the walk puts
+    back what it read too far for the next header. Each member reads ahead about
+    its own length, not a whole read size: a thousand tiny members pass a few times
+    the archive's bytes through the walk's source, not a read size each."""
+    out = _Writer()
+    with zipfile.ZipFile(out, "w", method) as zf:
+        for i in range(1000):
+            zf.writestr(f"f{i:04}.txt", f"member {i}\n" * 3)
+    data = bytes(out.data)
+    passed = 0
+    source_read = zip_local_walk.ForwardSource.read
+
+    def counting_read(self: zip_local_walk.ForwardSource, n: int) -> bytes:
+        nonlocal passed
+        chunk = source_read(self, n)
+        passed += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(zip_local_walk.ForwardSource, "read", counting_read)
+    seen = 0
+    with archivey.open_archive(_pipe(data), streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            if read:
+                assert stream.read() == f"member {int(member.name[1:5])}\n".encode() * 3
+            seen += 1
+    assert seen == 1000
+    assert passed <= 4 * len(data)
