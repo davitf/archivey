@@ -1378,8 +1378,9 @@ def _raw_tar_header(
     return bytes(header)
 
 
-_OLD_STYLE_TYPEFLAGS = [tarfile.AREGTYPE, tarfile.REGTYPE]
-"""The two regular-file typeflags whose ``d/`` entry GNU tar reads as a directory."""
+_OLD_STYLE_TYPEFLAGS = [tarfile.AREGTYPE, tarfile.REGTYPE, tarfile.CONTTYPE]
+"""The three regular-file typeflags whose ``d/`` entry GNU tar reads as a directory.
+7-Zip agrees for NUL and ``0``; it lists a contiguous ``d/`` as the file ``d``."""
 
 
 def _tar_slash_entry_with_data(
@@ -1394,9 +1395,10 @@ def _tar_slash_entry_with_data(
 ) -> bytes:
     """A ustar entry with the given typeflag and ``data`` (15 bytes by default), then a
     regular file ``after.txt`` and a good trailer, or ``tail`` in their place. GNU tar
-    1.35 and 7-Zip list ``d/`` as a directory and skip its data when the typeflag is
-    NUL (old-style ``AREGTYPE``) or ``0``; they report an error when it is ``5``
-    (``DIRTYPE``), which carries no data.
+    1.35 lists ``d/`` as a directory and skips its data when the typeflag is NUL
+    (old-style ``AREGTYPE``), ``0`` or ``7`` (``CONTTYPE``), as 7-Zip does for the
+    first two; both report an error when it is ``5`` (``DIRTYPE``), which carries no
+    data.
 
     ``wrapper`` puts a PAX ``path`` record (``"pax"``) or a GNU long name (``"gnu"``)
     holding ``final_name`` before the header, whose own name field is ``own_name``.
@@ -1689,6 +1691,42 @@ def test_old_style_directory_with_data_extracts(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
+def test_old_style_directory_holds_the_members_under_it(
+    tmp_path: Path, typeflag: bytes, streaming: bool
+) -> None:
+    # A "d/" header with no data and a member "d/f" behind it: d/ is a directory, so
+    # extraction creates d/f inside it, as GNU tar 1.35 does for all three typeflags.
+    # Listed as the file "d", d/f would fail to extract under it.
+    inner = tarfile.TarInfo("d/f")
+    inner.size = 3
+    tail = (
+        inner.tobuf(format=tarfile.USTAR_FORMAT)
+        + b"bee".ljust(512, b"\0")
+        + b"\0" * 1024
+    )
+    data = _tar_slash_entry_with_data(typeflag, data=b"", tail=tail)
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, None),
+        ("d/f", MemberType.FILE, b"bee"),
+    ]
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    open_and_extract(source, tmp_path, format=ArchiveFormat.TAR, streaming=streaming)
+    assert (tmp_path / "d" / "f").read_bytes() == b"bee"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_old_gnu_sparse_slash_name_is_a_file(streaming: bool) -> None:
+    # Old GNU sparse "S" carries a file's data but is not one of the regular-file
+    # typeflags: GNU tar 1.35 extracts an "S" header named "d/" as the file "d".
+    data = _tar_slash_entry_with_data(tarfile.GNUTYPE_SPARSE, data=b"")
+    assert _stream_all(data, streaming) == [
+        ("d", MemberType.FILE, b""),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 def test_dirtype_with_bytes_payload_is_corruption(streaming: bool) -> None:
     # A DIRTYPE header has no data area, so the walker reads the declared blocks as the
     # next header; a non-zero payload does not parse. The error names the directory,
@@ -1912,7 +1950,9 @@ def test_dirtype_with_size_then_header_chain_then_junk_is_generic_corruption(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS, ids=["AREGTYPE", "REGTYPE"])
+@pytest.mark.parametrize(
+    "typeflag", _OLD_STYLE_TYPEFLAGS, ids=["AREGTYPE", "REGTYPE", "CONTTYPE"]
+)
 def test_old_style_directory_with_data_before_lone_zero_block_lists(
     typeflag: bytes, streaming: bool
 ) -> None:
