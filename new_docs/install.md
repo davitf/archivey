@@ -1,0 +1,24 @@
+# Install
+
+Archivey is on PyPI as `archivey`. It needs Python 3.11 or later and has no dependencies of its own.
+Optional packages, grouped as extras, add the rest:
+
+```bash
+pip install archivey                 # no dependencies
+pip install "archivey[recommended]"  # every format and compression method that installs everywhere
+pip install "archivey[seekable]"     # faster seeking in large gzip and bzip2 files
+pip install "archivey[all]"          # recommended and seekable together
+```
+
+If you use a free-threaded Python build, [Free-threaded Python](#free-threaded-python) has the extra
+to use instead. There's no extra per format, because ZIP, 7z and TAR share their compression
+methods.
+
+| You install | It reads |
+| --- | --- |
+| `archivey` | ZIP, TAR and 7z with their common compression methods, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
+| `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
+| `[seekable]` adds | No new format. Faster seeking inside gzip, zlib and bzip2 data when you open with `seekable_members=True`. |
+
+Compressed or encrypted RAR files also need an outside program, which no extra can install. The next
+section covers it.
