@@ -395,11 +395,15 @@ earlier, an I/O error).
 ### Requirement: Sequential in-order iteration
 
 ```python
-def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
+def __iter__(self) -> MemberPass[ArchiveMember]: ...   # sequential, in-order
 def members(self) -> list[ArchiveMember]: ...          # materialize (RA only)
 def members_report(self) -> MemberListReport: ...         # prefix + error report
 def members_report_if_available(self) -> MemberListReport | None: ...  # report peek
 ```
+
+`__iter__` SHALL return a `MemberPass` of members (see "Streaming member access" for
+what closing one does). On a streaming reader it is the reader's one pass and holds the
+reader while paused, as a `stream_members()` pass does.
 
 `__iter__` MUST yield in archive order without loading all members into a
 *caller-visible* complete cache before the first yield when a terminal
@@ -733,7 +737,7 @@ def stream_members(
     members: MemberSelector | None = None,
     *,
     file_copy_streams: bool = True,
-) -> MemberPass: ...
+) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]: ...
 ```
 
 Yields `(member, stream)` in archive order with bounded memory. Solid blocks
@@ -789,15 +793,15 @@ pass that is executing (inside `next()`, e.g. a selector on another thread) stil
 makes `close()` raise (maintainer's ruling, 2026-10-10).
 
 The returned `MemberPass` SHALL be an iterator of `(member, stream)` pairs that also has
-`close()` and works as a context manager whose exit calls `close()`; iterating the reader
-SHALL return a `MemberPass` of members. Closing a pass SHALL end it at once, as closing a
-generator does: the last yielded stream is closed and the pass releases the reader. A
-random-access reader then accepts other calls again; a streaming reader accepts only
-`members_report()`, since its one pass is spent. Closing an ended or closed pass SHALL do
-nothing, and advancing a closed pass SHALL end the iteration. Closing a pass that another
-thread is advancing SHALL raise `ArchiveyUsageError` and leave the pass running, as
-`reader.close()` does; a `ValueError` the pass itself raises on close SHALL reach the
-caller unchanged. A plain `for` loop over a pass SHALL behave as before.
+`close()` and works as a context manager whose exit calls `close()`. Closing a pass
+SHALL end it at once, as closing a generator does: the last yielded stream is closed and
+the pass releases the reader. Closing does not give a streaming reader a second pass:
+`__iter__`, `stream_members()` and `extract_all()` still raise, and `members_report()`
+finishes the interrupted walk. Closing an ended or closed pass SHALL do
+nothing, and advancing a closed pass SHALL end the iteration. Closing a pass that is
+executing (another thread inside `next()`, or a selector closing its own pass) SHALL
+raise `ArchiveyUsageError` and leave the pass running, as `reader.close()` does; a
+`ValueError` the pass itself raises on close SHALL reach the caller unchanged. A plain `for` loop over a pass SHALL behave as before.
 
 #### Scenario: stream_members matrix
 

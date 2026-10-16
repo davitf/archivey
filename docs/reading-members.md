@@ -119,23 +119,24 @@ pass in a `with` block to end it at a known point:
 ```python
 with reader.stream_members() as members:
     for member, stream in members:
-        if member.name == "manifest.json":
+        if member.name == "manifest.json" and stream is not None:
             manifest = stream.read()
             break
 data = reader.read("payload.bin")  # the pass has ended
 ```
 
-`members.close()` does the same without the block. On a reader opened with `concurrent_members=True`,
-`open()`, `read()`, `get()`, `members()` and another `stream_members()` all work
-inside the loop, from any thread, on every format. `extract_all()` still raises.
-The pass and the calls beside it share one walk of the archive's headers, so a pass
-nobody gets ahead of costs what it costs on a default reader. A call that needs
-members the pass has not reached yet, such as `members()` in the first iteration,
-reads ahead for it; on a compressed tar the pass's later reads then decode again
-from an earlier point and report `STREAM_REWIND_REDECOMPRESSES`, as calling
-`members()` and then `read()` does. A compressed tar's member streams also share
-one decoder, so reading two of them interleaved makes each read decode again from an
-earlier point. That is slower, but the bytes are still correct.
+`members.close()` does the same without the block. The same holds for `for member in
+reader`, which returns a pass of members. On a reader opened with
+`concurrent_members=True`, `open()`, `read()`, `get()`, `members()` and another
+`stream_members()` all work inside the loop, from any thread, on every format.
+`extract_all()` still raises. The pass and the calls beside it share one walk of the
+archive's headers, so a pass nobody gets ahead of costs what it costs on a default
+reader. A call that needs members the pass has not reached yet, such as `members()` in
+the first iteration, reads ahead for it; on a compressed tar the pass's later reads then
+decode again from an earlier point and report `STREAM_REWIND_REDECOMPRESSES`, as calling
+`members()` and then `read()` does. A compressed tar's member streams also share one
+decoder, so reading two of them interleaved makes each read decode again from an earlier
+point. That is slower, but the bytes are still correct.
 
 ## What a read gives you back
 
@@ -224,7 +225,8 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 methods — `members()`, `get()`, `open()`, `read()` — raise
 `ArchiveyUsageError`. What you have instead is `__iter__`, `stream_members()`
 and `extract_all()`, and you get **one** of them: the first consumes the source, even
-if you `break` out early.
+if you `break` out early. Closing a pass early frees the reader for `members_report()`,
+which finishes the walk, but not for a second pass.
 
 A type checker catches the random-access calls before you run the code:
 `open_archive(..., streaming=True)` is typed to return `ForwardArchiveReader`, which

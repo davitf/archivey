@@ -68,9 +68,10 @@ def test_a_pass_closes_on_a_streaming_reader_too() -> None:
             member, stream = next(members)
             assert member.name == "a.txt"
         assert stream is not None and stream.closed
-        # The streaming reader has one pass: after closing it only members_report()
-        # works, and another pass is still refused.
+        # Closing does not give the streaming reader a second pass; members_report()
+        # finishes the interrupted walk.
         assert [m.name for m in reader.members_report().members] == ["a.txt", "b.txt"]
+        assert reader.members_report_if_available() is not None
         with pytest.raises(ArchiveyUsageError):
             next(reader.stream_members())
 
@@ -102,7 +103,7 @@ def test_closing_a_pass_another_thread_is_advancing_raises_usage_error() -> None
         worker.start()
         try:
             assert entered.wait(10)
-            with pytest.raises(ArchiveyUsageError, match="another thread"):
+            with pytest.raises(ArchiveyUsageError, match="while it is executing"):
                 members.close()
         finally:
             release.set()
@@ -124,3 +125,20 @@ def test_a_value_error_from_the_pass_itself_is_not_translated() -> None:
     with pytest.raises(ValueError, match="from the pass") as info:
         members.close()
     assert not isinstance(info.value, ArchiveyUsageError)
+
+
+def test_a_selector_closing_its_own_pass_raises_usage_error() -> None:
+    errors: list[BaseException] = []
+
+    def closing(_member: object) -> bool:
+        try:
+            members.close()
+        except ArchiveyUsageError as exc:
+            errors.append(exc)
+        return True
+
+    with open_archive(_zip()) as reader:
+        members = reader.stream_members(closing)
+        assert [m.name for m, _ in members] == ["a.txt", "b.txt"]
+    assert len(errors) == 2
+    assert "selector is closing its own pass" in str(errors[0])

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Generator, Iterator
 from pathlib import Path
@@ -58,13 +59,14 @@ class MemberPass(Iterator[_T]):
     :meth:`~ForwardArchiveReader.stream_members` returns one that yields
     ``(member, stream)`` pairs, and iterating the reader returns one that yields
     members. Iterate it as any iterator. Closing it ends the pass early and releases
-    the reader: the current member stream, if any, is closed, and a random-access
-    reader accepts other calls again. A streaming reader has only the one pass, so
-    after closing it only :meth:`~ForwardArchiveReader.members_report` works (it
-    finishes the walk) and another pass still raises ``ArchiveyUsageError``. Closing
-    an ended pass does nothing, and advancing a closed one ends the iteration. Closing
-    a pass while another thread is advancing it raises ``ArchiveyUsageError`` and
-    leaves the pass running.
+    the reader: the current member stream, if any, is closed. Closing does not give a
+    streaming reader a second pass: iterating it, :meth:`~ForwardArchiveReader.stream_members`
+    and :meth:`~ForwardArchiveReader.extract_all` still raise ``ArchiveyUsageError``,
+    and :meth:`~ForwardArchiveReader.members_report` finishes the interrupted walk.
+    Closing an ended pass does nothing, and advancing a closed one ends the iteration.
+    Closing a pass while it is executing (another thread inside ``next()``, or a
+    selector closing its own pass) raises ``ArchiveyUsageError`` and leaves the pass
+    running.
 
     A pass that runs to its end ends on its own, and so, on CPython, does one a
     ``for`` loop leaves with ``break``. Otherwise a pass stays alive while anything
@@ -94,17 +96,16 @@ class MemberPass(Iterator[_T]):
     def close(self) -> None:
         """End the pass: close the current member stream and release the reader.
 
-        Raises ``ArchiveyUsageError`` when another thread is advancing the pass."""
+        Raises ``ArchiveyUsageError`` while the pass is executing."""
+        if inspect.getgeneratorstate(self._pass) == inspect.GEN_RUNNING:
+            raise _executing_pass_error()
         try:
             self._pass.close()
         except ValueError as exc:
-            # Another thread is inside ``next()``. Only that case is translated: a
-            # ValueError the pass itself raises on close reaches the caller unchanged.
-            if exc.args == ("generator already executing",):
-                raise ArchiveyUsageError(
-                    "Cannot close a member pass while another thread is advancing it. "
-                    "Close it once that next() call has returned."
-                ) from exc
+            # A thread entered ``next()`` after the check above. Only that case is
+            # translated: a ValueError the pass itself raises reaches the caller.
+            if inspect.getgeneratorstate(self._pass) == inspect.GEN_RUNNING:
+                raise _executing_pass_error() from exc
             raise
 
     def __enter__(self) -> Self:
@@ -117,6 +118,14 @@ class MemberPass(Iterator[_T]):
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+def _executing_pass_error() -> ArchiveyUsageError:
+    return ArchiveyUsageError(
+        "Cannot close a member pass while it is executing: another thread is inside "
+        "next(), or a selector is closing its own pass. Close it once that next() "
+        "call has returned."
+    )
 
 
 class ForwardArchiveReader(ABC):
