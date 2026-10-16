@@ -84,6 +84,12 @@ UNIX_TIME_CASES = [
     # Above the NTFS times, which unzip on Unix does not read at all.
     pytest.param(NTFS + OLD_UNIX, _UNIX_TIMES, id="after-ntfs"),
     pytest.param(OLD_UNIX + NTFS, _UNIX_TIMES, id="then-ntfs"),
+    # Of two Unix fields, the last one long enough for both times wins.
+    pytest.param(
+        _field(0x5855, struct.pack("<ii", _ATIME - 1, _MTIME - 1)) + PKWARE_UNIX,
+        _UNIX_TIMES,
+        id="two-unix-fields",
+    ),
 ]
 
 
@@ -116,8 +122,8 @@ def test_unix_field_times_match_unzip(
         # The DOS stamp is local time, which unzip reads in the test's time zone.
         modified = modified.astimezone(UTC)
     assert _utc(int(st.st_mtime)) == modified
-    # unzip sets the access time with the modification time, and nothing reads the
-    # file before the stat, so a relatime or noatime mount keeps it. Where archivey
+    # unzip sets both times in one call, and nothing reads the file before the stat,
+    # so a relatime or noatime mount keeps the access time. Where archivey
     # lists none, unzip fills it from the modification time; there is nothing to
     # compare.
     if accessed is not None:
@@ -195,6 +201,26 @@ def test_stale_unicode_path_field_is_unparsed() -> None:
     with open_archive(io.BytesIO(_zip(field))) as archive:
         (member,) = archive.members()
     assert member.name == "a.txt"
+    assert member.extra["zip.extra_fields"] == {0x7075: field[4:]}
+
+
+def test_unicode_path_field_on_a_mislabelled_utf8_name_is_unparsed() -> None:
+    # The flag says UTF-8 and the bytes are not, so the field is never read: the
+    # member keeps the header's name and the field stays in the dict.
+    stored = b"\xed.txt"
+    field = _unicode_path("á.txt".encode(), stored)
+    buf = io.BytesIO()
+    info = zipfile.ZipInfo("X.txt", _DOS_TIME)
+    info.extra = field
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(info, b"hi")
+    data = bytearray(buf.getvalue().replace(b"X.txt", stored))
+    # zipfile clears the UTF-8 flag on an ASCII name, so it is set in both headers.
+    for signature, flags_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        data[data.index(signature) + flags_at + 1] |= 0x08  # bit 11 (0x0800)
+    with open_archive(io.BytesIO(bytes(data))) as archive:
+        (member,) = archive.members()
+    assert member.raw_name == stored
     assert member.extra["zip.extra_fields"] == {0x7075: field[4:]}
 
 
