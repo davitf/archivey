@@ -219,10 +219,13 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     repeats it. Members whose ``name`` appears only once among the rest are left
     unchanged.
     """
+    current_names = [member.name for member in members if member.is_current]
+    if len(set(current_names)) == len(current_names):
+        # No duplicate names, the common case: nothing to stamp.
+        return
     counts: dict[str, int] = {}
-    for member in members:
-        if member.is_current:
-            counts[member.name] = counts.get(member.name, 0) + 1
+    for name in current_names:
+        counts[name] = counts.get(name, 0) + 1
 
     seen: set[str] = set()
     for member in reversed(members):
@@ -574,6 +577,8 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_lock = threading.RLock()
         self._walk_built: list[ArchiveMember] = []
         self._walk_emits: dict[int, EmitLog] = {}
+        # An unused log from a position that emitted nothing (``_pull_replayable``).
+        self._spare_emit_log: EmitLog | None = None
         self._walk_presented: int = 0
         self._presenting: tuple[int, EmitLog] | None = None
         # Set by open_archive on the reader it is about to return; read only by the
@@ -1559,13 +1564,23 @@ class BaseArchiveReader(ArchiveReader):
         """
         assert self._walk is not None
         log = self._walk_emits.get(position)
+        fresh = log is None
         if log is None:
-            log = self._walk_emits[position] = EmitLog()
-        with self._diagnostics_collector.replaying(log):
-            member = next(self._walk)
-        log.settle()
+            # Most positions emit nothing, so their log is reused for the next one.
+            log = self._spare_emit_log or EmitLog()
+            self._spare_emit_log = None
+            self._walk_emits[position] = log
+        member = self._diagnostics_collector.call_replaying(log, self._walk.__next__)
         if not log.codes:
             del self._walk_emits[position]
+            if fresh:
+                # Nothing was recorded, so the log is as new: ``emit`` records a
+                # detail or a raise only beside a code, and ``call_replaying`` has
+                # dropped its reference to the log.
+                assert log.details == [] and log.raised is None
+                self._spare_emit_log = log
+        else:
+            log.settle()
         if position < len(self._walk_built):
             return self._walk_built[position]
         self._walk_built.append(member)
@@ -1832,7 +1847,8 @@ class BaseArchiveReader(ArchiveReader):
             if name_controls_possible(member):
                 self._present_member(idx, member)
             self._walk_presented = idx + 1
-        if member.type is MemberType.SYMLINK and member.link_target == "":
+        is_symlink = member.type is MemberType.SYMLINK
+        if is_symlink and member.link_target == "":
             # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
             # member is typed, so this is the first place every backend's passes share.
             # Emit first and clear after: a strict policy that raises here leaves the
@@ -1843,7 +1859,7 @@ class BaseArchiveReader(ArchiveReader):
         # Settled when its listing resolves links.
         member._listing_pending = True
         if (
-            member.type is MemberType.SYMLINK
+            is_symlink
             and member.link_target is None
             and not member._link_target_resolved
             and self._LINK_TARGETS_IN_DATA

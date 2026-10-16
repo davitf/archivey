@@ -395,6 +395,8 @@ def emit_member_name_normalized(
     an archive-integrity code, so inferring the suppression from the name's shape would
     silently stop a strict policy refusing that TAR.
     """
+    # The ZIP listing skips the call when the two names are equal, so a case that
+    # reports equal names would not reach ZIP members.
     if member.name == presented_name:
         return
     if (

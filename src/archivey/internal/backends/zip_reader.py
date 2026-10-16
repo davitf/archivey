@@ -44,9 +44,10 @@ import threading
 import zlib
 from array import array
 from bisect import bisect_right
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     BinaryIO,
@@ -93,6 +94,7 @@ from archivey.internal.backends.zip_aes import (
     iter_extra_fields,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
+    split_extra_fields,
 )
 from archivey.internal.backends.zip_detect import (
     LOCAL_HEADER_SIGNATURE,
@@ -205,6 +207,8 @@ from archivey.types import (
     crc32_digest,
 )
 
+_new_tuple = tuple.__new__
+
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
@@ -265,6 +269,8 @@ _ZIP_COMPRESSION_TUPLES: dict[int, tuple[CompressionMethod, ...]] = {
     method_id: (CompressionMethod(algo=algo),)
     for method_id, algo in _ZIP_COMPRESSION_ALGOS.items()
 }
+# A method id archivey does not know.
+_UNKNOWN_COMPRESSION = (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
 
 # ZIP method id -> shared codec-layer Codec for member decode, after any decrypt stage.
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
@@ -341,6 +347,11 @@ _ZIP_BIRTH_TIME_HOSTS: frozenset[CreateSystem] = frozenset(
 _CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
     member.value: member for member in CreateSystem
 }
+# _BACKSLASH_SEPARATOR_SYSTEMS by host byte: an enum member hashes in Python, an int
+# in C, and the listing asks once per member.
+_BACKSLASH_SEPARATOR_HOSTS: frozenset[int] = frozenset(
+    system.value for system in _BACKSLASH_SEPARATOR_SYSTEMS
+)
 
 
 # Raised when a member read finds the reader's handle gone.
@@ -596,7 +607,7 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
 
 
 def _zip_timestamps(
-    entry: CentralEntry, member_name: str
+    entry: CentralEntry, member_name: str, fields: Sequence[ExtraField]
 ) -> tuple[
     datetime | None,
     datetime | None,
@@ -634,7 +645,8 @@ def _zip_timestamps(
     Whether either is a birth time depends on the writer, not the field, so the caller
     decides (``_zip_created``).
 
-    ``member_name`` names the member in the issue messages.
+    ``member_name`` names the member in the issue messages; ``fields`` is
+    ``entry.extra`` split (``split_extra_fields``).
     """
     issues: list[TimestampIssue] = []
     date_time = entry.date_time
@@ -670,12 +682,11 @@ def _zip_timestamps(
     # The extra field each time came from, None for the DOS stamp or no time.
     modified_from: int | None = None
     accessed_from: int | None = None
-    extra = entry.extra
-    if not extra:
+    if not fields:
         return modified, accessed, ntfs_ctime, ut_ctime, issues, ()
     # A cut-short field is read for what it carries: the NTFS and UT walks below
     # check every read against the field's actual length.
-    for field in iter_extra_fields(extra):
+    for field in fields:
         tag = field.tag
         if tag == 0x000A and ntfs_field is None:
             ntfs_field = field.data
@@ -756,13 +767,10 @@ def _zip_timestamps(
     creation_from = (
         0x5455 if ut_ctime is not None else 0x000A if ntfs_ctime is not None else None
     )
-    used = tuple(
-        {
-            tag
-            for tag in (modified_from, accessed_from, creation_from)
-            if tag is not None
-        }
-    )
+    used: tuple[int, ...] = ()
+    for tag in (modified_from, accessed_from, creation_from):
+        if tag is not None and tag not in used:
+            used += (tag,)
     return modified, accessed, ntfs_ctime, ut_ctime, issues, used
 
 
@@ -796,8 +804,8 @@ class _ZipOwner(NamedTuple):
 _NO_OWNER = _ZipOwner(None)
 
 
-def _zip_owner(extra: bytes) -> _ZipOwner:
-    """The owner ids ``extra`` records, read as unzip 6.00 reads them.
+def _zip_owner(fields: Sequence[ExtraField]) -> _ZipOwner:
+    """The owner ids an extra field's ``fields`` record, read as unzip 6.00 reads them.
 
     The fields are read in blob order (measured with ``unzip -X`` as root, see
     dev-docs/formats/zip.md §6):
@@ -813,19 +821,25 @@ def _zip_owner(extra: bytes) -> _ZipOwner:
     ``0x7875`` of a version other than 1. Either still decides as above. No ZIP field
     records the owner's names.
     """
-    if not extra:
+    if not fields:
         return _NO_OWNER
     ids: tuple[int, int] | None = None
     ids_tag: int | None = None
     fault: tuple[int, str] | None = None
     # 0: no newer field seen; 1: a 0x7855; 2: a 0x7875.
     newer = 0
-    for field in iter_extra_fields(extra):
+    # Once a 0x7875 is seen the last one decides, so its owner is the answer as is.
+    newest: _ZipOwner | None = None
+    for field in fields:
         tag = field.tag
         data = field.data
         if tag == _OWNER_TAG_INFOZIP_NEW_UNIX:
             newer = 2
-            ids, fault, ids_tag = _new_unix_owner(field)
+            newest = (
+                _cached_new_unix_owner(data, field.complete)
+                if len(data) <= _NEW_UNIX_CACHED_LEN
+                else _new_unix_owner(data, field.complete)
+            )
         elif tag == _OWNER_TAG_INFOZIP_UNIX2:
             if newer == 2:
                 continue
@@ -845,19 +859,20 @@ def _zip_owner(extra: bytes) -> _ZipOwner:
                 ids_tag = tag
             elif ids is None and (not field.complete or len(data) != _UNIX_TIMES_LEN):
                 fault = (tag, "cut_short" if not field.complete else "too_short")
+    if newest is not None:
+        return newest
     if ids is not None:
         return _ZipOwner((ids[0], ids[1]), tag=ids_tag)
     return _NO_OWNER if fault is None else _ZipOwner(None, fault)
 
 
-def _new_unix_owner(field: ExtraField) -> _ZipOwner:
-    """The ids in an Info-ZIP new Unix field (``0x7875``).
+def _new_unix_owner(data: bytes, complete: bool) -> _ZipOwner:
+    """The ids in an Info-ZIP new Unix field (``0x7875``) holding ``data``.
 
     Layout: version (1), uid size, uid, gid size, gid, each id little-endian.
     """
-    data = field.data
-    tag = field.tag
-    if not field.complete:
+    tag = _OWNER_TAG_INFOZIP_NEW_UNIX
+    if not complete:
         return _ZipOwner(None, (tag, "cut_short"))
     if not data:
         return _ZipOwner(None, (tag, "too_short"))
@@ -880,6 +895,14 @@ def _new_unix_owner(field: ExtraField) -> _ZipOwner:
     return _ZipOwner((uid, gid), tag=tag)
 
 
+# The members of one archive mostly share an owner, so mostly share the field's bytes.
+# Only fields a writer could produce are cached (19 bytes at most: version, two sizes,
+# two 8-byte ids): hashing a long hostile field costs more than parsing it, and the
+# cache would keep its bytes for the life of the process.
+_NEW_UNIX_CACHED_LEN = 19
+_cached_new_unix_owner = lru_cache(maxsize=64)(_new_unix_owner)
+
+
 # Fields that are part of the ZIP structure rather than a record about the member: the
 # ZIP64 sizes (applied by the parser), WinZip AES and PKWARE Strong Encryption. They
 # never appear among the unparsed fields.
@@ -887,7 +910,7 @@ _STRUCTURAL_EXTRA_TAGS = frozenset((0x0001, 0x9901, _ZIP_EXTRA_STRONG_ENCRYPTION
 
 
 def _unparsed_extra_fields(
-    extra: bytes, used_tags: Collection[int]
+    fields: Sequence[ExtraField], used_tags: Collection[int]
 ) -> dict[int, bytes] | None:
     """The central extra fields archivey took nothing from, by tag, or ``None``.
 
@@ -897,7 +920,7 @@ def _unparsed_extra_fields(
     tag, the first is kept; a tag any copy of which was used is left out.
     """
     unparsed: dict[int, bytes] | None = None
-    for field in iter_extra_fields(extra):
+    for field in fields:
         tag = field.tag
         if tag in _STRUCTURAL_EXTRA_TAGS or tag in used_tags:
             continue
@@ -931,6 +954,8 @@ def _zip_created(
     ``_zip_timestamps`` gives it for the other times.
     """
     stored = ut_ctime if ut_ctime is not None else ntfs_ctime
+    if stored is None:
+        return None, None
     if create_system in _ZIP_BIRTH_TIME_HOSTS:
         return stored, None
     return None, stored
@@ -1161,7 +1186,9 @@ _ZIP_COST = CostReceipt(
 
 class _DecodedName(NamedTuple):
     """A ZIP entry's name as archivey reads it, before normalization. A tuple, not a
-    dataclass: one is built per member on the listing hot path."""
+    dataclass: one is built per member on the listing hot path. The ASCII fast path
+    in ``_decode_member_name`` builds it positionally; ``test_zip_native_reader``
+    pins the field order."""
 
     text: str
     """The decoded name; ``member.name`` is this, normalized."""
@@ -1742,7 +1769,11 @@ class ZipReader(BaseArchiveReader):
                 if max_members is not None and index >= max_members:
                     raise _max_members_error(max_members)
                 member = self._to_member(entry, index)
-                offsets.append(_bound_offset(entry.header_offset))
+                offset = entry.header_offset
+                # ``_bound_offset`` only for an offset out of its range (rare).
+                offsets.append(
+                    offset if 0 <= offset <= MAX_DATA_OFFSET else _bound_offset(offset)
+                )
                 last = entry
                 yield member
         except CorruptionError as damage:
@@ -2257,12 +2288,34 @@ class ZipReader(BaseArchiveReader):
         except UnicodeDecodeError:
             return self._decode_unflagged_legacy(raw, lambda: raw.decode("cp437"))[0]
 
-    def _decode_member_name(self, entry: CentralEntry) -> _DecodedName:
+    def _decode_member_name(
+        self, entry: CentralEntry, fields: Sequence[ExtraField] | None = None
+    ) -> _DecodedName:
         """The entry's name as archivey reads it: the source of ``member.name`` and of
         the directory marker. It reports nothing, so the end-record findings can name
-        an entry the listing already decoded."""
+        an entry the listing already decoded. ``fields`` is ``entry.extra`` split, for
+        a caller that has split it already."""
         raw_name = entry.name
         is_utf8_flagged = bool(entry.flags & _ZIP_MASK_UTF8)
+        if raw_name.isascii():
+            # The common case, decided without the steps below: ASCII reads the same
+            # under every codec, so only a Unicode Path field can rename it.
+            if not is_utf8_flagged and entry.extra:
+                if fields is None:
+                    fields = split_extra_fields(entry.extra)
+                has_unicode_path = any(
+                    field.tag == _ZIP_EXTRA_UNICODE_PATH for field in fields
+                )
+            else:
+                has_unicode_path = False
+            if not has_unicode_path:
+                # Positional, in _DecodedName's order (pinned by a test). The pragma:
+                # a NamedTuple is a tuple.
+                # pyrefly: ignore[bad-specialization]
+                return _new_tuple(
+                    _DecodedName,
+                    (raw_name.decode("ascii"), raw_name, None, None, None, None, False),
+                )
         if is_utf8_flagged:
             try:
                 decoded = raw_name.decode("utf-8")
@@ -2301,7 +2354,9 @@ class ZipReader(BaseArchiveReader):
         unicode_name: bytes | None = None
         unicode_extra_fault: str | None = None
         if not is_utf8_flagged and entry.extra:
-            unicode_path = _unicode_path_name(entry.extra, raw_name)
+            if fields is None:
+                fields = split_extra_fields(entry.extra)
+            unicode_path = _unicode_path_name(fields, raw_name)
             unicode_name = unicode_path.name
             unicode_extra_fault = unicode_path.fault
             if unicode_name is not None:
@@ -2340,7 +2395,9 @@ class ZipReader(BaseArchiveReader):
         mode = stat.S_IMODE(full_mode) if (external_attr != 0 and is_unix) else None
 
         create_system = _CREATE_SYSTEM_BY_VALUE.get(host, CreateSystem.UNKNOWN)
-        decoded_name = self._decode_member_name(entry)
+        # Split once: the name, the times, the owner and the leftovers all read it.
+        fields = split_extra_fields(entry.extra)
+        decoded_name = self._decode_member_name(entry, fields)
         name_source = decoded_name.text
         raw_name = decoded_name.raw_name
         stored_as_directory = _stored_as_directory(name_source, create_system)
@@ -2353,8 +2410,12 @@ class ZipReader(BaseArchiveReader):
         # The type is provisional: the data decides, in `_apply_reparse_data`, whether
         # the entry really holds a link buffer, and a member that does not goes back to
         # `reparse_fallback`.
-        reparse_fallback = _reparse_fallback_type(
-            external_attr, create_system, stored_as_directory=stored_as_directory
+        reparse_fallback = (
+            _reparse_fallback_type(
+                external_attr, create_system, stored_as_directory=stored_as_directory
+            )
+            if external_attr & FILE_ATTRIBUTE_REPARSE_POINT
+            else None
         )
         is_reparse_point = reparse_fallback is not None
 
@@ -2376,7 +2437,7 @@ class ZipReader(BaseArchiveReader):
             member_type = MemberType.FILE
         # Convert "\\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
-        backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
+        backslash_is_separator = host in _BACKSLASH_SEPARATOR_HOSTS
         name = normalize_member_name(
             name_source, member_type, backslash_is_separator=backslash_is_separator
         )
@@ -2390,13 +2451,10 @@ class ZipReader(BaseArchiveReader):
             )
             compression: tuple[CompressionMethod, ...] = (CompressionMethod(algo=algo),)
         else:
-            compression = _ZIP_COMPRESSION_TUPLES.get(
-                method,
-                (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),),
-            )
+            compression = _ZIP_COMPRESSION_TUPLES.get(method, _UNKNOWN_COMPRESSION)
 
         modified, accessed, ntfs_ctime, ut_ctime, ts_issues, time_tags = (
-            _zip_timestamps(entry, name)
+            _zip_timestamps(entry, name, fields)
         )
         created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
@@ -2492,7 +2550,10 @@ class ZipReader(BaseArchiveReader):
                 dos_time=entry.dos_time,
                 name=entry.name,
                 aes=aes_info,
-                strong_encryption=_uses_strong_encryption(entry.flags, entry.extra),
+                # The bit test repeats the callee's first line, to skip the call for
+                # an unencrypted member; it must stay a necessary condition there.
+                strong_encryption=bool(entry.flags & _ZIP_MASK_ENCRYPTED)
+                and _uses_strong_encryption(entry.flags, entry.extra),
                 reparse_fallback=reparse_fallback,
                 size_unknown=size_unknown,
             ),
@@ -2510,7 +2571,7 @@ class ZipReader(BaseArchiveReader):
             member.ctime = ctime
         if mode is not None:
             member.mode = mode
-        owner = _zip_owner(entry.extra)
+        owner = _zip_owner(fields)
         if owner.ids is not None:
             member.uid, member.gid = owner.ids
         if entry.extra:
@@ -2519,7 +2580,7 @@ class ZipReader(BaseArchiveReader):
                 used_tags.append(owner.tag)
             if decoded_name.unicode_path_used:
                 used_tags.append(_ZIP_EXTRA_UNICODE_PATH)
-            unparsed = _unparsed_extra_fields(entry.extra, used_tags)
+            unparsed = _unparsed_extra_fields(fields, used_tags)
             if unparsed is not None:
                 extra["zip.extra_fields"] = unparsed
         if _is_encrypted_entry(entry.flags, method):
@@ -2610,23 +2671,27 @@ class ZipReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
-        emit_member_name_normalized(
-            self._diagnostics_collector,
-            member=member,
-            # The decoded name before normalization, from whichever source named it;
-            # the cp437 text a sniff or the Unicode Path field replaced is not a
-            # normalization.
-            presented_name=name_source,
-            archive_name=self._archive_name,
-            member_id=index,
-            # A directory reparse point is stored with the directory convention's
-            # trailing "/" and is still a link, so normalization drops the slash. Only
-            # this backend knows that, so only this backend says so.
-            link_stored_as_directory=is_reparse_point and stored_as_directory,
-        )
-        self._settle_empty_reparse_point(
-            member, reparse_fallback=reparse_fallback, member_id=index
-        )
+        # member.name is still ``name``: this is the callee's own early return, kept
+        # here to skip the call for the common unchanged name.
+        if name != name_source:
+            emit_member_name_normalized(
+                self._diagnostics_collector,
+                member=member,
+                # The decoded name before normalization, from whichever source named
+                # it; the cp437 text a sniff or the Unicode Path field replaced is not
+                # a normalization.
+                presented_name=name_source,
+                archive_name=self._archive_name,
+                member_id=index,
+                # A directory reparse point is stored with the directory convention's
+                # trailing "/" and is still a link, so normalization drops the slash.
+                # Only this backend knows that, so only this backend says so.
+                link_stored_as_directory=is_reparse_point and stored_as_directory,
+            )
+        if is_reparse_point:
+            self._settle_empty_reparse_point(
+                member, reparse_fallback=reparse_fallback, member_id=index
+            )
         if entry.offset_correction:
             self._emit_offset_wrapped(member, entry, index)
         if size_wrapped:
@@ -2796,7 +2861,8 @@ class ZipReader(BaseArchiveReader):
         """
         header = entry.header
         central = _central_from_local(entry)
-        decoded_name = self._decode_member_name(central)
+        fields = split_extra_fields(central.extra)
+        decoded_name = self._decode_member_name(central, fields)
         stored_as_directory = decoded_name.text.endswith(("/", "\\"))
         member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
         name = normalize_member_name(
@@ -2810,11 +2876,9 @@ class ZipReader(BaseArchiveReader):
             )
             compression: tuple[CompressionMethod, ...] = (CompressionMethod(algo=algo),)
         else:
-            compression = _ZIP_COMPRESSION_TUPLES.get(
-                method, (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
-            )
+            compression = _ZIP_COMPRESSION_TUPLES.get(method, _UNKNOWN_COMPRESSION)
         modified, accessed, ntfs_ctime, ut_ctime, _issues, _tags = _zip_timestamps(
-            central, name
+            central, name, fields
         )
         created, ctime = _zip_created(CreateSystem.UNKNOWN, ntfs_ctime, ut_ctime)
         deferred = entry.deferred
@@ -3950,7 +4014,9 @@ class _UnicodePath(NamedTuple):
 _NO_UNICODE_PATH = _UnicodePath()
 
 
-def _unicode_path_name(extra: bytes, stored_name: bytes) -> _UnicodePath:
+def _unicode_path_name(
+    fields: Sequence[ExtraField], stored_name: bytes
+) -> _UnicodePath:
     """Read the Info-ZIP Unicode Path extra field (0x7075) of a name, if any.
 
     The field is version 1, a CRC-32 of the header's name bytes, then the name as UTF-8.
@@ -3962,7 +4028,7 @@ def _unicode_path_name(extra: bytes, stored_name: bytes) -> _UnicodePath:
     is empty or not UTF-8, is malformed: it names nothing, and the caller reports it as
     a dropped record.
     """
-    for extra_field in iter_extra_fields(extra):
+    for extra_field in fields:
         if extra_field.tag != _ZIP_EXTRA_UNICODE_PATH:
             continue
         field = extra_field.data
@@ -4000,6 +4066,7 @@ def _is_encrypted_entry(flags: int, method: int) -> bool:
 
 def _uses_strong_encryption(flags: int, extra: bytes) -> bool:
     """True for a PKWARE Strong Encryption member (APPNOTE §7)."""
+    # The listing tests this bit before calling, to skip the call.
     if not flags & _ZIP_MASK_ENCRYPTED:
         return False
     if flags & _ZIP_MASK_STRONG_ENCRYPTION:

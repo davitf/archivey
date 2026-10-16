@@ -979,3 +979,19 @@ def test_a_failure_met_walking_ahead_is_raised_where_the_pass_reaches_it() -> No
                 assert stream is not None
                 read.append((member.name, stream.read()))
     assert read == [(n, n.encode() * 3) for n in _NAMES]
+
+
+def test_decoded_name_field_order_is_pinned() -> None:
+    # The ASCII fast path in _decode_member_name builds _DecodedName positionally
+    # with tuple.__new__, which cannot notice a reordered or added field.
+    from archivey.internal.backends.zip_reader import _DecodedName
+
+    assert _DecodedName._fields == (
+        "text",
+        "raw_name",
+        "alternate_raw_name",
+        "inferred_encoding",
+        "declared_encoding",
+        "unicode_extra_fault",
+        "unicode_path_used",
+    )

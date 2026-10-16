@@ -18,7 +18,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from archivey.diagnostics import (
     Diagnostic,
@@ -35,6 +35,8 @@ from archivey.internal import logs
 if TYPE_CHECKING:
     from archivey.config import ArchiveyConfig
     from archivey.types import ArchiveMember
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -110,13 +112,11 @@ class _ReplayingBlock:
     def __enter__(self) -> None:
         collector = self._collector
         self._thread_id = thread_id = threading.get_ident()
-        with collector._lock:
-            collector._replays[thread_id] = _Replay(self._log)
+        # No lock: see ``DiagnosticCollector._replays``.
+        collector._replays[thread_id] = _Replay(self._log)
 
     def __exit__(self, *exc_info: object) -> None:
-        collector = self._collector
-        with collector._lock:
-            collector._replays.pop(self._thread_id, None)
+        self._collector._replays.pop(self._thread_id, None)
 
 
 def nothing_held() -> Exception | None:
@@ -185,6 +185,10 @@ class DiagnosticCollector:
         self._emitting_threads: set[int] = set()
         # Per thread, the log a ``replaying()`` block records into or replays from. Per
         # thread, so another thread's stream on the same reader is never replayed.
+        # Used without ``_lock``: each thread sets, gets and pops only its own entry,
+        # and a dict's single set, get or pop is atomic (free-threaded builds too). Any
+        # other operation on it (iterating, ``len``, ``clear``) would need a lock that
+        # every one of those accesses takes.
         self._replays: dict[int, _Replay] = {}
         # Per thread, the raises a ``deferring_raises()`` block is holding back.
         self._deferred: dict[int, list[Exception]] = {}
@@ -209,6 +213,21 @@ class DiagnosticCollector:
         generator machinery was a measurable share of the per-member cost.
         """
         return _ReplayingBlock(self, log)
+
+    def call_replaying(self, log: EmitLog, work: Callable[[], T]) -> T:
+        """Run ``work()`` inside :meth:`replaying` with ``log``, and return its result.
+
+        The same block without a context manager object, for a caller that enters
+        one per member of a large listing.
+        """
+        thread_id = threading.get_ident()
+        replays = self._replays
+        # No lock: see ``_replays``.
+        replays[thread_id] = _Replay(log)
+        try:
+            return work()
+        finally:
+            replays.pop(thread_id, None)
 
     def deferring_raises(self) -> _DeferringBlock:
         """Hold back this thread's emit raises until the caller can take them.

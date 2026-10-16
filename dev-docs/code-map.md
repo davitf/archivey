@@ -156,6 +156,7 @@ often they turn out to be the right place:
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
+| Where does listing time go, and how do I measure it? | [`investigations/listing-speed.md`](investigations/listing-speed.md); `benchmarks/zip_listing_baseline.py`, `benchmarks/tar_listing_baseline.py` |
 | Is this a known unfixed gap? | `dev-docs/known-issues.md` for defects, `dev-docs/threat-model.md` §5 for open design gaps, §7 of the format page for open questions, `docs/gotchas.md` for what users are told |
 | Has this already been reviewed? | The `SUMMARY.md` of each review under `review/archive/` |
 | Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) (closed 2026-10-02) record the first pass — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape. The formal sweep is planned for after the release |
