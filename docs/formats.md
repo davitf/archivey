@@ -73,6 +73,24 @@ other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too
 writer that marks itself Unix while storing a birth time (libarchive on Windows) gets
 `ctime`, not `created`, rather than a risk of `st_ctime` in `created`.
 
+A ZIP or TAR made on a Mac often carries AppleDouble sidecars: a `._name` file holding
+the extended attributes and resource fork of `name`, next to it (macOS `tar`) or under
+`__MACOSX/` (Finder, `ditto`). archivey lists them as ordinary files, as `unzip` does.
+To leave them out, filter on the name:
+
+```python
+from archivey import open_archive
+
+def is_macos_sidecar(member):
+    base = member.name.rsplit("/", 1)[-1]
+    return member.name.startswith("__MACOSX/") or base.startswith("._")
+
+with open_archive("photos.zip") as archive:
+    archive.extract_all("out", filter=lambda m: None if is_macos_sidecar(m) else m)
+```
+
+The test goes by name only, so it also skips a file that was really called `._notes`.
+
 ## Fields that change after a member is returned
 
 `ArchiveMember.member_state_final` is `False` while archivey can still update a member

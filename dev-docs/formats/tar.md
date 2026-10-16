@@ -472,6 +472,11 @@ disagreement is why a length rule cannot tell an empty tar from a zero-filled fi
 file with a trailer in the middle (`tar -A` does not: it overwrites the first trailer). GNU `tar -i` reads past it;
 archivey lists the first archive and reports `ARCHIVE_TRAILING_DATA`.
 
+**macOS `tar` writes AppleDouble sidecars.** bsdtar on macOS stores a file's extended
+attributes and resource fork as a `._name` member just before `name`, unless
+`COPYFILE_DISABLE=1` is set. archivey lists it as a plain file (the ZIP handbook §3 has
+the Finder and `ditto` shapes).
+
 **An ISO 9660 image opened as TAR lists empty.** Its first 32 KiB are zeros, which reads
 as an empty tar, and the first non-zero byte after them is reported as trailing data.
 
