@@ -998,6 +998,87 @@ def test_a_member_past_the_bytes_the_pass_holds_is_a_resource_limit() -> None:
                 pass
 
 
+def _overlapping_held_members(n: int) -> bytes:
+    """One sized member, four bytes that are no local header (the walk ends there),
+    then ``n`` local headers whose data each runs to the end of the stream, and a
+    directory naming them all: each held member's data covers every later one."""
+    first = (
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, zlib.crc32(b"x"), 1, 1, 1, 0
+        )
+        + b"ax"
+    )
+    body = bytearray(first + b"JUNK")
+    offsets = [0]
+    names = [b"a"]
+    for i in range(n):
+        offsets.append(len(body))
+        names.append(b"m%06d" % i)
+        body += struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, 0, 0, 0, 7, 0
+        )
+        body += names[-1]
+    cd = bytearray()
+    for name, offset in zip(names, offsets, strict=True):
+        crc, size = (zlib.crc32(b"x"), 1) if offset == 0 else (0, 0)
+        cd += struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50, 20, 20, 0, 0, 0, 0x21, crc, size, size,
+            len(name), 0, 0, 0, 0, 0, offset,
+        ) + name  # fmt: skip
+    end = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, n + 1, n + 1, len(cd), len(body), 0
+    )
+    size = len(body) + len(cd) + len(end)
+    # Each held header's data runs from its data start to the end of the stream.
+    for offset, name in zip(offsets[1:], names[1:], strict=True):
+        data_start = offset + 30 + len(name)
+        struct.pack_into("<II", body, offset + 18, size - data_start, size - data_start)
+    return bytes(body + cd + end)
+
+
+def test_held_members_read_the_kept_bytes_about_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Members whose data overlaps would each read on to the end of the stream, so
+    reading them all costs the stream's length times their number. The pass stops
+    once the members it read from the kept bytes have consumed as many bytes as it
+    holds, before it starts the next one."""
+    data = _overlapping_held_members(1000)
+    read = 0
+    original = zip_local_walk._HeldBytes.read
+
+    def counting(self: zip_local_walk._HeldBytes, n: int = -1, /) -> bytes:
+        nonlocal read
+        chunk = original(self, n)
+        read += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(zip_local_walk._HeldBytes, "read", counting)
+    with archivey.open_archive(_pipe(data), streaming=True, format="zip") as reader:
+        with pytest.raises(ResourceLimitError, match="held"):
+            for _ in reader.stream_members():
+                pass
+    assert read <= 4 * len(data)
+
+
+def test_a_held_member_is_numbered_after_the_walked_ones() -> None:
+    """A member read from the kept bytes keeps its place in the pass's numbering,
+    in the messages that quote it."""
+    first = _zip([("a.txt", b"one")], method=zipfile.ZIP_STORED)
+    second = bytearray(
+        _zip([("c.txt", b"three"), ("d.txt", b"four")], method=zipfile.ZIP_STORED)
+    )
+    # c.txt's local header claims more data than the stream holds.
+    struct.pack_into("<II", second, 18, 1_000_000, 1_000_000)
+    with archivey.open_archive(
+        _pipe(first + bytes(second)), streaming=True, format="zip"
+    ) as reader:
+        with pytest.raises(CorruptionError, match=r"member #1\b"):
+            for _ in reader.stream_members():
+                pass
+
+
 def test_a_stub_before_an_archive_with_no_local_header_opens_empty() -> None:
     """No local header within the stub scan's window, but an end record: as from a
     file, the archive opens with what its directory lists."""

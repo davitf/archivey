@@ -1550,7 +1550,9 @@ class ZipForwardReader(ZipReader):
                     source_format=ArchiveFormat.ZIP,
                 )
         self._pass_data: _PassData | None = None
-        # How many local headers the walk has met.
+        # How many local headers the walk has met: the next member's index, and
+        # what ``max_members`` is charged on. Reset where the walk starts
+        # (``_iter_members``).
         self._local_count = 0
         # Local header offset -> the member built from it, for the directory to
         # update in place at the end.
@@ -1591,6 +1593,7 @@ class ZipForwardReader(ZipReader):
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         walker = self._walker
+        self._local_count = 0
         entry = self._first_entry
         self._first_entry = None
         while True:
@@ -1646,14 +1649,41 @@ class ZipForwardReader(ZipReader):
         not name is read there. A directory entry whose local header the bound
         dropped is ``ResourceLimitError``, as a directory there is
         (``ForwardTail.end_record``): higher limits keep those bytes.
+
+        Each member is read from its offset to its data's end, which nothing keeps
+        short of the end of the stream, so members whose data overlaps would read
+        the kept bytes once each. What the members consume is counted, and once it
+        reaches the bytes held, a further member is ``ResourceLimitError`` before it
+        is read: members a writer laid out apart never consume that much, and
+        together the members consume the kept bytes at most twice.
+
+        The directory walk has run by then, so its callbacks never see these
+        members: ``local_name_at`` cannot correct a held member's offset wrapped
+        past 4 GiB, and ``local_data_start_at`` gives no data start for a held
+        bit-3 member with the macOS ``UX`` field. Both need an archive over 4 GiB
+        with bytes in front of the member; the member then fails as missing, or
+        its size is the directory's 32-bit one.
         """
         main = self._walker
+        budget = len(tail.head) + len(tail.data)
+        consumed = 0
         try:
-            for offset in sorted(set(offsets) - self._local_offsets):
-                if not tail.members_end <= offset < tail.size:
-                    # Among the members' data, which the walk read as such, or past
-                    # the end of the stream: no local header is there.
-                    continue
+            # Among the members' data, which the walk read as such, or past the end
+            # of the stream, no local header is there to read.
+            held_offsets = {
+                offset for offset in offsets if tail.members_end <= offset < tail.size
+            }
+            for offset in sorted(held_offsets - self._local_offsets):
+                if consumed >= budget:
+                    raise ResourceLimitError(
+                        "ZIP members the central directory places after the "
+                        f"members a forward read walked ({tail.after}) have "
+                        f"consumed the {budget} bytes it held after them, so "
+                        "their data overlaps; a forward read reads those bytes "
+                        "once",
+                        archive_name=self._archive_name,
+                        source_format=ArchiveFormat.ZIP,
+                    )
                 held = tail.held_from(offset)
                 if held is None:
                     raise ResourceLimitError(
@@ -1665,7 +1695,9 @@ class ZipForwardReader(ZipReader):
                         archive_name=self._archive_name,
                         source_format=ArchiveFormat.ZIP,
                     )
-                self._walker = LocalHeaderWalk(held, offset=offset, find_start=False)
+                self._walker = LocalHeaderWalk(
+                    held, offset=offset, find_start=False, index=self._local_count
+                )
                 try:
                     with self._translated_errors():
                         entry = self._walker.next_entry()
@@ -1677,6 +1709,7 @@ class ZipForwardReader(ZipReader):
                     continue
                 yield self._begin_member(entry)
                 self._leave_member()
+                consumed += self._walker.source.offset - offset
         finally:
             self._walker = main
 

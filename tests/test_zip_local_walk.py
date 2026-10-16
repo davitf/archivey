@@ -309,6 +309,17 @@ def test_a_stub_before_an_archive_with_no_local_header_is_kept_whole() -> None:
     assert end.entries_declared == 0
 
 
+def test_an_end_record_signature_in_a_stub_past_the_window_is_no_archive() -> None:
+    """Only an end record where an archive ending the stream would put it counts: a
+    signature inside a stub that runs past the scan window leaves the error."""
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+    stub = b"MZ" + b"\x00" * 100 + b"PK\x05\x06" + b"\x00" * SFX_MAX
+    walk = LocalHeaderWalk(_Unseekable(stub + buf.getvalue()))
+    with pytest.raises(CorruptionError, match="no ZIP local header"):
+        walk.next_entry()
+
+
 def test_a_tail_hands_back_its_bytes_from_an_offset_only_when_it_holds_them() -> None:
     whole = ForwardTail(
         after="after member #0", members_start=0, members_end=10, start=10,

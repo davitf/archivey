@@ -232,13 +232,15 @@ entry points to SHALL be dropped from the listing and reported as
 are no local header and keep the rest of the stream; a directory entry that points into
 the kept bytes (bytes a writer left between two members, or a second archive appended
 with `cat`) SHALL be read from them at that offset and yielded before the pass ends, and
-no other local header there SHALL be read. One whose bytes the listing limits dropped
-SHALL end the pass with `ResourceLimitError`. A stub with no local header within
-`SFX_MAX` but an end record there SHALL be read as the tail, so an archive with no local
-header behind a stub lists as from a file. A member flagged as a Windows reparse point
-whose data is not a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
-`FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
-`members_report_if_available()` SHALL return `None` until the directory has been read.
+no other local header there SHALL be read. One whose bytes the listing limits dropped,
+or one reached after such members have consumed as many bytes as the pass holds, SHALL
+end the pass with `ResourceLimitError`. A stub with no local header within `SFX_MAX`,
+the stream ending there on an end record, SHALL be read as the tail, so an archive with
+no local header behind a stub lists as from a file. A member flagged as a Windows
+reparse point whose data is not a reparse buffer stays a file. The cost receipt SHALL
+be `REQUIRES_SCANNING`, `DIRECT`, `FORWARD_ONLY`; `member_count` and `comment` SHALL be
+`None` and `members_report_if_available()` SHALL return `None` until the directory has
+been read.
 
 Four things SHALL fail the member they name once the directory has been read: a size
 or CRC from a data descriptor that differs from the central entry; a local header whose

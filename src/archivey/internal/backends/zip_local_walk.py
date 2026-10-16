@@ -96,6 +96,7 @@ _METHOD_STORED = 0
 _ZIP64_EXTRA_TAG = 0x0001
 _ZIP64_RECORD = "ZIP64 end of central directory record"
 _U32_MAX = 0xFFFF_FFFF
+_U16_MAX = 0xFFFF
 
 # What may follow a member's data descriptor: the next member, the directory, the end
 # records when the directory is empty or missing, or the record PKWARE Strong Encryption
@@ -818,16 +819,22 @@ class LocalHeaderWalk:
     entry offsets compare with the directory's. ``find_start`` scans for the first
     local header when the stream starts with no ZIP record :meth:`next_entry`
     handles (a self-extractor stub nobody skipped), within :data:`~archivey.internal.sfx.SFX_MAX`
-    bytes, with the detector's local-header validator.
+    bytes, with the detector's local-header validator. ``index`` is the number of
+    the first local entry, for a walk started part way through the members.
     """
 
     def __init__(
-        self, stream: BinaryIO, *, offset: int = 0, find_start: bool = True
+        self,
+        stream: BinaryIO,
+        *,
+        offset: int = 0,
+        find_start: bool = True,
+        index: int = 0,
     ) -> None:
         self.source = ForwardSource(stream, offset=offset)
         self._find_start = find_start
         self._started = False
-        self._index = 0
+        self._index = index
         # The entry :meth:`next_entry` returned last, until its data is settled.
         self._unsettled: LocalEntry | None = None
         #: What a member's ``settle`` raised: the walk cannot go past that member.
@@ -892,10 +899,18 @@ class LocalHeaderWalk:
         window = self._scan_for_local_header()
         if window is None:
             return
-        if EOCD_SIGNATURE in window:
-            # No local header, but an end record: an empty archive, or one whose
-            # members are gone, behind a stub. The stub and the archive are read
-            # whole by ``read_rest``, as a file read finds the end record behind it.
+        # No local header, but the stream ends within the window and an end
+        # record's signature lies where the end record of an archive ending it
+        # would: in the last ``EOCD_SIZE`` bytes plus the longest comment. That is
+        # an empty archive, or one whose members are gone, behind a stub; the stub
+        # and the archive are read whole by ``read_rest``, as a file read finds the
+        # end record behind the stub. A stub that runs past the window keeps the
+        # error below, whatever signatures it holds.
+        if (
+            not self.source.peek(1)
+            and window.rfind(EOCD_SIGNATURE, max(len(window) - EOCD_SIZE - _U16_MAX, 0))
+            >= 0
+        ):
             self.source.unread(window)
             return
         raise CorruptionError(
