@@ -563,7 +563,8 @@ _CLI_RENDERERS = {
     "escape_control_chars",
     "format_error_detail",
     "format_member_line",  # escapes the name and link target itself
-    "format_member_long_line",  # escapes the name, link target and method itself
+    "format_long_listing",  # escapes the name, link target and method itself
+    "format_field_value",  # escapes text; bytes print as hex
 }
 
 # Functions that write their arguments to a terminal stream. ``_field`` is ``info``'s
@@ -595,10 +596,9 @@ _CLI_PRINT_ALLOWED = {
         "_not_tested's return: arithmetic on int counts"
     ),
     "list_cmd.py: report.error": "an ArchiveyError, which escapes itself",
-    "list_cmd.py: LONG_HEADER": "fixed column titles",
     "list_cmd.py: line": (
-        "a format_member_details line: every key and value escaped there, "
-        "diagnostic messages stored escaped"
+        "a format_long_listing or format_member_details line: every archive value "
+        "escaped there, diagnostic messages stored escaped"
     ),
     "main.py: message": "_report_quietly's message; its call sites are checked here",
     "main.py: archivey.__version__": "archivey's own version",

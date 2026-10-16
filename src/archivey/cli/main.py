@@ -503,7 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
     layout.add_argument(
         "--long",
         action="store_true",
-        help="add packed size, ratio, compression method and CRC columns",
+        help="add packed size, space saved, compression method and CRC-32 columns",
     )
     layout.add_argument(
         "--details",

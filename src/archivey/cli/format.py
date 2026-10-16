@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Sequence
 from datetime import datetime
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -110,13 +111,8 @@ def format_hash_value(value: bytes | int) -> str:
     return value.hex()
 
 
-def format_member_line(
-    member: ArchiveMember,
-    *,
-    digests: bool = False,
-    verbose: bool = False,
-) -> str:
-    """Layer-1 listing line; optional stored digests and verbose extras."""
+def _member_status(member: ArchiveMember) -> str:
+    """The two-character type and status mark that starts every listing line."""
     mark = _TYPE_MARK.get(member.type, "?")
     if member.is_encrypted:
         status = "E"
@@ -124,38 +120,59 @@ def format_member_line(
         status = "~"  # superseded / non-current revision
     else:
         status = "-"
-    mode = format_mode(member.mode)
-    size = format_size(member.size)
-    mtime = format_mtime(member.modified)
+    return f"{mark}{status}"
+
+
+def _member_label(member: ArchiveMember) -> str:
+    """The escaped name, with ``-> target`` for a link."""
     name = escape_member_name(member.name)
     if member.is_link and member.link_target is not None:
         name = f"{name} -> {escape_member_name(member.link_target)}"
+    return name
 
-    parts = [f"{mark}{status}", mode, f"{size:>10}", mtime, name]
-    line = "  ".join(parts)
 
+def _listing_suffix(member: ArchiveMember, *, digests: bool, verbose: bool) -> str:
+    """The ``[digests]`` and ``(diagnostics)`` a listing line ends with, when asked."""
+    suffix = ""
     if digests and member.hashes:
         digest_bits = " ".join(
             f"{algo.value}={format_hash_value(val)}"
             for algo, val in sorted(member.hashes.items())
         )
-        line = f"{line}  [{digest_bits}]"
-
+        suffix += f"  [{digest_bits}]"
     if verbose and member.diagnostics:
+        # Messages are stored escaped (see format_member_details).
         diag = "; ".join(
             d.message for d in member.diagnostics if getattr(d, "message", None)
         )
         if diag:
-            line = f"{line}  ({diag})"
+            suffix += f"  ({diag})"
+    return suffix
 
-    return line
+
+def format_member_line(
+    member: ArchiveMember,
+    *,
+    digests: bool = False,
+    verbose: bool = False,
+) -> str:
+    """Layer-1 listing line; optional stored digests and verbose extras."""
+    parts = [
+        _member_status(member),
+        format_mode(member.mode),
+        f"{format_size(member.size):>10}",
+        format_mtime(member.modified),
+        _member_label(member),
+    ]
+    return "  ".join(parts) + _listing_suffix(member, digests=digests, verbose=verbose)
 
 
 def format_compression(methods: tuple[CompressionMethod, ...]) -> str:
     """The member's codec chain, pre-filters first: ``deflate``, ``bcj2+lzma2``.
 
-    A RAR method level shows after a colon (``rar:3``); ``-`` when the format
-    records no method (TAR, ISO).
+    A RAR method level shows after a colon (``rar:3``). ``-`` when the member's
+    entry records no method at all: a directory or a link, or a format that leaves
+    the field empty.
     """
     if not methods:
         return "-"
@@ -165,8 +182,11 @@ def format_compression(methods: tuple[CompressionMethod, ...]) -> str:
     )
 
 
-def format_ratio(member: ArchiveMember) -> str:
-    """Space saved, as ``unzip -v`` prints it: ``75%`` for a member packed to a quarter."""
+def format_saved(member: ArchiveMember) -> str:
+    """Space saved, as ``unzip -v`` prints it: ``75%`` for a member packed to a quarter.
+
+    Negative when the packed data is larger (a tiny member under encryption overhead).
+    """
     size, packed = member.size, member.compressed_size
     if size is None or packed is None:
         return "-"
@@ -180,40 +200,65 @@ def _crc_column(member: ArchiveMember) -> str:
     return format_hash_value(crc) if crc is not None else "-"
 
 
-LONG_HEADER = "  ".join(
-    [
-        "ts",
-        f"{'mode':<9}",
-        f"{'size':>10}",
-        f"{'packed':>10}",
-        f"{'ratio':>5}",
-        f"{'method':<10}",
-        f"{'crc32':>8}",
-        f"{'modified':<16}",
-        "name",
-    ]
+# ``list --long`` columns between the status mark and the name: title, alignment, and
+# the cell for one member. Each column is as wide as its widest cell in the listing.
+_LONG_COLUMNS: tuple[tuple[str, str, Callable[[ArchiveMember], str]], ...] = (
+    ("mode", "<", lambda m: format_mode(m.mode)),
+    ("size", ">", lambda m: format_size(m.size)),
+    ("packed", ">", lambda m: format_size(m.compressed_size)),
+    ("saved", ">", format_saved),
+    ("method", "<", lambda m: escape_control_chars(format_compression(m.compression))),
+    ("crc32", ">", _crc_column),
+    ("modified", "<", lambda m: format_mtime(m.modified)),
 )
 
 
-def format_member_long_line(member: ArchiveMember) -> str:
-    """``list --long`` line: the basic line plus packed size, ratio, method and CRC."""
-    mark = _TYPE_MARK.get(member.type, "?")
-    status = "E" if member.is_encrypted else ("~" if not member.is_current else "-")
-    name = escape_member_name(member.name)
-    if member.is_link and member.link_target is not None:
-        name = f"{name} -> {escape_member_name(member.link_target)}"
-    parts = [
-        f"{mark}{status}",
-        format_mode(member.mode),
-        f"{format_size(member.size):>10}",
-        f"{format_size(member.compressed_size):>10}",
-        f"{format_ratio(member):>5}",
-        f"{escape_control_chars(format_compression(member.compression)):<10}",
-        f"{_crc_column(member):>8}",
-        f"{format_mtime(member.modified):<16}",
-        name,
+def format_long_listing(
+    members: Sequence[ArchiveMember], *, digests: bool, verbose: bool
+) -> list[str]:
+    """``list --long``: a header line, then one line per member.
+
+    The default line's columns plus packed size, space saved, method and stored
+    CRC-32, each column sized to its widest cell so the names line up under their
+    header. ``digests`` and ``verbose`` add the same suffixes as the default line.
+    Empty for no members (no header without rows).
+    """
+    if not members:
+        return []
+    cells = [[cell(m) for _, _, cell in _LONG_COLUMNS] for m in members]
+    widths = [
+        max(len(title), *(len(row[i]) for row in cells))
+        for i, (title, _, _) in enumerate(_LONG_COLUMNS)
     ]
-    return "  ".join(parts)
+
+    def join(status: str, row: list[str], name: str) -> str:
+        padded = [
+            f"{text:{align}{width}}"
+            for text, (_, align, _), width in zip(
+                row, _LONG_COLUMNS, widths, strict=True
+            )
+        ]
+        return "  ".join([status, *padded, name])
+
+    lines = [join("ts", [title for title, _, _ in _LONG_COLUMNS], "name")]
+    for member, row in zip(members, cells, strict=True):
+        lines.append(
+            join(_member_status(member), row, _member_label(member))
+            + _listing_suffix(member, digests=digests, verbose=verbose)
+        )
+    return lines
+
+
+def format_field_value(value: object) -> str:
+    """One ``key: value`` value for the terminal, escaped.
+
+    Shared by ``info`` and ``list --details``, so a value prints the same in both.
+    ``bytes`` print as ``hex:<digits>``: bare hex digits read as a number (a TAR
+    typeflag ``b"0"`` would show as ``30``).
+    """
+    if isinstance(value, bytes):
+        return f"hex:{value.hex()}"
+    return escape_control_chars(str(value))
 
 
 def _format_time_detail(dt: datetime | None) -> str | None:
@@ -224,13 +269,19 @@ def format_member_details(member: ArchiveMember) -> list[str]:
     """``list --details`` block: one ``key: value`` line per field the member has.
 
     Fields the format does not record are left out rather than printed as ``-``, so
-    the block shows what this archive actually stores. Every value is escaped: names,
-    owners, the comment and the ``extra`` bag all come from the archive.
+    the block shows what this archive actually stores. ``raw_name`` shows only when
+    it is not the UTF-8 spelling of ``name``. Every value from the archive is escaped
+    (:func:`format_field_value`); a diagnostic's message arrives escaped and is not
+    escaped again (see below).
     """
     fields: list[tuple[str, object]] = [
         ("name", member.name),
-        ("type", member.type.value),
     ]
+    if member.raw_name is not None and member.raw_name != member.name.encode(
+        "utf-8", "surrogateescape"
+    ):
+        fields.append(("raw_name", member.raw_name))
+    fields.append(("type", member.type.value))
     if member.is_link and member.link_target is not None:
         fields.append(("link_target", member.link_target))
     fields += [
@@ -238,7 +289,7 @@ def format_member_details(member: ArchiveMember) -> list[str]:
         ("packed_size", member.compressed_size),
     ]
     if member.size is not None and member.compressed_size is not None:
-        fields.append(("ratio", format_ratio(member)))
+        fields.append(("saved", format_saved(member)))
     if member.compression:
         fields.append(("method", format_compression(member.compression)))
     fields.append(("encrypted", "yes" if member.is_encrypted else "no"))
@@ -268,12 +319,10 @@ def format_member_details(member: ArchiveMember) -> list[str]:
         fields.append((algo.value, format_hash_value(val)))
     fields.append(("comment", member.comment))
     for key, value in sorted(member.extra.items()):
-        if isinstance(value, bytes):
-            value = value.hex()
         fields.append((f"extra.{key}", value))
 
     shown = [
-        (escape_control_chars(k), escape_control_chars(str(v)))
+        (escape_control_chars(k), format_field_value(v))
         for k, v in fields
         if v is not None
     ]
