@@ -91,3 +91,22 @@ means it can't be opened at all, as with ISO without `pycdlib`. `list_supported_
 every format that is `FULL` or `PARTIAL`.
 
 `cryptography` isn't counted, because only encrypted members need it.
+
+## Python versions and platforms
+
+Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
+macOS and Windows with 3.11 and 3.14. Other platforms and interpreters such as PyPy aren't tested.
+The core is pure Python, so it should run there, but some optional packages may not install. [How it
+is built](how-it-is-built.md) has the full test setup.
+
+## Free-threaded Python
+
+On a free-threaded build (3.13t and later), importing a compiled package that doesn't declare
+free-threading support turns the GIL back on for the rest of the process. If you use `pip install
+"archivey[free-threaded]"`, you get only the optional packages that keep it off: ISO, LZ4 and
+Zstandard support, and CLI progress bars, plus AES decryption from 3.14t. On 3.13t, `[recommended]`
+doesn't install at all, because `cryptography` can't be installed there yet.
+
+Other optional packages can still be installed. Archivey imports each one only when a file needs it,
+so the GIL comes back the first time you read PPMd, Deflate64 or Brotli data, or seek in bzip2 data
+with `seekable_members=True`. Free-threaded builds are tested on Linux only.
