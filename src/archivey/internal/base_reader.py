@@ -1005,6 +1005,8 @@ class BaseArchiveReader(ArchiveReader):
         digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
         | None = None,
         verify_member: ArchiveMember | None = None,
+        end_check: Callable[[int], None] | None = None,
+        fill_size: bool = False,
         rewind_warning: RewindWarning | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
@@ -1035,6 +1037,11 @@ class BaseArchiveReader(ArchiveReader):
         length verification into the returned ``ArchiveStream`` (no separate
         ``VerifyingStream`` layer). A never-opened lazy handle skips verify on
         close, so solid unread members stay cheap.
+
+        For a member with no ``expected_size``, ``end_check`` is called with its
+        length when a read reaches its end, before the digest verdict, and raises to
+        refuse it; ``fill_size`` gives ``verify_member.size`` that length once the
+        digests match.
         """
         if (inner is None) == (open_fn is None):
             raise TypeError("exactly one of inner or open_fn is required")
@@ -1066,6 +1073,8 @@ class BaseArchiveReader(ArchiveReader):
                 expected_size=expected_size,
                 digest_transforms=digest_transforms,
                 verify_member=verify_member,
+                end_check=end_check,
+                fill_size=fill_size,
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
                 member_name=member_name,
@@ -1090,6 +1099,8 @@ class BaseArchiveReader(ArchiveReader):
             expected_size=expected_size,
             digest_transforms=digest_transforms,
             verify_member=verify_member,
+            end_check=end_check,
+            fill_size=fill_size,
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
             member_name=member_name,
