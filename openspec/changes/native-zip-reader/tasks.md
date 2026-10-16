@@ -64,7 +64,10 @@
       data, open pipe); `dev-docs/formats/zip.md` §2.2, §5, §6; `dev-docs/IDEAS.md`;
       `docs/formats.md`.
 - [x] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
-      All three configurations pass (2026-10-16). Against the commit before the switch
+      Every test passes in all three configurations (2026-10-16); the run still
+      exited 1, because the all-lowest leg's coverage combine then failed on local
+      coverage data ("Can't combine statement coverage data with branch data"), not on
+      a test. Against the commit before the switch
       (the stdlib-backed reader), median of nine runs on one machine: listing 20 000
       members takes 430-440 ms against 348-350 ms (`zipfile` alone, 50-58 ms), about
       a quarter slower; a streaming pass over them 680-700 ms against 746 ms; the

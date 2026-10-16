@@ -1843,9 +1843,11 @@ class ZipReader(BaseArchiveReader):
         """The overlap guard's bounds, walking the directory once more if needed.
 
         After a listing that ran to the end (or to damage, or to ``max_members``) the
-        bounds are already known. Otherwise, when a member opens before the listing has
-        finished, an **index pass** reads the directory's entries again, builds no
-        members and keeps only the offsets and the count. It stops where the listing
+        bounds are already known, and every member open comes after one: random access
+        lists before it opens, and a streaming pass walks ahead (``_iter_with_data``).
+        Otherwise, when ``member_count`` is asked for first, an **index pass** reads the
+        directory's entries again, builds no members and keeps only the offsets and the
+        count. It stops where the listing
         walk stops, at damage or at ``max_members``, and keeps the offsets before that
         point (``_DataBounds``).
         """
@@ -1885,8 +1887,8 @@ class ZipReader(BaseArchiveReader):
         except UnsupportedFeatureError:
             # The listing raises it itself, at the same entry.
             pass
-        # Stopped early: an open meanwhile reads with the bounds of the entries before
-        # the stop, as after a listing that met it; the count is unknown.
+        # Stopped early: the bounds are the entries' before the stop, as after a listing
+        # that met it; the count is unknown.
         self._bounds = _DataBounds(offsets, cd_start=self._end.cd_start)
         self._count_known = True
 

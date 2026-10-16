@@ -2088,7 +2088,9 @@ def _unzipsfx_archive(tmp_path: Path, payload_at: int) -> bytes:
     The stub's size depends on the platform's build (about 75 KiB on Linux, a universal
     Mach-O on macOS), so the test is skipped where it alone reaches ``payload_at``.
     """
-    stub = Path(shutil.which("unzipsfx") or "").read_bytes()
+    unzipsfx = shutil.which("unzipsfx")
+    assert unzipsfx is not None  # requires_binary
+    stub = Path(unzipsfx).read_bytes()
     if len(stub) >= payload_at:
         pytest.skip(f"this unzipsfx is {len(stub)} bytes, past offset {payload_at}")
     with zipfile.ZipFile(tmp_path / "base.zip", "w", zipfile.ZIP_DEFLATED) as zf:

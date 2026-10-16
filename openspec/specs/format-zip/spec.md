@@ -566,8 +566,8 @@ SHALL stay refused as a split set.
 ### Requirement: Apply max_members while reading a ZIP directory
 
 `ListingLimits.max_members` SHALL be charged as the central directory is walked, in
-every access mode and by every walk (the listing, and the index pass a member open or
-`member_count` runs when it comes first), so `stream_members()` and iteration are not
+every access mode and by every walk (the listing, and the index pass `member_count`
+runs when it comes first), so `stream_members()` and iteration are not
 an escape hatch. An end record that declares more entries than `max_members`, in a
 directory at least 46 bytes per declared entry long, SHALL be refused at
 `open_archive` with `ResourceLimitError`. A declared count the directory cannot hold is

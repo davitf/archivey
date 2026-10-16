@@ -455,7 +455,9 @@ already on disk, and from `OVERWRITTEN`, which is a member that *was* written th
 and then had its destination taken by a later one), so what lands on disk matches a
 fresh write. A streaming pass has no complete listing to say which entry is last, so
 each member reads `is_current=True` until the pass ends; `member_state_final` says
-whether that can still change. A streaming `extract_all()` writes the
+whether that can still change. A ZIP read from a seekable source is the exception: its
+pass reads the whole central directory first, so each member is yielded with
+`is_current` already final. A streaming `extract_all()` writes the
 earlier entry, then takes it back when the later one arrives, so a progress callback
 sees it written and the report ends with it `SUPERSEDED`.
 

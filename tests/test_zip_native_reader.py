@@ -7,9 +7,9 @@
 - Bytes after the end record and its comment are ``ARCHIVE_TRAILING_DATA`` (DR-3), as
   after a TAR trailer or a 7z archive's end, also when there are more of them than
   the end-record search reads: a walk over the local headers finds the directory.
-- The directory is walked as members are listed; the overlap guard's offsets and
-  ``member_count`` come from that walk, or from one index pass when a member opens
-  first.
+- The directory is walked as members are listed, and a streaming pass walks it before
+  the first member's data; the overlap guard's offsets and ``member_count`` come from
+  that walk, or from one index pass when ``member_count`` is read first.
 - A listed member keeps a small locator, not the directory entry.
 """
 
@@ -415,14 +415,21 @@ def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
             (m.name, m.size, m.compressed_size, outcome(partial(reader.read, m)))
             for m in reader.members_report().members
         ]
-    # A streaming pass opens each member as the listing reaches it, so the index
-    # pass runs before the listing gets to the damage.
-    opened_first = []
+    # ``member_count`` asked first runs the index pass, which meets the damage before
+    # the listing does.
+    with open_archive(io.BytesIO(bytes(data))) as reader:
+        assert reader.info.member_count is None
+        counted_first = [
+            (m.name, m.size, m.compressed_size, outcome(partial(reader.read, m)))
+            for m in reader.members_report().members
+        ]
+    # A streaming pass walks the directory before reading any member's data.
+    streamed = []
     with open_archive(io.BytesIO(bytes(data)), streaming=True) as reader:
         with raises_corruption_not_truncation(match="magic"):
             for member, stream in reader.stream_members():
                 assert stream is not None
-                opened_first.append(
+                streamed.append(
                     (
                         member.name,
                         member.size,
@@ -431,7 +438,8 @@ def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
                     )
                 )
     assert [(name, read) for name, _, _, read in listed_first] == expected
-    assert opened_first == listed_first
+    assert counted_first == listed_first
+    assert streamed == listed_first
 
 
 # --- Version needed above 6.3 -------------------------------------------------------
@@ -764,7 +772,7 @@ def test_junk_after_a_whole_directory_is_damage_not_a_cut() -> None:
         )
 
 
-# --- One walk for the listing, one index pass when an open comes first ---------------
+# --- One walk for the listing, one index pass when member_count comes first ----------
 
 
 def _counting_walks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -857,7 +865,7 @@ def test_a_seekable_streaming_pass_reads_the_directory_then_forward_only(
     # file order: one move back, to the first local header, and none after it.
     pass_reads = [start for start, n in source.reads[at_open:] if n]
     first_data = next(i for i, start in enumerate(pass_reads) if start < cd_start)
-    assert all(start >= cd_start for start in pass_reads[:first_data])
+    assert first_data > 0  # the pass reads the directory before any member
     member_reads = pass_reads[first_data:]
     assert all(start < cd_start for start in member_reads)
     assert member_reads == sorted(member_reads)
@@ -946,3 +954,24 @@ def test_a_classic_end_record_stands_in_for_a_damaged_zip64_record() -> None:
         ) as reader:
             reader.members()
     assert raised.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+
+
+def test_a_failure_met_walking_ahead_is_raised_where_the_pass_reaches_it() -> None:
+    # The end record declares five entries over a directory of three: a directory
+    # finding STRICT raises after the last member. The walk ahead meets it before any
+    # member is yielded; the pass yields the three, then raises the finding itself
+    # rather than the ReadError a walk that already failed gives.
+    data = bytearray(_zip())
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 5, 5)
+    read = []
+    with open_archive(
+        io.BytesIO(bytes(data)),
+        streaming=True,
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+    ) as reader:
+        with pytest.raises(DiagnosticRaisedError):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                read.append((member.name, stream.read()))
+    assert read == [(n, n.encode() * 3) for n in _NAMES]
