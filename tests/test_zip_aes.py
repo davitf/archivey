@@ -1142,3 +1142,41 @@ def test_forward_open_checks_in_the_sized_open_order(
             password=_PASSWORD,
             hold_back=hold_back,
         )
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("forward", [False, True], ids=["sized", "forward"])
+def test_aes_hmac_mismatch_keeps_withholding_the_last_chunk(forward: bool) -> None:
+    """A read after the mismatch raises again; it never hands out the chunk the
+    failed read withheld, or a clean end."""
+    payload = os.urandom(100_000)
+    enc_key, auth_key = os.urandom(32), os.urandom(32)
+    cipher = aes_ctr_le_encrypt(enc_key, payload)
+    mac = bytes(10)
+    stage: WinZipAesDecryptStream | WinZipAesForwardStream
+    if forward:
+        stage = WinZipAesForwardStream(
+            io.BytesIO(cipher + mac),
+            enc_key=enc_key,
+            auth_key=auth_key,
+            header_len=18,
+            hold_back=None,
+        )
+    else:
+        stage = WinZipAesDecryptStream(
+            io.BytesIO(cipher + mac),
+            enc_key=enc_key,
+            auth_key=auth_key,
+            cipher_len=len(cipher),
+        )
+    out = b""
+    with pytest.raises(CorruptionError, match="HMAC mismatch"):
+        while chunk := stage.read(1 << 16):
+            out += chunk
+    assert payload.startswith(out)
+    assert len(out) < len(payload)
+    for _ in range(2):
+        with pytest.raises(CorruptionError, match="HMAC mismatch"):
+            stage.read(1 << 16)
+    # A zero-length read carries no verdict, as on any ``io`` stream.
+    assert stage.read(0) == b""

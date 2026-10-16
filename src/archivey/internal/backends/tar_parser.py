@@ -36,6 +36,7 @@ from __future__ import annotations
 import errno
 import re
 import struct
+import sys
 import zlib
 from array import array
 from collections.abc import Callable, Mapping
@@ -459,7 +460,34 @@ def _pax_int(records: Mapping[bytes, PaxValue], key: bytes) -> int | None:
         raise CorruptionError(
             f"TAR PAX record {key.decode()} is not a number: {text[:40]!r}"
         )
-    return int(text)
+    return _pax_decimal(key, text)
+
+
+def _pax_decimal(key: bytes, digits: bytes) -> int:
+    """The value of the ASCII decimal ``digits`` of PAX record ``key``.
+
+    ``int()`` refuses a string longer than Python's digit limit with a builtin
+    ``ValueError``, leading zeros included. Those are dropped first, and a number
+    still past the limit is damage: no field holds a value that large."""
+    significant = digits.lstrip(b"0")
+    limit = sys.get_int_max_str_digits()
+    if limit and len(significant) > limit:
+        raise CorruptionError(
+            f"TAR PAX record {key.decode(errors='replace')} is a number of "
+            f"{len(significant)} digits, too large for any field"
+        )
+    return int(significant) if significant else 0
+
+
+def _sparse_major_1_or_more(major: PaxValue | None) -> bool:
+    """Whether a ``GNU.sparse.major`` value is a number of 1 or more.
+
+    Read from the digits, not through ``int()``: a value of thousands of digits is still
+    a version of 1 or more, and ``int()`` refuses one past Python's digit limit."""
+    if major is None:
+        return False
+    value = major.value
+    return value.isdigit() and value.strip(b"0") != b""
 
 
 # ------------------------------------------------------------------------ sparse maps
@@ -1130,9 +1158,9 @@ class TarWalker:
             if value is not None and value.value.isdigit():
                 # A PAX id that is not a number is ignored, keeping the header's.
                 if key == b"uid":
-                    uid = int(value.value)
+                    uid = _pax_decimal(key, value.value)
                 else:
-                    gid = int(value.value)
+                    gid = _pax_decimal(key, value.value)
 
         data_offset = offset + BLOCKSIZE
         size = stored_size
@@ -1148,41 +1176,14 @@ class TarWalker:
             # Sparse records on a link, device, FIFO or directory describe no data
             # area: the member is not sparse. Without PAX records it has none.
             pass
-        # Each encoding is chosen by the presence of the records that define its map,
-        # not by pax(), which drops an empty value: a sparse record whose value is
-        # empty is damage, and reading the member as a plain file would serve its
-        # compacted data as the content. Only the member's own records choose: a map
-        # describes one member's data area, so a global sparse record makes no member
-        # sparse, as GNU tar 1.35 reads it. The values still read the global defaults.
-        elif b"GNU.sparse.map" in own:
-            sparse_format = SparseFormat.PAX_0_1
-            sparse = sparse_map_0_1(
-                merged[b"GNU.sparse.map"].value, charge.name, charge
-            )
-            size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif b"GNU.sparse.size" in own or own_sparse[0]:
-            sparse_format = SparseFormat.PAX_0_0
-            sparse = sparse_map_0_0(*own_sparse, charge.name, charge)
-            size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif b"GNU.sparse.major" in own or b"GNU.sparse.realsize" in own:
-            # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the
-            # minor (measured with 1.1, 1.5, 2.0 and 9.9), and refuses a major of 0,
-            # an empty one, or one that is not a number when no 0.x map came with
-            # it. A realsize with no major is refused too: it declares a 1.0
-            # member's logical size, and GNU tar fails on it. (A minor alone is
-            # read as a plain file, as GNU tar reads it.) Read as a plain file, the
-            # member would serve its map blocks as content.
-            major = merged.get(b"GNU.sparse.major")
-            if major is None or not (major.value.isdigit() and int(major.value) >= 1):
-                version = (
-                    "(none)"
-                    if major is None
-                    else major.value[:20].decode("ascii", "replace")
-                )
-                raise CorruptionError(
-                    f"TAR member {charge.name} has GNU sparse major version "
-                    f"{version} and no sparse map"
-                )
+        # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the minor
+        # (measured with 1.1, 1.5, 2.0 and 9.9) and whatever 0.x records came with it:
+        # with a GNU.sparse.size it lists the realsize, and with a GNU.sparse.map it
+        # warns about the excess map and still reads the 1.0 map. Only the member's
+        # own records choose, as for 0.x below; the major may be a global default.
+        elif (b"GNU.sparse.major" in own or b"GNU.sparse.realsize" in own) and (
+            _sparse_major_1_or_more(merged.get(b"GNU.sparse.major"))
+        ):
             sparse_format = SparseFormat.PAX_1_0
             size = _pax_int(merged, b"GNU.sparse.realsize") or 0
             # The map is the first blocks of the data area. It is read here, as
@@ -1194,6 +1195,39 @@ class TarWalker:
             )
             data_offset += used
             stored_size -= used
+        # The 0.x encodings are chosen by the presence of the records that define
+        # their map, not by pax(), which drops an empty value: a sparse record whose
+        # value is empty is damage, and reading the member as a plain file would serve
+        # its compacted data as the content. Only the member's own records choose: a
+        # map describes one member's data area, so a global sparse record makes no
+        # member sparse, as GNU tar 1.35 reads it. The values still read the global
+        # defaults.
+        elif b"GNU.sparse.map" in own:
+            sparse_format = SparseFormat.PAX_0_1
+            sparse = sparse_map_0_1(
+                merged[b"GNU.sparse.map"].value, charge.name, charge
+            )
+            size = _pax_int(merged, b"GNU.sparse.size") or 0
+        elif b"GNU.sparse.size" in own or own_sparse[0]:
+            sparse_format = SparseFormat.PAX_0_0
+            sparse = sparse_map_0_0(*own_sparse, charge.name, charge)
+            size = _pax_int(merged, b"GNU.sparse.size") or 0
+        elif b"GNU.sparse.major" in own or b"GNU.sparse.realsize" in own:
+            # GNU tar refuses a major of 0, an empty one, or one that is not a number
+            # when no 0.x map came with it. A realsize with no major is refused too:
+            # it declares a 1.0 member's logical size, and GNU tar fails on it. (A
+            # minor alone is read as a plain file, as GNU tar reads it.) Read as a
+            # plain file, the member would serve its map blocks as content.
+            major = merged.get(b"GNU.sparse.major")
+            version = (
+                "(none)"
+                if major is None
+                else major.value[:20].decode("ascii", "replace")
+            )
+            raise CorruptionError(
+                f"TAR member {charge.name} has GNU sparse major version "
+                f"{version} and no sparse map"
+            )
 
         # The final name decides, after any PAX path or GNU long name: a regular-file
         # typeflag with a name ending in "/" is a pre-POSIX directory entry.

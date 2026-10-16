@@ -1444,6 +1444,16 @@ class TarReader(BaseArchiveReader):
             return self._decode_name(pax.value, NameSource.PAX, pax.binary)[0]
         return self._decode_name(header, NameSource.HEADER, False)[0]
 
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        # The stream layer (streamtools) raises builtins, never archivey errors.
+        # Today the one EOFError a member read can raise is a sparse member's
+        # SparseStream, when the stream under it returned no bytes instead of raising
+        # its own TruncatedError. The message says only what every source shares, so
+        # a new one still reads as truncation and is not blamed on a sparse member.
+        if isinstance(exc, EOFError):
+            return TruncatedError(f"TAR member data ended early: {exc}")
+        return None
+
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         with self._translated_errors(member.name):
             return self._open_member_stream(member, defer_sparse_error=False)
