@@ -208,7 +208,8 @@ Each idea carries a status:
   alone was tried and dropped: it adds nothing over a name filter (`docs/formats.md`)
   and also marks a real file called `._x`. A version worth having checks the AppleDouble
   magic (`00 05 16 07`) at the start of the data. That costs a read of the first bytes
-  of each `._` file, buffered before a forward pass yields it. Also requiring the
+  of each `._` file: buffered before a forward pass yields it, and an extra member open
+  per `._` file in a listing that otherwise reads no data (a seekable ZIP). Also requiring the
   described file to exist costs more in a TAR, where the sidecar comes before its file:
   the pass would hold the small sidecar back until it has seen the next member.
 - **Pathlib-like navigation.** *Open idea.* An `ArchivePath` with `/`, `iterdir()`,

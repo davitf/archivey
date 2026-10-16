@@ -78,7 +78,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 A ZIP or TAR made on a Mac often carries AppleDouble sidecars: a `._name` file holding
 the extended attributes and resource fork of `name`, next to it (macOS `tar`) or under
 `__MACOSX/` (Finder, `ditto`). archivey lists them as ordinary files, as `unzip` does.
-To leave them out, filter on the name:
+To leave them out, skip them by name with `members=`:
 
 ```python
 from archivey import open_archive
@@ -91,7 +91,8 @@ with open_archive("photos.zip") as reader:
     reader.extract_all("out", members=lambda m: not is_macos_sidecar(m))
 ```
 
-The test goes by name only, so it also skips a file that was really called `._notes`.
+The test goes by name only, so it also skips a file that was really called `._notes`
+and anything in a real folder named `__MACOSX`.
 
 ## Fields that change after a member is returned
 
