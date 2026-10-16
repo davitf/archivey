@@ -392,8 +392,11 @@ class _PassData:
         self._prefix_want: int | None = None
         #: The data has ended and been checked, or the pass has moved past it.
         self.done = False
-        #: The data was decoded to its end and checked (``_finish``); ``done`` alone
-        #: also covers data the pass skipped or failed to decode.
+        #: The data was decoded to its end and checked (``_finish``). ``done`` without
+        #: it means the decode failed part way, or ``abandon`` stopped the pass; for a
+        #: bit-3 member, it keeps a capture that reached exactly the reparse prefix's
+        #: length from counting as checked (``reparse_prefix``), since the file read's
+        #: bounded read stops there too and gives the target.
         self._checked = False
         #: The walk has moved on: the caller's stream reads nothing more.
         self.passed = False
@@ -425,8 +428,8 @@ class _PassData:
             return None
         if self._deferred():
             # Bit-3 data is decoded to its end to find it; the file read reaches
-            # that end only when the data is no longer than the start it reads. Data
-            # the pass skipped, or whose decode failed, was not checked here.
+            # that end only when the data is no longer than the start it reads. A
+            # decode that failed part way was not checked (``_checked``).
             ended = self.verified or (self._checked and self._size <= want)
         else:
             ended = self.verified or self._size >= self.entry.header.file_size

@@ -962,13 +962,15 @@ class LocalHeaderWalk:
             # Whether a field supplied each size, not its value: a field can hold all
             # ones as a real size. With no other source of sizes, a deferral no field
             # holds is refused rather than read as a size of 4 GiB.
-            sizes = local_zip64_sizes(header.extra, *local_stored_sizes(fixed))
-            for which, size in zip(("compressed", "uncompressed"), sizes, strict=True):
-                if size is None:
-                    raise CorruptionError(
-                        f"ZIP local header #{self._index} defers its {which} size to "
-                        "a ZIP64 extra field that does not hold it"
-                    )
+            compressed, uncompressed = local_zip64_sizes(
+                header.extra, *local_stored_sizes(fixed)
+            )
+            if compressed is None or uncompressed is None:
+                which = "compressed" if compressed is None else "uncompressed"
+                raise CorruptionError(
+                    f"ZIP local header #{self._index} defers its {which} size to "
+                    "a ZIP64 extra field that does not hold it"
+                )
         self._index += 1
         return entry
 
