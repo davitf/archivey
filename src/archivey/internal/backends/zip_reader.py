@@ -835,7 +835,11 @@ def _zip_owner(fields: Sequence[ExtraField]) -> _ZipOwner:
         data = field.data
         if tag == _OWNER_TAG_INFOZIP_NEW_UNIX:
             newer = 2
-            newest = _new_unix_owner(data, field.complete)
+            newest = (
+                _cached_new_unix_owner(data, field.complete)
+                if len(data) <= _NEW_UNIX_CACHED_LEN
+                else _new_unix_owner(data, field.complete)
+            )
         elif tag == _OWNER_TAG_INFOZIP_UNIX2:
             if newer == 2:
                 continue
@@ -862,13 +866,10 @@ def _zip_owner(fields: Sequence[ExtraField]) -> _ZipOwner:
     return _NO_OWNER if fault is None else _ZipOwner(None, fault)
 
 
-@lru_cache(maxsize=64)
 def _new_unix_owner(data: bytes, complete: bool) -> _ZipOwner:
     """The ids in an Info-ZIP new Unix field (``0x7875``) holding ``data``.
 
     Layout: version (1), uid size, uid, gid size, gid, each id little-endian.
-    Cached: the members of one archive mostly share an owner, so mostly share the
-    field's bytes.
     """
     tag = _OWNER_TAG_INFOZIP_NEW_UNIX
     if not complete:
@@ -892,6 +893,14 @@ def _new_unix_owner(data: bytes, complete: bool) -> _ZipOwner:
     uid = int.from_bytes(data[2:gid_at], "little")
     gid = int.from_bytes(data[gid_at + 1 : end], "little")
     return _ZipOwner((uid, gid), tag=tag)
+
+
+# The members of one archive mostly share an owner, so mostly share the field's bytes.
+# Only fields a writer could produce are cached (19 bytes at most: version, two sizes,
+# two 8-byte ids): hashing a long hostile field costs more than parsing it, and the
+# cache would keep its bytes for the life of the process.
+_NEW_UNIX_CACHED_LEN = 32
+_cached_new_unix_owner = lru_cache(maxsize=64)(_new_unix_owner)
 
 
 # Fields that are part of the ZIP structure rather than a record about the member: the
@@ -1177,7 +1186,9 @@ _ZIP_COST = CostReceipt(
 
 class _DecodedName(NamedTuple):
     """A ZIP entry's name as archivey reads it, before normalization. A tuple, not a
-    dataclass: one is built per member on the listing hot path."""
+    dataclass: one is built per member on the listing hot path. The ASCII fast path
+    in ``_decode_member_name`` builds it positionally; ``test_zip_native_reader``
+    pins the field order."""
 
     text: str
     """The decoded name; ``member.name`` is this, normalized."""
@@ -2298,7 +2309,10 @@ class ZipReader(BaseArchiveReader):
             else:
                 has_unicode_path = False
             if not has_unicode_path:
-                return _new_tuple(  # pyrefly: ignore[bad-specialization]  # a NamedTuple is a tuple
+                # Positional, in _DecodedName's order (pinned by a test). The pragma:
+                # a NamedTuple is a tuple.
+                # pyrefly: ignore[bad-specialization]
+                return _new_tuple(
                     _DecodedName,
                     (raw_name.decode("ascii"), raw_name, None, None, None, None, False),
                 )
@@ -2536,6 +2550,8 @@ class ZipReader(BaseArchiveReader):
                 dos_time=entry.dos_time,
                 name=entry.name,
                 aes=aes_info,
+                # The bit test repeats the callee's first line, to skip the call for
+                # an unencrypted member; it must stay a necessary condition there.
                 strong_encryption=bool(entry.flags & _ZIP_MASK_ENCRYPTED)
                 and _uses_strong_encryption(entry.flags, entry.extra),
                 reparse_fallback=reparse_fallback,
@@ -2652,6 +2668,8 @@ class ZipReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
+        # member.name is still ``name``: this is the callee's own early return, kept
+        # here to skip the call for the common unchanged name.
         if name != name_source:
             emit_member_name_normalized(
                 self._diagnostics_collector,
@@ -2840,7 +2858,8 @@ class ZipReader(BaseArchiveReader):
         """
         header = entry.header
         central = _central_from_local(entry)
-        decoded_name = self._decode_member_name(central)
+        fields = split_extra_fields(central.extra)
+        decoded_name = self._decode_member_name(central, fields)
         stored_as_directory = decoded_name.text.endswith(("/", "\\"))
         member_type = MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
         name = normalize_member_name(
@@ -2856,7 +2875,7 @@ class ZipReader(BaseArchiveReader):
         else:
             compression = _ZIP_COMPRESSION_TUPLES.get(method, _UNKNOWN_COMPRESSION)
         modified, accessed, ntfs_ctime, ut_ctime, _issues, _tags = _zip_timestamps(
-            central, name, split_extra_fields(central.extra)
+            central, name, fields
         )
         created, ctime = _zip_created(CreateSystem.UNKNOWN, ntfs_ctime, ut_ctime)
         deferred = entry.deferred
@@ -4042,6 +4061,7 @@ def _is_encrypted_entry(flags: int, method: int) -> bool:
 
 def _uses_strong_encryption(flags: int, extra: bytes) -> bool:
     """True for a PKWARE Strong Encryption member (APPNOTE §7)."""
+    # The listing tests this bit before calling, to skip the call.
     if not flags & _ZIP_MASK_ENCRYPTED:
         return False
     if flags & _ZIP_MASK_STRONG_ENCRYPTION:

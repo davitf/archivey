@@ -1563,7 +1563,10 @@ class BaseArchiveReader(ArchiveReader):
         if not log.codes:
             del self._walk_emits[position]
             if fresh:
-                # Nothing was recorded, so the log is as new: details still empty.
+                # Nothing was recorded, so the log is as new: ``emit`` records a
+                # detail or a raise only beside a code, and ``call_replaying`` has
+                # dropped its reference to the log.
+                assert log.details == [] and log.raised is None
                 self._spare_emit_log = log
         else:
             log.settle()

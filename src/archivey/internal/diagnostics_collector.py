@@ -112,13 +112,11 @@ class _ReplayingBlock:
     def __enter__(self) -> None:
         collector = self._collector
         self._thread_id = thread_id = threading.get_ident()
-        with collector._lock:
-            collector._replays[thread_id] = _Replay(self._log)
+        # No lock: see ``DiagnosticCollector._replays``.
+        collector._replays[thread_id] = _Replay(self._log)
 
     def __exit__(self, *exc_info: object) -> None:
-        collector = self._collector
-        with collector._lock:
-            collector._replays.pop(self._thread_id, None)
+        self._collector._replays.pop(self._thread_id, None)
 
 
 def nothing_held() -> Exception | None:
@@ -187,6 +185,10 @@ class DiagnosticCollector:
         self._emitting_threads: set[int] = set()
         # Per thread, the log a ``replaying()`` block records into or replays from. Per
         # thread, so another thread's stream on the same reader is never replayed.
+        # Used without ``_lock``: each thread sets, gets and pops only its own entry,
+        # and a dict's single set, get or pop is atomic (free-threaded builds too). Any
+        # other operation on it (iterating, ``len``, ``clear``) would need a lock that
+        # every one of those accesses takes.
         self._replays: dict[int, _Replay] = {}
         # Per thread, the raises a ``deferring_raises()`` block is holding back.
         self._deferred: dict[int, list[Exception]] = {}
@@ -220,9 +222,7 @@ class DiagnosticCollector:
         """
         thread_id = threading.get_ident()
         replays = self._replays
-        # No lock: the entry is keyed by this thread, which is the only one that
-        # writes it, and ``emit`` reads only its own thread's entry. A dict's single
-        # set, get and pop are atomic, free-threaded builds included.
+        # No lock: see ``_replays``.
         replays[thread_id] = _Replay(log)
         try:
             return work()

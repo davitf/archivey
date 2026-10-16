@@ -34,6 +34,7 @@ from archivey.internal.backends.zip_aes import (
     open_winzip_aes_forward,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
+    split_extra_fields,
 )
 from archivey.internal.streams import codecs
 from archivey.internal.streams.streamtools.binaryio import source_byte_size
@@ -619,6 +620,27 @@ def test_iter_extra_fields_edge_shapes() -> None:
     for stray in (b"\x01", b"\x01\x02", b"\x01\x02\x03"):
         assert list(iter_extra_fields(two + stray)) == list(iter_extra_fields(two))
     assert list(iter_extra_fields(b"")) == []
+
+
+def test_extra_field_order_is_pinned() -> None:
+    # split_extra_fields builds ExtraField positionally with tuple.__new__, which
+    # cannot notice a reordered or added field.
+    assert ExtraField._fields == ("tag", "data", "complete")
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_lazy_and_eager_extra_field_walks_agree(seed: int) -> None:
+    # iter_extra_fields (lazy, for early-exit probes) and split_extra_fields (eager,
+    # for the listing) are two loops that must read every blob the same way.
+    rng = random.Random(seed)
+    pieces = []
+    for _ in range(rng.randrange(0, 6)):
+        data = rng.randbytes(rng.randrange(0, 12))
+        size = len(data) + rng.choice((0, 0, 0, 1, 5))  # sometimes over-declared
+        pieces.append(struct.pack("<HH", rng.randrange(0x10000), size) + data)
+    blob = b"".join(pieces) + rng.randbytes(rng.randrange(0, 4))
+    for cut in range(len(blob) + 1):
+        assert tuple(iter_extra_fields(blob[:cut])) == split_extra_fields(blob[:cut])
 
 
 def test_aes_stream_guard_runs_before_the_cryptography_import(

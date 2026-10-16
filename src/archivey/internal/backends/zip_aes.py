@@ -82,24 +82,37 @@ _new_tuple = tuple.__new__
 
 
 class ExtraField(NamedTuple):
+    # Also built positionally (split_extra_fields); test_zip_aes pins this order.
     tag: int
     data: bytes
     complete: bool  # False: the declared size ran past the end of the blob
 
 
 def iter_extra_fields(extra: bytes) -> Iterator[ExtraField]:
-    """Yield each field of a ZIP extra-field blob, as :func:`split_extra_fields`
-    returns them."""
-    yield from split_extra_fields(extra)
+    """Yield each field of a ZIP extra-field blob lazily, as
+    :func:`split_extra_fields` returns them.
+
+    For callers that stop at the first match (the ZIP64 and AES probes): a blob can
+    hold 16 000 fields, and splitting all of them to find the first costs thousands of
+    times more. ``test_zip_aes`` checks that the two walks agree.
+    """
+    end_of_blob = len(extra)
+    pos = 0
+    while pos + 4 <= end_of_blob:
+        tag, size = _FIELD_HEADER.unpack_from(extra, pos)
+        start = pos + 4
+        pos = start + size
+        yield ExtraField(tag, extra[start:pos], pos <= end_of_blob)
 
 
 def split_extra_fields(extra: bytes) -> tuple[ExtraField, ...]:
     """Every field of a ZIP extra-field blob, AES or not.
 
-    It is the one walk every ZIP extra-field parser uses. It lives here rather than
-    in ``zip_reader`` because ``zip_reader`` imports this module, so the reverse
-    import would be a cycle. The listing splits a member's blob once and reads the
-    fields for its name, times, owner and leftovers.
+    It is the walk every ZIP extra-field parser that reads all the fields uses;
+    :func:`iter_extra_fields` is its lazy twin for callers that stop early. Both live
+    here rather than in ``zip_reader`` because ``zip_reader`` imports this module, so
+    the reverse import would be a cycle. The listing splits a member's blob once and
+    reads the fields for its name, times, owner and leftovers.
 
     A last field whose declared size runs past the blob comes back with the bytes
     that are there and ``complete`` false; each caller decides what that means (the
@@ -115,7 +128,8 @@ def split_extra_fields(extra: bytes) -> tuple[ExtraField, ...]:
         tag, size = _FIELD_HEADER.unpack_from(extra, pos)
         start = pos + 4
         pos = start + size
-        # tuple.__new__ directly: the NamedTuple constructor adds a Python call.
+        # tuple.__new__ directly: the NamedTuple constructor adds a Python call. The
+        # order is ExtraField's, pinned by test_zip_aes.
         fields.append(
             _new_tuple(  # pyrefly: ignore[bad-specialization]  # a NamedTuple is a tuple
                 ExtraField, (tag, extra[start:pos], pos <= end_of_blob)
