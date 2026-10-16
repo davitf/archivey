@@ -34,9 +34,10 @@ def unix_to_datetime(seconds: float) -> datetime | None:
     1970 would list with the right date on Linux and macOS and as invalid on Windows.
     Epoch plus ``timedelta`` is the same value on every platform, rounded to the
     microsecond the same way. (:func:`unix32_to_datetime` does call ``fromtimestamp``,
-    for speed, and falls back to this sum when the platform refuses the value.) ``timedelta`` raises ``OverflowError`` for a value too
-    large for it or a result outside ``datetime``'s range, and ``ValueError`` only
-    for NaN, which a float PAX time record can carry; both mean "no valid time".
+    for speed, and falls back to this sum when the platform refuses the value.)
+    ``timedelta`` raises ``OverflowError`` for a value too large for it or a result
+    outside ``datetime``'s range, and ``ValueError`` only for NaN, which a float PAX
+    time record can carry; both mean "no valid time".
     """
     try:
         return _UNIX_EPOCH + timedelta(seconds=seconds)
