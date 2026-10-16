@@ -1038,7 +1038,7 @@ class BaseArchiveReader(ArchiveReader):
         close, so solid unread members stay cheap.
 
         Pass ``fill_size=True`` with ``verify_member`` and no ``expected_size`` to set
-        ``verify_member.size`` once a read from the start, with no seek, reaches the
+        ``verify_member.size`` once a read from the start that skips no byte reaches the
         end cleanly (``MemberVerifier``): the late size of a member whose format
         records none.
         """

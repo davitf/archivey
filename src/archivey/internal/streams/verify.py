@@ -194,7 +194,7 @@ class MemberVerifier:
         fill_size: bool = False,
     ) -> None:
         self._expected_size = expected_size
-        # Set ``member.size`` once a read from the start, with no seek, finds the end
+        # Set ``member.size`` once a read from the start that skips no byte finds the end
         # (``_note_end_seen``). Needs ``member`` and no declared size.
         self._fill_member = member if fill_size and expected_size is None else None
         self._expected: dict[str, bytes] = {}
@@ -257,9 +257,6 @@ class MemberVerifier:
         # (``_pos`` already holds it) and where the inner was left. ``None`` when no
         # read-through is due.
         self._read_through_due: tuple[int, int] | None = None
-        # No seek has moved the position since the start or the last rewind to 0. Only
-        # such a read is the decoder's whole pass, the one its own checks cover.
-        self._unseeked = True
 
     def _rearm(self) -> None:
         """Put every check back to its state before the first read.
@@ -279,20 +276,20 @@ class MemberVerifier:
         self._abandoned = False
         self._end_seen = None
         self._read_through_due = None
-        self._unseeked = True
 
     def _note_end_seen(self) -> None:
         """Record that a read at the read frontier found the end of a size-unknown member.
 
-        With ``fill_size``, the member's ``size`` becomes that position when the read
-        went from the start to the end with no seek: the decoder made its whole pass
-        and its own end checks passed, since an error raises before the empty read
-        that brings us here. After any seek it stays ``None``, as a seek can resume
-        from an index point whose earlier blocks were never decoded.
+        With ``fill_size``, the member's ``size`` becomes that position when every
+        byte before it was returned in order (the hashing frontier is there), the
+        condition DR-4a keeps a digest under: a seek back keeps it, a jump over bytes
+        no read returned (an index, an accelerator, a forward seek) does not. The
+        decoder's own end checks passed, since an error raises before the empty read
+        that brings us here.
         """
         self._end_seen = self._pos
         member = self._fill_member
-        if member is None or not self._unseeked or self._hashed_to != self._pos:
+        if member is None or self._hashed_to != self._pos:
             return
         if member.size is None:
             member.size = self._pos
@@ -714,7 +711,6 @@ class MemberVerifier:
                 left_at = due[1] if due is not None else self._pos
                 self._read_through_due = (target, left_at)
                 self._pos = target
-                self._unseeked = False
                 if planned is not None:
                     raise planned
                 return target
@@ -792,9 +788,6 @@ class MemberVerifier:
         if result == 0:
             self._rearm()
             return
-        if result != self._pos or self._pos != self._furthest_read_pos:
-            # A seek to where the read already is (``seek(tell())``) moves nothing.
-            self._unseeked = False
         self._pos = result
 
     def finish_on_close(self, inner: BinaryIO) -> None:
@@ -865,7 +858,7 @@ def build_member_verifier(
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``.
 
     ``fill_size`` with a ``member`` and no ``expected_size`` is something to do: the
-    verifier sets ``member.size`` when a read with no seek reaches the end.
+    verifier sets ``member.size`` when a read that skipped no byte reaches the end.
     """
     hashes = expected if expected is not None else {}
     fills = fill_size and member is not None and expected_size is None

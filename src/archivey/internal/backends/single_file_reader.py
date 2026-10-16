@@ -300,8 +300,9 @@ class SingleFileReader(BaseArchiveReader):
         """
 
         def tail(f: BinaryIO) -> bytes | None:
-            # One seek: a file shorter than ``length`` refuses it (``OSError``, which
-            # the caller turns into ``None``) or clamps it to 0 and reads short.
+            # One seek. A source shorter than ``length`` raises ``ValueError`` (some
+            # streams) or ``OSError`` (a file; ``_try_on_seekable_source`` catches it),
+            # or clamps to 0 and reads short (``BytesIO``): every path gives ``None``.
             try:
                 f.seek(-length, io.SEEK_END)
             except ValueError:
@@ -561,7 +562,7 @@ class SingleFileReader(BaseArchiveReader):
         # Wrap so the handle carries the reader's diagnostic collector/operation id.
         # (open_codec_stream already returns an ArchiveStream; nesting is fine.) A
         # member with no recorded size takes the length of the first read from the
-        # start to the end with no seek; the open-time probe is no such read.
+        # start to the end that skips no byte; the open-time probe is no such read.
         member = self._member
         fill = attribute_member and member.size is None
         return self._wrap_member_stream(

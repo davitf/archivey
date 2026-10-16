@@ -743,7 +743,7 @@ class ArchiveMember:
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry).
 
     A single-file member (``.gz``, ``.bz2``, …) whose format records no size gets
-    one from a read: a read from the start to the end, with no seek, that the
+    one from a read: a read from the start to the end that skips no byte, which the
     decoder finishes without error sets it to the bytes it returned. Until then
     ``member_state_final`` is ``False``."""
 
@@ -1044,8 +1044,8 @@ class ArchiveMember:
           :meth:`~archivey.ForwardArchiveReader.extract_all` read it when they reach
           the link, on the member they are given, a copy included.
         - A single-file member (``.gz``, ``.bz2``, …) whose ``size`` is ``None``,
-          until a read from the start to the end with no seek fills it in. A read
-          that seeks, stops early or fails leaves it ``False``.
+          until a read from the start to the end that skips no byte fills it in. A read
+          that skips bytes, stops early or fails leaves it ``False``.
 
         Everywhere else it is ``True``. Closing the reader makes it ``True`` for every
         member it listed, since a closed reader updates nothing. A copy made with

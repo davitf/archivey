@@ -90,7 +90,8 @@ The fields that change in practice:
 | Single-file (`.gz`, `.xz`, …) | `size`, when the format records none: a full read fills it in, and the flag stays `False` until then ([below](#single-file-compressors)) | none |
 
 `members()`, `members_report()` and `get()` return members that read `True`, unless
-they are unread symlinks. Members read `False` until a call like those, or the end of a
+they are unread symlinks or single-file members whose `size` a full read has not
+filled in yet. Members read `False` until a call like those, or the end of a
 pass, has resolved the listing's links. A `streaming=True` pass yields every member
 before that, in every format, including the two whose fields do not change in
 practice. A `members_report_if_available()` peek resolves no links, so its members
@@ -712,10 +713,12 @@ yielded.
 - **`size` arrives with the first full read** when listing left it `None`: always for
   `.gz`, `.bz2`, `.zz`, `.br` and `.Z`, and for the others when their size field is
   absent or out of reach (an `.xz` from a pipe). A
-  read from the start to the end with no seek, which the decoder finishes without
-  error, sets `member.size` on the member `members()` returned. A read that stops
-  early, raises or seeks (other than back to 0) leaves it `None`, as does a copy made
-  with `replace()`. `member_state_final` reads `False` until the size is filled in or
+  read that reaches the end having returned every byte from the start, which the
+  decoder finishes without error, sets `member.size` on the member `members()`
+  returned. Seeking back is fine. A read that stops early or raises, or that skips
+  bytes with a forward seek, leaves it `None`, as does a copy made with `replace()`.
+  A `.Z` has no end marker or checksum, so for a `.Z` cut where the decoder cannot
+  see it, the filled size is that of the cut data. `member_state_final` reads `False` until the size is filled in or
   the reader closes.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is
   cheap to reach (a path or an in-memory stream; not a pipe or another archive's

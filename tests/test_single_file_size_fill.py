@@ -1,7 +1,7 @@
 """A single-file member's late ``size``, and the gzip trailer in ``extra``.
 
 Most single-file formats record no size. The member's ``size`` is ``None`` until a
-read from the start to the end, with no seek, that the decoder finishes cleanly;
+read from the start to the end that skips no byte, which the decoder finishes cleanly;
 that read sets it to the bytes it returned. ``member_state_final`` reads ``False``
 until then (spec ``format-single-file-compressors``, "Report member size with codec
 caveats"; ``archive-data-model``, "ArchiveMember says whether its fields can still
@@ -14,6 +14,7 @@ import bz2
 import gzip
 import io
 import lzma
+import tarfile
 import zlib
 from collections.abc import Callable
 from pathlib import Path
@@ -34,11 +35,11 @@ def _brotli(data: bytes) -> bytes:
     return brotli.compress(data)
 
 
-_NO_SIZE_CODECS: list[tuple[str, Callable[[bytes], bytes]]] = [
+_NO_SIZE_CODECS = [
     ("gz", gzip.compress),
     ("bz2", bz2.compress),
     ("zz", zlib.compress),
-    ("Z", make_unix_compress),
+    pytest.param("Z", make_unix_compress, marks=requires("ncompress")),
 ]
 
 
@@ -97,9 +98,9 @@ def test_partial_read_leaves_size_unknown(tmp_path: Path) -> None:
         assert not member.member_state_final
 
 
-def test_read_after_a_seek_leaves_size_unknown(tmp_path: Path) -> None:
-    """A seek may resume from an index point, so the decoder's own checks did not
-    cover the whole member. Only a rewind to 0 starts a qualifying read again."""
+def test_read_after_a_forward_seek_leaves_size_unknown(tmp_path: Path) -> None:
+    """A forward seek jumps over bytes no read returned, so nothing here saw them
+    decoded (DR-4a). A seek back to where reads stopped, or to 0, fills again."""
     path = _write(tmp_path, "gz", gzip.compress)
     with open_archive(path, seekable_members=True) as reader:
         member = reader.members()[0]
@@ -110,6 +111,17 @@ def test_read_after_a_seek_leaves_size_unknown(tmp_path: Path) -> None:
             assert member.size is None
             stream.seek(0)
             assert stream.read() == PAYLOAD
+        assert member.size == len(PAYLOAD)
+
+
+def test_read_after_a_seek_back_fills(tmp_path: Path) -> None:
+    path = _write(tmp_path, "gz", gzip.compress)
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            stream.read(100)
+            stream.seek(50)
+            assert stream.read() == PAYLOAD[50:]
         assert member.size == len(PAYLOAD)
 
 
@@ -181,6 +193,38 @@ def test_extract_all_fills_size(tmp_path: Path) -> None:
         member = reader.members()[0]
         reader.extract_all(tmp_path / "out")
         assert member.size == len(PAYLOAD)
+
+
+def test_xz_from_a_pipe_fills_size() -> None:
+    """An xz records its size in an index a pipe cannot reach: a full read fills it."""
+    source = NonSeekableBytesIO(lzma.compress(PAYLOAD))
+    with open_archive(source, streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            assert member.size is None
+            assert stream is not None
+            stream.read()
+            assert member.size == len(PAYLOAD)
+
+
+def test_gz_inside_a_tar_fills_size_without_isize(tmp_path: Path) -> None:
+    """A member stream is seekable but costly to seek to its end: no ``gzip.isize``,
+    and the full read still fills the size."""
+    tar_path = tmp_path / "outer.tar"
+    data = gzip.compress(PAYLOAD)
+    with tarfile.open(tar_path, "w") as tar:
+        info = tarfile.TarInfo("inner.txt.gz")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    with (
+        open_archive(tar_path, seekable_members=True) as outer,
+        outer.open("inner.txt.gz") as inner_src,
+    ):
+        with open_archive(inner_src) as reader:
+            member = reader.members()[0]
+            assert "gzip.isize" not in member.extra
+            with reader.open(member) as stream:
+                assert stream.read() == PAYLOAD
+            assert member.size == len(PAYLOAD)
 
 
 # --- gzip.isize --------------------------------------------------------------------

@@ -115,7 +115,9 @@ Its other limitations:
   comment, and a symlink is a `FILE`) and is updated from the directory when the pass reaches
   it ([ZIP](formats.md#zip)). A ZIP, 7z or RAR 4 symlink whose target has not been
   read (`read_link_targets=False`) also reads `False`, in either mode, until `open()`
-  or `extract_all()` reads it.
+  or `extract_all()` reads it. So does a single-file member (`.gz`, `.bz2`, …) whose
+  format records no size, until a read from its start to its end that skips no byte fills
+  in `size` ([Single-file compressors](formats.md#single-file-compressors)).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
   ([TAR](formats.md#tar-and-compressed-tar)).
