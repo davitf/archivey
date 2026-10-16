@@ -1169,6 +1169,19 @@ def test_a_rejected_held_header_keeps_no_frames() -> None:
     assert rejected - missing < n * 2048
 
 
+def test_a_rejected_held_header_leaves_the_callers_exception_alone() -> None:
+    """A pass driven inside the caller's ``except`` block raises its parse errors
+    with the caller's exception as their context. Keeping such an error drops the
+    reader's own frames, never those of the caller's exception."""
+    data = _cheap_rejected_held_headers(1)
+    try:
+        raise ValueError("the caller's own error")
+    except ValueError as caller_exc:
+        with archivey.open_archive(_pipe(data), streaming=True, format="zip") as reader:
+            assert isinstance(reader.members_report().error, CorruptionError)
+        assert caller_exc.__traceback__ is not None
+
+
 def test_a_held_local_header_that_does_not_parse_says_why() -> None:
     """A local header is there but does not parse: its entry fails, naming the
     parse error rather than saying the stream held none."""

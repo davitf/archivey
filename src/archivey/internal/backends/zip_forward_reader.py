@@ -296,14 +296,18 @@ def _missing_error(
 
 
 def _without_frames(exc: ArchiveyError) -> ArchiveyError:
-    """``exc`` with no traceback on it or on the errors chained to it, to keep for a
-    report: a traceback keeps its frames and their locals alive."""
+    """``exc`` and the errors it was raised from (``__cause__``, the reader's own
+    translation chain) with no traceback, to keep for a report: a traceback keeps
+    its frames and their locals alive. Each one's ``__context__`` link is dropped,
+    not followed: it may be an exception the caller was handling when it drove the
+    pass, whose traceback is the caller's."""
     visited: set[int] = set()
     link: BaseException | None = exc
     while link is not None and id(link) not in visited:
         visited.add(id(link))
         link.__traceback__ = None
-        link = link.__cause__ or link.__context__
+        link.__context__ = None
+        link = link.__cause__
     return exc
 
 
@@ -1608,7 +1612,8 @@ class ZipForwardReader(ZipReader):
         self._pass_data: _PassData | None = None
         # Local header offset -> why the header the directory names there, in the
         # bytes kept after the walk, did not parse (``_walk_held_members``): the
-        # error alone, its frames dropped. Cleared at the end of the pass.
+        # error alone, its frames dropped. Cleared on a pass that completes, with
+        # the other maps of the walk; a pass that raises leaves them on the reader.
         self._rejected_headers: dict[int, ArchiveyError] = {}
         # How many local headers the walk has met: the next member's index, and
         # what ``max_members`` is charged on. Reset where the walk starts

@@ -363,7 +363,8 @@ archive declares.
   before it is read (entries a writer laid out never overlap), so the attempts
   consume the kept bytes at most twice, not once per entry. What the pass keeps of
   an attempt whose local header does not parse is the parse error, without its
-  traceback, about 1 KB per entry until the end of the pass (the residual below).
+  traceback, about 1 KB per entry, released when the pass completes and held by
+  the reader when it raises (the residual below).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
@@ -465,10 +466,11 @@ so an end record that understates the count is refused when the walk passes the 
 A ZIP read from a pipe charges the count on its local headers and its directory as it
 goes (above). The one thing it holds per entry outside `max_metadata_bytes` is the
 parse error of a local header its directory places after the walk's end that does not
-parse, kept without its traceback until the end of the pass for that entry's failure:
-about 1 KB each, bounded by `max_members` (measured: 2 000 such entries hold about
-1.9 MB more than as many entries with no local header). ZIP has no other part in this
-residual from any source.
+parse, kept without its traceback for that entry's failure: about 1 KB each, bounded by
+`max_members` (measured: 2 000 such entries hold about 1.9 MB more than as many entries
+with no local header). A pass that completes releases them; one that raises leaves them
+on the reader object until it is dropped. ZIP has no other part in this residual from any
+source.
 `max_metadata_bytes` counts retained metadata, not a transient decode buffer discarded
 before any member exists. ISO's counts are a superset of the listing's: the extra
 records of a multi-extent file and the Rock Ridge `rr_moved` scaffolding count as
