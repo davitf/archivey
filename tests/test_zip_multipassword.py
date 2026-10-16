@@ -1012,9 +1012,45 @@ def test_a_directory_with_data_and_a_zero_crc_reads_with_any_password_list(
         )
         if cipher == "ae1":
             blob = _zero_crc_fields(blob)
-    with open_archive(io.BytesIO(blob), password=passwords) as ar:
-        member = ar.members()[0]
+
+    def read(password: PasswordArg) -> tuple[bytes, list[DiagnosticCode]]:
+        with open_archive(io.BytesIO(blob), password=password) as ar:
+            member = ar.members()[0]
+            assert member.type is MemberType.DIRECTORY
+            assert HashAlgorithm.CRC32 not in member.hashes
+            with ar.open(member) as stream:
+                read = stream.read()
+            return read, sorted(ar.diagnostics.counts)
+
+    got, reported = read(passwords)
+    assert got == data
+    # What the read reports is the same too, not just its bytes.
+    assert reported == read(RIGHT)[1]
+
+
+@pytest.mark.parametrize(
+    "compression",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflated"],
+)
+def test_a_walked_directory_with_data_is_checked_against_its_crc(
+    compression: int,
+) -> None:
+    """With no central directory the members come from their local headers. A
+    directory there that declares data and stores a real CRC-32 carries it as its
+    digest, as from the directory, so a wrong password that passes the check byte
+    ahead of the right one is rejected and the right one reads."""
+    data = b"directory data!\n" * 5
+    blob = build_zipcrypto_zip(RIGHT, b"d/", data, compression=compression)
+    wrong = find_check_byte_collision(blob, "d/", RIGHT)
+    walked = blob[: blob.index(b"PK\x01\x02")]
+    with open_archive(io.BytesIO(walked), password=[wrong, RIGHT]) as ar:
+        report = ar.members_report()
+        assert isinstance(report.error, TruncatedError)
+        member = report.members[0]
         assert member.type is MemberType.DIRECTORY
-        assert HashAlgorithm.CRC32 not in member.hashes
+        assert member.hashes == {
+            HashAlgorithm.CRC32: zlib.crc32(data).to_bytes(4, "big")
+        }
         with ar.open(member) as stream:
             assert stream.read() == data
