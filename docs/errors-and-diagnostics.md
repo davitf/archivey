@@ -265,11 +265,11 @@ zero-width joiner is part of ordinary emoji, so `STRICT` would refuse archives o
 legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set),
 `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes ZIPs past 4 GiB this
 way by default and reads them back, and each correction is checked against the
-archive's own bytes and the CRC-32), `FORMAT_EXTENSION_CONFLICT` (the file's name is wrong, not its bytes: a tarball
-saved as `b.gz` opens and reads in full, and the code is still recorded; to refuse such
-files, add the code to `raise_on`), and `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it,
-and the data is still checked, against the local header's CRC-32; its sibling
-`MEMBER_LOCAL_NAME_DIFFERS` is in the set).
+archive's own bytes and the CRC-32), `FORMAT_EXTENSION_CONFLICT` (the file's name is
+wrong, not its bytes: a tarball saved as `b.gz` opens and reads in full, and the code is
+still recorded; to refuse such files, add the code to `raise_on`), and
+`MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it, and the data is still checked, against
+the local header's CRC-32; its sibling `MEMBER_LOCAL_NAME_DIFFERS` is in the set).
 `ARCHIVE_INTEGRITY_CODES` is exported, and the presets are ordinary policies built from
 it, so you adjust one by building your own from the same set:
 
