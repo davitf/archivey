@@ -108,3 +108,26 @@ AI lets the maintainer build a better library, faster. It changes what is practi
   again, would take a team of people. With agents, both are part of the normal workflow.
 - **Measurement over memory.** Claims about speed, memory use and seeks are measured, and the
   benchmarks above catch a change that makes them worse.
+
+## What this does not promise
+
+- The maintainer doesn't read every line. Agents do the line-by-line reading, and the maintainer
+  reads designs, decisions, the tricky parts and review findings.
+- AI reviews find a lot, but their blind spots overlap: two sessions of similar models can miss the
+  same thing.
+- The fuzzing doesn't run at OSS-Fuzz scale. That waits until archivey has more users.
+- Nobody can promise that archivey has no security bugs. If you process untrusted archives, take the
+  precautions you would with any other library, such as running it with limited privileges or [in a
+  process you can stop](security.md#where-the-guarantees-stop).
+
+## Checking it yourself
+
+You don't have to take this page's word for it. The history is public: every [pull
+request](https://github.com/davitf/archivey/pulls?q=is%3Apr), its review threads and the decisions
+behind it are on GitHub, next to the decision records, specs and threat model linked above.
+
+Reviews are welcome, whether you read the code yourself or point an agent at it. So are bug reports,
+questions and pull requests; see
+[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md). If you find a
+security problem, please report it privately as [Security](security.md#reporting-a-vulnerability)
+describes, not in a public issue.
