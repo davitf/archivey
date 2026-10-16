@@ -254,7 +254,9 @@ There are no producers; there are filesystems, and each reports `lstat` differen
   `st_dev` against the root's, so a root above a mount point descends into it.
 - **A tree an archive was extracted into** is the common input. It carries whatever that
   archive carried: symlinks pointing outside the root, deep nesting, names that are not
-  UTF-8. The deep-tree case is why the walk is iterative.
+  UTF-8. The deep-tree case is why the walk is iterative. Its macOS `._name` sidecars
+  list as plain files without `extra["macos.resource_of"]`: only the ZIP and TAR
+  readers set that key.
 
 ## 4. Threat surface
 

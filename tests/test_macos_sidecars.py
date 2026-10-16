@@ -104,8 +104,16 @@ def test_a_macos_tar_marks_the_sidecar_written_before_its_file(
     streaming: bool,
 ) -> None:
     # macOS tar writes ._name next to the file, before it.
-    data = _tar(["dir/", "dir/._a.txt", "dir/a.txt", "._dir", "._lonely"])
-    expected = {"dir/._a.txt": "dir/a.txt", "._dir": "dir", "._lonely": "lonely"}
+    data = _tar(
+        ["dir/", "dir/._a.txt", "dir/a.txt", "._dir", "._lonely", "__MACOSX/._b", "b"]
+    )
+    # A tarred Finder extract: the __MACOSX/ prefix is dropped in a TAR too.
+    expected = {
+        "dir/._a.txt": "dir/a.txt",
+        "._dir": "dir",
+        "._lonely": "lonely",
+        "__MACOSX/._b": "b",
+    }
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
         assert _streamed_pairs(reader) == expected
         if not streaming:

@@ -202,7 +202,7 @@ produces it is untested, and so is the behaviour a real one would get.
   needs privileges the runner does not have, so the symlink half is exercised by
   simulating the platform.
 
-### Requirement: Pair macOS AppleDouble sidecars with their members
+### Requirement: Mark macOS AppleDouble sidecars with the path they describe
 
 macOS keeps a file's extended attributes and resource fork in an AppleDouble sidecar
 named `._` plus the file's name: in the same folder in a TAR written by macOS `tar`, and

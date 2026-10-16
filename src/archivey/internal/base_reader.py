@@ -473,7 +473,8 @@ class BaseArchiveReader(ArchiveReader):
     # Does the listing mark macOS AppleDouble sidecars (``._name`` files, under
     # ``__MACOSX/`` in a ZIP)? On for ZIP and TAR, whose macOS writers (Finder,
     # ``ditto``, macOS ``tar``) add them; a 7z, RAR or ISO holds one only as a file a
-    # user put there.
+    # user put there, and a directory read (an extracted Finder ZIP, say) lists them
+    # unmarked.
     _MACOS_SIDECARS: bool = False
 
     def __init__(
