@@ -127,11 +127,20 @@ class ListingLimitTracker:
         self._add_bytes(added, enforce=enforce)
 
     def account_member(self, member: ArchiveMember, *, enforce: bool = True) -> None:
+        # Called once per member of every listing, so the checks are inlined; each
+        # raise still goes through the shared helpers.
         next_count = self.member_count + 1
+        next_bytes = self.metadata_bytes + member_metadata_bytes(member)
         if enforce:
-            self._check_members(next_count)
+            limits = self._limits
+            max_members = limits.max_members
+            if max_members is not None and next_count > max_members:
+                self._check_members(next_count)
+            max_meta = limits.max_metadata_bytes
+            if max_meta is not None and next_bytes > max_meta:
+                self._check_metadata(next_bytes)
         # Raises before storing, so a refused member changes neither total.
-        self._add_bytes(member_metadata_bytes(member), enforce=enforce)
+        self.metadata_bytes = next_bytes
         self.member_count = next_count
 
     def account_link_target(self, target: str, *, enforce: bool = True) -> None:

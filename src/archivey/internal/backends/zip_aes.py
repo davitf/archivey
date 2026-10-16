@@ -77,6 +77,10 @@ class WinZipAesInfo:
         return self.vendor_version == 2
 
 
+_FIELD_HEADER = struct.Struct("<HH")
+_new_tuple = tuple.__new__
+
+
 class ExtraField(NamedTuple):
     tag: int
     data: bytes
@@ -84,23 +88,38 @@ class ExtraField(NamedTuple):
 
 
 def iter_extra_fields(extra: bytes) -> Iterator[ExtraField]:
-    """Yield each field of a ZIP extra-field blob, AES or not.
+    """Yield each field of a ZIP extra-field blob, as :func:`split_extra_fields`
+    returns them."""
+    yield from split_extra_fields(extra)
+
+
+def split_extra_fields(extra: bytes) -> tuple[ExtraField, ...]:
+    """Every field of a ZIP extra-field blob, AES or not.
 
     It is the one walk every ZIP extra-field parser uses. It lives here rather than
     in ``zip_reader`` because ``zip_reader`` imports this module, so the reverse
-    import would be a cycle.
+    import would be a cycle. The listing splits a member's blob once and reads the
+    fields for its name, times, owner and leftovers.
 
     A last field whose declared size runs past the blob comes back with the bytes
     that are there and ``complete`` false; each caller decides what that means (the
     Unicode Path field reports it as malformed). Trailing bytes too short for a header
     are ignored.
     """
+    if not extra:
+        return ()
+    fields: list[ExtraField] = []
+    end_of_blob = len(extra)
     pos = 0
-    while pos + 4 <= len(extra):
-        tag, size = struct.unpack_from("<HH", extra, pos)
-        data = extra[pos + 4 : pos + 4 + size]
-        yield ExtraField(tag, data, len(data) == size)
-        pos += 4 + size
+    while pos + 4 <= end_of_blob:
+        tag, size = _FIELD_HEADER.unpack_from(extra, pos)
+        start = pos + 4
+        pos = start + size
+        # tuple.__new__ directly: the NamedTuple constructor adds a Python call.
+        fields.append(
+            _new_tuple(ExtraField, (tag, extra[start:pos], pos <= end_of_blob))
+        )
+    return tuple(fields)
 
 
 def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:

@@ -18,7 +18,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from archivey.diagnostics import (
     Diagnostic,
@@ -35,6 +35,8 @@ from archivey.internal import logs
 if TYPE_CHECKING:
     from archivey.config import ArchiveyConfig
     from archivey.types import ArchiveMember
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -209,6 +211,22 @@ class DiagnosticCollector:
         generator machinery was a measurable share of the per-member cost.
         """
         return _ReplayingBlock(self, log)
+
+    def call_replaying(self, log: EmitLog, work: Callable[[], T]) -> T:
+        """Run ``work()`` inside :meth:`replaying` with ``log``, and return its result.
+
+        The same block without a context manager object, for a caller that enters
+        one per member of a large listing.
+        """
+        thread_id = threading.get_ident()
+        replays = self._replays
+        with self._lock:
+            replays[thread_id] = _Replay(log)
+        try:
+            return work()
+        finally:
+            with self._lock:
+                replays.pop(thread_id, None)
 
     def deferring_raises(self) -> _DeferringBlock:
         """Hold back this thread's emit raises until the caller can take them.
