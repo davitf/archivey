@@ -572,6 +572,11 @@ Two shapes read differently from a pipe, which decodes each member as it passes:
   not match the descriptor's. Both refuse the member's data, in different words: from
   a file by the size, digest or declared ratio check, from a pipe at the end of its
   data.
+- A bit-3 directory that declares data, in a ZIP with no central directory. The file
+  read lists the CRC32 its data descriptor states, as for a file. The pipe read lists
+  none: it gives a directory no stream, so it never computes the CRC it would check the
+  descriptor's against, and it lists a CRC32 only once one matched. When the central
+  directory arrives, the pipe read lists that directory's CRC32, as the file read does.
 - Junk after a bit-3 member: the two raise in different words.
 
 Both write the same files.

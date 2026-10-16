@@ -4090,9 +4090,16 @@ def _crc_is_digest(
     """Whether a member's CRC-32 field is a digest of its data, to list in
     ``hashes``: for a file or symlink, and for a directory that declares data
     unless the field is 0, a directory's conventional value. Never for AE-2, which
-    stores 0 by design and relies on its HMAC. The central directory's members,
-    the local headers' and a descriptor's update all take it from here, so the read
-    is checked, and several passwords anchored, alike on every listing path."""
+    stores 0 by design and relies on its HMAC. The seekable reader's three
+    producers of ``hashes[CRC32]`` take it from here: the central directory's
+    members, the local headers' and a data descriptor's update, so the read is
+    checked, and several passwords anchored, alike on each.
+
+    The pipe pass (``zip_forward_reader``) keeps its own rule for a bit-3 member:
+    it verifies as it lists, so it lists a descriptor's CRC only once the CRC it
+    computed matched, and a directory, which it gives no stream, gets none until
+    the central directory arrives (``format-zip`` spec, "Two shapes read
+    differently from a pipe")."""
     if aes is not None and aes.is_ae2:
         return False
     if member_type is MemberType.DIRECTORY:
@@ -4106,7 +4113,7 @@ def _member_crc_anchor(member: ArchiveMember) -> int | None:
     The member's CRC-32 digest, the one its read is checked against, and not the
     header's CRC field: that field is no digest for an AE-2 member, which stores 0
     by design, nor for a directory whose field is 0 over declared data
-    (:meth:`ZipReader._to_member`). Anchoring on it would reject the right password
+    (:func:`_crc_is_digest`). Anchoring on it would reject the right password
     with several candidates where one password reads the member (DR-5).
     """
     digest = member.hashes.get(HashAlgorithm.CRC32)
