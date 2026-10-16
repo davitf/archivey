@@ -956,7 +956,9 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   refusing, because many entries over one local header is the overlapping-entry
   amplification shape (DR-9a). The guard runs before the local name is compared, so a
   refused entry reports only the overlap, under every policy, and no
-  `MEMBER_LOCAL_NAME_DIFFERS`.
+  `MEMBER_LOCAL_NAME_DIFFERS`. The refusal is a per-member `CorruptionError`, never
+  the always-stop `DiagnosticRaisedError`, so under `OnError.CONTINUE` the rest of the
+  archive still extracts, `STRICT` included.
 - **Confirming a ZipCrypto password costs time that depends on the archive, and that cost
   is observable**: the one-byte verifier cannot decide between candidates, so a STORED
   member is read through and its CRC compared. Timing the call, or watching how much is

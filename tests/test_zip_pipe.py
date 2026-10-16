@@ -1378,7 +1378,11 @@ def test_a_bit3_codec_stream_that_runs_into_its_descriptor_reads_only_from_a_pip
     one byte more than the compressed size the descriptor and the directory state.
     A file read bounds the stream at that size and raises ``TruncatedError``. The
     pass does not know where the codec ended; it finds the descriptor by the decoded
-    CRC and size, and serves the data, which that CRC verifies."""
+    CRC and size, and serves the data, which that CRC verifies.
+
+    The checks on the fixture itself (``check.eof`` and ``check.unused_data``) are
+    what prove the stream needs exactly one byte past the stated size: without them
+    the two reads could differ for another reason and the test would still pass."""
     content = b"xyz" * 200
     compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
     stream = compressor.compress(content) + compressor.flush()

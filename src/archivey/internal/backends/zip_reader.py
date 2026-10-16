@@ -2982,8 +2982,8 @@ class ZipReader(BaseArchiveReader):
         # stdlib ZipFile.open's guard, with archivey's own bounds: a member whose
         # compressed payload extends past the next entry's start is a zip bomb. It
         # comes before the name check: a second directory entry over an earlier
-        # entry's local header almost always names another member, and a refused
-        # read must not report that it goes ahead by the directory's name.
+        # entry's local header almost always names another member, and the overlap
+        # refusal must not report that the read goes ahead by the directory's name.
         length = max(0, loc.compressed_size)
         if header.data_start + length > self._data_bounds().end_for(loc):
             raise CorruptionError(

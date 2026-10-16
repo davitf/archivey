@@ -1603,14 +1603,9 @@ def test_entries_sharing_one_local_header_read_only_once() -> None:
             ar.read(second)
 
 
-@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
-def test_an_overlapping_entry_with_another_name_reports_only_the_overlap(
-    strict: bool,
-) -> None:
-    # The second directory entry points at the first entry's local header, which
-    # stores another name. The overlap guard refuses the read before the name
-    # check runs: no MEMBER_LOCAL_NAME_DIFFERS for a read that does not go ahead,
-    # and STRICT raises the overlap, not the name difference.
+def _second_entry_over_the_first_header() -> bytes:
+    """Three STORED members; the second directory entry points at the first local
+    header, which stores the name ``m0.txt``."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as z:
         for name in ("m0.txt", "m1.txt", "m2.txt"):
@@ -1618,14 +1613,46 @@ def test_an_overlapping_entry_with_another_name_reports_only_the_overlap(
     raw = bytearray(buf.getvalue())
     second = raw.index(b"PK\x01\x02", raw.index(b"PK\x01\x02") + 4)
     struct.pack_into("<I", raw, second + 42, 0)
+    return bytes(raw)
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
+def test_an_overlapping_entry_with_another_name_reports_only_the_overlap(
+    strict: bool,
+) -> None:
+    # The overlap guard refuses the read before the name check runs: no
+    # MEMBER_LOCAL_NAME_DIFFERS for a read that does not go ahead, and STRICT
+    # raises the overlap, not the name difference.
     policy = DiagnosticPolicy.STRICT if strict else DiagnosticPolicy()
     config = ArchiveyConfig(diagnostic_policy=policy)
-    with open_archive(io.BytesIO(bytes(raw)), config=config) as ar:
+    data = _second_entry_over_the_first_header()
+    with open_archive(io.BytesIO(data), config=config) as ar:
         m1 = ar.members()[1]
         assert m1.name == "m1.txt"
         with raises_corruption_not_truncation(match="Overlapped entries"):
             ar.read(m1)
         assert DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS not in ar.diagnostics.counts
+
+
+def test_an_overlapping_entry_fails_alone_under_strict_and_continue(
+    tmp_path: Path,
+) -> None:
+    # The overlap refusal is a per-member CorruptionError, not the always-stop
+    # DiagnosticRaisedError a STRICT name report would raise, so OnError.CONTINUE
+    # extracts the members around it.
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    data = _second_entry_over_the_first_header()
+    with open_archive(io.BytesIO(data), config=config) as ar:
+        report = ar.extract_all(tmp_path / "out", on_error="continue")
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses == {
+        "m0.txt": ExtractionStatus.EXTRACTED,
+        "m1.txt": ExtractionStatus.FAILED,
+        "m2.txt": ExtractionStatus.EXTRACTED,
+    }
+    assert (tmp_path / "out" / "m0.txt").read_bytes() == b"m0.txt"
+    assert (tmp_path / "out" / "m2.txt").read_bytes() == b"m2.txt"
+    assert not (tmp_path / "out" / "m1.txt").exists()
 
 
 # ---------------------------------------------------------------------------
