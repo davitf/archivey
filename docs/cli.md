@@ -87,6 +87,11 @@ so one command decompresses whatever arrives:
 curl -s URL | archivey cat - --outer | tar t
 ```
 
+`extract` and `test` take `--outer` too. `archivey x data.tgz --outer` writes `data.tar`
+and leaves the source in place, as `gunzip -k` does. `archivey t data.tar.zst --outer`
+reads the whole decompressed stream and checks the compressor's own checksum, as
+`zstd -t` does, without looking inside the tar.
+
 From a pipe, the archive is read in one forward pass, with the same format limits as an
 archive piped to the other verbs (see the notes below). A redirect from a regular file
 (`archivey cat - < a.zip`) can seek, so every format reads.

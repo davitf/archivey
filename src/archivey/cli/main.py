@@ -84,6 +84,7 @@ examples:
   archivey x archive.zip '*.py'         extract matching members only
   archivey x archive.zip --exclude 't*' extract all except exclude patterns
   archivey x archive.zip --dry-run      run every check and read, write nothing
+  archivey x data.tar.zst --outer       decompress only: write data.tar
 """
 
 # Classic tar-style flag spellings that are not options here (verbs are bare words).
@@ -384,7 +385,12 @@ def _run_list(args: argparse.Namespace, common: _Common) -> int:
 
 def _run_test(args: argparse.Namespace, common: _Common) -> int:
     hide_progress = bool(args.hide_progress)
-    return run_test(**common, **_selection(args), hide_progress=hide_progress)
+    return run_test(
+        **common,
+        **_selection(args),
+        hide_progress=hide_progress,
+        outer=bool(args.outer),
+    )
 
 
 def _run_extract(args: argparse.Namespace, common: _Common) -> int:
@@ -398,6 +404,7 @@ def _run_extract(args: argparse.Namespace, common: _Common) -> int:
         stop_on_error=bool(args.stop_on_error),
         abort_on=list(args.abort_on or ()),
         dry_run=bool(args.dry_run),
+        outer=bool(args.outer),
     )
 
 
@@ -520,6 +527,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="full-read integrity check (verify stored digests)",
     )
     p_test.add_argument("archive", help="archive path")
+    p_test.add_argument(
+        "--outer",
+        action="store_true",
+        help=(
+            "test only the compression layer, as gzip -t does: read the whole "
+            "decompressed stream (the tar of a .tar.gz) and check its trailer"
+        ),
+    )
     _add_filter_args(p_test)
 
     p_extract = _add_verb(
@@ -589,6 +604,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "run the extraction's checks and read every member, but write nothing; "
             "reports what extracting into an empty destination would do"
+        ),
+    )
+    p_extract.add_argument(
+        "--outer",
+        action="store_true",
+        help=(
+            "remove only the compression layer and write the file inside, as "
+            "gunzip -k does (data.tar from data.tar.gz or data.tgz)"
         ),
     )
     _add_filter_args(p_extract)

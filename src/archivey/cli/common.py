@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
-from archivey import open_archive
+from archivey import detect_format, open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.cli.format import format_format_label
@@ -22,6 +22,7 @@ from archivey.exceptions import StreamNotSeekableError
 from archivey.internal.measurement import enable_measurement, io_stats
 from archivey.reader import ForwardArchiveReader
 from archivey.terminal import display_path
+from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 
 
 def reject_stdin_token(archive: str) -> None:
@@ -45,6 +46,69 @@ def reject_stdin_token(archive: str) -> None:
             f"the '-' token for stdin is reserved and not supported yet; {hint}",
             code=EXIT_USAGE,
         )
+
+
+def outer_format(
+    archive: str, *, config: ArchiveyConfig | None, verb: str
+) -> ArchiveFormat:
+    """The format that opens only ``archive``'s compression layer, for ``--outer``.
+
+    A compressed tar gives its single-file format (``.tar.gz`` → GZ), so the reader
+    presents the tar itself as its one member; a single compressed file is returned
+    unchanged. ``verb`` completes the "leave out --outer to …" advice.
+    """
+    reject_stdin_token(archive)
+    shown = display_path(archive)
+    if os.path.isdir(archive):
+        refuse_outer_directory(shown)
+    if is_read_once(archive):
+        # Detecting the format reads the start of the pipe, and the open after it
+        # would not see those bytes again.
+        raise CliError(
+            f"--outer: {shown} can be read only once; use "
+            f"'archivey cat --outer' to decompress a pipe",
+            code=EXIT_USAGE,
+        )
+    fmt = detect_format(archive, config=config).format
+    if fmt.container == ContainerFormat.RAW_STREAM:
+        return fmt
+    if fmt.container == ContainerFormat.TAR and fmt.stream != StreamFormat.UNCOMPRESSED:
+        return ArchiveFormat(ContainerFormat.RAW_STREAM, fmt.stream)
+    raise no_compression_layer(shown, fmt, verb=verb)
+
+
+def outer_format_for(
+    archive: str,
+    patterns: list[str],
+    exclude: list[str],
+    *,
+    config: ArchiveyConfig | None,
+    verb: str,
+) -> ArchiveFormat:
+    """:func:`outer_format` for ``extract`` and ``test``, which take patterns too."""
+    if patterns or exclude:
+        raise CliError(
+            f"--outer {verb}s the whole decompressed stream; it takes no member "
+            "patterns",
+            code=EXIT_USAGE,
+        )
+    return outer_format(archive, config=config, verb=verb)
+
+
+def refuse_outer_directory(shown: str) -> None:
+    """``--outer`` on a directory: a usage error naming the CLI's view of it."""
+    raise CliError(
+        f"--outer: {shown} is a directory, which has no compression layer",
+        code=EXIT_USAGE,
+    )
+
+
+def no_compression_layer(shown: str, fmt: ArchiveFormat, *, verb: str) -> CliError:
+    """The error for ``--outer`` on a container with nothing to decompress."""
+    return CliError(
+        f"--outer: {shown} is a {format_format_label(fmt)} archive, which has no "
+        f"compression layer to remove; leave out --outer to {verb} its members"
+    )
 
 
 def reject_empty_path(value: str, *, arg: str) -> None:
@@ -72,6 +136,7 @@ def open_for_cli(
     config: ArchiveyConfig | None = None,
     stdin: BinaryIO | None = None,
     err: TextIO | None = None,
+    format: ArchiveFormat | None = None,
 ) -> Iterator[ForwardArchiveReader]:
     """Open an archive, optionally wrapping the call in measurement for ``--track-io``.
 
@@ -79,7 +144,8 @@ def open_for_cli(
     mode: the user cannot choose the mode, so the CLI chooses the one that can work.
     Each verb then reads the archive in one forward pass. A verb that reads ``-`` from
     stdin passes the stream as ``stdin``, which opens in streaming mode as well; for
-    every other verb ``-`` is refused.
+    every other verb ``-`` is refused. ``format`` skips detection, as
+    ``open_archive(format=)`` does.
     """
     source: str | Path | BinaryIO
     if archive == "-" and stdin is not None:
@@ -91,13 +157,21 @@ def open_for_cli(
     if track_io:
         with enable_measurement():
             with _open(
-                source, password=password, streaming=streaming, config=config
+                source,
+                password=password,
+                streaming=streaming,
+                config=config,
+                format=format,
             ) as reader:
                 yield reader
                 _report_track_io(reader, err)
     else:
         with _open(
-            source, password=password, streaming=streaming, config=config
+            source,
+            password=password,
+            streaming=streaming,
+            config=config,
+            format=format,
         ) as reader:
             yield reader
 
@@ -108,10 +182,15 @@ def _open(
     password: PasswordInput,
     streaming: bool,
     config: ArchiveyConfig | None,
+    format: ArchiveFormat | None,
 ) -> ForwardArchiveReader:
     try:
         return open_archive(
-            archive, password=password, streaming=streaming, config=config
+            archive,
+            format=format,
+            password=password,
+            streaming=streaming,
+            config=config,
         )
     except StreamNotSeekableError as exc:
         shown = archive if isinstance(archive, (str, Path)) else "stdin"
