@@ -73,6 +73,27 @@ other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too
 writer that marks itself Unix while storing a birth time (libarchive on Windows) gets
 `ctime`, not `created`, rather than a risk of `st_ctime` in `created`.
 
+## macOS sidecar files
+
+A ZIP or TAR made on a Mac often carries AppleDouble sidecars: a `._name` file holding
+the extended attributes and resource fork of `name`, next to it (macOS `tar`) or under
+`__MACOSX/` (Finder, `ditto`). archivey lists them as ordinary files, as `unzip` does.
+To leave them out, skip them by name with `members=`:
+
+```python
+from archivey import open_archive
+
+def is_macos_sidecar(member):
+    base = member.name.rsplit("/", 1)[-1]
+    return member.name.startswith("__MACOSX/") or base.startswith("._")
+
+with open_archive("photos.zip") as reader:
+    reader.extract_all("out", members=lambda m: not is_macos_sidecar(m))
+```
+
+The test goes by name only, so it also skips a file that was really called `._notes`
+and anything in a real folder named `__MACOSX`.
+
 ## Fields that change after a member is returned
 
 `ArchiveMember.member_state_final` is `False` while archivey can still update a member
@@ -81,7 +102,7 @@ The fields that change in practice:
 
 | Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
-| ZIP | `is_current`, `link_target_member`; from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| ZIP | `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
@@ -103,6 +124,8 @@ yielded.
 
 ## ZIP
 
+- A ZIP from Finder or `ditto` holds `__MACOSX/` sidecar files; see
+  [macOS sidecar files](#macos-sidecar-files) to skip them.
 - Archivey's own parser reads the **central directory** as members are listed; member
   **data** decodes through archivey's shared codec layer. Stdlib ``zipfile`` is not
   used.
@@ -127,6 +150,13 @@ yielded.
   or two same-named members whose directory order reverses their file order make the
   member fail at the end of the pass (`CorruptionError`), where a read from a file
   writes it.
+- **A member whose local header disagrees with the central directory on its name, or
+  stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
+  alike, as `unzip` reads it. The directory's name is used, reported as
+  `MEMBER_LOCAL_NAME_DIFFERS`, which `DiagnosticPolicy.STRICT` refuses. The data is
+  checked against the local CRC-32, reported as `MEMBER_LOCAL_CRC_USED`, which `STRICT`
+  reads: Adobe AIR packages store `META-INF/AIR/hash` this way. A member whose two
+  headers both declare less than its data decodes to is refused with `CorruptionError`.
 - **A damaged central directory lists the members before the damage**, and the members
   the local headers hold after it (without the mode, host or comment only the directory
   has), then raises `CorruptionError`; `members_report()` gives you both. An archive
@@ -137,6 +167,20 @@ yielded.
   value itself and the directory's end can be placed (`ARCHIVE_EOF_MARKER_MISSING`);
   otherwise the members the local headers hold are listed, then `CorruptionError` is
   raised.
+- **A ZIP over 4 GiB that macOS wrote without ZIP64** reads. Finder's Compress (macOS
+  Archive Utility, `ditto -c -k`) stores every offset past 4 GiB with its top bits cut
+  off, so 7-Zip and Python's `zipfile` fail on such an archive. Archivey puts back the
+  missing multiple of 4 GiB where an offset falls below the furthest end of the
+  members before it, but only when a local header with the member's name is at the
+  corrected offset; the member's CRC-32 is still checked. Each correction emits
+  `ARCHIVE_OFFSET_WRAPPED`, which `DiagnosticPolicy.STRICT` does not raise on, since
+  macOS writes such archives by default. A single member over 4 GiB has its sizes
+  cut too. Archivey corrects them for entries carrying Archive Utility's marks, with
+  `MEMBER_SIZE_WRAPPED`: the compressed size from where the data really ends, and the
+  size from it where deflate's ratio leaves one value (members under about 4 MB
+  compressed). Where it leaves several, `size` is `None` and `extra["size_mod_2_32"]`
+  holds the stored value; a read to the end, checked against it and the CRC-32, fills
+  in `size`, and the key stays.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or
@@ -189,7 +233,12 @@ yielded.
   file, or a directory entry whose name, extra field or comment runs past the
   directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.STRICT`` raises.
-- Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- Timestamps: DOS base; NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
+  Extended Timestamp override when present, the Unix fields read as unzip 6.00 reads
+  them. macOS `ditto` and Archive Utility write only `0x5855`, so their archives list
+  `modified` and `accessed` in UTC.
+- Extra fields archivey takes nothing from (a vendor's own, or one it knows but
+  found malformed) stay readable as `extra["zip.extra_fields"]`, `{tag: data}`.
 - Owner ids: Info-ZIP `zip` on Unix records `uid` / `gid`, read as unzip 6.00 reads
   them; `uname` / `gname` stay `None`, and Windows writers store no owner.
 - An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as
@@ -197,7 +246,8 @@ yielded.
   writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in
   both cases `extra["special_file_type"]` names the stored kind. The mode is read only
   when "version made by" says Unix.
-- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
+- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8 when the stored bytes
+  are valid UTF-8 (otherwise see the wrongly-set flag below). For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise uses the
   `encoding=` you passed to `open_archive`, or without one a configurable legacy encoding
@@ -205,19 +255,22 @@ yielded.
   inferred for an unflagged name, a `member_name_encoding_inferred` diagnostic records it.
   So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
   Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
-  name. Comments decode the same way: a member comment follows its name's flag, and the
-  archive comment, which has no flag, decodes as an unflagged name. A byte the chosen
-  encoding does not define stays in the comment as a surrogate escape, as in a name. One
+  name. Comments decode the same way: a member comment follows its name's flag (a flag
+  the name's bytes refute counts as unset for the comment too), and the archive
+  comment, which has no flag, decodes as an unflagged name. A byte the chosen encoding
+  does not define stays in the comment as a surrogate escape, as in a name. One
   signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
   the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A
   malformed field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped
   with a `member_header_record_skipped` diagnostic. The archive opens on every Python
   version; `zipfile` on its own refuses it from Python 3.12.
-- **A wrongly-set UTF-8 flag is damage at that name.** When general-purpose bit 11
-  claims UTF-8 but the stored bytes are not, the listing raises `CorruptionError` at
-  that entry, after the members before it and the members the local headers hold past
-  it, as for a damaged directory. Rare, and it fails loudly.
+- **A wrongly-set UTF-8 flag is ignored.** When general-purpose bit 11 claims UTF-8
+  but the stored bytes are not valid UTF-8, the flag cannot be right, so the name
+  decodes as an unflagged name that is not UTF-8 does: with your `encoding=`, else
+  `zip_unflagged_fallback_encoding`. A `member_name_encoding_inferred` diagnostic
+  names the encoding used, with `declared_encoding="utf-8"`, and
+  `DiagnosticPolicy.STRICT` refuses the archive. `raw_name` keeps the stored bytes.
 - **ZipCrypto** checks a password against one byte, so a wrong one passes about one
   time in 256. Its data then fails the CRC or the decompressor, and Archivey raises
   `EncryptionError` saying the password may be wrong or the member corrupt, since a
@@ -244,6 +297,8 @@ yielded.
 
 ## TAR (and compressed TAR)
 
+- A tar from macOS `tar` can hold `._name` sidecar files; see
+  [macOS sidecar files](#macos-sidecar-files) to skip them.
 - Uncompressed seekable TAR: random access, each member read straight from its place in
   the file. Archivey parses the headers itself, the same way on every Python version.
 - Compressed variants (`.tar.gz` etc.) behave as **solid** for random member opens —
@@ -555,8 +610,13 @@ yielded.
   flag, and a solid `stream_members()` pass reads everything, because it builds no mask
   at all. A glob in a *directory* component, or a backslash, is refused outright either
   way; the one exception is a backslash in a RAR5 name written on Windows, which
-  `unrar` on Linux and macOS reads as `_`. Setting `ArchiveyConfig.rar_decompressor` to
-  `'unar'` reads those members by position instead.
+  `unrar` on Linux and macOS reads as `_`. `unar` selects members by position, so it
+  has none of these problems: under the default `rar_decompressor='auto'`, archivey
+  reads such a member with `unar` when one it accepts is installed. It does not when
+  the read needs a password (`unar` takes it on its command line), when
+  the archive is a stream or has data before the RAR (`unar` would need its own copy
+  of it), or when `unar` is known to misread the archive. Setting
+  `ArchiveyConfig.rar_decompressor` to `'unar'` reads every member that way.
 - **Member names.** RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16
   beside an 8-bit copy. A RAR 1.5-4 name that has only the 8-bit bytes does not say
   which code page they are in. Archivey tries UTF-8 first. When the bytes are not valid

@@ -26,25 +26,14 @@ Each idea carries a status:
 
 ## Formats
 
-- **Read ZIPs over 4 GiB that macOS wrote without ZIP64.** *Planned for 0.2.0*, as
-  stage 6 of the `native-zip-reader` OpenSpec change.
-  Finder's Compress writes a classic ZIP past 4 GiB and stores every offset mod 2³², so
-  archivey and 7-Zip fail on it while Finder reads it back. One rule recovers a real
-  4.9 GB archive ([`investigations/2026-10-backup-scan.md`](investigations/2026-10-backup-scan.md)
-  §4): offsets must increase, so add 2³² until each one passes the previous member's end,
-  then confirm a local header with the right name sits there and keep the CRC check. A
-  single member over 4 GiB is still open, because its sizes wrap too. A test needs no
-  large file: reduce the stored offsets of a small archive, as
-  `tests/test_audit_backup_scan.py` does.
 - **List a ZIP whose central directory is lost, and read spanned ZIP sets.** *Needs
   design.* The native ZIP reader (the `native-zip-reader` OpenSpec change) already
-  lists a damaged central directory up to the damage and the local headers past it, and
-  treats a wrong UTF-8 flag on one name as that damage. It reads a ZIP from a pipe or
-  socket by walking the local headers forward; its later stages, planned for 0.2.0, walk
-  them when the end record is not in the file's tail (which lists a ZIP cut before its
-  directory), and decode a wrongly flagged name as an unflagged one. Its parser's
-  per-entry disk number is what reading spanned `.z01`…`.zip` sets would follow (by
-  resolving each (disk, offset) pair). See [`formats/zip.md`](formats/zip.md) §5.
+  lists a damaged central directory up to the damage and the local headers past it. It
+  reads a ZIP from a pipe or socket by walking the local headers forward, and walks them
+  when the end record is not in the file's tail (which lists a ZIP cut before its
+  directory). Its parser's per-entry disk number is what reading spanned
+  `.z01`…`.zip` sets would follow (by resolving each (disk, offset) pair). See
+  [`formats/zip.md`](formats/zip.md) §5.
 - **Read raw CD sector images (`.bin`).** *Open idea.* 0.2.0 recognizes a raw image and
   refuses it (`iso_reader.refuse_raw_sector_image`). Mode 1 and Mode 2 Form 1 images
   strip to a byte-identical `.iso`, so a slicing stream that skips the sector headers
@@ -213,6 +202,16 @@ Each idea carries a status:
 - **Configurable symlink extraction.** *Open idea.* What to do when a symlink member cannot
   be created as a symlink (FAT, Windows without the privilege). Today it fails that member.
   An option such as `copy` must not reintroduce a path escape.
+- **Mark macOS AppleDouble sidecars.** *Open idea.* Set a key such as
+  `extra["macos.resource_of"]` on a `._name` file (next to `name` in a macOS TAR, under
+  `__MACOSX/` in a Finder or `ditto` ZIP) so callers can skip them. Marking by name
+  alone was tried and dropped: it adds nothing over a name filter (`docs/formats.md`)
+  and also marks a real file called `._x`. A version worth having checks the AppleDouble
+  magic (`00 05 16 07`) at the start of the data. That costs a read of the first bytes
+  of each `._` file: buffered before a forward pass yields it, and an extra member open
+  per `._` file in a listing that otherwise reads no data (a seekable ZIP). Also requiring the
+  described file to exist costs more in a TAR, where the sidecar comes before its file:
+  the pass would hold the small sidecar back until it has seen the next member.
 - **Pathlib-like navigation.** *Open idea.* An `ArchivePath` with `/`, `iterdir()`,
   `glob()` and `read_bytes()`, as `zipfile.Path` does.
 - **fsspec integration.** *Open idea.* Expose an opened archive as an fsspec file system,

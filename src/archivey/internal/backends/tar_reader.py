@@ -459,9 +459,9 @@ class TarReader(BaseArchiveReader):
     finished stream pass).
     """
 
-    # TAR has no central directory: the member list only exists after a scan, so it is not
-    # "available without scanning" (listing cost is REQUIRES_SCANNING / REQUIRES_DECOMPRESSION,
-    # not INDEXED). Once iterated, the base serves the cached list anyway.
+    # TAR has no central directory and scans lazily: the member list only exists after a
+    # scan, so the report peek has nothing to return before one. (RAR scans too, but at
+    # open, so its peek has a list.) Once iterated, the base serves the cached list anyway.
     _MEMBER_LIST_UPFRONT = False
 
     def __init__(

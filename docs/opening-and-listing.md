@@ -372,7 +372,7 @@ page for RAR 1.5-4, escapes for TAR and ISO).
 
 | Where the name comes from | What `encoding=` does |
 | --- | --- |
-| ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8 |
+| ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8. If the bytes are not valid UTF-8, the flag is wrong and the name is decoded as one without it |
 | ZIP, a name without the flag | Used only when the bytes are not valid UTF-8, in place of `zip_unflagged_fallback_encoding` |
 | ZIP, a name without the flag that has a matching Unicode Path extra field | Ignored; the name is the field's UTF-8 copy |
 | TAR, the name, link target, `uname` or `gname` in the header block | Used only when the bytes are not valid UTF-8 |
@@ -397,12 +397,13 @@ differs from Python's `zipfile`
 `metadata_encoding` and from `unzip -O`, which apply the encoding to every ZIP name
 without the flag.
 
-Comments follow the same rule. A ZIP member comment decodes as its name would (the
-UTF-8 flag covers both), and the archive comment, which has no flag, decodes as a name
-without one. A RAR 1.5-4 comment decodes as UTF-8 when it is valid, otherwise with your
-`encoding=`, and otherwise as windows-1252. In both formats a byte the chosen encoding
-does not define becomes a surrogate escape, as in a name, so a comment can raise
-`UnicodeEncodeError` where a name can.
+Comments follow the same rule. A ZIP member comment decodes as its name would (the UTF-8
+flag covers both, and a flag the name's bytes refute counts for neither), and the
+archive comment, which has no flag, decodes as a name without one. A RAR 1.5-4 comment
+decodes as UTF-8 when it is valid, otherwise with your `encoding=`, and otherwise as
+windows-1252. In both formats a byte the chosen encoding does not define becomes a
+surrogate escape, as in a name, so a comment can raise `UnicodeEncodeError` where a name
+can.
 
 The cost is that a legacy name whose bytes happen to form valid UTF-8 is read as UTF-8.
 For example, the Latin-1 name `Ã©.txt` is stored as the bytes `c3 a9 2e 74 78 74`,
@@ -456,9 +457,12 @@ already on disk, and from `OVERWRITTEN`, which is a member that *was* written th
 and then had its destination taken by a later one), so what lands on disk matches a
 fresh write. A streaming pass has no complete listing to say which entry is last, so
 each member reads `is_current=True` until the pass ends; `member_state_final` says
-whether that can still change. A streaming `extract_all()` writes the
-earlier entry, then takes it back when the later one arrives, so a progress callback
-sees it written and the report ends with it `SUPERSEDED`.
+whether that can still change. Such a streaming `extract_all()` writes the earlier
+entry, then takes it back when the later one arrives, so a progress callback sees it
+written and the report ends with it `SUPERSEDED`. A ZIP read from a seekable source is
+the exception: its pass reads the whole central directory first, so each member is
+yielded with `is_current` already final, and `extract_all()` skips the earlier entry
+as random access does.
 
 **Selecting members by name is the one place to be careful.** A name in a selector —
 `extract_all(members=["notes.txt"])`, `stream_members(members=["notes.txt"])` —

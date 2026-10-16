@@ -7,9 +7,9 @@
 - Bytes after the end record and its comment are ``ARCHIVE_TRAILING_DATA`` (DR-3), as
   after a TAR trailer or a 7z archive's end, also when there are more of them than
   the end-record search reads: a walk over the local headers finds the directory.
-- The directory is walked as members are listed; the overlap guard's offsets and
-  ``member_count`` come from that walk, or from one index pass when a member opens
-  first.
+- The directory is walked as members are listed, and a streaming pass walks it before
+  the first member's data; the overlap guard's offsets and ``member_count`` come from
+  that walk, or from one index pass when ``member_count`` is read first.
 - A listed member keeps a small locator, not the directory entry.
 """
 
@@ -20,6 +20,8 @@ import io
 import struct
 import tracemalloc
 import zipfile
+from collections.abc import Callable
+from functools import partial
 
 import pytest
 
@@ -352,8 +354,8 @@ def test_an_offset_no_file_can_seek_to_is_corruption(
 
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
     """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
-    that is not, optionally pointing at ``header_offset``, and whose third directory
-    entry is unreadable."""
+    that is not (read as unflagged), optionally pointing at ``header_offset``, and
+    whose third directory entry is unreadable."""
     data = bytearray(_with_modes(pipe=True))
     second = _central_headers(bytes(data))[1]
     spots = [(second, 8)]
@@ -372,42 +374,72 @@ def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> byte
 
 
 @pytest.mark.parametrize(
-    "data",
+    ("data", "expected"),
     [
         pytest.param(
             _bad_utf8_second_name(local_too=True, header_offset=None),
+            [("m0.txt", 512), ("m\xa0.txt", 768), ("m2.txt", 1024)],
             id="descriptors",
         ),
         pytest.param(
+            # The second entry points at no local header: its own read fails, and
+            # m1, whose local header no entry names, is listed from the walk.
             _bad_utf8_second_name(local_too=False, header_offset=60),
+            [
+                ("m0.txt", 512),
+                ("m\xa0.txt", "corrupt"),
+                ("m1.txt", 768),
+                ("m2.txt", 1024),
+            ],
             id="offset-of-no-local-header",
         ),
     ],
 )
 def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
-    data: bytes,
+    data: bytes, expected: list[tuple[str, int | str]]
 ) -> None:
-    """The index pass reads past an entry whose member cannot be built (a name
-    flagged UTF-8 that is not), where the listing stops. Whichever of the two runs
-    first, each member past the damage carries its own data descriptor, and an
-    offset of that entry's that points at no local header caps no member's data."""
+    """Whichever of the listing and the index pass meets a damaged directory first,
+    each member carries its own data descriptor, and an offset that points at no
+    local header caps no member's data: only that member's own read fails. A name
+    flagged UTF-8 that is not stops neither walk: it is read as an unflagged name,
+    and the damage is the third entry."""
+
+    def outcome(read: Callable[[], bytes]) -> int | str:
+        try:
+            return len(read())
+        except CorruptionError:
+            return "corrupt"
+
     with open_archive(io.BytesIO(bytes(data))) as reader:
         listed_first = [
-            (m.size, m.compressed_size, len(reader.read(m)))
+            (m.name, m.size, m.compressed_size, outcome(partial(reader.read, m)))
             for m in reader.members_report().members
         ]
-    # A streaming pass opens each member as the listing reaches it, so the index
-    # pass runs before the listing gets to the damage.
-    opened_first = []
+    # ``member_count`` asked first runs the index pass, which meets the damage before
+    # the listing does.
+    with open_archive(io.BytesIO(bytes(data))) as reader:
+        assert reader.info.member_count is None
+        counted_first = [
+            (m.name, m.size, m.compressed_size, outcome(partial(reader.read, m)))
+            for m in reader.members_report().members
+        ]
+    # A streaming pass walks the directory before reading any member's data.
+    streamed = []
     with open_archive(io.BytesIO(bytes(data)), streaming=True) as reader:
-        with raises_corruption_not_truncation(match="Could not decode a ZIP member"):
+        with raises_corruption_not_truncation(match="magic"):
             for member, stream in reader.stream_members():
                 assert stream is not None
-                opened_first.append(
-                    (member.size, member.compressed_size, len(stream.read()))
+                streamed.append(
+                    (
+                        member.name,
+                        member.size,
+                        member.compressed_size,
+                        outcome(stream.read),
+                    )
                 )
-    assert len(listed_first) == 3
-    assert opened_first == listed_first
+    assert [(name, read) for name, _, _, read in listed_first] == expected
+    assert counted_first == listed_first
+    assert streamed == listed_first
 
 
 # --- Version needed above 6.3 -------------------------------------------------------
@@ -740,7 +772,7 @@ def test_junk_after_a_whole_directory_is_damage_not_a_cut() -> None:
         )
 
 
-# --- One walk for the listing, one index pass when an open comes first ---------------
+# --- One walk for the listing, one index pass when member_count comes first ----------
 
 
 def _counting_walks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -774,18 +806,69 @@ def test_listing_then_open_walks_the_directory_once(
     assert walks == [1]
 
 
-def test_open_before_the_listing_ends_runs_one_index_pass(
+def test_a_streaming_pass_walks_the_directory_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     walks = _counting_walks(monkeypatch)
-    # A streaming pass opens each member as the walk yields it.
+    # The pass walks the whole directory before the first member's data, so no open
+    # comes before the listing has finished and no index pass runs.
     with open_archive(io.BytesIO(_zip()), streaming=True) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             assert stream.read() == member.name.encode() * 3
         assert reader.info.member_count == 3
-    # The listing walk, and one index pass for the open that came first.
-    assert walks == [1, 1]
+    assert walks == [1]
+
+
+class _PositionLog(io.BytesIO):
+    """Records where each read starts and how many bytes it returns."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.reads: list[tuple[int, int]] = []
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        start = self.tell()
+        out = super().read(size)
+        self.reads.append((start, len(out)))
+        return out
+
+    def readinto(self, buffer: bytearray | memoryview, /) -> int:  # type: ignore[override]
+        start = self.tell()
+        n = super().readinto(buffer)
+        self.reads.append((start, n))
+        return n
+
+
+@pytest.mark.parametrize("entries", [3, 25_000], ids=["small", "past_one_chunk"])
+def test_a_seekable_streaming_pass_reads_the_directory_then_forward_only(
+    entries: int,
+) -> None:
+    # 25 000 entries make a directory of about 1.4 MiB, longer than one walk chunk,
+    # so a listing drawn from the tail between members would show up here.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(entries):
+            zf.writestr(f"m{i:05}.txt", f"member {i} ".encode() * 20)
+    data = buf.getvalue()
+    source = _PositionLog(data)
+    with open_archive(source, streaming=True) as reader:
+        cd_start = struct.unpack_from("<I", data, len(data) - 6)[0]
+        at_open = len(source.reads)
+        names = []
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == f"member {len(names)} ".encode() * 20
+            names.append(member.name)
+    assert len(names) == entries
+    # The open reads at the tail; the pass reads the directory, then the members in
+    # file order: one move back, to the first local header, and none after it.
+    pass_reads = [start for start, n in source.reads[at_open:] if n]
+    first_data = next(i for i, start in enumerate(pass_reads) if start < cd_start)
+    assert first_data > 0  # the pass reads the directory before any member
+    member_reads = pass_reads[first_data:]
+    assert all(start < cd_start for start in member_reads)
+    assert member_reads == sorted(member_reads)
 
 
 def test_member_count_before_any_listing_runs_the_index_pass(
@@ -802,15 +885,18 @@ def test_member_count_before_any_listing_runs_the_index_pass(
 
 
 def _zip_with_large_extras(count: int, extra_size: int) -> bytes:
-    """Each central entry carries an unknown extra field and a comment of
-    ``extra_size`` bytes each."""
+    """Each central entry carries an extra field and a comment of ``extra_size``
+    bytes each. The extra field is an NTFS times field padded with an unknown
+    attribute, so archivey reads it and keeps nothing of it (an unknown field would
+    be kept, as ``extra["zip.extra_fields"]``)."""
+    times = struct.pack("<HHQQQ", 1, 24, 1, 1, 1)
+    padding = extra_size - 4 - 4 - len(times) - 4
+    ntfs = bytes(4) + times + struct.pack("<HH", 0x99, padding) + bytes(padding)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for i in range(count):
             info = zipfile.ZipInfo(f"f{i:05d}.txt")
-            info.extra = struct.pack("<HH", 0xCAFE, extra_size - 4) + bytes(
-                extra_size - 4
-            )
+            info.extra = struct.pack("<HH", 0x000A, len(ntfs)) + ntfs
             info.comment = b"c" * extra_size
             zf.writestr(info, b"x")
     return buf.getvalue()
@@ -835,6 +921,7 @@ def test_listing_does_not_keep_extra_fields_or_comments_alive() -> None:
         # all. Keeping the directory entry would hold both, over 8 KiB per member.
         assert per_member < extra_size + 3000, per_member
         assert all(m.comment == "c" * extra_size for m in members)
+        assert all("zip.extra_fields" not in m.extra for m in members)
     finally:
         reader.close()
 
@@ -871,3 +958,24 @@ def test_a_classic_end_record_stands_in_for_a_damaged_zip64_record() -> None:
         ) as reader:
             reader.members()
     assert raised.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+
+
+def test_a_failure_met_walking_ahead_is_raised_where_the_pass_reaches_it() -> None:
+    # The end record declares five entries over a directory of three: a directory
+    # finding STRICT raises after the last member. The walk ahead meets it before any
+    # member is yielded; the pass yields the three, then raises the finding itself
+    # rather than the ReadError a walk that already failed gives.
+    data = bytearray(_zip())
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 5, 5)
+    read = []
+    with open_archive(
+        io.BytesIO(bytes(data)),
+        streaming=True,
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+    ) as reader:
+        with pytest.raises(DiagnosticRaisedError):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                read.append((member.name, stream.read()))
+    assert read == [(n, n.encode() * 3) for n in _NAMES]

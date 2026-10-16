@@ -630,8 +630,15 @@ non-seekable source in random-access mode fails at open instead of being buffere
 footgun on TAR/7z" (ADR 0003). Blocking a cheap read too catches the mistake during
 development, not in production on a different archive (2026-09-29).
 
-**Rulings.** ADR 0003, 0004, 0010. `stream_members()` is never seekable (2026-09-26). The
-gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27).
+**Rulings.** ADR 0003, 0004, 0010. `stream_members()` is never seekable (2026-09-26).
+The gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27). `ListingCost` names
+how the member list is read through the source the archive was opened on (index, header
+walk or decompression), not the work of finding the index or when it is paid: RAR
+reports `REQUIRES_SCANNING` although it walks its headers inside `open_archive`
+(2026-10-15). A caller reading the receipt learns what a lazy backend would pay, and the
+value does not change when a backend moves the walk; it may differ by source, as a piped
+ZIP's does. Reopen if callers need "already paid" as its own signal, or if the RAR5
+quick-open case (`formats/rar.md` open questions) is ruled `INDEXED`.
 
 ### DR-10a. Read sequentially; seek only when the format needs it
 
@@ -885,9 +892,10 @@ accelerator usefulness". Only a `unar` that passes the RAR5 probe is used
 **Rule.** If a fix would mean replacing a component that is already planned for
 replacement, record the limitation where users will find it and fix it in the rewrite.
 
-**Rulings.** A ZIP name with the UTF-8 flag but invalid UTF-8 keeps refusing the archive
+**Rulings.** A ZIP name with the UTF-8 flag but invalid UTF-8 kept refusing the archive
 until the zipfile replacement (2026-10-06). The replacement, the native ZIP reader, moved
-into 0.2.0 on 2026-10-10 (davi); its names stage ends the refusal.
+into 0.2.0 on 2026-10-10 (davi); its names stage ended the refusal: such a name decodes
+as an unflagged one, with a diagnostic.
 
 ### DR-21a. Don't ship what can't be tested
 

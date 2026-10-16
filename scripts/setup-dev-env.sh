@@ -65,7 +65,10 @@ install_linux_packages() {
   #   scripts/install-unar-from-source.sh, which builds one that passes.
   # xorriso: builds hybrid ISOs with an appended partition for
   #   tests/test_iso_trailing_data.py.
-  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso
+  # zip, unzip: `zip -A` and the `unzipsfx` stub build the real self-extractor in
+  #   tests/test_sfx.py (macOS ships both); unzip is also the oracle
+  #   tests/test_zip_extra_fields.py compares extra-field times with.
+  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso zip unzip
 }
 
 install_macos_packages() {
@@ -168,7 +171,7 @@ def _on_login_path(found: str) -> bool:
     return parent in login_dirs
 
 
-for tool in ("unrar", "7z", "unar", "xorriso"):
+for tool in ("unrar", "7z", "unar", "xorriso", "zip", "unzip", "unzipsfx"):
     found = shutil.which(tool)
     if not found:
         print(f"MISSING {tool}")

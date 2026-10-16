@@ -39,6 +39,12 @@ def text_bytes(value: str | bytes | None) -> int:
     return _retained_bytes(value)
 
 
+# What one entry of a nested dict keyed by a number retains beyond its value's bytes:
+# the key object, the dict slot and the value's object header. Measured 69 bytes for
+# a ZIP extra field with one byte of data (CPython 3.11, int key over 256).
+NUMBERED_ENTRY_BYTES = 72
+
+
 def _extra_bytes(extra: Mapping[str, object]) -> int:
     """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts).
 
@@ -47,12 +53,20 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
     archive sizes, so charging it would only tighten the cap by a per-format toll.
     A nested key is archive text: TAR copies every PAX record into
     ``extra["tar.pax_headers"]``, where the keyword is as attacker-sized as the value.
+    A nested key that is not text (a ZIP extra field's tag in
+    ``extra["zip.extra_fields"]``) weighs ``NUMBERED_ENTRY_BYTES``: the archive sets
+    how many entries there are, and an empty value would otherwise weigh nothing.
     """
     total = 0
     for value in extra.values():
         if isinstance(value, dict):
             for nested_key, nested in value.items():
-                total += _retained_bytes(nested_key) + _retained_bytes(nested)
+                key_bytes = (
+                    _retained_bytes(nested_key)
+                    if isinstance(nested_key, (str, bytes))
+                    else NUMBERED_ENTRY_BYTES
+                )
+                total += key_bytes + _retained_bytes(nested)
         else:
             total += _retained_bytes(value)
     return total

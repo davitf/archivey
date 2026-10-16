@@ -305,7 +305,6 @@ def test_reserved_verbs(sample_zip: Path) -> None:
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
     assert main(["hash", str(sample_zip)]) == EXIT_USAGE
     assert main(["convert", str(sample_zip)]) == EXIT_USAGE
-    assert main(["cat", str(sample_zip)]) == EXIT_USAGE
 
 
 def test_salvage_reserved(sample_zip: Path) -> None:
@@ -2542,6 +2541,23 @@ def test_format_access_summary() -> None:
     assert "solid (" in format_access_summary(solid)
     assert "1 solid block" in format_access_summary(solid)
 
+    # The re-decode note is about access_cost, so every listing cost keeps it (a solid
+    # RAR lists by scanning).
+    note = "reading one member may decode earlier members in its block"
+    for listing in ListingCost:
+        receipt = CostReceipt(
+            listing_cost=listing,
+            access_cost=AccessCost.SOLID,
+            stream_capability=StreamCapability.SEEKABLE,
+        )
+        assert note in format_access_summary(receipt), listing
+    scanned = CostReceipt(
+        listing_cost=ListingCost.REQUIRES_SCANNING,
+        access_cost=AccessCost.SOLID,
+        stream_capability=StreamCapability.SEEKABLE,
+    )
+    assert format_access_summary(scanned) == (f"solid (listing requires scan; {note})")
+
 
 def test_list_escapes_control_bytes_in_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -4263,7 +4279,7 @@ def test_verb_option_hint_names_every_verb_that_takes_it(
     ) in capsys.readouterr().err
     assert main(["--exclude", "p", "a.zip"]) == EXIT_USAGE
     assert (
-        "(--exclude is an option of 'list', 'test', 'extract'; "
+        "(--exclude is an option of 'list', 'test', 'extract', 'cat'; "
         "it goes after one of those verbs)"
     ) in capsys.readouterr().err
 

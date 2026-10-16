@@ -34,7 +34,7 @@ The RAR backend SHALL expose these properties:
 | --- | --- |
 | Read dependency (metadata) | None; native RAR 1.5–RAR5 header parser |
 | Read dependency (data) | RARLAB `unrar` or `rar` binary on `PATH` (`unrar` preferred) |
-| Listing cost | O(1); headers parsed natively, no member-data decompression |
+| Listing cost | `REQUIRES_SCANNING`: a header walk at open, parsed natively, no member-data decompression. Also with a quick-open record, which saves seeks but not the walk |
 | Access cost | `SOLID` for solid archives; `DIRECT` otherwise |
 | Supports write | No |
 | Requires seek | Yes |
@@ -1076,6 +1076,56 @@ refused.
 | Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
 | A name with no `*` or `?`, even one shared with an earlier member | Not refused in either configuration |
 | POSIX: `hi` U+D800 `.txt` after `hiX.txt`, default config | `UnsupportedFeatureError` naming the flag; with the flag, the member's own bytes |
+
+### Requirement: Under auto, read a member unrar cannot name with unar
+
+`unar` selects members by index, so a name `unrar` cannot be given, or a glob name
+whose mask also matches earlier members, costs it nothing. When
+`ArchiveyConfig.rar_decompressor` is `auto` and resolved to `unrar`, a read that the
+two requirements above would refuse SHALL instead be served by `unar -i <index>`, when
+all of these hold: an accepted `unar` is installed (the same check `auto` uses), the
+read needs no password (see "A spawn gets a password only when the read needs one";
+`unar` takes it on its command line), the source
+is a file with nothing before the RAR (`unar` would otherwise need its own copy: a
+prefix has no open-time cost note under `unrar`, and a stream source would be copied a
+second time against the same `SpoolLimits` budget; a file is linked into `unar`'s
+private directory, copied only where the system allows no link), and `unar` itself would not refuse the member
+or the archive (`Read RAR member data with unar`). Otherwise the `unrar` refusal SHALL be
+raised unchanged. The dictionary memory check SHALL use `unar`'s rule for that read.
+Every other member SHALL still be read with `unrar`. With `rar_decompressor='unrar'`
+the refusals SHALL stand.
+
+#### Scenario: auto routes unnameable members to unar
+
+| Case | Expected |
+| --- | --- |
+| `a*.txt` with an earlier `subdir/aY.txt`, non-solid, `auto`, accepted `unar` installed | The member's own bytes, read with `unar`; other members read with `unrar` |
+| `d*/x.txt` (glob in a directory component), `auto`, accepted `unar` installed | The member's own bytes, read with `unar` |
+| The same reads with no accepted `unar` | The `unrar` refusals, unchanged |
+| The same reads with `rar_decompressor='unrar'` | The `unrar` refusals, unchanged |
+| RAR5 solid archive with data after a directory (`unar` refuses it) | The `unrar` refusal, unchanged |
+| A read that needs a password, or a stream source, or a prefix before the RAR | The `unrar` refusal, unchanged; nothing is written to disk |
+| A plaintext member of a non-solid archive whose last member is encrypted | Read with `unar`, which gets no password |
+
+### Requirement: A spawn gets a password only when the read needs one
+
+An `unrar` or `unar` process started to read one member SHALL receive a password only
+when that read needs one: the archive's headers are encrypted, the member is encrypted
+or its encryption is unknown, or the archive is solid and an encrypted member (or one
+whose encryption is unknown) comes before it. Otherwise the process SHALL be started
+with no password, whatever the caller supplied. A process that decodes the whole
+archive (a solid `stream_members()` pass) SHALL receive one when any member is
+encrypted.
+
+#### Scenario: Passwords per read
+
+| Case | Expected |
+| --- | --- |
+| Non-solid archive, caller password, plaintext member read with `unrar` | `unrar` gets no password |
+| The same archive, its encrypted member | `unrar` gets the password |
+| Header-encrypted archive, any member | The password |
+| Solid archive, plaintext member after an encrypted one | The password |
+| Solid archive, plaintext member before every encrypted one | No password |
 
 ### Requirement: Read RAR member data with unar
 

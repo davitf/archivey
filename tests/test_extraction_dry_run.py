@@ -197,8 +197,6 @@ _ADVERSARIAL = adversarial_archives()
 def test_adversarial_dry_run_matches_real_extraction(
     entry, blob: bytes, tmp_path: Path
 ) -> None:
-    if entry.open_outcome == "corruption":
-        pytest.skip("does not open")
     for policy in _POLICIES:
         work = tmp_path / policy.value
         (work / "tmp").mkdir(parents=True)

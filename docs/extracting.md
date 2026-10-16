@@ -449,8 +449,8 @@ Some things go differently from a pipe, on an archive that is crafted or damaged
 
 - A data descriptor that disagrees with the directory, a local header the directory
   contradicts, two same-named members whose directory order reverses their file order,
-  a directory entry with no member data, and a member whose two headers store different
-  names each fail that member at the end of the pass: `FAILED` with `CorruptionError`
+  and a directory entry with no member data each fail that member at the end of the
+  pass: `FAILED` with `CorruptionError`
   under `on_error="continue"`, raised under `on_error="stop"`. A read from a file writes
   the first two. What the pass wrote for such a member is removed.
 - Under `on_error="stop"`, a member whose data fails as the pass writes it stops the
@@ -625,9 +625,10 @@ archives under a hard latency budget should turn accelerators off (`use_rapidgzi
 
 **External tools:** RAR member *data* is decompressed by an external program: RARLAB
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB
-program is installed. Each is found on the process `PATH`. `unar` receives a password on
-its command line, where other local users can see it while it runs; select
-`RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
+program is installed. With one installed, `"auto"` still reads with `unar` a member whose
+name `unrar` cannot be given, but never for a member that needs a password. Each is found on
+the process `PATH`. `unar` receives a password on its command line, where other local
+users can see it while it runs; select `RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
 `RarDecompressor.NONE`: archivey then runs neither, and refuses every RAR member it
 cannot read without them (anything compressed, encrypted or solid);
 `extract_all(..., on_error="continue")` then writes the members it can read and records

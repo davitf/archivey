@@ -96,7 +96,14 @@ class RarDecompressor(Enum):
       local users can see it while it runs. See ``docs/formats.md``.
     - ``AUTO`` — ``unrar`` when a usable one is on ``PATH``, otherwise ``unar``. The
       choice is made once per opened archive, when it is opened, and holds for every
-      read of it: a read that ``unar`` refuses is not retried with ``unrar``. With
+      read of it: a read that ``unar`` refuses is not retried with ``unrar``. One
+      exception goes the other way: a member whose name ``unrar`` cannot be given, or
+      whose glob name also matches earlier members
+      (``rar_allow_glob_member_concatenation``), is read with ``unar`` when an
+      accepted one is installed, because ``unar`` selects members by index. That
+      applies only to a read that needs no password, from a file with nothing
+      before the RAR (so ``unar`` gets no password and no copy), and to a
+      member ``unar`` reads correctly; otherwise the ``unrar`` refusal stands. With
       neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
       This is the default. On a machine with ``unar`` and no RARLAB program, it means
       a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
@@ -306,7 +313,9 @@ class ListingLimits:
     (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
     keys are fixed per format and do not count. Non-ASCII text counts four bytes per
     character, so it is an upper bound rather than an exact size. A TAR sparse member's
-    map, which the listing keeps to read the member, counts 24 bytes per entry.
+    map, which the listing keeps to read the member, counts 24 bytes per entry, and
+    each ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its
+    data.
     """
 
     UNLIMITED: ClassVar[ListingLimits]
@@ -666,6 +675,9 @@ class ArchiveyConfig:
     reported (:class:`ExtractionLimits` does not cover ``open()`` or ``read()``); on a
     solid archive those bytes are already inside ``AccessCost.SOLID``. Set ``True`` to
     read it anyway. A glob name that matches no other member is unaffected either way.
+    Under ``rar_decompressor=AUTO``, an installed ``unar`` reads such a member by index
+    instead of the refusal (see :class:`RarDecompressor`), so this flag matters only
+    when ``unrar`` must read it.
     """
 
     rar_decompressor: RarDecompressor = RarDecompressor.AUTO

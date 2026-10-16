@@ -167,13 +167,17 @@ recovered member before propagating a terminal archive-level listing error
 no forward scan, no member-data reads, never consumes the pass. It returns the
 stored `MemberListReport` (complete or incomplete) when one exists without scanning,
 or the upfront index as a complete report for backends that carry one; else `None`.
+The peek follows whether the backend holds a member list after open, not its
+`listing_cost`: RAR's listing is `REQUIRES_SCANNING`, but the walk runs inside
+`open_archive`, so its peek returns the complete report.
 Guaranteed fully-resolved complete list → `members()` (RA), or `members_report()`
 with `error is None` (either mode).
 
 | Index topology | Availability |
 | --- | --- |
 | Leading (ISO) | Both modes, as complete report |
-| Scan-based (directory) | `None` until a pass completes — a filesystem walk is not an index (its `listing_cost` is `REQUIRES_SCANNING`), so it has nothing to peek at |
+| Scan-based (directory) | `None` until a pass completes — the filesystem walk is lazy, so before it there is nothing to peek at |
+| Scan at open (RAR) | Both modes, as complete report |
 | Trailing (ZIP CD, 7z EOF header), seekable source | Both modes, as complete report |
 | Trailing, non-seekable source (ZIP under `streaming=True`) | `None` until the pass has read the index after the last member; then the complete report, as for TAR after a completed pass |
 | No-index (TAR), no prior materialization/pass | `None` |
@@ -199,7 +203,7 @@ report to a caller MUST NOT change the complete-or-raise behaviour of `members()
 | Streaming ZIP from a seekable source (upfront index) | Full list; no scan/data read; forward pass still available |
 | Streaming ZIP from a pipe, before the pass has read the central directory | `None` |
 | No-index, not yet iterated | `None` |
-| Directory archive, either mode, not yet iterated | `None` — consistent with its own `listing_cost=REQUIRES_SCANNING` |
+| Directory archive, either mode, not yet iterated | `None` — its walk is lazy |
 | No-index after completed pass / `members_report` | Complete fully-resolved report |
 | No-index after incomplete pass already ran | Incomplete report with recovered prefix and `error` |
 | ZIP symlink via `members_report_if_available` | Link fields unset; `members`/`members_report` resolve them |

@@ -191,11 +191,17 @@ class MemberVerifier:
         member: ArchiveMember | None = None,
         archive_name: str | None = None,
         digest_transforms: _DigestTransforms | None = None,
+        end_check: Callable[[int], None] | None = None,
         fill_size: bool = False,
     ) -> None:
         self._expected_size = expected_size
-        # Set ``member.size`` once a read from the start that skips no byte finds the end
-        # (``_note_end_seen``). Needs ``member`` and no declared size.
+        # With no declared size: called with the member's length before the digest
+        # verdict, to refuse a length the archive rules out (it raises).
+        self._end_check = end_check
+        # With no declared size: give ``member.size`` the length once the digests
+        # matched over the whole member (``_check_digests_if_complete``), or, with no
+        # digest to check, once a read from the start that skips no byte finds the
+        # end (``_note_end_seen``).
         self._fill_member = member if fill_size and expected_size is None else None
         self._expected: dict[str, bytes] = {}
         self._hashers: dict[str, _IncrementalHasher] = {}
@@ -290,8 +296,12 @@ class MemberVerifier:
         """
         self._end_seen = self._pos
         member = self._fill_member
-        if member is None or self._hashed_to != self._pos:
+        # A member with a digest is filled once the digest matches instead
+        # (``_check_digests_if_complete``).
+        if member is None or self._expected or self._hashed_to != self._pos:
             return
+        if self._end_check is not None:
+            self._end_check(self._pos)
         if member.size is None:
             member.size = self._pos
         member._size_unread = False
@@ -439,7 +449,14 @@ class MemberVerifier:
         if end is None or self._hashed_to < end:
             return
         self._digest_checked = True
+        if self._expected_size is None and self._end_check is not None:
+            self._end_check(end)
         self._verify_digests()
+        fill = self._fill_member
+        if fill is not None:
+            if fill.size is None:
+                fill.size = end
+            fill._size_unread = False
 
     def _conclude(self, inner: BinaryIO) -> None:
         """Run end-of-stream checks once (read path only — never called from close).
@@ -873,6 +890,7 @@ def build_member_verifier(
     member: ArchiveMember | None = None,
     archive_name: str | None = None,
     digest_transforms: _DigestTransforms | None = None,
+    end_check: Callable[[int], None] | None = None,
     fill_size: bool = False,
 ) -> MemberVerifier | None:
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``.
@@ -891,6 +909,7 @@ def build_member_verifier(
         member=member,
         archive_name=archive_name,
         digest_transforms=digest_transforms,
+        end_check=end_check,
         fill_size=fills,
     )
 

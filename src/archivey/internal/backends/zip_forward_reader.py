@@ -22,7 +22,7 @@ import io
 import sys
 import zlib
 from array import array
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
 from typing import BinaryIO, Literal, cast
@@ -61,6 +61,7 @@ from archivey.internal.backends.zip_parser import (
     CentralDirectoryWalk,
     CentralEntry,
     EndRecord,
+    written_by_archive_utility,
 )
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
@@ -75,8 +76,8 @@ from archivey.internal.backends.zip_reader import (
     _CandidateFailures,
     _is_candidate_integrity_failure,
     _is_encrypted_entry,
+    _local_crc_stands_in,
     _max_members_error,
-    _stored_text,
     _unconfirmed_resource_limit,
     _unverified_data_error,
     _zipcrypto_check_byte,
@@ -182,12 +183,21 @@ def _contradicts(descriptor: tuple[int, int, int], central: CentralEntry) -> boo
     """Whether a data descriptor's CRC or sizes differ from the directory entry's.
 
     A 4-byte descriptor holds the size modulo 2**32 (its compressed size was matched
-    in full)."""
+    in full). So does the directory entry of a member past 4 GiB that macOS Archive
+    Utility wrote, whose compressed size the walk measured
+    (``CentralDirectoryWalk``)."""
     crc, compressed_size, file_size = descriptor
+    sizes = (central.file_size, central.file_size & 0xFFFF_FFFF)
     return (
         crc != central.crc
         or compressed_size != central.compressed_size
-        or file_size not in (central.file_size, central.file_size & 0xFFFF_FFFF)
+        or (
+            file_size not in sizes
+            and not (
+                file_size & 0xFFFF_FFFF == central.file_size
+                and written_by_archive_utility(central)
+            )
+        )
     )
 
 
@@ -215,7 +225,15 @@ def _header_disagreements(
             else "encrypted in the directory, not in the local header"
         )
     if not flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
-        if crc_used and crc != central.crc:
+        # A central CRC-32 of 0 over data against a local value is no
+        # contradiction, whatever the member's type: a file or link takes the local
+        # value (``_local_crc_for``), and a directory keeps no digest
+        # (``DIGEST_UNVERIFIABLE``), as from a file, which never compares the two.
+        if (
+            crc_used
+            and crc != central.crc
+            and not _local_crc_stands_in(central, flags, crc)
+        ):
             differ.append(f"CRC-32 {crc:08x} against {central.crc:08x}")
         if compressed_size != central.compressed_size:
             differ.append(
@@ -259,17 +277,6 @@ def _missing_error(member: ArchiveMember, offset: int) -> CorruptionError:
         f"ZIP central directory entry {quoted(member.name)} points to offset "
         f"{offset}, where the stream held no local header",
         member_name=member.name,
-        source_format=ArchiveFormat.ZIP,
-    )
-
-
-def _renamed_error(
-    local_name: bytes, central: CentralEntry, member_name: str
-) -> CorruptionError:
-    return CorruptionError(
-        f"File name in directory {quoted(_stored_text(central.name))} and header "
-        f"{quoted(_stored_text(local_name))} differ.",
-        member_name=member_name,
         source_format=ArchiveFormat.ZIP,
     )
 
@@ -1550,6 +1557,10 @@ class ZipForwardReader(ZipReader):
         # though a set costs some 60 bytes an offset against their array's 8, for a
         # lookup per directory entry.
         self._local_offsets: set[int] = set()
+        # Local header offset -> where its data starts, for the bit-3 headers with the
+        # ``UX`` extra field macOS Archive Utility writes: the directory walk measures
+        # their compressed sizes past 4 GiB from them (``CentralDirectoryWalk``).
+        self._mac_data_starts: dict[int, int] = {}
         # Member id -> its whole data, when short enough to be a link target, or the
         # start a Windows reparse buffer's parse reads of longer data
         # (``_PassData.reparse_prefix``), until the directory says which members are
@@ -1609,6 +1620,8 @@ class ZipForwardReader(ZipReader):
             )
             self._by_offset[entry.offset] = member
             self._local_offsets.add(entry.offset)
+            if entry.deferred and entry.header.extra[:2] == b"UX":
+                self._mac_data_starts[entry.offset] = entry.header.data_start
             yield member
             index += 1
         self._read_directory()
@@ -1666,10 +1679,11 @@ class ZipForwardReader(ZipReader):
         A local entry no directory entry points to is dropped from the listing and
         reported (``ARCHIVE_UNLISTED_DATA``). Of two members with the same name, the
         later in the directory is current (``_listed_in_index_order``). A member whose
-        data descriptor or local header the directory contradicts, or whose local
-        header names it differently, fails (``_failed_at_end``): the pass raises for
-        the first, after a directory entry with no local entry and two entries for one
-        local entry.
+        local header names it differently takes the directory's name and is reported
+        (``MEMBER_LOCAL_NAME_DIFFERS``), as a file read reports it when it reads that
+        local header. A member whose data descriptor or local header the directory
+        contradicts fails (``_failed_at_end``): the pass raises for the first, after a
+        directory entry with no local entry and two entries for one local entry.
         """
         limits = self._config.listing_limits
         max_members = limits.max_members
@@ -1680,7 +1694,20 @@ class ZipForwardReader(ZipReader):
         self._end_record = self._end = end
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
-        walk = CentralDirectoryWalk(tail.read_at, end)
+        by_offset = self._by_offset
+
+        def local_name_at(offset: int) -> bytes | None:
+            # The pass has every local header it met; the walk asks for one only to
+            # correct an offset wrapped past 4 GiB.
+            member = by_offset.get(offset)
+            return None if member is None else cast("_ZipLocator", member._raw).name
+
+        walk = CentralDirectoryWalk(
+            tail.read_at,
+            end,
+            local_name_at=local_name_at,
+            local_data_start_at=self._mac_data_starts.get,
+        )
         # Every entry's local header offset, in directory order, and the entries.
         offsets = array("q")
         entries: list[CentralEntry] = []
@@ -1708,8 +1735,10 @@ class ZipForwardReader(ZipReader):
         # A walk that met damage read no count.
         self._entries_read = None if damage is not None else walk.entries_read
         local_offsets = self._local_offsets
-        by_offset = self._by_offset
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
+        # Members whose local header named them differently, by member id: the name
+        # the local header gave.
+        renamed: dict[int, bytes] = {}
         matched: set[int] = set()
         order: list[ArchiveMember] = []
         # Entries pointing at a local header an earlier entry already took (by
@@ -1742,12 +1771,9 @@ class ZipForwardReader(ZipReader):
             central = entries[position]
             local_name = cast("_ZipLocator", member._raw).name
             if central.name != local_name:
-                # The seekable read refuses this member when it reads its local
-                # header; a forward pass has both copies only now.
-                failed.append(
-                    (position, member, _renamed_error(local_name, central, member.name))
-                )
-                continue
+                # Reported once the member has the directory's name, below.
+                assert member._member_id is not None
+                renamed[member._member_id] = local_name
             updates.append((member, central))
             # ``_raw`` still holds the local header's fields: the directory replaces
             # it only in ``_update_from_directory``, after this loop.
@@ -1773,6 +1799,12 @@ class ZipForwardReader(ZipReader):
             unlisted = []
         for member, central in updates:
             self._update_from_directory(member, central)
+            local_name = renamed.get(cast("int", member._member_id))
+            if local_name is not None:
+                # A file or link only, as from a file (``_report_local_name``).
+                self._report_local_name(
+                    cast("_ZipLocator", member._raw), member, local_name
+                )
         if any_missing:
             # A missing entry has a name too, and takes part in last-entry-wins as the
             # seekable read's listing does: a listed copy it follows is not current.
@@ -1818,6 +1850,7 @@ class ZipForwardReader(ZipReader):
             self._emit_trailing_data(found)
         self._by_offset = {}
         self._local_offsets = set()
+        self._mac_data_starts = {}
         self._descriptors = {}
         if damage is not None:
             # The listing's error, as from a file; a member that fails a check of its
@@ -1836,6 +1869,17 @@ class ZipForwardReader(ZipReader):
         if failed:
             _, _, error = failed[0]
             raise error
+
+    def _local_crc_for(self, entry: CentralEntry) -> int | None:
+        """The seekable read's :meth:`ZipReader._local_crc_for`, from the local header
+        the pass met at ``entry``'s offset rather than a read of it."""
+        member = self._by_offset.get(_bound_offset(entry.header_offset))
+        if member is None:
+            return None
+        local = cast("_ZipLocator", member._raw)
+        if not _local_crc_stands_in(entry, local.flags, local.crc):
+            return None
+        return local.crc
 
     def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:
         """The member a directory entry with no local entry describes, for the end of
@@ -1935,11 +1979,14 @@ class ZipForwardReader(ZipReader):
         assert member_id is not None
         old_name = member.name
         weighed = member_metadata_bytes(member)
+        # What the pass counted, and the digest it matched (``_PassData._finish``).
+        counted, counted_hashes = member.size, member.hashes
         fresh = self._to_member(central, member_id)
         for f in fields(ArchiveMember):
             if f.name in _KEPT_ON_UPDATE:
                 continue
             setattr(member, f.name, getattr(fresh, f.name))
+        self._keep_counted_size(member, counted, counted_hashes)
         member._diagnostics = member._diagnostics + fresh._diagnostics
         # The directory adds what no local header holds (a comment, its own extra
         # field); the limits weigh it when the pass is published, as they weigh the
@@ -1955,6 +2002,32 @@ class ZipForwardReader(ZipReader):
             and not member._link_target_resolved
         ):
             member._link_target_unread = True
+
+    def _keep_counted_size(
+        self,
+        member: ArchiveMember,
+        counted: int | None,
+        counted_hashes: Mapping[HashAlgorithm, bytes],
+    ) -> None:
+        """Give a member whose size the directory leaves unknown (a macOS Archive
+        Utility ZIP past 4 GiB, ``_wrapped_size``) the size the pass counted, when the
+        pass decoded it to the end with the directory's CRC-32 and the count fits what
+        the directory stores, as a file read fills it in."""
+        loc = member._raw
+        if (
+            member.size is not None
+            or counted is None
+            or not counted_hashes
+            or counted_hashes != member.hashes
+            or not isinstance(loc, _ZipLocator)
+            or loc.size_unknown is None
+        ):
+            return
+        try:
+            loc.size_unknown.check(counted)
+        except CorruptionError:
+            return
+        member.size = counted
 
     def _reindex_name(self, member: ArchiveMember, old_name: str) -> None:
         listed = self._listed_by_name.get(old_name)

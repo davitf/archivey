@@ -912,19 +912,21 @@ def test_a_directory_entry_with_no_local_entry_gets_a_failed_result(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
 
 
-def test_a_name_the_two_headers_disagree_on_fails_the_member(tmp_path: Path) -> None:
+def test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name(
+    tmp_path: Path,
+) -> None:
     hand = _Hand()
     hand.local(b"a.txt", b"one")
     hand.local(b"b.txt", b"two")
     data = bytearray(hand.directory(0, 1))
     cd = data.rindex(b"PK\x01\x02")
     data[cd + 46 : cd + 51] = b"z.txt"
-    report = _piped_report(bytes(data), tmp_path, on_error=OnError.CONTINUE)
-    assert _outcomes(report) == [
-        ("a.txt", ExtractionStatus.EXTRACTED, None),
-        ("b.txt", ExtractionStatus.FAILED, CorruptionError),
+    results, tree = _both(bytes(data), tmp_path, on_error=OnError.CONTINUE)
+    assert [result[:2] for result in results] == [
+        ("a.txt", ExtractionStatus.EXTRACTED),
+        ("z.txt", ExtractionStatus.EXTRACTED),
     ]
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+    assert sorted(tree) == ["a.txt", "z.txt"]
 
 
 def test_a_directory_entry_with_no_local_entry_under_stop_raises(
@@ -980,18 +982,17 @@ def test_a_directory_entry_with_no_local_entry_records_its_rewrite(
     assert NameRewrite.PORTABLE_NAME in result.rewrites
 
 
-def test_a_name_the_two_headers_disagree_on_under_stop_raises(tmp_path: Path) -> None:
+def test_a_name_the_two_headers_disagree_on_under_stop_is_written_alike(
+    tmp_path: Path,
+) -> None:
     hand = _Hand()
     hand.local(b"a.txt", b"one")
     hand.local(b"b.txt", b"two")
     data = bytearray(hand.directory(0, 1))
     cd = data.rindex(b"PK\x01\x02")
     data[cd + 46 : cd + 51] = b"z.txt"
-    with pytest.raises(CorruptionError, match="differ") as raised:
-        _piped_report(bytes(data), tmp_path, on_error=OnError.STOP)
-    # The name the pass yielded it under, which the report would carry.
-    assert raised.value.member_name == "b.txt"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+    _, tree = _both(bytes(data), tmp_path, on_error=OnError.STOP)
+    assert sorted(tree) == ["a.txt", "z.txt"]
 
 
 def test_a_reversed_pair_under_skip_matches_the_seekable_results(

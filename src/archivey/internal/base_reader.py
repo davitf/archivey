@@ -429,10 +429,11 @@ class BaseArchiveReader(ArchiveReader):
     **MUST set** when it differs from the default (``True``):
 
     - ``_MEMBER_LIST_UPFRONT``    — does the backend have a true upfront index (central
-      directory, 7z header, filesystem listing) that yields the full member list
-      *without scanning*? This is the predicate behind :meth:`members_report_if_available`
-      (it returns a report when ``True``, else ``None``). It does **not** gate the
-      access-mode-enforced methods — those key off the ``streaming`` flag alone.
+      directory, 7z header, or a header walk already done at open, as RAR's) that yields
+      the full member list *without a further scan*? This is the predicate behind
+      :meth:`members_report_if_available` (it returns a report when ``True``, else
+      ``None``). It does **not** gate the access-mode-enforced methods — those key off
+      the ``streaming`` flag alone.
 
     Access-mode enforcement (independent of the flag above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
@@ -557,6 +558,8 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_done: bool = False
         self._walk_error: CorruptionError | None = None
         self._walk_failure: BaseException | None = None
+        # ``_walk_ahead`` met ``_walk_failure``; the next pull raises it as it is.
+        self._walk_failure_unraised: bool = False
         self._walk_pulling: bool = False
         # Every pull, every pass cursor step and link finalization hold this lock, so
         # the passes and listing calls a CONCURRENT reader runs side by side share the
@@ -1005,8 +1008,9 @@ class BaseArchiveReader(ArchiveReader):
         digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
         | None = None,
         verify_member: ArchiveMember | None = None,
-        rewind_warning: RewindWarning | None = None,
+        end_check: Callable[[int], None] | None = None,
         fill_size: bool = False,
+        rewind_warning: RewindWarning | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -1037,9 +1041,12 @@ class BaseArchiveReader(ArchiveReader):
         ``VerifyingStream`` layer). A never-opened lazy handle skips verify on
         close, so solid unread members stay cheap.
 
-        Pass ``fill_size=True`` with ``verify_member`` and no ``expected_size`` to set
-        ``verify_member.size`` once a read from the start that skips no byte reaches the
-        end cleanly (``MemberVerifier``): the late size of a member whose format
+        For a member with no ``expected_size``, ``end_check`` is called with its
+        length when a read reaches its end, before the digest verdict, and raises to
+        refuse it. ``fill_size=True`` with ``verify_member`` gives
+        ``verify_member.size`` that length: once the digests match, or, with no
+        digest to check, once a read from the start that skips no byte reaches the
+        end cleanly (``MemberVerifier``). It is the late size of a member whose format
         records none.
         """
         if (inner is None) == (open_fn is None):
@@ -1072,10 +1079,11 @@ class BaseArchiveReader(ArchiveReader):
                 expected_size=expected_size,
                 digest_transforms=digest_transforms,
                 verify_member=verify_member,
+                end_check=end_check,
+                fill_size=fill_size,
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
                 member_name=member_name,
-                fill_size=fill_size,
             )
 
         assert inner is not None
@@ -1097,10 +1105,11 @@ class BaseArchiveReader(ArchiveReader):
             expected_size=expected_size,
             digest_transforms=digest_transforms,
             verify_member=verify_member,
+            end_check=end_check,
+            fill_size=fill_size,
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
             member_name=member_name,
-            fill_size=fill_size,
         )
 
     @abstractmethod
@@ -1482,6 +1491,9 @@ class BaseArchiveReader(ArchiveReader):
         if self._walk_done:
             return None
         if self._walk_failure is not None:
+            if self._walk_failure_unraised:
+                self._walk_failure_unraised = False
+                raise self._walk_failure
             raise ReadError(
                 "The archive scan previously failed "
                 f"({type(self._walk_failure).__name__}); the member list is incomplete "
@@ -1633,6 +1645,29 @@ class BaseArchiveReader(ArchiveReader):
         """Pull to the end of the walk."""
         while self._pull_member() is not None:
             pass
+
+    def _walk_ahead(self) -> None:
+        """Drain a streaming walk before its pass reads data; a failure waits for it.
+
+        For a backend whose pass reads better with the whole listing first: ZIP on a
+        seekable source reads its directory once, then member data forward only. A
+        pull that fails poisons the walk as in any streaming pass, and the pass then
+        yields the members listed before it and raises it when it gets there, as it
+        would with the listing and the data interleaved. Terminal damage is kept in
+        ``_walk_error`` and raised at the end of the pass as usual, and the limit check
+        at the end of the walk is left to the pass as well.
+        """
+        assert self._streaming
+        if self._walk_done or not self._state.begin_materialization():
+            return
+        try:
+            self._drain_walk()
+        except Exception as exc:
+            if exc is not self._walk_failure:
+                raise
+            self._walk_failure_unraised = True
+        finally:
+            self._state.fail_materialization()
 
     def _ensure_walked(self) -> None:
         """Drain the walk under the first-touch election, without resolving links.

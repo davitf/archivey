@@ -524,23 +524,72 @@ def test_directory_text_is_held_only_up_to_max_metadata_bytes(
         assert held == []
 
 
-def test_a_name_that_differs_between_the_two_headers_is_refused() -> None:
-    """As from a file, where reading the member compares the two."""
+def test_a_name_that_differs_between_the_two_headers_takes_the_directory_name() -> None:
+    """As from a file, where reading the member compares the two: the member reads,
+    by the directory's name, and the disagreement is reported."""
     data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
     cd = data.index(b"PK\x01\x02")
     at = data.index(b"b.txt", cd)
     data[at : at + 5] = b"c.txt"
     with archivey.open_archive(io.BytesIO(bytes(data))) as reader:
-        with pytest.raises(CorruptionError, match="differ"):
-            reader.read(reader.get("c.txt"))
+        member = reader.get("c.txt")
+        assert reader.read(member) == b"two"
+        assert reader.diagnostics.counts[DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS] == 1
+    (from_file,) = member.diagnostics
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
         names = []
-        with pytest.raises(
-            CorruptionError, match=r"directory 'c\.txt' and header 'b\.txt' differ"
-        ):
-            for member, _ in reader.stream_members():
-                names.append(member.name)
-    assert names == ["a.txt", "b.txt"]
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            names.append((member.name, stream.read()))
+        report = reader.members_report()
+        assert reader.diagnostics.counts[DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS] == 1
+    assert names == [("a.txt", b"one"), ("b.txt", b"two")]
+    assert report.error is None
+    assert [m.name for m in report.members] == ["a.txt", "c.txt"]
+    (from_pipe,) = report.members[1].diagnostics
+    assert from_pipe.context == from_file.context
+    assert from_pipe.context.to_dict() == {
+        "kind": "local_header",
+        "archive_name": None,
+        "member_name": "c.txt",
+        "member_id": 1,
+        "field": "name",
+        "local_raw_name_base64": "Yi50eHQ=",
+        "local_crc32": None,
+    }
+
+
+def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict(
+    tmp_path: Path,
+) -> None:
+    data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
+    cd = data.index(b"PK\x01\x02")
+    at = data.index(b"b.txt", cd)
+    data[at : at + 5] = b"c.txt"
+    config = archivey.ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with archivey.open_archive(io.BytesIO(bytes(data)), config=config) as reader:
+        member = reader.get("c.txt")
+        # Every open raises, not only the first.
+        for _ in range(2):
+            with pytest.raises(DiagnosticRaisedError, match="local header stores"):
+                reader.read(member)
+    with archivey.open_archive(
+        _pipe(bytes(data)), streaming=True, config=config
+    ) as reader:
+        with pytest.raises(DiagnosticRaisedError, match="local header stores"):
+            reader.members_report()
+    # Extraction stops where each read finds it: a file read at the member, the pass
+    # at the directory, every member written and the renamed one still under the
+    # local header's name, as the end-of-pass rename never ran.
+    for piped, expected in ((False, ["a.txt"]), (True, ["a.txt", "b.txt"])):
+        dest = tmp_path / ("pipe" if piped else "file")
+        source = _pipe(bytes(data)) if piped else io.BytesIO(bytes(data))
+        with pytest.raises(DiagnosticRaisedError):
+            with archivey.open_archive(
+                source, streaming=piped, config=config
+            ) as reader:
+                reader.extract_all(dest)
+        assert sorted(p.name for p in dest.iterdir()) == expected
 
 
 def test_too_many_local_headers_name_what_was_counted() -> None:

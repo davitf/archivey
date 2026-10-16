@@ -169,14 +169,15 @@ its own, or the directory start. That needs every offset, and the walk is lazy.
 
 The listing walk records each entry's header offset as it goes (8 bytes per entry, in an
 `array('Q')`), so after a listing that ran to the end the offsets and the count are
-already known. Only when a member is opened, or `member_count` is asked for, before the
-listing has finished does the reader run an **index pass**: one more pass over the fixed
-46-byte fields that builds no members and keeps only the offsets and the count. Both
-collections charge `max_members`: the index pass stops past it. Once it has stopped,
-**every** member open raises the listing's `ResourceLimitError`, not only one above the
-stop, because the bound of a member below it could come from an incomplete set of
-offsets. Listing alone never pays for the array beyond the offsets of the members it
-listed.
+already known. A member open always comes after that walk: random access lists first,
+and a streaming pass walks the directory before the first member's data (question C).
+Only when `member_count` is asked for before the listing has finished does the reader
+run an **index pass**: one more pass over the fixed 46-byte fields that builds no
+members and keeps only the offsets and the count. Both collections charge `max_members`:
+the index pass stops past it. Once it has stopped, **every** member open raises the
+listing's `ResourceLimitError`, not only one above the stop, because the bound of a
+member below it could come from an incomplete set of offsets. Listing alone never pays
+for the array beyond the offsets of the members it listed.
 
 `max_members` bounds the array in every mode, so ZIP charges it even under
 `streaming=True`, where listing limits are otherwise off. That moves ZIP into the list
@@ -577,8 +578,8 @@ Two more differences are recorded (`tests/test_zip_pipe_parity.py`, `_DIFFERS`):
   read stops refusing what the pass writes). A missing end record makes the file read
   walk the local headers (task 3.0b), and so do end records it cannot use (task 3.0c1,
   §"Damaged ZIP64 end records") and a directory damaged part way (task 3.0c2,
-  §"A damaged directory"); a name flagged UTF-8 that is not valid UTF-8 is damage at
-  its entry until task 4.1 decodes it as unflagged. The two reads write the same files.
+  §"A damaged directory"); a name flagged UTF-8 that is not valid UTF-8 decodes as an
+  unflagged one (task 4.1). The two reads write the same files.
   A split set and an encrypted central directory stay refused: no member of either can
   be read.
 
@@ -609,19 +610,18 @@ reads what the file read reads. A locator naming another disk is still a split s
 
 ### A damaged directory
 
-An entry the directory walk cannot read (a wrong signature, a cut fixed header, a name
-flagged UTF-8 that is not) ends the directory's part of the listing. The file read then
-walks the local headers once (`ZipReader._past_damage`, the walk a ZIP with no end
-record gets) and lists every member whose offset the directory did not already list,
-from its local header, then raises the damage, so the listing's error stays a
-`CorruptionError` and keeps its members; only a listing limit the walk meets is raised
-instead. A member whose data the walk could not get past is listed, and its read raises
-the walk's error, a cut as `CorruptionError` since the end record follows it. The walk
-is made once per reader (`_local_walk`, the tail search's walk when it made one), and
-each caller builds the offsets past the damage from what it listed itself: the index
-pass, which builds no member, stops at an entry whose name is flagged UTF-8 and is not,
-where the listing stops, so both list the same members past the damage. The overlap
-guard keeps one bound per member, aligned with the ids: -1, which bounds nothing, for a
+An entry the directory walk cannot read (a wrong signature, a cut fixed header) ends the
+directory's part of the listing. The file read then walks the local headers once
+(`ZipReader._past_damage`, the walk a ZIP with no end record gets) and lists every
+member whose offset the directory did not already list, from its local header, then
+raises the damage, so the listing's error stays a `CorruptionError` and keeps its
+members; only a listing limit the walk meets is raised instead. A member whose data the
+walk could not get past is listed, and its read raises the walk's error, a cut as
+`CorruptionError` since the end record follows it. The walk is made once per reader
+(`_local_walk`, the tail search's walk when it made one), and each caller builds the
+offsets past the damage from what it listed itself; the index pass and the listing stop
+at the same entry, so both list the same members past the damage. The overlap guard
+keeps one bound per member, aligned with the ids: -1, which bounds nothing, for a
 directory entry before the damage that points at no local header, and the entry's offset
 when a local header starts there, whether or not the walk reached it (a header inside
 another member's stated data is real, and two entries over it stay an overlap). The
@@ -831,11 +831,14 @@ One PR each, in order; every PR goes through the review label.
    the backup-scan investigation's §3.3-3.4 status.
 6. **ZIPs over 4 GiB without ZIP64.** macOS Finder writes a classic ZIP past 4 GiB and
    stores every offset modulo 2³². The rule recorded in `IDEAS.md`: offsets must
-   increase, so when one falls below the previous member's end, add 2³² until it does
-   not; the end record's directory offset follows the same rule. It applies only when a
+   increase, so when one falls below the furthest end of the members before it, add
+   2³² until it does not; the end record's directory offset follows the same rule. It applies only when a
    local header with the entry's name sits at the corrected offset, the CRC check stays,
-   and a diagnostic records the correction. A single member over 4 GiB (its sizes wrap
-   too) stays out until a real archive from a current Mac settles it. The diagnostic may
+   and a diagnostic records the correction. A single member over 4 GiB wraps its sizes
+   too. davi's tests on a current Mac (2026-10-15) settled it, as stage 6b: under the
+   writer's fingerprint the compressed size comes from the layout and the size from
+   deflate's ratio bound, or stays unknown (`None`, `extra["size_mod_2_32"]`) until a
+   verified read fills it in (handbook §3). The diagnostic may
    need a new code, which goes to the maintainer. Format-zip spec, handbook §3 and §5,
    `docs/formats.md`, and the `IDEAS.md` item, which this stage closes.
 7. **Methods 1 (Shrink) and 6 (Implode). Deferred until after 0.2.0** (the maintainer,
