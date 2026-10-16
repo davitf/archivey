@@ -834,6 +834,26 @@ local header with the entry's name at the corrected offset, so a ZIP under 4 GiB
 whose directory is out of file order is untouched (the corrected offset would be past
 the directory, and nothing is read there). `ARCHIVE_OFFSET_WRAPPED` records each one.
 
+**What Finder and `ditto` write besides sizes.** davi's tests on macOS (2026-10-16), a
+folder with relative, absolute, dangling and directory symlinks, a hard link, an
+executable, an xattr, a resource fork, an empty folder and an NFD name:
+
+- Both write only stored directories and deflated files; `ditto
+  --zlibCompressionLevel 0` still writes method 8, with stored blocks inside.
+- Symlinks are Unix-mode entries whose data is the target; the hard link is a second
+  copy. A FIFO hangs `ditto`.
+- Names are UTF-8 without the UTF-8 flag (bit 11), NFD as the filesystem gives them,
+  so every non-ASCII name reports `MEMBER_NAME_ENCODING_INFERRED`. davi chose to keep
+  that diagnostic.
+- Finder writes UTC into the DOS time field and `ditto` local time; both write the
+  real UTC mtime in the `UX` field (`0x5855`).
+- Both write `__MACOSX/<path>/._<name>` AppleDouble sidecars. `ditto` writes one for
+  every entry, symlinks included, plus `__MACOSX/` directory entries, and drops the
+  top folder unless given `--keepParent`. Finder keeps the top folder with its own
+  sidecar and writes none for symlinks. archivey lists sidecars as plain files, like
+  `unzip`; `ditto -x` folds them back into xattrs instead. §6 has why there is no
+  marking key.
+
 **A member over 4 GiB from macOS.** The same writer stores a member's sizes modulo 2³²
 too, in the directory and the data descriptor alike. davi's tests on macOS (2026-10-15):
 a Finder archive of five 1 GiB random files reads with the offset corrections; a
@@ -997,6 +1017,7 @@ ours.
 | `ARCHIVE_OFFSET_WRAPPED` is advisory, outside `ARCHIVE_INTEGRITY_CODES` (davi, 2026-10-15, project thread) | macOS Archive Utility writes a ZIP past 4 GiB this way by default and reads it back, so `STRICT` would refuse an ordinary Mac archive; a correction is kept only when a local header with the member's name is there, and the CRC-32 is still checked, the `MEMBER_SPECIAL_FILE_HAS_DATA` pattern (DR-25). Reopen if a writer other than macOS is found producing wrapped offsets that a correction misreads | The integrity set, under DR-3 (the stored offsets misdescribe where good data sits) |
 | Read a member whose central and local headers disagree on the name, or whose central CRC is 0 while the local CRC is right; keep refusing one whose two headers both understate the size (davi, 2026-10-10) | The first two are found in real archives (another code page or `\` against `/` in the local name; every Adobe AIR package), `unzip` reads both, and archivey takes every field from the central directory, so the local name decides nothing; the data is still checked against the local CRC. The third is refused because the declared size is the bound that stops decoding (DR-9a). The name case reports `MEMBER_LOCAL_NAME_DIFFERS`, which strict refuses because another tool shows another name; the CRC case reports `MEMBER_LOCAL_CRC_USED`, which strict reads because the data is still checked (davi, 2026-10-15). Both carry `LocalHeaderContext`. Reopen if a real writer produces the third shape at scale. Shipped with stage 5 of the native ZIP reader | Refusing all three, which loses archives `unzip` reads; reading the third, which drops the size bound |
 | Two stored names that decode to the same name stay ordinary duplicates (davi, 2026-10-10) | Once each name decodes on its own, `c3 a9` (valid UTF-8) and `82` (cp437) can both become `é.txt`. The later member supersedes the earlier like any duplicate (`is_current=False`, `SUPERSEDED` on extraction) and the two `raw_name`s differ, so nothing is lost and no new public name is needed. Reopen if a real archive shows a collision a user needs both copies of | A dedicated diagnostic or a renaming rule |
+| AppleDouble sidecars (`._name`, `__MACOSX/`) stay ordinary members with no marking key (davi, 2026-10-16, project thread) | Marked by name alone, a key adds nothing over the name filter in `docs/formats.md` and also marks a real file named `._x` | `extra["macos.resource_of"]` set from the name (#839, closed). Reopen with a mark that checks the AppleDouble magic in the data (`IDEAS.md`) |
 | Leave LZMA1 `lc + lp` over 4 unsupported | 7-Zip writes it only when asked (`lc=8`). Decoding it needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; a pure-Python LZMA1 decoder (very slow); handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma |
 
 ## 7. Open questions

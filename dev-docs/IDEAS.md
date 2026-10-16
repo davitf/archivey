@@ -202,6 +202,16 @@ Each idea carries a status:
 - **Configurable symlink extraction.** *Open idea.* What to do when a symlink member cannot
   be created as a symlink (FAT, Windows without the privilege). Today it fails that member.
   An option such as `copy` must not reintroduce a path escape.
+- **Mark macOS AppleDouble sidecars.** *Open idea.* Set a key such as
+  `extra["macos.resource_of"]` on a `._name` file (next to `name` in a macOS TAR, under
+  `__MACOSX/` in a Finder or `ditto` ZIP) so callers can skip them. Marking by name
+  alone was tried and dropped: it adds nothing over a name filter (`docs/formats.md`)
+  and also marks a real file called `._x`. A version worth having checks the AppleDouble
+  magic (`00 05 16 07`) at the start of the data. That costs a read of the first bytes
+  of each `._` file: buffered before a forward pass yields it, and an extra member open
+  per `._` file in a listing that otherwise reads no data (a seekable ZIP). Also requiring the
+  described file to exist costs more in a TAR, where the sidecar comes before its file:
+  the pass would hold the small sidecar back until it has seen the next member.
 - **Pathlib-like navigation.** *Open idea.* An `ArchivePath` with `/`, `iterdir()`,
   `glob()` and `read_bytes()`, as `zipfile.Path` does.
 - **fsspec integration.** *Open idea.* Expose an opened archive as an fsspec file system,

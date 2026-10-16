@@ -73,6 +73,27 @@ other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too
 writer that marks itself Unix while storing a birth time (libarchive on Windows) gets
 `ctime`, not `created`, rather than a risk of `st_ctime` in `created`.
 
+## macOS sidecar files
+
+A ZIP or TAR made on a Mac often carries AppleDouble sidecars: a `._name` file holding
+the extended attributes and resource fork of `name`, next to it (macOS `tar`) or under
+`__MACOSX/` (Finder, `ditto`). archivey lists them as ordinary files, as `unzip` does.
+To leave them out, skip them by name with `members=`:
+
+```python
+from archivey import open_archive
+
+def is_macos_sidecar(member):
+    base = member.name.rsplit("/", 1)[-1]
+    return member.name.startswith("__MACOSX/") or base.startswith("._")
+
+with open_archive("photos.zip") as reader:
+    reader.extract_all("out", members=lambda m: not is_macos_sidecar(m))
+```
+
+The test goes by name only, so it also skips a file that was really called `._notes`
+and anything in a real folder named `__MACOSX`.
+
 ## Fields that change after a member is returned
 
 `ArchiveMember.member_state_final` is `False` while archivey can still update a member
@@ -102,6 +123,8 @@ yielded.
 
 ## ZIP
 
+- A ZIP from Finder or `ditto` holds `__MACOSX/` sidecar files; see
+  [macOS sidecar files](#macos-sidecar-files) to skip them.
 - Archivey's own parser reads the **central directory** as members are listed; member
   **data** decodes through archivey's shared codec layer. Stdlib ``zipfile`` is not
   used.
@@ -273,6 +296,8 @@ yielded.
 
 ## TAR (and compressed TAR)
 
+- A tar from macOS `tar` can hold `._name` sidecar files; see
+  [macOS sidecar files](#macos-sidecar-files) to skip them.
 - Uncompressed seekable TAR: random access, each member read straight from its place in
   the file. Archivey parses the headers itself, the same way on every Python version.
 - Compressed variants (`.tar.gz` etc.) behave as **solid** for random member opens —
