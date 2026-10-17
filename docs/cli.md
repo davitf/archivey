@@ -150,17 +150,19 @@ encrypted members fail as if no password had been given.
   says. It never writes into an existing folder or through a link it did not choose. To
   re-extract into an existing folder, name it: `archivey x backup.zip -d backup
   --overwrite replace`.
-- When the wrapper ends up holding a single entry, `extract` moves that entry up into the
-  working directory, where `--overwrite` decides what happens to entries already there.
-  It skips the move when the entry is a symlink, or when a symlink in it leaves it on
-  the way to its target (or is absolute), because such a link would point somewhere
-  else after the move. It also skips the move when part of the entry could not be
-  listed, since it may hold such a link. And it skips the move when an entry already
-  there collides in a way `--overwrite` cannot settle without deleting it: any
-  collision under `--overwrite error`; under `replace`, any collision that has a folder
-  on either side; under `skip`, a folder from the archive against a file already
-  there. Then nothing is moved and the run still succeeds. It prints a line saying why
-  the files stayed in the wrapper.
+- When the wrapper ends up holding a single entry, `extract` moves that entry up into
+  the working directory. This move never replaces or deletes anything already there:
+  under `--overwrite rename` (the default) a colliding entry gets the next free `name
+  (N)`, and under any other `--overwrite` a collision keeps the content in the wrapper.
+  An archive with a member index whose single top-level entry already has a name in the
+  working directory, or may be written under another spelling that does (a trailing
+  space stripped, a control character escaped), goes through the wrapper too, so
+  `--overwrite` never replaces that entry. It skips the move when the entry is a
+  symlink, or when a symlink in it leaves it on the way to its target (or is absolute),
+  because such a link would point somewhere else after the move. It also skips the move
+  when part of the entry could not be listed, since it may hold such a link. Whenever
+  the move is skipped, nothing is moved and the run still succeeds. It prints a line
+  saying why the files stayed in the wrapper.
 - `test` exits `1` when its summary reports members as not tested, or digests as not
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip

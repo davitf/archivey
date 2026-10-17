@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 import tarfile
+import time
 import zipfile
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -36,7 +37,7 @@ from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parse
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.types import ArchiveMember, MemberType
-from tests.conftest import requires_binary
+from tests.conftest import case_sensitive, requires_binary
 
 
 def _as_pass(
@@ -2501,44 +2502,20 @@ def test_hoist_merges_like_direct_extraction_rename(
     assert not (tmp_path / "root (1)").exists()
 
 
-def test_hoist_merges_like_direct_extraction_skip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    archive = _hoist_collision_archive(tmp_path)
-    _seed_existing_root(tmp_path)
-    assert main(["extract", str(archive), "--overwrite", "skip"]) == EXIT_OK
-    root = tmp_path / "root"
-    assert (root / "clash.txt").read_bytes() == b"MINE"
-    assert (root / "new.txt").read_bytes() == b"NEW"
-    assert not (tmp_path / "bundle").exists()
-
-
-def test_hoist_merges_like_direct_extraction_replace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    archive = _hoist_collision_archive(tmp_path)
-    _seed_existing_root(tmp_path)
-    assert main(["extract", str(archive), "--overwrite", "replace"]) == EXIT_OK
-    root = tmp_path / "root"
-    assert (root / "clash.txt").read_bytes() == b"ARCHIVE"  # only this file replaced
-    assert (root / "keep.txt").read_bytes() == b"MINE"
-    assert (root / "new.txt").read_bytes() == b"NEW"
-    assert not (tmp_path / "bundle").exists()
-
-
-def test_hoist_collision_under_error_keeps_the_root_in_the_wrapper(
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace"])
+def test_hoist_collision_rename_does_not_settle_keeps_the_root_in_the_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    overwrite: str,
 ) -> None:
-    """The hoist is a convenience: a collision ``error`` refuses keeps the whole root
-    in the wrapper, with nothing moved, and the run succeeds."""
+    """The hoist is a convenience that never replaces or deletes anything in the cwd:
+    a collision under any policy but ``rename`` keeps the whole root in the wrapper,
+    with nothing moved, and the run succeeds."""
     monkeypatch.chdir(tmp_path)
     archive = _hoist_collision_archive(tmp_path)
     _seed_existing_root(tmp_path)
-    assert main(["extract", str(archive), "--overwrite", "error"]) == EXIT_OK
+    assert main(["extract", str(archive), "--overwrite", overwrite]) == EXIT_OK
     err = capsys.readouterr().err
     assert _report_lines(err, "kept in ") == [
         "kept in bundle/: root/clash.txt already exists"
@@ -2566,24 +2543,204 @@ def test_hoist_never_deletes_colliding_tree_under_replace(
     assert (tmp_path / "bundle" / "root" / "clash").read_bytes() == b"ARCHIVE"
 
 
-def test_hoist_discards_our_file_over_the_operators_directory_under_skip(
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace"])
+def test_indexed_single_root_never_replaces_the_operators_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    """An indexed archive whose single root's name is taken in the cwd is extracted
+    into a wrapper and hoisted, so ``replace`` cannot replace the operator's file
+    ``top`` with the archive's directory ``top/``."""
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("top/f", b"ARCHIVE")
+    (tmp_path / "top").write_bytes(b"MINE")
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "kept in ") == ["kept in one/: top already exists"]
+    assert err.rstrip().endswith("→ one/")
+    assert (tmp_path / "top").read_bytes() == b"MINE"
+    assert (tmp_path / "one" / "top" / "f").read_bytes() == b"ARCHIVE"
+
+
+@pytest.mark.parametrize(
+    ("stored", "mine"),
+    [("top /f", "top/f"), ("c\x02", "c%02")],
+    ids=["trailing-space", "control-character"],
+)
+@pytest.mark.parametrize("overwrite", ["skip", "replace"])
+def test_indexed_single_root_rewritten_onto_the_operators_entry_is_hoisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stored: str,
+    mine: str,
+    overwrite: str,
+) -> None:
+    """The stored root name is free but its written spelling is the operator's entry:
+    it still goes through the wrapper, so the hoist judges from what is on disk."""
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(stored, b"ARCHIVE")
+    (tmp_path / mine).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / mine).write_bytes(b"MINE")
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "kept in ") == [f"kept in one/: {mine} already exists"]
+    assert (tmp_path / mine).read_bytes() == b"MINE"
+    assert (tmp_path / "one" / mine).read_bytes() == b"ARCHIVE"
+
+
+@pytest.mark.parametrize("archive_name", ["foo.tar", "foo.zip"])
+def test_dry_run_names_where_rename_moves_the_root_past_a_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    archive_name: str,
+) -> None:
+    """The root ``foo/`` meets the operator's file ``foo``: the dry run names
+    ``foo (1)/``, where the real run puts it, not ``foo/``."""
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / archive_name
+    if archive_name.endswith(".zip"):
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("foo/x.txt", b"ARCHIVE")
+    else:
+        _tar(archive, {"foo/x.txt": b"ARCHIVE"})
+    (tmp_path / "foo").write_bytes(b"MINE")
+    assert main(["x", str(archive), "--dry-run"]) == EXIT_OK
+    dry = capsys.readouterr().err
+    assert _report_lines(dry, "would move to ") == ["would move to foo (1)/"]
+    assert dry.rstrip().endswith("→ foo (1)/")
+    assert main(["x", str(archive)]) == EXIT_OK
+    real = capsys.readouterr().err
+    assert real.rstrip().endswith("→ foo (1)/")
+    assert (tmp_path / "foo (1)" / "x.txt").read_bytes() == b"ARCHIVE"
+
+
+def test_indexed_symlink_root_with_a_rewritten_name_lands_in_an_empty_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``skip`` resolves our file against the operator's directory by discarding our
-    copy, so the hoist goes ahead: the opposite direction to ``replace`` above."""
+    """A rewritable root name that collides with nothing extracts straight into the cwd,
+    so a symlink root stays live instead of being kept in a wrapper."""
     monkeypatch.chdir(tmp_path)
-    archive = _tar(
-        tmp_path / "bundle.tar", {"root/clash": b"ARCHIVE", "root/new.txt": b"NEW"}
-    )
-    (tmp_path / "root" / "clash").mkdir(parents=True)
-    (tmp_path / "root" / "clash" / "precious.txt").write_bytes(b"MINE")
-    assert main(["extract", str(archive), "--overwrite", "skip"]) == EXIT_OK
+    (tmp_path / "target.txt").write_bytes(b"TARGET")
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("t ")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "target.txt")
+    assert main(["x", str(archive)]) == EXIT_OK
     err = capsys.readouterr().err
-    assert _report_lines(err, "skipped: ") == ["skipped: root/clash"]
     assert _report_lines(err, "kept in ") == []
-    assert (tmp_path / "root" / "clash" / "precious.txt").read_bytes() == b"MINE"
-    assert (tmp_path / "root" / "new.txt").read_bytes() == b"NEW"
-    assert not (tmp_path / "bundle").exists()
+    assert not (tmp_path / "one").exists()
+    assert (tmp_path / "t").read_bytes() == b"TARGET"
+
+
+@pytest.mark.parametrize(
+    "stored",
+    ["top ", "top.", "c\x02", "a<b", "q?", "x\\y", "e\x7f", "a%b<c", "100%?", "%<"],
+)
+def test_may_land_on_existing_matches_the_spelling_extraction_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored: str
+) -> None:
+    """Pins ``_may_land_on_existing`` against the library's name policy: whatever top
+    level name extraction writes for ``stored``, the check finds it in the cwd."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    out = tmp_path / "out"
+    archive = tmp_path / "n.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(zipfile.ZipInfo(stored), b"x")
+    assert main(["x", str(archive), "-d", str(out)]) == EXIT_OK
+    assert len(os.listdir(out)) == 1  # the one spelling extraction wrote
+    monkeypatch.chdir(out)
+    assert _may_land_on_existing(stored)
+
+
+def test_may_land_on_existing_takes_linear_time_on_a_crafted_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root of many ``<`` against entries that nearly match their escapes: the check
+    compares each entry once, with no backtracking, so it answers at once."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    monkeypatch.chdir(tmp_path)
+    for n in range(100):
+        (tmp_path / ("%41" * 80 + f"Z{n}")).mkdir()
+    started = time.monotonic()
+    assert _may_land_on_existing("<" * 24) is False
+    assert _may_land_on_existing("<" * 4) is False
+    assert time.monotonic() - started < 1
+
+
+def test_may_land_on_existing_with_many_rewritable_characters_in_an_empty_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary name with several spaces and escapes collides with nothing in an
+    empty cwd, so the archive is not sent through the wrapper."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    monkeypatch.chdir(tmp_path)
+    assert _may_land_on_existing("My Holiday Photos <2024>") is False
+    (tmp_path / "My Holiday Photos %3C2024%3E").mkdir()
+    assert _may_land_on_existing("My Holiday Photos <2024>")
+
+
+def test_may_land_on_existing_ignores_case_where_the_filesystem_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``top `` is written as ``top``, which a case-insensitive filesystem holds as the
+    operator's ``TOP``; a case-sensitive one keeps them apart."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "TOP").mkdir()
+    assert _may_land_on_existing("top ") == (not case_sensitive(tmp_path))
+
+
+def test_indexed_symlink_root_lands_beside_an_entry_differing_in_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On a case-sensitive filesystem the operator's ``T`` does not collide with the
+    root ``t `` (written as ``t``), so the symlink root extracts into the cwd, live."""
+    if not case_sensitive(tmp_path):
+        pytest.skip("the filesystem folds case, so T and t collide")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "target.txt").write_bytes(b"TARGET")
+    (tmp_path / "T").write_bytes(b"MINE")
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("t ")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "target.txt")
+    assert main(["x", str(archive)]) == EXIT_OK
+    assert not (tmp_path / "one").exists()
+    assert (tmp_path / "t").read_bytes() == b"TARGET"
+    assert (tmp_path / "T").read_bytes() == b"MINE"
+
+
+def test_indexed_single_root_renames_past_the_operators_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("top/f", b"ARCHIVE")
+    (tmp_path / "top").write_bytes(b"MINE")
+    assert main(["x", str(archive)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "renamed: ") == ["renamed: top -> top (1)"]
+    assert err.rstrip().endswith("→ top (1)/")
+    assert (tmp_path / "top").read_bytes() == b"MINE"
+    assert (tmp_path / "top (1)" / "f").read_bytes() == b"ARCHIVE"
+    assert not (tmp_path / "one").exists()
 
 
 def test_cli_logging_leaves_no_global_state(sample_zip: Path) -> None:
@@ -3512,7 +3669,6 @@ def _hostile_collision_archive(tmp_path: Path, name: str = "bundle.tar") -> Path
             "rename",
             "renamed: rootev\\u2028il/clash.txt -> rootev\\u2028il/clash (1).txt",
         ),
-        ("skip", "skipped: rootev\\u2028il/clash.txt"),
     ],
 )
 def test_hoist_escapes_the_collisions_it_resolves(
@@ -3668,7 +3824,7 @@ def test_hoist_names_the_free_name_a_rename_chose(
     ],
     ids=["file", "dir-over-file"],
 )
-def test_summary_names_the_free_name_a_rename_chose_without_a_hoist(
+def test_summary_names_the_free_name_a_rename_chose_for_an_indexed_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -3676,8 +3832,9 @@ def test_summary_names_the_free_name_a_rename_chose_without_a_hoist(
     mine: str,
     landed: str,
 ) -> None:
-    """An indexed archive with one top extracts straight into cwd, no hoist; the
-    summary still names where the rename put it, not the operator's own file."""
+    """An indexed archive whose one top is taken in the cwd goes through a wrapper and
+    the hoist; the summary names where the rename put it, not the operator's own
+    file."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / mine).write_bytes(b"MINE")
     archive = _zip(tmp_path / "a.zip", entries)
@@ -3687,34 +3844,22 @@ def test_summary_names_the_free_name_a_rename_chose_without_a_hoist(
     assert _summary_lines(err)[0].endswith(f"→ {landed}")
 
 
-def test_hoist_names_no_destination_when_skip_discards_the_root(
+def test_hoist_keeps_a_file_root_in_the_wrapper_under_skip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Under ``skip`` nothing moves; ``moved to a.txt`` would name the operator's file."""
+    """Under ``skip`` the hoist discards nothing: the archive's ``a.txt`` stays in the
+    wrapper beside the operator's, and no ``moved to`` line names the operator's
+    file."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a.txt").write_bytes(b"MINE")
     archive = _tar(tmp_path / "bundle.tar", {"a.txt": b"ARCHIVE"})
     assert main(["x", str(archive), "--overwrite", "skip"]) == EXIT_OK
     err = capsys.readouterr().err
     assert (tmp_path / "a.txt").read_bytes() == b"MINE"
-    assert _report_lines(err, "skipped: ") == ["skipped: a.txt"]
+    assert (tmp_path / "bundle" / "a.txt").read_bytes() == b"ARCHIVE"
+    assert _report_lines(err, "kept in ") == ["kept in bundle/: a.txt already exists"]
     assert _report_lines(err, "moved to ") == []
-    # Nothing from the archive is on disk, so nothing counts as extracted — the same
-    # line a direct extraction hitting this collision prints.
-    assert _summary_lines(err) == ["0 extracted, 0 renamed, 1 skipped → ."]
-
-
-def test_hoist_skip_inside_a_merged_root_is_not_counted_as_extracted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """One skip per colliding child: only the file that moved counts as extracted."""
-    monkeypatch.chdir(tmp_path)
-    archive = _hoist_collision_archive(tmp_path)
-    _seed_existing_root(tmp_path)
-    assert main(["x", str(archive), "--overwrite", "skip"]) == EXIT_OK
-    assert _summary_lines(capsys.readouterr().err) == [
-        "1 extracted, 0 renamed, 1 skipped → root/"
-    ]
+    assert _summary_lines(err) == ["1 extracted, 0 renamed, 0 skipped → bundle/"]
 
 
 def test_hoist_does_not_mark_a_file_root_as_a_directory(
@@ -3798,18 +3943,13 @@ _HOIST_ONLY = ("extracting into ", "moved to ", "removed wrapper")
 
 def _as_direct(hoist_err: str) -> list[str]:
     """The hoist's stderr lines as ``-d .`` would print them, sorted: without the lines
-    about the wrapper, and with the hoist's ``skipped:`` (it discarded its own copy) as
-    ``not overwritten:`` (extraction did not write it).
+    about the wrapper.
 
     Sorted because the order differs: the merge prints its own lines while it moves,
     before the per-member lines, and ``-d .`` prints every line in member order. Pass
     ``-d .``'s stderr through it too."""
     return sorted(
-        f"not overwritten: {ln.removeprefix('skipped: ')}"
-        if ln.startswith("skipped: ")
-        else ln
-        for ln in hoist_err.split("\n")
-        if ln and not ln.startswith(_HOIST_ONLY)
+        ln for ln in hoist_err.split("\n") if ln and not ln.startswith(_HOIST_ONLY)
     )
 
 
@@ -3875,7 +4015,6 @@ def test_hoist_reports_member_paths_where_they_landed(
     )
 
 
-@pytest.mark.parametrize("overwrite", ["rename", "skip", "replace"])
 @pytest.mark.parametrize(
     ("archive_name", "entries", "mine", "args"),
     [
@@ -3908,30 +4047,26 @@ def test_hoist_reports_member_paths_where_they_landed(
         "collision-at-rerooted-root",
     ],
 )
-def test_hoist_reports_what_the_merge_did_under_each_policy(
+def test_hoist_reports_what_the_merge_renamed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    overwrite: str,
     archive_name: str,
     entries: dict[str, bytes],
     mine: dict[str, bytes],
     args: tuple[str, ...],
 ) -> None:
     """A member whose rewritten name collides with the operator's file while the
-    hoist merges: the layout and the per-member lines are those of ``-d .``.
-
-    Under ``rename`` the line names ``c%02 (1)``, where the member is; under ``skip``
-    the hoist discarded the member, so no ``name rewritten:`` line names the operator's
-    ``c%02`` as if it were the member (the hoist's ``skipped:`` line stands for
-    ``-d .``'s ``not overwritten:``). Both used to name ``c%02``.
+    hoist merges under ``rename``: the layout and the per-member lines are those of
+    ``-d .``. The line names ``c%02 (1)``, where the member is; it used to name
+    ``c%02``.
     """
     (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
-        tmp_path, monkeypatch, capsys, archive_name, entries, mine, overwrite, args
+        tmp_path, monkeypatch, capsys, archive_name, entries, mine, "rename", args
     )
     assert hoisted == direct
     assert _as_direct(hoist_err) == _as_direct(direct_err)
-    if archive_name == "t3.tar" and overwrite == "rename":
+    if archive_name == "t3.tar":
         # The order the cli spec states: the merge's own line, then the per-member ones.
         lines = hoist_err.split("\n")
         rewritten = [
@@ -3939,12 +4074,6 @@ def test_hoist_reports_what_the_merge_did_under_each_policy(
         ]
         assert len(rewritten) == 2
         assert lines.index("renamed: top/c%02 -> top/c%02 (1)") < min(rewritten)
-    if overwrite == "skip":
-        (where,) = mine
-        assert _report_lines(hoist_err, "skipped: ") == [f"skipped: {where}"]
-        assert _report_lines(direct_err, "not overwritten: ") == [
-            f"not overwritten: {where}"
-        ]
 
 
 def test_hoist_reports_an_existing_directory_keeping_its_mode(
@@ -4656,23 +4785,14 @@ def test_hoist_runs_when_a_directory_has_the_wrapper_name(
     ("overwrite", "code", "expected", "leftover"),
     [
         # A colliding file keeps the whole root in the new wrapper; nothing moves.
-        (
-            "error",
-            EXIT_OK,
-            {"src/a.txt": b"mine-a", "src/c.txt": b"mine-c"},
-            {"src (1)/src/a.txt": b"new-a", "src (1)/src/b.txt": b"new-b"},
-        ),
-        (
-            "replace",
-            EXIT_OK,
-            {"src/a.txt": b"new-a", "src/b.txt": b"new-b", "src/c.txt": b"mine-c"},
-            {},
-        ),
-        (
-            "skip",
-            EXIT_OK,
-            {"src/a.txt": b"mine-a", "src/b.txt": b"new-b", "src/c.txt": b"mine-c"},
-            {},
+        *(
+            (
+                overwrite,
+                EXIT_OK,
+                {"src/a.txt": b"mine-a", "src/c.txt": b"mine-c"},
+                {"src (1)/src/a.txt": b"new-a", "src (1)/src/b.txt": b"new-b"},
+            )
+            for overwrite in ("error", "replace", "skip")
         ),
         (
             "rename",
