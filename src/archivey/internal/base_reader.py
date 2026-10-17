@@ -523,6 +523,10 @@ class BaseArchiveReader(ArchiveReader):
             weakref.WeakValueDictionary()
         )
         self._public_stream_seq = 0
+        # Guards the counter and the registry: on a CONCURRENT reader two open() calls
+        # register at once, and an unlocked ``+= 1`` could hand both the same key, so
+        # one stream would drop out and close() would leave it open.
+        self._public_streams_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
         # ``compressed_source_size`` below.
@@ -604,6 +608,8 @@ class BaseArchiveReader(ArchiveReader):
         # per reader, not per raised exception — retries must not multiply the
         # diagnostic (or burn retention slots).
         self._unconfirmed_failure_emitted: bool = False
+        # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
+        self._unconfirmed_failure_lock = threading.Lock()
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
@@ -693,8 +699,9 @@ class BaseArchiveReader(ArchiveReader):
             self._state.acquire_live_stream(stream)
         else:
             self._state.bind_live_stream(token, stream)
-        self._public_stream_seq += 1
-        self._public_streams[self._public_stream_seq] = stream
+        with self._public_streams_lock:
+            self._public_stream_seq += 1
+            self._public_streams[self._public_stream_seq] = stream
 
         # Capture the identity token, not the stream. ``weakref.finalize`` keeps its
         # callback alive until it fires, so a callback that strongly referenced the
@@ -1270,8 +1277,13 @@ class BaseArchiveReader(ArchiveReader):
             exc.args = (escaped,)
             exc.format_unconfirmed = True
 
-        if self._unconfirmed_failure_emitted:
-            return
+        # Test and set in one step: two threads failing at once on a CONCURRENT
+        # reader would otherwise both pass the test and emit twice. Set before
+        # emitting, for the reason below.
+        with self._unconfirmed_failure_lock:
+            if self._unconfirmed_failure_emitted:
+                return
+            self._unconfirmed_failure_emitted = True
 
         # Under PEDANTIC (RAISE on every code), a bare emit would raise DiagnosticRaisedError
         # mid-raise and destroy the typed TruncatedError/CorruptionError/
@@ -1280,15 +1292,14 @@ class BaseArchiveReader(ArchiveReader):
         # caller.
         raising = code in self._diagnostics_collector.policy.raise_on
 
-        # Set before emitting: under RAISE the emit does not return, and a flag set
-        # afterwards would never be reached — every retried read would record the
-        # diagnostic again. `diagnostics` splits those concerns ("deduplication is a
+        # The flag is set above, before emitting: under RAISE the emit does not return,
+        # and a flag set afterwards would never be reached — every retried read would
+        # record the diagnostic again. `diagnostics` splits those concerns ("deduplication is a
         # presentation concern; escalation is not"), and normally a deduplicated code
         # still escalates on later occurrences via `escalate_only`. This code needs no
         # such re-escalation: the caller re-raises the stamped `exc` — same type, same
         # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
         # stopped is stopped whether or not the diagnostic fires a second time.
-        self._unconfirmed_failure_emitted = True
         reader_format = self._format.display_name
         escalate_as: type[BaseException] | None = None
         escalate_message: str | None = None
@@ -1430,14 +1441,9 @@ class BaseArchiveReader(ArchiveReader):
             if child_scope:
                 # Also wraps ``_internal_member_opens()`` (live-stream gate exemption) —
                 # the two always travel together for eager link-data reads.
-                # Link-data reads are a private child scope under an active root when one
+                # Link-data reads are a private child scope under an active pass when one
                 # exists; otherwise they only need the live-stream gate exemption.
-                root = self._state.current_root()
-                child = (
-                    self._state.enter_child(root, "link_reads")
-                    if root is not None
-                    else None
-                )
+                child = self._state.enter_child_scope("link_reads")
                 try:
                     with self._internal_member_opens():
                         _resolve()
@@ -1941,7 +1947,17 @@ class BaseArchiveReader(ArchiveReader):
         diagnostic again — which would count one targetless link twice in
         ``DiagnosticSummary.counts``, and under a ``RAISE`` disposition would raise at
         whatever later access happened to touch the member rather than during listing.
+
+        Under the walk lock, so two threads following the same link on a
+        ``CONCURRENT`` reader read and report it once: the second finds the memo. The
+        walk lock and not a lock of its own: link finalization already holds it while
+        it calls this, so a second lock would have to be taken in that same order
+        everywhere.
         """
+        with self._walk_lock:
+            self._resolve_link_target_locked(member)
+
+    def _resolve_link_target_locked(self, member: ArchiveMember) -> None:
         if member.link_target is not None or member._link_target_resolved:
             return
         try:
@@ -1984,11 +2000,16 @@ class BaseArchiveReader(ArchiveReader):
         reads, without enforcing: this is not a listing call, and the published report
         will carry it.
         """
-        if member.link_target is not None or member._link_target_resolved:
-            return
-        self._resolve_link_target(member)
-        if member.link_target is not None:
-            self._listing_tracker.account_link_target(member.link_target, enforce=False)
+        # Under the walk lock, as _resolve_link_target is: the check, the read and the
+        # weighing happen once for two threads following the same link.
+        with self._walk_lock:
+            if member.link_target is not None or member._link_target_resolved:
+                return
+            self._resolve_link_target_locked(member)
+            if member.link_target is not None:
+                self._listing_tracker.account_link_target(
+                    member.link_target, enforce=False
+                )
 
     def _emit_link_target_unavailable(
         self,
@@ -3034,7 +3055,18 @@ class BaseArchiveReader(ArchiveReader):
         incomplete report (prefix plus ``error``), not raised. After a streaming pass
         stopped by a listing limit, ``None``, as on a reader with no index.
         """
-        self._state.require_open("members_report_if_available()")
+        if not self._state.concurrent:
+            self._state.require_open("members_report_if_available()")
+            return self._members_report_if_available()
+        # A worker token, as members() takes: close() then waits for the walk below
+        # instead of closing the archive under it.
+        token = self._state.acquire_worker("members_report_if_available()")
+        try:
+            return self._members_report_if_available()
+        finally:
+            self._state.release_worker(token)
+
+    def _members_report_if_available(self) -> MemberListReport | None:
         published = self._published_within_limits()
         if published is not None:
             return published.report
@@ -3436,9 +3468,6 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
-        # This call's report covers only its own extraction-phase events; open-phase
-        # diagnostics stay on reader.diagnostics.
-        wm = collector.watermark()
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
@@ -3453,13 +3482,16 @@ class BaseArchiveReader(ArchiveReader):
         token = self._state.acquire_pass("extract_all")
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
-            with self._internal_member_opens():
+            # The report covers only the emits this call makes, on its own thread:
+            # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
+            # reader other threads emit into the same collector meanwhile.
+            with self._internal_member_opens(), collector.scoped() as scope:
                 results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         return ExtractionReport(
             results=tuple(results),
-            diagnostics=collector.snapshot(since=wm),
+            diagnostics=scope.summary(),
             _dry_run_top_level=coordinator.dry_run_top_level,
             _dry_run_links=coordinator.dry_run_links,
             _dry_run_entries=coordinator.dry_run_entries,
@@ -3575,14 +3607,17 @@ class BaseArchiveReader(ArchiveReader):
         """
         failures: list[BaseException] = []
         # Snapshot: closing mutates the registry through the lease callbacks.
-        for stream in list(self._public_streams.values()):
+        with self._public_streams_lock:
+            streams = list(self._public_streams.values())
+        for stream in streams:
             if stream.closed:
                 continue
             try:
                 stream.close()
             except BaseException as exc:  # noqa: BLE001 - report every failure, not the first
                 failures.append(exc)
-        self._public_streams.clear()
+        with self._public_streams_lock:
+            self._public_streams.clear()
         if len(failures) == 1:
             raise failures[0]
         if failures:

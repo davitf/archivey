@@ -130,8 +130,8 @@ data = reader.read("payload.bin")  # the pass has ended
 a member loop can be closed or used in a `with` block the same way, but on this reader
 it holds nothing between members: `for m in reader: reader.open(m)` works. On a reader
 opened with `concurrent_members=True`, `open()`, `read()`, `get()`, `members()` and
-another `stream_members()` all work inside the loop, from any thread, on every format.
-`extract_all()` still raises. The pass and the calls beside it share one walk of the
+another `stream_members()` or `extract_all()` all work inside the loop, from any thread,
+on every format. The pass and the calls beside it share one walk of the
 archive's headers, so a pass nobody gets ahead of costs what it costs on a default
 reader. A call that needs members the pass has not reached yet, such as `members()` in
 the first iteration, reads ahead for it; on a compressed tar the pass's later reads then

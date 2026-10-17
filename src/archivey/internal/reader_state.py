@@ -7,11 +7,11 @@ transition on, or a test of, four independent pieces of state:
 
 - **Who owns the reader.** ``_root`` is the reader-wide pass in progress (``members()``
   on a default reader, ``stream_members()``, ``extract_all()``), ``_children`` are
-  library-internal scopes under it (link reads, the extraction coordinator's own
+  library-internal scopes under a pass (link reads, the extraction coordinator's own
   opens), and ``_workers`` are short ``open()`` / ``read()`` / ``get()`` calls (and, on a
   ``CONCURRENT`` reader, ``members()`` / ``members_report()``). On a ``CONCURRENT``
-  reader ``stream_members()`` passes may run beside workers and beside one another
-  (``_side_passes``). Each is
+  reader ``stream_members()`` and ``extract_all()`` passes may run beside workers and
+  beside one another (``_side_passes``). Each is
   an :class:`OperationToken` that records the thread that took it, so a callback that
   re-enters the reader on that thread gets a message about the callback, not about a
   second caller.
@@ -62,6 +62,10 @@ if TYPE_CHECKING:
 
     from archivey.internal.open_site import OpenSite
     from archivey.internal.streams.archive_stream import ArchiveStream
+
+
+# Passes that may run beside workers and beside one another on a CONCURRENT reader.
+_OVERLAPPING_PASSES = frozenset({"stream_members", "extract_all"})
 
 
 class CacheState(enum.Enum):
@@ -139,10 +143,10 @@ class ReaderState:
     reader-wide operation, no overlapping worker calls, and no shared-handle locks
     needed. ``CONCURRENT`` turns those refusals into waits: several live streams,
     a second materializer waits for the first one's snapshot, and ``close()`` drains
-    in-flight worker calls, and a ``stream_members()`` pass admits worker calls and
-    other such passes beside it. Most methods therefore have two behaviours,
-    chosen by :attr:`concurrent`. Distinct reader-wide passes and access to one stream
-    stay single-owner (caller-synchronized) either way.
+    in-flight worker calls, and a ``stream_members()`` or ``extract_all()`` pass admits
+    worker calls and other such passes beside it. Most methods therefore have two
+    behaviours, chosen by :attr:`concurrent`. Access to one stream stays single-owner
+    (caller-synchronized) either way.
     """
 
     def __init__(
@@ -161,8 +165,8 @@ class ReaderState:
         self.lifecycle = LifecycleState.OPEN
         self._closing = False
         self._root: OperationToken | None = None
-        # Further ``stream_members()`` passes running beside ``_root``, which is then a
-        # ``stream_members()`` pass too (see :meth:`_pass_admits_overlap_locked`). When
+        # Further passes running beside ``_root``, all of kinds that admit overlap (see
+        # :meth:`_pass_admits_overlap_locked`), ``_root`` included. When
         # ``_root`` ends, one of these takes its place, so ``_root`` is set whenever
         # any pass is active.
         self._side_passes: set[OperationToken] = set()
@@ -217,10 +221,6 @@ class ReaderState:
         with self._lock:
             self._require_admissible_locked(op)
 
-    def current_root(self) -> OperationToken | None:
-        with self._lock:
-            return self._root
-
     def begin_internal_opens(self) -> None:
         tid = threading.get_ident()
         with self._lock:
@@ -242,27 +242,51 @@ class ReaderState:
         return self._internal_open_threads.get(threading.get_ident(), 0) > 0
 
     def _pass_admits_overlap_locked(self, pass_name: str) -> bool:
-        """Whether a ``stream_members()`` pass may overlap workers and other such passes.
+        """Whether a pass may overlap workers and other such passes.
 
-        Only on a ``CONCURRENT`` reader. The overlapping calls and passes share the
-        reader's one member walk, each at its own position, under the walk lock
+        Only on a ``CONCURRENT`` reader, and only ``stream_members()`` and
+        ``extract_all()`` (which drives its own ``stream_members()`` pass, or opens
+        members one by one). The overlapping calls and passes share the reader's one
+        member walk, each at its own position, under the walk lock
         (``BaseArchiveReader._walk_lock``); link finalization goes through the
         materialization election, so whichever of a pass's end or a ``members()``
         call comes first publishes the list once. A TAR pass stream that reads
         through the walk moves to a view of its own before the walk moves on for
         another caller. So none of them can corrupt another's walk or stream.
-        Other reader-wide passes (``extract_all()``, a default reader's listing)
-        never overlap anything.
+        The other passes (a default reader's listing, a streaming reader's only
+        pass) never overlap anything; ``open_archive`` refuses ``CONCURRENT`` on a
+        streaming reader.
         """
-        return self.concurrent and pass_name == "stream_members"
+        return self.concurrent and pass_name in _OVERLAPPING_PASSES
+
+    def _owner_pass_locked(self) -> OperationToken | None:
+        """The pass a library-internal scope opened on this thread belongs to.
+
+        This thread's own executing pass when it holds one (an ``extract_all()``
+        whose coordinator opens members). Otherwise, on a ``CONCURRENT`` reader,
+        none: any pass there belongs to another thread and can end while this
+        thread's scope is still open, so a child must not be filed under it. The
+        scope then runs as what it is, a worker call (or no token at all for a
+        link-read scope). On a default reader at most one pass runs, and the
+        generator holding it may be resumed on a thread other than the one that
+        took it, so every scope there goes under ``_root``.
+        """
+        current = threading.current_thread()
+        for token in self._passes_locked():
+            if token.thread is current and not token.suspended:
+                return token
+        if self.concurrent:
+            return None
+        return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
             self._require_admissible_locked(name)
             internal = self._internal_opens_active_locked()
-            if self._root is not None and internal:
-                child = OperationToken(name=name, parent=self._root, kind="child")
+            owner = self._owner_pass_locked() if internal else None
+            if owner is not None:
+                child = OperationToken(name=name, parent=owner, kind="child")
                 self._children.add(child)
                 return child
             if not internal:
@@ -357,13 +381,18 @@ class ReaderState:
                 self._root = self._side_passes.pop() if self._side_passes else None
             self._children = {c for c in self._children if c.parent is not token}
 
-    def enter_child(self, root: OperationToken, name: str) -> OperationToken:
+    def enter_child_scope(self, name: str) -> OperationToken | None:
+        """A child scope under the pass this thread works for, or ``None`` if no pass.
+
+        Picks the pass and files the child in one lock hold: on a ``CONCURRENT``
+        reader another thread's pass can end at any moment, so a pass looked up in
+        one call could be gone by the next.
+        """
         with self._lock:
-            if root._released or root not in self._passes_locked():
-                raise ArchiveyUsageError(
-                    f"Cannot enter child scope {name!r}: root operation is not active."
-                )
-            child = OperationToken(name=name, parent=root, kind="child")
+            owner = self._owner_pass_locked()
+            if owner is None:
+                return None
+            child = OperationToken(name=name, parent=owner, kind="child")
             self._children.add(child)
             return child
 
@@ -378,8 +407,8 @@ class ReaderState:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
 
         Rejected while a reader-wide root pass is active (unless under library-internal
-        opens), except a ``stream_members()`` pass on a ``CONCURRENT`` reader
-        (:meth:`_pass_admits_overlap_locked`). Idle open
+        opens), except a ``stream_members()`` or ``extract_all()`` pass on a
+        ``CONCURRENT`` reader (:meth:`_pass_admits_overlap_locked`). Idle open
         streams (leases only) do not block workers. Stream I/O after this token is
         released does not re-check the gate.
         """
@@ -394,16 +423,17 @@ class ReaderState:
                 and not self._pass_admits_overlap_locked(self._root.name)
             ):
                 # Side passes exist only beside a root that admits overlap, and they
-                # are stream_members() passes too, so checking the root is enough.
+                # admit it too, so checking the root is enough.
                 raise ArchiveyUsageError(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
             # Under an internal library owner (extract_all), the OWNING THREAD's worker
-            # opens are admitted as children of that root; other threads are rejected
-            # above like during any root pass.
-            if self._root is not None and internal:
-                token = OperationToken(name=name, parent=self._root, kind="child")
+            # opens are admitted as children of its pass; other threads are rejected
+            # above like during any root pass that does not admit overlap.
+            owner = self._owner_pass_locked() if internal else None
+            if owner is not None:
+                token = OperationToken(name=name, parent=owner, kind="child")
                 self._children.add(token)
                 return token
             token = OperationToken(name=name, kind="worker")
@@ -438,7 +468,10 @@ class ReaderState:
         """
         with self._lock:
             while True:
-                self._require_admissible_locked("materialization")
+                # The lifecycle only, not ``_closing``: a caller here already holds
+                # its token, and a close() draining in-flight workers waits for this
+                # one to finish, so refusing it would turn that wait into an error.
+                self._require_lifecycle_open_locked("materialization")
                 if self.cache_state is CacheState.MATERIALIZED:
                     return False
                 if self.cache_state is CacheState.MATERIALIZING:

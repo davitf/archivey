@@ -338,11 +338,10 @@ requirement only states how the capabilities compose with `streaming`.
 | `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`concurrent_members=True` incompatible** → `ArchiveyUsageError` at open. `seekable_members=True` alone MAY be declared. |
 
 Random-access `stream_members()` is exclusive on a default reader. Under
-`concurrent_members=True`, random `open()`, the other random-access calls and further
-`stream_members()` passes run beside it on every format; `extract_all()` still does
-not (see `reader-concurrency`, "Random-access calls beside a `stream_members()`
-pass"). Detected pass/open/close overlap →
-later op `ArchiveyUsageError`; active pass stays usable. The exception is `close()`
+`concurrent_members=True`, random `open()`, the other random-access calls, further
+`stream_members()` passes and `extract_all()` run beside it on every format (see
+`reader-concurrency`, "Random-access calls beside a pass").
+Detected pass/open/close overlap → later op `ArchiveyUsageError`; active pass stays usable. The exception is `close()`
 while the pass is suspended at a yield: the reader closes and resuming the pass raises
 `ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see `archive-reading`). Ops
 after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
