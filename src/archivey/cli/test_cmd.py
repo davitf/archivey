@@ -79,7 +79,7 @@ def run_test(
             selected = selection.settle_from(indexed, err=err)
             if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
-            file_members = [m for m in selected if m.is_file]
+            file_members = [m for m in selected if _has_data(m)]
             members_total = len(file_members)
             sizes = [m.size for m in file_members if m.size is not None]
             if len(sizes) == len(file_members):
@@ -136,10 +136,11 @@ def run_test(
                         # stream_members() is running.
                         pending_links.append(member)
                         continue
-                    if stream is None or member.is_dir:
+                    if stream is None:
                         # Directories / links / non-file: no body to verify — omit from counts
                         # so "N OK" matches unzip -t style (files only). A directory
-                        # that declares data gets a stream; the pass closes it unread.
+                        # that declares data gets a stream and is read like a file, so
+                        # a wrong checksum on its hidden bytes fails the test.
                         if verbose:
                             print(f"skip {escape_member_name(member.name)}", file=err)
                         continue
@@ -256,6 +257,13 @@ def run_test(
     # An untested remainder or an unchecked digest is an incomplete verification.
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
     return EXIT_FAIL if failed or not_tested or not_verified else EXIT_OK
+
+
+def _has_data(member: ArchiveMember) -> bool:
+    """Whether the pass yields a stream for ``member``: a file, or a directory whose
+    header declares data (``MEMBER_DIRECTORY_DATA_IGNORED``).
+    """
+    return member.is_file or (member.is_dir and bool(member.size))
 
 
 def _same_fault(exc: BaseException, reported: BaseException) -> bool:

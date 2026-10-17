@@ -10,6 +10,7 @@ import os
 import sys
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -99,19 +100,44 @@ def test_cat_writes_file_members_in_archive_order(tar_xz: Path) -> None:
     assert run.stdout == b"hello\nworld\ndeep\n"
 
 
-def test_cat_and_test_skip_a_directory_that_declares_data(tmp_path: Path) -> None:
-    # stream_members() yields a stream for such a directory, but its bytes are not
-    # file content: cat writes the files only, and test counts the files only.
-    path = tmp_path / "dirdata.zip"
+def _zip_with_directory_data(path: Path, *, bad_crc: bool = False) -> Path:
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(zipfile.ZipInfo("d/"), b"hidden data!")
         zf.writestr("d/f.txt", b"visible")
+    if bad_crc:
+        # The directory's CRC-32 sits in its local header and its central entry.
+        crc = zlib.crc32(b"hidden data!").to_bytes(4, "little")
+        data = path.read_bytes()
+        assert data.count(crc) == 2
+        path.write_bytes(data.replace(crc, bytes([crc[0] ^ 1]) + crc[1:]))
+    return path
+
+
+def test_cat_skips_and_test_reads_a_directory_that_declares_data(
+    tmp_path: Path,
+) -> None:
+    # stream_members() yields a stream for such a directory. Its bytes are not file
+    # content, so cat writes the files only; test is the integrity check, so it reads
+    # them and counts the directory with the files.
+    path = _zip_with_directory_data(tmp_path / "dirdata.zip")
     run = _Run(["cat", str(path)])
     assert run.code == EXIT_OK, run.stderr
     assert run.stdout == b"visible"
     run = _Run(["test", str(path)])
     assert run.code == EXIT_OK, run.stderr
-    assert "1 OK" in run.stdout.decode() + run.stderr
+    assert "2 OK, 0 failed" in run.stderr
+
+
+def test_test_fails_a_directory_whose_data_fails_its_checksum(tmp_path: Path) -> None:
+    path = _zip_with_directory_data(tmp_path / "dirdata.zip", bad_crc=True)
+    run = _Run(["test", str(path)])
+    assert run.code == EXIT_FAIL
+    assert "FAIL d/" in run.stderr
+    assert "1 OK, 1 failed" in run.stderr
+    # cat never reads the directory, so the damage does not stop it.
+    run = _Run(["cat", str(path)])
+    assert run.code == EXIT_OK, run.stderr
+    assert run.stdout == b"visible"
 
 
 @pytest.mark.parametrize(

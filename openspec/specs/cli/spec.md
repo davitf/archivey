@@ -135,7 +135,10 @@ SHALL emit a short stderr message naming the terminal archive error, and SHALL
 exit nonzero (`1`). `-v` / `--verbose` SHALL surface diagnostics when present.
 
 `test` SHALL fully read selected file members and verify stored digests through
-the shared verification stage (including CRC32 and Blake2sp where supported).
+the shared verification stage (including CRC32 and Blake2sp where supported). A
+directory member that declares data (`MEMBER_DIRECTORY_DATA_IGNORED`) and for which
+`stream_members()` yields a stream SHALL be read and counted like a file member, so
+damage in its hidden bytes fails the test; `cat` SHALL skip such a directory.
 Members with no stored digest SHALL count as OK when fully readable without
 error. `test` MUST NOT require emitting computed content hashes. By default
 `test` SHALL be quiet — printing only failures, the stop notice when the read
