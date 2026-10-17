@@ -323,6 +323,12 @@ the right weight.
   "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
   Applied by PR 731 for ZIP and RAR and by PR 763 for TAR (an old-style `d/` file
   entry with data).
+- A TAR symlink or hard link header that declares data lists as a link, its declared
+  blocks are skipped so the members after them stay listed, and
+  `MEMBER_LINK_DATA_IGNORED` reports it (a warning; strict refuses), with the weight
+  of the directory case (2026-10-17, "skip and report"). A member header right after
+  the link header means the size names no data: nothing is skipped or reported, as for
+  a `DIRTYPE` header with a size (PR 763).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 

@@ -143,6 +143,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   not written, as every official tool does; `MEMBER_DIRECTORY_DATA_IGNORED` reports it
   and `reader.read()` on the directory returns them where the format's reader can
   decode them.
+- **A TAR link entry that declares data** is created as a link and the bytes are not
+  written; `MEMBER_LINK_DATA_IGNORED` reports it, and the members after the bytes are
+  extracted too.
 - **Special files** (devices, FIFOs, sockets) are never created: archivey calls no
   `mknod`. An entry that stores no data under such a mode is `MemberType.OTHER` and is
   skipped; an entry that stores data under such a mode is a `FILE` and its bytes are

@@ -78,6 +78,7 @@ class DiagnosticCode(StrEnum):
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
     MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
+    MEMBER_LINK_DATA_IGNORED = "member_link_data_ignored"
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
@@ -154,6 +155,8 @@ DiagnosticCodeStr = Literal[
     "member-local-crc-used",
     "member_directory_data_ignored",
     "member-directory-data-ignored",
+    "member_link_data_ignored",
+    "member-link-data-ignored",
     "archive_offset_wrapped",
     "archive-offset-wrapped",
     "member_size_wrapped",
@@ -501,6 +504,22 @@ class DirectoryDataContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class LinkDataContext(_JsonSafeContext):
+    """A TAR symlink or hard link header declares data, which nothing delivers.
+
+    ``size`` is the declared byte count. The link is listed and extracted as a link;
+    the declared blocks are skipped so the members after them stay listed. Nothing
+    reads them: ``open()`` on a link reads its target.
+    """
+
+    kind: Literal["link_data"] = "link_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    size: int = 0
+
+
+@dataclass(frozen=True)
 class EncryptedVerificationContext(_JsonSafeContext):
     """An encrypted member's stream closed before its digest checked the password.
 
@@ -729,6 +748,7 @@ DiagnosticContext = (
     | SymlinkTargetContext
     | DigestContext
     | DirectoryDataContext
+    | LinkDataContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
@@ -764,6 +784,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
+        DiagnosticCode.MEMBER_LINK_DATA_IGNORED: "link_data",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
@@ -795,6 +816,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+        DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
     }
@@ -1216,6 +1238,7 @@ __all__ = [
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "LinkDataContext",
     "LocalHeaderContext",
     "MemberHeaderRecordContext",
     "MemberListReport",
