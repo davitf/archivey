@@ -325,6 +325,12 @@ the right weight.
   entry with data). `stream_members()` yields a stream of the same bytes for such a
   directory in every format, so a forward-only reader reaches them too (2026-10-17),
   except a bit-3 ZIP directory read from a pipe, whose size comes after its data.
+- A TAR symlink or hard link header that declares data lists as a link, its declared
+  blocks are skipped so the members after them stay listed, and
+  `MEMBER_LINK_DATA_IGNORED` reports it (a warning; strict refuses), with the weight
+  of the directory case (2026-10-17, "skip and report"). A member header right after
+  the link header means the size names no data: nothing is skipped or reported, as for
+  a `DIRTYPE` header with a size (PR 763).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 

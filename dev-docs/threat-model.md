@@ -362,12 +362,13 @@ data its pass keeps for link targets beside it.
   text is charged as they are listed, as from any directory.
   The TAR walker keeps nothing behind the member list, so nothing else is
   held. The caps bound memory, not work: a forward-only TAR walk reads through
-  every member it skips, for the bytes present rather than the size a header declares
-  (a member declaring more than the archive holds raises `TruncatedError` at the first
-  short read), and that ZIP walk reads through the data of every member whose local
-  header leaves its size to a data descriptor, up to one read of the file. The pipe
-  pass also reads the entries its directory places in the bytes it kept after the
-  walk stopped (a gap between members, a second archive appended). Every byte each
+  every member it skips, and a TAR walk in either mode reads the declared span of a
+  link header whose first block is zero, each for the bytes present rather than the
+  size a header declares (a member declaring more than the archive holds raises
+  `TruncatedError` at the first short read), and that ZIP walk reads through the
+  data of every member whose local header leaves its size to a data descriptor, up
+  to one read of the file. The pipe pass also reads the entries its directory
+  places in the bytes it kept after the walk stopped (a gap between members, a second archive appended). Every byte each
   attempt consumes there, a member read or a local header that fails to parse, is
   counted against the bytes held, and past that the next entry is `CorruptionError`
   before it is read (entries a writer laid out never overlap), so the attempts
