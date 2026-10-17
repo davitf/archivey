@@ -99,7 +99,11 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.naming import (
+    COMPRESSED_TAR_SHORT_SUFFIXES,
+    emit_member_name_normalized,
+    normalize_member_name,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
@@ -282,15 +286,11 @@ _TAR_EXTENSIONS.update(
 )
 _TAR_EXTENSIONS.update(
     {
-        ".tgz": ArchiveFormat.TAR_GZ,
-        ".tbz2": ArchiveFormat.TAR_BZ2,
-        ".tbz": ArchiveFormat.TAR_BZ2,
-        ".txz": ArchiveFormat.TAR_XZ,
-        ".tzst": ArchiveFormat.TAR_ZST,
-        ".tlz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP),
-        ".cbt": ArchiveFormat.TAR,
+        suffix: ArchiveFormat(ContainerFormat.TAR, stream)
+        for suffix, stream in COMPRESSED_TAR_SHORT_SUFFIXES.items()
     }
 )
+_TAR_EXTENSIONS[".cbt"] = ArchiveFormat.TAR
 
 
 # Shared across FILE/HARDLINK members — avoid per-member CompressionMethod construction.
