@@ -214,9 +214,13 @@ and caller-created member copies are outside the library budget, and so is the r
 a random-access member walk keeps until it ends so that a walk started over can
 replay its diagnostics (`archive-reading` §Each member is listed once per reader).
 
-**Watermark (implementer):** an internal operation watermark consumes no slot and
-copies no occurrence; a ranged summary computes counter deltas and selects from
-already-retained aggregate entries.
+**Watermark and scope (implementer):** an internal operation watermark consumes no
+slot and copies no occurrence; a ranged summary computes counter deltas and selects
+from already-retained aggregate entries. A scope does the same for the emits made on
+one thread while it is entered: it keeps its own exact counters, and its summary
+selects the retained aggregate entries tagged with it. A call whose result reports
+its own diagnostics on a reader that other threads use at the same time
+(`extract_all()`) uses a scope, so their emits stay out of its report.
 
 #### Scenario: retention matrix
 
@@ -259,7 +263,7 @@ extracting.
 | Case | Expected |
 | --- | --- |
 | `open_archive` detects conflict, opens reader | One collector/budget; conflict one aggregate slot; visible on reader summary; no copy |
-| `open_archive` then `extract_all()` | Report is the watermark range of that call; detection and open diagnostics stay on `reader.diagnostics` |
+| `open_archive` then `extract_all()` | Report is that call's own emits (its scope); detection and open diagnostics, and other threads' emits meanwhile, stay on `reader.diagnostics` |
 | Reader-owned stream rewinds | On stream op snapshot + cumulative reader; `CostReceipt`/`ArchiveInfo` unchanged |
 | Extraction hits a member with an invalid timestamp and a blocked member | Timestamp diagnostic in the report summary; the block appears only as a `BLOCKED` result |
 

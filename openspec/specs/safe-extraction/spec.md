@@ -38,8 +38,9 @@ def extract_all(
 ) -> ExtractionReport: ...
 ```
 
-The helper SHALL record a diagnostic watermark at call start and return a report
-whose summary contains exact count/retained deltas for this extraction call only.
+The helper SHALL count the diagnostics its own call emits, on its own thread, and
+return a report whose summary contains exact counts and retained entries for this
+extraction call only, even when other threads use the reader meanwhile.
 `reader.diagnostics` remains cumulative. The call SHALL run under the reader's
 open config — its collector, diagnostic policy, callback and retention maximum —
 and SHALL NOT take a `config=`; `limits=` overrides only the extraction limits.
