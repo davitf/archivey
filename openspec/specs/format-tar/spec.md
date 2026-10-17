@@ -92,6 +92,7 @@ in every format; the record name appears only in the message.
 | Old GNU or v7 header with bytes at offsets 345 to 500 (GNU incremental `tar -G` fills `atime` there) | Not joined to the name: `d/f.txt`, not `15262452373/d/f.txt` |
 | PAX global header, then members with no records of their own | Each member's `extra["tar.pax_headers"]` holds the global records, and a later global header does not change it. Changing it raises `TypeError` |
 | PAX sparse 1.0 map holding a number longer than 20 digits | `CorruptionError` while the header is parsed. GNU tar reads each number into a 20-digit buffer and refuses a longer one; this structural bound keeps a number with no newline from growing one buffer for the rest of the archive |
+| PAX `size`, `uid`, `gid`, `GNU.sparse.size` or `GNU.sparse.realsize` of more significant digits than Python's `int()` reads (4300 by default) | `CorruptionError` while the header is parsed, never the builtin `ValueError` of `int()`. Leading zeros do not count |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
 | PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the member attribute it would have filled |
 | PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
@@ -478,8 +479,10 @@ GNU tar refuses too. An old GNU map that does not parse is a header that does no
 parse (`Reject TAR headers that do not parse`).
 
 A PAX member whose `GNU.sparse.major` is 1 or more SHALL be read as 1.0, whatever its
-minor version, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
-a number, with no 0.x map SHALL raise `CorruptionError`, never serve the map as content.
+minor version and whatever 0.x records (`GNU.sparse.size`, `GNU.sparse.map`,
+`GNU.sparse.offset`, `GNU.sparse.numbytes`) it also carries, as GNU tar 1.35 reads it.
+A `GNU.sparse.major` of 0, or one that is not a number, with no 0.x map SHALL raise
+`CorruptionError`, never serve the map as content.
 
 A sparse member's map SHALL be checked before any of its data is returned: when the
 member is opened, or in a streaming pass on its first read, so a consumer that skips
@@ -504,6 +507,7 @@ slots with `(0, 0)`.
 | Case | Expected |
 | --- | --- |
 | A sparse member | Logical bytes with holes as zeros; never bytes past the member's stored size |
+| A sparse member cut in its stored data, wherever the cut lands (inside a chunk, at a chunk's first byte, or in the hole before one) | A sized `read(n)` returns the logical bytes before the cut, short, and the next read raises `TruncatedError`; a `read()` with no size raises `TruncatedError` |
 | A sparse map out of order or overlapping | `UnsupportedFeatureError` on open |
 | A chunk, empty or not, that ends past the logical size | `CorruptionError` on open |
 | Chunks that add up to more than the member stores | `CorruptionError` on open |
@@ -514,5 +518,6 @@ slots with `(0, 0)`.
 | A PAX 0.1 map holding a number past 2**63 - 1 | `CorruptionError` during the listing |
 | An old GNU extension block with a number that does not parse | The walk stops on a rejected header, as `Detect truncated TAR archives` classifies it |
 | `GNU.sparse.major=2`, `GNU.sparse.minor=0` with a 1.0 map | Read as 1.0 |
+| `GNU.sparse.major=1` with a 1.0 map and a `GNU.sparse.size` or `GNU.sparse.map` record too | Read as 1.0, at the `GNU.sparse.realsize` |
 | `GNU.sparse.major=0` with no 0.x map | `CorruptionError` during the listing |
 | A PAX 1.0 map of more entries than the budget allows | `ResourceLimitError` during the listing, before the entries are read |
