@@ -1043,20 +1043,21 @@ def test_trailing_data_scan_is_bounded(tmp_path: Path) -> None:
     [
         ("junk-inside-gzip", {"ARCHIVE_TRAILING_DATA": 1}),
         ("junk-after-gzip", {"ARCHIVE_TRAILING_DATA": 1}),
-        ("gzip-footer-missing", {}),
+        ("gzip-footer-missing", {"DIGEST_UNVERIFIABLE": 1}),
     ],
 )
-def test_compressed_tail_that_will_not_decode_ends_the_scan_quietly(
+def test_compressed_tail_that_will_not_decode_ends_the_scan_without_error(
     damage: str, expected: dict[str, int], tmp_path: Path
 ) -> None:
-    """F20: on a ``.tar.gz``, a tail that fails to decode ends the scan quietly.
+    """F20: on a ``.tar.gz``, a tail that fails to decode ends the scan without error.
 
     Bytes inside the gzip stream past the tar trailer are TAR's trailing data. Junk
     after the gzip stream is the codec's: the tail read reaches the stream's end, and
     the codec reports what follows it, once. A missing gzip footer makes the tail read
-    fail to decode; the scan then stops without a diagnostic or an error, because the
-    tar itself was read whole. Removing the ``except ReadError`` around the tail read
-    makes that last case raise.
+    fail as truncated; the tar itself was read whole, so the scan stops without an
+    error, but the CRC-32 over it was never checked, and ``DIGEST_UNVERIFIABLE`` says
+    so. Removing the ``except TruncatedError`` around the tail read makes that last
+    case raise.
     """
     import gzip
 

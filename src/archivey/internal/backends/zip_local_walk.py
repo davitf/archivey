@@ -26,14 +26,16 @@ Where a member's data ends (``openspec/changes/native-zip-reader/design.md``):
 - Bit 3 and STORED: a scan for a descriptor, with or without its ``PK\\x07\\x08``,
   whose CRC and compressed size match the bytes since the data start and which a ZIP
   signature follows. Under encryption the CRC covers the plaintext, so only the size
-  and the signature after the descriptor are matched.
+  and the signature after the descriptor are matched. Unencrypted, a descriptor with
+  one damaged field still ends the data (:func:`match_damaged_descriptor`), so one
+  damaged byte fails that member alone.
 - Bit 3 and any other method: the codec's own end. The walk cannot see it, so the
   caller decodes until the codec stream ends and hands :meth:`MemberData.settle` the
-  decoded data's CRC; the walk finds the descriptor among the bytes it kept, and puts
-  what follows it back in front of the stream. A caller whose codec counts the bytes
-  it used (DEFLATE) may pass that count instead. An encrypted one nobody reads is
-  scanned for as a STORED one is (:meth:`LocalHeaderWalk.scan_member_data`), so no
-  key is needed to pass it.
+  decoded data's CRC; the walk finds the descriptor among the bytes it kept, one
+  damaged field allowed, and puts what follows it back in front of the stream. A
+  caller whose codec counts the bytes it used (DEFLATE) may pass that count
+  instead. An encrypted one nobody reads is scanned for as a STORED one is
+  (:meth:`LocalHeaderWalk.scan_member_data`), so no key is needed to pass it.
 
 Like ``zip_parser``, this module decodes no name, runs no codec and emits no
 diagnostic. Damage raises ``CorruptionError``, a stream that ends early
@@ -137,6 +139,16 @@ _DESCRIPTOR_LOOKAHEAD = 4 + 4 + 8 + 8 + 4
 # at the end of the pass catches that.
 _DESCRIPTOR_LENGTHS = (24, 20, 16, 12)
 _DESCRIPTOR_LONGEST = _DESCRIPTOR_LENGTHS[0]
+_U32_MAX = (1 << 32) - 1
+_U64_MAX = (1 << 64) - 1
+# ``_ScannedData._size_fits``'s probes, as (offset from the shape's start, width):
+# the compressed size without a signature, then with one (or a damaged one), each
+# 4 then 8 bytes wide; then for STORED data the uncompressed size without a
+# signature, and with one when one is there.
+_ENCRYPTED_PROBES = ((4, 4), (4, 8))
+_ENCRYPTED_PROBES_SIGNED = (*_ENCRYPTED_PROBES, (8, 4), (8, 8))
+_STORED_PROBES = (*_ENCRYPTED_PROBES_SIGNED, (8, 4), (12, 8))
+_STORED_PROBES_SIGNED = (*_STORED_PROBES, (12, 4), (16, 8))
 # Forward reads are made in pieces of this size.
 _READ_CHUNK = 1 << 16
 # The first read ahead into a bit-3 member's data, whose end the walk does not know
@@ -273,7 +285,6 @@ def match_descriptor(
     file_size: int | None,
     zip64: bool,
     at_end: bool,
-    signed_only: bool = False,
 ) -> DataDescriptor | None:
     """The data descriptor at ``buffer[pos:]``, or ``None`` when none fits there.
 
@@ -284,15 +295,12 @@ def match_descriptor(
     uncompressed size ``file_size`` when those are known, and a ZIP signature follows
     it, or the end of the input when ``at_end``. ``buffer`` must hold the
     longest shape and the signature after it (``_DESCRIPTOR_LOOKAHEAD`` bytes) unless
-    it ends there. ``signed_only`` drops the shapes without a signature, for a caller
-    with nothing else to place a candidate by: ``_CodecData._find_descriptor``,
-    searching kept bytes once the decoded CRC is no needle. A caller that knows a
-    ZIP signature ends the shape (``_ScannedData._find_end``) tries unsigned ones
-    too.
+    it ends there. :func:`match_damaged_descriptor` is the fallback for a shape with
+    one damaged field.
     """
     widths = (8, 4) if zip64 else (4, 8)
     for width in widths:
-        for signed in (True,) if signed_only else (True, False):
+        for signed in (True, False):
             at = pos
             if signed:
                 if buffer[at : at + 4] != DATA_DESCRIPTOR_SIGNATURE:
@@ -322,6 +330,80 @@ def match_descriptor(
                 compressed_size=compressed_size if width == 4 else got_csize,
                 file_size=file_size
                 if width == 4 and file_size is not None
+                else got_usize,
+                length=end - pos,
+            )
+    return None
+
+
+def match_damaged_descriptor(
+    buffer: bytes | bytearray,
+    pos: int,
+    *,
+    compressed_size: int,
+    crc: int | None,
+    file_size: int | None,
+    zip64: bool,
+    at_end: bool,
+) -> DataDescriptor | None:
+    """The data descriptor at ``buffer[pos:]`` when one damaged field is all that
+    stops :func:`match_descriptor` from taking it, or ``None``.
+
+    The shapes and the ZIP signature after them are those of :func:`match_descriptor`.
+    A shape without its signature is taken when two of its three fields agree with
+    what the caller knows (its compressed size is ``compressed_size``, its CRC
+    ``crc``, its uncompressed size ``file_size``; an unknown one never agrees). One
+    with its signature is taken when its compressed size agrees, or two of the
+    fields do; and with its signature damaged, when all three do. So one damaged
+    byte, in the data or in the descriptor, still ends the member where it ends, and
+    the member fails alone: the caller checks the CRC and size it read against the
+    descriptor's, and the directory checks the descriptor at the end of the pass.
+
+    The thresholds keep the same amount of evidence for each shape. The signature is
+    itself a 32-bit match, so with it one agreeing field places the shape; that arm
+    is also the fallback ``_CodecData._find_descriptor`` applied alone before this
+    function existed (a signed descriptor whose size fits, whatever its CRC), kept
+    at its strength so a damaged codec member still ends where it did. Without a
+    signature, two agreeing fields stand in for those 32 bits. Four bytes that are
+    nearly the signature but not it are evidence against the shape, so then all
+    three fields must agree.
+
+    The fields are returned as stored, except that a 4-byte size that agrees gives
+    back the full value the caller supplied.
+    """
+    widths = (8, 4) if zip64 else (4, 8)
+    signed_here = buffer[pos : pos + 4] == DATA_DESCRIPTOR_SIGNATURE
+    for width in widths:
+        # How many bytes come before the fields: a signature, one damaged, or none.
+        for lead in (4, 0):
+            at = pos + lead
+            end = at + 4 + 2 * width
+            if len(buffer) < end:
+                continue
+            following = bytes(buffer[end : end + 4])
+            if following not in _AFTER_MEMBER and not (at_end and not following):
+                continue
+            mask = (1 << (8 * width)) - 1
+            got_crc = int.from_bytes(buffer[at : at + 4], "little")
+            got_csize = int.from_bytes(buffer[at + 4 : at + 4 + width], "little")
+            got_usize = int.from_bytes(buffer[at + 4 + width : end], "little")
+            csize_ok = got_csize == compressed_size & mask
+            crc_ok = crc is not None and got_crc == crc
+            usize_ok = file_size is not None and got_usize == file_size & mask
+            agree = csize_ok + crc_ok + usize_ok
+            if not lead:
+                taken = agree >= 2
+            elif signed_here:
+                taken = csize_ok or agree >= 2
+            else:
+                taken = agree == 3
+            if not taken:
+                continue
+            return DataDescriptor(
+                crc=got_crc,
+                compressed_size=compressed_size if csize_ok else got_csize,
+                file_size=file_size
+                if usize_ok and file_size is not None
                 else got_usize,
                 length=end - pos,
             )
@@ -362,6 +444,57 @@ def descriptor_by_crc(
                 return pos, descriptor
         at = buffer.find(needle, at + 1)
     return None
+
+
+def _next_signature(buf: bytes | bytearray, at: int) -> int:
+    """Where the next signature that may follow a descriptor starts, or -1."""
+    while (at := buf.find(b"PK", at)) >= 0:
+        if bytes(buf[at : at + 4]) in _AFTER_MEMBER:
+            return at
+        at += 1
+    return -1
+
+
+def _damaged_descriptor_in(
+    buffer: bytes | bytearray,
+    *,
+    base: int,
+    crc: int,
+    file_size: int | None,
+    zip64: bool,
+    at_end: bool,
+) -> tuple[int, DataDescriptor] | None:
+    """The first descriptor in ``buffer`` that :func:`match_damaged_descriptor`
+    takes, with its position; ``base`` is as for :func:`descriptor_by_crc`.
+
+    Each descriptor ends at a ZIP signature (or the end of the input when
+    ``at_end``), so the search goes from one signature to the next and tries each
+    shape ending there, the earliest start first."""
+    at = 0
+    while True:
+        after = _next_signature(buffer, at)
+        if after < 0:
+            if not at_end:
+                return None
+            after = len(buffer)
+        for length in _DESCRIPTOR_LENGTHS:
+            pos = after - length
+            if pos < 0:
+                continue
+            descriptor = match_damaged_descriptor(
+                buffer,
+                pos,
+                compressed_size=base + pos,
+                crc=crc,
+                file_size=file_size,
+                zip64=zip64,
+                at_end=at_end,
+            )
+            if descriptor is not None:
+                return pos, descriptor
+        if after >= len(buffer):
+            return None
+        at = after + 1
 
 
 class MemberData(ReadOnlyIOStream):
@@ -592,9 +725,11 @@ class _CodecData(MemberData):
         its decoder takes input in chunks, and some (Deflate64, PPMd) cannot say how
         much of the last one they used. The descriptor holds the CRC of the decoded
         data, so it is found where that CRC is, with a compressed size equal to its
-        own position and a ZIP signature after it. A signed descriptor whose CRC
-        differs (the data is damaged) is found by its signature and size, and the
-        caller judges the CRC; an unsigned one cannot be told from the data then.
+        own position and a ZIP signature after it. A descriptor with one damaged
+        field (a CRC that differs because the data is damaged, or a damaged byte in
+        the descriptor) is found by the fields that still agree
+        (:func:`match_damaged_descriptor`); the caller and the directory judge the
+        field that differs.
 
         The descriptor dates the data's end from its own position, so bytes between the
         codec's end and the descriptor count into its compressed size: the check a sized
@@ -626,22 +761,15 @@ class _CodecData(MemberData):
                 zip64=zip64,
                 at_end=at_end,
             )
-            at = buffer.find(DATA_DESCRIPTOR_SIGNATURE)
-            while found is None and at >= 0:
-                # Damaged data: a signed descriptor whose size fits, whatever its CRC.
-                descriptor = match_descriptor(
+            if found is None:
+                found = _damaged_descriptor_in(
                     buffer,
-                    at,
-                    compressed_size=base + at,
-                    crc=None,
-                    file_size=None,
+                    base=base,
+                    crc=crc,
+                    file_size=file_size,
                     zip64=zip64,
                     at_end=at_end,
-                    signed_only=True,
                 )
-                if descriptor is not None:
-                    found = (at, descriptor)
-                at = buffer.find(DATA_DESCRIPTOR_SIGNATURE, at + 1)
             return found
 
         # The descriptor is usually right after the codec's end, in the bytes kept and
@@ -726,7 +854,13 @@ class _ScannedData(MemberData):
         the scan looks for those and tries each descriptor shape ending there:
         signed or not (APPNOTE 4.3.9.3 makes ``PK\\x07\\x08`` optional), 4- or
         8-byte sizes. A shape is taken when its compressed size is the length of the
-        data before it, and its CRC that data's when ``check_crc``. Without the CRC,
+        data before it, and its CRC that data's when ``check_crc``; then, when no
+        shape ending at that signature matches whole, one with a single damaged field
+        (:func:`match_damaged_descriptor`), so damaged data or a damaged descriptor
+        fails the member alone instead of hiding where it ends. That fallback runs
+        under ``check_crc`` only: without the CRC and the uncompressed size, the
+        compressed size is the only field left to agree, and "one damaged field"
+        would place a descriptor on a single 32-bit coincidence. Without the CRC,
         a false match in ciphertext takes a planted signature and size; in a damaged
         codec member's stored bytes it can also come by accident, a signature and a
         size that happen to fit. Either way the member ends early and the walk reads on
@@ -735,7 +869,7 @@ class _ScannedData(MemberData):
 
         The CRC runs on from one candidate to the next, so a buffer full of planted
         signatures costs one pass, and it is computed only for a candidate whose
-        compressed size already fits.
+        compressed size (or, under ``check_crc``, uncompressed size) already fits.
         """
         buf = self._buf
         # The CRC of the data up to ``buf[crc_at]``, carried over from the last call
@@ -753,7 +887,7 @@ class _ScannedData(MemberData):
         at = self._search_from
         try:
             while True:
-                after = self._next_signature(buf, at)
+                after = _next_signature(buf, at)
                 if after < 0:
                     # A signature can still start in the last three bytes.
                     self._search_from = max(len(buf) - 3, 0)
@@ -762,12 +896,13 @@ class _ScannedData(MemberData):
                     after = len(buf)  # the stream ends after the descriptor
                 # This candidate's shapes and every later one's start at or past here.
                 earliest = after - _DESCRIPTOR_LONGEST
+                fitting: list[tuple[int, int | None]] = []
                 for length in _DESCRIPTOR_LENGTHS:
                     pos = after - length
                     if pos < 0:
                         continue
                     size = self.consumed + pos
-                    if not self._size_fits(buf, pos, size):
+                    if not self._size_fits(buf, pos, size, stored=self._check_crc):
                         continue
                     expect_crc = None
                     if self._check_crc:
@@ -777,6 +912,9 @@ class _ScannedData(MemberData):
                         # An empty slice would give a longer prefix's CRC.
                         assert crc_at <= pos
                         expect_crc = zlib.crc32(buf[crc_at:pos], crc)
+                    fitting.append((pos, expect_crc))
+                for pos, expect_crc in fitting:
+                    size = self.consumed + pos
                     descriptor = match_descriptor(
                         buf,
                         pos,
@@ -785,6 +923,24 @@ class _ScannedData(MemberData):
                         # STORED: both sizes are the data's length, unless encryption
                         # added its header to the compressed one.
                         file_size=size if self._check_crc else None,
+                        zip64=self.entry.zip64,
+                        at_end=self._eof,
+                    )
+                    if descriptor is not None:
+                        self._end_at = pos
+                        self._descriptor = descriptor
+                        return
+                for pos, expect_crc in fitting if self._check_crc else ():
+                    # No shape here matches whole: one damaged field (a byte of the data
+                    # changes the CRC) still ends the member here, and the caller's CRC
+                    # check fails it alone. Only under ``check_crc``: see the docstring.
+                    size = self.consumed + pos
+                    descriptor = match_damaged_descriptor(
+                        buf,
+                        pos,
+                        compressed_size=size,
+                        crc=expect_crc,
+                        file_size=size,
                         zip64=self.entry.zip64,
                         at_end=self._eof,
                     )
@@ -804,26 +960,31 @@ class _ScannedData(MemberData):
         return self._descriptor
 
     @staticmethod
-    def _next_signature(buf: bytearray, at: int) -> int:
-        """Where the next signature that may follow a descriptor starts, or -1."""
-        while (at := buf.find(b"PK", at)) >= 0:
-            if bytes(buf[at : at + 4]) in _AFTER_MEMBER:
-                return at
-            at += 1
-        return -1
-
-    @staticmethod
-    def _size_fits(buf: bytearray, pos: int, length: int) -> bool:
+    def _size_fits(buf: bytearray, pos: int, length: int, *, stored: bool) -> bool:
         """A descriptor at ``pos`` could state ``length``: the cheap test that comes
-        before a CRC."""
+        before a CRC, and the scan's cost per candidate on signature-dense data.
+
+        Each shape fixes the offset and width of its two sizes, so this probes
+        those, the compressed sizes first (all a scan without ``stored`` needs):
+        without a signature, then with one or one damaged. For unencrypted STORED
+        data (``stored``) the uncompressed size is the same length, so a descriptor
+        whose compressed size is the damaged field is still a candidate: then the
+        uncompressed sizes without a signature, and with one when it is there (a
+        damaged one needs all three fields, so its compressed size fits). At most
+        eight probes.
+        """
         signed = buf[pos : pos + 4] == DATA_DESCRIPTOR_SIGNATURE
-        return any(
-            int.from_bytes(buf[at : at + width], "little")
-            == length & ((1 << (8 * width)) - 1)
-            # Past the CRC, and the signature when there is one.
-            for at in ((pos + 8, pos + 4) if signed else (pos + 4,))
-            for width in (4, 8)
-        )
+        if stored:
+            probes = _STORED_PROBES_SIGNED if signed else _STORED_PROBES
+        else:
+            probes = _ENCRYPTED_PROBES_SIGNED if signed else _ENCRYPTED_PROBES
+        as4 = (length & _U32_MAX).to_bytes(4, "little")
+        as8 = (length & _U64_MAX).to_bytes(8, "little")
+        for offset, width in probes:
+            at = pos + offset
+            if buf[at : at + width] == (as4 if width == 4 else as8):
+                return True
+        return False
 
     def _avail(self) -> int:
         """How many bytes of ``_buf`` can be handed out before the end is found: no

@@ -25,6 +25,7 @@ from archivey import (
 from archivey.cli.choices import from_cli_choice
 from archivey.cli.common import (
     open_for_cli,
+    outer_format_for,
     reject_empty_path,
 )
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
@@ -1331,6 +1332,7 @@ def run_extract(
     stop_on_error: bool = False,
     abort_on: list[str] | None = None,
     dry_run: bool = False,
+    outer: bool = False,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -1349,9 +1351,21 @@ def run_extract(
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
     abort_on_enum = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
     archive_path = Path(archive)
+    # --outer opens the compression layer as a one-file archive: its member is the
+    # tar of a .tar.gz, so the extraction writes that file, as gunzip -k would.
+    fmt = (
+        outer_format_for(archive, patterns, exclude, config=config, verb="extract")
+        if outer
+        else None
+    )
 
     with open_for_cli(
-        archive_path, password=pwd, track_io=track_io, config=config, err=err
+        archive_path,
+        password=pwd,
+        track_io=track_io,
+        config=config,
+        err=err,
+        format=fmt,
     ) as reader:
         # A complete free index settles the patterns before anything is written.
         # Without one, or with one that ends in damage, the extraction's own pass

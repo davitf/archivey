@@ -45,6 +45,7 @@ fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
@@ -64,6 +65,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     DirectoryDataContext,
+    MemberHeaderRecordContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -83,6 +85,7 @@ from archivey.internal.backends.tar_parser import (
     TarEntry,
     TarSpan,
     TarWalker,
+    shown_value,
     validate_sparse_map,
 )
 from archivey.internal.base_reader import (
@@ -96,7 +99,11 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.naming import (
+    COMPRESSED_TAR_SHORT_SUFFIXES,
+    emit_member_name_normalized,
+    normalize_member_name,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
@@ -204,8 +211,6 @@ _DIRECTORY_TYPES = frozenset((b"5", b"D"))
 
 _SYMLINK_TYPE = b"2"
 _HARDLINK_TYPE = b"1"
-# Character and block devices and FIFOs, which carry device numbers.
-_DEVICE_TYPES = frozenset((b"3", b"4", b"6"))
 
 # PAX records whose value is a name: without ``hdrcharset=BINARY`` it is UTF-8, as
 # POSIX says; with it, or for a ustar or GNU field, it has no declared encoding.
@@ -281,15 +286,11 @@ _TAR_EXTENSIONS.update(
 )
 _TAR_EXTENSIONS.update(
     {
-        ".tgz": ArchiveFormat.TAR_GZ,
-        ".tbz2": ArchiveFormat.TAR_BZ2,
-        ".tbz": ArchiveFormat.TAR_BZ2,
-        ".txz": ArchiveFormat.TAR_XZ,
-        ".tzst": ArchiveFormat.TAR_ZST,
-        ".tlz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP),
-        ".cbt": ArchiveFormat.TAR,
+        suffix: ArchiveFormat(ContainerFormat.TAR, stream)
+        for suffix, stream in COMPRESSED_TAR_SHORT_SUFFIXES.items()
     }
 )
+_TAR_EXTENSIONS[".cbt"] = ArchiveFormat.TAR
 
 
 # Shared across FILE/HARDLINK members — avoid per-member CompressionMethod construction.
@@ -307,6 +308,11 @@ def _pax_text(entry: TarEntry, key: bytes) -> str | None:
     return value.value.decode("utf-8", "surrogateescape")
 
 
+# A PAX time as GNU tar 1.35 reads it (``decode_timespec``): an optional minus, ASCII
+# digits, then an optional point and more digits.
+_PAX_TIME = re.compile(r"-?[0-9]+(?:\.[0-9]*)?")
+
+
 def _pax_time(
     entry: TarEntry, key: str, name: str
 ) -> tuple[datetime | None, TimestampIssue | None]:
@@ -318,19 +324,21 @@ def _pax_time(
     Returns ``(None, None)`` when the record is absent, and ``(None, TimestampIssue)``
     when it is present but not a number or outside ``datetime``'s range, so a bad
     record is reported the same way as a bad header ``mtime``.
+
+    A number is what GNU tar 1.35 accepts: an optional ``-``, ASCII digits, then
+    optionally a ``.`` and more digits (``1000.`` included). Python float syntax
+    beyond that (``+1``, ``1e3``, ``1_000``, blanks, ``.5``, ``inf``) is reported,
+    as GNU tar reports it ("invalid mtime").
     """
     raw = _pax_text(entry, key.encode())
     if raw is None:
         return None, None
-    try:
-        seconds = float(raw)
-    except ValueError:
-        value = None
-    else:
-        value = unix_to_datetime(seconds)
+    value = (
+        unix_to_datetime(float(raw)) if _PAX_TIME.fullmatch(raw) is not None else None
+    )
     if value is not None:
         return value, None
-    return None, _tar_time_issue(name, key, repr(raw), pax_record=True)
+    return None, _tar_time_issue(name, key, shown_value(raw), pax_record=True)
 
 
 # The ArchiveMember field each TAR time fills, which is what a timestamp diagnostic
@@ -1029,24 +1037,43 @@ class TarReader(BaseArchiveReader):
         reads go past the trailer too, so a pipe held open after the tar ends blocks
         here until more bytes or EOF arrive; ``docs/gotchas.md`` says so to callers.
 
-        A tail that fails to *decode* ends the scan quietly. On a compressed tar the
-        bytes past the trailer can be a truncated gzip footer or junk after the
-        compressed stream, and the codec refuses both. Every member was already read
-        whole, and before this scan ran unconditionally such an archive listed without
-        complaint, so a decode failure out here must not turn a good listing into an
-        error. It is not trailing tar data either, so it is not reported as that. The one
+        A tail that fails to *decode* never raises. Every member was already read
+        whole, so a decode failure out here must not turn a good listing into an
+        error, and it is not trailing tar data, so it is not reported as that. The one
         exception is a :class:`_StreamChecksumError`: a codec checksum that covers the
         whole decoded stream (gzip's CRC-32 and ISIZE, zlib's Adler-32, the zstd and lz4
         content checksums, lzip's CRC-32) failed, so the members already read are
         damaged, and that raises. A ``tar -b128`` record pads 64 KiB past the trailer,
         so this scan is often where the checksum is reached.
 
-        bzip2 and xz check each block, and the last block's check can be reached here
-        too, but neither codec reports a failed check differently from junk after the
-        stream. A decode failure on those is therefore ``DIGEST_UNVERIFIABLE``, not
-        silence: the members already read may be damaged, and nothing can say. When the
-        codec had already read to the stream's end during the last member's read, the
-        check fails there instead, as ``CorruptionError`` from that read.
+        A compressed stream that ends early (a cut gzip footer, a cut lz4 end mark and
+        content checksum) is :class:`TruncatedError` here. The checksum that would
+        cover the members was never reached, so on any codec that can carry one this is
+        ``DIGEST_UNVERIFIABLE`` (``reason="trailing_stream_truncated"``). Junk after
+        the compressed stream is reported by the codec itself, as
+        ``ARCHIVE_TRAILING_DATA``.
+
+        Any other decode failure here (a damaged deflate stream past the trailer, say)
+        is ``DIGEST_UNVERIFIABLE`` (``reason="trailing_decode_failed"``) on a codec
+        that can carry a checksum, not silence. It is worded as "cannot be told", not
+        "never reached": the bytes that failed may be in the members' own stream, or
+        in a further compressed member (``cat a.tar.gz b.gz``) whose predecessor's
+        checksum was already checked, and nothing here tells the two apart. A further
+        member that fills a whole scan chunk (``_TRAILING_SCAN_CHUNK``) of output
+        in a read that does not fail is reported as trailing data instead; one that
+        fails before that loses its output with the failing read.
+        bzip2 and xz check each block, and neither reports a failed check differently
+        from junk after the stream, so on those the failure may be that check itself.
+        When the codec had already read to the failure during the last member's read,
+        it fails there instead, as ``CorruptionError`` from that read.
+
+        The first non-zero byte ends the scan, on every codec. Reading on to the
+        stream's checksum would look more thorough, but nothing here says where the
+        listed members' compressed stream ends: in a concatenated ``.tar.gz`` the
+        trailing bytes are a second gzip member, whose checksum covers none of the
+        listed members, while the first member's was already checked on the way in.
+        So past trailing bytes the scan claims nothing about the checksum either way;
+        ``ARCHIVE_TRAILING_DATA`` is the report, and ``STRICT`` refuses it.
 
         When the scan stops at its bound with the compressed stream not yet at its end,
         that checksum was never checked, and ``DIGEST_UNVERIFIABLE`` says so.
@@ -1059,14 +1086,23 @@ class TarReader(BaseArchiveReader):
                 with self._translated_errors(), self._walk_guard():
                     chunk = stream.read(want)
             except _StreamChecksumError:
-                # The codec's whole-stream checksum covers the members already read,
-                # so this is damage to them, not a tail that failed to decode.
+                # Nothing non-zero has come out since the trailer, so the stream this
+                # checksum covers holds the members already read: this is damage to
+                # them, not a tail that failed to decode. (A codec's read-ahead can
+                # also check a short further member whose output this read has not
+                # returned yet; that is attributed to the members too.)
                 raise
+            except TruncatedError:
+                # The compressed stream ends before its footer, so the checksum it
+                # would carry over the members already read was never reached.
+                self._emit_stream_checksum_unverified(
+                    reason="trailing_stream_truncated"
+                )
+                return
             except ReadError:
-                if self._format.stream in _STREAMS_WITH_UNTYPED_CHECKSUM:
-                    self._emit_stream_checksum_unverified(
-                        reason="trailing_decode_failed"
-                    )
+                # In the members' stream or a further one: whether the checksum over
+                # the members passed cannot be told.
+                self._emit_stream_checksum_unverified(reason="trailing_decode_failed")
                 return
             if not chunk:
                 return
@@ -1085,10 +1121,12 @@ class TarReader(BaseArchiveReader):
         """Report a compressed stream whose checksum the trailing scan could not check.
 
         ``reason`` is ``"trailing_scan_limit"`` when the scan stopped at its bound
-        before the stream's end, and ``"trailing_decode_failed"`` when a bzip2 or xz
-        tail failed to decode (see :meth:`_verify_nothing_but_zeros_to_eof`). Only
-        for a codec that can carry such a checksum; the zstd, lz4 and xz ones are
-        optional, so the message says "if it carries one".
+        before the stream's end, ``"trailing_stream_truncated"`` when the compressed
+        stream ended before its footer, and ``"trailing_decode_failed"`` when the
+        tail failed to decode in another way (see
+        :meth:`_verify_nothing_but_zeros_to_eof`). Only for a codec that can carry
+        such a checksum; the zstd, lz4 and xz ones are optional, so the message says
+        "if it carries one".
         """
         stream = self._format.stream
         if stream not in _STREAMS_WITH_CHECKSUM:
@@ -1099,11 +1137,22 @@ class TarReader(BaseArchiveReader):
                 "end-of-archive marker, and the scan stopped there: the stream's "
                 "checksum, if it carries one, was not checked"
             )
-        else:
+        elif reason == "trailing_stream_truncated":
+            what = (
+                "ends before its footer, past the end-of-archive marker: the stream's "
+                "checksum, if it carries one, was never reached"
+            )
+        elif stream in _STREAMS_WITH_UNTYPED_CHECKSUM:
             what = (
                 "fails to decode past the end-of-archive marker: this codec reports a "
                 "failed check the same way as junk after the stream, so whether the "
                 "checksum passed cannot be told"
+            )
+        else:
+            what = (
+                "fails to decode past the end-of-archive marker: the failure may be "
+                "in the stream that holds the members or in a further compressed "
+                "member after it, so whether the checksum passed cannot be told"
             )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.DIGEST_UNVERIFIABLE,
@@ -1340,7 +1389,9 @@ class TarReader(BaseArchiveReader):
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if entry.pax:
             extra["tar.pax_headers"] = self._extra_pax_headers(entry)
-        if entry.typeflag in _DEVICE_TYPES:
+        if entry.header.devmajor is not None and entry.header.devminor is not None:
+            # Set for a ustar or GNU character or block device only: a FIFO or a v7
+            # header holds no device number, and GNU tar reads none there.
             extra["tar.devmajor"] = entry.header.devmajor
             extra["tar.devminor"] = entry.header.devminor
 
@@ -1431,6 +1482,27 @@ class TarReader(BaseArchiveReader):
                     f"{self._encoding!r} (the stored bytes are valid UTF-8): "
                     f"{quoted(member.name)}"
                 ),
+            )
+        if entry.header.device_number_fault is not None:
+            # GNU tar 1.35 reports the field and lists the device with a garbage
+            # number. Here the numbers are absent, never wrong, and the walk goes on.
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"TAR device {quoted(member.name)}: "
+                    f"{entry.header.device_number_fault}; the member has no device "
+                    "numbers."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="device_numbers",
+                    reason=entry.header.device_number_fault,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=backends_logger,
             )
         if entry.old_style_directory and entry.size:
             # GNU tar and 7-Zip create the directory and skip the bytes without a word.
