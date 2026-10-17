@@ -355,8 +355,9 @@ archive declares.
   every member it skips, and a TAR walk in either mode reads the declared span of a
   link header whose first block is zero, each for the bytes present rather than the
   size a header declares (a member declaring more than the archive holds raises
-  `TruncatedError` at the first short read), and that ZIP walk reads through the data of every member whose local
-  header leaves its size to a data descriptor, up to one read of the file.
+  `TruncatedError` at the first short read), and that ZIP walk reads through the
+  data of every member whose local header leaves its size to a data descriptor, up
+  to one read of the file.
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the

@@ -851,10 +851,10 @@ class TarWalker:
     ``seekable`` walks skip a member's data with a seek; forward-only walks read
     through it in steps, so the cost is the bytes the archive holds, not the size a
     header declares. Both read the declared span of a link header whose first block
-    is zero (:meth:`_place_link_data`), once and bounded the same way. The walker owns the stream position between calls: a caller
-    that reads member data on a seekable stream may move it freely (each call seeks
-    back), and on a forward-only stream reads through :meth:`open_data`, whose reads
-    the walker counts.
+    is zero (:meth:`_place_link_data`), once and bounded the same way. The walker
+    owns the stream position between calls: a caller that reads member data on a
+    seekable stream may move it freely (each call seeks back), and on a forward-only
+    stream reads through :meth:`open_data`, whose reads the walker counts.
     """
 
     def __init__(
@@ -1455,7 +1455,8 @@ _SEEK_RANGE_ERRNOS = frozenset((errno.EINVAL, errno.EOVERFLOW))
 
 class _ReplayStream:
     """``zeros`` zero bytes, then ``head``, then the rest of ``stream``: a walk's
-    view of bytes it had read past, as stream_after_end serves them. The zeros are made as they are read, so a long span costs no memory."""
+    view of bytes it had read past, as stream_after_end serves them. The zeros are
+    made as they are read, so a long span costs no memory."""
 
     def __init__(
         self,
