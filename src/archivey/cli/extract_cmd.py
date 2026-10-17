@@ -887,6 +887,15 @@ def predict_hoist(
     if reason is not None:
         print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
+    if (
+        not in_place
+        and os.path.lexists(dest)
+        and not (is_dir and dest.is_dir() and not dest.is_symlink())
+    ):
+        # Not a merge: the check above let it through, so ``rename`` moves the root
+        # to the first free name, as the real hoist's ``_merge_move`` does. That
+        # rename is a collision the policy resolves, so it gets no line of its own.
+        dest = _free_name(dest, is_dir=is_dir)
     label = f"{escape_path(dest)}{'/' if is_dir else ''}"
     if in_place:
         print(f"would remove wrapper; content at {label}", file=err)

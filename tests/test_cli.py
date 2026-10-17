@@ -2594,6 +2594,33 @@ def test_indexed_single_root_rewritten_onto_the_operators_entry_is_hoisted(
     assert (tmp_path / "one" / mine).read_bytes() == b"ARCHIVE"
 
 
+@pytest.mark.parametrize("archive_name", ["foo.tar", "foo.zip"])
+def test_dry_run_names_where_rename_moves_the_root_past_a_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    archive_name: str,
+) -> None:
+    """The root ``foo/`` meets the operator's file ``foo``: the dry run names
+    ``foo (1)/``, where the real run puts it, not ``foo/``."""
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / archive_name
+    if archive_name.endswith(".zip"):
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("foo/x.txt", b"ARCHIVE")
+    else:
+        _tar(archive, {"foo/x.txt": b"ARCHIVE"})
+    (tmp_path / "foo").write_bytes(b"MINE")
+    assert main(["x", str(archive), "--dry-run"]) == EXIT_OK
+    dry = capsys.readouterr().err
+    assert _report_lines(dry, "would move to ") == ["would move to foo (1)/"]
+    assert dry.rstrip().endswith("→ foo (1)/")
+    assert main(["x", str(archive)]) == EXIT_OK
+    real = capsys.readouterr().err
+    assert real.rstrip().endswith("→ foo (1)/")
+    assert (tmp_path / "foo (1)" / "x.txt").read_bytes() == b"ARCHIVE"
+
+
 def test_indexed_single_root_renames_past_the_operators_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3811,18 +3838,13 @@ _HOIST_ONLY = ("extracting into ", "moved to ", "removed wrapper")
 
 def _as_direct(hoist_err: str) -> list[str]:
     """The hoist's stderr lines as ``-d .`` would print them, sorted: without the lines
-    about the wrapper, and with the hoist's ``skipped:`` (it discarded its own copy) as
-    ``not overwritten:`` (extraction did not write it).
+    about the wrapper.
 
     Sorted because the order differs: the merge prints its own lines while it moves,
     before the per-member lines, and ``-d .`` prints every line in member order. Pass
     ``-d .``'s stderr through it too."""
     return sorted(
-        f"not overwritten: {ln.removeprefix('skipped: ')}"
-        if ln.startswith("skipped: ")
-        else ln
-        for ln in hoist_err.split("\n")
-        if ln and not ln.startswith(_HOIST_ONLY)
+        ln for ln in hoist_err.split("\n") if ln and not ln.startswith(_HOIST_ONLY)
     )
 
 
