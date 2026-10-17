@@ -176,7 +176,7 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
 
 
 def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:
-    """The flag type behind ``seekable_members`` / ``concurrent_members`` stays internal.
+    """The flag type behind ``seekable_members`` / ``concurrent_operations`` stays internal.
 
     Pins the archive-reading spec: not re-exported, not in ``__all__``, still importable
     from ``archivey.types``, and no reader attribute exposes the declared flags.

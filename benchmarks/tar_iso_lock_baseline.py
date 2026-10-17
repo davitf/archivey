@@ -2,7 +2,7 @@
 """Non-gating TAR/ISO lock baseline (wall time under concurrent opens).
 
 Records representative wall-clock samples for concurrent member opens under
-``concurrent_members=True``. There is **no** pass/fail threshold — re-run before any
+``concurrent_operations=True``. There is **no** pass/fail threshold — re-run before any
 performance claim and compare before/after with the same recipe.
 
 Example::
@@ -43,7 +43,7 @@ def _make_tar(
 
 
 def _fan_out_wall(path: Path) -> float:
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         names = [m.name for m in reader.members() if m.is_file]
         barrier = threading.Barrier(len(names))
 

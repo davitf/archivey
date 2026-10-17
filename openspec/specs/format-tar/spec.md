@@ -293,8 +293,8 @@ through the walk's buffer, so a compressed tar is decoded once. Under
 `MemberStreams.CONCURRENT` another caller (a `members()` call, a second pass) may move
 the walk on while that stream is part read; before the walk moves, the stream SHALL
 switch to a member view of its own at the same position, so its remaining bytes are
-unchanged (`reader-concurrency`, "Random-access calls beside a `stream_members()`
-pass"). Reads through the walk and the walk's own steps hold the reader's walk lock.
+unchanged (`reader-concurrency`, "Random-access calls beside a pass"). Reads through
+the walk and the walk's own steps hold the reader's walk lock.
 
 Compressed TAR remains `SOLID`; locking guarantees correctness but not parallel
 throughput. Streaming TAR (`streaming=True`) remains one forward pass and does not gain

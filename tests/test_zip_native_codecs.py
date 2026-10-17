@@ -235,7 +235,7 @@ def test_zip_concurrent_codec_path_interleaved(tmp_path: Path) -> None:
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("a.txt", b"aaaa" * 1000, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("b.txt", b"bbbb" * 1000, compress_type=zipfile.ZIP_DEFLATED)
-    with open_archive(archive, concurrent_members=True) as ar:
+    with open_archive(archive, concurrent_operations=True) as ar:
         s1 = ar.open("a.txt")
         s2 = ar.open("b.txt")
         assert s1.read(4) == b"aaaa"

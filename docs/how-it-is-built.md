@@ -15,7 +15,7 @@ The maintainer decides. The agents write, test and review.
 The maintainer designed the fundamental building blocks and the public API: one opener,
 one reader and one member model for every format; streaming as the default way to read,
 with a member's bytes decoded as you read them; and the modes you declare at open, such
-as `streaming=True` for a pipe, `seekable_members=True` and `concurrent_members=True`.
+as `streaming=True` for a pipe, `seekable_members=True` and `concurrent_operations=True`.
 [How it works](how-it-works.md) explains those choices.
 
 The maintainer also sets the scope and the architecture, and rules on every
