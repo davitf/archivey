@@ -160,14 +160,15 @@ alternative is `unar`, used when `ArchiveyConfig.rar_decompressor` selects it, o
 when it is `auto` (the default) and no RARLAB binary is found, provided it passes the
 RAR5 check in `format-rar`. The choice is made once when the
 archive opens; a read is never retried with the other program.
-Member-data spawns SHALL use the `p` command only.
+Member-data spawns SHALL use the `p` command only. A stored, encrypted member in one part
+needs no program: archivey decrypts it with `cryptography` (`format-rar`).
 
 #### Scenario: single-tool matrix
 
 | Case | Expected |
 | --- | --- |
-| RARLAB `unrar` 6.0+ on `PATH` | Used for compressed/encrypted member data |
-| RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data |
+| RARLAB `unrar` 6.0+ on `PATH` | Used for compressed member data and encrypted data archivey does not decrypt |
+| RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed member data and encrypted data archivey does not decrypt |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
 | RARLAB `unrar`/`rar` older than 6.0, or a RARLAB banner with no parseable version | `PackageNotInstalledError` naming the floor and the version found; refused at identification |
 | Only `unrar-free` / `7z` on `PATH`, default config | `PackageNotInstalledError` naming RARLAB `unrar` or `rar`; they are never used |
