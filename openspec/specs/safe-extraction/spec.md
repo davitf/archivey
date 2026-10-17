@@ -1159,7 +1159,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Member blocked by policy/path-safety under `CONTINUE` | `BLOCKED` result; partial output removed; later members continue |
 | First member blocked, remaining members extractable, under `STOP` | Run completes; report contains `BLOCKED` + later `EXTRACTED`; no exception escapes |
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
-| Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain |
+| Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
 | A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`, under every `OverwritePolicy` |
 | A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
@@ -1563,7 +1563,10 @@ independent of `OnError` and of `DiagnosticPolicy` — a blocked member aborts u
 either `OnError` value when `BLOCKED_MEMBER` is set, and never aborts when it is not.
 
 Output written for **earlier** members SHALL remain on disk, matching `OnError.STOP`:
-abort stops the run, it does not roll it back. For a collision abort this means the
+abort stops the run, it does not roll it back. The exception is a ZIP read from a pipe,
+whose pass stops before the central directory says which members are links: it removes
+the files it wrote that could still be links (`format-zip`, "Read a non-seekable ZIP
+source in one forward pass"). For a collision abort this means the
 first member's bytes are typically still present at the contested path, since that
 member completed normally before the collision was detected.
 
