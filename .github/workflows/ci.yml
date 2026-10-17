@@ -608,8 +608,8 @@ jobs:
 
   # PyPy trial (allowed to fail). PyPy is not a supported interpreter: this job shows how
   # far archivey gets on it, so a decision about supporting it rests on results. It
-  # reports and never fails the run (job-level continue-on-error), and its two test steps
-  # carry continue-on-error too so the extras run still happens when the core run fails.
+  # reports and never fails the run (job-level continue-on-error), and its check and test
+  # steps carry continue-on-error too so a failure in one does not hide the later ones.
   # Dependencies come one at a time rather than through `--extra all`, because several
   # native packages have no PyPy wheel and one failed build would hide what does install;
   # the "Install what installs" step writes the outcome per package to the job summary.
@@ -640,6 +640,7 @@ jobs:
       - name: Sync zero-dep core
         run: uv sync --python ${{ matrix.python }} --no-dev
       - name: Assert zero-dependency core
+        continue-on-error: true
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
       - name: Run full suite (core-only)
         continue-on-error: true
