@@ -24,7 +24,10 @@ def test_index_holds_duplicates_in_listing_order_and_drops_by_identity() -> None
         members = reader.members()
         first, second, third = (m for m in members if m.name == "a")
         assert first == second  # so removal by equality would take the wrong one
-        assert list(reader._listed_named("a")) == [first, second, third]
+        held = reader._listed_named("a")
+        assert len(held) == 3
+        assert held[0] is first and held[1] is second and held[2] is third
+        assert reader._last_by_exact_name("a") is third
         assert list(reader._listed_named("b")) == [members[1]]
         assert reader._listed_named("missing") == ()
         # A name listed once holds the member itself: no list object per member.
@@ -56,6 +59,7 @@ def test_dropping_same_named_members_keeps_the_others_reachable() -> None:
         reader._drop_listed([a1, a3, members[1]])
         held = reader._listed_named("a")
         assert len(held) == 2 and held[0] is a2 and held[1] is a4
+        assert reader._last_by_exact_name("a") is a4
         assert reader._listed_named("b") == ()
         assert reader._last_by_exact_name("c") is members[5]
         # Down to one, the entry is the member again.
