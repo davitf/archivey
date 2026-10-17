@@ -10,11 +10,6 @@ this list:
   records, and bytes after the archive, are expected to change.
 - `install.md` says RAR is partly supported without RARLAB's `unrar`, which is true only once PR 868
   merges.
-- `reading.md` "Several members at once" says `extract_all()` runs beside other operations under
-  `concurrent_members=True`, including a second `extract_all()` and `open()` or `members()` from
-  other threads. Today each of those raises; a code fix is in progress. The `stream_members()`
-  docstring in `src/archivey/reader.py` ("`extract_all` still raises beside a pass") and the
-  `extract_all()` row of `docs/support-matrix.md` change with it.
 
 `migrating.md`, `philosophy.md`, `how-it-works.md`, `how-it-is-built.md` and `acknowledgements.md`
 aren't linked from `index.md` yet; the site navigation covers them at the switch. `reading.md`
