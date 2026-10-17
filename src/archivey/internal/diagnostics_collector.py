@@ -1,13 +1,17 @@
 """Lifecycle diagnostic collector and emission path.
 
 Owns exact counts, bounded retention (aggregate + member attachments), watermark-based
-ranged snapshots, policy resolution, logging/callback delivery, and RAISE escalation.
+ranged snapshots, per-operation scopes, policy resolution, logging/callback delivery,
+and RAISE escalation.
 
 Memory is bounded by design: the only lifetime-retained structure is ``_retained``, which
-is capped at ``max_retained``. Exact counts are kept as a small fixed per-code ``Counter``,
-and ranged/stream snapshots are computed by differencing a cheap :class:`DiagnosticWatermark`
-(a sequence number plus a per-code count snapshot) against the live counters — so nothing
-grows with the number of emitted diagnostics or opened streams.
+is capped at ``max_retained``. Exact counts are kept as a small fixed per-code ``Counter``.
+Ranged snapshots are computed by differencing a cheap :class:`DiagnosticWatermark` (a
+sequence number plus a per-code count snapshot) against the live counters, and an
+operation's snapshot (a member stream's, an extraction's) comes from its
+:class:`DiagnosticScope`, which its owner holds: a per-code ``Counter`` of its own, and a
+tag on the retained entries. So nothing grows with the number of emitted diagnostics, and
+a scope lives as long as its stream or a retained entry that names it.
 """
 
 from __future__ import annotations
@@ -57,6 +61,74 @@ class DiagnosticWatermark:
 class _RetainedEntry:
     sequence: int
     diagnostic: Diagnostic
+    # The scopes open on the emitting thread, for :meth:`DiagnosticScope.summary`.
+    scopes: tuple[DiagnosticScope, ...] = ()
+
+
+class DiagnosticScope:
+    """The emits one operation makes, whatever other threads emit meanwhile.
+
+    A watermark answers "what happened since here" for the whole collector, so on a
+    reader used from several threads it also catches the other threads' emits. A
+    scope counts only the emits made on a thread while the scope is entered there
+    (:meth:`DiagnosticCollector.scoped`, :meth:`DiagnosticCollector.inside`). A
+    member stream enters its scope on every call, from whichever thread makes it;
+    ``extract_all()`` enters one for the whole call. Scopes nest: an emit counts in
+    every scope entered on its thread.
+    """
+
+    __slots__ = ("_collector", "_counts", "_total")
+
+    def __init__(self, collector: DiagnosticCollector) -> None:
+        self._collector = collector
+        self._total = 0
+        self._counts: Counter[DiagnosticCode] = Counter()
+
+    def summary(self) -> DiagnosticSummary:
+        """The emits counted so far: exact counts, and those still retained."""
+        with self._collector._lock:
+            total = self._total
+            retained = tuple(
+                e.diagnostic
+                for e in self._collector._retained
+                if any(scope is self for scope in e.scopes)
+            )
+            return DiagnosticSummary(
+                total_count=total,
+                counts=dict(self._counts),
+                retained=retained,
+                dropped_count=total - len(retained),
+            )
+
+
+class _ScopeBlock:
+    """The context manager :meth:`DiagnosticCollector.inside` returns."""
+
+    __slots__ = ("_scope", "_stack")
+
+    def __init__(self, scope: DiagnosticScope) -> None:
+        self._scope = scope
+        self._stack: list[DiagnosticScope] = []
+
+    def __enter__(self) -> DiagnosticScope:
+        scope = self._scope
+        self._stack = stack = scope._collector.scope_stack()
+        stack.append(scope)
+        return scope
+
+    def __exit__(self, *exc_info: object) -> None:
+        leave_scope(self._stack, self._scope)
+
+
+def leave_scope(stack: list[DiagnosticScope], scope: DiagnosticScope) -> None:
+    """Take ``scope`` off this thread's ``stack``, the last time it was entered."""
+    if stack and stack[-1] is scope:
+        stack.pop()
+        return
+    for i in range(len(stack) - 1, -1, -1):
+        if stack[i] is scope:
+            del stack[i]
+            return
 
 
 @dataclass(slots=True)
@@ -192,6 +264,40 @@ class DiagnosticCollector:
         self._replays: dict[int, _Replay] = {}
         # Per thread, the raises a ``deferring_raises()`` block is holding back.
         self._deferred: dict[int, list[Exception]] = {}
+        # Per thread, the scopes entered on it, outermost first (``scope_stack``). A
+        # ``threading.local`` and not a locked dict: a member stream enters its scope on
+        # every read, and each thread touches only its own list.
+        self._local = threading.local()
+
+    def scope_stack(self) -> list[DiagnosticScope]:
+        """This thread's entered scopes, for a caller that enters one on a hot path.
+
+        Append the scope before the work and :func:`leave_scope` after it; that is
+        what :meth:`inside` does, without the context manager object.
+        """
+        try:
+            return self._local.stack
+        except AttributeError:
+            stack: list[DiagnosticScope] = []
+            self._local.stack = stack
+            return stack
+
+    def new_scope(self) -> DiagnosticScope:
+        return DiagnosticScope(self)
+
+    def inside(self, scope: DiagnosticScope) -> _ScopeBlock:
+        """Count this thread's emits in ``scope`` while inside the block."""
+        return _ScopeBlock(scope)
+
+    def scoped(self) -> _ScopeBlock:
+        """Count this thread's emits in a new :class:`DiagnosticScope` while inside.
+
+        For a call whose result reports its own diagnostics, such as
+        ``extract_all()``: on a reader opened with ``concurrent_operations=True`` other
+        threads emit into the same collector meanwhile, and a watermark would hand
+        their emits to this call too.
+        """
+        return _ScopeBlock(DiagnosticScope(self))
 
     def replaying(self, log: EmitLog) -> _ReplayingBlock:
         """Record this thread's emits into ``log``, or replay the ones it already holds.
@@ -417,13 +523,22 @@ class DiagnosticCollector:
             )
             self._total_count += 1
             self._counts[code] += 1
+            open_scopes = getattr(self._local, "stack", None)
+            scopes: tuple[DiagnosticScope, ...] = ()
+            if open_scopes:
+                scopes = tuple(open_scopes)
+                for scope in scopes:
+                    scope._total += 1
+                    scope._counts[code] += 1
 
             retained_aggregate = False
             attached = False
             if not ignored:
                 if self._slots_used < self._max_retained:
                     self._retained.append(
-                        _RetainedEntry(sequence=sequence, diagnostic=diagnostic)
+                        _RetainedEntry(
+                            sequence=sequence, diagnostic=diagnostic, scopes=scopes
+                        )
                     )
                     self._slots_used += 1
                     retained_aggregate = True

@@ -695,7 +695,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # behaving as written, not a leak.
     ("open_archive", "streaming"): "truthiness flag",
     ("open_archive", "seekable_members"): "truthiness flag",
-    ("open_archive", "concurrent_members"): "truthiness flag",
+    ("open_archive", "concurrent_operations"): "truthiness flag",
     ("open_stream", "seekable"): "truthiness flag",
     ("detect_format", "follow_stub_volumes"): "truthiness flag",
     ("extract_all", "dry_run"): "truthiness flag",
@@ -1019,8 +1019,8 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
         ValueError,
     ),
     (
-        "open_archive(streaming=True, concurrent_members=True)",
-        lambda a, t: open_archive(a, streaming=True, concurrent_members=True),
+        "open_archive(streaming=True, concurrent_operations=True)",
+        lambda a, t: open_archive(a, streaming=True, concurrent_operations=True),
         ValueError,
     ),
     (

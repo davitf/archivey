@@ -1768,6 +1768,11 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
         old.crc32 = new.crc32
     if new.blake2sp_hash is not None:
         old.blake2sp_hash = new.blake2sp_hash
+    # The digests above are the last part's, and so is the record that says how to
+    # check them: RAR5 sets the tweaked-checksum flag (``ConvertHashToMAC``) only on
+    # the part that carries the whole file's digest, under that part's salt.
+    if new.file_encryption is not None:
+        old.file_encryption = new.file_encryption
     # RAR 1.5-4 writes a member's UOW header after its last part.
     if new.owner is not None:
         _set_uow_owner(old, new.owner)
@@ -2059,6 +2064,24 @@ def rar5_hash_key(
         raise CorruptionError(f"RAR5 kdf_count too large: {kdf_count_shift}")
     derive = kdf_cache.rar5 if kdf_cache is not None else _rar5_s2k
     return derive(password, salt, (1 << kdf_count_shift) + 16)
+
+
+def rar5_data_key(
+    password: str | bytes,
+    salt: bytes,
+    kdf_count_shift: int,
+    *,
+    kdf_cache: RarKdfCache | None = None,
+) -> bytes:
+    """Derive the RAR5 AES-256 key for one member's data (PBKDF2 at ``1 << kdf``).
+
+    The same derivation as the header key; :func:`rar5_hash_key` has the offsets of the
+    other two outputs.
+    """
+    if kdf_count_shift > _RAR_MAX_KDF_SHIFT:
+        raise CorruptionError(f"RAR5 kdf_count too large: {kdf_count_shift}")
+    derive = kdf_cache.rar5 if kdf_cache is not None else _rar5_s2k
+    return derive(password, salt, 1 << kdf_count_shift)
 
 
 def convert_crc_to_mac(crc: int, hash_key: bytes) -> int:

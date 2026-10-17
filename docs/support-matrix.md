@@ -45,14 +45,14 @@ narrow on purpose.
 
 ### What is claimed
 
-On a reader opened with `concurrent_members=True`, after member materialization, it is
+On a reader opened with `concurrent_operations=True`, after member materialization, it is
 safe for multiple threads to call `open()` and to work on **different** member streams
 concurrently:
 
 ```python
 from archivey import open_archive
 
-with open_archive("photos.zip", concurrent_members=True) as reader:
+with open_archive("photos.zip", concurrent_operations=True) as reader:
     members = reader.members()          # materialize once, on one thread
     # Now: fan out. Each thread opens and reads its own member.
 ```
@@ -115,16 +115,16 @@ job.
 - **The packages in the "No" rows above.** They are not tested under free-threading, and
   since importing them re-enables the GIL, "free-threaded support" is not a meaningful
   question for them yet.
-- **Extraction, and anything on a reader without `concurrent_members=True`.**
-  `extract_all()` is a **single-owner** operation, and without `concurrent_members=True`
-  so are iteration, materialization and `stream_members()`. Driving them from several
-  threads is a usage error, not a race to be fixed.
+- **Anything on a reader without `concurrent_operations=True`.** Without it, iteration,
+  materialization, `stream_members()` and `extract_all()` are **single-owner**
+  operations. Driving them from several threads is a usage error, not a race to be
+  fixed.
 - **Parallel speedup.** Nothing here promises that fanning out is *faster*; it promises
   it is correct. Decode work may still serialize on a backend lock.
 
 ### The default is fail-fast, not racy
 
-If you do not pass `concurrent_members=True`, the reader allows **one live member
+If you do not pass `concurrent_operations=True`, the reader allows **one live member
 stream**. A second overlapping `open()` raises
 [`ArchiveyUsageError`][archivey.ArchiveyUsageError] rather than quietly returning
 interleaved bytes:
@@ -156,12 +156,12 @@ another thread that might still be reading it when the owner closes the reader.
 
 | Operation | Safe from multiple threads? |
 | --- | --- |
-| `open()` + reading **different** member streams | Yes, with `concurrent_members=True`, after materialization |
+| `open()` + reading **different** member streams | Yes, with `concurrent_operations=True`, after materialization |
 | Reading the **same** member stream object | No — one owner per stream |
-| `members()` / `members_report()` | With `concurrent_members=True`, yes: one thread builds the list and the others wait for it. Otherwise no — single-owner; materialize once, then share the result |
-| `__iter__` | With `concurrent_members=True`, yes. Otherwise no — single-owner |
-| `stream_members()` | With `concurrent_members=True`, yes, beside other passes and random access. Otherwise no — single-owner pass |
-| `extract_all()` | No — single-owner pass |
+| `members()` / `members_report()` | With `concurrent_operations=True`, yes: one thread builds the list and the others wait for it. Otherwise no — single-owner; materialize once, then share the result |
+| `__iter__` | With `concurrent_operations=True`, yes. Otherwise no — single-owner |
+| `stream_members()` | With `concurrent_operations=True`, yes, beside other passes and random access. Otherwise no — single-owner pass |
+| `extract_all()` | With `concurrent_operations=True`, yes, beside passes, random access and other extractions (into different folders). Otherwise no — single-owner pass |
 | `close()` | Safe to call twice; not safe to race against in-flight opens |
 | Separate `ArchiveReader` objects | Yes — independent readers share no mutable state |
 
