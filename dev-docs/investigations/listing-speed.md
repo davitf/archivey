@@ -51,10 +51,12 @@ Shaving more from the parse helpers gains little.
 
 Collection time over the same tree listed in each format: ZIP about 40 ms, Info-ZIP ZIP
 about 37, TAR about 10, 7z about 53. It scales with the objects kept per member, not with
-the format's parse work. Fewer objects per member (a shared empty `extra`, no per-member
-hash dict when there is no digest, fields built on first access) would cut it in every
-format at once; that changes `ArchiveMember`'s mutation, `replace()` and equality, so it
-needs its own design.
+the format's parse work. The name index holds a name's only member directly rather
+than in a one-item list, which saves one object per member in every format (about 3% of
+ZIP and TAR listing). What else each member keeps is public (`hashes`, `extra`) or held
+elsewhere too (7z's file records stay in the parsed header), so cutting more would change
+`ArchiveMember`'s shape, `replace()` and construction and needs its own design. Exact
+tuples of untracked items drop out of collection; a `NamedTuple` or dataclass does not.
 
 ## 7z and TAR
 
