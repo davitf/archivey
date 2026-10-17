@@ -1,13 +1,17 @@
 """Lifecycle diagnostic collector and emission path.
 
 Owns exact counts, bounded retention (aggregate + member attachments), watermark-based
-ranged snapshots, policy resolution, logging/callback delivery, and RAISE escalation.
+ranged snapshots, per-operation scopes, policy resolution, logging/callback delivery,
+and RAISE escalation.
 
 Memory is bounded by design: the only lifetime-retained structure is ``_retained``, which
-is capped at ``max_retained``. Exact counts are kept as a small fixed per-code ``Counter``,
-and ranged/stream snapshots are computed by differencing a cheap :class:`DiagnosticWatermark`
-(a sequence number plus a per-code count snapshot) against the live counters — so nothing
-grows with the number of emitted diagnostics or opened streams.
+is capped at ``max_retained``. Exact counts are kept as a small fixed per-code ``Counter``.
+Ranged snapshots are computed by differencing a cheap :class:`DiagnosticWatermark` (a
+sequence number plus a per-code count snapshot) against the live counters, and an
+operation's snapshot (a member stream's, an extraction's) comes from its
+:class:`DiagnosticScope`, which its owner holds: a per-code ``Counter`` of its own, and a
+tag on the retained entries. So nothing grows with the number of emitted diagnostics, and
+a scope lives as long as its stream or a retained entry that names it.
 """
 
 from __future__ import annotations
@@ -62,13 +66,15 @@ class _RetainedEntry:
 
 
 class DiagnosticScope:
-    """The emits one call makes, on its own thread, whatever other threads emit.
+    """The emits one operation makes, whatever other threads emit meanwhile.
 
     A watermark answers "what happened since here" for the whole collector, so on a
     reader used from several threads it also catches the other threads' emits. A
-    scope counts only the emits made on the thread that entered it, while it is
-    entered (:meth:`DiagnosticCollector.scoped`). Scopes nest: an emit counts in
-    every scope open on its thread.
+    scope counts only the emits made on a thread while the scope is entered there
+    (:meth:`DiagnosticCollector.scoped`, :meth:`DiagnosticCollector.inside`). A
+    member stream enters its scope on every call, from whichever thread makes it;
+    ``extract_all()`` enters one for the whole call. Scopes nest: an emit counts in
+    every scope entered on its thread.
     """
 
     __slots__ = ("_collector", "_counts", "_total")
@@ -95,31 +101,34 @@ class DiagnosticScope:
             )
 
 
-class _ScopedBlock:
-    """The context manager :meth:`DiagnosticCollector.scoped` returns."""
+class _ScopeBlock:
+    """The context manager :meth:`DiagnosticCollector.inside` returns."""
 
-    __slots__ = ("_collector", "_scope", "_thread_id")
+    __slots__ = ("_scope", "_stack")
 
-    def __init__(self, collector: DiagnosticCollector) -> None:
-        self._collector = collector
-        self._scope = DiagnosticScope(collector)
-        self._thread_id = 0
+    def __init__(self, scope: DiagnosticScope) -> None:
+        self._scope = scope
+        self._stack: list[DiagnosticScope] = []
 
     def __enter__(self) -> DiagnosticScope:
-        collector = self._collector
-        self._thread_id = thread_id = threading.get_ident()
-        with collector._lock:
-            collector._scopes.setdefault(thread_id, []).append(self._scope)
-        return self._scope
+        scope = self._scope
+        self._stack = stack = scope._collector.scope_stack()
+        stack.append(scope)
+        return scope
 
     def __exit__(self, *exc_info: object) -> None:
-        collector = self._collector
-        with collector._lock:
-            scopes = collector._scopes.get(self._thread_id)
-            if scopes is not None:
-                scopes.remove(self._scope)
-                if not scopes:
-                    del collector._scopes[self._thread_id]
+        leave_scope(self._stack, self._scope)
+
+
+def leave_scope(stack: list[DiagnosticScope], scope: DiagnosticScope) -> None:
+    """Take ``scope`` off this thread's ``stack``, the last time it was entered."""
+    if stack and stack[-1] is scope:
+        stack.pop()
+        return
+    for i in range(len(stack) - 1, -1, -1):
+        if stack[i] is scope:
+            del stack[i]
+            return
 
 
 @dataclass(slots=True)
@@ -255,10 +264,32 @@ class DiagnosticCollector:
         self._replays: dict[int, _Replay] = {}
         # Per thread, the raises a ``deferring_raises()`` block is holding back.
         self._deferred: dict[int, list[Exception]] = {}
-        # Per thread, the ``scoped()`` blocks open on it, outermost first.
-        self._scopes: dict[int, list[DiagnosticScope]] = {}
+        # Per thread, the scopes entered on it, outermost first (``scope_stack``). A
+        # ``threading.local`` and not a locked dict: a member stream enters its scope on
+        # every read, and each thread touches only its own list.
+        self._local = threading.local()
 
-    def scoped(self) -> _ScopedBlock:
+    def scope_stack(self) -> list[DiagnosticScope]:
+        """This thread's entered scopes, for a caller that enters one on a hot path.
+
+        Append the scope before the work and :func:`leave_scope` after it; that is
+        what :meth:`inside` does, without the context manager object.
+        """
+        try:
+            return self._local.stack
+        except AttributeError:
+            stack: list[DiagnosticScope] = []
+            self._local.stack = stack
+            return stack
+
+    def new_scope(self) -> DiagnosticScope:
+        return DiagnosticScope(self)
+
+    def inside(self, scope: DiagnosticScope) -> _ScopeBlock:
+        """Count this thread's emits in ``scope`` while inside the block."""
+        return _ScopeBlock(scope)
+
+    def scoped(self) -> _ScopeBlock:
         """Count this thread's emits in a new :class:`DiagnosticScope` while inside.
 
         For a call whose result reports its own diagnostics, such as
@@ -266,7 +297,7 @@ class DiagnosticCollector:
         threads emit into the same collector meanwhile, and a watermark would hand
         their emits to this call too.
         """
-        return _ScopedBlock(self)
+        return _ScopeBlock(DiagnosticScope(self))
 
     def replaying(self, log: EmitLog) -> _ReplayingBlock:
         """Record this thread's emits into ``log``, or replay the ones it already holds.
@@ -492,7 +523,7 @@ class DiagnosticCollector:
             )
             self._total_count += 1
             self._counts[code] += 1
-            open_scopes = self._scopes.get(thread_id)
+            open_scopes = getattr(self._local, "stack", None)
             scopes: tuple[DiagnosticScope, ...] = ()
             if open_scopes:
                 scopes = tuple(open_scopes)

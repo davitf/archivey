@@ -219,8 +219,11 @@ slot and copies no occurrence; a ranged summary computes counter deltas and sele
 from already-retained aggregate entries. A scope does the same for the emits made on
 one thread while it is entered: it keeps its own exact counters, and its summary
 selects the retained aggregate entries tagged with it. A call whose result reports
-its own diagnostics on a reader that other threads use at the same time
-(`extract_all()`) uses a scope, so their emits stay out of its report.
+its own diagnostics on a reader that other threads use at the same time uses a
+scope, so their emits stay out of its report: `extract_all()` enters one for the
+whole call, and a reader-owned member stream enters its own on every `read`, `seek`
+and `close`, on whichever thread makes the call. `stream.diagnostics` is therefore
+that stream's own reads, not everything the reader emitted after it opened.
 
 #### Scenario: retention matrix
 

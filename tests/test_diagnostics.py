@@ -501,7 +501,6 @@ def test_scope_counts_only_its_own_threads_emits() -> None:
     assert inner.total_count == 1
     assert [d.message for d in inner.retained] == ["nested"]
     assert collector.snapshot().total_count == 4
-    assert collector._scopes == {}
 
 
 def test_scope_counts_exactly_past_retention() -> None:

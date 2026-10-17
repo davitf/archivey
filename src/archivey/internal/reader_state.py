@@ -468,7 +468,10 @@ class ReaderState:
         """
         with self._lock:
             while True:
-                self._require_admissible_locked("materialization")
+                # The lifecycle only, not ``_closing``: a caller here already holds
+                # its token, and a close() draining in-flight workers waits for this
+                # one to finish, so refusing it would turn that wait into an error.
+                self._require_lifecycle_open_locked("materialization")
                 if self.cache_state is CacheState.MATERIALIZED:
                     return False
                 if self.cache_state is CacheState.MATERIALIZING:

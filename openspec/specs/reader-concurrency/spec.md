@@ -264,8 +264,14 @@ waits in the materialization election, as concurrent first-touch callers do, rat
 than raising.
 
 **Reports.** An `ExtractionReport`'s diagnostics are the ones its own call emitted, on
-its own thread; diagnostics another thread emits meanwhile go to `reader.diagnostics`
-and to that thread's own result, not to this report.
+its own thread, and a member stream's `diagnostics` are the ones its own `read`, `seek`
+and `close` calls emitted; diagnostics another thread emits meanwhile, or the reader
+emits between those calls (a walk reading further headers), go to `reader.diagnostics`
+and to that call's own result, not to this one. A link several threads follow at once
+is read and reported once. `members_report_if_available()` holds a worker token like
+`members()`, so `close()` waits for its walk. A member stream that `close()` on another
+thread closes under a read in flight raises the closed-file `ValueError`, never an
+error that reads as archive damage.
 
 **Close.** `close()` with suspended passes and in-flight workers waits for the
 workers, then decides again: a pass that resumed meanwhile and is executing makes that
