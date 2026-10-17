@@ -1498,40 +1498,84 @@ def test_short_name_alias_on_windows(tmp_path: Path) -> None:
 # --- A name another writer creates first clashes as the existence check would -------
 
 
-@pytest.mark.skipif(os.name == "nt", reason="simulates the Windows rename error")
+_OTHER_WRITER = b"other writer"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["file", "hard", pytest.param("sym", marks=_POSIX_SYMLINKS)],
+)
 @pytest.mark.parametrize(
     ("overwrite", "raised"),
     [
         (OverwritePolicy.ERROR, ExtractionError),
-        (OverwritePolicy.REPLACE, PermissionError),
+        (OverwritePolicy.REPLACE, OSError),
     ],
 )
-def test_rename_onto_a_name_created_after_the_check(
+def test_landing_on_a_name_taken_after_the_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    kind: str,
     overwrite: OverwritePolicy,
     raised: type[BaseException],
 ) -> None:
-    """Simulated on POSIX: another writer (a second extraction into the same folder)
-    creates the file between the existence check and the rename, and Windows refuses
-    the rename with access denied. Under ERROR that is the clash the check reports;
-    under any other policy the error is not a clash and goes through as it is."""
-    monkeypatch.setattr(extraction, "_WINDOWS", True)
+    """Simulated: another writer (a second extraction into the same folder) creates
+    ``b.txt`` between the existence check and the landing. Windows refuses the rename of
+    a FILE or HARDLINK with access denied, and ``os.symlink`` refuses a taken name on
+    every OS. Under ERROR that is the clash the check reports; the other policies do not
+    handle it, and the error goes out as it is."""
     dest = tmp_path / "out"
     real_replace = os.replace
 
     def replace(src: str, dst: str) -> None:
-        if os.path.basename(str(src)).startswith(".archivey-tmp-"):
-            Path(dst).write_bytes(b"other writer")
-            raise PermissionError(13, "Access is denied", str(dst))
+        if os.path.basename(str(dst)) == "b.txt":
+            Path(dst).write_bytes(_OTHER_WRITER)
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+        real_replace(src, dst)
+
+    def symlink(src: str, dst: str, target_is_directory: bool = False) -> None:
+        Path(dst).write_bytes(_OTHER_WRITER)
+        raise FileExistsError(errno.EEXIST, "File exists", str(dst))
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(os, "symlink", symlink)
+    payload = None if kind == "file" else "a.txt"
+    second = ("file", "b.txt", b"ours") if kind == "file" else (kind, "b.txt", payload)
+    archive = _tar([("file", "a.txt", b"first"), second])
+    with pytest.raises(raised) as excinfo:
+        open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+    if raised is ExtractionError:
+        assert "Destination already exists" in str(excinfo.value)
+    else:
+        assert not isinstance(excinfo.value, ExtractionError)
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A streaming pass parks the earlier ``a.txt`` and the later one replaces it under
+    any policy. A rename refused there is not the caller's entry in the way, so ERROR
+    does not report it as one: the refusal goes out as it is."""
+    real_replace = os.replace
+    landings = 0
+
+    def replace(src: str, dst: str) -> None:
+        nonlocal landings
+        if os.path.basename(str(dst)) == "a.txt":
+            landings += 1
+            if landings == 2:
+                raise PermissionError(errno.EACCES, "Access is denied", str(dst))
         real_replace(src, dst)
 
     monkeypatch.setattr(os, "replace", replace)
-    with pytest.raises(raised) as excinfo:
+    archive = _tar([("file", "a.txt", b"first"), ("file", "a.txt", b"second")])
+    with pytest.raises(PermissionError):
         open_and_extract(
-            io.BytesIO(_tar([("file", "a.txt", b"ours")])), dest, overwrite=overwrite
+            io.BytesIO(archive),
+            tmp_path / "out",
+            streaming=True,
+            overwrite=OverwritePolicy.ERROR,
         )
-    if raised is ExtractionError:
-        assert "already exists" in str(excinfo.value)
-    assert (dest / "a.txt").read_bytes() == b"other writer"
-    assert [p.name for p in dest.iterdir()] == ["a.txt"]
+    assert landings == 2
