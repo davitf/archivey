@@ -8,7 +8,15 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Generator, Iterator, Mapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
+    Iterator,
+    Mapping,
+    Sequence,
+    Set,
+)
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -560,7 +568,11 @@ class BaseArchiveReader(ArchiveReader):
         # the index's order, with why: the walk's error is the first of them, and
         # extraction gives each its result.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
-        self._listed_by_name: dict[str, list[ArchiveMember]] = {}
+        # Name to the member listed under it, or to a list of them in listing order
+        # once a second member has that name: a list here always holds two or more. A
+        # list per name would be one more object per member for the collector to walk.
+        # Read it through ``_listed_named`` or ``_last_by_exact_name``.
+        self._listed_by_name: dict[str, ArchiveMember | list[ArchiveMember]] = {}
         self._walk_position: int = 0
         self._walk: Iterator[ArchiveMember] | None = None
         self._walk_done: bool = False
@@ -1632,12 +1644,10 @@ class BaseArchiveReader(ArchiveReader):
             assert member._member_id is not None
             self._dropped_listed.add(member._member_id)
         self._listed = [member for member in self._listed if id(member) not in gone]
-        for member in dropped:
-            listed = self._listed_by_name.get(member.name)
-            if listed is not None:
-                listed[:] = [m for m in listed if id(m) not in gone]
-                if not listed:
-                    del self._listed_by_name[member.name]
+        # One pass per name: dropping one member at a time would rebuild a shared
+        # name's entry once per member.
+        for name in {member.name for member in dropped}:
+            self._unindex_members(name, gone)
         _settle_listing(dropped, links_too=True)
 
     def _abandon_walk(self, exc: BaseException) -> None:
@@ -2529,13 +2539,57 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _index_member_name(self, member: ArchiveMember) -> None:
-        self._listed_by_name.setdefault(member.name, []).append(member)
+        index = self._listed_by_name
+        held = index.get(member.name)
+        if held is None:
+            index[member.name] = member
+        elif isinstance(held, list):
+            held.append(member)
+        else:
+            index[member.name] = [held, member]
+
+    def _unindex_members(self, name: str, gone: Set[int]) -> None:
+        """Take the members whose ``id()`` is in ``gone`` out of ``name``'s entry.
+
+        By identity: a duplicate can compare equal to the member being removed. ``gone``
+        is a set so that one pass over a long entry stays linear.
+        """
+        index = self._listed_by_name
+        held = index.get(name)
+        if held is None:
+            return
+        if not isinstance(held, list):
+            if id(held) in gone:
+                del index[name]
+            return
+        kept = [m for m in held if id(m) not in gone]
+        if len(kept) == len(held):
+            return
+        if not kept:
+            del index[name]
+        elif len(kept) == 1:
+            index[name] = kept[0]
+        else:
+            index[name] = kept
+
+    def _listed_named(self, name: str) -> Sequence[ArchiveMember]:
+        """The members listed so far under exactly ``name``, in listing order.
+
+        Read-only, and only until the index next changes: for a duplicated name it is
+        the index's own list.
+        """
+        held = self._listed_by_name.get(name)
+        if held is None:
+            return ()
+        if isinstance(held, list):
+            return held
+        return (held,)
 
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
-        candidates = self._listed_by_name.get(name)
-        if not candidates:
-            return None
-        return candidates[-1]
+        held = self._listed_by_name.get(name)
+        if isinstance(held, list):
+            return held[-1]
+        return held
 
     def _find_link_target(
         self, member: ArchiveMember, *, before_id: int | None = None
@@ -2544,7 +2598,7 @@ class BaseArchiveReader(ArchiveReader):
 
         Resolves the stored target string to an archive-namespace name first (a symlink
         target is relative to the link's own directory — see
-        :func:`resolve_link_target_name`), then looks it up in ``_listed_by_name``;
+        :func:`resolve_link_target_name`), then looks it up in the name index;
         directory members carry a trailing ``/`` in their names, so both forms are
         tried. With ``before_id``, only members listed before that id count.
 
@@ -2574,14 +2628,14 @@ class BaseArchiveReader(ArchiveReader):
                 return None
         if before_id is None:
             for name in link_target_name_keys(target_name):
-                candidates = self._listed_by_name.get(name)
-                if candidates:
-                    return candidates[-1]
+                last = self._last_by_exact_name(name)
+                if last is not None:
+                    return last
             return None
         best: ArchiveMember | None = None
         best_id = -1
         for name in link_target_name_keys(target_name):
-            for candidate in reversed(self._listed_by_name.get(name, [])):
+            for candidate in reversed(self._listed_named(name)):
                 candidate_id = candidate._member_id
                 if candidate_id is None or candidate_id >= before_id:
                     continue
