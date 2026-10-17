@@ -87,6 +87,7 @@ class DiagnosticCode(StrEnum):
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
     MEMBER_SIZE_WRAPPED = "member_size_wrapped"
+    MEMBER_TYPE_UNKNOWN = "member_type_unknown"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -157,6 +158,8 @@ DiagnosticCodeStr = Literal[
     "archive-offset-wrapped",
     "member_size_wrapped",
     "member-size-wrapped",
+    "member_type_unknown",
+    "member-type-unknown",
 ]
 
 
@@ -343,15 +346,6 @@ class ArchiveEofContext(_JsonSafeContext):
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
       ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
       is 0.
-    - ``"central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a ZIP central
-      directory entry's name, extra field or comment length runs past the directory
-      size the end record gives, and that field is cut short. ``expected_bytes`` is
-      that directory size and ``observed_bytes`` where the entry would end, both
-      counted from the directory's start; ``observed_kind`` is ``"nonzero"``. Read
-      from a source that cannot seek, where the entries come before the end record
-      that sizes them, the same marker reports entries that fill more
-      (``"nonzero"``) or fewer (``"short"``) bytes than that size: ``expected_bytes``
-      is the size and ``observed_bytes`` the bytes the entries fill.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
       archive's end within the first MiB past it, so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
@@ -430,7 +424,9 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     the field it would have populated is absent rather than wrong. ``record`` names
     the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
     ``redir``, ``version``; ZIP's Unicode Path extra field, ``unicode_path``, and its
-    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``);
+    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``;
+    a TAR device header's ``device_numbers``, when its devmajor or devminor field is
+    not a number);
     ``record_id`` is its numeric type where the format has one (0x7075 for
     ``unicode_path``, the field's tag for ``unix_owner``), so an unnamed record is
     still identifiable.
@@ -698,6 +694,28 @@ class SizeWrapContext(_JsonSafeContext):
     size: int | None = None
 
 
+@dataclass(frozen=True)
+class UnknownMemberTypeContext(_JsonSafeContext):
+    """A TAR member header has a typeflag archivey does not know.
+
+    POSIX reserves ``A`` to ``Z`` for vendors and leaves the rest undefined; GNU tar
+    extracts any typeflag it does not know as a regular file and warns ("Unknown file
+    type"). A header that declares data is listed as a ``FILE`` of that ``size``,
+    readable and extracted (design rule DR-25); one that declares none stays ``OTHER``.
+    ``stored_type`` is the typeflag byte as a one-character string (the byte as
+    Latin-1), the same byte as ``extra["tar.type"]``; ``size`` is the member's
+    ``size``, ``None`` for an ``OTHER`` member. Advisory: the bytes are delivered and
+    nothing is hidden, so it is not in :data:`ARCHIVE_INTEGRITY_CODES`.
+    """
+
+    kind: Literal["unknown_member_type"] = "unknown_member_type"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    stored_type: str = ""
+    size: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -722,6 +740,7 @@ DiagnosticContext = (
     | LocalHeaderContext
     | OffsetWrapContext
     | SizeWrapContext
+    | UnknownMemberTypeContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -757,6 +776,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_LOCAL_CRC_USED: "local_header",
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
+        DiagnosticCode.MEMBER_TYPE_UNKNOWN: "unknown_member_type",
     }
 )
 
@@ -784,7 +804,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Fourteen codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Fifteen codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -835,6 +855,9 @@ and the reasons are part of the contract rather than an oversight:
   can tell. A size is corrected only where the layout or deflate's ratio forces it,
   and an unknown one is ``None``, with the length and CRC-32 checked on a read.
   ``STRICT`` would refuse ordinary Mac archives.
+- ``MEMBER_TYPE_UNKNOWN`` — a TAR typeflag archivey does not know. GNU tar extracts
+  such a member as a regular file with a warning, and archivey lists its data as a
+  ``FILE``, so nothing is hidden. ``STRICT`` would refuse an archive GNU tar extracts.
 """
 
 
@@ -894,7 +917,6 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "end_of_archive_block",
                         "end_of_central_directory",
                         "zip64_end_of_central_directory",
-                        "central_directory",
                     }
                 ),
             ),
@@ -1214,6 +1236,7 @@ __all__ = [
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",
+    "UnknownMemberTypeContext",
     "UnlistedDataContext",
     "UnusedArgumentContext",
     "format_path_name",

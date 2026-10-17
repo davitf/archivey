@@ -38,6 +38,7 @@ from archivey.internal.backends.tar_parser import (
     parse_number,
     parse_pax_records,
     read_sparse_map_1_0,
+    shown_value,
     sparse_map_0_0,
     sparse_map_0_1,
     validate_sparse_map,
@@ -146,6 +147,19 @@ def _add(t: tarfile.TarFile, name: str, data: bytes = b"", **attrs) -> None:
         (b"\x80" + (2**40).to_bytes(11, "big"), 2**40),
         (b"\xff" * 12, -1),
         (b"\xff" + b"\xff" * 10 + b"\xfe", -2),
+        # As GNU tar 1.35 reads octal (``from_header``): the digits end at the first
+        # NUL or blank, and the bytes after it are not read.
+        (b"644\x00XYZ\x00", 0o644),
+        (b"12 34\x00\x00\x00", 0o12),
+        (b"12\t34\x00\x00\x00", 0o12),
+        (b"\t12\x00\x00\x00\x00\x00", 0o12),
+        (b"\x00\x00junk\x00\x00", 0),
+        (b" \x00junk\x00\x00", 0),
+        (b"12345670", 0o12345670),
+        # One leading NUL is skipped: an old writer put it there when the previous
+        # field overflowed.
+        (b"\x0014000000000", 0o14000000000),
+        (b"\x000000012", 0o12),
     ],
 )
 def test_parse_number(field: bytes, expected: int) -> None:
@@ -153,11 +167,111 @@ def test_parse_number(field: bytes, expected: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "field", [b"12a\x00", b"0x12\x00", b"1_0\x00", b"+12\x00", b"9\x00"]
+    "field",
+    [
+        b"12a\x00",
+        b"0x12\x00",
+        b"1_0\x00",
+        b"+12\x00",
+        b"9\x00",
+        b"12X\x00\x00\x00",
+        b"0000089\x00",
+        # The leading NUL is skipped, never taken as the end of an empty number.
+        b"\x00junk\x00\x00\x00",
+        b"\xa012\x00\x00\x00\x00\x00",
+    ],
 )
 def test_parse_number_refuses_what_is_not_octal(field: bytes) -> None:
     with pytest.raises(ValueError):
         parse_number(field)
+
+
+def _field(start: int, end: int, value: bytes) -> Callable[[bytearray], None]:
+    def patch(h: bytearray) -> None:
+        h[start:end] = value.ljust(end - start, b"\x00")
+
+    return patch
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "field", "value"),
+    [
+        (100, 108, "mode", 0o644),
+        (108, 116, "uid", 0o1750),
+        (124, 136, "size", 0),
+        (136, 148, "mtime", 0o1234567),
+    ],
+)
+def test_header_number_with_bytes_after_its_terminator_is_read(
+    start: int, end: int, field: str, value: int
+) -> None:
+    """GNU tar and tarfile read a numeric field up to its NUL; the bytes after it are
+    not part of the number, and a header holding them is no damage."""
+    digits = f"{value:o}".encode()
+    patch = _field(start, end, digits + b"\x00XYZ")
+    parsed = parse_header_block(_block(patch=patch), 0)
+    assert isinstance(parsed, HeaderBlock)
+    assert getattr(parsed, field) == value
+
+
+def test_checksum_field_with_bytes_after_its_terminator_is_read() -> None:
+    """GNU tar reads the checksum field with the same rule as every other field."""
+
+    def checksum(h: bytearray) -> None:
+        h[148:156] = b" " * 8
+        h[148:156] = f"{sum(h):06o}".encode() + b"\x00X"
+
+    parsed = parse_header_block(_block(patch=checksum, checksum=False), 0)
+    assert isinstance(parsed, HeaderBlock)
+
+
+def test_v7_header_has_no_owner_names_or_device_numbers() -> None:
+    """A v7 header ends at byte 257. GNU tar reads no uname, gname or device number
+    from it, so bytes there are neither listed nor damage."""
+    patch = _field(
+        265,
+        345,
+        b"someuser\x00" + b"x" * 23 + b"grp\x00" + b"z" * 28 + b"junkjunkjunkjunk",
+    )
+    for typeflag in (b"0", b"3"):
+        parsed = parse_header_block(
+            _block(magic=b"", typeflag=typeflag, patch=patch), 0
+        )
+        assert isinstance(parsed, HeaderBlock)
+        assert parsed.format is HeaderFormat.V7
+        assert (parsed.uname, parsed.gname) == (b"", b"")
+        assert (parsed.devmajor, parsed.devminor) == (None, None)
+
+
+@pytest.mark.parametrize("typeflag", [b"0", b"5", b"6"])
+def test_device_numbers_are_read_only_for_devices(typeflag: bytes) -> None:
+    """GNU tar parses devmajor and devminor for a character or block device only; in
+    any other ustar header the two fields are not read."""
+    patch = _field(329, 345, b"junkjunkjunkjunk")
+    parsed = parse_header_block(_block(typeflag=typeflag, patch=patch), 0)
+    assert isinstance(parsed, HeaderBlock)
+    assert (parsed.devmajor, parsed.devminor) == (None, None)
+
+
+@pytest.mark.parametrize("typeflag", [b"3", b"4"])
+def test_device_numbers_of_a_device(typeflag: bytes) -> None:
+    good = _field(329, 345, _octal(5, 8) + _octal(7, 8))
+    parsed = parse_header_block(_block(typeflag=typeflag, patch=good), 0)
+    assert isinstance(parsed, HeaderBlock)
+    assert (parsed.devmajor, parsed.devminor) == (5, 7)
+    # A device number that is not a number does not reject the header: GNU tar
+    # reports it and lists the device. The header names the fault and keeps neither.
+    for bad, field in (
+        (_octal(5, 8) + b"junkjunk", "devminor"),
+        (b"junkjunk" + _octal(7, 8), "devmajor"),
+    ):
+        parsed = parse_header_block(
+            _block(typeflag=typeflag, patch=_field(329, 345, bad)), 0
+        )
+        assert isinstance(parsed, HeaderBlock)
+        assert (parsed.devmajor, parsed.devminor) == (None, None)
+        assert parsed.device_number_fault is not None
+        assert field in parsed.device_number_fault
 
 
 # ------------------------------------------------------------------ header blocks
@@ -836,6 +950,30 @@ def test_old_gnu_header_slot_below_any_offset_rejects_the_block() -> None:
     assert isinstance(parsed, RejectedBlock)
 
 
+@pytest.mark.parametrize(
+    "realsize",
+    [b"\xff" * 12, _base_256(2**63), _base_256(2**80)],
+    ids=["-1", "2**63", "2**80"],
+)
+def test_old_gnu_realsize_out_of_range_rejects_the_block(realsize: bytes) -> None:
+    """The realsize is the member's listed size. GNU tar 1.35 refuses one outside
+    off_t ("Archive value -1 is out of off_t range"); a negative one with an empty
+    map would otherwise read as an empty file with no error."""
+
+    def header(h: bytearray) -> None:
+        h[483:495] = realsize
+
+    block = _block(b"sp", typeflag=b"S", magic=b"ustar  \x00", patch=header)
+    parsed = parse_header_block(block, 0)
+    assert isinstance(parsed, RejectedBlock)
+    assert "real size" in parsed.reason
+
+
+def test_negative_sparse_size_is_damage() -> None:
+    error = validate_sparse_map(SparseMap.from_pairs([]), -1, 0, "'sp'")
+    assert isinstance(error, CorruptionError)
+
+
 def test_old_gnu_negative_slot_that_fits_reaches_validation() -> None:
     def header(h: bytearray) -> None:
         h[386:398] = b"\xff" * 12  # -1 in base-256
@@ -1006,6 +1144,84 @@ def test_pax_sparse_realsize_without_a_major_is_damage() -> None:
         _walk(_pax_1_0_member_without_major({"GNU.sparse.realsize": "20"}))
 
 
+_LONG_NUMBER = "1" * 5000  # past CPython's 4300-digit int() limit
+
+
+@pytest.mark.parametrize("key", ["size", "GNU.sparse.size", "GNU.sparse.major"])
+def test_pax_number_past_any_file_is_damage(key: str) -> None:
+    """A PAX number of thousands of digits is CorruptionError, not the builtin
+    ValueError that ``int()`` raises past ``sys.int_max_str_digits``. GNU tar
+    reports it out of range."""
+    records = {key: _LONG_NUMBER}
+    if key == "GNU.sparse.size":
+        records["GNU.sparse.map"] = "0,0"
+    data = _pax(records) + _block(b"a") + _END
+    with pytest.raises(CorruptionError):
+        _walk(data)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (b"\xff\xfe12abcd", r"'\xff\xfe12abcd'"),
+        (b"junk\x00\x00", r"'junk\x00\x00'"),
+        (b"\x81junkju\x00", r"'\x81junkju\x00'"),
+        (b"1" * 41, "'" + "1" * 40 + "...'"),
+        (b"\xff" * 41, "'" + r"\xff" * 40 + "...'"),
+        ("abc", "'abc'"),
+        ("9" * 41, "'" + "9" * 40 + "...'"),
+    ],
+)
+def test_shown_value_escapes_each_byte_once(value: bytes | str, expected: str) -> None:
+    """One escape per byte, whatever the byte is, and the cut marked inside the
+    quotes: a reader can tell the archive's bytes from the escape and a cut value
+    from a whole one."""
+    assert shown_value(value) == expected
+
+
+def test_long_sparse_major_is_cut_in_the_message() -> None:
+    data = _pax({"GNU.sparse.major": "0" * 5000}) + _block(b"a") + _END
+    with pytest.raises(CorruptionError, match=r"major version '0{40}\.\.\.' and no"):
+        _walk(data)
+
+
+def test_pax_size_past_max_offset_is_damage() -> None:
+    """A 20-digit PAX size is a number ``_pax_decimal`` reads; past 2**63 - 1 it is
+    no file's size, and the message quotes the value with the cut inside the
+    quotes."""
+    with pytest.raises(CorruptionError, match=f"PAX size '{2**63}' .* past any file"):
+        _walk(_pax({"size": str(2**63)}) + _block(b"a") + _END)
+    with pytest.raises(CorruptionError, match=r"'1{40}\.\.\.'"):
+        _walk(_pax({"size": _LONG_NUMBER}) + _block(b"a") + _END)
+
+
+@pytest.mark.parametrize("key", ["uid", "gid"])
+@pytest.mark.parametrize(
+    "value", [_LONG_NUMBER, "9" * 21, "9" * 20, str(2**32)], ids=lambda v: v[:12]
+)
+def test_pax_id_out_of_range_keeps_the_header_value(key: str, value: str) -> None:
+    """Past 2**32 - 1, uid_t's range, GNU tar 1.35 reports the id ("out of range
+    0..4294967295") and keeps the header's, as for an id that is not a number."""
+    (entry,), _ = _walk(_pax({key: value}) + _block(b"a") + _END)
+    assert (entry.uid, entry.gid) == (1000, 1000)
+
+
+@pytest.mark.parametrize("key", ["uid", "gid"])
+def test_largest_pax_id_is_read(key: str) -> None:
+    (entry,), _ = _walk(_pax({key: str(2**32 - 1)}) + _block(b"a") + _END)
+    assert getattr(entry, key) == 2**32 - 1
+
+
+def test_pax_numbers_may_have_leading_zeros() -> None:
+    """GNU tar reads PAX numbers with strtoumax: leading zeros do not count."""
+    zeros = "0" * 30
+    data = (
+        _pax({"size": zeros + "3", "uid": zeros + "7"}) + _block(b"a") + _data(b"abc")
+    )
+    (entry,), _ = _walk(data + _END)
+    assert (entry.stored_size, entry.uid) == (3, 7)
+
+
 def test_pax_sparse_minor_alone_reads_as_a_plain_member() -> None:
     """GNU tar lists a member with only a minor record as a plain file, exit 0."""
     (entry,), _ = _walk(_pax_1_0_member_without_major({"GNU.sparse.minor": "0"}))
@@ -1167,8 +1383,6 @@ def test_numeric_field_split_matches_the_field_table() -> None:
         ("gid", 116, 124),
         ("size", 124, 136),
         ("mtime", 136, 148),
-        ("devmajor", 329, 337),
-        ("devminor", 337, 345),
     ],
 )
 def test_each_bad_numeric_field_is_named(field: str, start: int, end: int) -> None:

@@ -93,7 +93,10 @@ stream (ZIP, 7z, RAR, ISO) SHALL be `MemberType.FILE` with
 attribute, and `OTHER` would hide bytes every official tool writes out (design rule
 DR-25). In TAR the typeflag is the structure and GNU tar ignores the size field of a
 device or FIFO header, so a header of typeflag `3`, `4` or `6` with a non-zero size
-SHALL be refused as `CorruptionError`. Every member whose stored mode's file-type bits
+SHALL be refused as `CorruptionError`. A TAR typeflag the reader does not know is not a
+special file: with a non-zero size it SHALL be `MemberType.FILE`, as GNU tar extracts it,
+and with none `MemberType.OTHER`, both reported with `MEMBER_TYPE_UNKNOWN` (DR-25; the
+`format-tar` spec has the rule). Every member whose stored mode's file-type bits
 (or TAR typeflag `3`/`4`/`6`) named a device, FIFO, socket or unknown file type SHALL
 carry `extra["special_file_type"]` ∈ `{"fifo","char_device","block_device","socket",
 "unknown"}`, whatever type the member ends up with (a RAR file copy is `FILE` by its
@@ -159,6 +162,7 @@ whose data-stored target has not been read yet (`read_link_targets=False`).
 | Case | Expected |
 | --- | --- |
 | TAR contains a device node or FIFO † | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
+| TAR header with an unknown typeflag (`9`) and 5 bytes of data; the same with none | `FILE` with `size == 5` that reads and extracts; `OTHER` with no `size`. Both report `MEMBER_TYPE_UNKNOWN`; neither has `extra["special_file_type"]` |
 | ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set), with no data | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
 | The same entry storing data (`zip -FI` on a named pipe), or an ISO Rock Ridge special mode over a non-empty extent | `member.type == MemberType.FILE`; `size` is the stored size; `extra["special_file_type"]` set; `MEMBER_SPECIAL_FILE_HAS_DATA` with `SpecialFileDataContext`; `STRICT` does not raise |
 | ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes, and so does the stream `stream_members()` yields for it; extraction creates the directory; `STRICT` raises |

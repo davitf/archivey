@@ -364,8 +364,8 @@ def test_empty_listing_check_never_decides_whether_listing_succeeded(
 def _names_with_and_without_encoding(path: Path) -> tuple[list[str], list[str]]:
     with open_archive(path) as reader:
         base = [m.name for m in reader.members()]
-    # cp500 (EBCDIC) re-maps even ASCII, so "unchanged" means "not applied at all"
-    # rather than "applied but this corpus has no non-ASCII names".
+    # No backend applies ``encoding=`` to a valid UTF-8 name, ASCII included, so a
+    # difference here needs a name whose bytes are not valid UTF-8.
     with open_archive(path, encoding="cp500") as reader:
         alt = [m.name for m in reader.members()]
     return base, alt
@@ -405,13 +405,6 @@ def test_encoding_argument_is_applied(key: str, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("key", ["7z", "dir"])
-def test_encoding_argument_is_silently_discarded(key: str, tmp_path: Path) -> None:
-    """F2 (pin): these backends accept ``encoding=`` and ignore it, with no signal."""
-    base, alt = _names_with_and_without_encoding(_archive("basic", key, tmp_path))
-    assert base == alt
-
-
-@pytest.mark.parametrize("key", ["7z", "dir"])
 def test_unusable_encoding_argument_is_recorded(key: str, tmp_path: Path) -> None:
     """F2 (fixed): the discard is queryable — but the entry point stays permissive.
 
@@ -420,11 +413,19 @@ def test_unusable_encoding_argument_is_recorded(key: str, tmp_path: Path) -> Non
     is a **resource offered for use if needed**, not an assertion about this archive,
     and the batch caller who passes one configuration across heterogeneous input should
     not have it fail on the ISO in the middle.
+
+    The names come out unchanged, but that alone cannot show the argument was
+    discarded: no backend applies ``encoding=`` to a valid UTF-8 name, and these
+    formats cannot portably hold one that is not (7z names are UTF-16). The
+    diagnostic is what tells "discarded" from "applied to nothing".
     """
     from archivey.diagnostics import DiagnosticCode
 
     path = _archive("basic", key, tmp_path)
+    with open_archive(path) as reader:
+        base = [m.name for m in reader.members()]
     with open_archive(path, encoding="cp500") as reader:
+        assert [m.name for m in reader.members()] == base
         assert reader.diagnostics.counts[DiagnosticCode.ENCODING_ARGUMENT_UNUSED] == 1
 
 
@@ -1043,20 +1044,21 @@ def test_trailing_data_scan_is_bounded(tmp_path: Path) -> None:
     [
         ("junk-inside-gzip", {"ARCHIVE_TRAILING_DATA": 1}),
         ("junk-after-gzip", {"ARCHIVE_TRAILING_DATA": 1}),
-        ("gzip-footer-missing", {}),
+        ("gzip-footer-missing", {"DIGEST_UNVERIFIABLE": 1}),
     ],
 )
-def test_compressed_tail_that_will_not_decode_ends_the_scan_quietly(
+def test_compressed_tail_that_will_not_decode_ends_the_scan_without_error(
     damage: str, expected: dict[str, int], tmp_path: Path
 ) -> None:
-    """F20: on a ``.tar.gz``, a tail that fails to decode ends the scan quietly.
+    """F20: on a ``.tar.gz``, a tail that fails to decode ends the scan without error.
 
     Bytes inside the gzip stream past the tar trailer are TAR's trailing data. Junk
     after the gzip stream is the codec's: the tail read reaches the stream's end, and
     the codec reports what follows it, once. A missing gzip footer makes the tail read
-    fail to decode; the scan then stops without a diagnostic or an error, because the
-    tar itself was read whole. Removing the ``except ReadError`` around the tail read
-    makes that last case raise.
+    fail as truncated; the tar itself was read whole, so the scan stops without an
+    error, but the CRC-32 over it was never checked, and ``DIGEST_UNVERIFIABLE`` says
+    so. Removing the ``except TruncatedError`` around the tail read makes that last
+    case raise.
     """
     import gzip
 

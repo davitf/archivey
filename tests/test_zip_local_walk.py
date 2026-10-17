@@ -14,6 +14,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import BinaryIO
 
 import pytest
 
@@ -28,9 +29,11 @@ from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.zip_local_walk import (
     DATA_DESCRIPTOR_SIGNATURE,
     DataDescriptor,
+    ForwardTail,
     LocalEntry,
     LocalHeaderWalk,
     MemberData,
+    match_damaged_descriptor,
     match_descriptor,
 )
 from archivey.internal.backends.zip_parser import (
@@ -295,6 +298,59 @@ def test_no_local_header_in_the_scan_window_is_corruption() -> None:
         walk.next_entry()
 
 
+def test_a_stub_before_an_archive_with_no_local_header_is_kept_whole() -> None:
+    """No local header in the window, but an end record: the stub and the archive
+    go to ``read_rest``, so the end record is found behind the stub as a file read
+    finds it."""
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+    stub = b"MZ" + b"\x00" * 5000
+    walk = LocalHeaderWalk(_Unseekable(stub + buf.getvalue()))
+    assert walk.next_entry() is None
+    end = walk.read_rest(None).end_record()
+    assert end.entries_declared == 0
+
+
+def test_an_end_record_signature_in_a_stub_past_the_window_is_no_archive() -> None:
+    """Only an end record where an archive ending the stream would put it counts: a
+    signature inside a stub that runs past the scan window leaves the error."""
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+    stub = b"MZ" + b"\x00" * 100 + b"PK\x05\x06" + b"\x00" * SFX_MAX
+    walk = LocalHeaderWalk(_Unseekable(stub + buf.getvalue()))
+    with pytest.raises(CorruptionError, match="no ZIP local header"):
+        walk.next_entry()
+
+
+def test_a_tail_hands_back_its_bytes_from_an_offset_only_when_it_holds_them() -> None:
+    whole = ForwardTail(
+        after="after member #0", members_start=0, members_end=10, start=10,
+        data=b"abcdef",
+    )  # fmt: skip
+    assert _read_all(whole.held_from(12)) == b"cdef"
+    assert whole.held_from(9) is None
+    # The head and the last bytes overlap: one run to the end of the stream.
+    joined = ForwardTail(
+        after="", members_start=0, members_end=10, start=13, data=b"defgh",
+        head=b"abcde",
+    )  # fmt: skip
+    assert _read_all(joined.held_from(11)) == b"bcdefgh"
+    # Bytes dropped between them: only the last ones run to the end.
+    cut = ForwardTail(
+        after="", members_start=0, members_end=10, start=20, data=b"xyz", head=b"abc"
+    )
+    assert cut.held_from(11) is None
+    assert _read_all(cut.held_from(21)) == b"yz"
+
+
+def _read_all(stream: BinaryIO | None) -> bytes:
+    assert stream is not None
+    out = b""
+    while chunk := stream.read(2):
+        out += chunk
+    return out
+
+
 def test_bytes_before_the_directory_are_kept_with_it() -> None:
     """An APK signing block sits between the last member and the directory, and the
     end record's directory offset counts it."""
@@ -392,12 +448,31 @@ def test_descriptors_without_their_signature_are_found_by_what_follows() -> None
     assert stored.descriptor.length == 12
 
 
-def test_an_unsigned_descriptor_that_matches_nothing_is_unsupported() -> None:
-    """A descriptor whose sizes do not match the data cannot be told from data: the
-    scan reads to the end record and gives up."""
+def test_an_unsigned_descriptor_with_one_damaged_field_is_found() -> None:
+    """Its CRC and uncompressed size still place it: the member ends there, and the
+    damaged compressed size is returned as stored, for the directory to contradict."""
     raw = bytearray(without_descriptor_signatures(_write(pipe=True)))
     first = raw.index(b"stored " * 50) + len(b"stored " * 50)
     raw[first + 4] ^= 0xFF  # the compressed size's low byte
+    walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
+    entry = walk.next_entry()
+    assert entry is not None
+    data = walk.member_data(entry)
+    assert data.read() == b"stored " * 50
+    descriptor = data.settle()
+    assert descriptor is not None
+    assert descriptor.file_size == len(b"stored " * 50)
+    assert descriptor.compressed_size == len(b"stored " * 50) ^ 0xFF
+    assert walk.next_entry() is not None
+
+
+def test_an_unsigned_descriptor_that_matches_nothing_is_unsupported() -> None:
+    """A descriptor with two fields that do not match the data cannot be told from
+    data: the scan reads to the end record and gives up."""
+    raw = bytearray(without_descriptor_signatures(_write(pipe=True)))
+    first = raw.index(b"stored " * 50) + len(b"stored " * 50)
+    raw[first + 4] ^= 0xFF  # the compressed size's low byte
+    raw[first + 8] ^= 0xFF  # the uncompressed size's low byte
     walk = LocalHeaderWalk(_Unseekable(bytes(raw)))
     entry = walk.next_entry()
     assert entry is not None
@@ -633,6 +708,107 @@ def test_match_descriptor_needs_a_signature_after_it() -> None:
             at_end, 0, compressed_size=10, crc=7, file_size=20, zip64=False, at_end=True
         )
         is not None
+    )
+
+
+_SIG = DATA_DESCRIPTOR_SIGNATURE
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "taken"),
+    [
+        # Without a signature: two of the CRC (7) and sizes (10, 20) must agree.
+        (struct.pack("<LLL", 8, 10, 20), True),
+        (struct.pack("<LLL", 7, 11, 20), True),
+        (struct.pack("<LLL", 7, 10, 21), True),
+        (struct.pack("<LLL", 8, 11, 20), False),
+        (struct.pack("<LLL", 8, 10, 21), False),
+        # With one: the compressed size alone, or two fields.
+        (_SIG + struct.pack("<LLL", 8, 10, 21), True),
+        (_SIG + struct.pack("<LLL", 7, 11, 20), True),
+        (_SIG + struct.pack("<LLL", 8, 11, 20), False),
+        # With a damaged one: all three fields.
+        (b"PK\x07\x09" + struct.pack("<LLL", 7, 10, 20), True),
+        (b"PK\x07\x09" + struct.pack("<LLL", 8, 10, 20), False),
+    ],
+)
+def test_match_damaged_descriptor_takes_one_damaged_field(
+    descriptor: bytes, taken: bool
+) -> None:
+    buffer = descriptor + b"PK\x03\x04"
+    found = match_damaged_descriptor(
+        buffer, 0, compressed_size=10, crc=7, file_size=20, zip64=False, at_end=False
+    )
+    assert (found is not None) == taken
+    if found is not None:
+        # The fields as stored, so the caller and the directory can judge them.
+        stored = struct.unpack("<LLL", descriptor[-12:])
+        assert (found.crc, found.compressed_size, found.file_size) == stored
+        assert found.length == len(descriptor)
+
+
+@pytest.mark.parametrize("signed", [True, False], ids=["signed", "unsigned"])
+def test_match_damaged_descriptor_reads_8_byte_sizes(signed: bool) -> None:
+    """A ZIP64 shape: 8-byte sizes, the uncompressed one damaged."""
+    csize, usize = 2**32 + 10, 2**32 + 20
+    descriptor = (_SIG if signed else b"") + struct.pack("<LQQ", 7, csize, usize + 1)
+    found = match_damaged_descriptor(
+        descriptor + b"PK\x03\x04",
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=True,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.crc, found.compressed_size, found.file_size) == (7, csize, usize + 1)
+    assert found.length == len(descriptor)
+
+
+def test_match_damaged_descriptor_gives_back_full_sizes_past_4_gib() -> None:
+    """A 4-byte shape past 4 GiB: the size that agrees modulo 2**32 comes back whole,
+    the damaged one as stored."""
+    csize, usize = 2**32 + 10, 2**32 + 20
+    descriptor = struct.pack("<LLL", 8, csize & 0xFFFFFFFF, usize & 0xFFFFFFFF)
+    found = match_damaged_descriptor(
+        descriptor + b"PK\x03\x04",
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=False,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.crc, found.compressed_size, found.file_size) == (8, csize, usize)
+    damaged = struct.pack("<LLL", 7, csize & 0xFFFFFFFF, (usize + 1) & 0xFFFFFFFF)
+    found = match_damaged_descriptor(
+        damaged + b"PK\x03\x04",
+        0,
+        compressed_size=csize,
+        crc=7,
+        file_size=usize,
+        zip64=False,
+        at_end=False,
+    )
+    assert found is not None
+    assert (found.compressed_size, found.file_size) == (csize, (usize + 1) & 0xFFFFFFFF)
+
+
+def test_match_damaged_descriptor_needs_a_signature_after_it() -> None:
+    buffer = struct.pack("<LLL", 8, 10, 20) + b"junk"
+    assert (
+        match_damaged_descriptor(
+            buffer,
+            0,
+            compressed_size=10,
+            crc=7,
+            file_size=20,
+            zip64=False,
+            at_end=False,
+        )
+        is None
     )
 
 

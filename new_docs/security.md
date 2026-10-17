@@ -147,7 +147,7 @@ in the repository measures what each limit costs in time and memory on your mach
 | `extraction_limits.max_entries` | 262,144 | Members one extraction writes | About 0.6 ms per file written, under 3 minutes at the default |
 | `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands. It's checked as data is written, and for a member whose size and compressed size the archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive read from a pipe, aren't checked | None of its own |
 | `listing_limits.max_members` | 262,144 | Members an archive can list | About 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default |
-| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets | About 1.7 MiB of memory per MiB counted, 110 MiB at the default |
+| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets. A ZIP read from a pipe also keeps up to this much of its small members' data, in case they are links, on top of the text | About 1.7 MiB of memory per MiB counted, 110 MiB at the default; up to 64 MiB more for a ZIP read from a pipe |
 | `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE | The memory itself |
 | `decoder_limits.max_key_derivation_rounds` | 2^25 | Password-hashing work per open archive | 0.2-0.7 µs per round, 7-25 s at the default |
 | `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process | Up to twice the limit in memory while a PPMd member decodes, 32 MiB at the default |

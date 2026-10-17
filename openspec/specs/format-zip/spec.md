@@ -226,16 +226,27 @@ password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").
 
 `stream_members()` SHALL yield each member with what its local header gives: `mode`,
-`create_system` and `comment` are `None`, `uid` and `gid` are `None` even when the
-local extra field carries them, the type is `FILE` or `DIRECTORY` from the
-name (a name ending in `\` is a `DIRECTORY`), and `member_state_final` is `False`
-(`archive-data-model`). Once the directory has been read, before the pass ends, each
-member SHALL be updated in place from its directory entry, matched by offset, as the
-same archive read from a file lists it, and `is_current` SHALL follow the directory
-order; member ids and listing order stay those of the file. A local entry no directory
-entry points to SHALL be dropped from the listing and reported as
-`ARCHIVE_UNLISTED_DATA`. A member flagged as a Windows reparse point whose data is not
-a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
+`create_system` and `comment` are `None`, `uid` and `gid` are `None` even when the local
+extra field carries them, the type is `FILE` or `DIRECTORY` from the name (a name ending
+in `\` is a `DIRECTORY`), and `member_state_final` is `False` (`archive-data-model`).
+Once the directory has been read, before the pass ends, each member SHALL be updated in
+place from its directory entry, matched by offset, as the same archive read from a file
+lists it, and `is_current` SHALL follow the directory order; member ids and listing
+order stay those of the file. A local entry no directory entry points to SHALL be
+dropped from the listing and reported as `ARCHIVE_UNLISTED_DATA`. The walk SHALL stop at
+the first bytes after a member that are no local header and keep the rest of the stream;
+a directory entry that points into the kept bytes (bytes a writer left between two
+members, or a second archive appended with `cat`) SHALL be read from them at that offset
+and yielded before the pass ends, and no other local header there SHALL be read. One
+whose bytes the listing limits dropped SHALL end the pass with `ResourceLimitError`.
+Every byte each attempt there consumes, a member read or a local header that fails to
+parse, SHALL be counted, and an entry reached once the count equals the bytes the pass
+holds SHALL end the pass with `CorruptionError` before it is read. A local header there
+that does not parse SHALL fail its entry at the end of the pass with the parse error as
+its cause. A stub with no local header within `SFX_MAX`, the stream ending there on an
+end record, SHALL be read as the tail, so an archive with no local header behind a stub
+lists as from a file. A member flagged as a Windows reparse point whose data is not a
+reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
 `FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
 `members_report_if_available()` SHALL return `None` until the directory has been read.
 
@@ -255,23 +266,40 @@ entry already took SHALL end the pass with `CorruptionError`.
 
 The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
 mismatch (a STORED member's, or a descriptor planted in the data of a bit-3 codec member
-the pass reads past) and the reversed pair fail a member the file read writes; bytes between a bit-3
-codec member's end and its descriptor, refused from a file, are counted into the member;
-the first of several inconclusive password candidates wins. It MAY also differ in these:
-a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
-the pass, losing the members after it, if its decode read more than 4 MiB past the
-data's end; a bit-3 codec member whose stream runs on into its descriptor reads, where a
-file read raises `TruncatedError` at the stated compressed size; a bit-3 LZMA member
-without the end-of-stream marker is refused where a file read reads it; in
+the pass reads past) and the reversed pair fail a member the file read writes; bytes
+between a bit-3 codec member's end and its descriptor, refused from a file, are counted
+into the member; the first of several inconclusive password candidates wins. It MAY also
+differ in these: a damaged bit-3 codec member can fail with another `CorruptionError`
+subclass, and ends the pass, losing the members after it, if its decode read more than 4
+MiB past the data's end; a bit-3 codec member whose stream runs on into its descriptor
+reads, where a file read raises `TruncatedError` at the stated compressed size; a bit-3
+LZMA member without the end-of-stream marker is refused where a file read reads it; a
+bit-3 member followed by bytes that are no ZIP record ends the pass
+(`UnsupportedFeatureError` when STORED) where a file read reads it; in
 `extract_all`, a link member the pass wrote as a file keeps the error its data read gave
 (no password: `EncryptionError`, where the file read reports `LinkTargetNotFoundError`);
 and an archive-wide refusal the directory or end record makes is raised by a file read
-before anything is written and by the pass after every member is written, the files
-staying on disk. A policy that raises on `MEMBER_LOCAL_NAME_DIFFERS` or
-`MEMBER_LOCAL_CRC_USED` is the same: a file read raises when it lists or opens the
-member, the pass once it has read the directory, leaving every member it wrote as the
-pass wrote it: a member whose local header names it differently stays under the local
-header's name, since the pass stops before the end-of-pass rename.
+before anything is written and by the pass after every member is written. A policy that
+raises on `MEMBER_LOCAL_NAME_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the same: a file
+read raises when it lists or opens the member, the pass once it has read the directory.
+A run that stops before the end of the pass, for these or any other reason, never learns
+which members are links: it SHALL remove every file it wrote whose data could be a
+link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag),
+so no link is left on disk as a file holding its target. The longer files stay as the
+pass wrote them, with no mode applied: a member whose local header names it differently
+stays under the local header's name, since the pass stops before the end-of-pass rename.
+
+The data the pass keeps of short members until the directory says which are links SHALL
+NOT be charged to the listing limits: an archive a file read lists within them SHALL
+list from a pipe too, however many small files it holds, except that a link whose own
+data was dropped (below) is listed without its target. The pass SHALL hold at most
+`max_metadata_bytes` of that data, dropping the longest first; a link whose data was
+dropped SHALL be listed with `link_target` unset and `SYMLINK_TARGET_UNAVAILABLE` with
+reason `"target_data_dropped"`, and the rest of the listing SHALL stand, except under
+`DiagnosticPolicy.STRICT`, which refuses the archive on that integrity code. This
+differs from a file read only for a target at least as long as `max_metadata_bytes` of
+short members' data before it. The archive comment SHALL be weighed against
+`max_metadata_bytes` once the pass reads the end record, as a file read weighs it.
 
 #### Scenario: non-seekable read matrix
 
@@ -281,13 +309,20 @@ header's name, since the pass stops before the end-of-pass rename.
 | Non-seekable ZIP with `streaming=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
 | Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
 | `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
+| A pipe, many small files whose data passes `max_metadata_bytes`, a symlink after them | Lists every member and the link's target, as a file read does |
 | `extract_all()` from a pipe, a Unix symlink member | The link is made at the end of the pass, after the filter runs again on it |
+| `extract_all()` from a pipe that stops before the end of the pass (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the directory, or any other reason) | Every file the pass wrote whose data could be a link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag) is removed; a longer file stays, with no mode applied |
 | Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |
 | Bit-3 LZMA member without the end-of-stream marker | `UnsupportedFeatureError` at that member |
 | Bit-3 PPMd member, `max_ppmd_in_process_input=None` | `ResourceLimitError` |
 | Two same-name members whose directory order reverses their file order | `is_current` from the directory order; `stream_members()` raises nothing |
 | A data descriptor that understates a STORED member, `stream_members()` | `CorruptionError` at the end of the pass |
 | A local entry the directory does not list | Dropped from the listing; `ARCHIVE_UNLISTED_DATA` |
+| Bytes between a sized member and the next | Every member read, as from a file |
+| `cat first.zip second.zip` | The second archive's members, as from a file; the first's yielded, then dropped with `ARCHIVE_UNLISTED_DATA` |
+| A member the directory places in bytes the listing limits dropped | `ResourceLimitError` |
+| Entries placed in the kept bytes whose data or headers overlap, at any listing limits | `CorruptionError` once they have consumed the bytes held |
+| A stub, then an archive with no local header (an empty one), `format=ZIP` | Opens with what the directory lists, as from a file |
 | `reader.info` during the pass, then after it | `member_count` and `comment` `None`, then the directory's |
 
 ### Requirement: Map ZIP member metadata to ArchiveMember
@@ -403,12 +438,9 @@ last member so the listing completes, each of:
   there without ZIP64, which current 7-Zip accepts, so its count is compared modulo
   65536;
 - the archive comment length runs past the end of the file
-  (`expected_marker="end_of_central_directory"`, `observed_kind="short"`);
-- a central-directory entry's name, extra field or comment length runs past the
-  directory, so the field is cut at the directory's end
-  (`expected_marker="central_directory"`, `observed_kind="nonzero"`).
+  (`expected_marker="end_of_central_directory"`, `observed_kind="short"`).
 
-None of them SHALL raise under the default policy; `STRICT` refuses the archive.
+Neither SHALL raise under the default policy; `STRICT` refuses the archive.
 Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
 every member.
 
@@ -425,7 +457,6 @@ while 7-Zip searches further back and lists the real members.
 | Classic end record declares 2 or 4 entries, directory holds 3 | All 3 members listed and readable; one `ARCHIVE_EOF_MARKER_MISSING`, `expected_marker="end_of_central_directory"`, `observed_kind="nonzero"`, `observed_bytes` the record's offset |
 | ZIP64 end record declares 5 entries, directory holds 3 | Same, the message naming the ZIP64 record |
 | Comment length 5000, 8 comment bytes in the file | `observed_kind="short"`, `expected_bytes` 5022, `observed_bytes` 30 |
-| Last directory entry's name, extra or comment length runs past the directory | `expected_marker="central_directory"`; the message names the member and the field |
 | Consistent classic or ZIP64 end record | No diagnostic |
 | 65537 entries, classic record only, count 1 (65537 modulo 65536) | All 65537 members listed; no diagnostic |
 | Archive comment holding an end-record signature followed by 30 zero bytes | No members listed; one `EMPTY_ARCHIVE` and no `ARCHIVE_EOF_MARKER_MISSING` |
@@ -435,24 +466,49 @@ while 7-Zip searches further back and lists the real members.
 
 The central directory SHALL be walked as members are listed, so a damaged entry costs
 the directory's fields from it on, not the archive (DR-2). An entry whose signature is
-wrong, or whose 46-byte fixed header the directory cuts short, SHALL make the listing
-raise `CorruptionError` after the members before it and the members the local headers
-hold past it, which a read from a pipe lists the same way: those keep only what their
-local header holds (no mode, host or comment), and a member the directory already
-listed, by offset, is not listed again. `members()` raises, `members_report()` returns
-those members with the error, iteration yields them and then raises, and `extract_all()`
-writes them and then raises. Every listed member SHALL read, except one whose data the
-walk over the local headers could not get past: its read SHALL raise that walk's error,
-a cut as `CorruptionError` and never `TruncatedError` (the end record follows it). A
-listing limit that walk meets SHALL be raised instead of the damage. A read from a pipe
-raises whatever stops it, as it meets that before the directory, and raises the damage
-ahead of a check a member before it fails. `ArchiveInfo.member_count` SHALL be `None`
-when the walk did not complete. A name, extra field or comment that runs
-past the directory's end can only be the last entry's; it is the end-record mismatch
-above, not damage. A local-header offset past the file's end SHALL raise
-`CorruptionError` when that member opens, never `TruncatedError` (the directory follows
-every local header, so the offset is wrong, not the file cut) and never an untyped error
-for an offset too large to seek to.
+wrong, whose 46-byte fixed header the directory cuts short, or whose lengths are damaged
+SHALL make the listing raise `CorruptionError` after the members before it and the
+members the local headers hold past it, which a read from a pipe lists the same way:
+those keep only what their local header holds (no mode, host or comment), and a member
+the directory already listed, by offset, is not listed again. `members()` raises,
+`members_report()` returns those members with the error, iteration yields them and then
+raises, and `extract_all()` writes them and then raises. Every listed member SHALL read,
+except one whose data the walk over the local headers could not get past: its read SHALL
+raise that walk's error, a cut as `CorruptionError` and never `TruncatedError` (the end
+record follows it). A listing limit that walk meets SHALL be raised instead of the
+damage. A read from a pipe raises whatever stops it, as it meets that before the
+directory, and raises the damage ahead of a check a member before it fails.
+`ArchiveInfo.member_count` SHALL be `None` when the walk did not complete. A
+local-header offset past the file's end SHALL raise `CorruptionError` when that member
+opens, never `TruncatedError` (the directory follows every local header, so the offset
+is wrong, not the file cut) and never an untyped error for an offset too large to seek
+to.
+
+An entry's lengths are damaged when:
+
+- its name, extra field or comment runs past the directory's end;
+- its name, extra field or comment holds a central header signature from which the
+  headers chain exactly to the directory's end, and either the end record's count fits
+  that reading or the first of those headers points at a local header with its name:
+  the lengths swallowed those entries. A member comment holding a whole well-formed
+  entry chains too, but points at another member's local header and lists as it is;
+- its name, extra field or comment holds a central header signature, and following
+  such signatures has already stepped over as many headers as the directory could
+  hold or read twice the directory past the walk's own reads, so the walk cannot rule
+  out a swallow. The walk remembers the headers a chain steps onto past its first, up
+  to a fixed number ahead of it, so following costs about one more pass over the
+  directory however many signatures it holds, in bounded memory, and a signature that
+  is part of a name fails at its first header and spends nothing;
+- no central header follows it and the local header at its offset holds another name:
+  its name length was made shorter.
+
+Cutting the field, as `zipfile` does, would list a member under a cut name or one made
+of other entries' bytes and drop the entries it swallowed (DR-1). A signature from which
+the headers do not chain so is part of the name, and a wrong count alone stays the
+end-record finding above. An entry no header follows whose local header holds the same
+name, or none, is listed without its comment, which a wrong length may have cut, and the
+next entry raises. This supersedes the earlier cut-and-warn rule, by davi's 2026-10-17
+ruling (PR 860).
 
 #### Scenario: damaged directory
 
@@ -462,6 +518,14 @@ for an offset too large to seek to.
 | A 10-byte header fragment after the second entry, inside the declared directory size | `a.txt`, `b.txt` listed (no third local header), then `CorruptionError` naming a truncated central directory |
 | The first, through `for member in reader` or `extract_all()` | Three members yielded or written, then `CorruptionError` |
 | Second central header's signature overwritten, from a file and from a pipe | The same listing, mode from the directory for the first member only, the same files written |
+| First entry's name, extra or comment length grown by exactly the second entry's size, or by 0x8000, from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` listed from their local headers, the same files written, then `CorruptionError`; never a member named `m0.txtPK\x01\x02…` |
+| Last entry's name, extra or comment length runs past the directory | The members before it from the directory, the last from its local header, then `CorruptionError` naming the field |
+| A member named `a\x01PK\x01\x02.txt`, count agreeing | Listed as it is; no diagnostic |
+| A member named `a\x01PK\x01\x02.txt`, end record declaring one entry too many, from a file and from a pipe | Both members listed with their mode; one `ARCHIVE_EOF_MARKER_MISSING` for the count |
+| First entry's name length cut from 6 to 4 (`m0.t`), from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` from their local headers, then `CorruptionError`; never `m0.t` |
+| First entry's name length grown by exactly the second entry, end record declaring the 2 entries that remain, from a file and from a pipe | `m0.txt`, `m1.txt`, `m2.txt` from their local headers, then `CorruptionError` |
+| First entry's comment length cut from 13 to 8, from a file and from a pipe | Both members listed with comment `None`, never `hello-co`, then `CorruptionError` |
+| 40 members, each with two signatures in its comment and one in its name, from a file and from a pipe | Every member listed with its mode and comment; no error and no diagnostic |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 
 ### Requirement: Read ZIP members whatever version they say they need

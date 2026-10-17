@@ -18,11 +18,12 @@ reads its directory first.
 
 from __future__ import annotations
 
+import heapq
 import io
 import sys
 import zlib
 from array import array
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
 from typing import BinaryIO, Literal, cast
@@ -50,6 +51,7 @@ from archivey.internal.backends.zip_aes import (
 from archivey.internal.backends.zip_local_walk import (
     _CODEC_RETAIN,
     DataDescriptor,
+    ForwardTail,
     LocalEntry,
     LocalHeaderWalk,
     MemberData,
@@ -111,7 +113,11 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import open_codec_stream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
-from archivey.internal.streams.streamtools import ReadableStream, read_exact
+from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
+    ReadableStream,
+    read_exact,
+)
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import (
@@ -140,6 +146,10 @@ _NO_END_BEFORE_EOF = sys.maxsize
 #: the cost of one key derivation, so it bounds only the bytes held until the
 #: directory arrives.
 _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
+
+#: Why a member's kept data was dropped (``ZipForwardReader._hold``): the pass held
+#: ``max_metadata_bytes`` of short members' data, and this member's was the longest.
+_DROPPED = "dropped"
 #: The data a member read with several possible passwords keeps to confirm one on
 #: (``_PassData._confirm_password``): the compressed input a bounded confirm may take
 #: (``PASSWORD_CONFIRM_MAX_INPUT_BYTES``), and room for the encryption header.
@@ -272,13 +282,42 @@ def _descriptor_error(
     )
 
 
-def _missing_error(member: ArchiveMember, offset: int) -> CorruptionError:
-    return CorruptionError(
+def _missing_error(
+    member: ArchiveMember, offset: int, rejected: ArchiveyError | None = None
+) -> CorruptionError:
+    """The failure of a directory entry with no local entry: none at ``offset``, or
+    one there that did not parse (``rejected``, chained as the cause)."""
+    if rejected is None:
+        return CorruptionError(
+            f"ZIP central directory entry {quoted(member.name)} points to offset "
+            f"{offset}, where the stream held no local header",
+            member_name=member.name,
+            source_format=ArchiveFormat.ZIP,
+        )
+    error = CorruptionError(
         f"ZIP central directory entry {quoted(member.name)} points to offset "
-        f"{offset}, where the stream held no local header",
+        f"{offset}, where the local header did not parse: {rejected.message}",
         member_name=member.name,
         source_format=ArchiveFormat.ZIP,
     )
+    error.__cause__ = rejected
+    return error
+
+
+def _without_frames(exc: ArchiveyError) -> ArchiveyError:
+    """``exc`` and the errors it was raised from (``__cause__``, the reader's own
+    translation chain) with no traceback, to keep for a report: a traceback keeps
+    its frames and their locals alive. Each one's ``__context__`` link is dropped,
+    not followed: it may be an exception the caller was handling when it drove the
+    pass, whose traceback is the caller's."""
+    visited: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in visited:
+        visited.add(id(link))
+        link.__traceback__ = None
+        link.__context__ = None
+        link = link.__cause__
+    return exc
 
 
 def _declared_reparse_buffer(header: bytes) -> int:
@@ -620,6 +659,10 @@ class _PassData:
             # PPMd holds a sized member's input until it is all in; a bit-3 member
             # has no size to wait for, so it is fed in pieces, in a child process.
             params = replace(params, input_runs_on=True)
+        if deferred:
+            # The data reads ahead in small steps (``MemberData._read_ahead``),
+            # which a ``BufferedReader`` in front of the decoder would fill.
+            source = OneReadEachStream(source)
         return open_codec_stream(
             codec,
             source,
@@ -1613,6 +1656,15 @@ class ZipForwardReader(ZipReader):
                     source_format=ArchiveFormat.ZIP,
                 )
         self._pass_data: _PassData | None = None
+        # Local header offset -> why the header the directory names there, in the
+        # bytes kept after the walk, did not parse (``_walk_held_members``): the
+        # error alone, its frames dropped. Cleared on a pass that completes, with
+        # the other maps of the walk; a pass that raises leaves them on the reader.
+        self._rejected_headers: dict[int, ArchiveyError] = {}
+        # How many local headers the walk has met: the next member's index, and
+        # what ``max_members`` is charged on. Reset where the walk starts
+        # (``_iter_members``).
+        self._local_count = 0
         # Local header offset -> the member built from it, for the directory to
         # update in place at the end.
         self._by_offset: dict[int, ArchiveMember] = {}
@@ -1628,10 +1680,16 @@ class ZipForwardReader(ZipReader):
         # Member id -> its whole data, when short enough to be a link target, or the
         # start a Windows reparse buffer's parse reads of longer data
         # (``_PassData.reparse_prefix``), until the directory says which members are
-        # links. Weighed by the listing tracker.
+        # links. Bounded with the kept ciphertext by ``_hold``, not charged to the
+        # listing: most of it is files' data, which a file read does not keep.
         self._captured: dict[int, bytes] = {}
+        # What ``_captured`` and the kept ciphertext hold, in bytes, and a heap of
+        # (-length, member id) over them, so ``_hold`` drops the longest first.
+        self._kept_bytes = 0
+        self._kept_heap: list[tuple[int, int]] = []
         # Member id -> why its bytes were not kept, when not for their length
-        # (``_PassData.uncaptured``), so a link's missing target says why.
+        # (``_PassData.uncaptured``, or ``_DROPPED`` by ``_hold``), so a link's
+        # missing target says why.
         self._uncaptured: dict[int, str | int | ArchiveyError | _KeptCiphertext] = {}
         # Local header offset -> what the data descriptor after a bit-3 member's data
         # said (CRC, compressed size, size), for the directory to confirm at the end.
@@ -1652,43 +1710,133 @@ class ZipForwardReader(ZipReader):
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         walker = self._walker
-        max_members = self._config.listing_limits.max_members
-        index = 0
+        self._local_count = 0
         entry = self._first_entry
         self._first_entry = None
         while True:
-            if index:
+            if self._local_count:
                 self._leave_member()
                 with self._translated_errors():
                     entry = walker.next_entry()
             if entry is None:
                 break
-            if max_members is not None and index >= max_members:
-                error = _max_members_error(max_members, "ZIP local headers name")
-                self._stamp_error_context(error)
-                raise error
-            member = self._local_member(entry, index)
-            aes = cast("_ZipLocator", member._raw).aes
-            self._pass_data = _PassData(
-                self,
+            yield self._begin_member(entry)
+        yield from self._read_directory()
+
+    def _begin_member(self, entry: LocalEntry) -> ArchiveMember:
+        """The member ``entry`` describes, its data open on the walk at it."""
+        max_members = self._config.listing_limits.max_members
+        index = self._local_count
+        if max_members is not None and index >= max_members:
+            error = _max_members_error(max_members, "ZIP local headers name")
+            self._stamp_error_context(error)
+            raise error
+        member = self._local_member(entry, index)
+        aes = cast("_ZipLocator", member._raw).aes
+        self._pass_data = _PassData(
+            self,
+            entry,
+            member,
+            self._walker.member_data(
                 entry,
-                member,
-                walker.member_data(
-                    entry,
-                    encrypted=_is_encrypted_entry(
-                        entry.header.flags, entry.header.method
-                    ),
-                    # WinZip AES names the real method in its extra field.
-                    stored=None if aes is None else aes.actual_method == 0,
-                ),
-            )
-            self._by_offset[entry.offset] = member
-            self._local_offsets.add(entry.offset)
-            if entry.deferred and entry.header.extra[:2] == b"UX":
-                self._mac_data_starts[entry.offset] = entry.header.data_start
-            yield member
-            index += 1
-        self._read_directory()
+                encrypted=_is_encrypted_entry(entry.header.flags, entry.header.method),
+                # WinZip AES names the real method in its extra field.
+                stored=None if aes is None else aes.actual_method == 0,
+            ),
+        )
+        self._by_offset[entry.offset] = member
+        self._local_offsets.add(entry.offset)
+        if entry.deferred and entry.header.extra[:2] == b"UX":
+            self._mac_data_starts[entry.offset] = entry.header.data_start
+        self._local_count = index + 1
+        return member
+
+    def _walk_held_members(
+        self, tail: ForwardTail, offsets: Iterable[int]
+    ) -> Iterator[ArchiveMember]:
+        """Yield the members the directory places after the walk's end, read from
+        the bytes the pass kept there.
+
+        The walk ends at the first bytes after a member that are no local header:
+        the directory, or bytes between two members (a gap a writer left, a stray
+        data descriptor), or a first archive's directory with a second archive
+        after it (``cat a.zip b.zip``). A file read seeks to each offset the
+        directory names, so the pass reads each such member from the kept bytes
+        the same way, at those offsets only: no local header the directory does
+        not name is read there. A directory entry whose local header the bound
+        dropped is ``ResourceLimitError``, as a directory there is
+        (``ForwardTail.end_record``): higher limits keep those bytes.
+
+        Each entry is read from its offset to its data's end, or as far as its
+        local header got before it failed to parse, and nothing keeps that short
+        of the end of the stream, so entries whose bytes overlap would read the
+        kept bytes once each. Every byte each attempt reads is counted, however it
+        ends, and once the count reaches the bytes held, the next entry is
+        ``CorruptionError`` before it is read: entries a writer laid out apart never
+        take that much, so their bytes overlap, and no limit would relieve it.
+        Together the attempts read the kept bytes at most twice. A local header
+        that is there and does not parse fails its entry at the end of the pass,
+        with the parse error as the reason (``_rejected_headers``).
+
+        The directory walk has run by then, so its callbacks never see these
+        members: ``local_name_at`` cannot correct a held member's offset wrapped
+        past 4 GiB, and ``local_data_start_at`` gives no data start for a held
+        bit-3 member with the macOS ``UX`` field. Both need an archive over 4 GiB
+        with bytes in front of the member; the member then fails as missing, or
+        its size is the directory's 32-bit one.
+        """
+        main = self._walker
+        budget = len(tail.head) + len(tail.data)
+        consumed = 0
+        try:
+            # Among the members' data, which the walk read as such, or past the end
+            # of the stream, no local header is there to read.
+            held_offsets = {
+                offset for offset in offsets if tail.members_end <= offset < tail.size
+            }
+            for offset in sorted(held_offsets - self._local_offsets):
+                if consumed >= budget:
+                    raise CorruptionError(
+                        "ZIP central directory places entries after the members a "
+                        f"forward read walked ({tail.after}) whose bytes overlap: "
+                        f"reading them has taken the {budget} bytes held there, "
+                        "and entries a writer laid out apart never do",
+                        archive_name=self._archive_name,
+                        source_format=ArchiveFormat.ZIP,
+                    )
+                held = tail.held_from(offset)
+                if held is None:
+                    raise ResourceLimitError(
+                        "ZIP central directory places a local header at stream "
+                        f"offset {offset}, past the members a forward read walked "
+                        f"({tail.after}), and the {tail.size - offset} bytes from "
+                        "there to the end of the stream are more than it holds "
+                        "within the listing limits",
+                        archive_name=self._archive_name,
+                        source_format=ArchiveFormat.ZIP,
+                    )
+                self._walker = LocalHeaderWalk(
+                    held, offset=offset, find_start=False, index=self._local_count
+                )
+                try:
+                    try:
+                        with self._translated_errors():
+                            entry = self._walker.next_entry()
+                    except ArchiveyError as exc:
+                        # A local header there that does not parse: the entry fails
+                        # at the end of the pass, with this as the reason.
+                        self._rejected_headers[offset] = _without_frames(exc)
+                        continue
+                    if entry is None:
+                        # Other bytes: the entry fails as missing, as from a file.
+                        continue
+                    yield self._begin_member(entry)
+                    self._leave_member()
+                finally:
+                    # Every byte this attempt read counts, however it ended.
+                    consumed += self._walker.source.offset - offset
+        finally:
+            self._walker = main
 
     def _leave_member(self) -> None:
         """Read past the data of the member the walk is at, before the next header."""
@@ -1712,15 +1860,40 @@ class ZipForwardReader(ZipReader):
         assert member._member_id is not None
         if captured is not None:
             self._captured[member._member_id] = captured
-            self._listing_tracker.account_retained_bytes(len(captured), enforce=False)
+            self._hold(member._member_id, len(captured))
         elif (why := current.uncaptured) is not None:
             self._uncaptured[member._member_id] = why
             if isinstance(why, _KeptCiphertext):
-                self._listing_tracker.account_retained_bytes(len(why), enforce=False)
+                self._hold(member._member_id, len(why))
+
+    def _hold(self, member_id: int, length: int) -> None:
+        """Count ``length`` bytes just kept for ``member_id`` against the most the pass
+        keeps for link targets, and drop the longest kept data while over it.
+
+        Every member short enough to be a link keeps its data until the directory says
+        which members are links, so an archive of many small files keeps most of its
+        data. The pass holds at most ``max_metadata_bytes`` of it (none is charged to
+        the listing, which a file read's never holds), on top of what the listing
+        holds. Real link targets are paths, far shorter than most files, so the
+        longest data goes first: a link loses its target only behind
+        ``max_metadata_bytes`` of kept data no longer than its own, and is then listed
+        without one (``_ensure_link_target``).
+        """
+        budget = self._config.listing_limits.max_metadata_bytes
+        if budget is None:
+            return
+        self._kept_bytes += length
+        heap = self._kept_heap
+        heapq.heappush(heap, (-length, member_id))
+        while self._kept_bytes > budget:
+            negative, dropped = heapq.heappop(heap)
+            self._kept_bytes += negative
+            self._captured.pop(dropped, None)
+            self._uncaptured[dropped] = _DROPPED
 
     # -- the directory -------------------------------------------------------------
 
-    def _read_directory(self) -> None:
+    def _read_directory(self) -> Iterator[ArchiveMember]:
         """Read the directory and end records, and update the members in place.
 
         The bytes after the last member are kept up to ``_tail_bound`` (``read_rest``)
@@ -1756,13 +1929,19 @@ class ZipForwardReader(ZipReader):
             tail = self._walker.read_rest(_tail_bound(limits))
             end = tail.end_record()
         self._end_record = self._end = end
+        # Weighed now that it is known, as a file read weighs it before the first
+        # member.
+        self._account_archive_comment()
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
         by_offset = self._by_offset
 
         def local_name_at(offset: int) -> bytes | None:
-            # The pass has every local header it met; the walk asks for one only to
-            # correct an offset wrapped past 4 GiB.
+            # The pass has every local header it met. The walk asks for the name of
+            # the one an offset in the directory points at wherever a length or
+            # offset field may be wrong: a corrected offset, an entry no central
+            # header follows, and the first header a signature inside an entry's
+            # fields chains to (an offset no local header has to back).
             member = by_offset.get(offset)
             return None if member is None else cast("_ZipLocator", member._raw).name
 
@@ -1796,6 +1975,7 @@ class ZipForwardReader(ZipReader):
                     entries.append(central)
         except CorruptionError as exc:
             damage = exc
+        yield from self._walk_held_members(tail, offsets)
         # A walk that met damage read no count.
         self._entries_read = None if damage is not None else walk.entries_read
         local_offsets = self._local_offsets
@@ -1819,7 +1999,11 @@ class ZipForwardReader(ZipReader):
                     (
                         position,
                         missing,
-                        _missing_error(missing, entries[position].header_offset),
+                        _missing_error(
+                            missing,
+                            entries[position].header_offset,
+                            self._rejected_headers.get(offset),
+                        ),
                     )
                 )
                 placed.append(missing)
@@ -1902,10 +2086,11 @@ class ZipForwardReader(ZipReader):
             for member_id, why in self._uncaptured.items()
             if member_id in links
         }
+        self._kept_heap = []
+        self._kept_bytes = 0
         self._report_unlisted(unlisted)
-        last = entries[-1] if entries else None
         for finding in () if damage is not None else walk.findings:
-            self._emit_walk_finding(finding, last)
+            self._emit_walk_finding(finding)
         # The kept bytes end where the stream does, so the last ``trailing`` of them
         # follow the end record and its declared comment.
         trailing = tail.data[len(tail.data) - end.trailing :]
@@ -1916,6 +2101,7 @@ class ZipForwardReader(ZipReader):
         self._local_offsets = set()
         self._mac_data_starts = {}
         self._descriptors = {}
+        self._rejected_headers = {}
         if damage is not None:
             # The listing's error, as from a file; a member that fails a check of its
             # own fails at the end of the pass (``_failed_at_end``).
@@ -2164,6 +2350,35 @@ class ZipForwardReader(ZipReader):
             )
         return self._wrap_member_stream(stream, member.name, size=member.size)
 
+    def _ensure_link_target(self, member: ArchiveMember) -> None:
+        member_id = member._member_id
+        if (
+            member.type is not MemberType.SYMLINK
+            or member.link_target is not None
+            or member_id is None
+            or self._uncaptured.get(member_id) != _DROPPED
+        ):
+            super()._ensure_link_target(member)
+            return
+        # ``_hold`` dropped the data to stay within the bound. The archive is not
+        # damaged and a file read lists the target, so the link is listed without
+        # one and says why, as for any target the read cannot reach; the rest of
+        # the listing stands.
+        budget = self._config.listing_limits.max_metadata_bytes
+        assert budget is not None, "data is dropped only under a budget"
+        self._emit_link_target_unavailable(
+            member,
+            reason="target_data_dropped",
+            message=(
+                f"The symlink target of {quoted(member.name)} was not kept: reading "
+                "from a stream that cannot seek, the pass holds at most "
+                f"max_metadata_bytes={budget} of the data of members short enough "
+                "to be links until the directory says which are, and dropped this "
+                "member's data as the longest; leaving link_target unset."
+            ),
+            target_in_archive=True,
+        )
+
     def _link_target_opener(
         self, member: ArchiveMember
     ) -> Callable[[], AbstractContextManager[ReadableStream]]:
@@ -2218,6 +2433,15 @@ class ZipForwardReader(ZipReader):
         return open_data
 
     # -- what the caller sees ------------------------------------------------------
+
+    def _account_archive_comment(self) -> None:
+        # The walk starts before the end record is read: ``_read_directory`` weighs
+        # the comment once it is. The base call at the start of the walk has to be
+        # suppressed, not passed through with no comment: the tracker latches the
+        # comment as counted on its first call, even for ``None``, so the later one
+        # would weigh nothing.
+        if self._end_record is not None:
+            super()._account_archive_comment()
 
     def _archive_comment(self) -> str | None:
         end = self._end_record

@@ -110,19 +110,19 @@ def _zip_directory_data(tmp_path: Path, shape: str) -> Path:
 
 
 def _tar_directory_data(tmp_path: Path, shape: str) -> Path:
-    from tests.test_tar import _DAMAGED_TRAILER, _tar_slash_entry_with_data
+    from tests.test_tar import _DAMAGED_TRAILER, _tar_entry_with_data
 
     if shape == "tar-dirtype-no-blocks":
         # A DIRTYPE header with a size and a member header right after it: listed
         # with no size and no report, so open() refuses it and the pass yields none.
-        data = _tar_slash_entry_with_data(
+        data = _tar_entry_with_data(
             tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 4096
         )
     elif shape == "tar-dirtype-before-trailer":
         # The same header as the last member, the walk ending on a zero block inside
         # the declared span: the blocks cannot be told from the trailer, so it lists
         # with no size, MEMBER_DIRECTORY_DATA_IGNORED reports it, and nothing reads.
-        data = _tar_slash_entry_with_data(
+        data = _tar_entry_with_data(
             tarfile.DIRTYPE,
             data=b"",
             size_field=b"%011o\0" % 4096,
@@ -130,7 +130,7 @@ def _tar_directory_data(tmp_path: Path, shape: str) -> Path:
         )
     else:
         typeflag = tarfile.AREGTYPE if shape == "tar-old-style-nul" else tarfile.REGTYPE
-        data = _tar_slash_entry_with_data(typeflag)
+        data = _tar_entry_with_data(typeflag)
     path = tmp_path / f"{shape}.tar"
     path.write_bytes(data)
     return path

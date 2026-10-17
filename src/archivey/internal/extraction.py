@@ -49,6 +49,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     _UsageTypeError,
 )
+from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
@@ -65,6 +66,10 @@ from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
 from archivey.internal.selection import CollectionSelector
+from archivey.internal.windows_reparse import (
+    IO_REPARSE_TAG_MOUNT_POINT,
+    IO_REPARSE_TAG_SYMLINK,
+)
 from archivey.paths import numbered_name
 from archivey.terminal import display_path, quoted
 from archivey.types import (
@@ -1357,13 +1362,20 @@ class ExtractionCoordinator:
             self._run_pass(reader, stream_selector, selected_total)
         except _AbortExtraction as abort:
             # An abort_on trigger fired: no report is returned, and output already
-            # written for earlier members stays on disk (same as OnError.STOP). Nothing
+            # written for earlier members stays on disk (same as OnError.STOP), except
+            # what a revising pass (a ZIP read from a pipe) takes back in ``finally``
+            # below: the files it wrote that could still be links. Nothing
             # partial exists for the triggering member — every trigger fires before its
             # write begins, and FILE writes land atomically in any case.
             raise abort.error from None
         finally:
-            # Also when the run stops early. The caller's entries a streaming pass
-            # moved aside come back first, where nothing of the run's replaced them.
+            # Also when the run stops early. A stop before the end of a revising
+            # pass settled every member first takes back the files that may be
+            # links, so the caller's entries they replaced come back below.
+            if self._state.revisable:
+                self._take_back_possible_links()
+            # The caller's entries a streaming pass moved aside come back first,
+            # where nothing of the run's replaced them.
             if self._state.set_aside:
                 self._restore_set_aside()
             # Links first: remaking one changes its directory, whose times come next.
@@ -1782,7 +1794,9 @@ class ExtractionCoordinator:
         state = self._state
         reader = state.reader
         assert reader is not None
-        revisable, state.revisable = state.revisable, {}
+        # ``state.revisable`` keeps the members not settled yet, so a run that stops
+        # part way takes back what of theirs may be a link (``_run``).
+        revisable = state.revisable
         # Members inside a folder come after it, so the last are taken back first and
         # the folder is empty by the time its turn comes.
         for index in sorted(revisable, reverse=True):
@@ -1793,10 +1807,12 @@ class ExtractionCoordinator:
                 del revisable[index]
                 if index not in state.dropped:
                     self._unselect_revised_member(index)
-        # The selection is final from here: a member written so far is kept, if
+        # The selection is final from here: a member settled so far is kept, if
         # the run stops now, as a file run keeps what it wrote before stopping.
         state.settled = True
-        for index, handled in revisable.items():
+        settling = list(revisable)
+        for index in settling:
+            handled = revisable.pop(index)
             member = state.results[index].member
             if handled is None:
                 self._redo_revised_member(index)
@@ -1814,7 +1830,7 @@ class ExtractionCoordinator:
                 self._redo_revised_member(index)
             elif written is not None:
                 self._reapply_revised_metadata(index, before, written)
-        return self._settle_failures_at_end(list(revisable), selector, members_done)
+        return self._settle_failures_at_end(settling, selector, members_done)
 
     def _settle_failures_at_end(
         self,
@@ -2080,6 +2096,74 @@ class ExtractionCoordinator:
                     str(self._shown(path)),
                     exc,
                 )
+
+    def _take_back_possible_links(self) -> None:
+        """Remove each file a revising pass wrote whose member the walk could still
+        make a link, when the run stops before the end of the pass settled it
+        (``_settle_revised_members``).
+
+        A ZIP from a pipe yields every member that is not a directory as a ``FILE``:
+        only the central directory, after the last member, says which are symlinks.
+        Until then the pass writes a link's target text as a file's content. A run
+        that stops before the directory never learns which, and a link left on disk
+        as a file holding its target is a wrong answer (DR-1), where random access
+        would have made the link, or refused it. So every such file whose data could
+        be a link's is taken back: one of at most ``MAX_LINK_TARGET_BYTES`` bytes,
+        the longest target a read gives, or one that starts with a Windows symlink or
+        junction reparse tag, whose buffer the directory can make a link at any
+        length. A longer file stays; as a link its target is over the cap, which a
+        read reports as an error and extraction never creates.
+
+        A file the filesystem refuses to remove stays, with a warning. Nothing is
+        reported for it: a stopped run returns no results. The folders made for these
+        members stay, unlike those ``_unselect_revised_member`` removes: the member was
+        written, so a file read stopped at the same point made and kept them too.
+        """
+        state = self._state
+        for index, handled in state.revisable.items():
+            if handled is None:
+                continue
+            _before, written = handled
+            result = state.results[index]
+            path = result.path
+            if (
+                written is None
+                or written.type is not MemberType.FILE
+                or result.status is not ExtractionStatus.EXTRACTED
+                or path is None
+                or path not in state.written_paths
+            ):
+                continue
+            try:
+                if not self._may_be_link_data(path):
+                    continue
+                self._remove_unsettled(path)
+            except OSError as exc:
+                self._rebase_os_error(exc)
+                logger.warning(
+                    "Could not remove %r, written before the archive's directory "
+                    "said whether it is a symlink: %s",
+                    str(self._shown(path)),
+                    exc,
+                )
+
+    @staticmethod
+    def _may_be_link_data(path: Path) -> bool:
+        """Whether the regular file at ``path`` holds what a link member's data can
+        be: a target within ``MAX_LINK_TARGET_BYTES``, or a Windows reparse buffer
+        for a symlink or a junction (``_take_back_possible_links``)."""
+        target = long_path(path)
+        info = os.lstat(target)
+        if not stat.S_ISREG(info.st_mode):
+            return False
+        if info.st_size <= MAX_LINK_TARGET_BYTES:
+            return True
+        with open(target, "rb") as f:
+            head = f.read(4)
+        return int.from_bytes(head, "little") in (
+            IO_REPARSE_TAG_MOUNT_POINT,
+            IO_REPARSE_TAG_SYMLINK,
+        )
 
     def _remove_unsettled_tree(self, path: Path) -> None:
         """``_remove_unsettled`` for what the run wrote or created at ``path`` and
@@ -2739,7 +2823,15 @@ class ExtractionCoordinator:
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
-            self._makedirs(dest_path, transformed)
+            try:
+                self._makedirs(dest_path, transformed)
+            except FileExistsError as exc:
+                # A non-directory took the name after the existence check, as for the
+                # other landings (``_taken_after_check``). Only this call: a parent
+                # that turned into a file is not this member's name being taken.
+                if not self._taken_after_check(dest_path, atomic=False):
+                    raise
+                raise self._already_exists(dest_path, transformed) from exc
             kept_mode: int | None = None
             if callers:
                 # A directory the caller already had, the destination root included
@@ -3447,12 +3539,19 @@ class ExtractionCoordinator:
         # a per-member OnError failure; no copy-the-target fallback. A dry run creates
         # an absolute target that names dest pointing into its scratch copy instead.
         on_disk = self._link_target_on_disk(target)
-        if _DIRECTORY_LINKS:
-            is_dir = self._link_to_directory(dest_path, target, on_disk)
-            os.symlink(on_disk, long_path(dest_path), target_is_directory=is_dir)
-            self._state.link_kinds[dest_path] = (on_disk, is_dir)
-        else:
-            os.symlink(on_disk, long_path(dest_path))
+        try:
+            if _DIRECTORY_LINKS:
+                is_dir = self._link_to_directory(dest_path, target, on_disk)
+                os.symlink(on_disk, long_path(dest_path), target_is_directory=is_dir)
+                self._state.link_kinds[dest_path] = (on_disk, is_dir)
+            else:
+                os.symlink(on_disk, long_path(dest_path))
+        except FileExistsError as exc:
+            # The name was taken after the existence check, as for a FILE or HARDLINK
+            # landing (``_swap_into_place``).
+            if not self._taken_after_check(dest_path, atomic=False):
+                raise
+            raise self._already_exists(dest_path, transformed) from exc
         self._resolutions_changed()
 
         # Re-validate the symlink target AFTER creating it, resolving through the real
@@ -4330,11 +4429,7 @@ class ExtractionCoordinator:
             if member.type == MemberType.DIRECTORY and stat.S_ISDIR(existing):
                 return True
             if self._overwrite is OverwritePolicy.ERROR:
-                raise ExtractionError(
-                    "Destination already exists: "
-                    f"{display_path(self._shown(dest_path))}",
-                    member_name=member.name,
-                )
+                raise self._already_exists(dest_path, member)
             if self._overwrite is OverwritePolicy.SKIP:
                 return False
             if (
@@ -4440,7 +4535,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, dest_path)
+            self._swap_into_place(tmp, dest_path, member)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -4596,14 +4691,41 @@ class ExtractionCoordinator:
                 # Applied before the swap, so the final name never appears with the
                 # source's metadata instead of this member's.
                 self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, new_path)
+            self._swap_into_place(tmp, new_path, member)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
             raise
         self._state.source_paths.setdefault(source_id, []).append(new_path)
 
-    def _swap_into_place(self, tmp: Path, dest: Path) -> None:
+    def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
+        """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the
+        existence check and from a landing that finds the name taken after it."""
+        return ExtractionError(
+            f"Destination already exists: {display_path(self._shown(dest))}",
+            member_name=member.name,
+        )
+
+    def _taken_after_check(self, dest: Path, *, atomic: bool) -> bool:
+        """Whether, under ``OverwritePolicy.ERROR``, ``dest`` is now taken by something
+        that was not there at the existence check: another writer into the same folder,
+        such as a second extraction. Asked by every landing whose creation refuses a
+        taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and the
+        ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
+
+        Under ERROR the check lets a member through only to a free name, to a copy this
+        run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to an existing
+        directory. An atomic landing replaces a parked copy where it stands, so that
+        copy does not count (``_occupied``); the other landings removed it in
+        ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
+        existing directory, so a ``FileExistsError`` there means a non-directory. So
+        anything a landing is refused over appeared after the check. Under the other policies a landing that fails this way is not
+        handled: its error goes out as it is."""
+        if self._overwrite is not OverwritePolicy.ERROR:
+            return False
+        return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
+
+    def _swap_into_place(self, tmp: Path, dest: Path, member: ArchiveMember) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
         of every atomic write (``_write_file_atomic``, ``_place_link``).
 
@@ -4624,9 +4746,20 @@ class ExtractionCoordinator:
         not a failed write. The unlink stays inside the ``_readonly_cleared`` block. On
         Windows that block's exit puts the read-only attribute back on the other names of
         ``dest``'s file, and in the same-file case the temp is one of them, so an unlink
-        after the block would fail."""
+        after the block would fail.
+
+        A rename refused onto an entry that appeared after the existence check is, under
+        ERROR, the clash that check reports, and raises its error
+        (``_taken_after_check``). Windows refuses it with access denied (seen with two
+        extractions into one folder); POSIX refuses it in a sticky directory when someone
+        else owns the entry, and otherwise replaces it."""
         with self._readonly_cleared(dest):
-            os.replace(long_path(tmp), long_path(dest))
+            try:
+                os.replace(long_path(tmp), long_path(dest))
+            except PermissionError as exc:
+                if not self._taken_after_check(dest, atomic=True):
+                    raise
+                raise self._already_exists(dest, member) from exc
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
 

@@ -7,14 +7,19 @@ import sys
 from typing import BinaryIO, TextIO
 
 from archivey import open_stream
-from archivey.cli.common import open_for_cli, reject_stdin_token
+from archivey.cli.common import (
+    no_compression_layer,
+    open_for_cli,
+    outer_directory_error,
+    refuse_outer_selection,
+    reject_stdin_token,
+)
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import (
     escape_member_name,
     format_error_detail,
-    format_format_label,
 )
 from archivey.cli.password import resolve_password
 from archivey.config import ArchiveyConfig, PasswordInput
@@ -69,12 +74,7 @@ def run_cat(
         # help, since there is no standard input behind that path either.
         raise CliError("no standard input to read the archive from", code=EXIT_USAGE)
     if outer:
-        if patterns or exclude:
-            raise CliError(
-                "--outer writes the whole decompressed stream; it takes no member "
-                "patterns",
-                code=EXIT_USAGE,
-            )
+        refuse_outer_selection(patterns, exclude, verb="writes")
         if track_io:
             raise CliError(
                 "--track-io counts member reads; it does not apply with --outer",
@@ -112,10 +112,7 @@ def _cat_outer(
         if os.path.isdir(archive):
             # The library refuses a directory too (caught below), but its message
             # points at open_archive(); this one names the CLI's view of it.
-            raise CliError(
-                f"--outer: {shown} is a directory, which has no compression layer",
-                code=EXIT_USAGE,
-            )
+            raise outer_directory_error(shown)
     try:
         stream = open_stream(source, config=config)
     except ArchiveyUsageError as exc:
@@ -127,10 +124,7 @@ def _cat_outer(
             raise
         # Detection found a container (ZIP, 7z, a plain tar): the library's message
         # names open_archive, which a CLI user reaches by leaving the flag out.
-        raise CliError(
-            f"--outer: {shown} is a {format_format_label(fmt)} archive, which has no "
-            "compression layer to remove; leave out --outer to write its members"
-        ) from exc
+        raise no_compression_layer(shown, fmt, verb="write") from exc
     try:
         with stream:
             _copy(stream, sink)
