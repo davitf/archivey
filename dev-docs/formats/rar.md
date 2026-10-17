@@ -1438,17 +1438,18 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     reads through `caf`. macOS CI confirmed the refusal. `_probe_utf8_locale` is
     unverified on macOS/BSD. If it fails there, non-ASCII names are refused rather
     than misread.
+  - To build more cases: `tests/test_audit_rar_iso_dir.py` has RAR5/RAR3 header
+    rewriters with CRC fix-up (`_rar5_parse`, `_rar5_build`, `_rar3_parse`,
+    `_rar3_build`), since `rar` 7.00 cannot write RAR4.
 - **Open: an encrypted RAR 2.9-4 symlink's target is not decrypted at listing.**
   `_ensure_link_target` reads a RAR 2.9-4 symlink's target from its stored data, and
   refuses (`target_data_encrypted`) when that data is encrypted, although the member
   read can now decrypt stored data itself. Decrypting it at listing would set
   `link_target`, stop the `SYMLINK_TARGET_UNAVAILABLE` a strict policy refuses on, and,
   for RAR alone, split RAR from ZIP, which has the same guard (`zip_reader.py`). No
-  fixture writes an encrypted RAR 2.9-4 symlink yet. Put to the maintainer when stored
-  encrypted members became native reads; tracked internally.
-  - To build more cases: `tests/test_audit_rar_iso_dir.py` has RAR5/RAR3 header
-    rewriters with CRC fix-up (`_rar5_parse`, `_rar5_build`, `_rar3_parse`,
-    `_rar3_build`), since `rar` 7.00 cannot write RAR4.
+  fixture writes an encrypted RAR 2.9-4 symlink yet. Maintainer decision (2026-10-16):
+  decrypt it at listing when a password is given, in a follow-up change that also looks
+  at ZIP; tracked internally.
 - **Settled (2026-09-30): a RAR dictionary size counts against `DecoderLimits`.** Every
   in-process codec checks the dictionary or window its header declares against
   `max_decoder_memory`, and RAR now does too, although `unrar` or `unar` decodes it in
