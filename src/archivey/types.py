@@ -613,8 +613,11 @@ class MemberExtra(dict[str, object]):
       global ones in force included. Read-only: a change raises ``TypeError``, and
       ``dict(...)`` gives a copy to change. It is a ``dict`` subclass, so
       ``json.dumps`` takes it.
-    * ``tar.devmajor`` (``int``)
-    * ``tar.devminor`` (``int``)
+    * ``tar.devmajor`` (``int``) — set only for a character or block device
+      (typeflag ``3`` or ``4``) in a ustar or GNU header whose field is a number;
+      absent for a FIFO, for a v7 header, and for a device whose field is not a
+      number (that member carries ``MEMBER_HEADER_RECORD_SKIPPED``).
+    * ``tar.devminor`` (``int``) — present exactly when ``tar.devmajor`` is.
     * ``gzip.original_filename`` (``str``)
     * ``gzip.isize`` (``int``) — the gzip trailer's ISIZE field: the last four
       bytes of the file, read only when its end is cheap to reach (not from a
@@ -1308,7 +1311,10 @@ class AbortOn(StrEnum):
     Abort is immediate — the triggering member's partial output is removed, no later
     member is processed, and **no** ``ExtractionReport`` is returned. Output already
     written for earlier members stays on disk, matching ``OnError.STOP``: an abort stops
-    the run, it does not roll it back.
+    the run, it does not roll it back. The exception is a ZIP read from a pipe, whose
+    pass stops before the central directory says which members are links: it removes
+    the files it wrote that could still be links (see "A ZIP from a pipe" in the
+    extraction guide).
 
     There is deliberately no member for extraction *failures*: ``OnError.STOP`` already
     means "raise on the first failure".

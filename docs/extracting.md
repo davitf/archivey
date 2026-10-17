@@ -315,7 +315,9 @@ with archivey.open_archive("untrusted.zip") as reader:
 An abort is immediate: no later member is processed and **no report is returned** — so
 handle the exception, not a return value. Output already written for earlier members
 stays on disk, exactly as with `OnError.STOP`; an abort stops the run, it does not roll
-it back.
+it back. The exception is a ZIP read from a pipe, whose pass stops before the central
+directory says which members are links: it removes the files it wrote that could still
+be links ([A ZIP from a pipe](#a-zip-from-a-pipe)).
 
 `NAME_COLLISION` fires on every collision whatever `OverwritePolicy` does with it —
 replaced, skipped, errored or renamed — because the trigger is the collision, not its
@@ -449,6 +451,13 @@ stored as `docs\r.txt`, sees the stored name during the pass, so that member fai
 file of yours that the pass replaces under `overwrite="replace"` is moved aside and put
 back at the end, unless the member still lands there.
 
+If the run stops (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the
+directory, or any other reason) before the end of the pass has settled a member, it never learns whether that member is a link, and a link the pass
+wrote is still a file holding its target. So the run removes each such file whose
+content could be a link's: 4096 bytes or less, or starting with the tag of a Windows
+symlink or junction. The longer files stay, with no permissions applied. From a file,
+the same stop keeps every member written before it.
+
 Some things go differently from a pipe. All but the last come only from an archive
 that is crafted or damaged:
 
@@ -500,7 +509,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   `for member in reader` and `extract_all()`. Trips raise `ResourceLimitError`. A TAR
   extraction, and any extraction from a streaming reader, does not list first: it checks
   the limits as each member arrives in its one pass, so members before the one that
-  crosses a cap are already written when it raises. A `stream_members()` pass that lists
+  crosses a cap are already written when it raises (from a ZIP read from a pipe, less
+  the files that could still be links: [A ZIP from a pipe](#a-zip-from-a-pipe)). A
+  `stream_members()` pass that lists
   as it goes yields the members before the one that crosses a cap, the same way. ZIP,
   7z, RAR and ISO check `max_members` at `open_archive` (on ZIP, as the directory is
   read when its end record understates the count; on a ZIP from a pipe, as each member

@@ -546,7 +546,11 @@ directory makes a symlink turned into a link after the `filter` and policy run a
 it, what a member the directory makes `OTHER` wrote removed, a renamed member moved, and
 the selection made again on what each member became (`design.md`, "The selection is made
 again"). A caller's entry the pass replaces is moved aside and put back unless the member
-still lands there.
+still lands there. A run that stops before the end of the pass settles a member never
+learns whether it is a link, so it takes back each such file whose data could be a
+link's (`_take_back_possible_links`): 4096 bytes or less (`MAX_LINK_TARGET_BYTES`), or data
+that starts with a Windows symlink or junction reparse tag. A longer file stays, with
+no mode applied; as a link its target would be over the cap, which no read gives.
 
 **Failures found at the end of the pass** (`_failed_at_end`,
 `_settle_failures_at_end`): a data descriptor the directory contradicts, a local header
@@ -579,6 +583,11 @@ the pass puts on the data it keeps for link targets, which an ordinary archive c
   though the directory may then not list it. `abort_on` fires before the end of the pass
   decides a member's selection, and the bomb limits count what the pass wrote until it
   is taken back.
+- A run stopped before the end of the pass settled its members (`abort_on`,
+  `on_error="stop"`, a limit, a `STRICT` refusal at the directory) leaves less than the
+  file read: the files it wrote for them that could be links are taken back
+  (§"Extraction" above), where the file read keeps every member it wrote before the
+  stop, links made. The longer files that stay have no mode applied.
 - A bit-3 codec member whose data is damaged can fail with another error than from a
   file (`TruncatedError` where the file read says `DataAfterEndError`, for one): the
   file read knows its stored size, and the pass finds its end by the scan for its
@@ -1035,7 +1044,7 @@ ours.
 | A ZIP with a digital signature record (`PK\x05\x05`, APPNOTE 4.3.13) between its directory and its end record is refused with `CorruptionError` ("Bad magic number") | **archivey** | The end record's directory size and offset do not count the record, so its bytes shift where the directory is taken to start, the way prepended data does. stdlib `zipfile` refuses it the same way, and a read from a pipe matches the file read. Few writers produce the record; reading past it is not planned |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
-| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, with every member already written (§2.2.2), and the CRC case is recorded |
+| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, after every member was written, so extraction takes back the files that could be links (§2.2.2); the CRC case is recorded |
 
 ## 6. Decisions
 

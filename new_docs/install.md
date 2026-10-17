@@ -20,14 +20,15 @@ methods.
 | `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
 | `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. |
 
-Compressed or encrypted RAR files also need an outside program, which no extra can install. The next
-section covers it.
+Compressed RAR files, and a few encrypted ones, also need an outside program, which no extra can
+install. The next section covers it.
 
 ## RAR needs an outside program
 
 RAR is a proprietary format, and there's no self-contained Python decoder for it, so archivey reads
-compressed or encrypted RAR members with an outside program. It lists RAR archives, and reads stored
-(uncompressed) members, by itself.
+compressed RAR members with an outside program. It lists RAR archives and reads stored
+(uncompressed) members itself, encrypted ones too when `cryptography` is installed and the member is
+in one part.
 
 The preferred program is RARLAB's `unrar` (or `rar`), version 6.0 or later. Archivey also supports
 `unar` 1.10 or later, from The Unarchiver, but it has some limitations. Archivey uses `unar` when it
@@ -85,9 +86,9 @@ isn't counted, because only encrypted members need it.
 ## Python versions and platforms
 
 Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
-macOS and Windows with 3.11 and 3.14. Other platforms and interpreters such as PyPy aren't tested.
-The core is pure Python, so it should run there, but some optional packages may not install. [How it
-is built](how-it-is-built.md) has the full test setup.
+macOS and Windows with 3.11 and 3.14. Other platforms aren't tested. PyPy doesn't fully work yet: a
+trial run failed in places, including some LZMA data and the accelerator behind `[seekable]`. [How
+it is built](how-it-is-built.md) has the full test setup.
 
 ## Free-threaded Python
 
