@@ -37,7 +37,7 @@ from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parse
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.types import ArchiveMember, MemberType
-from tests.conftest import requires_binary
+from tests.conftest import case_sensitive, requires_binary
 
 
 def _as_pass(
@@ -2663,29 +2663,33 @@ def test_may_land_on_existing_matches_the_spelling_extraction_writes(
     assert _may_land_on_existing(stored)
 
 
-def test_may_land_on_existing_does_not_backtrack_on_a_crafted_name(
+def test_may_land_on_existing_takes_linear_time_on_a_crafted_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A root of many ``<`` against an entry that nearly matches their escapes used to
-    backtrack exponentially; past a few rewritable characters the check now takes the
-    wrapper without matching."""
+    """A root of many ``<`` against entries that nearly match their escapes: the check
+    compares each entry once, with no backtracking, so it answers at once."""
     from archivey.cli.extract_cmd import _may_land_on_existing
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ("%41" * 26 + "Z")).mkdir()
+    for n in range(100):
+        (tmp_path / ("%41" * 80 + f"Z{n}")).mkdir()
     started = time.monotonic()
-    assert _may_land_on_existing("<" * 24)
+    assert _may_land_on_existing("<" * 24) is False
     assert _may_land_on_existing("<" * 4) is False
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 1
 
 
-def _folds_case(directory: Path) -> bool:
-    probe = directory / "case-probe"
-    probe.touch()
-    try:
-        return (directory / "CASE-PROBE").exists()
-    finally:
-        probe.unlink()
+def test_may_land_on_existing_with_many_rewritable_characters_in_an_empty_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary name with several spaces and escapes collides with nothing in an
+    empty cwd, so the archive is not sent through the wrapper."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    monkeypatch.chdir(tmp_path)
+    assert _may_land_on_existing("My Holiday Photos <2024>") is False
+    (tmp_path / "My Holiday Photos %3C2024%3E").mkdir()
+    assert _may_land_on_existing("My Holiday Photos <2024>")
 
 
 def test_may_land_on_existing_ignores_case_where_the_filesystem_does(
@@ -2697,7 +2701,7 @@ def test_may_land_on_existing_ignores_case_where_the_filesystem_does(
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "TOP").mkdir()
-    assert _may_land_on_existing("top ") is _folds_case(tmp_path)
+    assert _may_land_on_existing("top ") == (not case_sensitive(tmp_path))
 
 
 def test_indexed_symlink_root_lands_beside_an_entry_differing_in_case(
@@ -2705,7 +2709,7 @@ def test_indexed_symlink_root_lands_beside_an_entry_differing_in_case(
 ) -> None:
     """On a case-sensitive filesystem the operator's ``T`` does not collide with the
     root ``t `` (written as ``t``), so the symlink root extracts into the cwd, live."""
-    if _folds_case(tmp_path):
+    if not case_sensitive(tmp_path):
         pytest.skip("the filesystem folds case, so T and t collide")
     monkeypatch.chdir(tmp_path)
     (tmp_path / "target.txt").write_bytes(b"TARGET")

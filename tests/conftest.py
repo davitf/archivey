@@ -84,6 +84,17 @@ class ReadSizeSpy:
         return getattr(self._inner, name)
 
 
+def case_sensitive(path: Path) -> bool:
+    """Whether the filesystem at ``path`` tells ``CaseProbe`` from ``caseprobe``. Writes
+    and removes ``path / "CaseProbe"``, so ``path`` is left as it was."""
+    probe = path / "CaseProbe"
+    probe.write_bytes(b"")
+    try:
+        return not (path / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
 def requires(*packages: str) -> pytest.MarkDecorator:
     """Skip a test (or parametrization) when an optional package is not importable.
 

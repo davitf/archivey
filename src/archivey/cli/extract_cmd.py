@@ -201,45 +201,45 @@ def _may_land_on_existing(name: str) -> bool:
     already there, under its own spelling or one the name policy may write instead.
 
     For a name not written as stored (:func:`_written_as_stored`), each cwd entry is
-    matched against every spelling the policy can give it: each character that may be
-    rewritten stands for itself, nothing, or ``%XX`` escapes; a ``%`` stands for itself
-    or ``%25``, as it is escaped in a name that has other escapes; a ``\\`` ends the
-    top level, as it is written as ``/``; trailing dots and spaces may be stripped.
-    An entry that matches only when case is ignored counts when the cwd folds case
-    (:func:`_cwd_folds_case`). The match is loose on
-    purpose: a false match only sends the archive through the wrapper, while a missed
-    one lets ``--overwrite`` touch the operator's entry. A name with more than four
-    such characters always counts, which keeps the match's backtracking bounded."""
+    compared with the name after undoing what the policy may do to it: ``%XX`` escapes
+    are turned back into the character or byte they stand for (``%25`` into ``%``), a
+    ``\\`` ends the top level, as it is written as ``/``, and trailing dots and spaces
+    are dropped from both sides. The entry is also compared as it is, for a ``%`` the
+    policy left alone. An entry that matches only when case is ignored counts when the
+    cwd folds case (:func:`_cwd_folds_case`). The comparison is loose on purpose: a
+    false match only sends the archive through the wrapper, while a missed one lets
+    ``--overwrite`` touch the operator's entry."""
     if os.path.lexists(name):
         return True
     if _written_as_stored(name):
         return False
-    head = name.split("\\", 1)[0]
-    stem = head.rstrip(". ")
-    if sum(1 for ch in stem if ch == "%" or not _written_as_stored(ch)) > 4:
-        # Each such character is an optional run of ``%XX`` in the pattern, and
-        # neighbouring runs make the match backtrack exponentially on an entry that
-        # nearly matches. The archive chooses the name, so beyond a few of them take
-        # the wrapper instead of matching.
-        return True
-    pattern = "".join(
-        "%(?:25)?"
-        if ch == "%"
-        else re.escape(ch)
-        if _written_as_stored(ch)
-        else f"(?:{re.escape(ch)}|(?:%[0-9A-Fa-f]{{2}})+)?"
-        for ch in stem
-    )
-    written = re.compile(f"{pattern}[. ]*")
-    folded = re.compile(f"{pattern}[. ]*", re.IGNORECASE)
+    stem = name.split("\\", 1)[0].rstrip(". ")
     try:
-        return any(
-            written.fullmatch(entry)
-            or (folded.fullmatch(entry) and _cwd_folds_case(entry))
-            for entry in os.listdir(".")
-        )
+        entries = os.listdir(".")
     except OSError:
         return True  # the cwd could not be listed: take the safe route
+    for entry in entries:
+        for spelling in {entry.rstrip(". "), _unescaped(entry).rstrip(". ")}:
+            if spelling == stem or (
+                spelling.casefold() == stem.casefold() and _cwd_folds_case(entry)
+            ):
+                return True
+    return False
+
+
+_ESCAPE = re.compile(rb"%([0-9A-Fa-f]{2})")
+
+
+def _unescaped(entry: str) -> str:
+    """``entry`` with each ``%XX`` turned back into its byte, read as UTF-8 with a byte
+    that is not UTF-8 as a surrogate, as the library reads a stored name."""
+    try:
+        raw = entry.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        return entry  # a lone surrogate from a Windows listing: nothing to undo
+    return _ESCAPE.sub(lambda m: bytes([int(m[1], 16)]), raw).decode(
+        "utf-8", "surrogateescape"
+    )
 
 
 def _cwd_folds_case(entry: str) -> bool:

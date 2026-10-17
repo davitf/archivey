@@ -65,6 +65,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
+from tests.conftest import case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
 from tests.streams_util import SizedNonSeekable
@@ -879,17 +880,6 @@ def test_directory_metadata_is_applied_after_its_children(
         _restore_modes(dest)
 
 
-def _case_sensitive(path: Path) -> bool:
-    """Whether the filesystem at ``path`` tells ``CaseProbe`` from ``caseprobe``. Writes
-    and removes ``path / "CaseProbe"``, so ``path`` is left as it was."""
-    probe = path / "CaseProbe"
-    probe.write_bytes(b"")
-    try:
-        return not (path / "caseprobe").exists()
-    finally:
-        probe.unlink()
-
-
 class _NoInode:
     """A stat result that reports inode 0, as some FUSE and network mounts do."""
 
@@ -1094,7 +1084,7 @@ def test_deferred_metadata_of_a_directory_removed_by_a_case_variant_is_dropped(
     plain parent, which must not get ``D/``'s mode and mtime."""
     dest = tmp_path / "out"
     dest.mkdir()
-    if _case_sensitive(dest):
+    if case_sensitive(dest):
         pytest.skip("needs a case-insensitive filesystem, where D/ and d are one entry")
     statuses = _extract_removing_a_directory(
         dest,
@@ -1124,7 +1114,7 @@ def test_deferred_metadata_of_a_case_variant_directory_still_there_is_kept(
     pending metadata of ``X/``, which is still there."""
     dest = tmp_path / "out"
     dest.mkdir()
-    if not _case_sensitive(dest):
+    if not case_sensitive(dest):
         pytest.skip(
             "needs a case-sensitive filesystem, where X/ and x/ are two entries"
         )
@@ -1197,7 +1187,7 @@ def test_a_directory_this_run_made_is_ours_under_a_case_variant(
     no ``kept_mode`` is reported, and its stored mode and mtime, written last, apply."""
     dest = tmp_path / "out"
     dest.mkdir()
-    if _case_sensitive(dest):
+    if case_sensitive(dest):
         pytest.skip(
             "needs a case-insensitive filesystem, where D/ and d/ are one entry"
         )
@@ -4236,7 +4226,7 @@ def test_replace_keeps_a_case_variant_directory_that_is_still_there(
     filesystem. Removing ``x/`` must not revise ``X/``, which is still on disk."""
     dest = tmp_path / "out"
     dest.mkdir()
-    if not _case_sensitive(dest):
+    if not case_sensitive(dest):
         pytest.skip(
             "needs a case-sensitive filesystem, where X/ and x/ are two entries"
         )
@@ -4259,7 +4249,7 @@ def test_replace_revises_a_case_variant_directory_it_removed(
     removing it revises ``X/``. The casefolded collision key is what finds it."""
     dest = tmp_path / "out"
     dest.mkdir()
-    if _case_sensitive(dest):
+    if case_sensitive(dest):
         pytest.skip("needs a case-insensitive filesystem, where X/ and x are one entry")
     archive = build([("dir", "X/", None), ("file", "x", b"f")])
     report = open_and_extract(
