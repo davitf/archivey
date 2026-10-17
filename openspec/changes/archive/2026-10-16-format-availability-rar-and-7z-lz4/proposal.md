@@ -19,7 +19,9 @@
   or later is found. A new `ReadBackend.missing_programs()` hook reports it, and only the
   public `format_availability()` calls it, because finding out runs the binary once to
   read its banner. `open_archive` and `list_supported_formats()` keep their answer
-  without the probe: a missing tool never makes a format `NONE`.
+  without the probe: a missing tool never makes a format `NONE`. The `unrar` entry's
+  install hint is the finder's own refusal, so it names a too-old or unresponsive
+  binary. `format_availability(..., check_programs=False)` runs no program.
 
 Alternatives not taken:
 

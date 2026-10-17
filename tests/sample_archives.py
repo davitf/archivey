@@ -762,12 +762,13 @@ READER_PACKAGES: dict[str, tuple[str, ...]] = {
     "zip-aes": ("cryptography",),
 }
 
-# External binaries the *reader* needs for member DATA, beyond what format availability
-# reports. RAR lists natively but reads member data through RARLAB ``unrar`` (only a
-# stored, unencrypted member takes the direct sliced view — see ``rar_reader``), and
-# ``format_availability(RAR)`` reports PARTIAL, not NONE, without it because listing works. Unlike
-# BUILDER_BINARIES, a committed fixture does **not** substitute for these: it saves you
-# from writing the archive, not from reading it.
+# External binaries the *reader* needs for member DATA. RAR lists natively but reads
+# member data through RARLAB ``unrar`` (only a stored, unencrypted member takes the
+# direct sliced view — see ``rar_reader``). ``format_availability(RAR)`` names
+# ``unrar`` as missing but reports PARTIAL, so RAR stays in list_supported_formats()
+# and these rows need their own gate. Unlike BUILDER_BINARIES, a committed fixture
+# does **not** substitute for these: it saves you from writing the archive, not from
+# reading it.
 READER_BINARIES: dict[str, tuple[str, ...]] = {
     "rar": ("unrar",),
 }

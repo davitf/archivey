@@ -112,7 +112,9 @@ class RarDecompressor(Enum):
       reading a stored (uncompressed) member that is not encrypted, also when it is
       split across volumes or sits in a solid archive. A compressed or encrypted
       member, or a split one with a volume missing, raises ``UnsupportedFeatureError``
-      before anything runs, and a compressed RAR 1.5-4 comment is ``None``.
+      before anything runs, and a compressed RAR 1.5-4 comment is ``None``. The
+      ``format_availability()`` query takes no config and still runs the ``unrar``
+      identification probe; pass it ``check_programs=False`` to avoid that.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises

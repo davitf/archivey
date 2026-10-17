@@ -12,6 +12,7 @@ import importlib
 import importlib.util
 import io
 import operator
+import sys
 import types
 import zipfile
 from collections.abc import Mapping
@@ -744,7 +745,8 @@ def test_rar_partial_without_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
     avail = format_availability(ArchiveFormat.RAR)
     assert avail.support is FormatSupport.PARTIAL
     assert [m.name for m in avail.missing] == ["unrar"]
-    assert "apt install unrar" in avail.missing[0].install_hint
+    # The hint is the finder's own refusal, the text a member read raises.
+    assert avail.missing[0].install_hint == "no unrar here"
     # PARTIAL still opens and lists, so RAR stays supported.
     assert ArchiveFormat.RAR in list_supported_formats()
 
@@ -757,6 +759,42 @@ def test_rar_partial_with_empty_path(
     avail = format_availability(ArchiveFormat.RAR)
     assert avail.support is FormatSupport.PARTIAL
     assert [m.name for m in avail.missing] == ["unrar"]
+
+
+def test_rar_hint_names_a_too_old_unrar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A RARLAB unrar under the 6.0 floor is installed but refused: the hint names it
+    # and its version, as the read refusal does, instead of advising an install.
+    if sys.platform == "win32":
+        pytest.skip("a shell-script stand-in for unrar needs a POSIX shell")
+    fake = tmp_path / "unrar"
+    fake.write_text(
+        "#!/bin/sh\necho 'UNRAR 5.91 freeware      Copyright (c) 1993-2020 "
+        "Alexander Roshal'\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    avail = format_availability(ArchiveFormat.RAR)
+    assert avail.support is FormatSupport.PARTIAL
+    (component,) = avail.missing
+    assert component.name == "unrar"
+    assert "5.91" in component.install_hint
+    assert str(fake) in component.install_hint
+
+
+def test_check_programs_false_runs_no_program(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.backends import rar_unrar
+
+    def _fail() -> str:
+        raise AssertionError("probed for unrar")
+
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", _fail)
+    avail = format_availability(ArchiveFormat.RAR, check_programs=False)
+    assert avail.support is FormatSupport.FULL
+    assert avail.missing == ()
 
 
 def test_rar_full_with_unrar(monkeypatch: pytest.MonkeyPatch) -> None:

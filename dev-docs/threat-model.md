@@ -1033,8 +1033,13 @@ password as its own item after `-p`. ADR
 [0002](decisions/0002-native-rar-metadata-unrar-data.md),
 [`investigations/alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md).
 
+The public `format_availability()` runs the same `unrar` banner probe with no archive
+in play, whatever `rar_decompressor` says, so `archivey --version -v` runs it too;
+`check_programs=False` skips it.
+
 **Residual.** The program is found on the process `PATH` and is part of the deployment's
-trust boundary. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
+trust boundary. On Windows `shutil.which` also searches the current directory, so the
+probe and a read can run a program from there. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
 
 ### Concurrent member streams are race-free where declared
 

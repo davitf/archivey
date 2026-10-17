@@ -27,7 +27,9 @@ exist. Reads still spawn only `p` (§3).
 
 The 6.0 floor is the **banner probe**, not archive open. Missing or too-old `unrar`
 does not fail `open_archive` or stored reads; compressed comments stay
-`None` (§1, §2.2).
+`None` (§1, §2.2). The public `format_availability()` also runs the probe, and reports
+RAR `PARTIAL` with the probe's refusal as the `unrar` hint; `check_programs=False`
+skips it.
 
 ## 1. Shape
 

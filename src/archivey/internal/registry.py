@@ -440,7 +440,9 @@ def get_registry() -> BackendRegistry:
     return _registry
 
 
-def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
+def format_availability(
+    fmt: ArchiveFormat | str, *, check_programs: bool = True
+) -> FormatAvailability:
     """Public query: the tri-state support level of ``fmt`` and its missing components.
 
     ``fmt`` is an :class:`~archivey.ArchiveFormat` — the ``(container, stream)`` pair —
@@ -451,9 +453,11 @@ def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
 
     RAR is ``PARTIAL``, with ``unrar`` in ``missing``, when no RARLAB ``unrar`` or
     ``rar`` 6.0 or later is on ``PATH``: it still opens and lists, and stored members
-    read. To find out, the first call runs each candidate once to read its banner; the
-    answer is cached per binary. It describes the default ``rar_decompressor``
-    (``AUTO``) and does not change with ``ArchiveyConfig``.
+    read. To find out, the first call runs each candidate once to read its banner, for
+    at most ``cli.PROBE_TIMEOUT_SECONDS`` (10 s) each; the answer is cached per binary.
+    It describes the default ``rar_decompressor`` (``AUTO``) and does not change with
+    ``ArchiveyConfig``. ``check_programs=False`` runs no program: missing programs are
+    then not counted, and RAR reports as it would with ``unrar`` installed.
     """
     # A non-ArchiveFormat used to fall through to a fabricated record — NONE with an
     # empty ``missing``, indistinguishable from a legitimate unsupported answer, and a
@@ -463,7 +467,7 @@ def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
     resolved = coerce_archive_format(
         fmt, call="format_availability()", allow_none=False
     )
-    return _registry.format_availability(resolved, check_programs=True)
+    return _registry.format_availability(resolved, check_programs=check_programs)
 
 
 def list_supported_formats() -> list[ArchiveFormat]:

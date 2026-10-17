@@ -204,7 +204,9 @@ class FormatAvailability:
     missing: tuple[MissingComponent, ...]
     required_source: StreamCapability = StreamCapability.SEEKABLE
 
-def format_availability(format: ArchiveFormat) -> FormatAvailability: ...
+def format_availability(
+    format: ArchiveFormat, *, check_programs: bool = True
+) -> FormatAvailability: ...
 def list_supported_formats() -> list[ArchiveFormat]: ...
 def list_known_formats() -> list[ArchiveFormat]: ...
 ```
@@ -226,10 +228,12 @@ Support SHALL be computed across the format backend and codecs/tools:
   `missing` names `unrar`; it still opens and lists, and stored members read. A usable
   `unar` does not make RAR FULL, because it reads fewer archives than `unrar`. The
   public `format_availability()` finds out by running each candidate once to read its
-  banner (cached per binary, as for a member read). `open_archive` and
+  banner (cached per binary, as for a member read), and the `unrar` entry's
+  `install_hint` is the refusal that probe gives a member read. `open_archive` and
   `list_supported_formats()` do not run it: a missing tool never makes a format NONE,
   so they need no answer about tools. The answer does not depend on `ArchiveyConfig`:
-  `format_availability()` takes no config.
+  `format_availability()` takes no config. `check_programs=False` runs no program and
+  counts no tool, for a caller who wants no external program run.
 - `cryptography`, which only encrypted members need, SHALL NOT lower support.
 - By-design unsupported features such as unknown 7z method IDs SHALL
   not lower support; members using them raise `UnsupportedFeatureError`.
@@ -276,7 +280,8 @@ conservative answer.
 | GZIP availability | FULL; no missing components |
 | 7z with the optional 7z packages installed | FULL even though an unknown method ID still raises `UnsupportedFeatureError` |
 | 7z without `lz4` | PARTIAL; `missing` names `lz4` |
-| RAR with no usable RARLAB `unrar` or `rar` on `PATH` | PARTIAL; `missing` names `unrar` with its install hint; RAR is in `list_supported_formats()` |
+| RAR with no usable RARLAB `unrar` or `rar` on `PATH` | PARTIAL; `missing` names `unrar` with the probe's refusal as its hint (a too-old binary is named with its version); RAR is in `list_supported_formats()` |
+| `format_availability(RAR, check_programs=False)` | No program runs; FULL when no codec is missing |
 | RAR with a usable RARLAB `unrar` on `PATH` | FULL; no missing components |
 | ZIP with every optional member codec installed | FULL; no missing components |
 | ZIP missing deflate64 and/or zstd packages | PARTIAL; missing names absent codec packages; stored/deflate members still list/read |

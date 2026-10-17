@@ -231,24 +231,20 @@ def _banner_meets_floor(banner: _UnrarBanner) -> bool:
     )
 
 
-# What ``format_availability(RAR)`` names when no usable RARLAB program is found.
-# Without one, RAR still opens and lists, and stored members read natively, so the
-# format is PARTIAL. ``unar`` is not named: it is a bounded fallback that reads
-# fewer archives, so finding it does not make RAR FULL.
-UNRAR_REQUIREMENT = MissingComponent(
-    "unrar",
-    "install RARLAB unrar 6.0 or later (Debian and Ubuntu: apt install unrar, "
-    "not unrar-free)",
-    ("compressed members", "encrypted members"),
-)
-
-
 def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
-    """``(UNRAR_REQUIREMENT,)`` when :func:`find_rarlab_unrar` finds no usable program."""
+    """What ``format_availability(RAR)`` names when no usable RARLAB program is found.
+
+    Without one, RAR still opens and lists, and stored members read natively, so the
+    format is PARTIAL. The install hint is the refusal :func:`find_rarlab_unrar`
+    raises, so the query and a member read give the same advice: nothing on ``PATH``,
+    a lookalike, a RARLAB binary under the 6.0 floor, or one that did not answer the
+    probe. ``unar`` is not named: it is a bounded fallback that reads fewer archives,
+    so finding it does not make RAR FULL.
+    """
     try:
         find_rarlab_unrar()
-    except PackageNotInstalledError:
-        return (UNRAR_REQUIREMENT,)
+    except PackageNotInstalledError as exc:
+        return (MissingComponent("unrar", str(exc)),)
     return ()
 
 
