@@ -223,16 +223,20 @@ characters in the destination. It's safe to delete.
 
 Creating a symlink on Windows needs Developer Mode or an elevated process. Without either, each
 symlink member fails with an `ExtractionError` that says so. Windows also keeps file and directory
-symlinks apart. Archivey makes a directory link when it knows the target is a directory, and when
-the run ends it remakes any link whose target turned out to be one.
+symlinks apart. Archivey makes a directory link when the target is already a directory, or when the
+archive lists its members up front (ZIP, 7z, RAR and ISO do). Otherwise, as with a TAR archive or a
+pipe, a link starts as a file link, and when the run ends archivey remakes any link whose target
+turned out to be a directory.
 
 Windows normally refuses paths of 260 characters or more unless its `LongPathsEnabled` setting is
 on. Archivey gets around the limit by handing Windows long paths in its extended form
-(`\\?\C:\...`), which has no length limit, so a deep archive still extracts in full. Other programs
-may still fail to open those files if the setting is off.
+(`\\?\C:\...`), so a deep archive still extracts in full, and results and errors still show the
+plain path. A single name longer than the filesystem allows, such as more than 255 characters on
+NTFS, still fails that member. Other programs may fail to open those long-path files if the setting
+is off.
 
 On a volume that keeps 8.3 short names, `LONGFI~1.TXT` is a second name for `longfilename.txt`. If
-you use `STRICT` or `STANDARD`, a member with such a name collides with the file the run already
+you use `"strict"` or `"standard"`, a member with such a name collides with the file the run already
 wrote, the same way `README` and `readme` do.
 
 ## Archives you trust

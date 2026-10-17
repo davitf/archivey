@@ -10,8 +10,11 @@ this list:
   records, and bytes after the archive, are expected to change.
 - `install.md` says RAR is partly supported without RARLAB's `unrar`, which is true only once PR 868
   merges.
-- `reading.md` says `extract_all()` runs beside other operations under `concurrent_members=True`,
-  a code fix in progress (it raises today).
+- `reading.md` "Several members at once" says `extract_all()` runs beside other operations under
+  `concurrent_members=True`, including a second `extract_all()` and `open()` or `members()` from
+  other threads. Today each of those raises; a code fix is in progress. The `stream_members()`
+  docstring in `src/archivey/reader.py` ("`extract_all` still raises beside a pass") and the
+  `extract_all()` row of `docs/support-matrix.md` change with it.
 
 `migrating.md`, `philosophy.md`, `how-it-works.md`, `how-it-is-built.md` and `acknowledgements.md`
 aren't linked from `index.md` yet; the site navigation covers them at the switch. `reading.md`
@@ -21,8 +24,12 @@ The API reference doesn't link to `reading.md` for these types yet. Three limita
 philosophy page listed have no page here yet: archivey doesn't modify archives in place, has no
 async API before 1.0, and isn't a backup engine by itself. They belong on a future limitations or
 formats page. The RAR details `install.md` leaves to the formats page (what `unar` can't read,
-per-release `unrar` versions, unnotarized RARLAB macOS builds) have no page here yet. No check looks
-at links in this tree, so a broken one goes unnoticed.
+per-release `unrar` versions, unnotarized RARLAB macOS builds) have no page here yet. Two facts from
+the old pages have no page here yet: on NTFS a hard link past a file's 1,024th name is written as a
+copy, and those copies count toward `max_extracted_bytes` and the archive-wide `max_ratio`; and the
+old thread-safety table's `close()` row (safe to call twice, not safe to race in-flight opens),
+which needs checking against the current code before it moves. No check looks at links in this tree,
+so a broken one goes unnoticed.
 
 When this tree replaces `docs/`, three pointers outside it move too. `SECURITY.md` links the known
 limits at `docs/extracting.md`, and `dev-docs/threat-model.md` names `docs/extracting.md` as its
