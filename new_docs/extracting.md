@@ -219,6 +219,22 @@ written.
 A process killed during an extraction can leave a file named `.archivey-tmp-` followed by random
 characters in the destination. It's safe to delete.
 
+## On Windows
+
+Creating a symlink on Windows needs Developer Mode or an elevated process. Without either, each
+symlink member fails with an `ExtractionError` that says so. Windows also keeps file and directory
+symlinks apart. Archivey makes a directory link when it knows the target is a directory, and when
+the run ends it remakes any link whose target turned out to be one.
+
+Windows normally refuses paths of 260 characters or more unless its `LongPathsEnabled` setting is
+on. Archivey gets around the limit by handing Windows long paths in its extended form
+(`\\?\C:\...`), which has no length limit, so a deep archive still extracts in full. Other programs
+may still fail to open those files if the setting is off.
+
+On a volume that keeps 8.3 short names, `LONGFI~1.TXT` is a second name for `longfilename.txt`. If
+you use `STRICT` or `STANDARD`, a member with such a name collides with the file the run already
+wrote, the same way `README` and `readme` do.
+
 ## Archives you trust
 
 By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
