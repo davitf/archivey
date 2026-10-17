@@ -260,17 +260,18 @@ codec member's end and its descriptor, refused from a file, are counted into the
 the first of several inconclusive password candidates wins. It MAY also differ in these:
 a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
 the pass, losing the members after it, if its decode read more than 4 MiB past the
-data's end; a bit-3 LZMA member without the end-of-stream marker is refused where a file
-read reads it; in `extract_all`, a link member the pass wrote as a file keeps the error
-its data read gave (no password: `EncryptionError`, where the file read reports
-`LinkTargetNotFoundError`); and an archive-wide refusal the directory or end record
-makes is raised by a file read before anything is written and by the pass after every
-member is written, the files staying on disk. A policy that raises on
-`MEMBER_LOCAL_NAME_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the same: a file read raises
-when it lists or opens the member, the pass once it has read the directory, leaving
-every member it wrote as the pass wrote it: a member whose local header names it
-differently stays under the local header's name, since the pass stops before the
-end-of-pass rename.
+data's end; a bit-3 codec member whose stream runs on into its descriptor reads, where a
+file read raises `TruncatedError` at the stated compressed size; a bit-3 LZMA member
+without the end-of-stream marker is refused where a file read reads it; in
+`extract_all`, a link member the pass wrote as a file keeps the error its data read gave
+(no password: `EncryptionError`, where the file read reports `LinkTargetNotFoundError`);
+and an archive-wide refusal the directory or end record makes is raised by a file read
+before anything is written and by the pass after every member is written, the files
+staying on disk. A policy that raises on `MEMBER_LOCAL_NAME_DIFFERS` or
+`MEMBER_LOCAL_CRC_USED` is the same: a file read raises when it lists or opens the
+member, the pass once it has read the directory, leaving every member it wrote as the
+pass wrote it: a member whose local header names it differently stays under the local
+header's name, since the pass stops before the end-of-pass rename.
 
 The data the pass keeps of short members until the directory says which are links SHALL
 NOT be charged to the listing limits: an archive a file read lists within them SHALL

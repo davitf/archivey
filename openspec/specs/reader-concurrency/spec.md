@@ -3,7 +3,7 @@
 ## Purpose
 
 Thread-safety and ownership rules for `ArchiveReader` when callers declare
-`open_archive(concurrent_members=True)` (and the related single-owner / lifecycle machinery
+`open_archive(concurrent_operations=True)` (and the related single-owner / lifecycle machinery
 that makes concurrent opens correct). Caller-facing open/iterate/read APIs live
 in `archive-reading`; this capability is the implementer contract for concurrent
 use, free-threaded correctness, and pass ownership.
@@ -24,7 +24,7 @@ use, free-threaded correctness, and pass ownership.
 ### Requirement: Multiple concurrently-open member streams
 
 Every **random-access** reader (`streaming=False`) opened with
-`concurrent_members=True` SHALL support any number of member streams from that
+`concurrent_operations=True` SHALL support any number of member streams from that
 reader held open simultaneously and read interleaved without corrupting one
 another. Without that flag the single-live-stream default in `archive-reading`
 applies. Access cost never determines legality: declared capabilities are
@@ -74,8 +74,8 @@ redundant decompression.
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
 `stream_members`, `extract_all`) and `members_report_if_available` initialization
 remain single-owner and cannot overlap one another or the random worker seam, with
-one exception: `stream_members()` passes on a `CONCURRENT` reader overlap workers and
-one another (see "Random-access calls beside a `stream_members()` pass"). Under
+one exception: `stream_members()` and `extract_all()` passes on a `CONCURRENT` reader
+overlap workers and one another (see "Random-access calls beside a pass"). Under
 `CONCURRENT`, first-touch materialization through `members()` or `members_report()`
 is coordinated (wait/share) and `reader.close()` drains in-flight worker calls
 rather than rejecting them. The base reader SHALL represent ownership with an
@@ -104,7 +104,7 @@ This is not a blanket thread-safety guarantee for every reader method.
 
 **`stream_members()` is separate.** A `stream_members()` pass owns the reader's
 one-pass data path. It MUST NOT overlap any other forward/data pass, nor random
-`open()` work, except as "Random-access calls beside a `stream_members()` pass"
+`open()` work, except as "Random-access calls beside a pass"
 allows. Advancing the iterator closes/invalidates the previously yielded
 stream before yielding the next; this iterator-owned lifecycle does not apply to
 independent streams returned by random `open()`. The yielded stream carries a child
@@ -159,15 +159,14 @@ release.
 | `CONCURRENT` interleaved reads, any format | Both correct; `AccessCost` describes expense only |
 | Concurrent first-touch on unmaterialized `CONCURRENT` reader | One builder; others wait; all proceed on published snapshot; no overlap `ArchiveyUsageError` |
 | Materialization fails before publish | Private state discarded; `UNMATERIALIZED`; waiters re-elect/see error; lifecycle stays `OPEN` |
-| Workers active + `extract_all` | Later op → `ArchiveyUsageError`; active streams OK |
-| Workers active + `stream_members` or `__iter__` | Admitted (see "Random-access calls beside a `stream_members()` pass") |
+| Workers active + `stream_members`, `__iter__` or `extract_all` | Admitted (see "Random-access calls beside a pass") |
 | `close()` under `CONCURRENT` with in-flight workers | Blocks until return, then closes; no raise merely for active workers; idle member streams are closed by that `close()` and their leases drop |
 | Two members in one solid block opened together | Correct independent bytes; may re-decode; no concurrency exception |
 | Same on CPython `3.13t` free-threaded job | Data-race-free; same observables as regular build |
 
 ### Requirement: Coordinated first-touch materialization
 
-A reader opened with `concurrent_members=True` SHALL coordinate concurrent
+A reader opened with `concurrent_operations=True` SHALL coordinate concurrent
 first-touch operations on a not-yet-materialized member list by blocking all but
 one caller until the immutable snapshot is published, rather than rejecting the
 overlap. Materialization SHALL run exactly once. Non-concurrent and uncontended
@@ -208,23 +207,25 @@ applies, and like teardown the claim is not retried.
 | Two threads `close()` / `__exit__` | Stream shutdown once **and** teardown once; both return; dual failures → one `ExceptionGroup` |
 | Op after `close()` returned | `ArchiveyUsageError` (unchanged) |
 
-### Requirement: Random-access calls beside a `stream_members()` pass
+### Requirement: Random-access calls beside a pass
 
-A random-access reader opened with `concurrent_members=True` SHALL admit `open()`,
-`read()`, `get()`, `members()`, `members_report()`, iteration and further
-`stream_members()` passes while a `stream_members()` pass is active, from the pass's
-own thread (the loop body, while the generator is suspended at a yield) and from any
-other thread, on every format. A `stream_members()` pass SHALL likewise start while
-worker calls are in flight.
+A random-access reader opened with `concurrent_operations=True` SHALL admit `open()`,
+`read()`, `get()`, `members()`, `members_report()`, iteration, further
+`stream_members()` passes and `extract_all()` while a `stream_members()` or
+`extract_all()` pass is active, from the pass's own thread (the loop body, while the
+generator is suspended at a yield) and from any other thread, on every format. Either
+pass SHALL likewise start while worker calls are in flight. Each call SHALL behave as
+it would on a reader of its own (maintainer, 2026-10-17). The reader does not arbitrate
+between two extractions into one folder: a file the other wrote, or one already there,
+is an existing destination to each, under its own overwrite policy.
 
 **Why.** Consistency (maintainer, 2026-10-13). A call that raises only on some formats,
 or only on a first pass, raises in production on an input nobody tried during
 development. A caller should be able to open an archive with
-`concurrent_members=True`, hand the reader to several threads and let each do what it
-wants without worrying about what the others are doing. The cases that still raise are
-few and do not depend on the archive: another reader-wide operation that is not a
-`stream_members()` pass (`extract_all()`), and every overlap on a reader opened
-without `concurrent_members=True`.
+`concurrent_operations=True`, hand the reader to several threads and let each do what it
+wants without worrying about what the others are doing. The one case that still raises
+does not depend on the archive: every overlap on a reader opened without
+`concurrent_operations=True`.
 
 **One shared walk.** Every pass and listing call reads the reader's one member walk,
 each at its own position: a member already walked is served from the list, and the
@@ -251,12 +252,25 @@ correct bytes when interleaved. On a compressed TAR they share the one decoder u
 the handle lock, so interleaving costs re-decoding, not correctness. The walk is
 shared; member data is not: each pass decodes the data it reads on its own.
 
-**Ownership.** The state machine keeps one root pass and the `stream_members()`
-passes beside it; when the root ends, one of those takes its place, so an
-`extract_all()` stays refused until the last pass ends. A call that arrives on another
-thread while a pass is reading the next member's headers waits for the walk lock, and
-one that arrives while another call publishes the list waits in the materialization
-election, as concurrent first-touch callers do, rather than raising.
+**Ownership.** The state machine keeps one root pass and the passes beside it; when the
+root ends, one of those takes its place. A library-internal scope (an extraction's own
+`stream_members()` pass and opens, link-data reads) is filed under the pass of the
+thread that opened it, never under another thread's pass, which can end first.
+
+A call that arrives on another thread while a pass is reading the next member's headers
+waits for the walk lock, and one that arrives while another call publishes the list
+waits in the materialization election, as concurrent first-touch callers do, rather
+than raising.
+
+**Reports.** An `ExtractionReport`'s diagnostics are the ones its own call emitted, on
+its own thread, and a member stream's `diagnostics` are the ones its own `read`, `seek`
+and `close` calls emitted; diagnostics another thread emits meanwhile, or the reader
+emits between those calls (a walk reading further headers), go to `reader.diagnostics`
+and to that call's own result, not to this one. A link several threads follow at once
+is read and reported once. `members_report_if_available()` holds a worker token like
+`members()`, so `close()` waits for its walk. A member stream that `close()` on another
+thread closes under a read in flight raises the closed-file `ValueError`, never an
+error that reads as archive damage.
 
 **Close.** `close()` with suspended passes and in-flight workers waits for the
 workers, then decides again: a pass that resumed meanwhile and is executing makes that
@@ -276,9 +290,10 @@ suspended pass is wound down, each once; several wind-down failures surface as o
 | Same from another thread while the pass is suspended or reading | Same |
 | Random stream held open, read interleaved with the pass's streams | Both correct |
 | Second `stream_members()` beside the first, same thread or another | Both yield every member with correct bytes |
-| First pass ends while a second runs | `extract_all()` still refused until the second ends |
-| `extract_all()` inside the loop | `ArchiveyUsageError` |
-| Reader without `concurrent_members=True` | Every overlap → `ArchiveyUsageError`; pass usable |
+| `extract_all()` inside the loop, or from another thread | Extracts every member; the pass yields every member with correct bytes |
+| Two `extract_all()` calls, a pass and `read()` calls start together on a fresh reader | All correct; each report lists only its own diagnostics |
+| Two `extract_all()` calls into one folder holding one of the files, `OverwritePolicy.ERROR` | Each raises `ExtractionError` "Destination already exists"; the file there stays |
+| Reader without `concurrent_operations=True` | Every overlap → `ArchiveyUsageError`; pass usable |
 | Worker in flight on another thread, `stream_members()` starts | Admitted |
 | `close()` with two suspended passes | Both wound down; resuming either → `ArchiveyUsageError` |
 | `close()` with a suspended pass and an in-flight worker | Waits for the worker; pass wound down; reader closed |
@@ -289,16 +304,16 @@ suspended pass is wound down, each once; several wind-down failures surface as o
 
 Overlapping *distinct* reader-wide passes or concurrent access to a single
 stream object SHALL remain rejected or caller-synchronized. Coordination under
-`CONCURRENT` is bounded to materialization, draining close, and random-access calls
-and `stream_members()` passes beside a `stream_members()` pass — it does not make
+`CONCURRENT` is bounded to materialization, draining close, and random-access calls,
+`stream_members()` passes and `extract_all()` beside one another — it does not make
 every reader method thread-safe.
 
 #### Scenario: single-owner matrix
 
 | Case | Expected |
 | --- | --- |
-| Active `extract_all()` + another pass, or active `stream_members()` + `extract_all()` | Later → `ArchiveyUsageError` |
-| Active `stream_members()` + random calls or another `stream_members()`, `CONCURRENT` | Admitted (see "Random-access calls beside a `stream_members()` pass") |
+| Active `extract_all()` + another pass, or active `stream_members()` + `extract_all()`, default reader | Later → `ArchiveyUsageError` |
+| Active `stream_members()` or `extract_all()` + random calls or another such pass, `CONCURRENT` | Admitted (see "Random-access calls beside a pass") |
 | Concurrent ops on same `ArchiveStream` | Caller's responsibility; no per-stream locking added |
 | `seekable() is False` + seek | `io.UnsupportedOperation` (no synthetic seek) |
 | `extract_all()` drives `stream_members` + hardlink recovery | Token-bearing child scopes permitted; unrelated public op rejected |

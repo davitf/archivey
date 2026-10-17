@@ -92,8 +92,8 @@ The system SHALL define `ArchiveyUsageError(Exception)` outside `ArchiveyError`
 for detected caller-code bugs. `except ArchiveyError` MUST NOT swallow misuse.
 
 `ArchiveyUsageError` SHALL be raised when a second member stream opens while another is
-live on a reader opened without `concurrent_members=True`. Its message SHALL include the
-recorded `open_archive()` call site (`file:line`) and SHALL name `concurrent_members=True`
+live on a reader opened without `concurrent_operations=True`. Its message SHALL include the
+recorded `open_archive()` call site (`file:line`) and SHALL name `concurrent_operations=True`
 as the parameter that would have allowed the operation.
 
 `ArchiveyUsageError` SHALL also cover:
@@ -101,14 +101,14 @@ as the parameter that would have allowed the operation.
 - reader-wide exclusive pass overlap (`__iter__`, `stream_members`,
   `extract_all`, materialization, active worker calls), except the calls and passes
   `reader-concurrency` admits beside a `stream_members()` pass under
-  `concurrent_members=True`;
+  `concurrent_operations=True`;
 - close overlapping an active worker call without declared concurrency;
 - any reader operation/property after `close()` except repeated `close()` /
   `__exit__`;
 - same-reader password-provider reentry into password-requiring work;
 - using an `ArchiveMember` from another reader;
 - member I/O after a caller closes its supplied source early;
-- `open_archive(streaming=True, concurrent_members=True)`;
+- `open_archive(streaming=True, concurrent_operations=True)`;
 - a random-access or second-pass call on a `streaming=True` reader (`members()`,
   `get()`, `open()`, `read()`, a second `__iter__` / `stream_members()` /
   `extract_all()`), since the caller chose the mode;
@@ -128,7 +128,7 @@ of a type the call cannot use raises an `ArchiveyUsageError` that is also a
 that is also a `ValueError`. The two classes are private subclasses in
 `archivey.exceptions` and are not exported; callers catch the builtin or
 `ArchiveyUsageError`. From the list above, an `ArchiveMember` from another reader,
-`open_archive(streaming=True, concurrent_members=True)`, `open_stream()` given a
+`open_archive(streaming=True, concurrent_operations=True)`, `open_stream()` given a
 container `format=`, and `open()` / `read()` of a non-payload member are value errors.
 So are refusals made after looking at what an argument names: a `format=` that
 conflicts with what the source is (a directory source with a container `format=`, or a
@@ -152,7 +152,7 @@ raise `io.UnsupportedOperation`.
 | Case | Expected |
 | --- | --- |
 | `except ArchiveyError` wraps code that raises `ArchiveyUsageError` | Usage error propagates past the handler |
-| Second overlapping member stream without `concurrent_members=True` | `ArchiveyUsageError` with open-site `file:line` naming `concurrent_members=True`; first stream still readable |
+| Second overlapping member stream without `concurrent_operations=True` | `ArchiveyUsageError` with open-site `file:line` naming `concurrent_operations=True`; first stream still readable |
 | Exclusive pass/materialization is active and conflicting public op begins | Later op raises `ArchiveyUsageError`; active op remains valid |
 | Operation/property after `reader.close()` | `ArchiveyUsageError`; already-open member stream follows lifecycle lease |
 | Repeated `reader.close()` | No error; no repeated backend teardown |
