@@ -70,6 +70,14 @@ def test_unix_to_datetime_matches_fromtimestamp(seconds: float) -> None:
     assert unix_to_datetime(seconds) == datetime.fromtimestamp(seconds, tz=UTC)
 
 
+@pytest.mark.parametrize("seconds", [0, 1, 1_600_000_000, 2**31 - 1, 2**32 - 1])
+def test_unix_to_datetime_integer_matches_the_epoch_sum(seconds: int) -> None:
+    # An integer takes the fromtimestamp fast path; this pins it to the epoch sum the
+    # fallback computes, which the comparison above cannot.
+    expected = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=seconds)
+    assert unix_to_datetime(seconds) == expected
+
+
 @pytest.mark.parametrize(
     ("seconds", "expected"),
     [
