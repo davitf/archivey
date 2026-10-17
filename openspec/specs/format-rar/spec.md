@@ -467,6 +467,7 @@ desynchronize sizes).
 | Stream source of unknown size refused mid-copy, then another compressed read | The same refusal, with no second temp file |
 | Stream source, `max_bytes=0` | Stored members read, unencrypted or decrypted by archivey; a member needing `unrar` is refused |
 | `open()` on a directory-flagged header that declares data | Stored, unencrypted data is sliced by archivey and delivered; compressed or encrypted directory data raises `UnsupportedFeatureError` (`unrar p` emits nothing for a directory entry), never a spawn |
+| `stream_members()` over the same header, solid or not | The stream yielded for the directory delivers what `open()` delivers, sliced from the archive and outside the `unrar p` pipe (it takes no offset there), or raises the same `UnsupportedFeatureError` on its first read |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`); the spool limit never refuses it |
 | Prefixed path source under `unar`, copy over `SpoolLimits.max_bytes` | `ar.cost.notes` says a compressed read will be refused; the read raises `ResourceLimitError` naming `rar_decompressor='unrar'`; no temp file |

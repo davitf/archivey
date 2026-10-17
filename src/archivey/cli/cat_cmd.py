@@ -167,10 +167,12 @@ def _cat_members(
         # a closed stdout), rather than leaving it suspended for ``reader.close()``.
         with reader.stream_members(selection.predicate) as it:
             for member, stream in it:
-                if stream is None:
+                if stream is None or member.is_dir:
                     # Directories, links and other entries have no body of their
                     # own. A pass reads forward only, so a link's target, an earlier
-                    # member, cannot be read again for it.
+                    # member, cannot be read again for it. A directory that declares
+                    # data gets a stream, but its bytes are not file content: the
+                    # pass closes the stream unread when it advances.
                     if verbose:
                         print(f"skip {escape_member_name(member.name)}", file=err)
                     continue

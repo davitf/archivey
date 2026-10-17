@@ -30,6 +30,7 @@ from archivey import (
     MemberType,
     open_archive,
 )
+from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -1571,16 +1572,17 @@ def _stream_all(data: bytes, streaming: bool) -> list[tuple[str, MemberType, Any
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
-def test_old_style_directory_with_data_is_skipped(
+def test_old_style_directory_with_data_is_a_directory(
     typeflag: bytes, streaming: bool
 ) -> None:
     # stdlib tarfile turns an AREGTYPE header whose name ends in "/" into a directory
     # and then reads its data blocks as the next header, and lists a REGTYPE one as
     # the file "d/". GNU tar lists a directory for all three typeflags and skips the
-    # data; 7-Zip does too for NUL and 0.
+    # data; 7-Zip does too for NUL and 0. The pass yields the directory's declared
+    # bytes, as open() delivers them.
     data = _tar_entry_with_data(typeflag)
     assert _stream_all(data, streaming) == [
-        ("d/", MemberType.DIRECTORY, None),
+        ("d/", MemberType.DIRECTORY, b"hello directory"),
         ("after.txt", MemberType.FILE, b"after\n"),
     ]
 
@@ -1597,7 +1599,7 @@ def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) 
         streaming=streaming,
     ) as ar:
         directory, stream = next(iter(ar.stream_members()))
-        assert stream is None
+        assert stream is not None
         assert directory.type is MemberType.DIRECTORY
         assert directory.size == 15
         assert directory.extra["tar.type"] == typeflag
@@ -1622,8 +1624,8 @@ def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) 
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
 def test_old_style_directory_data_is_readable(typeflag: bytes) -> None:
     # read() delivers the bytes, so the data an archive hides behind a directory name
-    # is never out of reach. Random access only: a streaming walk hands a directory
-    # no stream, whatever its size.
+    # is never out of reach. A streaming walk has no read(); its pass yields the same
+    # bytes (test_old_style_directory_with_data_is_a_directory).
     data = _tar_entry_with_data(typeflag)
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         directory, after = ar.members()
@@ -1690,7 +1692,7 @@ def test_old_style_directory_name_from_extended_header(
         typeflag, own_name=own_name, wrapper=wrapper, final_name="d/"
     )
     assert _stream_all(data, streaming) == [
-        ("d/", MemberType.DIRECTORY, None),
+        ("d/", MemberType.DIRECTORY, b"hello directory"),
         ("after.txt", MemberType.FILE, b"after\n"),
     ]
 
@@ -1985,6 +1987,387 @@ def test_dirtype_with_size_before_damaged_trailer_is_the_trailer_warning(
         assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
 
 
+_LINK_TYPEFLAGS = [tarfile.SYMTYPE, tarfile.LNKTYPE]
+"""The two link typeflags. Their size field announces no data area, as for a
+directory, but a link with a size has its declared blocks skipped (maintainer ruling,
+2026-10-17)."""
+
+_LINK_PAYLOADS = [
+    b"link data " * 60,
+    b"\0" * 512,
+    b"\0" * 1024,
+    b"\0" * 1536,
+    b"\0" * 512 + b"x" * 512,
+]
+_LINK_PAYLOAD_IDS = [
+    "bytes",
+    "zero_block",
+    "two_zero_blocks",
+    "three_zero_blocks",
+    "zero_then_bytes",
+]
+
+
+def _tar_link_with_data(
+    typeflag: bytes,
+    data: bytes,
+    *,
+    size: int | None = None,
+    tail: bytes | None = None,
+) -> bytes:
+    """``a.txt``, then a link ``l`` to it whose header declares ``size`` bytes
+    (``len(data)`` by default) and is followed by ``data``, padded to a block, then
+    ``after.txt`` and a good trailer, or ``tail`` in their place."""
+    target = tarfile.TarInfo("a.txt")
+    target.size = 5
+    header = bytearray(
+        _raw_tar_header("l", typeflag, len(data) if size is None else size)
+    )
+    header[157:162] = b"a.txt"
+    header[148:156] = b" " * 8
+    header[148:156] = b"%06o\0 " % sum(header)
+    if tail is None:
+        after = tarfile.TarInfo("after.txt")
+        after.size = 6
+        tail = (
+            after.tobuf(format=tarfile.USTAR_FORMAT)
+            + b"after\n".ljust(512, b"\0")
+            + b"\0" * 1024
+        )
+    return (
+        target.tobuf(format=tarfile.USTAR_FORMAT)
+        + b"hello".ljust(512, b"\0")
+        + bytes(header)
+        + (data + b"\0" * (-len(data) % 512))
+        + tail
+    )
+
+
+def _link_type(typeflag: bytes) -> MemberType:
+    return MemberType.SYMLINK if typeflag == tarfile.SYMTYPE else MemberType.HARDLINK
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("payload", _LINK_PAYLOADS, ids=_LINK_PAYLOAD_IDS)
+@pytest.mark.parametrize("typeflag", _LINK_TYPEFLAGS)
+def test_link_data_is_skipped_and_reported(
+    typeflag: bytes, payload: bytes, streaming: bool
+) -> None:
+    # A link header with a size and blocks behind it that are not a member header:
+    # the blocks are skipped, so a zero block among them does not end the listing
+    # and after.txt stays. GNU tar 1.35 and tarfile stop at a zero block (GNU tar
+    # exits 0) and GNU tar reports "Skipping to next header" for bytes; 7-Zip skips
+    # a symlink's blocks only. MEMBER_LINK_DATA_IGNORED names the link.
+    data = _tar_link_with_data(typeflag, payload)
+    assert _stream_all(data, streaming) == [
+        ("a.txt", MemberType.FILE, b"hello"),
+        ("l", _link_type(typeflag), None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        members = list(ar)
+        assert [m.name for m in members] == ["a.txt", "l", "after.txt"]
+        link = members[1]
+        assert link.size is None
+        assert link.link_target == "a.txt"
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        assert [d.code for d in link.diagnostics] == [
+            DiagnosticCode.MEMBER_LINK_DATA_IGNORED
+        ]
+        (diag,) = ar.diagnostics.retained
+        assert diag.context is not None
+        assert diag.context.to_dict() == {
+            "kind": "link_data",
+            "archive_name": None,
+            "member_name": "l",
+            "member_id": 1,
+            "size": len(payload),
+        }
+        assert "skipped" in diag.message
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "payload", [_LINK_PAYLOADS[0], _LINK_PAYLOADS[2]], ids=["bytes", "zero_blocks"]
+)
+@pytest.mark.parametrize("typeflag", _LINK_TYPEFLAGS)
+def test_link_data_extraction_makes_the_link_and_later_members(
+    tmp_path: Path, typeflag: bytes, payload: bytes, streaming: bool
+) -> None:
+    # The link is extracted as a link, its declared bytes written nowhere, and the
+    # member after them is extracted too.
+    if typeflag == tarfile.SYMTYPE and not _can_symlink(tmp_path):
+        pytest.skip("this process may not create symlinks")
+    dest = tmp_path / "out"
+    data = _tar_link_with_data(typeflag, payload)
+    open_and_extract(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        dest,
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    )
+    assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "after.txt", "l"]
+    assert (dest / "after.txt").read_bytes() == b"after\n"
+    assert (dest / "l").read_bytes() == b"hello"
+    if typeflag == tarfile.SYMTYPE:
+        assert (dest / "l").is_symlink()
+        assert os.readlink(dest / "l") == "a.txt"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _LINK_TYPEFLAGS)
+def test_link_with_size_and_no_blocks_lists_whole(
+    typeflag: bytes, streaming: bool
+) -> None:
+    # A link header whose size field is set but whose blocks are not there: the next
+    # member header follows at once, so the size names no data. GNU tar, tarfile and
+    # bsdtar list every member, and so does archivey, with nothing to report, as for
+    # a DIRTYPE header with a size (PR 763). Skipping by the size would hide after.txt,
+    # as 7-Zip hides it behind a symlink.
+    data = _tar_link_with_data(typeflag, b"", size=600)
+    assert [(n, t) for n, t, _ in _stream_all(data, streaming)] == [
+        ("a.txt", MemberType.FILE),
+        ("l", _link_type(typeflag)),
+        ("after.txt", MemberType.FILE),
+    ]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.members()[1].size is None
+        assert dict(ar.diagnostics.counts) == {}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_link_with_size_and_no_blocks_before_a_pax_header_lists_whole(
+    streaming: bool,
+) -> None:
+    # The header after the link is a PAX extended header, whose records the walk
+    # reads from the blocks right after it: read ahead at the link, it is still read
+    # from the right place.
+    after = tarfile.TarInfo("after.txt")
+    after.size = 6
+    after.pax_headers = {"comment": "x" * 600}
+    tail = (
+        after.tobuf(format=tarfile.PAX_FORMAT)
+        + b"after\n".ljust(512, b"\0")
+        + b"\0" * 1024
+    )
+    data = _tar_link_with_data(tarfile.SYMTYPE, b"", size=600, tail=tail)
+    assert _stream_all(data, streaming) == [
+        ("a.txt", MemberType.FILE, b"hello"),
+        ("l", MemberType.SYMLINK, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.members()[2].extra["tar.pax_headers"]["comment"] == "x" * 600
+        assert dict(ar.diagnostics.counts) == {}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _LINK_TYPEFLAGS)
+def test_link_with_size_before_the_trailer_is_reported_not_truncated(
+    typeflag: bytes, streaming: bool
+) -> None:
+    # The last member is a link whose size declares more than the archive holds after
+    # it, and what follows is the trailer: zeros to the end. Either the blocks were
+    # never written or they are zeros cut short; nothing tells them apart, so the
+    # zero block ends the walk, as in GNU tar and tarfile, and the declared size is
+    # reported, as for a DIRTYPE header (PR 763). It is not truncation.
+    data = _tar_link_with_data(typeflag, b"", size=64 * 1024, tail=b"\0" * 1024)
+    assert [n for n, _, _ in _stream_all(data, streaming)] == ["a.txt", "l"]
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        assert [m.name for m in ar] == ["a.txt", "l"]
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        (diag,) = ar.diagnostics.retained
+        assert "end-of-archive marker" in diag.message
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("declared", "trailer"),
+    [(10, 1024), (600, 1024), (1024, 1024), (1500, 1536)],
+    ids=["10_before_1024", "600_before_1024", "1024_before_1024", "1500_before_1536"],
+)
+@pytest.mark.parametrize("typeflag", _LINK_TYPEFLAGS)
+def test_link_with_size_inside_the_trailer_keeps_the_trailer_whole(
+    typeflag: bytes, declared: int, trailer: int, streaming: bool
+) -> None:
+    # The last member is a link whose declared span fits inside the trailer's zeros,
+    # with no member header after it. The span is skipped as the link's data, but the
+    # walk then ends right at its end, so the trailer checks read the span as the
+    # trailer, as GNU tar and tarfile read these bytes (both list a.txt and l, exit
+    # 0). Only the link's declared size is reported, not a missing marker.
+    data = _tar_link_with_data(typeflag, b"", size=declared, tail=b"\0" * trailer)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        assert [m.name for m in ar] == ["a.txt", "l"]
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        (diag,) = ar.diagnostics.retained
+        # The report is made at the link, before the walk reads past the span, so
+        # it names both readings.
+        assert "skipped" in diag.message
+        assert "end-of-archive marker" in diag.message
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [600, 64 * 1024],
+    ids=["span_inside_the_trailer", "archive_ends_inside_the_span"],
+)
+def test_link_zero_span_in_a_large_tar_gz_does_not_rewind(declared: int) -> None:
+    # A random-access walk over a .tar.gz larger than the rewind warning threshold,
+    # whose last member is a link declaring `declared` bytes before a 1024-byte
+    # trailer. The trailer checks run from the span's first block, which the walk
+    # has read past: when the span lies inside the trailer and when the archive ends
+    # inside the span. Either way the bytes are replayed from memory, not seeked
+    # back to (a gzip stream with no resume point would decode again from its start
+    # and report STREAM_REWIND_REDECOMPRESSES).
+    chunk = 512 * 1024
+    body = b""
+    for i in range(4):
+        info = tarfile.TarInfo(f"f{i}")
+        info.size = chunk
+        body += info.tobuf(format=tarfile.USTAR_FORMAT) + bytes(chunk)
+    raw = body + _tar_link_with_data(
+        tarfile.SYMTYPE, b"", size=declared, tail=b"\0" * 1024
+    )
+    assert len(raw) > REWIND_REDECODE_WARN_BYTES
+    with open_archive(
+        io.BytesIO(gzip.compress(raw)), format=ArchiveFormat.TAR_GZ
+    ) as ar:
+        assert [m.name for m in ar.members()] == ["f0", "f1", "f2", "f3", "a.txt", "l"]
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_link_with_size_inside_the_trailer_before_junk_is_trailing_data(
+    streaming: bool,
+) -> None:
+    # As above with junk after the trailer: the junk is reported as after a file.
+    data = _tar_link_with_data(
+        tarfile.SYMTYPE, b"", size=600, tail=b"\0" * 1024 + b"junk".ljust(512, b"\0")
+    )
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        assert [m.name for m in ar] == ["a.txt", "l"]
+        assert ar.diagnostics.counts == {
+            DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1,
+            DiagnosticCode.ARCHIVE_TRAILING_DATA: 1,
+        }
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_link_with_size_before_a_one_block_trailer_misses_the_marker(
+    streaming: bool,
+) -> None:
+    # As above with a lone zero block: the marker checks then report its missing
+    # second block, as after a file.
+    data = _tar_link_with_data(tarfile.SYMTYPE, b"", size=4096, tail=b"\0" * 512)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        assert [m.name for m in ar] == ["a.txt", "l"]
+        assert ar.diagnostics.counts == {
+            DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1,
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: 1,
+        }
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "payload", [b"x" * 600, b"\0" * 512 + b"x" * 88], ids=["bytes", "zero_then_bytes"]
+)
+def test_link_data_cut_short_is_truncation_after_the_link(
+    payload: bytes, streaming: bool
+) -> None:
+    # The declared blocks start with data that is not all zeros and the archive ends
+    # inside them: truncation, as for a file's data. The link is listed first (DR-2).
+    data = _tar_link_with_data(tarfile.SYMTYPE, payload, size=8192, tail=b"")
+    seen: list[str] = []
+    with (
+        open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+        ) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        for member in ar:
+            seen.append(member.name)
+    assert seen == ["a.txt", "l"]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("payload", "size", "tail", "names"),
+    [
+        (b"\0" * 1024, None, None, ["a.txt", "l", "after.txt"]),
+        (b"", 64 * 1024, b"\0" * 1024, ["a.txt", "l"]),
+    ],
+    ids=["skipped", "ends_archive"],
+)
+def test_link_data_in_a_compressed_tar(
+    payload: bytes,
+    size: int | None,
+    tail: bytes | None,
+    names: list[str],
+    streaming: bool,
+) -> None:
+    # A compressed tar has no known length, so a random-access walk finds the end of
+    # the declared span by reading, not from the file size.
+    data = gzip.compress(
+        _tar_link_with_data(tarfile.SYMTYPE, payload, size=size, tail=tail)
+    )
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR_GZ,
+        streaming=streaming,
+    ) as ar:
+        assert [m.name for m in ar] == names
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _LINK_TYPEFLAGS)
+def test_link_data_is_refused_by_strict_policy(
+    typeflag: bytes, streaming: bool
+) -> None:
+    data = _tar_link_with_data(typeflag, b"\0" * 1024)
+    with pytest.raises(DiagnosticRaisedError) as excinfo:
+        with open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as ar:
+            list(ar.stream_members())
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_LINK_DATA_IGNORED
+
+
+def _can_symlink(tmp_path: Path) -> bool:
+    probe = tmp_path / "symlink-probe"
+    try:
+        probe.symlink_to("x")
+    except OSError:
+        return False
+    probe.unlink()
+    return True
+
+
 def _global_pax_chain() -> bytes:
     """A PAX global header (``g``) and its one record block: 1024 bytes that the walker
     reads as part of the next member's header chain, so a walk gets past them."""
@@ -2088,7 +2471,9 @@ def test_old_style_directory_with_data_before_lone_zero_block_lists(
         + b"\0" * 1024
     )
     data = _tar_entry_with_data(typeflag, tail=tail)
-    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, b"hello directory")
+    ]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.members()[0].size == 15
         assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1

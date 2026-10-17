@@ -2339,6 +2339,15 @@ class ZipReader(BaseArchiveReader):
             unicode_path_used=unicode_name is not None,
         )
 
+    def _directory_data_reach(self, entry: CentralEntry) -> str | None:
+        """Where the data of the directory ``entry`` describes can be read, for the
+        ``MEMBER_DIRECTORY_DATA_IGNORED`` message, or ``None`` for the shared wording.
+
+        ``None`` here: this reader lists from the central directory before any pass,
+        so a pass knows the size and yields the bytes. The pipe reader overrides it.
+        """
+        return None
+
     def _to_member(self, entry: CentralEntry, index: int) -> ArchiveMember:
         external_attr = entry.external_attr
         full_mode = external_attr >> 16
@@ -2650,15 +2659,17 @@ class ZipReader(BaseArchiveReader):
             self._emit_size_wrapped(member, entry, index)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
-            # the directory and drop the bytes silently. Say so; read() delivers them.
-            self._emit_directory_data_ignored(member, index)
+            # the directory and drop the bytes silently. Say so; a read delivers them.
+            self._emit_directory_data_ignored(
+                member, index, reach=self._directory_data_reach(entry)
+            )
             if directory_without_anchor:
                 self._diagnostics_collector.emit(
                     code=DiagnosticCode.DIGEST_UNVERIFIABLE,
                     message=(
                         f"Directory {quoted(member.name)} declares {entry.file_size} "
                         "bytes of data but its CRC-32 field is 0, a directory's "
-                        "conventional value; the bytes open() delivers are not "
+                        "conventional value; the bytes a read delivers are not "
                         "checked against any digest."
                     ),
                     context=DigestContext(
@@ -3863,9 +3874,10 @@ class ZipReader(BaseArchiveReader):
         # A symlink's target is its (possibly encrypted) file data. A missing/wrong
         # password, or data that fails its check under an unconfirmed ZipCrypto
         # password, leaves link_target unset (following the link later fails with
-        # LinkTargetNotFoundError). A CorruptionError or TruncatedError propagates, and
-        # listing reports the link as damaged (`_report_damaged_link_target`); other
-        # errors surface translated like any member-read error.
+        # LinkTargetNotFoundError). Damage, a method this reader does not decode, or an
+        # optional library the data needs that is not installed propagates, and listing
+        # reports the link targetless (`_report_unreadable_link_target`); open and
+        # extraction raise it.
         self._link_target_from_data(
             member,
             self._link_target_opener(member),
@@ -4043,9 +4055,10 @@ def _crc_is_digest(
 
     The pipe pass (``zip_forward_reader``) keeps its own rule for a bit-3 member:
     it verifies as it lists, so it lists a descriptor's CRC only once the CRC it
-    computed matched, and a directory, which it gives no stream, gets none until
-    the central directory arrives (``format-zip`` spec, "Two shapes read
-    differently from a pipe")."""
+    computed matched, and a directory gets none until the central directory
+    arrives (``format-zip`` spec, "Two shapes read differently from a pipe"). A
+    pass that reads a directory's data checks it by this rule all the same
+    (``_PassData._crc_is_digest``)."""
     if aes is not None and aes.is_ae2:
         return False
     if member_type is MemberType.DIRECTORY:

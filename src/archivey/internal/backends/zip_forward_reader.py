@@ -92,6 +92,7 @@ from archivey.internal.backends.zipcrypto import (
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
     _apply_last_entry_wins_is_current,
+    pass_has_data,
 )
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
@@ -1194,7 +1195,7 @@ class _PassData:
                     "Decompressed content exceeds its declared size of "
                     f"{file_size} bytes."
                 )
-        elif error is None and crc != self._crc and not self._ae2():
+        elif error is None and crc != self._crc and self._crc_is_digest(crc, file_size):
             error = CorruptionError(
                 f"CRC-32 mismatch in ZIP member {quoted(member.name)}: stored "
                 f"{crc:08x}, computed {self._crc:08x}"
@@ -1204,6 +1205,22 @@ class _PassData:
         elif raise_mismatch:
             raise error
         return error
+
+    def _crc_is_digest(self, crc: int, file_size: int) -> bool:
+        """Whether the stored ``crc`` checks the data, by the file read's rule for a
+        directory (``zip_reader._crc_is_digest``).
+
+        Not for WinZip AE-2, which stores no CRC. For a directory, only when it
+        declares data (``file_size`` above 0) under a non-zero field: 0 is a
+        directory's conventional value, so the file read lists no digest for it and
+        reports ``DIGEST_UNVERIFIABLE``, and a pass that reads the directory's data
+        delivers it unchecked too (DR-5). Any other member's stored CRC is checked.
+        """
+        if self._ae2():
+            return False
+        if self.member.type is MemberType.DIRECTORY:
+            return file_size > 0 and crc != 0
+        return True
 
     def _ae2(self) -> bool:
         """A WinZip AE-2 member stores no CRC: its HMAC is the check."""
@@ -2114,6 +2131,25 @@ class ZipForwardReader(ZipReader):
             return None
         return local.crc
 
+    def _directory_data_reach(self, entry: CentralEntry) -> str | None:
+        """A directory whose local header defers its sizes to a data descriptor (bit
+        3) has no size when a pass reaches it, so the pass yields no stream and its
+        data goes past unread: say so instead of promising a stream. The message is
+        emitted on any listing, a pass or not, so it says what a pass does. Only a
+        seekable source, which a reader lists from its central directory first,
+        offers those bytes."""
+        member = self._by_offset.get(_bound_offset(entry.header_offset))
+        if member is None:
+            return None
+        local = cast("_ZipLocator", member._raw)
+        if not local.flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
+            return None
+        return (
+            "its data descriptor comes after them, so stream_members() over a source "
+            "that cannot seek yields no stream for it; open() delivers them from a "
+            "seekable source"
+        )
+
     def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:
         """The member a directory entry with no local entry describes, for the end of
         the pass to fail (``_failed_at_end``).
@@ -2278,7 +2314,7 @@ class ZipForwardReader(ZipReader):
         # member's data, and its stream reads nothing after that.
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
-            if not member.is_file:
+            if not pass_has_data(member):
                 return None
             return self._open_member(member)
 

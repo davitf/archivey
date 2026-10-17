@@ -140,9 +140,12 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   so if it is a symlink to a directory, archivey follows it and extracts into the
   target (as `tar -C` and `unzip -d` do).
 - **A directory entry that declares data** is created as a directory and the bytes are
-  not written, as every official tool does; `MEMBER_DIRECTORY_DATA_IGNORED` reports it
-  and `reader.read()` on the directory returns them where the format's reader can
-  decode them.
+  not written, as every official tool does; `MEMBER_DIRECTORY_DATA_IGNORED` reports it.
+  `reader.read()` on the directory returns them where the format's reader can decode
+  them, and so does the stream `stream_members()` yields for it.
+- **A TAR link entry that declares data** is created as a link and the bytes are not
+  written; `MEMBER_LINK_DATA_IGNORED` reports it, and the members after the bytes are
+  extracted too.
 - **Special files** (devices, FIFOs, sockets) are never created: archivey calls no
   `mknod`. An entry that stores no data under such a mode is `MemberType.OTHER` and is
   skipped; an entry that stores data under such a mode is a `FILE` and its bytes are
@@ -172,11 +175,18 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   describes in full while reporting success. In ZIP, 7z and RAR3/4, a damaged target
   (its data fails the CRC or HMAC, or the decompressor) does not fail the listing: the
   link is listed without a target, reported with `reason="target_data_damaged"`, and
-  opening or extracting it raises the damage. A ZIP read from a pipe has one more such
-  case: the pass keeps the data of members short enough to be links until the central
-  directory says which are, at most `max_metadata_bytes` of it, and drops the longest
-  past that. A link whose data was dropped is listed without a target, reported with
-  `reason="target_data_dropped"`, and fails when extracted.
+  opening or extracting it raises the damage. A target stored with a method archivey
+  cannot decode, or that needs an optional library that is not installed (a codec, or
+  `cryptography` for WinZip AES), is handled the same way, with
+  `reason="target_data_unsupported"` or `reason="package_not_installed"`; opening or
+  extracting the link raises `UnsupportedFeatureError` or `PackageNotInstalledError`.
+  `DiagnosticPolicy.STRICT` refuses such an archive even when its bytes are intact and
+  the only cause is a missing library, as it does for a link whose password is missing.
+  A ZIP read from a pipe has one more such case: the pass keeps the data of members
+  short enough to be links until the central directory says which are, at most
+  `max_metadata_bytes` of it, and drops the longest past that. A link whose data was
+  dropped is listed without a target, reported with `reason="target_data_dropped"`, and
+  fails when extracted.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small

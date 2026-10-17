@@ -37,10 +37,15 @@ After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
 
 A directory listed from an old-style regular-file header named ``d/`` keeps its declared
 ``size`` and is reported with ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing; ``open()``
-delivers the bytes, extraction creates the directory (DR-3).
+and ``stream_members()`` deliver the bytes, extraction creates the directory (DR-3).
 
-Both codes follow the diagnostic policy like any other: a caller who wants either to
-fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
+A symlink or hard link header with a size is listed as a link with no ``size``. When
+the block after it is not a member header, the walker skips the declared blocks (see
+``TarWalker._place_link_data``) and the link is reported with
+``MEMBER_LINK_DATA_IGNORED`` at listing; extraction creates the link.
+
+These codes follow the diagnostic policy like any other: a caller who wants one to fail
+sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for all of them).
 """
 
 from __future__ import annotations
@@ -65,6 +70,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     DirectoryDataContext,
+    LinkDataContext,
     MemberHeaderRecordContext,
     UnknownMemberTypeContext,
 )
@@ -79,6 +85,7 @@ from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     SPARSE_ENTRY_BYTES,
     Budget,
+    LinkData,
     NameSource,
     PaxValue,
     TarEnd,
@@ -93,6 +100,7 @@ from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
     _ProgressivePassIterator,
+    pass_has_data,
     reject_start_offset,
 )
 from archivey.internal.config import stream_config_from_archivey
@@ -832,7 +840,7 @@ class TarReader(BaseArchiveReader):
                 return self._member_body(member, in_walk=True)
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
-            if not member.is_file:
+            if not pass_has_data(member):
                 return None
             return self._lazy_member_stream(member, _open_in_walk, track_output=True)
 
@@ -866,7 +874,7 @@ class TarReader(BaseArchiveReader):
         with self._translated_errors():
 
             def _open(member: ArchiveMember) -> ArchiveStream | None:
-                if not member.is_file:
+                if not pass_has_data(member):
                     return None
                 return self._open_member_stream(member, defer_sparse_error=True)
 
@@ -997,8 +1005,8 @@ class TarReader(BaseArchiveReader):
                 "would occupy: a TAR directory entry has no data area, so if the "
                 "blocks are there they were read as the end-of-archive marker and the "
                 "members behind them are not listed. Extraction creates the directory; "
-                "the bytes cannot be told from the trailer, so open() has nothing to "
-                "deliver."
+                "the bytes cannot be told from the trailer, so there is nothing to "
+                "read."
             ),
             context=DirectoryDataContext(
                 archive_name=self._archive_name,
@@ -1436,7 +1444,7 @@ class TarReader(BaseArchiveReader):
             name=name,
             raw_name=entry.name,
             # An old-style directory keeps its declared size: its regular-file
-            # typeflag gives it a data area, which open() delivers (DR-3). A DIRTYPE
+            # typeflag gives it a data area, which open() and a pass deliver (DR-3). A DIRTYPE
             # size names no data area, so it is dropped here and judged at the end
             # of the walk (_verify_tar_eof).
             size=entry.size
@@ -1544,9 +1552,55 @@ class TarReader(BaseArchiveReader):
             # GNU tar creates the directory and skips the bytes without a word (7-Zip
             # too, for NUL and 0). Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
+        if entry.link_data is not None:
+            self._emit_link_data_ignored(member, index, entry)
         if entry.typeflag not in _KNOWN_TYPES:
             self._emit_member_type_unknown(member, index, entry.typeflag)
         return member
+
+    def _emit_link_data_ignored(
+        self, member: ArchiveMember, member_id: int, entry: TarEntry
+    ) -> None:
+        """Report ``MEMBER_LINK_DATA_IGNORED`` for a link header whose declared
+        blocks the walk took as its data (:class:`LinkData`).
+
+        A TAR link has no data area. The walker skipped the declared blocks, so a
+        zero block among them did not end the listing, as the maintainer ruled
+        (2026-10-17); GNU tar and ``tarfile`` stop at such a block and drop the members
+        after it. The code is in ``ARCHIVE_INTEGRITY_CODES``, as
+        ``MEMBER_DIRECTORY_DATA_IGNORED`` is: a warning by default, refused under
+        ``DiagnosticPolicy.STRICT``. The finding is attached to the member.
+        """
+        kind = "Symlink" if member.type == MemberType.SYMLINK else "Hard link"
+        declares = f"{kind} {quoted(member.name)} declares {entry.size} bytes of data"
+        if entry.link_data is LinkData.ENDS_ARCHIVE:
+            what = (
+                f"{declares}, and the archive ends on zero bytes before the span those "
+                "bytes would occupy ends: if the blocks are there, they are zeros cut "
+                "short; if not, the zero block is the end-of-archive marker."
+            )
+        else:
+            what = (
+                f"{declares}; a TAR link entry has no data area, so the blocks are "
+                "skipped. If they are all zeros and no member header follows them, "
+                "they are read as the end-of-archive marker, as for a link whose "
+                "blocks were never written, and the listing ends there."
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
+            message=(
+                f"{what} Extraction creates the link and does not write the bytes."
+            ),
+            context=LinkDataContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                size=entry.size,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
 
     def _emit_member_type_unknown(
         self, member: ArchiveMember, member_id: int, typeflag: bytes

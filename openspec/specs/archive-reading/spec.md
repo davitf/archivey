@@ -719,16 +719,31 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | Symlink resolves to a file | Follow succeeds; returns file stream/bytes |
 | Symlink target missing in archive | `LinkTargetNotFoundError` |
 
-### Requirement: Non-file stream_members yield None
+### Requirement: stream_members yields a stream for exactly the members open() reads
 
-`stream_members` SHALL pair every non-file member (`DIRECTORY`, `SYMLINK`,
-`HARDLINK`, `OTHER`, `ANTI`) with `stream is None` (no empty `ArchiveStream`).
+`stream_members` SHALL pair every non-file member (`DIRECTORY`, `SYMLINK`, `HARDLINK`,
+`OTHER`, `ANTI`) with `stream is None` (no empty `ArchiveStream`), with one exception: a
+`DIRECTORY` whose header declares data (a non-zero `size`, reported with
+`MEMBER_DIRECTORY_DATA_IGNORED`) SHALL be paired with a stream when its size is known as
+the pass reaches it, which holds in every format and both access modes but one: a ZIP
+directory whose local header defers its sizes to a data descriptor (bit 3, which every
+writer to a pipe sets), read from a source that cannot seek, is paired with `None`,
+since its data has gone past before the descriptor says it is data (`format-zip`, "Two
+shapes read differently from a pipe"). That stream SHALL deliver the bytes `open()`
+delivers for the directory, under the same checks (the stored digest,
+`DIGEST_UNVERIFIABLE` where there is none), and SHALL raise on its first read what
+`open()` raises for it (RAR: `UnsupportedFeatureError` for compressed or encrypted
+directory data). For every directory but that ZIP one, the pass and `open()` SHALL
+agree: a stream where `open()` reads, `None` where it refuses.
 
 #### Scenario: non-file stream matrix
 
 | Case | Expected |
 | --- | --- |
-| Directory member | Stream `None` |
+| Directory member declaring no data | Stream `None` |
+| ZIP directory written with a data descriptor (bit 3) declaring 12 bytes, from a source that cannot seek | Stream `None`; `MEMBER_DIRECTORY_DATA_IGNORED` when the central directory arrives, its message saying the pass yields no stream for it; from a seekable source, with or without `streaming=True`, the row below |
+| Directory member declaring 12 bytes (ZIP, RAR, an old-style TAR `d/`), from a file or a forward-only source | A stream; `read()` returns the 12 bytes `open()` returns, and raises the `CorruptionError` `open()` raises when they fail the CRC-32 |
+| TAR `DIRTYPE` header with a size the walk cannot tell from the trailer | Stream `None` (no `size`; `open()` refuses it) |
 | `MemberType.ANTI` | Stream `None` |
 
 ### Requirement: Bounded-memory sequential streaming via stream_members
@@ -744,7 +759,8 @@ def stream_members(
 
 Yields `(member, stream)` in archive order with bounded memory. Solid blocks
 decompress progressively (never buffered whole); peak = decoder working set + one
-in-flight chunk. Non-file members yield `None`.
+in-flight chunk. Non-file members yield `None`, except a directory that declares data
+(see "stream_members yields a stream for exactly the members open() reads").
 
 `file_copy_streams=False` SHALL also yield `None` for a `FILE` member that the archive
 stores as a copy of an earlier member (`extra["is_file_copy"]`; only `format-rar` has
@@ -877,7 +893,7 @@ that one `open()` operation.
 | Missing target | `LinkTargetNotFoundError`, `reason == UNRESOLVED` |
 | Chain revisits member id | `LinkTargetNotFoundError` (a `ReadError`), `reason == UNRESOLVED`; no infinite recursion |
 | Link the archive records no target for | `LinkTargetNotFoundError`, `reason == NOT_RECORDED`; `member.link_target_unrecorded` |
-| Link whose stored target the reader reported out of reach (encrypted, compressed, over the length limit) | `LinkTargetNotFoundError`, `reason == UNREADABLE`; a damaged target raises the damage instead |
+| Link whose stored target the reader reported out of reach (encrypted, compressed, over the length limit) | `LinkTargetNotFoundError`, `reason == UNREADABLE`; a damaged or undecodable target raises its own error instead |
 | Symlink → file in archive | Stream yields target file data |
 | Symlink `dir/link` → `file` / `./file` | Lookup `dir/file`, not root-relative `file` |
 | Hardlink → `a/../b`, archive holds both `a/../b` and `b` | Resolves to the `a/../b` member; never `b` |
@@ -1644,3 +1660,34 @@ member stops, therefore still reports every damaged target it read, and
 | ZIP symlink whose data outruns its declared size | Listed targetless; the message names the declared size |
 | RAR3/4 stored symlink whose data fails its CRC32 | Listed targetless with `reason="target_data_damaged"` |
 | RAR3/4 stored symlink whose declared size differs from its packed size, either way | Listed targetless with `reason="target_data_damaged"`; nothing is read past the packed data |
+
+### Requirement: An undecodable data-stored link target leaves the listing intact
+
+When a backend reads a symlink's target from the member's data and that read raises
+`UnsupportedFeatureError` (a compression method, variant or flag this reader does not
+decode, such as an unknown ZIP method, ZIP general-purpose bit 5, or an LZMA coder with
+`lc + lp` over 4) or `PackageNotInstalledError` (an optional library the member's data
+needs is not installed: a codec, or `cryptography` for WinZip AES), the link SHALL be
+handled as the damaged-target requirement says, with one difference:
+`SYMLINK_TARGET_UNAVAILABLE` SHALL carry `reason="target_data_unsupported"` for the first
+and `reason="package_not_installed"` for the second. Every other member SHALL stay
+listed, `link_target` SHALL be unset, and opening, following or extracting the link SHALL
+raise the same error the read raised. This holds in `members()`, in `stream_members()` in
+either access mode, and in `extract_all()`. `SYMLINK_TARGET_UNAVAILABLE` is in
+`ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` SHALL refuse the archive in both
+cases, even an intact archive whose only fault is a missing library, as it already does
+for `reason="password_required"`: strict means every member can be vouched for, and this
+install cannot vouch for that link.
+
+#### Scenario: undecodable link target matrix
+
+| Case | Expected |
+| --- | --- |
+| ZIP symlink with an unknown compression method, or bit 5 set, `members()` | Every member listed; link `link_target is None`; `reason="target_data_unsupported"` |
+| Same, `open()` on the link | `UnsupportedFeatureError` |
+| Same, `extract_all(on_error=CONTINUE)` in either access mode | Link `FAILED` with `UnsupportedFeatureError`; other members extract |
+| Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
+| 7z symlink in an LZMA `lc=8` folder, `members()` or `stream_members()` | Every member listed; `reason="target_data_unsupported"` |
+| ZIP Zstandard, ZIP WinZip AES or 7z PPMd symlink with the library it needs absent | Every member listed; `reason="package_not_installed"`; `open()` raises `PackageNotInstalledError` |
+| Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `PackageNotInstalledError`; other members extract |
+| Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError`, though the archive is intact |

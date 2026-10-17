@@ -59,6 +59,7 @@ from archivey.exceptions import (
     EncryptionError,
     LinkTargetNotFoundError,
     LinkTargetNotFoundReason,
+    PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
@@ -159,6 +160,23 @@ from archivey.types import (
     OverwritePolicyStr,
     TrailerSignature,
 )
+
+UNREADABLE_LINK_TARGET_ERRORS: tuple[type[ArchiveyError], ...] = (
+    CorruptionError,
+    UnsupportedFeatureError,
+    PackageNotInstalledError,
+)
+"""What a read of one link's data-stored target may raise without failing the listing.
+
+Damage (``CorruptionError``, and ``TruncatedError`` under it), a method or variant this
+reader does not decode (``UnsupportedFeatureError``), and an optional library the
+member's data needs that is not installed (``PackageNotInstalledError``: a codec, or
+``cryptography`` for WinZip AES) are each about that one member's data. Listing
+and a data pass leave the link targetless and report it
+(``_report_unreadable_link_target``); opening or extracting the link reads it again and
+raises the error itself. ``EncryptionError`` is not here: the backends catch it where
+they read and report it with its own reason.
+"""
 
 MAX_LINK_TARGET_BYTES = 4096
 """Longest symlink target, in stored bytes, that a reader accepts from member data.
@@ -275,6 +293,23 @@ class _Materialized:
     """
 
     report: MemberListReport
+
+
+def pass_has_data(member: ArchiveMember) -> bool:
+    """Whether a data pass yields a stream for ``member``: the members ``open()`` reads.
+
+    A ``FILE``, and a ``DIRECTORY`` whose header declares data (a non-zero ``size``):
+    the bytes ``MEMBER_DIRECTORY_DATA_IGNORED`` reports and extraction does not write
+    (DR-25). Every other member has no data of its own, so the pass yields ``None``.
+    ``open()`` applies the same test to the member a link resolves to, so a pass and
+    a random-access read deliver the same bytes and refuse the same members, except
+    a bit-3 ZIP directory read from a source that cannot seek: its size arrives after
+    its data, so ``size`` is ``None`` when the pass reaches it and the pass yields
+    ``None`` where ``open()`` from a seekable source reads.
+    """
+    if member.is_file:
+        return True
+    return member.type is MemberType.DIRECTORY and bool(member.size)
 
 
 def reject_start_offset(
@@ -843,7 +878,8 @@ class BaseArchiveReader(ArchiveReader):
         produce ``(member, stream)`` pairs progressively from a single forward pass and
         must **not** call ``_materialize_members()``. The yielded stream is only valid
         until the iterator advances (see the ``stream_members`` contract in
-        ``archive-reading``); for non-file members it is ``None``.
+        ``archive-reading``); it is ``None`` for every member :func:`pass_has_data`
+        rejects.
 
         When ``streaming=True`` and the backend does not override, this default pulls
         from the shared instance-held progressive pass and opens each file member on
@@ -869,7 +905,7 @@ class BaseArchiveReader(ArchiveReader):
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
             self._read_pass_link_target(member)
-            if member.is_file:
+            if pass_has_data(member):
                 return self._lazy_member_stream(member)
             return None
 
@@ -890,26 +926,27 @@ class BaseArchiveReader(ArchiveReader):
         A streaming pass resolves links when it ends, after the caller has had the
         member. The read here serves two needs. In ZIP, a reparse point whose data is
         not a link buffer is a file, and the caller needs its stream now (the 7z pass
-        does the same read). In every format that stores the target as data, a damaged
-        one must be reported before the link is handed out. A random-access listing
-        has read it already (the memo, or the damage flag, makes this a no-op).
+        does the same read). In every format that stores the target as data, an
+        unreadable one (damaged, or in a method or codec this install cannot decode)
+        must be reported before the link is handed out. A random-access listing has
+        read it already (the memo, or the unreadable flag, makes this a no-op).
 
-        A damaged target is reported here rather than left to link finalization: a
+        An unreadable target is reported here rather than left to link finalization: a
         pass the caller leaves early, or one a later member stops, never finalizes,
         and a strict policy must refuse before the link is handed out. Finalization
-        skips a link already reported as damaged.
+        skips a link already reported as unreadable.
         """
         if (
             not self._config.read_link_targets
             or member.type is not MemberType.SYMLINK
             # Already read and reported; reading it again would only re-raise.
-            or member._link_target_damaged
+            or member._link_target_unreadable
         ):
             return
         try:
             self._read_link_target_on_request(member)
-        except CorruptionError as exc:
-            self._report_damaged_link_target(member, exc)
+        except UNREADABLE_LINK_TARGET_ERRORS as exc:
+            self._report_unreadable_link_target(member, exc)
 
     def _lazy_member_stream(
         self,
@@ -1391,10 +1428,11 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
 
-        A ``CorruptionError`` / ``TruncatedError`` reading one link's target leaves
-        that link targetless and reported (``_report_damaged_link_target``), and the
-        others resolve. Past that, when ``error is not None`` (incomplete listing /
-        terminal pass damage), a secondary fault of those types is swallowed so the
+        A ``CorruptionError`` / ``TruncatedError``, an ``UnsupportedFeatureError`` or a
+        ``PackageNotInstalledError`` reading one link's target leaves that link
+        targetless and reported (``_report_unreadable_link_target``), and the others
+        resolve. Past that, when ``error is not None`` (incomplete listing /
+        terminal pass damage), a secondary ``CorruptionError`` is swallowed so the
         recovered prefix stays publishable. When ``error is None`` (clean EOF / complete
         listing), it propagates.
 
@@ -1430,15 +1468,15 @@ class BaseArchiveReader(ArchiveReader):
                     and member.link_target is None
                     and not member._link_target_resolved
                     # A pass that read it first has reported it already.
-                    and not member._link_target_damaged
+                    and not member._link_target_unreadable
                 ]
                 if unread:
                     self._prepare_link_target_reads(unread)
                 for member in unread:
                     try:
                         self._resolve_link_target(member)
-                    except CorruptionError as exc:
-                        self._report_damaged_link_target(member, exc)
+                    except UNREADABLE_LINK_TARGET_ERRORS as exc:
+                        self._report_unreadable_link_target(member, exc)
                         continue
                     if member.link_target is not None:
                         self._listing_tracker.account_link_target(member.link_target)
@@ -1468,23 +1506,32 @@ class BaseArchiveReader(ArchiveReader):
             if error is None:
                 raise
 
-    def _report_damaged_link_target(
-        self, member: ArchiveMember, exc: CorruptionError
+    def _report_unreadable_link_target(
+        self, member: ArchiveMember, exc: ArchiveyError
     ) -> None:
-        """Leave a link whose target data is damaged listed, targetless, and reported.
+        """Leave a link whose target data cannot be read listed, targetless, and reported.
 
-        One damaged member does not make the rest of the listing wrong, and a listing
-        that raised would take every other member with it. So the link stays in the
-        list with ``link_target`` unset and ``SYMLINK_TARGET_UNAVAILABLE``
-        (``reason="target_data_damaged"``) says why; a strict policy still refuses the
-        archive, since the code is an integrity one. The memo stays unset, so opening
-        or extracting the link reads the target again and raises the fault itself.
-        ``_link_target_damaged`` marks it reported, so link finalization after a
-        ``stream_members()`` pass that read it first does not report it twice.
+        ``exc`` is one of ``UNREADABLE_LINK_TARGET_ERRORS``. One member's data says
+        nothing about the others, and a listing that raised would take every other
+        member with it. So the link stays in the list with ``link_target`` unset and
+        ``SYMLINK_TARGET_UNAVAILABLE`` says why: ``reason="target_data_damaged"`` for
+        damage, ``"target_data_unsupported"`` for a method or variant this reader does
+        not decode, ``"package_not_installed"`` for a missing optional library. A strict
+        policy still refuses the archive, since the code is an integrity one. The memo
+        stays unset, so opening or extracting the link reads the target again and
+        raises the error itself. ``_link_target_unreadable`` marks it reported, so link
+        finalization after a ``stream_members()`` pass that read it first does not
+        report it twice.
         """
+        if isinstance(exc, CorruptionError):
+            reason = "target_data_damaged"
+        elif isinstance(exc, PackageNotInstalledError):
+            reason = "package_not_installed"
+        else:
+            reason = "target_data_unsupported"
         self._emit_link_target_unavailable(
             member,
-            reason="target_data_damaged",
+            reason=reason,
             message=(
                 f"The symlink target of {quoted(member.name)} could not be read: "
                 f"{raw_message_of(exc).rstrip('.')}. Leaving link_target unset."
@@ -1494,7 +1541,7 @@ class BaseArchiveReader(ArchiveReader):
             target_in_archive=True,
         )
         # After the emit: if a strict policy raises there, the next look reports again.
-        member._link_target_damaged = True
+        member._link_target_unreadable = True
 
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Hook: ``members`` are about to have their data-stored targets read.
@@ -1974,9 +2021,10 @@ class BaseArchiveReader(ArchiveReader):
             return
         try:
             self._ensure_link_target(member)
-        except CorruptionError:
-            # Damaged target data stays damaged: a later read raises the same fault
-            # and sets nothing, so the member will not change.
+        except UNREADABLE_LINK_TARGET_ERRORS:
+            # Damaged target data stays damaged, and a method or codec this install
+            # cannot decode stays undecodable: a later read raises the same error and
+            # sets nothing, so the member will not change.
             member._link_target_unread = False
             raise
         if member.type is MemberType.SYMLINK and member.link_target == "":
@@ -1992,10 +2040,10 @@ class BaseArchiveReader(ArchiveReader):
             archive_name=self._archive_name,
         )
         # After, not before: a hook that raised did not look and come back empty, it
-        # never finished. `_finalize_links` reports a CorruptionError / TruncatedError
-        # here and lists the link without a target, so marking it resolved on the way
-        # out would trade the real fault for a generic "Link target is unknown" when the
-        # caller opens or extracts the link.
+        # never finished. `_finalize_links` reports an unreadable target (damage, an
+        # unsupported method, a missing codec) here and lists the link without a
+        # target, so marking it resolved on the way out would trade the real error for
+        # a generic "Link target is unknown" when the caller opens or extracts the link.
         # A backend that catches EncryptionError returns normally, so the repeated-read
         # case this memo exists for is still covered.
         member._link_target_resolved = True
@@ -2134,7 +2182,7 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _emit_directory_data_ignored(
-        self, member: ArchiveMember, member_id: int
+        self, member: ArchiveMember, member_id: int, *, reach: str | None = None
     ) -> None:
         """Report one ``MEMBER_DIRECTORY_DATA_IGNORED`` finding, attached to ``member``.
 
@@ -2144,18 +2192,23 @@ class BaseArchiveReader(ArchiveReader):
         one for every directory it writes). No format gives a directory entry content,
         and every official tool creates the directory and drops the bytes silently;
         archivey does the same on extraction but says so (DR-3). A declared size opens
-        through ``open()`` where the backend can decode the body (RAR delivers stored
-        data only); a declared size of 0 has nothing ``open()`` could return.
+        through ``open()``, and gets a stream from ``stream_members()``, where the
+        backend can decode the body (RAR delivers stored data only); a declared size
+        of 0 has nothing to read in either. ``reach`` replaces the clause on where a
+        declared size can be read, for a backend whose pass could not offer the bytes.
         """
         assert member.size or member.compressed_size, (
             "only a directory with a body is reported"
         )
         if member.size:
             what = f"declares {member.size} bytes of data"
-            reach = "open() delivers them where they can be decoded"
+            if reach is None:
+                reach = (
+                    "open() and stream_members() deliver them where they can be decoded"
+                )
         else:
             what = f"declares no data but stores a {member.compressed_size}-byte body"
-            reach = "a declared size of 0 leaves nothing for open() to return"
+            reach = "a declared size of 0 leaves nothing to read"
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
             message=(
@@ -3278,11 +3331,10 @@ class BaseArchiveReader(ArchiveReader):
         # deliver for them even where a header declares a size. A directory is
         # refused by data: it has none unless its header declares some, and one that
         # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP, TAR
-        # and RAR; a 7z directory can carry a size too until the sweep that types a
-        # member with a stream as a file lands) opens here, and only here: the bytes
-        # the backend can decode are reachable through ``open()``, while
-        # ``stream_members()`` and extraction still route by type and skip them.
-        # Both messages end in "(not a file)", which ``archivey test`` classifies by.
+        # and RAR) opens here. ``stream_members()`` decides by ``pass_has_data``,
+        # which says where the two differ; extraction creates the directory and does
+        # not write the bytes. Both messages end in "(not a file)", which ``archivey
+        # test`` classifies by.
         if current.type in (MemberType.ANTI, MemberType.OTHER):
             raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is "
@@ -3310,7 +3362,9 @@ class BaseArchiveReader(ArchiveReader):
     ) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
-        The yielded stream is owned by the iterator: advancing closes/invalidates the
+        The stream is ``None`` for every member :func:`pass_has_data` rejects (see
+        there for the one shape where that differs from ``open()``). The yielded
+        stream is owned by the iterator: advancing closes/invalidates the
         previous stream before the next pair is produced. It never seeks, on any
         format and whatever ``seekable_members`` says (``_iter_stream_members`` makes
         each handle forward-only); ``tell()`` works.

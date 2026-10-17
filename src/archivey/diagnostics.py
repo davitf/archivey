@@ -78,6 +78,7 @@ class DiagnosticCode(StrEnum):
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
     MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
+    MEMBER_LINK_DATA_IGNORED = "member_link_data_ignored"
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
@@ -154,6 +155,8 @@ DiagnosticCodeStr = Literal[
     "member-local-crc-used",
     "member_directory_data_ignored",
     "member-directory-data-ignored",
+    "member_link_data_ignored",
+    "member-link-data-ignored",
     "archive_offset_wrapped",
     "archive-offset-wrapped",
     "member_size_wrapped",
@@ -487,9 +490,12 @@ class DirectoryDataContext(_JsonSafeContext):
 
     ``size`` is the declared uncompressed size and ``compressed_size`` the stored
     one (``None`` where the format does not record it). The directory is still
-    created. A declared size is reachable through ``open()`` / ``read()`` where the
-    backend can decode the body (RAR delivers stored data only); a ``size`` of 0 over
-    a non-empty body has nothing ``open()`` could return.
+    created. A declared size is reachable through ``open()`` / ``read()`` and the
+    stream ``stream_members()`` yields for the directory, where the backend can decode
+    the body (RAR delivers stored data only), except a bit-3 ZIP directory read from
+    a source that cannot seek: its size arrives after its data, so the pass yields
+    ``None`` for it and the message says so. A ``size`` of 0 over a non-empty body
+    has nothing to read, so ``open()`` refuses it and the pass yields ``None``.
     """
 
     kind: Literal["directory_data"] = "directory_data"
@@ -498,6 +504,22 @@ class DirectoryDataContext(_JsonSafeContext):
     member_id: int | None = None
     size: int = 0
     compressed_size: int | None = None
+
+
+@dataclass(frozen=True)
+class LinkDataContext(_JsonSafeContext):
+    """A TAR symlink or hard link header declares data, which nothing delivers.
+
+    ``size`` is the declared byte count. The link is listed and extracted as a link;
+    the declared blocks are skipped so the members after them stay listed. Nothing
+    reads them: ``open()`` on a link reads its target.
+    """
+
+    kind: Literal["link_data"] = "link_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    size: int = 0
 
 
 @dataclass(frozen=True)
@@ -729,6 +751,7 @@ DiagnosticContext = (
     | SymlinkTargetContext
     | DigestContext
     | DirectoryDataContext
+    | LinkDataContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
@@ -764,6 +787,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
+        DiagnosticCode.MEMBER_LINK_DATA_IGNORED: "link_data",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
@@ -795,6 +819,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+        DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
     }
@@ -1216,6 +1241,7 @@ __all__ = [
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "LinkDataContext",
     "LocalHeaderContext",
     "MemberHeaderRecordContext",
     "MemberListReport",

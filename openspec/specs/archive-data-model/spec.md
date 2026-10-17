@@ -117,24 +117,27 @@ data is the directory's contents list at dump time, structure that GNU tar defin
 reads itself, so it is a `DIRECTORY` with no `size` and no report, and `open()`
 refuses it for declaring no data.
 `open()` SHALL refuse a directory for declaring no data, and a tombstone or a special
-entry for its type (a special entry that stores data is a `FILE`): `ANTI`, `OTHER` and a directory
-declaring no size raise `ArchiveyUsageError`, while a directory declaring data opens
-and delivers the bytes where the backend can decode them (ZIP decodes any method;
+entry for its type (a special entry that stores data is a `FILE`): `ANTI`, `OTHER` and a
+directory declaring no size raise `ArchiveyUsageError`, while a directory declaring data
+opens and delivers the bytes where the backend can decode them (ZIP decodes any method;
 TAR reads the blocks of an old-style `d/` regular-file header; RAR delivers stored,
 unencrypted directory data and raises `UnsupportedFeatureError` for the rest, since
-`unrar` emits nothing for a directory entry), checked against the stored digest like
-a file's when the header carries one. A ZIP directory entry
-whose CRC-32 field is 0, the conventional value for a directory, carries no digest;
-`DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) SHALL say so instead of
-refusing the bytes as damaged when that CRC was the entry's only check (unencrypted
-or ZipCrypto), and when the entry is WinZip AES (AE-1 or AE-2) its HMAC checks the
-bytes as it checks a file's, so nothing is reported. `stream_members()` SHALL still
-yield `None` for a directory. A directory whose declared size is zero SHALL also be
-reported when its body is larger than an empty one of its method takes (ZIP: 0 stored,
-2 deflated, 14 bzip2, 19 LZMA, any body for a method not in that table; RAR: any body),
-so a payload cannot hide one field away; the Java `jar` tool's deflated empty directory
-body (compressed size 2, size 0) is not reported. Such a member has no declared data, so
-`open()` still refuses it.
+`unrar` emits nothing for a directory entry), checked against the stored digest like a
+file's when the header carries one. A ZIP directory entry whose CRC-32 field is 0, the
+conventional value for a directory, carries no digest; `DIGEST_UNVERIFIABLE`
+(`reason="no_integrity_anchor"`) SHALL say so instead of refusing the bytes as damaged
+when that CRC was the entry's only check (unencrypted or ZipCrypto), and when the entry
+is WinZip AES (AE-1 or AE-2) its HMAC checks the bytes as it checks a file's, so nothing
+is reported. `stream_members()` SHALL yield a stream for the same directories, with the
+same bytes and checks, in both access modes, so a forward-only reader reaches them too,
+except a ZIP directory written with a data descriptor and read from a source that cannot
+seek (`archive-reading`, "stream_members yields a stream for exactly the members open()
+reads"). A directory whose declared size is zero SHALL also be reported when its body is
+larger than an empty one of its method takes (ZIP: 0 stored, 2 deflated, 14 bzip2, 19
+LZMA, any body for a method not in that table; RAR: any body), so a payload cannot hide
+one field away; the Java `jar` tool's deflated empty directory body (compressed size 2,
+size 0) is not reported. Such a member has no declared data, so `open()` still refuses
+it and `stream_members()` yields `None` for it.
 
 A link the source filesystem held as a Windows reparse point — a junction, a Windows
 directory symlink or a Windows file symlink — SHALL additionally carry
@@ -162,12 +165,12 @@ whose data-stored target has not been read yet (`read_link_targets=False`).
 | TAR header with an unknown typeflag (`9`) and 5 bytes of data; the same with none | `FILE` with `size == 5` that reads and extracts; `OTHER` with no `size`. Both report `MEMBER_TYPE_UNKNOWN`; neither has `extra["special_file_type"]` |
 | ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set), with no data | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
 | The same entry storing data (`zip -FI` on a named pipe), or an ISO Rock Ridge special mode over a non-empty extent | `member.type == MemberType.FILE`; `size` is the stored size; `extra["special_file_type"]` set; `MEMBER_SPECIAL_FILE_HAS_DATA` with `SpecialFileDataContext`; `STRICT` does not raise |
-| ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes; extraction creates the directory; `STRICT` raises |
+| ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes, and so does the stream `stream_members()` yields for it; extraction creates the directory; `STRICT` raises |
 | ZIP directory entry declaring 12 bytes whose stored body was altered | `read()` raises `CorruptionError` (CRC-32 mismatch), as for a file |
 | ZIP directory entry declaring 12 bytes with a CRC-32 field of 0 | `hashes` empty; `MEMBER_DIRECTORY_DATA_IGNORED` and `DIGEST_UNVERIFIABLE`; `read()` returns the 12 bytes |
 | ZIP directory entry with compressed size 2 and size 0 (the `jar` shape) | `DIRECTORY`; no diagnostic; `read()` → `ArchiveyUsageError` |
 | ZIP or RAR directory entry with size 0 over a 2000-byte stored body | `DIRECTORY`, `size == 0`, `compressed_size == 2000`; `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; `read()` → `ArchiveyUsageError`; `STRICT` raises |
-| RAR directory entry with compressed or encrypted data | `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` → `UnsupportedFeatureError` |
+| RAR directory entry with compressed or encrypted data | `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` → `UnsupportedFeatureError`, and so does the first read of the stream `stream_members()` yields for it |
 | ZIP whose member carries a junction's reparse data † | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True`; `link_target` is the buffer's substitute name |
 | ZIP whose member has the reparse bit and no reparse data | `member.type == MemberType.SYMLINK`; `link_target is None`; `is_junction` unset, the tag that would establish it being in the data that was not written |
 | 7z ANTI-bit entry † | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |

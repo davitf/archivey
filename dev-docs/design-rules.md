@@ -322,7 +322,15 @@ the right weight.
   readable through `open()` (2026-10-10, DR-25): nothing is misread, so this is the
   "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
   Applied by PR 731 for ZIP and RAR and by PR 763 for TAR (an old-style `d/` file
-  entry with data).
+  entry with data). `stream_members()` yields a stream of the same bytes for such a
+  directory in every format, so a forward-only reader reaches them too (2026-10-17),
+  except a bit-3 ZIP directory read from a pipe, whose size comes after its data.
+- A TAR symlink or hard link header that declares data lists as a link, its declared
+  blocks are skipped so the members after them stay listed, and
+  `MEMBER_LINK_DATA_IGNORED` reports it (a warning; strict refuses), with the weight
+  of the directory case (2026-10-17, "skip and report"). A member header right after
+  the link header means the size names no data: nothing is skipped or reported, as for
+  a `DIRTYPE` header with a size (PR 763).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 
@@ -496,12 +504,18 @@ visible: `extra["special_file_type"]` is set on every member whose stored type i
 `MEMBER_SPECIAL_FILE_HAS_DATA` (advisory). Bytes that extraction does not deliver, a
 directory entry that declares data, are reported with `MEMBER_DIRECTORY_DATA_IGNORED` (a
 warning; strict refuses) and stay readable: `open()` refuses a member that has no data (an
-anti item, a stream-less `OTHER`, a directory with none), not a member by its type.
+anti item, a stream-less `OTHER`, a directory with none), not a member by its type, and
+`stream_members()` yields a stream for exactly the directories `open()` reads.
 
 Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format), PR 731
 (directory data in ZIP and RAR, and `open()` by data) and PR 763 (directory data in TAR;
 a `DIRTYPE` header with a size that the walk ends right after is reported the same
-way, since its blocks cannot be told from the trailer).
+way, since its blocks cannot be told from the trailer). Extended 2026-10-17 (maintainer
+decision): `stream_members()` yields a data stream for a directory that declares data, in
+every format, with the bytes and checks `open()` gives, where it had yielded `None` for
+every directory and left the bytes out of a forward-only reader's reach. The one shape
+left out is a ZIP directory written with a data descriptor (bit 3) and read from a pipe:
+the pass meets it before its size, and its message says so.
 
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar
@@ -531,6 +545,18 @@ empty entry; `jar` 21.0.12, measured for this rule, stores directories with both
   size, readable, as GNU tar 1.35 extracts it and 7-Zip 23.01 lists and extracts it; with
   no data it stays `OTHER`. Both report `MEMBER_TYPE_UNKNOWN` (advisory), and
   `extra["tar.type"]` keeps the byte (2026-10-17).
+- `archivey test` reads a directory's declared data and fails it on a bad checksum, while
+  `archivey cat` skips it (maintainer, 2026-10-17, TAR/ZIP sweep questions). `unzip -t`
+  tests the bytes and fails a bad CRC; `7z t` reports the same archive as OK. archivey
+  takes the stricter reading because a lenient one would hide bytes from the integrity
+  command. Reopen if a real writer routinely stores directory data that `7z t` users
+  rely on passing.
+- Agent decision in PR 879's review (2026-10-17), not a maintainer ruling: a directory
+  body archivey cannot decode (an unsupported method, a missing codec, RAR's compressed
+  directory data) is not tested rather than failed, per DR-4 and `unzip -t`, which skips
+  it. A directory body that needs a password stays a failure, as an encrypted file does
+  with no password (`unzip -t` splits here: it skips AES and errors on ZipCrypto).
+  Reopen if the maintainer wants the password case skipped too.
 
 **Reopen if** a real producer writes a directory entry whose data users need on disk, or a
 special-mode entry whose bytes are not the content; then that format needs a named
