@@ -164,6 +164,26 @@ def test_infer_member_name_from_archive() -> None:
 
 
 @pytest.mark.parametrize(
+    ("archive_name", "expected"),
+    [
+        ("data.tgz", "data.tar"),
+        ("DATA.TXZ", "DATA.tar"),
+        ("data.tbz2", "data.tar"),
+        ("data.tar.gz", "data.tar"),
+        ("notes.gz", "notes"),
+        (".tgz", ".tgz.uncompressed"),
+    ],
+)
+def test_single_file_name_turns_a_short_tar_suffix_into_tar(
+    archive_name: str, expected: str
+) -> None:
+    """``gzip -d data.tgz`` writes ``data.tar``; the one member is named the same."""
+    from archivey.internal.backends.single_file_reader import _infer_member_name
+
+    assert _infer_member_name(archive_name) == expected
+
+
+@pytest.mark.parametrize(
     "archive_name",
     ["..gz", "...gz", " .gz", ".gz", ". .gz"],
 )

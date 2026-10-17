@@ -79,7 +79,6 @@ from archivey.internal.backends.zip_reader import (
     _local_crc_stands_in,
     _max_members_error,
     _unconfirmed_resource_limit,
-    _unverified_data_error,
     _zipcrypto_check_byte,
     _ZipLocator,
 )
@@ -95,7 +94,7 @@ from archivey.internal.base_reader import (
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
-from archivey.internal.password import wrong_password_error
+from archivey.internal.password import unverified_data_error, wrong_password_error
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
@@ -1046,7 +1045,7 @@ class _PassData:
         if self._unconfirmed and _is_candidate_integrity_failure(
             exc, payload_complete=lambda: not self._cut_short
         ):
-            failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+            failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
             failure.__cause__ = exc
             return failure
         return exc
@@ -1338,7 +1337,7 @@ class _PassData:
         if not self.done:
             error = self._finish(raise_mismatch=False)
             if self._unconfirmed and not self.verified:
-                self._failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+                self._failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
             elif encrypted and error is not None:
                 self._failure = error
 
@@ -1348,7 +1347,7 @@ class _PassData:
         error = self._finish(raise_mismatch=False)
         failure: ArchiveyError | None = None
         if self._unconfirmed and not self.verified:
-            failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+            failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
         elif error is not None:
             failure = self._as_read_failure(error) if encrypted else error
         if failure is not None:
@@ -1745,8 +1744,11 @@ class ZipForwardReader(ZipReader):
         by_offset = self._by_offset
 
         def local_name_at(offset: int) -> bytes | None:
-            # The pass has every local header it met; the walk asks for one only to
-            # correct an offset wrapped past 4 GiB.
+            # The pass has every local header it met. The walk asks for the name of
+            # the one an offset in the directory points at wherever a length or
+            # offset field may be wrong: a corrected offset, an entry no central
+            # header follows, and the first header a signature inside an entry's
+            # fields chains to (an offset no local header has to back).
             member = by_offset.get(offset)
             return None if member is None else cast("_ZipLocator", member._raw).name
 
@@ -1887,9 +1889,8 @@ class ZipForwardReader(ZipReader):
             if member_id in links
         }
         self._report_unlisted(unlisted)
-        last = entries[-1] if entries else None
         for finding in () if damage is not None else walk.findings:
-            self._emit_walk_finding(finding, last)
+            self._emit_walk_finding(finding)
         # The kept bytes end where the stream does, so the last ``trailing`` of them
         # follow the end record and its declared comment.
         trailing = tail.data[len(tail.data) - end.trailing :]
@@ -2079,11 +2080,9 @@ class ZipForwardReader(ZipReader):
         member._size_unread = False
 
     def _reindex_name(self, member: ArchiveMember, old_name: str) -> None:
-        listed = self._listed_by_name.get(old_name)
-        if listed is not None and member in listed:
-            listed.remove(member)
-            if not listed:
-                del self._listed_by_name[old_name]
+        # By identity, though an equality scan would also find ``member``: its new
+        # name is already set, so no other entry under ``old_name`` equals it.
+        self._unindex_members(old_name, {id(member)})
         self._index_member_name(member)
 
     # -- data ----------------------------------------------------------------------

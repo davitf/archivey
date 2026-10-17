@@ -6,7 +6,7 @@ import sys
 from typing import TextIO, cast
 
 from archivey import ArchiveReader, ExtractionProgress
-from archivey.cli.common import open_for_cli
+from archivey.cli.common import open_for_cli, outer_format_for
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
@@ -41,6 +41,7 @@ def run_test(
     track_io: bool,
     config: ArchiveyConfig | None = None,
     hide_progress: bool = False,
+    outer: bool = False,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -53,8 +54,20 @@ def run_test(
     ok = 0
     failed = 0
     members_total: int | None = None
+    # --outer tests the compression layer alone, as gzip -t does: the one member is
+    # the whole decompressed stream, checked against the codec's own trailer.
+    fmt = (
+        outer_format_for(archive, patterns, exclude, config=config, verb="test")
+        if outer
+        else None
+    )
     with open_for_cli(
-        archive, password=pwd, track_io=track_io, config=config, err=err
+        archive,
+        password=pwd,
+        track_io=track_io,
+        config=config,
+        err=err,
+        format=fmt,
     ) as reader:
         indexed = reader.members_report_if_available()
         total_bytes: int | None = None

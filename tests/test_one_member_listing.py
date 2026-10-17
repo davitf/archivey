@@ -644,7 +644,7 @@ def test_a_peek_racing_members_shares_one_walk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _zip(tmp_path, [(f"f{i}.txt", b"x", False) for i in range(20)])
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         cls = type(reader)
         original = cls._iter_members
         calls = [0]

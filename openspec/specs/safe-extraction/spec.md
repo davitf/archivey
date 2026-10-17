@@ -38,8 +38,9 @@ def extract_all(
 ) -> ExtractionReport: ...
 ```
 
-The helper SHALL record a diagnostic watermark at call start and return a report
-whose summary contains exact count/retained deltas for this extraction call only.
+The helper SHALL count the diagnostics its own call emits, on its own thread, and
+return a report whose summary contains exact counts and retained entries for this
+extraction call only, even when other threads use the reader meanwhile.
 `reader.diagnostics` remains cumulative. The call SHALL run under the reader's
 open config — its collector, diagnostic policy, callback and retention maximum —
 and SHALL NOT take a `config=`; `limits=` overrides only the extraction limits.
@@ -74,7 +75,7 @@ tuple on success; there is no no-tracking mode.
 
 | Case | Expected |
 | --- | --- |
-| `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; report remains a watermark range over the existing collector |
+| `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; the report holds only this call's own diagnostics, from the existing collector |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` then `extract_all(dest)` | Cumulative byte limit is 10 GiB |
 | Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
 | `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |
@@ -1158,7 +1159,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Member blocked by policy/path-safety under `CONTINUE` | `BLOCKED` result; partial output removed; later members continue |
 | First member blocked, remaining members extractable, under `STOP` | Run completes; report contains `BLOCKED` + later `EXTRACTED`; no exception escapes |
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
-| Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain |
+| Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
 | A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`, under every `OverwritePolicy` |
 | A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
@@ -1562,7 +1563,10 @@ independent of `OnError` and of `DiagnosticPolicy` — a blocked member aborts u
 either `OnError` value when `BLOCKED_MEMBER` is set, and never aborts when it is not.
 
 Output written for **earlier** members SHALL remain on disk, matching `OnError.STOP`:
-abort stops the run, it does not roll it back. For a collision abort this means the
+abort stops the run, it does not roll it back. The exception is a ZIP read from a pipe,
+whose pass stops before the central directory says which members are links: it removes
+the files it wrote that could still be links (`format-zip`, "Read a non-seekable ZIP
+source in one forward pass"). For a collision abort this means the
 first member's bytes are typically still present at the contested path, since that
 member completed normally before the collision was detected.
 

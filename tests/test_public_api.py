@@ -176,7 +176,7 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
 
 
 def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:
-    """The flag type behind ``seekable_members`` / ``concurrent_members`` stays internal.
+    """The flag type behind ``seekable_members`` / ``concurrent_operations`` stays internal.
 
     Pins the archive-reading spec: not re-exported, not in ``__all__``, still importable
     from ``archivey.types``, and no reader attribute exposes the declared flags.
@@ -288,9 +288,9 @@ def test_niche_names_live_only_in_their_submodule() -> None:
     )
     assert unlisted == []
     contexts = [name for name in archivey.diagnostics.__all__ if is_payload(name)]
-    # The 24 payload classes the module defines; update the count when one is added
+    # The 25 payload classes the module defines; update the count when one is added
     # or removed, so the loop below cannot pass on a shrunken list.
-    assert len(contexts) == 24, contexts
+    assert len(contexts) == 25, contexts
     gates = [
         "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
         "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",

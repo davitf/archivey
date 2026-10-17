@@ -257,6 +257,10 @@ data and no CRC, where a wrong password yields garbage
   answer (PR 371, `formats/rar.md` §6).
 - `created` never holds a change time in any format (DR-5).
 - Streams raise rather than clamp an over-long read (CONTRIBUTING §Coding standards).
+- A ZIP central entry whose name, extra or comment runs past the directory, swallows
+  the entries after it or is shortened is damage: members list from their local
+  headers, then `CorruptionError`, from a file as from a pipe. This supersedes the
+  cut-and-warn rule (2026-10-17, davi, PR 860, `formats/zip.md` §6).
 
 **Reopen if** a case appears where the only alternative to a guess is refusing data that
 real tools read correctly; then the guess must be reported as a diagnostic, not silent.
@@ -386,7 +390,7 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
   what `open_archive` opens).
 - **When and where a call is made.** A call that works on one archive, or at one point in
   a reader's life, works on every archive and at every point, or raises on all of them.
-  That holds across threads too: a reader opened with `concurrent_members=True` can be
+  That holds across threads too: a reader opened with `concurrent_operations=True` can be
   handed to several threads that each do what they need, whatever the others are doing.
   A call that raised only sometimes would ship bugs that never showed during development
   (2026-10-13).
@@ -415,10 +419,11 @@ that is right on one format and wrong on another breaks callers silently.
 - `streaming=True` refuses out-of-order reads on every format, ZIP included, although a
   ZIP could serve them cheaply, so the mistake shows on the first archive tested
   (2026-09-29, `new_docs/reading.md` §"Why these aren't on by default").
-- Under `concurrent_members=True`, `open`, `read`, `get` and `members()` work during a
+- Under `concurrent_operations=True`, `open`, `read`, `get` and `members()` work during a
   `stream_members` pass, on every format and from any thread, because they share one lazy
-  walk of the archive with the pass; `extract_all` beside a pass keeps raising (2026-10-13;
-  applied by PR 786).
+  walk of the archive with the pass (2026-10-13; applied by PR 786). `extract_all` joined
+  them on 2026-10-17: under the flag every operation works as if it ran on a reader of its
+  own.
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
@@ -525,8 +530,13 @@ empty entry; `jar` 21.0.12, measured for this rule, stores directories with both
   698).
 - A TAR device or directory typeflag followed by data is damage, not a file: GNU tar and
   libarchive ignore the size field for those typeflags and resync, so archivey's
-  `CorruptionError` stands. A TAR regular-file typeflag named `d/` with data is a
-  directory, as GNU tar and 7-Zip read it (2026-10-10).
+  `CorruptionError` stands. A TAR regular-file typeflag (NUL, `0` or contiguous `7`)
+  named `d/` with data is a directory, as GNU tar reads it; 7-Zip agrees for NUL and `0`
+  and lists a contiguous `d/` as a file (2026-10-10; `7` added 2026-10-16).
+- A TAR typeflag archivey does not know (`9`, say) that declares data is a `FILE` of that
+  size, readable, as GNU tar 1.35 extracts it and 7-Zip 23.01 lists and extracts it; with
+  no data it stays `OTHER`. Both report `MEMBER_TYPE_UNKNOWN` (advisory), and
+  `extra["tar.type"]` keeps the byte (2026-10-17).
 
 **Reopen if** a real producer writes a directory entry whose data users need on disk, or a
 special-mode entry whose bytes are not the content; then that format needs a named

@@ -804,6 +804,9 @@ found after it dates the member's end from its own position, so junk between the
 counts into the member's compressed size: refused from a file (DR-3), accepted from a
 pipe (DR-5a; the native ZIP reader's `design.md`, "Where a member's data ends"). Only a
 crafted archive has that shape; the decoded data is still checked against the CRC.
+The mirror shape, a codec stream that runs on into its descriptor, is refused from a
+file (`TruncatedError`) and read from a pipe, with the same CRC check
+(`dev-docs/formats/zip.md` §2.2.2).
 
 **Tests.**
 `tests/test_codecs.py::test_verify_mismatch_raises_at_eof_without_losing_final_chunk`,
@@ -1035,8 +1038,13 @@ password as its own item after `-p`. ADR
 [0002](decisions/0002-native-rar-metadata-unrar-data.md),
 [`investigations/alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md).
 
+The public `format_availability()` runs the same `unrar` banner probe with no archive
+in play, whatever `rar_decompressor` says, so `archivey --version -v` runs it too;
+`check_programs=False` skips it.
+
 **Residual.** The program is found on the process `PATH` and is part of the deployment's
-trust boundary. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
+trust boundary. On Windows `shutil.which` also searches the current directory, so the
+probe and a read can run a program from there. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
 
 ### Concurrent member streams are race-free where declared
 
@@ -1044,14 +1052,16 @@ trust boundary. `unar`'s password is [visible to other users](#the-unar-password
 materialization, concurrent `open()` and independent use of different member streams is
 data-race-free without the GIL. Otherwise a second overlapping open raises
 `ArchiveyUsageError`, so accidental sharing fails fast. On a `CONCURRENT` reader,
-random-access calls and further `stream_members()` passes also run beside a
-`stream_members()` pass: they share the reader's one member walk, each at its own
-position, and every pull, cursor step and link finalization holds the walk lock
-(`base_reader.py` `_walk_lock`). A TAR pass stream reading through the walk moves to a
-view of its own before the walk moves on for another caller (`_WalkHandoffStream`).
-Extraction and close stay single-owner, as does everything on a reader without
-`CONCURRENT`. Stream leases defer backend teardown until the last stream closes, because
-an accelerator must close before it is finalized
+random-access calls, further `stream_members()` passes and `extract_all()` also run
+beside a `stream_members()` or `extract_all()` pass: they share the reader's one member
+walk, each at its own position, and every pull, cursor step and link finalization holds
+the walk lock (`base_reader.py` `_walk_lock`). A TAR pass stream reading through the
+walk moves to a view of its own before the walk moves on for another caller
+(`_WalkHandoffStream`). A library-internal scope (an extraction's own opens, link-data
+reads) is filed under its own thread's pass, never another thread's. Close stays
+single-owner, as does everything on a reader without `CONCURRENT`. Stream leases defer
+backend teardown until the last stream closes, because an accelerator must close before
+it is finalized
 ([`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §6).
 
@@ -1072,11 +1082,15 @@ vulnerability. Most are in
 Every limit caps bytes, entries or key-derivation rounds, not time. Worst cases we know:
 a 7z BCJ2 `main` stream made only of branch candidates decodes at 1.8 MB/s in pure
 Python (26 MB/s on a real executable), and LZMA2 compresses that stream to almost
-nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folder
-costs folder size times candidates. A "work per output byte" limit for BCJ2 was
-considered and not added: no other codec has one, and `ExtractionLimits` still bounds
-the amount, only the rate is lower. Callers who need a time bound run archivey in a
-worker they can kill. Public: [known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folder costs
+folder size times candidates; a ZIP central directory whose comments are nothing but
+central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython 3.11),
+where an ordinary directory lists at about 5 ns, because each signature is checked for a
+swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). A "work per output byte"
+limit for BCJ2 was considered and not added: no other codec has one, and
+`ExtractionLimits` still bounds the amount, only the rate is lower. Callers who need a
+time bound run archivey in a worker they can kill. Public:
+[known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
 
 ### A native decoder crash or MemoryError
 

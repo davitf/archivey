@@ -344,7 +344,7 @@ class ArchiveyUsageError(Exception):
     It covers what the argument types alone cannot rule out: calling a method the
     reader's mode forbids (``members()`` on a ``streaming=True`` reader), using a closed
     reader, opening a second overlapping member stream without
-    ``concurrent_members=True`` (the message names the ``open_archive()`` call site),
+    ``concurrent_operations=True`` (the message names the ``open_archive()`` call site),
     and driving the reader from inside a diagnostic callback. Those raise this class
     itself.
 

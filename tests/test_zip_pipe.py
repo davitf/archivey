@@ -23,7 +23,6 @@ import archivey
 from archivey.config import ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
-    ArchiveEofContext,
     DiagnosticCode,
     DiagnosticPolicy,
     SymlinkTargetContext,
@@ -34,6 +33,7 @@ from archivey.exceptions import (
     DiagnosticRaisedError,
     EncryptionError,
     ResourceLimitError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_forward_reader, zip_local_walk
@@ -50,6 +50,7 @@ from tests.sample_archives import (
     skip_unless_runnable,
 )
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
+from tests.zip_descriptors import without_descriptor_signatures
 
 
 class _Writer(io.RawIOBase):
@@ -286,13 +287,132 @@ def test_a_damaged_member_fails_when_read_and_not_when_skipped(method: int) -> N
     assert names == ["ok.txt"]
 
 
-def test_a_damaged_bit3_stored_member_ends_the_pass() -> None:
-    """The scan finds a bit-3 STORED member's end by the CRC of the bytes before its
-    descriptor, so damaged data has no end the walk can find."""
-    payload = b"payload bytes " * 100
-    data = _streamed(_zip([("bad.bin", payload)], method=zipfile.ZIP_STORED))
-    data = _corrupt_stored(data, payload)
+_DAMAGED_PAYLOAD = b"payload bytes " * 100
+_AFTER_DAMAGE = [("b.txt", b"fine"), ("c.txt", b"also fine")]
+
+
+def _with_damaged_descriptor(method: int, *, signed: bool, field: str) -> bytes:
+    """A bit-3 ``bad.bin`` with one byte of ``field`` flipped, then two members.
+
+    ``field`` is ``"data"`` (a byte in the middle of a STORED member's data), or
+    ``"signature"``, ``"crc"``, ``"csize"`` or ``"usize"`` of its data descriptor.
+    """
+    data = _streamed(
+        _zip([("bad.bin", _DAMAGED_PAYLOAD), *_AFTER_DAMAGE], method=method)
+    )
+    if not signed:
+        data = without_descriptor_signatures(data)
+    out = bytearray(data)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        info = zf.getinfo("bad.bin")
+    name_len, extra_len = struct.unpack_from("<HH", out, 26)
+    start = 30 + name_len + extra_len
+    if field == "data":
+        # Damaged DEFLATE data fails its decode instead, which another test covers.
+        assert method == zipfile.ZIP_STORED
+        out[start + len(_DAMAGED_PAYLOAD) // 2] ^= 0x01
+        return bytes(out)
+    descriptor = start + info.compress_size
+    body = descriptor + 4 if signed else descriptor
+    at = {
+        "signature": descriptor + 2,
+        "crc": body,
+        "csize": body + 4,
+        "usize": body + 8,
+    }
+    out[at[field]] ^= 0x01
+    return bytes(out)
+
+
+_DAMAGED_DESCRIPTORS = [
+    pytest.param(method, signed, field, id=f"{label}-{shape}-{field}")
+    for method, label in (
+        (zipfile.ZIP_STORED, "stored"), (zipfile.ZIP_DEFLATED, "deflated")
+    )
+    for signed, shape in ((True, "signed"), (False, "unsigned"))
+    for field in ("data", "signature", "crc", "csize", "usize")
+    if not (field == "signature" and not signed)
+    # A damaged DEFLATE stream fails its decode: the scan after a failed decode
+    # covers that (``test_a_damaged_member_fails_when_read_and_not_when_skipped``).
+    and not (field == "data" and method != zipfile.ZIP_STORED)
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("method", "signed", "field"), _DAMAGED_DESCRIPTORS)
+def test_one_damaged_byte_in_a_bit3_member_fails_it_alone(
+    method: int, signed: bool, field: str
+) -> None:
+    """The walk finds where the damaged member ends by its descriptor with one field
+    damaged (DR-2), and reads every member after it. The member fails when its read
+    checks the descriptor, or at the end of the pass when the directory does; one the
+    file read reads cleanly (a damaged signature) reads cleanly here too."""
+    data = _with_damaged_descriptor(method, signed=signed, field=field)
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        file_ok = True
+        try:
+            reader.read(reader.get("bad.bin"))
+        except CorruptionError:
+            file_ok = False
+    read: dict[str, bytes | type[Exception]] = {}
     with archivey.open_archive(_pipe(data), streaming=True) as reader:
+        pass_ = reader.stream_members()
+        failed_at_end = False
+        while True:
+            try:
+                member, stream = next(pass_)
+            except StopIteration:
+                break
+            except CorruptionError as exc:
+                assert "differs from its central" in str(exc)
+                failed_at_end = True
+                break
+            assert stream is not None
+            try:
+                read[member.name] = stream.read()
+            except CorruptionError as exc:
+                read[member.name] = type(exc)
+    assert {k: v for k, v in read.items() if k != "bad.bin"} == dict(_AFTER_DAMAGE)
+    if field in ("data", "signature"):
+        # The descriptor agrees with the directory.
+        assert not failed_at_end
+        assert (read["bad.bin"] == _DAMAGED_PAYLOAD) == file_ok
+    else:
+        assert failed_at_end
+    if field == "csize":
+        # The data and its CRC are intact; the directory catches the size.
+        assert read["bad.bin"] == _DAMAGED_PAYLOAD
+    elif field != "signature":
+        assert issubclass(read["bad.bin"], CorruptionError)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("method", "signed", "field"), _DAMAGED_DESCRIPTORS)
+def test_a_damaged_bit3_member_nobody_reads_does_not_end_the_pass(
+    method: int, signed: bool, field: str
+) -> None:
+    data = _with_damaged_descriptor(method, signed=signed, field=field)
+    names = []
+    with archivey.open_archive(_pipe(data), streaming=True) as reader:
+        try:
+            for member, _stream in reader.stream_members():
+                names.append(member.name)
+        except CorruptionError as exc:
+            assert "differs from its central" in str(exc)
+    assert names == ["bad.bin", "b.txt", "c.txt"]
+
+
+def test_a_bit3_stored_member_with_two_damaged_descriptor_fields_ends_the_pass() -> (
+    None
+):
+    """With its CRC and both sizes off, nothing places the descriptor: the scan reads
+    to the end record and the pass ends there."""
+    data = bytearray(
+        _with_damaged_descriptor(zipfile.ZIP_STORED, signed=True, field="csize")
+    )
+    with zipfile.ZipFile(io.BytesIO(bytes(data))) as zf:
+        info = zf.getinfo("bad.bin")
+    usize = 30 + len("bad.bin") + info.compress_size + 4 + 8
+    data[usize] ^= 0x01
+    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
         with pytest.raises(UnsupportedFeatureError, match="data descriptor"):
             for _ in reader.stream_members():
                 pass
@@ -462,27 +582,21 @@ def test_a_decoy_end_record_in_the_comment_is_the_one_used() -> None:
 @pytest.mark.parametrize(
     ("field", "at"), [("name", 28), ("extra field", 30), ("comment", 32)]
 )
-def test_a_field_running_past_the_directory_is_cut_as_from_a_file(
+def test_a_field_running_past_the_directory_is_damage_as_from_a_file(
     field: str, at: int
 ) -> None:
     """The last entry's name, extra field or comment length runs past the
-    directory's declared end: the file read cuts it there and reports it, and so does
-    the pass, where it used to read on through the end record."""
+    directory's declared end: the pass stops there and raises it, as the file read
+    does, where it used to read on through the end record."""
     data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
     last = data.rindex(b"PK\x01\x02")
     struct.pack_into("<H", data, last + at, 3000)
-    assert _piped_view(bytes(data)) == _seekable_view(bytes(data))
+    yielded = []
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        for _ in reader.stream_members():
-            pass
-        found = [
-            (d.context.expected_marker, d.message)
-            for d in reader.diagnostics.retained
-            if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
-            and isinstance(d.context, ArchiveEofContext)
-        ]
-    assert [marker for marker, _ in found] == ["central_directory"]
-    assert f"its {field} is cut short" in found[0][1]
+        with pytest.raises(CorruptionError, match=f"'s {field} runs"):
+            for member, _ in reader.stream_members():
+                yielded.append(member.name)
+    assert yielded == ["a.txt", "b.txt"]
 
 
 def _commented(count: int, comment_len: int) -> bytes:
@@ -586,9 +700,9 @@ def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict(
         with pytest.raises(DiagnosticRaisedError, match="local header stores"):
             reader.members_report()
     # Extraction stops where each read finds it: a file read at the member, the pass
-    # at the directory, every member written and the renamed one still under the
-    # local header's name, as the end-of-pass rename never ran.
-    for piped, expected in ((False, ["a.txt"]), (True, ["a.txt", "b.txt"])):
+    # at the directory. The pass never learned which members are links, so it takes
+    # back every file it wrote that could be one (all of them here).
+    for piped, expected in ((False, ["a.txt"]), (True, [])):
         dest = tmp_path / ("pipe" if piped else "file")
         source = _pipe(bytes(data)) if piped else io.BytesIO(bytes(data))
         with pytest.raises(DiagnosticRaisedError):
@@ -1374,6 +1488,38 @@ def test_a_bit3_ppmd_member_with_no_end_mark_fails_as_from_a_file() -> None:
     seen = _pipe_reads(data)
     assert seen["p.bin"] is CorruptionError
     assert seen["b.txt"] == b"after"
+
+
+def test_a_bit3_codec_stream_that_runs_into_its_descriptor_reads_only_from_a_pipe() -> (
+    None
+):
+    """A recorded difference (``dev-docs/formats/zip.md`` §2.2.2). The deflate
+    stream's last byte is the ``P`` of the descriptor's signature, so the codec needs
+    one byte more than the compressed size the descriptor and the directory state.
+    A file read bounds the stream at that size and raises ``TruncatedError``. The
+    pass does not know where the codec ended; it finds the descriptor by the decoded
+    CRC and size, and serves the data, which that CRC verifies.
+
+    The checks on the fixture itself (``check.eof`` and ``check.unused_data``) are
+    what prove the stream needs exactly one byte past the stated size: without them
+    the two reads could differ for another reason and the test would still pass."""
+    content = b"xyz" * 200
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    stream = compressor.compress(content) + compressor.flush()
+    check = zlib.decompressobj(-15)
+    assert check.decompress(stream[:-1] + b"PK\x07\x08") == content
+    assert check.eof
+    assert check.unused_data == b"K\x07\x08"
+    tail = zlib.compressobj(9, zlib.DEFLATED, -15)
+    after = tail.compress(b"after") + tail.flush()
+    data = _bit3_deflate_zip(
+        [("a.txt", stream[:-1], content), ("b.txt", after, b"after")]
+    )
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        with pytest.raises(TruncatedError):
+            reader.read("a.txt")
+        assert reader.read("b.txt") == b"after"
+    assert _pipe_reads(data) == {"a.txt": content, "b.txt": b"after"}
 
 
 def _zeros_bit3_zip(size: int, method: int) -> bytes:

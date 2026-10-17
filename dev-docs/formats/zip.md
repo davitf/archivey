@@ -204,7 +204,8 @@ damage, and the members before the stop read with the overlap bounds of the entr
 before it.
 
 **A damaged directory lists up to the damage, then the local headers past it.** An entry
-with a wrong signature, or whose 46-byte fixed header the directory cuts short, raises
+with a wrong signature, whose 46-byte fixed header the directory cuts short, or whose
+lengths swallowed the entries after it (below), raises
 `CorruptionError` after the members before it, as a cut TAR or RAR does (DR-2), and
 after the members the local headers hold past it: the headers are walked once, as for a
 ZIP with no end record, and a member the directory already listed (by offset) is not
@@ -218,11 +219,49 @@ stepped over (inside another member's stated data) still bounds its neighbours, 
 entries over it stay an overlap. A walk over the local headers that meets a listing
 limit raises the limit instead. One that cannot get past a member's data lists that
 member, whose read fails, never as `TruncatedError` (the end record follows it), and the
-listing still raises the damage; the pass meets that error first and raises it. A name,
-extra field or comment that runs past the directory's end can only be the last entry's,
-so it lists and is reported with the end-record checks below. A local header that the
-file cuts short means the directory pointed at the wrong place (the directory follows
-every local header), so it is `CorruptionError` too, never `TruncatedError`.
+listing still raises the damage; the pass meets that error first and raises it.
+
+A damaged name, extra or comment length can swallow the entries after it: the entry
+then ends at a later entry, or past the directory's end. Stdlib cuts the field at the
+directory's end and lists it: one member named `a.txtPK\x01\x02…`, the swallowed
+members gone, and only the entry-count warning, while a pipe lists every member from
+its local headers. Info-ZIP `unzip` stops with "expected central file header signature
+not found" and 7-Zip with "Headers Error". So the walk treats three shapes as damage:
+
+- an entry whose fields run past the directory's end;
+- an entry whose name, extra field or comment holds a central header signature from
+  which the headers chain exactly to the directory's end, when either the declared
+  count fits that reading or the first of those headers points at a local header with
+  its name. The count alone cannot decide: a swallow can leave it agreeing with the
+  entries that remain (then `unzip` and 7-Zip list the swallowing name without an
+  error; archivey takes DR-1's side), and a member comment can hold a whole
+  well-formed entry, which chains too but points at another member's local header. A
+  signature that does not chain so is part of the name, and a wrong count alone stays
+  the count warning below;
+- an entry no header follows whose local header holds another name: its name length
+  was made shorter. A next entry with a damaged signature, where the local header
+  agrees, leaves the entry listed from the directory with its mode, but without its
+  comment: one of its lengths is wrong, and the comment, its last field, may be cut.
+
+Whether the headers from a directory position chain to its end depends on the
+directory's bytes alone, so the walk remembers each position a chain steps onto past its
+first header, with the answer, and a later chain stops there. Each such header is
+stepped over once per walk, and the reads past the walk's own go through one buffer: a
+directory of crafted chains costs about one more pass over it, however many signatures
+point into them. The memo holds at most 4096 positions (about 400 KiB), forgetting those
+the walk has passed, since chains only step forward; a ladder longer than that costs
+steps instead. Most signatures are settled before any following: the header one would
+start steps past the directory's end, or onto bytes the walk holds that start no header.
+A signature that is part of a name fails there and spends nothing. Two budgets bound
+the rest: headers stepped over, as many as the directory could hold, and bytes read,
+twice the directory. Past either, the walk fails closed: an entry holding a signature it
+can no longer follow is damage, since a swallow cannot be ruled out. What stays is time:
+a directory of nothing but signatures lists at about 155 ns a byte, an ordinary one at
+about 5 ns ([threat model](../threat-model.md#no-cpu-or-wall-clock-bound)).
+
+A local header that the file cuts short means the directory pointed at the wrong place
+(the directory follows every local header), so it is `CorruptionError` too, never
+`TruncatedError`.
 
 **"Version needed to extract" decides nothing.** Stdlib refused an archive whose entry
 said it needed more than 6.3; 7-Zip 23.01 reads such a stored member and Info-ZIP
@@ -460,14 +499,13 @@ directory entries until it has consumed the size the end record gives. After the
 member, the reader emits the walk's findings as `ARCHIVE_EOF_MARKER_MISSING`: an entry
 count that differs from the entries read (the ZIP64 record's count when there is one; a
 classic count modulo 65536, because old 7-Zip versions stored a larger count's low 16
-bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that with a "16-bit
-overflow" note), an archive comment length past the end of the file, and an entry whose
-name, extra field or comment runs past the directory, which is cut at the directory's
-end. Info-ZIP unzip warns or errors on each and 7-Zip says "Headers Error", after
-testing every member, so the default policy lists and reads; `STRICT` refuses. The
-end record is the last signature in the tail, so a decoy end-record signature inside
-the archive comment passes the checks: the archive lists as empty (`EMPTY_ARCHIVE`), as
-with Info-ZIP unzip, where 7-Zip searches further back and lists the real members.
+bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that with a "16-bit overflow"
+note), and an archive comment length past the end of the file. Info-ZIP unzip warns or
+errors on each and 7-Zip says "Headers Error", after testing every member, so the
+default policy lists and reads; `STRICT` refuses. The end record is the last signature
+in the tail, so a decoy end-record signature inside the archive comment passes the
+checks: the archive lists as empty (`EMPTY_ARCHIVE`), as with Info-ZIP unzip, where
+7-Zip searches further back and lists the real members.
 
 #### 2.2.2 From a pipe: the forward pass
 
@@ -486,8 +524,16 @@ been read. The full design, row by row, is the `native-zip-reader` change's `des
 the caller reads to its end is decoded to the codec's end marker (DEFLATE, Deflate64,
 bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk finds
 the data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC
-and size match the bytes before it and that a ZIP signature follows, signed or not. A
-bit-3 codec member the pass reads past (nobody read it, or the caller stopped early) is
+and size match the bytes before it and that a ZIP signature follows, signed or not. When
+none matches whole, one with a single damaged field still ends the member
+(`match_damaged_descriptor`): without its signature, two of its CRC, compressed size and
+uncompressed size agree; with it, its compressed size or two fields; with a damaged
+signature, all three. So one damaged byte in a STORED member's data, or in the
+descriptor of a member the walk ends by its CRC, fails that member alone, by its CRC or
+size check or by the directory at the end of the pass, and the members after it are
+read. A scan matched on the size alone (below) has one field to go on and takes no
+damaged descriptor. A bit-3 codec member the pass reads past (nobody read it, or the
+caller stopped early) is
 decoded no further than the byte past the 4096-byte target cap, then the reparse prefix
 a file read reads (the buffer and one byte, §2.2.1), and one byte past that prefix:
 bit-3 data has no size, so only a decode that returns nothing says it ended there, and
@@ -532,7 +578,11 @@ directory makes a symlink turned into a link after the `filter` and policy run a
 it, what a member the directory makes `OTHER` wrote removed, a renamed member moved, and
 the selection made again on what each member became (`design.md`, "The selection is made
 again"). A caller's entry the pass replaces is moved aside and put back unless the member
-still lands there.
+still lands there. A run that stops before the end of the pass settles a member never
+learns whether it is a link, so it takes back each such file whose data could be a
+link's (`_take_back_possible_links`): 4096 bytes or less (`MAX_LINK_TARGET_BYTES`), or data
+that starts with a Windows symlink or junction reparse tag. A longer file stays, with
+no mode applied; as a link its target would be over the cap, which no read gives.
 
 **Failures found at the end of the pass** (`_failed_at_end`,
 `_settle_failures_at_end`): a data descriptor the directory contradicts, a local header
@@ -564,11 +614,27 @@ directory's refusals the file read is to drop:
   though the directory may then not list it. `abort_on` fires before the end of the pass
   decides a member's selection, and the bomb limits count what the pass wrote until it
   is taken back.
+- A run stopped before the end of the pass settled its members (`abort_on`,
+  `on_error="stop"`, a limit, a `STRICT` refusal at the directory) leaves less than the
+  file read: the files it wrote for them that could be links are taken back
+  (§"Extraction" above), where the file read keeps every member it wrote before the
+  stop, links made. The longer files that stay have no mode applied.
 - A bit-3 codec member whose data is damaged can fail with another error than from a
   file (`TruncatedError` where the file read says `DataAfterEndError`, for one): the
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
+- A bit-3 member whose data descriptor has one damaged field fails at the end of the
+  pass, as the directory contradicts the descriptor: the file read never reads the
+  descriptor, and reads the member when its data is intact.
+- A bit-3 codec member whose stream runs on into its descriptor (the stream's last
+  byte is the descriptor's first) reads from a pipe. The file read is the right one:
+  it stops at the compressed size the directory and the descriptor state, and raises
+  `TruncatedError`. The pass does not know where the codec ended, so it finds the
+  descriptor by the decoded CRC and size, and that CRC still checks the data (DR-1).
+  To match the file read, every codec (Deflate64 and PPMd too) would have to say
+  exactly where its input ended, through the decrypt stages (DR-5a). One flipped bit
+  can make this shape; it is the mirror of the junk case above.
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no
@@ -971,7 +1037,11 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   and the later one is refused. stdlib raised on 3.11, on 3.12 before 3.12.10 and on
   3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read both. archivey keeps
   refusing, because many entries over one local header is the overlapping-entry
-  amplification shape (DR-9a).
+  amplification shape (DR-9a). The guard runs before the local name is compared, so a
+  refused entry reports only the overlap, under every policy, and no
+  `MEMBER_LOCAL_NAME_DIFFERS`. The refusal is a per-member `CorruptionError`, never
+  the always-stop `DiagnosticRaisedError`, so under `OnError.CONTINUE` the rest of the
+  archive still extracts, `STRICT` included.
 - **Confirming a ZipCrypto password costs time that depends on the archive, and that cost
   is observable**: the one-byte verifier cannot decide between candidates, so a STORED
   member is read through and its CRC compared. Timing the call, or watching how much is
@@ -992,7 +1062,7 @@ ours.
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | A ZIP from a pipe opens only with `streaming=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
-| From a pipe, a few crafted shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
+| From a pipe, a few crafted or damaged shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
 | A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_ENCODING_INFERRED`, and `DiagnosticPolicy.STRICT` refuses it | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `declared_encoding` is `"utf-8"` and its `inferred_encoding` the codec used (§2.2) |
 | A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
@@ -1005,7 +1075,7 @@ ours.
 | A ZIP with a digital signature record (`PK\x05\x05`, APPNOTE 4.3.13) between its directory and its end record is refused with `CorruptionError` ("Bad magic number") | **archivey** | The end record's directory size and offset do not count the record, so its bytes shift where the directory is taken to start, the way prepended data does. stdlib `zipfile` refuses it the same way, and a read from a pipe matches the file read. Few writers produce the record; reading past it is not planned |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
-| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, with every member already written (§2.2.2), and the CRC case is recorded |
+| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, after every member was written, so extraction takes back the files that could be links (§2.2.2); the CRC case is recorded |
 
 ## 6. Decisions
 
@@ -1014,6 +1084,7 @@ ours.
 | archivey's own parser for the end record, central directory and local headers ([ADR 0020](../decisions/0020-native-zip-reader.md), superseding [0006](../decisions/0006-stdlib-zipfile.md)) | Zero-dependency still. Stdlib parsed the whole directory at open before `ListingLimits` saw a member, lost the archive over one damaged entry, varied by Python version and was reached through private names and exception text; the parser lists lazily, lists up to damage, and behaves the same everywhere | Stdlib `zipfile` (ADR 0006); `python-libarchive-c`, faster and broader at the cost of a native dependency |
 | Report bytes after the end record as `ARCHIVE_TRAILING_DATA` | DR-3: the TAR, 7z, RAR and ISO rule. 7-Zip warns on any tail; zero padding stays silent here as there | Ignoring the tail, as Info-ZIP `unzip` and stdlib do |
 | Refuse at open an end record declaring more entries than `max_members` | Every walk keeps an offset per entry for the overlap guard, so the count bounds memory in every mode (DR-15b); the directory must be 46 bytes per declared entry, so a wrong count field alone does not refuse a small archive | Charging only on `members()`, which left a streaming pass unbounded |
+| A central entry whose fields run past the directory's end, hold the headers after it (they chain from a signature inside exactly to the end), or whose name is shorter than its local header's with no header after it, is damage (§2.2) | Cutting the field, as stdlib does, listed a member named after the swallowed entries' bytes and dropped those entries with only a count warning, where a pipe listed every member (DR-1, DR-5); `unzip` and 7-Zip both stop with an error. As damage, both reads list every member from the local headers and raise | Cutting at the directory's end (the native reader's first choice; superseded by davi's 2026-10-17 ruling, PR 860); treating a signature with a wrong count as damage, which refuses an intact directory over a name and a count field |
 | Read members whatever "version needed" says | DR-4: the method and flags say what a member needs; 7-Zip reads such members | Stdlib's refusal of the whole archive above 6.3 |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Read a non-seekable source forward over the local headers under `streaming=True`, and refuse it under `streaming=False`, rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for; the local headers make one forward pass possible (the maintainer, 2026-10-10) | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
@@ -1071,6 +1142,7 @@ move.
 | Non-seekable refused at open under `streaming=False`, naming `streaming=True`; read under `streaming=True` | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection`, `::test_non_seekable_zip_opens_via_detection_when_streaming` |
 | From a pipe: the walk and where each member's data ends | `tests/test_zip_local_walk.py`, `tests/test_zip_walk_codec_end.py` |
 | From a pipe: members updated from the directory, `is_current` by directory order, unlisted local entries dropped, failures at the end of the pass, limits | `tests/test_zip_pipe.py`, `tests/test_zip_pipe_directory_checks.py` |
+| A bit-3 codec stream that runs on into its descriptor: `TruncatedError` from a file, read from a pipe (§2.2.2) | `tests/test_zip_pipe.py::test_a_bit3_codec_stream_that_runs_into_its_descriptor_reads_only_from_a_pipe` |
 | From a pipe: encrypted members, one password, several, a provider | `tests/test_zip_pipe_encrypted.py` |
 | From a pipe: extraction settled at the end of the pass, selection made again, failures at the end | `tests/test_zip_pipe_extract.py`, `tests/test_zip_pipe_reparse.py` |
 | Every fixture read from a pipe and from a file gives the same members, data and files, except the recorded differences | `tests/test_zip_pipe_parity.py` |
@@ -1092,7 +1164,7 @@ move.
 | Symlink target from member data; encrypted target withheld | `::test_symlink_member`, `::test_encrypted_symlink_listing_without_password` |
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
-| Overlapping-entry bomb; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_entries_sharing_one_local_header_read_only_once` |
+| Overlapping-entry bomb; entries sharing a local header read once; a refused entry reports no name difference | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_entries_sharing_one_local_header_read_only_once`, `::test_an_overlapping_entry_with_another_name_reports_only_the_overlap` |
 | A damaged directory lists up to the damage, then the local headers past it; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when `member_count` comes first, a seekable streaming pass reads the directory then forward only; a listed member keeps no extra field | `tests/test_zip_native_reader.py` |
 | `max_members` refused at open from the declared count, charged by the walk when the count lies | `tests/test_listing_limits.py::test_zip_applies_max_members_at_open`, `::test_zip_walk_charges_max_members_when_the_declared_count_lies` |
 | The parser against stdlib on every fixture, ZIP64, stubs, disk fields | `tests/test_zip_parser.py` |

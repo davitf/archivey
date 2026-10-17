@@ -6,7 +6,7 @@ native decoders. Background: `dev-docs/investigations/parallel-reader.md`.
 
 ## Threads over one reader
 
-`open_archive(concurrent_members=True)` declares `MemberStreams.CONCURRENT`: first-touch
+`open_archive(concurrent_operations=True)` declares `MemberStreams.CONCURRENT`: first-touch
 materialization is coordinated, then workers may read members in parallel. Forward-only
 and streaming passes stay single-owner.
 

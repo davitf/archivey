@@ -30,7 +30,7 @@ class MemberStreams(Flag):
     """The member-stream capabilities a reader was opened with.
 
     Callers declare these as booleans —
-    ``open_archive(..., seekable_members=True, concurrent_members=True)`` — and never
+    ``open_archive(..., seekable_members=True, concurrent_operations=True)`` — and never
     construct a ``MemberStreams`` value. This flag set is the internal representation
     those booleans map to at the entry point, and what every backend receives. It is
     importable from :mod:`archivey.types` for backends and tests, not re-exported from
@@ -48,8 +48,8 @@ class MemberStreams(Flag):
         materialization is coordinated (one build; waiters share the snapshot);
         ``close()`` drains in-flight worker calls. Callers still synchronize any
         *shared* stream objects they hand around. ``__iter__`` and
-        ``stream_members`` run beside random access and beside one another;
-        ``extract_all`` remains single-owner.
+        ``stream_members`` and ``extract_all`` run beside random access and beside
+        one another.
         Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
 
     ``SEEKABLE``
@@ -260,7 +260,9 @@ class MissingComponent:
     """
 
     name: str  # e.g. "pycdlib", "brotli", "unrar"
-    install_hint: str  # e.g. "pip install archivey[recommended]"
+    # A package's install line, e.g. "pip install archivey[recommended]"; for an
+    # external program (``unrar``), the whole refusal a read would raise.
+    install_hint: str
     unlocks: tuple[
         str, ...
     ] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
@@ -276,6 +278,9 @@ class MissingComponent:
 
         ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
         a backport that is pointless on a Python version shipping the module).
+
+        For package entries only: a program entry's ``install_hint`` is already a
+        complete message.
         """
         text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
         return f"{text} {note}" if note else text
@@ -285,9 +290,7 @@ class FormatSupport(Enum):
     """Tri-state readability of a known format (see ``backend-registry``)."""
 
     FULL = "full"  # backend usable AND every optional codec/tool it can use is present
-    PARTIAL = (
-        "partial"  # opens & lists; common members decode; some optional codec missing
-    )
+    PARTIAL = "partial"  # opens & lists; common members decode; some optional codec or tool missing
     NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
 
 
@@ -610,8 +613,11 @@ class MemberExtra(dict[str, object]):
       global ones in force included. Read-only: a change raises ``TypeError``, and
       ``dict(...)`` gives a copy to change. It is a ``dict`` subclass, so
       ``json.dumps`` takes it.
-    * ``tar.devmajor`` (``int``)
-    * ``tar.devminor`` (``int``)
+    * ``tar.devmajor`` (``int``) — set only for a character or block device
+      (typeflag ``3`` or ``4``) in a ustar or GNU header whose field is a number;
+      absent for a FIFO, for a v7 header, and for a device whose field is not a
+      number (that member carries ``MEMBER_HEADER_RECORD_SKIPPED``).
+    * ``tar.devminor`` (``int``) — present exactly when ``tar.devmajor`` is.
     * ``gzip.original_filename`` (``str``)
     * ``gzip.isize`` (``int``) — the gzip trailer's ISIZE field: the last four
       bytes of the file, read only when its end is cheap to reach (not from a
@@ -1305,7 +1311,10 @@ class AbortOn(StrEnum):
     Abort is immediate — the triggering member's partial output is removed, no later
     member is processed, and **no** ``ExtractionReport`` is returned. Output already
     written for earlier members stays on disk, matching ``OnError.STOP``: an abort stops
-    the run, it does not roll it back.
+    the run, it does not roll it back. The exception is a ZIP read from a pipe, whose
+    pass stops before the central directory says which members are links: it removes
+    the files it wrote that could still be links (see "A ZIP from a pipe" in the
+    extraction guide).
 
     There is deliberately no member for extraction *failures*: ``OnError.STOP`` already
     means "raise on the first failure".

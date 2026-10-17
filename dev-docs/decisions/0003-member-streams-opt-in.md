@@ -19,7 +19,7 @@ Both capabilities are off by default:
 - streams report `seekable() is False`; `seek()` → `io.UnsupportedOperation`
 - at most one live member stream; a second overlapping `open()` → `ArchiveyUsageError`
 
-Opt in with `open_archive(..., seekable_members=True, concurrent_members=True)`. Same
+Opt in with `open_archive(..., seekable_members=True, concurrent_operations=True)`. Same
 rule for `open_stream(..., seekable=False)`. Seek indexes / accelerators are
 **demand-driven**. Uniform across every format, including directory.
 
@@ -43,9 +43,15 @@ format, with or without `seekable_members=True`: `seekable()` is `False`, `seek(
 raises `io.UnsupportedOperation`, `tell()` works. Before, whether a pass handle could
 seek depended on the backend. `seekable_members=True` is for random `open()` only.
 
+**Amended (2026-10-17):** after the `member_streams=` flag enum gave way to the two
+booleans, the second was spelled `concurrent_members`. It became `concurrent_operations`
+once it covered more than member opens: under it every operation on the reader (open,
+read, passes, `extract_all()`) works as if it ran on a reader of its own. Same default,
+same semantics otherwise.
+
 ## Consequences
 
 - Default path: no shared-handle locks, no seek tables, no accelerators.
 - Strict default is reversible pre-1.0; permissive-then-gate would be a breaking change.
 - Solid **open-order** cost remains the caller’s algorithm (`AccessCost` /
-  `stream_members()`), not something `concurrent_members=True` erases.
+  `stream_members()`), not something `concurrent_operations=True` erases.
