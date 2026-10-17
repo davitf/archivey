@@ -482,22 +482,32 @@ are `None`, and `members_report_if_available()` returns `None`, until the direct
 been read. The full design, row by row, is the `native-zip-reader` change's `design.md`
 (§"Streaming: a forward walk over local headers").
 
-**Where a member's data ends.** A sized local header gives it. With bit 3 set the walk
-decodes to the codec's end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the
-EOS bit, PPMd with its end mark), then finds the data descriptor by the decoded CRC; a
-STORED member ends at a descriptor whose CRC and size match the bytes before it and that
-a ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed
-the same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA
-member without EOS has no end its codec can find, and its read is
+**Where a member's data ends.** A sized local header gives it. With bit 3 set, a member
+the caller reads to its end is decoded to the codec's end marker (DEFLATE, Deflate64,
+bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk finds
+the data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC
+and size match the bytes before it and that a ZIP signature follows, signed or not. A
+bit-3 codec member the pass reads past (nobody read it, or the caller stopped early) is
+decoded no further than the byte past the 4096-byte target cap, then the reparse prefix
+a file read reads (the buffer and one byte, §2.2.1), and one byte past that prefix:
+bit-3 data has no size, so only a decode that returns nothing says it ended there, and
+the two reads stop at the same place. A member whose codec ends within that is checked
+as a read to its end is. Past it the walk passes the member by the STORED member's scan
+on its stored bytes, matched on the size and the signature after the descriptor, since
+the CRC covers the decoded data: decoding the rest would cost what no limit bounds (a
+900-byte bzip2 member decodes to 1 GiB). A descriptor planted in the data then ends the
+member early, and the directory catches it at the end of the pass. An encrypted bit-3
+member nobody reads is passed the same way on its ciphertext, so no key is needed. A
+bit-3 LZMA member without EOS has no end its codec can find, and its read is
 `UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
 its decode, as from a file. A bit-3 codec member whose decode fails or finds no end is
 passed by the same scan on its stored bytes. The scan starts at the bytes the walk kept
-of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into the
-size it matches, so the descriptor is found unless the decode read more than that past
-the data's end; then the scan runs to the end of the stream and the pass ends with its
-error. A bit-3 PPMd member is always decoded in a child process
-(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several password
-candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
+of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into
+the size it matches, so the descriptor is found unless the decode read more than that
+past the data's end; then the scan runs to the end of the stream and the pass ends with
+its error. A bit-3 PPMd member is always decoded in a child process
+(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several
+password candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
 **What the pass yields, and what changes at the end.** Each member is yielded with what
 its local header gives: `mode`, `create_system` and `comment` are `None`, the type is
@@ -541,8 +551,8 @@ extraction moves what it wrote.
 are shapes only crafted archives have (DR-5a); the rest come from damage, or from the
 directory's refusals the file read is to drop:
 
-- A data descriptor that understates a STORED member, and the reversed same-name pair,
-  fail a member the file read writes.
+- A data descriptor that understates a STORED member, or a bit-3 codec member the pass
+  reads past, and the reversed same-name pair, fail a member the file read writes.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
   where the file read refuses it (DR-3).
 - The first of several inconclusive password candidates wins (§6).
@@ -559,10 +569,6 @@ directory's refusals the file read is to drop:
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
-  For a reparse point whose decode fails more than one byte past its reparse buffer,
-  the file read's bounded read stops before the damage and gives the target; the pass
-  decodes in larger pieces, loses the piece the error ends, and gives none
-  (`test_zip_pipe_reparse.py::test_a_bit3_reparse_buffer_whose_decode_fails_past_it`).
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no
@@ -924,7 +930,10 @@ info, extended attributes, resource fork; no data length).
     the reader, settles it).
     `extra["size_mod_2_32"]` stays after the fill-in, so the member still says the
     archive stored only the low bits. A pipe pass that decoded the member to its end
-    with the directory's CRC-32 keeps the size it counted. davi chose this (option A,
+    with the directory's CRC-32 keeps the size it counted. For a bit-3 member nobody
+    read, that is one whose codec ended within the symlink target cap; past it the
+    pass decodes no further (§2.2 "Where a member's data ends") and `size` stays `None`,
+    as from a file. davi chose this (option A,
     2026-10-15) over decoding such members while listing, which would read a whole
     archive of videos to list it. An entry with no CRC-32 (a directory carrying data)
     has nothing to check a read against, so it keeps the stored size instead of
