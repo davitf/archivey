@@ -239,7 +239,7 @@ def _member_type(entry: TarEntry) -> MemberType:
         return MemberType.FILE
     if typeflag not in _KNOWN_TYPES and entry.size:
         # An unknown typeflag that declares data: GNU tar extracts it as a regular
-        # file with a warning, and 7-Zip lists it as a file. The data area is the
+        # file with a warning, and 7-Zip 23.01 extracts it as one. The data area is the
         # structure (DR-25; maintainer ruling, 2026-10-17). _to_member reports it.
         return MemberType.FILE
     # Character/block devices, FIFOs, multi-volume and volume headers, and an unknown

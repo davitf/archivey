@@ -91,8 +91,10 @@ EXTENDED_TYPES = PAX_MEMBER_TYPES | {PAX_GLOBAL_TYPE, LONG_NAME_TYPE, LONG_LINK_
 # Types whose size field does not announce a data area. ``tarfile`` skips no data
 # after these; GNU tar skips none after a directory and fails on the others with
 # "Skipping to next header". Data declared on one of them is read as the next header,
-# as both tools read it. Every other typeflag, including the regular types and ones
-# neither tool knows (``V``, ``M``, ``N``, ``D`` ...), has its data skipped by size.
+# as both tools read it. The size field of every other typeflag announces a data area,
+# whatever either tool makes of the type: the regular types, ``D``, ``M``, ``V``, and
+# typeflags the reader does not know (``tar_reader._KNOWN_TYPES``) all have their data
+# skipped by size.
 NO_DATA_TYPES = frozenset((b"1", b"2", b"3", b"4", b"5", b"6"))
 
 # The regular-file typeflags whose entry is a directory when its final name ends in

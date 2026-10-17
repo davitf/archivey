@@ -267,9 +267,9 @@ legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in t
 `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes ZIPs past 4 GiB this
 way by default and reads them back, and each correction is checked against the
 archive's own bytes and the CRC-32), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the
-member as a file, and archivey delivers its bytes), `FORMAT_EXTENSION_CONFLICT` (the file's name is
-wrong, not its bytes: a tarball saved as `b.gz` opens and reads in full, and the code is
-still recorded; to refuse such files, add the code to `raise_on`), and
+member as a file, and archivey delivers its bytes), `FORMAT_EXTENSION_CONFLICT` (the
+file's name is wrong, not its bytes: a tarball saved as `b.gz` opens and reads in full,
+and the code is still recorded; to refuse such files, add the code to `raise_on`), and
 `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it, and the data is still checked, against
 the local header's CRC-32; its sibling `MEMBER_LOCAL_NAME_DIFFERS` is in the set).
 `ARCHIVE_INTEGRITY_CODES` is exported, and the presets are ordinary policies built from
