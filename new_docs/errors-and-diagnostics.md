@@ -59,7 +59,7 @@ Mistakes in the calling code raise `ArchiveyUsageError`, which isn't an `Archive
 catch-all for archive problems never hides a bug. The ones you're most likely to meet are:
 
 - calling `members()`, `open()` or `read()` on a reader opened with `streaming=True`;
-- opening a second member stream while another is still open, without `concurrent_members=True`;
+- opening a second member stream while another is still open, without `concurrent_operations=True`;
 - calling `open()` or `read()` on a directory;
 - giving an option a value it doesn't know, such as `policy="strictt"`. The error names the
   accepted values.

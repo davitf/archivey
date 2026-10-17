@@ -360,7 +360,7 @@ def test_archive_close_waits_for_an_in_flight_member_read() -> None:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a.txt", b"data")
     source = _BlockingSource(buf.getvalue())
-    ar = open_archive(source, concurrent_members=True)
+    ar = open_archive(source, concurrent_operations=True)
     stream = ar.open("a.txt")
     got: list[bytes] = []
     source.armed = True
@@ -404,7 +404,7 @@ def test_archive_closed_before_the_overrun_probe() -> None:
             return out
 
     source = _ClosesOnRead(buf.getvalue())
-    ar = open_archive(source, concurrent_members=True)
+    ar = open_archive(source, concurrent_operations=True)
     with ar.open("a.txt") as stream:
         source.armed = True
         assert stream.read() == data
@@ -1385,7 +1385,7 @@ def test_read_roundtrip_from_stream_source(simple_zip: Path) -> None:
 
 def test_concurrent_open_members_interleaved_path_source(simple_zip: Path) -> None:
     # Path source: stdlib zipfile's _SharedFile already coordinates; lock the contract in.
-    with open_archive(simple_zip, concurrent_members=True) as ar:
+    with open_archive(simple_zip, concurrent_operations=True) as ar:
         s1 = ar.open("hello.txt")
         s2 = ar.open("dir/nested.txt")
         assert s1.read(5) == b"hello"
@@ -1401,7 +1401,7 @@ def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> 
     # source (_SharedFile keeps a per-open position under ZipFile's lock), so archivey
     # adds no wrap; this test locks the concurrent-open contract in for that leg too.
     data = simple_zip.read_bytes()
-    with open_archive(io.BytesIO(data), concurrent_members=True) as ar:
+    with open_archive(io.BytesIO(data), concurrent_operations=True) as ar:
         s1 = ar.open("hello.txt")
         s2 = ar.open("dir/nested.txt")
         assert s1.read(5) == b"hello"

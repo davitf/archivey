@@ -30,7 +30,7 @@ class MemberStreams(Flag):
     """The member-stream capabilities a reader was opened with.
 
     Callers declare these as booleans —
-    ``open_archive(..., seekable_members=True, concurrent_members=True)`` — and never
+    ``open_archive(..., seekable_members=True, concurrent_operations=True)`` — and never
     construct a ``MemberStreams`` value. This flag set is the internal representation
     those booleans map to at the entry point, and what every backend receives. It is
     importable from :mod:`archivey.types` for backends and tests, not re-exported from

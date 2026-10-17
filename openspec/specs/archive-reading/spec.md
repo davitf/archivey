@@ -30,7 +30,7 @@ archivey.open_archive(
     format: ArchiveFormat | None = None,
     streaming: bool = False,
     seekable_members: bool = False,
-    concurrent_members: bool = False,
+    concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -117,7 +117,7 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 
 `open_archive()` SHALL accept two keyword-only booleans, both defaulting to `False`:
 
-- `concurrent_members=True` — any number of member streams may be open simultaneously
+- `concurrent_operations=True` — any number of member streams may be open simultaneously
   (full contract: `reader-concurrency`)
 - `seekable_members=True` — every member stream from random `open()` is seekable;
   `stream_members()` yields stay forward-only (below)
@@ -163,7 +163,7 @@ only. A caller that needs to seek opens the member with random `open()` under
 `seekable_members=True`.
 
 `ArchiveyUsageError`'s message SHALL name the parameter a caller would pass to
-allow the operation (`concurrent_members=True`), not an internal type.
+allow the operation (`concurrent_operations=True`), not an internal type.
 
 `open_archive()` SHALL capture the caller stack once; `ArchiveyUsageError`
 SHALL include that `file:line`. Full stack is retained on the reader for
@@ -183,8 +183,8 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 
 | Case | Expected |
 | --- | --- |
-| Overlapping second `open()` without `concurrent_members` (ZIP/TAR/ISO/single-file/dir) | `ArchiveyUsageError` at later `open()` with open_archive `file:line`; first stream remains readable |
-| Refused second `open()` without `concurrent_members` | Raises before the member is opened — no member stream constructed, no helper process spawned, no member data read |
+| Overlapping second `open()` without `concurrent_operations` (ZIP/TAR/ISO/single-file/dir) | `ArchiveyUsageError` at later `open()` with open_archive `file:line`; first stream remains readable |
+| Refused second `open()` without `concurrent_operations` | Raises before the member is opened — no member stream constructed, no helper process spawned, no member data read |
 | Non-overlapping open/read/close loop, no capabilities declared | All opens succeed |
 | Stream without `seekable_members` (incl. real directory file) | `seekable()` false; `seek()` → `io.UnsupportedOperation`; `tell()` + forward reads OK |
 | Same member via random `open()` with `seekable_members=True` | `seekable()` true; backward seek rereads; loud-slow-rewind when there is no index/accelerator |
@@ -775,7 +775,7 @@ directed to `stream_members()` by `reader.cost.access_cost` and by the `open()` 
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another
 iteration/data pass, unrelated extraction, or reader close. On a reader opened with
-`concurrent_members=True`, random `open()` / `read()` / `get()` / `members()`,
+`concurrent_operations=True`, random `open()` / `read()` / `get()` / `members()`,
 iteration, further `stream_members()` passes and `extract_all()` MAY run beside it, on
 every format (`reader-concurrency`, "Random-access calls beside a pass"). An
 `extract_all()` owner MAY invoke it as a child pass and MAY read/close the yielded
@@ -815,7 +815,7 @@ advancing a closed pass SHALL end the iteration. Closing a pass that is executin
 | `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened, except data-stored symlink targets when `read_link_targets=True`; original mutable members |
 | Fully read stream, then inspect member | Late-bound fields (e.g. size/CRC) visible on same object |
 | Advance after one yield | Prior stream closed/invalidated first |
-| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable. Under `concurrent_members=True`: admitted |
+| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable. Under `concurrent_operations=True`: admitted |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
 | `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
 | `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |

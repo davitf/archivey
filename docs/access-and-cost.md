@@ -112,7 +112,7 @@ for name in wanted_names:
 ```
 
 `AccessCost.SOLID` and `solid_block_count` tell you when this matters.
-`concurrent_members=True` does **not** remove solid open-order cost — it only makes
+`concurrent_operations=True` does **not** remove solid open-order cost — it only makes
 overlapping streams correct.
 
 ## Seeking inside compressed members
@@ -230,14 +230,14 @@ Default: at most one live member stream. A second overlapping `open()` raises
 `ArchiveyUsageError` (a usage error — not an `ArchiveyError`).
 
 ```python
-open_archive(src, concurrent_members=True)
+open_archive(src, concurrent_operations=True)
 ```
 
 After members are materialized, workers may `open()` different members concurrently.
 Same-stream access still needs caller synchronization. `__iter__` and
 `stream_members()` and `extract_all()` also run beside random access and beside one
 another.
-`streaming=True` cannot combine with `concurrent_members=True`.
+`streaming=True` cannot combine with `concurrent_operations=True`.
 
 ## Non-seekable sources
 
@@ -370,6 +370,6 @@ not a guarantee: an input that aborts the bzip2 decoder would end your process. 
 | Hash / process every member | `stream_members()` or `__iter__` |
 | Solid archive, many named opens | Reorder to archive order, or one streaming pass |
 | Need `seek()` on a member | `seekable_members=True` (+ `[seekable]` for gz/bz2/zlib/deflate) |
-| Thread pool of member readers | `concurrent_members=True` after `members()` |
+| Thread pool of member readers | `concurrent_operations=True` after `members()` |
 | stdin / socket | `streaming=True` for TAR, ZIP and the single-file compressors; buffer ISO / 7z / RAR to a file or `BytesIO` first ([above](#non-seekable-sources)) |
 | “Just unzip it safely” | `open_archive(src)`, then `reader.extract_all(dest)` |

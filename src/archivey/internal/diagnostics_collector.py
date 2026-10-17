@@ -293,7 +293,7 @@ class DiagnosticCollector:
         """Count this thread's emits in a new :class:`DiagnosticScope` while inside.
 
         For a call whose result reports its own diagnostics, such as
-        ``extract_all()``: on a reader opened with ``concurrent_members=True`` other
+        ``extract_all()``: on a reader opened with ``concurrent_operations=True`` other
         threads emit into the same collector meanwhile, and a watermark would hand
         their emits to this call too.
         """

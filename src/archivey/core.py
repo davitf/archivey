@@ -249,7 +249,7 @@ def open_archive(
     format: ArchiveFormat | str | None = None,
     streaming: Literal[False] = False,
     seekable_members: bool = False,
-    concurrent_members: bool = False,
+    concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -263,7 +263,7 @@ def open_archive(
     format: ArchiveFormat | str | None = None,
     streaming: bool,
     seekable_members: bool = False,
-    concurrent_members: bool = False,
+    concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -276,7 +276,7 @@ def open_archive(
     format: ArchiveFormat | str | None = None,
     streaming: bool = False,
     seekable_members: bool = False,
-    concurrent_members: bool = False,
+    concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -302,7 +302,7 @@ def open_archive(
       ``io.UnsupportedOperation``. A backward seek may re-decompress from the
       start when there is no index or accelerator. A ``stream_members()``
       stream never seeks, with or without this flag.
-    - ``concurrent_members=True`` — multiple member streams may be open at once
+    - ``concurrent_operations=True`` — multiple member streams may be open at once
       (coordinated first-touch materialization, then worker fan-out; draining close).
       Without it, a second overlapping ``open()`` raises ``ArchiveyUsageError``.
 
@@ -311,7 +311,7 @@ def open_archive(
     no counterpart. Declared concurrency does **not** gate solid open-order cost — see
     ``AccessCost`` / ``stream_members()``.
 
-    ``streaming=True`` combined with ``concurrent_members=True`` is rejected
+    ``streaming=True`` combined with ``concurrent_operations=True`` is rejected
     (``ArchiveyUsageError``): a forward-only pass cannot fan out.
 
     ``config`` supplies library tuning knobs (accelerator modes, the diagnostic
@@ -400,10 +400,10 @@ def open_archive(
     check_config(config, call="open_archive(config=…)")
     check_encoding(encoding, call="open_archive(encoding=…)")
 
-    if streaming and concurrent_members:
+    if streaming and concurrent_operations:
         raise _UsageValueError(
             "open_archive(streaming=True) cannot be combined with "
-            "concurrent_members=True: a forward-only pass has one progressive decoder "
+            "concurrent_operations=True: a forward-only pass has one progressive decoder "
             "and cannot fan out concurrent member streams."
         )
 
@@ -413,7 +413,7 @@ def open_archive(
     member_streams = MemberStreams(0)
     if seekable_members:
         member_streams |= MemberStreams.SEEKABLE
-    if concurrent_members:
+    if concurrent_operations:
         member_streams |= MemberStreams.CONCURRENT
 
     passwords = _PasswordCandidates.from_input(password)
@@ -778,7 +778,7 @@ def open_stream(
     … payload (no archive container). ``seekable`` is the same capability
     :func:`open_archive` spells ``seekable_members``; concurrency is not a concept here
     — the call returns exactly one stream — so there is no counterpart to
-    ``concurrent_members``.
+    ``concurrent_operations``.
 
     ``seekable=False`` (the default) returns a forward-only stream: ``seekable()`` is
     ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index or

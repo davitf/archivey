@@ -19,7 +19,7 @@ Both capabilities are off by default:
 - streams report `seekable() is False`; `seek()` → `io.UnsupportedOperation`
 - at most one live member stream; a second overlapping `open()` → `ArchiveyUsageError`
 
-Opt in with `open_archive(..., seekable_members=True, concurrent_members=True)`. Same
+Opt in with `open_archive(..., seekable_members=True, concurrent_operations=True)`. Same
 rule for `open_stream(..., seekable=False)`. Seek indexes / accelerators are
 **demand-driven**. Uniform across every format, including directory.
 
@@ -31,6 +31,11 @@ share one vocabulary (`seekable` means the same thing in `open_archive` and
 already chose in the analogous case: prefer a bool when the mode count is small, and
 these are two specific traps rather than an open-ended set. `MemberStreams` remains
 exported and is still the declared-capability value on `CostReceipt` and in diagnostics.
+
+**Amended before `0.2.0` (renamed):** the second flag was first spelled
+`concurrent_members`. It became `concurrent_operations` once it covered more than member
+opens: under it every operation on the reader (open, read, passes, `extract_all()`)
+works as if it ran on a reader of its own. Same default, same semantics otherwise.
 
 **Amended (PR #299):** `seekable_members=True` is a guarantee on random `open()`, not
 "where the backend can provide it". A backend that can list a file member must seek it
@@ -48,4 +53,4 @@ seek depended on the backend. `seekable_members=True` is for random `open()` onl
 - Default path: no shared-handle locks, no seek tables, no accelerators.
 - Strict default is reversible pre-1.0; permissive-then-gate would be a breaking change.
 - Solid **open-order** cost remains the caller’s algorithm (`AccessCost` /
-  `stream_members()`), not something `concurrent_members=True` erases.
+  `stream_members()`), not something `concurrent_operations=True` erases.
