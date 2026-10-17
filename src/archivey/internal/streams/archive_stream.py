@@ -593,6 +593,14 @@ class ArchiveStream(ReadOnlyIOStream):
         raise e
 
     def read(self, n: int | None = -1, /) -> bytes:
+        """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
+
+        A fused verifier with a declared size caps each read at the bytes left while it
+        is still checking, until it concludes or abandons. Otherwise ``n`` goes to the
+        backend as given, so what a very large ``n`` costs is the backend's: a TAR member's reader allocates a buffer of ``n`` bytes, and
+        ``read(2**62)`` raises ``MemoryError`` there, as ``open(path, "rb").read(2**62)``
+        does on a plain file. The stream is still usable afterwards.
+        """
         scope = self._diagnostics_scope
         if scope is None:
             return self._read(n)
@@ -604,14 +612,7 @@ class ArchiveStream(ReadOnlyIOStream):
             leave_scope(stack, scope)
 
     def _read(self, n: int | None) -> bytes:
-        """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
-
-        A fused verifier with a declared size caps each read at the bytes left while it
-        is still checking, until it concludes or abandons. Otherwise ``n`` goes to the
-        backend as given, so what a very large ``n`` costs is the backend's: a TAR member's reader allocates a buffer of ``n`` bytes, and
-        ``read(2**62)`` raises ``MemoryError`` there, as ``open(path, "rb").read(2**62)``
-        does on a plain file. The stream is still usable afterwards.
-        """
+        """``read`` inside the stream's diagnostic scope, already entered."""
         # ``None`` reads to EOF, as on any ``io`` stream; a float or str is the caller's
         # TypeError, and an int too wide for ``Py_ssize_t`` their OverflowError, both
         # raised before anything is read. Passed inward, ``read(1.5)`` or ``read(2**70)``

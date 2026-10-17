@@ -65,6 +65,32 @@ def test_random_stream_diagnostics_are_its_own(tmp_path: Path) -> None:
         assert reader.diagnostics.total_count == 1
 
 
+def test_stream_calls_leave_the_threads_scope_stack_as_they_found_it(
+    tmp_path: Path,
+) -> None:
+    """``read``, ``seek`` and ``close`` take the stream's scope off the thread again.
+
+    A scope left on the stack would count every later emit on the thread into a stream
+    that is done with, and into its ``diagnostics``.
+    """
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", b"alpha" * 100)
+    with open_archive(path, seekable_members=True) as reader:
+        stack = reader._diagnostics_collector.scope_stack()  # type: ignore[attr-defined]
+        stream = reader.open("a.txt")
+        assert stack == []
+        stream.read(3)
+        assert stack == []
+        stream.seek(0)
+        assert stack == []
+        with pytest.raises(TypeError):
+            stream.read(1.5)  # type: ignore[arg-type]
+        assert stack == []
+        stream.close()
+        assert stack == []
+
+
 def _zip_with_empty_symlink(tmp_path: Path) -> Path:
     path = tmp_path / "link.zip"
     with zipfile.ZipFile(path, "w") as zf:

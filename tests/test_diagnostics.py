@@ -486,6 +486,7 @@ def test_scope_counts_only_its_own_threads_emits() -> None:
                 _emit_norm(collector, message="nested")
         summaries["outer"] = outer.summary()
         summaries["inner"] = inner.summary()
+        summaries["stack"] = list(collector.scope_stack())
 
     thread = threading.Thread(target=scoped)
     thread.start()
@@ -501,6 +502,8 @@ def test_scope_counts_only_its_own_threads_emits() -> None:
     assert inner.total_count == 1
     assert [d.message for d in inner.retained] == ["nested"]
     assert collector.snapshot().total_count == 4
+    # Both scopes left the thread's stack on exit.
+    assert summaries["stack"] == []
 
 
 def test_scope_counts_exactly_past_retention() -> None:

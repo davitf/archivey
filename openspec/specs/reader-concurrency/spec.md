@@ -75,8 +75,7 @@ redundant decompression.
 `stream_members`, `extract_all`) and `members_report_if_available` initialization
 remain single-owner and cannot overlap one another or the random worker seam, with
 one exception: `stream_members()` and `extract_all()` passes on a `CONCURRENT` reader
-overlap workers and one another (see "Random-access calls beside a
-pass"). Under
+overlap workers and one another (see "Random-access calls beside a pass"). Under
 `CONCURRENT`, first-touch materialization through `members()` or `members_report()`
 is coordinated (wait/share) and `reader.close()` drains in-flight worker calls
 rather than rejecting them. The base reader SHALL represent ownership with an

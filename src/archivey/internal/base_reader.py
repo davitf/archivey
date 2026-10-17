@@ -516,8 +516,7 @@ class BaseArchiveReader(ArchiveReader):
         self._public_stream_seq = 0
         # Guards the counter and the registry: on a CONCURRENT reader two open() calls
         # register at once, and an unlocked ``+= 1`` could hand both the same key, so
-        # one stream would drop out and close() would leave it open. Also guards the
-        # test-and-set of ``_unconfirmed_failure_emitted``.
+        # one stream would drop out and close() would leave it open.
         self._public_streams_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
@@ -596,6 +595,8 @@ class BaseArchiveReader(ArchiveReader):
         # per reader, not per raised exception — retries must not multiply the
         # diagnostic (or burn retention slots).
         self._unconfirmed_failure_emitted: bool = False
+        # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
+        self._unconfirmed_failure_lock = threading.Lock()
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
@@ -1266,7 +1267,7 @@ class BaseArchiveReader(ArchiveReader):
         # Test and set in one step: two threads failing at once on a CONCURRENT
         # reader would otherwise both pass the test and emit twice. Set before
         # emitting, for the reason below.
-        with self._public_streams_lock:
+        with self._unconfirmed_failure_lock:
             if self._unconfirmed_failure_emitted:
                 return
             self._unconfirmed_failure_emitted = True
