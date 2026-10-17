@@ -613,6 +613,8 @@ jobs:
   # Dependencies come one at a time rather than through `--extra all`, because several
   # native packages have no PyPy wheel and one failed build would hide what does install;
   # the "Install what installs" step writes the outcome per package to the job summary.
+  # The test steps print one line per failure and no tracebacks (--tb=no) so the whole
+  # result fits in the part of the log the GitHub API returns.
   pypy:
     name: ${{ matrix.python }} (trial, allowed to fail)
     runs-on: ubuntu-latest
@@ -649,7 +651,8 @@ jobs:
         run: >
           uv run --python ${{ matrix.python }} --no-sync
           --with pytest --with pytest-timeout --with pytest-xdist
-          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE -m 'not ppmd_native_stress'
+          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE --tb=no -p no:warnings
+          -m 'not ppmd_native_stress'
       - name: Install what installs (runtime extras, then test-only packages)
         run: |
           {
@@ -664,9 +667,9 @@ jobs:
               libarchive-c ncompress urllib3 fsspec pyzstd; do
             if uv pip install --python .venv "$pkg" > "pip-$pkg.log" 2>&1; then
               ver=$(uv pip show --python .venv "$pkg" | sed -n 's/^Version: //p')
-              echo "| $pkg | installed $ver |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| $pkg | installed $ver |" | tee -a "$GITHUB_STEP_SUMMARY"
             else
-              echo "| $pkg | FAILED: $(grep -m1 -iE 'error|failed' "pip-$pkg.log" | cut -c1-150 | tr '|' '/') |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| $pkg | FAILED: $(grep -m1 -iE 'error|failed' "pip-$pkg.log" | cut -c1-150 | tr '|' '/') |" | tee -a "$GITHUB_STEP_SUMMARY"
               echo "::group::$pkg install log"; cat "pip-$pkg.log"; echo "::endgroup::"
             fi
           done
@@ -676,7 +679,8 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE -m 'not ppmd_native_stress'
+          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE --tb=no -p no:warnings
+          -m 'not ppmd_native_stress'
 
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
