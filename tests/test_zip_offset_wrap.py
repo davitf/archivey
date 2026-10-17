@@ -792,6 +792,17 @@ def test_a_finished_pass_settles_a_size_it_left_unknown(forward_only: bool) -> N
         assert members[0].member_state_final is True
 
 
+def test_a_pass_counts_no_size_past_the_target_cap_it_left_unknown() -> None:
+    # Data past the symlink target cap that nobody read is decoded only that far,
+    # so the pass counts no size, and the member lists with ``None`` as from a file.
+    layout = _mac_layout([("p.bin", _padded_mac_member(bytes(5000)))])
+    source = _ForwardOnly(layout.segments, layout.size)
+    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+        members = [member for member, _ in reader.stream_members()]
+        assert [m.size for m in members] == [None]
+        assert members[0].member_state_final is True
+
+
 def test_a_pipe_descriptor_may_hold_the_full_size_of_a_marked_entry() -> None:
     # A pass that decoded a deflated member past 4 GiB carries the size it counted;
     # a marked entry stores it modulo 2³². Without the fingerprint it contradicts.

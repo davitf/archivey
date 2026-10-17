@@ -25,7 +25,7 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 | Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
 | Single-file gz/bz2/xz | yes | — | one member | seek with `SEEKABLE` | See single-file section |
 | 7z | yes (common codecs) | `[recommended]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 in pure Python |
-| RAR | yes (metadata) | **`unrar` or `rar` binary for data**; `[recommended]` for header crypto | native metadata | solid when solid | No write |
+| RAR | yes (metadata) | **`unrar` or `rar` binary for compressed data**; `[recommended]` for header crypto and stored encrypted members | native metadata | solid when solid | No write |
 | ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
 | `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | — | rewind seek unless indexed later | |
 | `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
@@ -457,8 +457,10 @@ yielded.
   `read()` returns the bytes when they are stored and not encrypted; compressed or
   encrypted directory data raises `UnsupportedFeatureError`, because `unrar` emits
   nothing for a directory entry.
-- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
-  or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
+- Member **data**: a stored (uncompressed) member is read by archivey itself, and so is
+  a stored, encrypted one in one part when `cryptography` is installed (`[recommended]`;
+  RAR 2.9 and later). Everything else needs RARLAB `unrar` or `rar` **6.0 or later** on
+  `PATH` (not `unrar-free` or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
   archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
   passwords as bare `-p` with the secret on stdin (not in argv). Install:
   [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
@@ -468,9 +470,11 @@ yielded.
   refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
   so at open. `"unrar"` and `"unar"` use only that program. `"none"` runs no program
   at all, for when you don't want `unrar` or `unar` run on your archives: listing still
-  works, and so does reading a stored (uncompressed) member that is not encrypted,
-  also when it is split across volumes or sits in a solid archive. A compressed or
-  encrypted member, or a split one with a volume missing, raises
+  works, and so does reading a stored (uncompressed) member, also when it is split
+  across volumes or sits in a solid archive, or when it is encrypted and in one part
+  (that one needs `cryptography`, and raises `PackageNotInstalledError` without it).
+  A compressed member, an encrypted one split across volumes, or a split one with a
+  volume missing, raises
   `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so at open.
   `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
   easy to install on macOS, but it reads less than `unrar`. Archivey runs each `unar`
@@ -897,7 +901,7 @@ a full `read()` still verifies through the normal path.
 
 | Format | When present | Keys |
 | --- | --- | --- |
-| ZIP | FILE / SYMLINK (central directory) | `crc32` |
+| ZIP | FILE / SYMLINK, and a directory that declares data with a non-zero CRC; from the central directory, or the local header when listed without one; not WinZip AE-2 | `crc32` |
 | 7z | FILE | `crc32` |
 | RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
 | single-file `.lz` | seekable source (one or many members; multi-member value is combined) | `crc32` |
