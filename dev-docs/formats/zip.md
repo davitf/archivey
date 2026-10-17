@@ -524,8 +524,16 @@ been read. The full design, row by row, is the `native-zip-reader` change's `des
 the caller reads to its end is decoded to the codec's end marker (DEFLATE, Deflate64,
 bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk finds
 the data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC
-and size match the bytes before it and that a ZIP signature follows, signed or not. A
-bit-3 codec member the pass reads past (nobody read it, or the caller stopped early) is
+and size match the bytes before it and that a ZIP signature follows, signed or not. When
+none matches whole, one with a single damaged field still ends the member
+(`match_damaged_descriptor`): without its signature, two of its CRC, compressed size and
+uncompressed size agree; with it, its compressed size or two fields; with a damaged
+signature, all three. So one damaged byte in a STORED member's data, or in the
+descriptor of a member the walk ends by its CRC, fails that member alone, by its CRC or
+size check or by the directory at the end of the pass, and the members after it are
+read. A scan matched on the size alone (below) has one field to go on and takes no
+damaged descriptor. A bit-3 codec member the pass reads past (nobody read it, or the
+caller stopped early) is
 decoded no further than the byte past the 4096-byte target cap, then the reparse prefix
 a file read reads (the buffer and one byte, §2.2.1), and one byte past that prefix:
 bit-3 data has no size, so only a decode that returns nothing says it ended there, and
@@ -616,6 +624,9 @@ directory's refusals the file read is to drop:
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
+- A bit-3 member whose data descriptor has one damaged field fails at the end of the
+  pass, as the directory contradicts the descriptor: the file read never reads the
+  descriptor, and reads the member when its data is intact.
 - A bit-3 codec member whose stream runs on into its descriptor (the stream's last
   byte is the descriptor's first) reads from a pipe. The file read is the right one:
   it stops at the compressed size the directory and the descriptor state, and raises
@@ -1051,7 +1062,7 @@ ours.
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | A ZIP from a pipe opens only with `streaming=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
-| From a pipe, a few crafted shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
+| From a pipe, a few crafted or damaged shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
 | A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_ENCODING_INFERRED`, and `DiagnosticPolicy.STRICT` refuses it | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `declared_encoding` is `"utf-8"` and its `inferred_encoding` the codec used (§2.2) |
 | A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
