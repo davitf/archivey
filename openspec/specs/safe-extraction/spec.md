@@ -38,8 +38,9 @@ def extract_all(
 ) -> ExtractionReport: ...
 ```
 
-The helper SHALL record a diagnostic watermark at call start and return a report
-whose summary contains exact count/retained deltas for this extraction call only.
+The helper SHALL count the diagnostics its own call emits, on its own thread, and
+return a report whose summary contains exact counts and retained entries for this
+extraction call only, even when other threads use the reader meanwhile.
 `reader.diagnostics` remains cumulative. The call SHALL run under the reader's
 open config — its collector, diagnostic policy, callback and retention maximum —
 and SHALL NOT take a `config=`; `limits=` overrides only the extraction limits.
@@ -74,7 +75,7 @@ tuple on success; there is no no-tracking mode.
 
 | Case | Expected |
 | --- | --- |
-| `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; report remains a watermark range over the existing collector |
+| `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; the report holds only this call's own diagnostics, from the existing collector |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` then `extract_all(dest)` | Cumulative byte limit is 10 GiB |
 | Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
 | `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |

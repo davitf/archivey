@@ -21,6 +21,9 @@ since #480), and the single-file `listing_cost` rows other than gz are `OK`
 (listing now records `seeks=1 decomp=1`). The tables and the "Violations"
 section below are still the 2026-09-17 run; read the JSON for current verdicts.
 
+**Note (2026-10-17):** `concurrent_members=True` was renamed `concurrent_operations=True`.
+The predicates below and the script use the new name; the 2026-09-17 run used the old one.
+
 ## Re-run
 
 ```bash
@@ -93,7 +96,7 @@ Still true: zip-aes `open()` streams under `seekable_members=True` report
 - `seekable_members=True` → every FILE from `open()` has `seekable() is True`
   and backward / mid-stream seek rereads the same bytes. Per-member
   disagreement inside one archive is a fail even if some members pass.
-- `concurrent_members=True` → two overlapping `open()` calls both read.
+- `concurrent_operations=True` → two overlapping `open()` calls both read.
 - Default → `seekable()` is False and `seek()` raises; a second live
   `open()` raises `ConcurrentAccessError`.
 - `stream_members()` under `seekable_members=True` → every FILE handle has
