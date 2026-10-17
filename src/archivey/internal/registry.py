@@ -454,7 +454,7 @@ def format_availability(
     RAR is ``PARTIAL``, with ``unrar`` in ``missing``, when no RARLAB ``unrar`` or
     ``rar`` 6.0 or later is on ``PATH``: it still opens and lists, and stored members
     read. To find out, the first call runs each candidate once to read its banner, for
-    at most ``cli.PROBE_TIMEOUT_SECONDS`` (10 s) each; the answer is cached per binary.
+    at most 10 seconds each; the answer is cached per binary.
     It describes the default ``rar_decompressor`` (``AUTO``) and does not change with
     ``ArchiveyConfig``. ``check_programs=False`` runs no program: missing programs are
     then not counted, and RAR reports as it would with ``unrar`` installed.

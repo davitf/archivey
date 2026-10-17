@@ -64,9 +64,10 @@ if availability.support is not FormatSupport.FULL:
 - **`PARTIAL`** — the format opens and lists, and members in its common codecs read. A
   member that needs a missing codec raises `PackageNotInstalledError` when you read it.
   ZIP and 7z are `PARTIAL` when a codec package is missing. RAR is `PARTIAL` when no
-  RARLAB `unrar` or `rar` 6.0 or later is on `PATH`: stored members read. Compressed
-  and encrypted members need that program, or `unar` when it is installed, which reads
-  fewer archives (see below).
+  RARLAB `unrar` or `rar` 6.0 or later is on `PATH`: stored members read, and a stored,
+  encrypted one in one part reads with `cryptography`. Compressed members, and
+  encrypted ones split across volumes, need that program, or `unar` when it is
+  installed, which reads fewer archives (see below).
 - **`NONE`** — the format cannot be opened. `open_archive()` raises
   `PackageNotInstalledError` naming the package: ISO without `pycdlib`, `.lz4` without
   `lz4`, `.tar.zst` without a zstd backend. The exception is a source that cannot seek,
