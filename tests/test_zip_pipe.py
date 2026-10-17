@@ -12,9 +12,10 @@ import dataclasses
 import io
 import random
 import struct
+import tracemalloc
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -997,6 +998,346 @@ def test_an_unlisted_local_entry_is_refused_under_strict() -> None:
     ) as reader:  # fmt: skip
         with pytest.raises(DiagnosticRaisedError):
             reader.members_report()
+
+
+# -- Bytes after a member that are no local header -----------------------------------
+
+
+def _insert(data: bytes, at: int, gap: bytes) -> bytes:
+    """``data`` with ``gap`` inserted at offset ``at``, between two members, and the
+    directory's offsets moved to match, as a writer that left the bytes there
+    records them."""
+    out = bytearray(data[:at] + gap + data[at:])
+    eocd = out.rindex(b"PK\x05\x06")
+    count, _, cd_offset = struct.unpack_from("<HII", out, eocd + 10)
+    cd = cd_offset + len(gap)
+    struct.pack_into("<I", out, eocd + 16, cd)
+    for _ in range(count):
+        (offset,) = struct.unpack_from("<I", out, cd + 42)
+        if offset >= at:
+            struct.pack_into("<I", out, cd + 42, offset + len(gap))
+        name_len, extra_len, comment_len = struct.unpack_from("<HHH", out, cd + 28)
+        cd += 46 + name_len + extra_len + comment_len
+    return bytes(out)
+
+
+def _read_one(data: bytes, *, pipe: bool) -> tuple[list[tuple[str, bytes]], object]:
+    """Each listed member's name and data, and the listing's error."""
+    source = _pipe(data) if pipe else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=True, format="zip") as reader:
+        read = [
+            (m.name, stream.read())
+            for m, stream in reader.stream_members()
+            if stream is not None
+        ]
+        report = reader.members_report()
+    listed = {m.name for m in report.members}
+    return [r for r in read if r[0] in listed], report.error
+
+
+def _read_both(data: bytes) -> list[tuple[list[tuple[str, bytes]], object]]:
+    """:func:`_read_one` from a file, then from a pipe."""
+    return [_read_one(data, pipe=pipe) for pipe in (False, True)]
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        pytest.param(b"\x00" * 16, id="zeros"),
+        pytest.param(b"junkjunk", id="junk"),
+        # A descriptor a writer appended to a member whose sizes are in its header.
+        pytest.param(b"PK\x07\x08" + b"\x00" * 12, id="stray-descriptor"),
+        pytest.param(b"PK\x01\x02junk", id="directory-signature"),
+        pytest.param(b"PK\x05\x06" + b"\x00" * 18, id="end-record-signature"),
+    ],
+)
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_bytes_between_two_members_do_not_end_the_pass(gap: bytes, method: int) -> None:
+    """The walk stops at bytes after a member that are no local header, and keeps
+    what follows. The members the directory places there are read from those bytes,
+    as a file read seeks to them."""
+    data = _zip(
+        [("a.txt", b"one"), ("b.txt", b"two"), ("c.txt", b"three")], method=method
+    )
+    second = data.index(b"PK\x03\x04", 1)
+    data = _insert(data, second, gap)
+    expected = [("a.txt", b"one"), ("b.txt", b"two"), ("c.txt", b"three")]
+    assert _read_both(data) == [(expected, None), (expected, None)]
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_bytes_after_a_bit3_member_still_end_the_pass(method: int) -> None:
+    """A recorded difference: a bit-3 member's descriptor counts only when a ZIP
+    signature follows it, which is what stops a descriptor planted in its data. Bytes
+    between it and the next member leave the pass no end for its data; a file read
+    knows its size and reads every member."""
+    data = _streamed(_zip([("a.txt", b"one" * 50), ("b.txt", b"two")], method=method))
+    second = data.index(b"PK\x03\x04", 1)
+    data = _insert(data, second, b"\x00" * 16)
+    expected = [("a.txt", b"one" * 50), ("b.txt", b"two")]
+    assert _read_one(data, pipe=False) == (expected, None)
+    with pytest.raises((CorruptionError, UnsupportedFeatureError)):
+        _read_one(data, pipe=True)
+
+
+def test_two_concatenated_archives_read_the_second_from_a_pipe(tmp_path: Path) -> None:
+    """``cat first.zip second.zip``: a file read takes the last end record and the
+    second archive's members, as ``unzip`` does. The pass reads the first archive's
+    members as it meets them, then the second's from the bytes it kept after them;
+    the first's are not in the listing, and are reported."""
+    first = _zip([("a.txt", b"one"), ("b.txt", b"two")])
+    second = _zip([("c.txt", b"three"), ("d.txt", b"four")])
+    data = first + second
+    expected = [("c.txt", b"three"), ("d.txt", b"four")]
+    assert _read_both(data) == [(expected, None), (expected, None)]
+    report = _listing(data, pipe=True)
+    assert [c.member_name for c in _unlisted(report)] == ["a.txt", "b.txt"]
+    for pipe in (False, True):
+        dest = tmp_path / str(pipe)
+        source = _pipe(data) if pipe else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=True, format="zip") as reader:
+            reader.extract_all(dest)
+        assert sorted(p.name for p in dest.iterdir()) == ["c.txt", "d.txt"]
+
+
+def test_a_member_past_the_bytes_the_pass_holds_is_a_resource_limit() -> None:
+    """The second archive's first member runs into the bytes the listing limits
+    drop: higher limits keep them, so the pass refuses with ``ResourceLimitError``,
+    as for a directory there."""
+    first = _zip([("a.txt", b"one")], method=zipfile.ZIP_STORED)
+    second = _zip(
+        [("c.txt", random.Random(0).randbytes(1 << 20)), ("d.txt", b"four")],
+        method=zipfile.ZIP_STORED,
+    )
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_members=4, max_metadata_bytes=200)
+    )
+    with archivey.open_archive(
+        _pipe(first + second), streaming=True, format="zip", config=config
+    ) as reader:
+        with pytest.raises(ResourceLimitError, match="past the members"):
+            for _ in reader.stream_members():
+                pass
+
+
+def _overlapping_held_members(n: int) -> bytes:
+    """One sized member, four bytes that are no local header (the walk ends there),
+    then ``n`` local headers whose data each runs to the end of the stream, and a
+    directory naming them all: each held member's data covers every later one."""
+    first = (
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, zlib.crc32(b"x"), 1, 1, 1, 0
+        )
+        + b"ax"
+    )
+    body = bytearray(first + b"JUNK")
+    offsets = [0]
+    names = [b"a"]
+    for i in range(n):
+        offsets.append(len(body))
+        names.append(b"m%06d" % i)
+        body += struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, 0, 0, 0, 7, 0
+        )
+        body += names[-1]
+    size = len(_with_directory(body, names, offsets))
+    # Each held header's data runs from its data start to the end of the stream.
+    for offset, name in zip(offsets[1:], names[1:], strict=True):
+        data_start = offset + 30 + len(name)
+        struct.pack_into("<II", body, offset + 18, size - data_start, size - data_start)
+    return _with_directory(body, names, offsets)
+
+
+def _rejected_held_headers(n: int) -> bytes:
+    """One sized member, four bytes that end the walk, then ``n`` local headers 30
+    bytes apart that do not parse: each names a 65 535-byte name, read over the
+    headers after it, and declares 4 GiB sizes with no ZIP64 extra field. Padding
+    keeps the last name inside the stream, and a directory names them all."""
+    body = bytearray(
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, zlib.crc32(b"x"), 1, 1, 1, 0
+        )
+        + b"axJUNK"
+    )
+    offsets = [0]
+    names = [b"a"]
+    for i in range(n):
+        offsets.append(len(body))
+        names.append(b"h%06d" % i)
+        body += struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50, 20, 0, 0, 0, 0x21, 0, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF, 0,
+        )  # fmt: skip
+    body += b"\x00" * (0xFFFF + 64)
+    return _with_directory(body, names, offsets)
+
+
+def _with_directory(body: bytearray, names: list[bytes], offsets: list[int]) -> bytes:
+    """``body`` with a directory naming each of ``names`` at its offset; the first
+    is the one-byte STORED ``a``."""
+    cd = bytearray()
+    for name, offset in zip(names, offsets, strict=True):
+        crc, size = (zlib.crc32(b"x"), 1) if offset == 0 else (0, 0)
+        cd += struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50, 20, 20, 0, 0, 0, 0x21, crc, size, size,
+            len(name), 0, 0, 0, 0, 0, offset,
+        ) + name  # fmt: skip
+    count = len(names)
+    end = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, count, count, len(cd), len(body), 0
+    )
+    return bytes(body + cd + end)
+
+
+def _count_held_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """A one-item list holding how many bytes the walks over held members read."""
+    read = [0]
+    original = zip_local_walk._HeldBytes.read
+
+    def counting(self: zip_local_walk._HeldBytes, n: int = -1, /) -> bytes:
+        chunk = original(self, n)
+        read[0] += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(zip_local_walk._HeldBytes, "read", counting)
+    return read
+
+
+@pytest.mark.parametrize(
+    "limits", [ListingLimits(), ListingLimits.UNLIMITED], ids=["default", "unlimited"]
+)
+@pytest.mark.parametrize(
+    "build", [_overlapping_held_members, _rejected_held_headers],
+    ids=["overlapping-data", "rejected-headers"],
+)  # fmt: skip
+def test_held_entries_read_the_kept_bytes_at_most_twice(
+    monkeypatch: pytest.MonkeyPatch,
+    build: Callable[[int], bytes],
+    limits: ListingLimits,
+) -> None:
+    """Entries whose bytes overlap would each read on past the next ones: members
+    whose data runs to the end of the stream, or local headers whose names run
+    over the headers after them and then do not parse. Every byte an attempt reads
+    is counted, and once the count reaches the bytes held the next entry is
+    refused before it is read. Overlap is malformed input, so the refusal is
+    ``CorruptionError`` at any listing limit."""
+    data = build(1000)
+    read = _count_held_reads(monkeypatch)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with archivey.open_archive(
+        _pipe(data), streaming=True, format="zip", config=config
+    ) as reader:
+        with pytest.raises(CorruptionError, match="overlap"):
+            for _ in reader.stream_members():
+                pass
+    assert read[0] <= 2 * len(data)
+
+
+def _cheap_rejected_held_headers(n: int, *, header: bool = True) -> bytes:
+    """``n`` 30-byte local headers after the walk's end that fail to parse after
+    their fixed part (4 GiB sizes, no ZIP64 extra field), or, without ``header``,
+    the same number of bytes holding no local header."""
+    body = bytearray(
+        struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0x21, zlib.crc32(b"x"), 1, 1, 1, 0
+        )
+        + b"axJUNK"
+    )
+    offsets = [0]
+    names = [b"a"]
+    for i in range(n):
+        offsets.append(len(body))
+        names.append(b"h%06d" % i)
+        if header:
+            body += struct.pack(
+                "<IHHHHHIIIHH",
+                0x04034B50, 20, 0, 0, 0, 0x21, 0, 0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0,
+            )  # fmt: skip
+        else:
+            body += b"QQQQ" + b"\x00" * 26
+    return _with_directory(body, names, offsets)
+
+
+def test_a_rejected_held_header_keeps_no_frames() -> None:
+    """Each rejected header's error is kept until the end of the pass, for its
+    entry's failure; its traceback would keep the parse's frames alive, one chain
+    per entry. The pass holds no more for rejected headers than for entries with
+    no header at all, give or take the error objects."""
+    n = 2000
+
+    def peak(data: bytes) -> int:
+        tracemalloc.start()
+        try:
+            with archivey.open_archive(
+                _pipe(data), streaming=True, format="zip"
+            ) as reader:
+                report = reader.members_report()
+            assert isinstance(report.error, CorruptionError)
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    rejected = peak(_cheap_rejected_held_headers(n))
+    missing = peak(_cheap_rejected_held_headers(n, header=False))
+    assert rejected - missing < n * 2048
+
+
+def test_a_rejected_held_header_leaves_the_callers_exception_alone() -> None:
+    """A pass driven inside the caller's ``except`` block raises its parse errors
+    with the caller's exception as their context. Keeping such an error drops the
+    reader's own frames, never those of the caller's exception."""
+    data = _cheap_rejected_held_headers(1)
+    try:
+        raise ValueError("the caller's own error")
+    except ValueError as caller_exc:
+        with archivey.open_archive(_pipe(data), streaming=True, format="zip") as reader:
+            assert isinstance(reader.members_report().error, CorruptionError)
+        assert caller_exc.__traceback__ is not None
+
+
+def test_a_held_local_header_that_does_not_parse_says_why() -> None:
+    """A local header is there but does not parse: its entry fails, naming the
+    parse error rather than saying the stream held none."""
+    data = _rejected_held_headers(1)
+    with archivey.open_archive(_pipe(data), streaming=True, format="zip") as reader:
+        report = reader.members_report()
+    assert [m.name for m in report.members] == ["a"]
+    error = report.error
+    assert isinstance(error, CorruptionError)
+    assert "held no local header" not in str(error)
+    assert "did not parse" in str(error)
+    assert isinstance(error.__cause__, CorruptionError)
+
+
+def test_a_held_member_is_numbered_after_the_walked_ones() -> None:
+    """A member read from the kept bytes keeps its place in the pass's numbering,
+    in the messages that quote it."""
+    first = _zip([("a.txt", b"one")], method=zipfile.ZIP_STORED)
+    second = bytearray(
+        _zip([("c.txt", b"three"), ("d.txt", b"four")], method=zipfile.ZIP_STORED)
+    )
+    # c.txt's local header claims more data than the stream holds.
+    struct.pack_into("<II", second, 18, 1_000_000, 1_000_000)
+    with archivey.open_archive(
+        _pipe(first + bytes(second)), streaming=True, format="zip"
+    ) as reader:
+        with pytest.raises(CorruptionError, match=r"member #1\b"):
+            for _ in reader.stream_members():
+                pass
+
+
+def test_a_stub_before_an_archive_with_no_local_header_opens_empty() -> None:
+    """No local header within the stub scan's window, but an end record: as from a
+    file, the archive opens with what its directory lists."""
+    empty = io.BytesIO()
+    zipfile.ZipFile(empty, "w").close()
+    data = b"MZ" + b"\x00" * 5000 + empty.getvalue()
+    for pipe in (False, True):
+        source = _pipe(data) if pipe else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=True, format="zip") as reader:
+            report = reader.members_report()
+        assert (list(report.members), report.error) == ([], None)
 
 
 def test_the_later_copy_in_the_directory_is_current() -> None:

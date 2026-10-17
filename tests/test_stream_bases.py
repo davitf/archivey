@@ -501,6 +501,10 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         zip_local_walk._SizedData,
         zip_local_walk._CodecData,
         zip_local_walk._ScannedData,
+        # The bytes a pipe ZIP pass kept after its members, read forward once by a
+        # walk over a member the directory places there: the stream under the
+        # walk, archive offsets, no table.
+        zip_local_walk._HeldBytes,
         # A pipe ZIP pass's member stream, over the codec stream the pass reads
         # once: forward-only, so nothing seeks it or asks it for a resume offset.
         zip_forward_reader._PassStream,
