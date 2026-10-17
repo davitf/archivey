@@ -96,9 +96,10 @@ Three things about the yielded streams are worth knowing:
     Symlinks are another exception. ZIP, 7z and RAR4 keep a link's target in its member
     data, and by default a pass that runs to the end reads every such target, links
     you skipped included, so that it ends with the same links resolved as `members()`.
-    That read can decompress the link's data and, on ZIP and 7z, ask your password
-    provider. Set `ArchiveyConfig(read_link_targets=False)` to keep the pass from
-    reading any of them; see [Extracting](extracting.md) for what extraction then does.
+    That read can decompress or decrypt the link's data and, on ZIP, 7z and RAR4, ask
+    your password provider. Set `ArchiveyConfig(read_link_targets=False)` to keep the
+    pass from reading any of them; see [Extracting](extracting.md) for what extraction
+    then does.
 
 Links are the one to watch, because `reader.open()` *does* follow them. Following a
 link means reading the target's bytes, and those live somewhere else in the archive —
@@ -129,8 +130,8 @@ data = reader.read("payload.bin")  # the pass has ended
 a member loop can be closed or used in a `with` block the same way, but on this reader
 it holds nothing between members: `for m in reader: reader.open(m)` works. On a reader
 opened with `concurrent_members=True`, `open()`, `read()`, `get()`, `members()` and
-another `stream_members()` all work inside the loop, from any thread, on every format.
-`extract_all()` still raises. The pass and the calls beside it share one walk of the
+another `stream_members()` or `extract_all()` all work inside the loop, from any thread,
+on every format. The pass and the calls beside it share one walk of the
 archive's headers, so a pass nobody gets ahead of costs what it costs on a default
 reader. A call that needs members the pass has not reached yet, such as `members()` in
 the first iteration, reads ahead for it; on a compressed tar the pass's later reads then

@@ -54,5 +54,12 @@ before `0.2.0`). Keep `rarfile` as a test oracle only.
 - **Amended 2026-09-28:** deciding the program once at open, never per read, was an
   implementation choice rather than the maintainer's; a per-member fallback is an open
   question (`formats/rar.md`).
+- **Amended 2026-10-16:** at the maintainer's request, the boundary is
+  *decompression*, not *data*. A stored (`-m0`) member has nothing to decompress, so
+  archivey decrypts a stored, encrypted member in one part itself (AES-128 for RAR
+  2.9-4, AES-256 for RAR5, `cryptography`), under every `rar_decompressor` value. No RAR
+  compression algorithm is reimplemented, so the UnRAR licence is not involved. Compressed
+  members, split encrypted members and RAR 2.0's cipher still go to the program
+  (OpenSpec change `rar-stored-encrypted-native-read`).
 - The spec’s optional “extract-hack” (single-member temp RAR for tiny random opens) is
   **deferred** — allowed by `format-rar` but not implemented in the native reader change.

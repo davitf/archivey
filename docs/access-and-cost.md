@@ -235,8 +235,8 @@ open_archive(src, concurrent_members=True)
 
 After members are materialized, workers may `open()` different members concurrently.
 Same-stream access still needs caller synchronization. `__iter__` and
-`stream_members()` also run beside random access and beside one another;
-`extract_all()` remains single-owner.
+`stream_members()` and `extract_all()` also run beside random access and beside one
+another.
 `streaming=True` cannot combine with `concurrent_members=True`.
 
 ## Non-seekable sources

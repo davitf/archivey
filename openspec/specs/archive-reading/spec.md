@@ -776,12 +776,12 @@ A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another
 iteration/data pass, unrelated extraction, or reader close. On a reader opened with
 `concurrent_members=True`, random `open()` / `read()` / `get()` / `members()`,
-iteration and further `stream_members()` passes MAY run beside it, on every format
-(`reader-concurrency`, "Random-access calls beside a `stream_members()` pass"). An `extract_all()`
-owner MAY invoke it as a child pass and MAY read/close the yielded child stream.
-Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and leave the
-active pass/stream valid. (Unlike random `open()`, whose independently owned
-streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
+iteration, further `stream_members()` passes and `extract_all()` MAY run beside it, on
+every format (`reader-concurrency`, "Random-access calls beside a pass"). An
+`extract_all()` owner MAY invoke it as a child pass and MAY read/close the yielded
+child stream. Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and
+leave the active pass/stream valid. (Unlike random `open()`, whose independently
+owned streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 
 Reader close is the one exception, and only while the pass is suspended at a yield
 (the caller holds the iterator and is not inside a `next()` call). `close()` and

@@ -4,9 +4,8 @@ On a ``CONCURRENT`` reader every pass and listing call shares the reader's one m
 walk, each at its own position, so ``open()``, ``read()``, ``get()``, ``members()``,
 iteration and further ``stream_members()`` passes work beside a pass on every format,
 from the loop body and from other threads. On a reader opened without
-``concurrent_members=True`` they still raise ``ArchiveyUsageError``, as
-``extract_all()`` beside a pass does everywhere. The bookkeeping itself is unit-tested
-at the bottom.
+``concurrent_members=True`` they still raise ``ArchiveyUsageError``. ``extract_all()``
+works beside a pass the same way. The bookkeeping itself is unit-tested at the bottom.
 """
 
 from __future__ import annotations
@@ -21,7 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, ArchiveyUsageError, TruncatedError, open_archive
+from archivey import (
+    ArchiveyConfig,
+    ArchiveyUsageError,
+    ExtractionError,
+    TruncatedError,
+    open_archive,
+)
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.reader_state import LifecycleState, ReaderState
 from archivey.reader import ArchiveReader
@@ -283,23 +288,124 @@ def test_passes_side_by_side(tmp_path: Path, make: Callable[[Path], Path]) -> No
     assert second == expected
 
 
-def test_extraction_still_refused_inside_the_loop(tmp_path: Path) -> None:
+def _extracted(dest: Path, expected: dict[str, bytes]) -> dict[str, bytes]:
+    return {name: (dest / name).read_bytes() for name in expected}
+
+
+def _run_together(*calls: Callable[[], object]) -> list[object]:
+    """Start every call on its own thread at the same moment; return their results."""
+    barrier = threading.Barrier(len(calls))
+    results: list[object] = [None] * len(calls)
+    errors: list[BaseException] = []
+
+    def run(i: int, call: Callable[[], object]) -> None:
+        try:
+            barrier.wait(5)
+            results[i] = call()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=(i, call)) for i, call in enumerate(calls)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    if errors:
+        raise errors[0]
+    return results
+
+
+@pytest.mark.parametrize("make", ALL_FORMATS)
+def test_extraction_inside_the_loop_and_from_another_thread(
+    tmp_path: Path, make: Callable[[Path], Path]
+) -> None:
+    path = make(tmp_path)
+    expected = _expected(path)
+    passed: dict[str, bytes] = {}
+    with open_archive(path, concurrent_members=True) as reader:
+        for i, (member, stream) in enumerate(reader.stream_members()):
+            if i == 0:
+                reader.extract_all(tmp_path / "inside")
+                _in_thread(lambda: reader.extract_all(tmp_path / "thread"))
+            if stream is not None and member.is_file and member.is_current:
+                passed[member.name] = stream.read()
+    assert passed == expected
+    assert _extracted(tmp_path / "inside", expected) == expected
+    assert _extracted(tmp_path / "thread", expected) == expected
+
+
+@pytest.mark.parametrize("make", ALL_FORMATS)
+def test_extractions_and_calls_at_once(
+    tmp_path: Path, make: Callable[[Path], Path]
+) -> None:
+    """Two extractions, a pass and random reads start together on a fresh reader."""
+    path = make(tmp_path)
+    expected = _expected(path)
+
+    def drain() -> dict[str, bytes]:
+        return {
+            m.name: s.read()
+            for m, s in reader.stream_members()
+            if s is not None and m.is_file and m.is_current
+        }
+
+    with open_archive(path, concurrent_members=True) as reader:
+        first, second, passed, read = _run_together(
+            lambda: reader.extract_all(tmp_path / "one"),
+            lambda: reader.extract_all(tmp_path / "two"),
+            drain,
+            lambda: {name: reader.read(name) for name in expected},
+        )
+    assert passed == expected
+    assert read == expected
+    assert first is not None and second is not None
+    assert _extracted(tmp_path / "one", expected) == expected
+    assert _extracted(tmp_path / "two", expected) == expected
+
+
+def test_extractions_into_one_folder_clash_as_two_readers_would(
+    tmp_path: Path,
+) -> None:
+    """The reader does not arbitrate between two extractions into one folder.
+
+    A file already there (or one the other extraction wrote first) is an existing
+    destination to each of them, under the overwrite policy each was given.
+    """
+    path = _zip(tmp_path)
+    dest = tmp_path / "same"
+    dest.mkdir()
+    (dest / "c.txt").write_bytes(b"there first")
+    errors: list[BaseException] = []
+
+    def extract() -> None:
+        try:
+            reader.extract_all(dest)
+        except ExtractionError as exc:
+            errors.append(exc)
+
+    with open_archive(path, concurrent_members=True) as reader:
+        _run_together(extract, extract)
+    assert len(errors) == 2
+    assert all("already exists" in str(e) for e in errors)
+    assert (dest / "c.txt").read_bytes() == b"there first"
+
+
+def test_extraction_report_keeps_only_its_own_diagnostics(tmp_path: Path) -> None:
+    """A diagnostic one extraction emits stays out of the one running beside it."""
     path = _zip(tmp_path)
     with open_archive(path, concurrent_members=True) as reader:
-        it = reader.stream_members()
-        next(it)
-        with pytest.raises(ArchiveyUsageError, match="already active"):
-            reader.extract_all(tmp_path / "out")
-        side = reader.stream_members()
-        next(side)
-        # The first pass ends; the one beside it still holds the reader.
-        it.close()
-        with pytest.raises(ArchiveyUsageError, match="already active"):
-            reader.extract_all(tmp_path / "out")
-        assert reader.read("c.txt") == b"gamma"
-        side.close()
-        reader.extract_all(tmp_path / "out")
-    assert (tmp_path / "out" / "c.txt").read_bytes() == b"gamma"
+        selected, everything = _run_together(
+            lambda: reader.extract_all(
+                tmp_path / "one", members=["c.txt", "missing.txt"]
+            ),
+            lambda: reader.extract_all(tmp_path / "two"),
+        )
+        unmatched = DiagnosticCode.MEMBER_SELECTOR_UNMATCHED
+        assert selected.diagnostics.counts == {unmatched: 1}  # type: ignore[attr-defined]
+        assert everything.diagnostics.total_count == 0  # type: ignore[attr-defined]
+        assert reader.diagnostics.counts[unmatched] == 1
 
 
 def test_close_winds_down_every_suspended_pass(tmp_path: Path) -> None:
@@ -348,7 +454,7 @@ def test_pass_starts_beside_another_threads_worker() -> None:
 
 @pytest.mark.parametrize(
     ("concurrent", "name"),
-    [(False, "stream_members"), (True, "extract_all"), (True, "members")],
+    [(False, "stream_members"), (False, "extract_all"), (True, "members")],
 )
 def test_pass_and_worker_still_exclude_each_other(concurrent: bool, name: str) -> None:
     state = _state(concurrent=concurrent)
@@ -485,9 +591,75 @@ def test_ending_the_first_pass_hands_the_reader_to_the_one_beside_it() -> None:
     state.set_suspended(second, True)
     state.release_pass(first)
     with pytest.raises(ArchiveyUsageError, match="'stream_members'"):
-        state.acquire_pass("extract_all")
+        state.acquire_pass("members")
     state.release_pass(second)
-    state.release_pass(state.acquire_pass("extract_all"))
+    state.release_pass(state.acquire_pass("members"))
+
+
+def test_extraction_runs_beside_passes_and_workers() -> None:
+    state = _state()
+    worker = _in_thread(lambda: state.acquire_worker("open"))
+    passing = state.acquire_pass("stream_members")
+    extracting = _in_thread(lambda: state.acquire_pass("extract_all"))
+    # The loop body runs while the pass is suspended at a yield.
+    state.set_suspended(passing, True)
+    second = state.acquire_pass("extract_all")
+    for token in (passing, extracting, second):
+        state.release_pass(token)  # type: ignore[arg-type]
+    state.release_worker(worker)  # type: ignore[arg-type]
+    assert state._root is None
+
+
+def test_internal_scope_belongs_to_its_own_threads_pass() -> None:
+    """A child scope is filed under the pass of the thread that opened it.
+
+    ``_root`` may be another thread's pass, which can end first; the extraction's own
+    opens must stay under the extraction.
+    """
+    state = _state()
+    other = _in_thread(lambda: state.acquire_pass("stream_members"))
+    assert state._root is other
+    extracting = state.acquire_pass("extract_all")
+    state.begin_internal_opens()
+    try:
+        inner = state.acquire_pass("stream_members")
+        scope = state.enter_child_scope("link_reads")
+    finally:
+        state.end_internal_opens()
+    assert inner.parent is extracting
+    assert scope is not None and scope.parent is extracting
+    state.release_pass(other)  # type: ignore[arg-type]
+    assert inner in state._children
+    assert scope in state._children
+    state.release_child(scope)
+    state.release_pass(inner)
+    state.release_pass(extracting)
+    assert state._children == set()
+    assert state.enter_child_scope("link_reads") is None
+
+
+def test_scope_on_a_thread_without_a_pass_stays_off_other_passes() -> None:
+    """``members()`` on a ``CONCURRENT`` reader holds a worker, not a pass.
+
+    Its link reads must not be filed under a pass another thread holds, which could
+    end while they run and take them out of the bookkeeping.
+    """
+    state = _state()
+    other = _in_thread(lambda: state.acquire_pass("stream_members"))
+    worker = state.acquire_worker("members")
+    assert state.enter_child_scope("link_reads") is None
+    state.begin_internal_opens()
+    try:
+        inner = state.acquire_worker("open")
+    finally:
+        state.end_internal_opens()
+    # A worker of its own, which close() drains, not a child of the other pass.
+    assert inner.kind == "worker"
+    assert inner in state._workers
+    state.release_pass(other)  # type: ignore[arg-type]
+    assert inner in state._workers
+    state.release_worker(inner)
+    state.release_worker(worker)
 
 
 @pytest.mark.parametrize("make", [_tar, _zip])

@@ -51,10 +51,24 @@ Shaving more from the parse helpers gains little.
 
 Collection time over the same tree listed in each format: ZIP about 40 ms, Info-ZIP ZIP
 about 37, TAR about 10, 7z about 53. It scales with the objects kept per member, not with
-the format's parse work. Fewer objects per member (a shared empty `extra`, no per-member
-hash dict when there is no digest, fields built on first access) would cut it in every
-format at once; that changes `ArchiveMember`'s mutation, `replace()` and equality, so it
-needs its own design.
+the format's parse work. The name index holds a name's only member directly rather
+than in a one-item list, which saves one object per member in every format (about 3% of
+ZIP and TAR listing). Ideas not yet tried, each still open:
+
+- **One shared, immutable empty `extra` or `hashes`** for members that have none. Both
+  default to a fresh mutable object (`ArchiveMember.extra` and `.hashes`), and `extra` is
+  documented as writable, so a shared one needs a copy on first write. It helps only
+  where the field is empty: ZIP and TAR always fill `extra`, and ZIP's `hashes` holds the
+  CRC.
+- **Fields built on first access** (`hashes`, `extra` from the locator). This changes the
+  dataclass's constructor, `replace()` and `dataclasses.fields()`.
+- **Locators as plain tuples.** The collector stops tracking an exact `tuple` whose items
+  are all untracked (ints, bytes, `None`) after it first looks at it; a `NamedTuple` or
+  a dataclass such as `_ZipLocator` stays tracked. The cost is index access in the read
+  paths.
+
+7z's file records cannot go this way: the parsed header keeps every one of them, so a
+member dropping its reference frees nothing.
 
 ## 7z and TAR
 
@@ -62,11 +76,15 @@ The same tree as a 7z lists in about 290 ms, faster than ZIP: the 7z header stor
 property as one array for all members, so the parse is a few bulk reads rather than one
 record per member, and there is no per-member extra field to split.
 
-TAR lists in about 820 ms, and more than half of it is TAR's own header reading
+TAR listed in about 820 ms, and more than half of it was TAR's own header reading
 (`TarWalker`): a seek and a 512-byte read per header through the shared stream view,
 `parse_header_block` (about a quarter, with `parse_number` about a tenth), and resolving
-the extended headers. Building the member is about 18%. `tarfile` takes about 18 µs per
-member. Reading headers in larger chunks and a cheaper field split are the obvious levers.
+the extended headers. Building the member was about 18%. `tarfile` takes about 18 µs per
+member. Cutting the numeric fields with one `struct` unpack and a bounded cache of their
+values took `parse_header_block` from about 8.5 to 5.5 µs and the listing to about
+720 ms. A 32 KiB read-ahead of headers was tried and dropped: it reads member data twice
+on a plain file, changes which member a truncation is reported against, and the walk
+already reads through a buffered view.
 
 ## Per-member stream open and close
 

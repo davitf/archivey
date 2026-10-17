@@ -13,6 +13,7 @@ and hashes/bounds in the same ``read()``.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import sys
 import threading
@@ -33,7 +34,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
 )
-from archivey.internal.diagnostics_collector import resolve_collector
+from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
@@ -55,7 +56,10 @@ from archivey.types import HashAlgorithm
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
-    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.diagnostics_collector import (
+        DiagnosticCollector,
+        DiagnosticScope,
+    )
     from archivey.types import ArchiveMember
 
 # A translator maps a raw exception to an ArchiveyError, or returns None to signal "not
@@ -207,6 +211,7 @@ class ArchiveStream(ReadOnlyIOStream):
         # which can raise (a digest diagnostic under a RAISE policy): ``IOBase.__del__``
         # still calls ``close()`` on an instance whose ``__init__`` raised.
         self._finalizer: weakref.finalize | None = None
+        self._closing = False
         self._verifier: MemberVerifier | None = verifier
         # The content verdict this stream raised, if any. Every later read and seek
         # raises it again (see ``_fail``).
@@ -221,17 +226,49 @@ class ArchiveStream(ReadOnlyIOStream):
         # seek is enough to mark the stream rewound, so a short read that ends at the
         # damage would lose its prefix. The member streams over those views keep theirs.
         self._repeat_verdict = repeat_verdict
-        # A stream's diagnostics are everything emitted from its open onward: capture the
-        # collector position here and difference against "now" on each query. No per-stream
-        # bookkeeping is retained collector-side.
-        self._diagnostics_watermark = (
-            collector.watermark() if collector is not None else None
+        # A stream's diagnostics are what its own calls emit, from this constructor on:
+        # ``read``, ``seek`` and ``close`` enter this scope, on whichever thread calls.
+        # Other threads' emits into the same collector stay out, as do the reader's
+        # own emits between calls (a pass walking on to the next header).
+        self._diagnostics_scope: DiagnosticScope | None = (
+            collector.new_scope() if collector is not None else None
         )
+        with (
+            collector.inside(self._diagnostics_scope)
+            if collector is not None and self._diagnostics_scope is not None
+            else contextlib.nullcontext()
+        ):
+            self._init_checks(
+                expected_hashes,
+                expected_size=expected_size,
+                collector=collector,
+                verify_member=verify_member,
+                archive_name=archive_name,
+                digest_transforms=digest_transforms,
+                end_check=end_check,
+                fill_size=fill_size,
+                lazy=lazy,
+            )
+
+    def _init_checks(
+        self,
+        expected_hashes: Mapping[HashAlgorithm, bytes] | None,
+        *,
+        expected_size: int | None,
+        collector: DiagnosticCollector | None,
+        verify_member: ArchiveMember | None,
+        archive_name: str | None,
+        digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None,
+        end_check: Callable[[int], None] | None,
+        fill_size: bool,
+        lazy: bool,
+    ) -> None:
+        """The part of the constructor that can emit: inside the stream's scope."""
         # Fused member verification (None when there is nothing to check). Prefer an
         # already-built ``verifier`` (collapse adoption); otherwise build from knobs.
         # ``expected_size`` here is the verify bound only — bare ``size=`` (fsspec
         # attribute) must not enable length checks on TAR/ISO/directory handles.
-        if verifier is None:
+        if self._verifier is None:
             self._verifier = build_member_verifier(
                 expected_hashes,
                 expected_size=expected_size,
@@ -315,12 +352,11 @@ class ArchiveStream(ReadOnlyIOStream):
 
     @property
     def diagnostics(self) -> DiagnosticSummary:
-        """Diagnostic snapshot for events emitted since this stream opened, or empty."""
-        collector = self._diagnostics_collector
-        watermark = self._diagnostics_watermark
-        if collector is None or watermark is None:
+        """Diagnostic snapshot for events this stream's own calls emitted, or empty."""
+        scope = self._diagnostics_scope
+        if scope is None:
             return DiagnosticSummary.empty()
-        return collector.snapshot(since=watermark)
+        return scope.summary()
 
     @property
     def size(self) -> int | None:
@@ -463,6 +499,18 @@ class ArchiveStream(ReadOnlyIOStream):
             "Cannot collapse nested ArchiveStream: it has no opener and no inner stream."
         )
 
+    def _fail_unless_closed(self, e: Exception) -> NoReturn:
+        """``_fail``, unless this stream was closed while the call ran.
+
+        On a ``CONCURRENT`` reader, ``reader.close()`` on one thread closes the member
+        streams another thread may be reading. The inner then fails in whatever way
+        its layer does (a closed pipe, a buffer gone), and translated that could read
+        as damage. Raise the closed-file error a read after ``close()`` raises.
+        """
+        if self._closing or self.closed:
+            raise ValueError("I/O operation on closed file.") from e
+        self._fail(e)
+
     def _fail(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise it, remembering a content verdict.
 
@@ -549,10 +597,23 @@ class ArchiveStream(ReadOnlyIOStream):
 
         A fused verifier with a declared size caps each read at the bytes left while it
         is still checking, until it concludes or abandons. Otherwise ``n`` goes to the
-        backend as given, so what a very large ``n`` costs is the backend's: a TAR member's reader allocates a buffer of ``n`` bytes, and
-        ``read(2**62)`` raises ``MemoryError`` there, as ``open(path, "rb").read(2**62)``
-        does on a plain file. The stream is still usable afterwards.
+        backend as given, so what a very large ``n`` costs is the backend's: a TAR
+        member's reader allocates a buffer of ``n`` bytes, and ``read(2**62)`` raises
+        ``MemoryError`` there, as ``open(path, "rb").read(2**62)`` does on a plain file.
+        The stream is still usable afterwards.
         """
+        scope = self._diagnostics_scope
+        if scope is None:
+            return self._read(n)
+        stack = scope._collector.scope_stack()
+        stack.append(scope)
+        try:
+            return self._read(n)
+        finally:
+            leave_scope(stack, scope)
+
+    def _read(self, n: int | None) -> bytes:
+        """``read`` inside the stream's diagnostic scope, already entered."""
         # ``None`` reads to EOF, as on any ``io`` stream; a float or str is the caller's
         # TypeError, and an int too wide for ``Py_ssize_t`` their OverflowError, both
         # raised before anything is read. Passed inward, ``read(1.5)`` or ``read(2**70)``
@@ -586,7 +647,7 @@ class ArchiveStream(ReadOnlyIOStream):
             else:
                 data = inner.read(n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
-            self._fail(e)
+            self._fail_unless_closed(e)
         if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the
             # seek may have paused the check that found it (a seek back to its
@@ -602,6 +663,17 @@ class ArchiveStream(ReadOnlyIOStream):
         return readinto_via_read(self, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        scope = self._diagnostics_scope
+        if scope is None:
+            return self._seek(offset, whence)
+        stack = scope._collector.scope_stack()
+        stack.append(scope)
+        try:
+            return self._seek(offset, whence)
+        finally:
+            leave_scope(stack, scope)
+
+    def _seek(self, offset: int, whence: int) -> int:
         if not self._seekable_hint:
             raise io.UnsupportedOperation("seek")
         # The arguments are checked after seekability, as a buffered reader over a pipe
@@ -629,7 +701,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 result = inner.seek(offset, whence)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._note_raised_seek(inner, before)
-            self._fail(e)
+            self._fail_unless_closed(e)
         if self._verdict is not None:
             self._verdict_rewound = True
         self._maybe_warn_rewind(before, result)
@@ -788,6 +860,21 @@ class ArchiveStream(ReadOnlyIOStream):
     def close(self) -> None:
         if self.closed:
             return
+        scope = getattr(self, "_diagnostics_scope", None)
+        if scope is None:
+            self._close()
+            return
+        stack = scope._collector.scope_stack()
+        stack.append(scope)
+        try:
+            self._close()
+        finally:
+            leave_scope(stack, scope)
+
+    def _close(self) -> None:
+        # First: a read failing on another thread because this close is taking the
+        # inner down raises the closed-file error (``_fail_unless_closed``).
+        self._closing = True
         # The finally ensures the wrapper is marked closed even when the inner close
         # raises (which is re-raised translated): a half-open wrapper would hand out
         # further reads on a dead stream, and a retried close() would fail again
