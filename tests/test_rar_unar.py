@@ -105,6 +105,7 @@ _PASSWORDS = {
     "encryption_stored__.rar": "password",
     "encryption_stored_sizes__.rar": "password",
     "encryption_stored_sizes__rar4.rar": "password",
+    "symlinks_encrypted__rar4.rar": "password",
     "encrypted.rar": "password",
     "encrypted-mixed.rar": "password",
     "encrypted_header__.rar": "header_password",
@@ -120,6 +121,7 @@ _RAR4_ENCRYPTED = {
     "encryption_large_solid__rar4.rar",
     "encryption_large_stored__rar4.rar",
     "encryption_stored_sizes__rar4.rar",
+    "symlinks_encrypted__rar4.rar",
 }
 # Encrypted members of zero bytes.
 _EMPTY_ENCRYPTED = {("encryption_stored_sizes__.rar", "size_0.bin")}

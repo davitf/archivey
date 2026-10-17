@@ -413,26 +413,31 @@ The absent RAR3 check value is why a wrong header password used to surface as
 Storing the target as data also means a RAR3/4 symlink can arrive with its target out
 of reach, where a RAR5 redirect never can — the redirect is in the header, which the
 reader has already parsed by the time anyone asks. The reader reads those bytes
-directly out of the archive (no `unrar` hop, even in a solid archive) and declines when
+directly out of the archive (no `unrar` hop, even in a solid archive), decrypts a
+stored encrypted target as `open()` would (maintainer decision 2026-10-16, so a
+password gives the same listing as a plain archive, as in ZIP and 7z), and declines when
 it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than leaving
 `link_target` silently unset:
 
 | `reason` | When | Archive records a target |
 | --- | --- | --- |
-| `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
+| `password_required` | the target is encrypted, stored and in one part, and no password was given | yes |
+| `password_or_damage` | the target decrypted under the password fails its CRC32: RAR 2.9-4 has no password check, so a wrong password and damage look the same | yes |
+| `target_data_encrypted` | the target is encrypted in a form archivey does not decrypt (compressed, split, RAR 2.0's cipher), or `cryptography` is not installed | yes |
 | `target_data_split_across_volumes` | the target is split across volumes and a part was not found (a complete split target is joined and read) | yes |
 | `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
-| `no_target_data` | the member's declared and packed sizes are both zero | no |
+| `no_target_data` | an unencrypted member's declared and packed sizes are both zero | no |
+| `target_empty` | an encrypted member's sizes are both zero: it goes through the decrypting read, which returns no bytes, and the shared empty-target report names it | no |
 
 The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
 an archive; a lenient one lists the member as a link with no target. The last column is
-what extraction does with it: only `no_target_data` is the archive's own omission and
-reports `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`); the other
-three are targets the archive carries and this read could not reach, so they stay
-per-member failures governed by `OnError`. That is why the encrypted row is not called
-`password_required` as the ZIP and 7z readers' equivalent is — those two open the
-member and catch the failure, so a password really is what is missing, whereas this
-path never decrypts and a correct password does not change its answer.
+what extraction does with it: `no_target_data` and `target_empty` are the archive's own
+omission and report `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`);
+the other five are targets the archive carries and this read could not reach, so they
+stay per-member failures governed by `OnError`. `password_required` is kept for a target
+this read can decrypt, as in the ZIP and 7z readers, so a password really is what is
+missing; a target it cannot decrypt is `target_data_encrypted`, because a correct
+password does not change that answer.
 
 A target the direct read does reach is checked twice before it is used. Its declared
 size must equal its packed size, since a stored target is its packed bytes; a header
@@ -1441,15 +1446,6 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   - To build more cases: `tests/test_audit_rar_iso_dir.py` has RAR5/RAR3 header
     rewriters with CRC fix-up (`_rar5_parse`, `_rar5_build`, `_rar3_parse`,
     `_rar3_build`), since `rar` 7.00 cannot write RAR4.
-- **Open: an encrypted RAR 2.9-4 symlink's target is not decrypted at listing.**
-  `_ensure_link_target` reads a RAR 2.9-4 symlink's target from its stored data, and
-  refuses (`target_data_encrypted`) when that data is encrypted, although the member
-  read can now decrypt stored data itself. Decrypting it at listing would set
-  `link_target`, stop the `SYMLINK_TARGET_UNAVAILABLE` a strict policy refuses on, and,
-  for RAR alone, split RAR from ZIP, which has the same guard (`zip_reader.py`). No
-  fixture writes an encrypted RAR 2.9-4 symlink yet. Maintainer decision (2026-10-16):
-  decrypt it at listing when a password is given, in a follow-up change that also looks
-  at ZIP; tracked internally.
 - **Settled (2026-09-30): a RAR dictionary size counts against `DecoderLimits`.** Every
   in-process codec checks the dictionary or window its header declares against
   `max_decoder_memory`, and RAR now does too, although `unrar` or `unar` decodes it in
