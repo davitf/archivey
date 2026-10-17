@@ -363,6 +363,15 @@ yielded.
       declared span (extended headers filled it) has read all it could hide, and
       nothing is reported. An old-style directory, a regular-file header named `d/`,
       is the other case: see above.
+    - A **symlink or hard link header (typeflag `2` or `1`) that declares data** has no
+      data area either. When a member header follows it at once, the size names no
+      data and the link lists with nothing reported, as GNU tar and `tarfile` read it.
+      Otherwise the declared blocks are skipped, so a zero block among them does not
+      end the archive, and `MEMBER_LINK_DATA_IGNORED` reports the link (`STRICT`
+      refuses the archive). GNU tar and `tarfile` skip nothing and stop at such a zero
+      block, dropping the later members. When only zeros follow the link and the
+      archive ends before its declared span does, the zero block ends the archive and
+      the link is reported the same way. Extraction creates the link.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `STRICT`. Zero padding passes — `tar` writes

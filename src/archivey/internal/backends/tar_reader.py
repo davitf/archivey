@@ -39,8 +39,13 @@ A directory listed from an old-style regular-file header named ``d/`` keeps its 
 ``size`` and is reported with ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing; ``open()``
 delivers the bytes, extraction creates the directory (DR-3).
 
-Both codes follow the diagnostic policy like any other: a caller who wants either to
-fail sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for both).
+A symlink or hard link header with a size is listed as a link with no ``size``. When
+the block after it is not a member header, the walker skips the declared blocks (see
+``TarWalker._place_link_data``) and the link is reported with
+``MEMBER_LINK_DATA_IGNORED`` at listing; extraction creates the link.
+
+These codes follow the diagnostic policy like any other: a caller who wants one to fail
+sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for all of them).
 """
 
 from __future__ import annotations
@@ -65,6 +70,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     DirectoryDataContext,
+    LinkDataContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -77,6 +83,7 @@ from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     SPARSE_ENTRY_BYTES,
     Budget,
+    LinkData,
     NameSource,
     PaxValue,
     TarEnd,
@@ -1434,7 +1441,51 @@ class TarReader(BaseArchiveReader):
             # GNU tar and 7-Zip create the directory and skip the bytes without a word.
             # Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
+        if entry.link_data is not None:
+            self._emit_link_data_ignored(member, index, entry)
         return member
+
+    def _emit_link_data_ignored(
+        self, member: ArchiveMember, member_id: int, entry: TarEntry
+    ) -> None:
+        """Report ``MEMBER_LINK_DATA_IGNORED`` for a link header whose declared
+        blocks the walk took as its data (:class:`LinkData`).
+
+        A TAR link has no data area. The walker skipped the declared blocks, so a
+        zero block among them did not end the listing, as the maintainer ruled
+        (2026-10-17); GNU tar and ``tarfile`` stop at such a block and drop the members
+        after it. The code is in ``ARCHIVE_INTEGRITY_CODES``, as
+        ``MEMBER_DIRECTORY_DATA_IGNORED`` is: a warning by default, refused under
+        ``DiagnosticPolicy.STRICT``. The finding is attached to the member.
+        """
+        kind = "Symlink" if member.type == MemberType.SYMLINK else "Hard link"
+        declares = f"{kind} {quoted(member.name)} declares {entry.size} bytes of data"
+        if entry.link_data is LinkData.ENDS_ARCHIVE:
+            what = (
+                f"{declares}, and the archive ends on zero bytes before the span those "
+                "bytes would occupy ends: if the blocks are there, they are zeros cut "
+                "short; if not, the zero block is the end-of-archive marker."
+            )
+        else:
+            what = (
+                f"{declares}; a TAR link entry has no data area, so the blocks are "
+                "skipped and the listing goes on after them."
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
+            message=(
+                f"{what} Extraction creates the link and does not write the bytes."
+            ),
+            context=LinkDataContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                size=entry.size,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
 
     def _owner_name(self, header: bytes, pax: PaxValue | None) -> str:
         """``uname`` or ``gname``: a PAX record of that name overrides the header's."""

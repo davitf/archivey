@@ -34,6 +34,7 @@ otherwise.
 from __future__ import annotations
 
 import errno
+import io
 import re
 import sys
 import zlib
@@ -94,6 +95,10 @@ EXTENDED_TYPES = PAX_MEMBER_TYPES | {PAX_GLOBAL_TYPE, LONG_NAME_TYPE, LONG_LINK_
 # as both tools read it. Every other typeflag, including the regular types and ones
 # neither tool knows (``V``, ``M``, ``N``, ``D`` ...), has its data skipped by size.
 NO_DATA_TYPES = frozenset((b"1", b"2", b"3", b"4", b"5", b"6"))
+# A link (``1`` or ``2``) with a size is the exception, ruled by the maintainer over GNU
+# tar's reading (2026-10-17): when the block after its header is not a member header,
+# the declared blocks are read as the link's data and skipped, so a zero block among
+# them does not end the walk (TarWalker._place_link_data).
 
 
 class HeaderFormat(Enum):
@@ -691,6 +696,10 @@ class TarEntry:
     # device, FIFO or directory leave both None.
     sparse_format: SparseFormat | None = None
     sparse: SparseMap | None = None
+    # Set only for a link whose size field declares blocks that the walk took as its
+    # data (see LinkData). ``size`` keeps the declared byte count; ``stored_size`` is
+    # 0, since nothing delivers the bytes.
+    link_data: LinkData | None = None
 
     @property
     def typeflag(self) -> bytes:
@@ -737,6 +746,18 @@ def carries_data(typeflag: bytes) -> bool:
 
 
 # --------------------------------------------------------------------------- walker
+
+
+class LinkData(Enum):
+    """What the walk did with the blocks a link header's size declares."""
+
+    # The block after the header is not a member header: the declared blocks were
+    # skipped and the walk went on from their end.
+    SKIPPED = "skipped"
+    # The block after the header is a zero block and every byte from there to the end
+    # of the archive is zero, fewer bytes than the size declares: the zero block ends
+    # the walk, as a trailer after a header whose blocks were never written.
+    ENDS_ARCHIVE = "ends_archive"
 
 
 class TarEndKind(Enum):
@@ -825,6 +846,16 @@ class TarWalker:
         # (see _check_data_present).
         self._unchecked_data_end: int | None = None
         self.end: TarEnd | None = None
+        # Forward-only: a block read ahead and not yet used, with its offset: the block
+        # after a link header with a size, which such a walk cannot read twice. A
+        # seekable walk reads it again: a caller may move that stream between calls,
+        # and the header loop reads an extended header's records from where the
+        # stream stands after its block.
+        self._held_block: tuple[int, bytes] | None = None
+        # Forward-only: how many zero bytes followed the zero block a link's declared
+        # span ended the walk on (LinkData.ENDS_ARCHIVE). They were read past while
+        # skipping, so stream_after_end serves them from memory.
+        self._zero_tail: int | None = None
         # The first error next_entry raised: the walk is over, and later calls
         # raise it again.
         self._failed: ArchiveyError | None = None
@@ -881,8 +912,28 @@ class TarWalker:
         return data
 
     def _read_block(self, offset: int) -> bytes:
+        held = self._held_block
+        if held is not None:
+            self._held_block = None
+            if held[0] == offset:
+                return held[1]
         self._seek(offset)
         return self._read(BLOCKSIZE)
+
+    def _zeros_until_end(self, count: int) -> int | None:
+        """Read up to ``count`` bytes from the current position. Return how many were
+        read when the stream ends before ``count`` and every byte read is zero, else
+        None: the stream did not end first (the position is then ``count`` further),
+        or a byte read is not zero."""
+        read = 0
+        while read < count:
+            chunk = self._read(min(count - read, READ_STEP))
+            read += len(chunk)
+            if chunk.count(0) != len(chunk):
+                return None
+            if not chunk:
+                return read
+        return None
 
     def _check_data_present(self, end: int) -> None:
         """On a seekable stream, raise unless the byte before ``end`` exists.
@@ -916,6 +967,10 @@ class TarWalker:
         the caller's check of the rest of the end-of-archive marker and what follows
         it."""
         assert self.end is not None and self.end.kind is TarEndKind.ZERO_BLOCK
+        if self._zero_tail is not None:
+            # Only the size matters to the caller's check; past two blocks, zeros
+            # tell it nothing more.
+            return io.BytesIO(bytes(min(self._zero_tail, 2 * BLOCKSIZE)))
         self._seek(self.end.offset + BLOCKSIZE)
         return self._stream
 
@@ -1042,7 +1097,72 @@ class TarWalker:
             self._pos = entry.data_end
             if entry.stored_size:
                 self._unchecked_data_end = entry.data_end
+            elif entry.size and entry.typeflag in LINK_TYPES:
+                self._place_link_data(entry)
             return entry
+
+    def _place_link_data(self, entry: TarEntry) -> None:
+        """Decide where the next header starts after a link header with a size.
+
+        The maintainer ruled (2026-10-17) that a link's declared blocks are skipped,
+        so that a zero block among them is not read as the end-of-archive marker. GNU
+        tar and ``tarfile`` skip nothing after a link and stop there; 7-Zip skips a
+        symlink's blocks. A size alone does not prove the blocks are there, so the
+        block right after the header decides, as for a ``DIRTYPE`` header:
+
+        - A member header: the size names no data, and the walk reads that header
+          next, as GNU tar, ``tarfile`` and bsdtar read it. Nothing is reported.
+        - Any other full block (data, or a zero block): the declared blocks are the
+          link's data. The walk goes on from their end and ``link_data`` is
+          :attr:`LinkData.SKIPPED`. Blocks the archive cuts short are truncation, as
+          for a file's data.
+        - A zero block with only zeros behind it up to an end of the archive that
+          comes before the declared span's end: this is the trailer after a header
+          whose blocks were never written, or zero data cut short, and nothing tells
+          them apart. The zero block ends the walk, and ``link_data`` is
+          :attr:`LinkData.ENDS_ARCHIVE`.
+        - A short block or none: the walk reads it next, and the reader reports the
+          missing end-of-archive marker.
+        """
+        start = entry.data_offset
+        block = self._read_block(start)
+        if len(block) < BLOCKSIZE or isinstance(
+            parse_header_block(block, start), HeaderBlock
+        ):
+            if not self._seekable:
+                self._held_block = (start, block)
+            return
+        end = start + _round_up(entry.size)
+        entry.link_data = LinkData.SKIPPED
+        self._pos = end
+        self._unchecked_data_end = end
+        if block.count(0) != BLOCKSIZE:
+            return
+        rest = end - start - BLOCKSIZE
+        if self._seekable:
+            if self._span_present(end):
+                return
+            self._seek(start + BLOCKSIZE)
+        zeros = self._zeros_until_end(rest)
+        if zeros is None:
+            return
+        entry.link_data = LinkData.ENDS_ARCHIVE
+        self._unchecked_data_end = None
+        self.end = TarEnd(TarEndKind.ZERO_BLOCK, start)
+        if not self._seekable:
+            self._zero_tail = zeros
+
+    def _span_present(self, end: int) -> bool:
+        """On a seekable stream, whether the byte before ``end`` exists. A seek the
+        source refuses counts as absent: the link is listed first, and the walk's
+        next read reports the damage (DR-2)."""
+        if self._end is not None:
+            return end <= self._end
+        try:
+            self._seek(end - 1)
+            return bool(self._read(1))
+        except ArchiveyError:
+            return False
 
     def _reject(self, offset: int, reason: str) -> TarEnd:
         self.end = TarEnd(TarEndKind.REJECTED, offset, reason=reason)
