@@ -133,11 +133,32 @@ def test_test_fails_a_directory_whose_data_fails_its_checksum(tmp_path: Path) ->
     run = _Run(["test", str(path)])
     assert run.code == EXIT_FAIL
     assert "FAIL d/" in run.stderr
+    assert "crc32" in run.stderr
     assert "1 OK, 1 failed" in run.stderr
     # cat never reads the directory, so the damage does not stop it.
     run = _Run(["cat", str(path)])
     assert run.code == EXIT_OK, run.stderr
     assert run.stdout == b"visible"
+
+
+def test_test_skips_a_directory_whose_data_it_cannot_decode(tmp_path: Path) -> None:
+    # Method 77 is not one archivey decodes. The bytes are never extracted, so the
+    # directory is not tested rather than failed, as unzip -t skips it (DR-4).
+    path = tmp_path / "dirdata.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("d/"), b"hidden data!")
+        zf.writestr("d/f.txt", b"visible")
+    data = bytearray(path.read_bytes())
+    # The directory is the first entry: its local header's method is at offset 8, and
+    # its central entry's at offset 10 of the first central header.
+    data[8:10] = (77).to_bytes(2, "little")
+    cd = data.index(b"PK\x01\x02")
+    data[cd + 10 : cd + 12] = (77).to_bytes(2, "little")
+    path.write_bytes(bytes(data))
+    run = _Run(["test", str(path)])
+    assert run.code == EXIT_FAIL
+    assert "skip d/:" in run.stderr
+    assert "1 OK, 0 failed, 1 not tested" in run.stderr
 
 
 @pytest.mark.parametrize(

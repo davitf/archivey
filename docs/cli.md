@@ -165,6 +165,11 @@ encrypted members fail as if no password had been given.
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip
   trailer past the trailing-data scan bound; the warning logged for it says why.
+- `test` reads a directory entry that declares data (`MEMBER_DIRECTORY_DATA_IGNORED`)
+  and fails it on a bad checksum, as `unzip -t` does; `cat` skips it. Data archivey
+  cannot decode is reported as not tested. A ZIP read from a pipe whose directory entry
+  has a data descriptor is the one exception: its size arrives after its data, so the
+  bytes are not read, and the entry is left out of the counts.
 - Member names, paths and messages are printed with control characters escaped, so a
   hostile name cannot rewrite the terminal line that reports it
   (see [Errors and diagnostics](errors-and-diagnostics.md#the-exception-tree)).

@@ -545,6 +545,14 @@ empty entry; `jar` 21.0.12, measured for this rule, stores directories with both
   size, readable, as GNU tar 1.35 extracts it and 7-Zip 23.01 lists and extracts it; with
   no data it stays `OTHER`. Both report `MEMBER_TYPE_UNKNOWN` (advisory), and
   `extra["tar.type"]` keeps the byte (2026-10-17).
+- `archivey test` reads a directory's declared data and fails it on a bad checksum, while
+  `archivey cat` skips it (maintainer, 2026-10-17, TAR/ZIP sweep questions). `unzip -t`
+  tests the bytes and fails a bad CRC; `7z t` reports the same archive as OK. archivey
+  takes the stricter reading because a lenient one would hide bytes from the integrity
+  command. A body archivey cannot deliver (an unsupported method, a missing codec, RAR's
+  compressed directory data) is not tested rather than failed, as `unzip -t` skips it.
+  Reopen if a real writer routinely stores directory data that `7z t` users rely on
+  passing.
 
 **Reopen if** a real producer writes a directory entry whose data users need on disk, or a
 special-mode entry whose bytes are not the content; then that format needs a named

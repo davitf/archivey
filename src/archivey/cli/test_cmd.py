@@ -18,7 +18,9 @@ from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     LinkTargetNotFoundError,
+    PackageNotInstalledError,
     ReadError,
+    UnsupportedFeatureError,
 )
 from archivey.types import ArchiveMember, MemberType
 
@@ -91,6 +93,7 @@ def run_test(
         bytes_done = 0
         files_done = 0
         pending_links: list[ArchiveMember] = []
+        untested_dirs = 0
         pass_ended_early = False
         # The error the member read that just ran raised, or None once the pass yields
         # another member. A pass that raises right after a failed member read is
@@ -137,10 +140,11 @@ def run_test(
                         pending_links.append(member)
                         continue
                     if stream is None:
-                        # Directories / links / non-file: no body to verify — omit from counts
-                        # so "N OK" matches unzip -t style (files only). A directory
-                        # that declares data gets a stream and is read like a file, so
-                        # a wrong checksum on its hidden bytes fails the test.
+                        # No data to verify: a link, a special entry, a tombstone, a
+                        # directory that declares no data, or a bit-3 ZIP directory
+                        # read from a pipe, whose size arrives after its data. Left
+                        # out of the counts. A directory that declares data gets a
+                        # stream and is read like a file, as `unzip -t` tests it.
                         if verbose:
                             print(f"skip {escape_member_name(member.name)}", file=err)
                         continue
@@ -188,6 +192,25 @@ def run_test(
                         # The -v line or the progress bar lost its reader: not a
                         # member failure. main() exits 141 for it, with no message.
                         raise
+                    except (UnsupportedFeatureError, PackageNotInstalledError) as exc:
+                        if not member.is_dir:
+                            failed += 1
+                            member_error = exc
+                            print(
+                                f"FAIL {escape_member_name(member.name)}: "
+                                f"{format_error_detail(exc)}",
+                                file=err,
+                            )
+                            continue
+                        # A directory's data archivey cannot deliver is not tested
+                        # rather than failed (DR-4), as `unzip -t` skips it: the
+                        # archive extracts in full, since the bytes are never written.
+                        untested_dirs += 1
+                        print(
+                            f"skip {escape_member_name(member.name)}: "
+                            f"{format_error_detail(exc)}",
+                            file=err,
+                        )
                     except (ArchiveyError, OSError) as exc:
                         failed += 1
                         member_error = exc
@@ -244,6 +267,10 @@ def run_test(
         # its reason, so the summary only counts them.
         counts = reader.diagnostics.counts
         not_verified = sum(counts.get(code, 0) for code in _UNVERIFIED_CODES)
+        if untested_dirs and members_total is None:
+            # No index counted them in advance: count the skipped directories here,
+            # so they show as not tested either way.
+            members_total = ok + failed + untested_dirs
 
     print(
         _test_summary(
@@ -260,8 +287,14 @@ def run_test(
 
 
 def _has_data(member: ArchiveMember) -> bool:
-    """Whether the pass yields a stream for ``member``: a file, or a directory whose
-    header declares data (``MEMBER_DIRECTORY_DATA_IGNORED``).
+    """Whether a pass is expected to yield a stream for ``member``: a file, or a
+    directory whose header declares data (``MEMBER_DIRECTORY_DATA_IGNORED``).
+
+    A copy of ``archivey.internal.base_reader.pass_has_data``, which every backend
+    pass calls; the CLI uses only the public API. Keep the two in step, or
+    ``members_total`` mispredicts the pass and the summary shows a false "not tested".
+    The indexed total it feeds never meets that function's one exception, a bit-3 ZIP
+    directory from a pipe, because a pipe has no index.
     """
     return member.is_file or (member.is_dir and bool(member.size))
 
