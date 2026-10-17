@@ -3814,7 +3814,7 @@ class RarReader(BaseArchiveReader):
             # so past the size check above this is the only check a damaged target
             # meets. Held to it as ZIP and 7z hold theirs: a mismatch raises, and the
             # listing, or a pass when it reaches the link, lists the link targetless
-            # (`_report_damaged_link_target`) while open/extract re-raise.
+            # (`_report_unreadable_link_target`) while open/extract re-raise.
             # A short read is caught by the same comparison. Encrypted members never
             # reach here, so the CRC is never a RAR5 key-tweaked one.
             if raw.crc32 is not None and zlib.crc32(data) != raw.crc32:
