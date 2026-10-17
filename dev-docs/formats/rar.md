@@ -431,13 +431,13 @@ it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than lea
 
 The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
 an archive; a lenient one lists the member as a link with no target. The last column is
-what extraction does with it: only `no_target_data` is the archive's own omission and
-reports `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`); the other
-three are targets the archive carries and this read could not reach, so they stay
-per-member failures governed by `OnError`. That is why the encrypted row is not called
-`password_required` as the ZIP and 7z readers' equivalent is — those two open the
-member and catch the failure, so a password really is what is missing, whereas this
-path never decrypts and a correct password does not change its answer.
+what extraction does with it: `no_target_data` and `target_empty` are the archive's own
+omission and report `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`);
+the other five are targets the archive carries and this read could not reach, so they
+stay per-member failures governed by `OnError`. `password_required` is kept for a target
+this read can decrypt, as in the ZIP and 7z readers, so a password really is what is
+missing; a target it cannot decrypt is `target_data_encrypted`, because a correct
+password does not change that answer.
 
 A target the direct read does reach is checked twice before it is used. Its declared
 size must equal its packed size, since a stored target is its packed bytes; a header

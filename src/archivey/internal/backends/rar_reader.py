@@ -2113,18 +2113,22 @@ class RarReader(BaseArchiveReader):
                     self._passwords, reference, probe, full_check
                 )
             except _PasswordCandidatesExhausted as exc:
-                message = raw_message_of(exc)
-                if (
+                undecodable = (
                     exc.last_error is not None
                     and raw_message_of(exc.last_error) == _UNDECODABLE_WITH_CANDIDATE
-                ):
-                    message = _UNDECODABLE_WITH_ANY_CANDIDATE
-                raise EncryptionError(
-                    message,
+                )
+                error = EncryptionError(
+                    _UNDECODABLE_WITH_ANY_CANDIDATE
+                    if undecodable
+                    else raw_message_of(exc),
                     archive_name=self._archive_name,
                     member_name=reference.name,
                     source_format=ArchiveFormat.RAR,
-                ) from exc
+                )
+                if undecodable:
+                    # Wrong password or damage: nothing here can tell which.
+                    mark_unverified_data(error)
+                raise error from exc
             self._unchecked_passwords[id(reference)] = found
             if verdict is PasswordConfirmVerdict.CONFIRMED:
                 self._unchecked_confirmed.add(id(reference))
@@ -4247,13 +4251,8 @@ class RarReader(BaseArchiveReader):
         tell apart, and is reported as such
         (:meth:`_locked_link_target_report`) rather than as a damaged target.
         """
-        try:
-            password = self._stored_data_password(member, raw)
-        except EncryptionError as exc:
-            # A candidate list judged by the same CRC, every entry failing it.
-            if raw_message_of(exc) == _UNDECODABLE_WITH_ANY_CANDIDATE:
-                mark_unverified_data(exc)
-            raise
+        # A candidate list whose every entry fails the same CRC arrives marked.
+        password = self._stored_data_password(member, raw)
         if raw.crc32 is not None and not self._stored_crc_matches(raw, password):
             error = EncryptionError(
                 "The decrypted symlink target does not match its CRC32 checksum",

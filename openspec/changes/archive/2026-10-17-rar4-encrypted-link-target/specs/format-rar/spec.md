@@ -37,6 +37,6 @@ targets stored as member data are read only when configured").
 | RAR4 stored symlink | `link_target` equals stored target bytes decoded as text |
 | Encrypted stored RAR4 symlink, right password (one, or in a list) | `link_target` set; no program started |
 | Encrypted stored RAR4 symlink, no password | `link_target=None`; `reason="password_required"`; listing succeeds |
-| Encrypted stored RAR4 symlink, wrong password | `link_target=None`; `reason="password_or_damage"`; listing succeeds |
+| Encrypted stored RAR4 symlink, wrong password (one, or a list whose every entry fails) | `link_target=None`; `reason="password_or_damage"`; listing succeeds |
 | Encrypted stored RAR4 symlink, no `cryptography` | `link_target=None`; `reason="target_data_encrypted"` |
 | RAR4 stored symlink, `read_link_targets=False` | `link_target=None`; no member bytes read; RAR5 targets still set |
