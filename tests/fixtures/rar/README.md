@@ -47,6 +47,7 @@ Encrypted / hash fixtures of note:
 | `encryption_large_solid__rar4.rar` | Same members, `-s`: one password for the solid stream |
 | `encryption_large_stored__rar4.rar` | RAR4 `-ma4 -m0 -ppassword`; one stored 100 000-byte member, which every wrong password decrypts to full length |
 | `encryption_stored_sizes__rar4.rar` | RAR4 `-ma4 -m0 -ppassword`; the members of `encryption_stored_sizes__.rar`, AES-128 |
+| `symlinks_encrypted__rar4.rar` | RAR4 `-ma4 -m3 -ppassword`; the members of `symlinks_solid__rar4.rar` (not solid), with each symlink's target stored and AES-128 encrypted |
 
 Compressed RAR 2.9-4 archive comments (`-z`). `rar` 6.23 compresses a comment that
 shrinks into the `CMT` SERVICE header, so the text repeats twenty times; RAR 7 cannot

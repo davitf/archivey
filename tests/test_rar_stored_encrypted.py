@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import subprocess
 from pathlib import Path
 
@@ -260,3 +261,76 @@ def test_split_member_reports_the_last_parts_tweaked_crc() -> None:
         assert member is not None
         assert member.hashes == {}
         assert member.extra["rar.tweaked_crc32"] == 0x1DF2A612
+
+
+_SYMLINKS_RAR4 = _RAR / "symlinks_encrypted__rar4.rar"
+_SYMLINK_TARGETS = {
+    "symlink_to_file1.txt": "file1.txt",
+    "subdir/link_to_file1.txt": "../file1.txt",
+    "subdir_link": "subdir",
+    "subdir_link_with_slash": "subdir/",
+}
+
+
+def _link_targets(archive: object) -> dict[str, str | None]:
+    return {
+        m.name: m.link_target
+        for m in archive.members()  # type: ignore[attr-defined]
+        if m.name in _SYMLINK_TARGETS
+    }
+
+
+def _unavailable_reasons(archive: object) -> list[str]:
+    return [
+        d.context.reason
+        for d in archive.diagnostics.retained  # type: ignore[attr-defined]
+        if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+    ]
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "password", ["password", ["wrong", "password"]], ids=["one", "list"]
+)
+def test_encrypted_rar4_symlink_targets_list_with_the_password(
+    monkeypatch: pytest.MonkeyPatch, password: str | list[str]
+) -> None:
+    """RAR 2.9-4 keeps a symlink's target as its stored data, which ``-p`` encrypts."""
+    _refuse_processes(monkeypatch)
+    with open_archive(_SYMLINKS_RAR4, config=_NONE, password=password) as archive:
+        assert _link_targets(archive) == _SYMLINK_TARGETS
+        assert _unavailable_reasons(archive) == []
+
+
+@requires("cryptography")
+def test_encrypted_rar4_symlink_targets_without_a_password_are_locked() -> None:
+    with open_archive(_SYMLINKS_RAR4, config=_NONE) as archive:
+        assert set(_link_targets(archive).values()) == {None}
+        assert _unavailable_reasons(archive) == ["password_required"] * 4
+
+
+@requires("cryptography")
+def test_encrypted_rar4_symlink_target_under_a_wrong_password_is_not_damage() -> None:
+    """No password check: a wrong password fails the CRC, as damage would."""
+    with open_archive(_SYMLINKS_RAR4, config=_NONE, password="wrong") as archive:
+        assert set(_link_targets(archive).values()) == {None}
+        assert _unavailable_reasons(archive) == ["password_or_damage"] * 4
+
+
+def test_encrypted_rar4_symlink_targets_without_cryptography() -> None:
+    from unittest import mock
+
+    with mock.patch.object(rar_reader, "_crypto_available", lambda: False):
+        with open_archive(_SYMLINKS_RAR4, config=_NONE, password="password") as a:
+            assert set(_link_targets(a).values()) == {None}
+            assert _unavailable_reasons(a) == ["target_data_encrypted"] * 4
+
+
+@requires("cryptography")
+@requires_binary("unrar")
+def test_encrypted_rar4_symlinks_extract(tmp_path: Path) -> None:
+    # file1.txt is compressed, so unrar reads it; the links are decrypted here.
+    with open_archive(_SYMLINKS_RAR4, config=_UNRAR, password="password") as archive:
+        archive.extract_all(tmp_path)
+    assert (tmp_path / "symlink_to_file1.txt").read_bytes() == b"Hello, world!"
+    assert os.readlink(tmp_path / "subdir_link") == "subdir"

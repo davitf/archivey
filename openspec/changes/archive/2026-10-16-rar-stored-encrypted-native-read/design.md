@@ -89,6 +89,10 @@ behaviour, so it is put to the maintainer separately and kept open in the RAR ha
 (`dev-docs/formats/rar.md` §7); this change only corrects the comment and the diagnostic
 text, which claimed the reader cannot decrypt the bytes.
 
+Later (2026-10-16): the maintainer chose to decrypt it, done by the change
+`rar4-encrypted-link-target`. The ZIP comparison above was wrong: ZIP's guard covers
+only PKWARE Strong Encryption, and ZIP already decrypts a link target at listing.
+
 ### Rejected: decrypt natively, then hand the plaintext to `unrar`
 
 This would seem to extend the approach to compressed encrypted members. It cannot work:
