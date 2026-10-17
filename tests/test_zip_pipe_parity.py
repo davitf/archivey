@@ -25,8 +25,10 @@ import pytest
 
 import archivey
 from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
@@ -581,6 +583,137 @@ def test_a_damaged_directory_reads_from_a_file_as_from_a_pipe(
         _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
     tree = _tree(tmp_path / "file", since=started)
     assert len(tree) == 3 and _tree(tmp_path / "pipe", since=started) == tree
+
+
+def _length_overrun_params() -> Iterator[pytest.ParameterSet]:
+    for kind, pipe in (("sized", False), ("bit3", True)):
+        base = _with_modes(pipe=pipe)
+        first = base.index(b"PK\x01\x02")
+        second = base.index(b"PK\x01\x02", first + 4)
+        for at, field in ((28, "name"), (30, "extra"), (32, "comment")):
+            for grow, how in ((second - first, "swallows-next"), (0x8000, "past-end")):
+                data = bytearray(base)
+                old = struct.unpack_from("<H", data, first + at)[0]
+                struct.pack_into("<H", data, first + at, old + grow)
+                yield pytest.param(bytes(data), id=f"{kind}-{field}-{how}")
+        data = bytearray(base)
+        struct.pack_into("<H", data, first + 28, 4)  # "m0.txt" listed as "m0.t"
+        yield pytest.param(bytes(data), id=f"{kind}-name-shortened")
+        # The swallow leaves the count agreeing with the entries that remain.
+        data = bytearray(base)
+        struct.pack_into("<H", data, first + 28, 6 + second - first)
+        eocd = data.rindex(b"PK\x05\x06")
+        struct.pack_into("<HH", data, eocd + 8, 2, 2)
+        yield pytest.param(bytes(data), id=f"{kind}-name-swallows-next-count-agrees")
+
+
+@pytest.mark.parametrize("data", list(_length_overrun_params()))
+def test_a_damaged_length_reads_from_a_file_as_from_a_pipe(
+    data: bytes, tmp_path: Path
+) -> None:
+    """The first entry's name, extra or comment length grown past the next entry or
+    past the directory's end, or its name length cut short. Cutting the field listed
+    a member named ``m0.txtPK\\x01\\x02...`` (or ``m0.t``) and lost the entries
+    it swallowed, with only a count warning. Both reads list every member under its
+    local header's name, write the same files, then raise the damage."""
+    from_file = _report(data, piped=False)
+    assert from_file == _report(data, piped=True)
+    assert isinstance(from_file, tuple)
+    members, error = from_file
+    assert isinstance(members, list)
+    assert [m["name"] for m in members] == ["m0.txt", "m1.txt", "m2.txt"]
+    assert error is not None and error[0] is CorruptionError
+    started = time.time() - 1
+    for side in ("file", "pipe"):
+        _extracted(data, tmp_path / side, piped=side == "pipe", password=None)
+    tree = _tree(tmp_path / "file", since=started)
+    assert len(tree) == 3 and _tree(tmp_path / "pipe", since=started) == tree
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sized", "bit3"])
+def test_a_signature_in_a_name_with_a_wrong_count_reads_alike(pipe: bool) -> None:
+    """A name holding ``PK\\x01\\x02`` in a directory whose end record declares one
+    entry too many: nothing was swallowed, so both reads list both members with the
+    directory's mode and report the count, as for any other wrong count."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        for name in ("a\x01PK\x01\x02.txt", "b.txt"):
+            info = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o640 << 16
+            zf.writestr(info, b"data")
+    data = bytearray(out.getvalue())
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 3, 3)
+    from_file = _report(bytes(data), piped=False)
+    assert from_file == _report(bytes(data), piped=True)
+    assert isinstance(from_file, tuple) and isinstance(from_file[0], list)
+    members, error = from_file
+    assert error is None
+    assert [m["name"] for m in members] == ["a\x01PK\x01\x02.txt", "b.txt"]
+    assert [m["mode"] for m in members] == [0o640, 0o640]
+    for piped in (False, True):
+        source = NonSeekableBytesIO(bytes(data)) if piped else io.BytesIO(bytes(data))
+        with archivey.open_archive(source, streaming=piped) as reader:
+            for _ in reader.stream_members():
+                pass
+            assert list(reader.diagnostics.counts) == [
+                DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+            ]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sized", "bit3"])
+def test_a_shortened_comment_is_not_listed_cut(pipe: bool) -> None:
+    """Entry 0's comment length cut from 13 to 8: its name agrees with its local
+    header, so it lists from the directory, but no central header follows it, so its
+    lengths are wrong and its comment may be cut. Neither read lists ``hello-co``."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        for name in ("m0.txt", "m1.txt"):
+            info = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+            info.comment = b"hello-comment"
+            zf.writestr(info, b"data")
+    data = bytearray(out.getvalue())
+    first = data.index(b"PK\x01\x02")
+    struct.pack_into("<H", data, first + 32, 8)
+    for piped in (False, True):
+        report = _report(bytes(data), piped=piped)
+        assert isinstance(report, tuple) and isinstance(report[0], list)
+        members, error = report
+        assert [m["name"] for m in members] == ["m0.txt", "m1.txt"]
+        assert [m["comment"] for m in members] == [None, None]
+        assert error is not None and error[0] is CorruptionError
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["sized", "bit3"])
+def test_many_signatures_in_names_and_comments_are_not_damage(pipe: bool) -> None:
+    """An intact archive of 120 members, each with ``PK\\x01\\x02`` once in its
+    name and twice in its comment. Each signature fails within a header, so following
+    them never spends the walk's budget: every member lists with its mode and
+    comment, with no error and no diagnostic, from a file and from a pipe."""
+    out: io.BytesIO | NonSeekableSink = NonSeekableSink() if pipe else io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        for i in range(120):
+            info = zipfile.ZipInfo(f"m{i}PK\x01\x02.txt", (2020, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o640 << 16
+            info.comment = b"PK\x01\x02PK\x01\x02"
+            zf.writestr(info, b"data")
+    data = bytes(out.getvalue())
+    for piped in (False, True):
+        report = _report(data, piped=piped)
+        assert isinstance(report, tuple) and isinstance(report[0], list)
+        members, error = report
+        assert error is None
+        assert len(members) == 120
+        assert {m["mode"] for m in members} == {0o640}
+        assert {m["comment"] for m in members} == {"PK\x01\x02PK\x01\x02"}
+        assert all(m["diagnostics"] == [] for m in members)
+        source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
+        with archivey.open_archive(source, streaming=piped) as reader:
+            for _ in reader.stream_members():
+                pass
+            assert reader.diagnostics.total_count == 0
 
 
 def _three_stored(names: tuple[str, ...]) -> bytearray:

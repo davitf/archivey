@@ -1744,8 +1744,11 @@ class ZipForwardReader(ZipReader):
         by_offset = self._by_offset
 
         def local_name_at(offset: int) -> bytes | None:
-            # The pass has every local header it met; the walk asks for one only to
-            # correct an offset wrapped past 4 GiB.
+            # The pass has every local header it met. The walk asks for the name of
+            # the one an offset in the directory points at wherever a length or
+            # offset field may be wrong: a corrected offset, an entry no central
+            # header follows, and the first header a signature inside an entry's
+            # fields chains to (an offset no local header has to back).
             member = by_offset.get(offset)
             return None if member is None else cast("_ZipLocator", member._raw).name
 
@@ -1886,9 +1889,8 @@ class ZipForwardReader(ZipReader):
             if member_id in links
         }
         self._report_unlisted(unlisted)
-        last = entries[-1] if entries else None
         for finding in () if damage is not None else walk.findings:
-            self._emit_walk_finding(finding, last)
+            self._emit_walk_finding(finding)
         # The kept bytes end where the stream does, so the last ``trailing`` of them
         # follow the end record and its declared comment.
         trailing = tail.data[len(tail.data) - end.trailing :]

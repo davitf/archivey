@@ -23,7 +23,6 @@ import archivey
 from archivey.config import ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
-    ArchiveEofContext,
     DiagnosticCode,
     DiagnosticPolicy,
     SymlinkTargetContext,
@@ -463,27 +462,21 @@ def test_a_decoy_end_record_in_the_comment_is_the_one_used() -> None:
 @pytest.mark.parametrize(
     ("field", "at"), [("name", 28), ("extra field", 30), ("comment", 32)]
 )
-def test_a_field_running_past_the_directory_is_cut_as_from_a_file(
+def test_a_field_running_past_the_directory_is_damage_as_from_a_file(
     field: str, at: int
 ) -> None:
     """The last entry's name, extra field or comment length runs past the
-    directory's declared end: the file read cuts it there and reports it, and so does
-    the pass, where it used to read on through the end record."""
+    directory's declared end: the pass stops there and raises it, as the file read
+    does, where it used to read on through the end record."""
     data = bytearray(_zip([("a.txt", b"one"), ("b.txt", b"two")]))
     last = data.rindex(b"PK\x01\x02")
     struct.pack_into("<H", data, last + at, 3000)
-    assert _piped_view(bytes(data)) == _seekable_view(bytes(data))
+    yielded = []
     with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        for _ in reader.stream_members():
-            pass
-        found = [
-            (d.context.expected_marker, d.message)
-            for d in reader.diagnostics.retained
-            if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
-            and isinstance(d.context, ArchiveEofContext)
-        ]
-    assert [marker for marker, _ in found] == ["central_directory"]
-    assert f"its {field} is cut short" in found[0][1]
+        with pytest.raises(CorruptionError, match=f"'s {field} runs"):
+            for member, _ in reader.stream_members():
+                yielded.append(member.name)
+    assert yielded == ["a.txt", "b.txt"]
 
 
 def _commented(count: int, comment_len: int) -> bytes:
