@@ -607,12 +607,13 @@ class _CodecData(MemberData):
         """
         handed = self._kept_len  # where the bytes handed out end in ``buffer``
         base = self.consumed - handed
-        kept = b"".join(self._kept)
+        # Built once and extended: the kept bytes are up to 4 MiB.
+        buffer = bytearray().join(self._kept)
         self._kept.clear()
         self._kept_len = 0
         zip64 = self.entry.zip64
 
-        def search(buffer: bytes, at_end: bool) -> tuple[int, DataDescriptor] | None:
+        def search(at_end: bool) -> tuple[int, DataDescriptor] | None:
             found = descriptor_by_crc(
                 buffer,
                 crc=crc,
@@ -645,14 +646,14 @@ class _CodecData(MemberData):
         # little the codec's last read took, before the search gives up.
         ahead = self._source.read(_DESCRIPTOR_LOOKAHEAD)
         at_end = len(ahead) < _DESCRIPTOR_LOOKAHEAD
-        buffer = kept + ahead
-        found = search(buffer, at_end)
+        buffer += ahead
+        found = search(at_end)
         if found is None and not at_end:
             more = self._source.read(_DESCRIPTOR_SEARCH_PAST - len(ahead))
             ahead += more
             at_end = len(ahead) < _DESCRIPTOR_SEARCH_PAST
-            buffer = kept + ahead
-            found = search(buffer, at_end)
+            buffer += more
+            found = search(at_end)
         if found is None:
             self._source.unread(ahead)
             index = self.entry.index
@@ -668,7 +669,7 @@ class _CodecData(MemberData):
                 f"{crc:08x}"
             )
         pos, descriptor = found
-        self.passed_over = buffer[handed:pos]
+        self.passed_over = bytes(buffer[handed:pos])
         self._source.unread(buffer[pos + descriptor.length :])
         return descriptor
 
@@ -736,7 +737,10 @@ class _ScannedData(MemberData):
         # The CRC of the data up to ``buf[crc_at]``, carried over from the last call
         # while those bytes are still in ``buf``: the scan runs over bytes pulled in
         # small steps, and starting it again at ``buf[0]`` each step would cost a pass
-        # over the whole buffer per step.
+        # over the whole buffer per step. It stays behind every later candidate: a
+        # call that runs out leaves ``_search_from`` at ``len(buf) - 3``, and a
+        # signature needs four bytes, so its last ``earliest`` is behind the start of
+        # the next call's first candidate.
         crc = self._crc  # of the bytes handed out, then buf[:crc_at]
         crc_at = 0
         if self._scan_crc_end > self.consumed:
@@ -766,6 +770,8 @@ class _ScannedData(MemberData):
                         if earliest > crc_at:
                             crc = zlib.crc32(buf[crc_at:earliest], crc)
                             crc_at = earliest
+                        # An empty slice would give a longer prefix's CRC.
+                        assert crc_at <= pos
                         expect_crc = zlib.crc32(buf[crc_at:pos], crc)
                     descriptor = match_descriptor(
                         buf,
