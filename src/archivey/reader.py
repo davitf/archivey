@@ -275,9 +275,10 @@ class ForwardArchiveReader(ABC):
         with the bytes :meth:`~ArchiveReader.open` delivers for it, under the same
         checks, so a forward-only reader reaches them too. The exception is a ZIP
         directory written with a data descriptor, read from a source that cannot
-        seek: its size comes after its data, so it gets ``None``. Data archivey cannot decode
-        is refused on the first read, as ``open()`` refuses it. Test ``is_file``, not
-        ``stream is not None``, to tell a file from such a directory.
+        seek: its size comes after its data, so it gets ``None``. Data archivey
+        cannot decode is refused on the first read, as ``open()`` refuses it. Test
+        ``is_file``, not ``stream is not None``, to tell a file from such a
+        directory.
 
         The returned :class:`MemberPass` can be closed, or used in a ``with`` block, to
         end the pass early; see there for when that matters.

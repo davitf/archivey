@@ -371,7 +371,7 @@ def test_zip_bit3_directory_from_a_pipe_says_it_has_no_stream(tmp_path: Path) ->
             ]
             messages[label] = diag.message
     assert (
-        "stream_members() over a source that cannot seek yielded no stream"
+        "stream_members() over a source that cannot seek yields no stream for it"
         in (messages["pipe"])
     )
     assert "open() and stream_members() deliver them" in messages["seekable"]

@@ -1947,9 +1947,10 @@ class ZipForwardReader(ZipReader):
         return local.crc
 
     def _directory_data_reach(self, entry: CentralEntry) -> str | None:
-        """A directory whose local header deferred its sizes to a data descriptor
-        (bit 3) had no size when the pass reached it, so the pass yielded no stream
-        and its data went past unread: say so instead of promising a stream. Only a
+        """A directory whose local header defers its sizes to a data descriptor (bit
+        3) has no size when a pass reaches it, so the pass yields no stream and its
+        data goes past unread: say so instead of promising a stream. The message is
+        emitted on any listing, a pass or not, so it says what a pass does. Only a
         seekable source, which a reader lists from its central directory first,
         offers those bytes."""
         member = self._by_offset.get(_bound_offset(entry.header_offset))
@@ -1959,9 +1960,9 @@ class ZipForwardReader(ZipReader):
         if not local.flags & _ZIP_MASK_USE_DATA_DESCRIPTOR:
             return None
         return (
-            "its data descriptor came after them, so stream_members() over a source "
-            "that cannot seek yielded no stream; open() delivers them from a seekable "
-            "source"
+            "its data descriptor comes after them, so stream_members() over a source "
+            "that cannot seek yields no stream for it; open() delivers them from a "
+            "seekable source"
         )
 
     def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:

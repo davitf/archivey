@@ -493,7 +493,9 @@ class DirectoryDataContext(_JsonSafeContext):
     one (``None`` where the format does not record it). The directory is still
     created. A declared size is reachable through ``open()`` / ``read()`` and the
     stream ``stream_members()`` yields for the directory, where the backend can decode
-    the body (RAR delivers stored data only); a ``size`` of 0 over a non-empty body
+    the body (RAR delivers stored data only), except a bit-3 ZIP directory read from
+    a source that cannot seek: its size arrives after its data, so the pass yields
+    ``None`` for it and the message says so. A ``size`` of 0 over a non-empty body
     has nothing to read, so ``open()`` refuses it and the pass yields ``None``.
     """
 

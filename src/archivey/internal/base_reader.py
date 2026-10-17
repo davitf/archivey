@@ -274,7 +274,10 @@ def pass_has_data(member: ArchiveMember) -> bool:
     the bytes ``MEMBER_DIRECTORY_DATA_IGNORED`` reports and extraction does not write
     (DR-25). Every other member has no data of its own, so the pass yields ``None``.
     ``open()`` applies the same test to the member a link resolves to, so a pass and
-    a random-access read deliver the same bytes and refuse the same members.
+    a random-access read deliver the same bytes and refuse the same members, except
+    a bit-3 ZIP directory read from a source that cannot seek: its size arrives after
+    its data, so ``size`` is ``None`` when the pass reaches it and the pass yields
+    ``None`` where ``open()`` from a seekable source reads.
     """
     if member.is_file:
         return True
@@ -3191,11 +3194,10 @@ class BaseArchiveReader(ArchiveReader):
         # deliver for them even where a header declares a size. A directory is
         # refused by data: it has none unless its header declares some, and one that
         # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP, TAR
-        # and RAR) opens here. ``stream_members()`` yields a stream for the same
-        # members (``pass_has_data``), so the bytes the backend can decode are
-        # reachable in both access modes; extraction creates the directory and does
-        # not write them. Both messages end in "(not a file)", which ``archivey test``
-        # classifies by.
+        # and RAR) opens here. ``stream_members()`` decides by ``pass_has_data``,
+        # which says where the two differ; extraction creates the directory and does
+        # not write the bytes. Both messages end in "(not a file)", which ``archivey
+        # test`` classifies by.
         if current.type in (MemberType.ANTI, MemberType.OTHER):
             raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is "
@@ -3223,8 +3225,8 @@ class BaseArchiveReader(ArchiveReader):
     ) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
-        The stream is ``None`` for every member :func:`pass_has_data` rejects; a
-        directory that declares data gets one, as ``open()`` reads it. The yielded
+        The stream is ``None`` for every member :func:`pass_has_data` rejects (see
+        there for the one shape where that differs from ``open()``). The yielded
         stream is owned by the iterator: advancing closes/invalidates the
         previous stream before the next pair is produced. It never seeks, on any
         format and whatever ``seekable_members`` says (``_iter_stream_members`` makes

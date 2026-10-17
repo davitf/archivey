@@ -221,11 +221,12 @@ yielded.
   extraction creates the directory, as unzip and 7-Zip do, and ``read()`` returns the
   bytes, checked against the stored CRC-32, as does the stream ``stream_members()``
   yields for it. From a pipe, a directory written with a data descriptor (as every
-  writer to a pipe writes it) gets no stream: its size comes after its data, so the
-  pass cannot know the bytes are there, and the message says so. A CRC field of 0, a directory's conventional
-  value, is no digest; when that CRC was the entry's only check (unencrypted or
-  ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back unchecked, while a WinZip
-  AES entry (AE-1 or AE-2) has its HMAC check the bytes, so nothing is reported for it.
+  writer to a pipe writes it) gets no stream: its size comes after its data, so the pass
+  cannot know the bytes are there, and the message says so. A CRC field of 0, a
+  directory's conventional value, is no digest; when that CRC was the entry's only check
+  (unencrypted or ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back
+  unchecked, while a WinZip AES entry (AE-1 or AE-2) has its HMAC check the bytes, so
+  nothing is reported for it.
   Strict refuses the archive. A directory declaring size 0 over a body larger than
   an empty one of its method is reported too (``read()`` has nothing to return for it);
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is

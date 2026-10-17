@@ -114,26 +114,27 @@ data is the directory's contents list at dump time, structure that GNU tar defin
 reads itself, so it is a `DIRECTORY` with no `size` and no report, and `open()`
 refuses it for declaring no data.
 `open()` SHALL refuse a directory for declaring no data, and a tombstone or a special
-entry for its type (a special entry that stores data is a `FILE`): `ANTI`, `OTHER` and a directory
-declaring no size raise `ArchiveyUsageError`, while a directory declaring data opens
-and delivers the bytes where the backend can decode them (ZIP decodes any method;
+entry for its type (a special entry that stores data is a `FILE`): `ANTI`, `OTHER` and a
+directory declaring no size raise `ArchiveyUsageError`, while a directory declaring data
+opens and delivers the bytes where the backend can decode them (ZIP decodes any method;
 TAR reads the blocks of an old-style `d/` regular-file header; RAR delivers stored,
 unencrypted directory data and raises `UnsupportedFeatureError` for the rest, since
-`unrar` emits nothing for a directory entry), checked against the stored digest like
-a file's when the header carries one. A ZIP directory entry
-whose CRC-32 field is 0, the conventional value for a directory, carries no digest;
-`DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) SHALL say so instead of
-refusing the bytes as damaged when that CRC was the entry's only check (unencrypted
-or ZipCrypto), and when the entry is WinZip AES (AE-1 or AE-2) its HMAC checks the
-bytes as it checks a file's, so nothing is reported. `stream_members()` SHALL yield a
-stream for the same directories, with the same bytes and checks, in both access modes,
-so a forward-only reader reaches them too, except a ZIP directory written with a data
-descriptor and read from a source that cannot seek (`archive-reading`, "stream_members yields a stream for exactly the members open() reads"). A directory whose declared size is zero SHALL also be
-reported when its body is larger than an empty one of its method takes (ZIP: 0 stored,
-2 deflated, 14 bzip2, 19 LZMA, any body for a method not in that table; RAR: any body),
-so a payload cannot hide one field away; the Java `jar` tool's deflated empty directory
-body (compressed size 2, size 0) is not reported. Such a member has no declared data, so
-`open()` still refuses it and `stream_members()` yields `None` for it.
+`unrar` emits nothing for a directory entry), checked against the stored digest like a
+file's when the header carries one. A ZIP directory entry whose CRC-32 field is 0, the
+conventional value for a directory, carries no digest; `DIGEST_UNVERIFIABLE`
+(`reason="no_integrity_anchor"`) SHALL say so instead of refusing the bytes as damaged
+when that CRC was the entry's only check (unencrypted or ZipCrypto), and when the entry
+is WinZip AES (AE-1 or AE-2) its HMAC checks the bytes as it checks a file's, so nothing
+is reported. `stream_members()` SHALL yield a stream for the same directories, with the
+same bytes and checks, in both access modes, so a forward-only reader reaches them too,
+except a ZIP directory written with a data descriptor and read from a source that cannot
+seek (`archive-reading`, "stream_members yields a stream for exactly the members open()
+reads"). A directory whose declared size is zero SHALL also be reported when its body is
+larger than an empty one of its method takes (ZIP: 0 stored, 2 deflated, 14 bzip2, 19
+LZMA, any body for a method not in that table; RAR: any body), so a payload cannot hide
+one field away; the Java `jar` tool's deflated empty directory body (compressed size 2,
+size 0) is not reported. Such a member has no declared data, so `open()` still refuses
+it and `stream_members()` yields `None` for it.
 
 A link the source filesystem held as a Windows reparse point — a junction, a Windows
 directory symlink or a Windows file symlink — SHALL additionally carry

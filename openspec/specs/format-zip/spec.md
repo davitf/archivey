@@ -585,9 +585,9 @@ Two shapes read differently from a pipe, which decodes each member as it passes:
   bytes. Telling a bit-3 directory with data from an empty one would mean decoding its
   data before the pass yields it, which for an encrypted entry asks for a password the
   caller may never need; so the pass does not, and the data goes past unread.
-  `MEMBER_DIRECTORY_DATA_IGNORED`, reported when the central directory arrives, says
-  that the pass yielded no stream and that `open()` from a seekable source delivers the
-  bytes. In a ZIP with no central directory, the file read lists the CRC32 the data
+  `MEMBER_DIRECTORY_DATA_IGNORED`, reported when the central directory arrives (on any
+  listing, not only a pass), says that a pass over a source that cannot seek yields no
+  stream for it and that `open()` from a seekable source delivers the bytes. In a ZIP with no central directory, the file read lists the CRC32 the data
   descriptor states, as for a file; the pipe read lists none for the directory.
 - Junk after a bit-3 member: the two raise in different words.
 
