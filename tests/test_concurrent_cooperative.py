@@ -59,7 +59,7 @@ def test_open_during_stream_members_raises(tmp_path: Path) -> None:
 
 def test_members_then_open_ok(tmp_path: Path) -> None:
     root = _dir_with_files(tmp_path)
-    with open_archive(root, concurrent_members=True) as reader:
+    with open_archive(root, concurrent_operations=True) as reader:
         names = {m.name for m in reader.members()}
         assert names == {"a.txt", "b.txt"}
         s1 = reader.open("a.txt")
@@ -82,7 +82,7 @@ def test_iterate_and_open_inside_loop(tmp_path: Path, concurrent: bool) -> None:
     """
     root = _dir_with_files(tmp_path)
     got: dict[str, bytes] = {}
-    with open_archive(root, concurrent_members=concurrent) as reader:
+    with open_archive(root, concurrent_operations=concurrent) as reader:
         for member in reader:
             if member.is_file:
                 with reader.open(member) as stream:
@@ -851,7 +851,7 @@ def test_reader_reentry_from_diagnostic_callback_raises_not_deadlocks(
         reader.members()  # re-enter the reader that is mid-materialization
 
     config = ArchiveyConfig(on_diagnostic=on_diagnostic)
-    with open_archive(path, concurrent_members=True, config=config) as opened:
+    with open_archive(path, concurrent_operations=True, config=config) as opened:
         reader = opened
         with pytest.raises(ArchiveyUsageError, match="re-entered"):
             reader.members()
@@ -873,7 +873,7 @@ def test_close_from_diagnostic_callback_raises_not_deadlocks(tmp_path: Path) -> 
         reader.close()
 
     config = ArchiveyConfig(on_diagnostic=on_diagnostic)
-    reader_cm = open_archive(path, concurrent_members=True, config=config)
+    reader_cm = open_archive(path, concurrent_operations=True, config=config)
     try:
         reader = reader_cm
         with pytest.raises(ArchiveyUsageError, match="from inside one of its own"):

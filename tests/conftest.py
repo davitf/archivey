@@ -6,8 +6,10 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
+import types
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, overload
@@ -17,6 +19,24 @@ import pytest
 if TYPE_CHECKING:
     from archivey.reader import ForwardArchiveReader
     from archivey.types import ArchiveMember
+
+
+# PyPy has no ``_tracemalloc``, so ``import tracemalloc`` fails there and every test
+# module that imports it, directly or through tests/memory_util.py, would fail to
+# load. This stand-in skips only the test that calls it.
+class _TracemallocUnavailable(types.ModuleType):
+    def __getattr__(self, name: str) -> Callable[..., object]:
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def unavailable(*_args: object, **_kwargs: object) -> object:
+            pytest.skip("tracemalloc is not available on this interpreter")
+
+        return unavailable
+
+
+if importlib.util.find_spec("_tracemalloc") is None:
+    sys.modules["tracemalloc"] = _TracemallocUnavailable("tracemalloc")
 
 # Per-test OS-resource leak oracle (child processes, owning streams, pipe fds).
 pytest_plugins = ("leak_oracle",)

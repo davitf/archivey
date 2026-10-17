@@ -96,7 +96,7 @@ def test_closing_a_pass_another_thread_is_advancing_raises_usage_error() -> None
         release.wait(10)
         return True
 
-    with open_archive(_zip(), concurrent_members=True) as reader:
+    with open_archive(_zip(), concurrent_operations=True) as reader:
         members = reader.stream_members(blocking)
         got: list[str] = []
         worker = threading.Thread(target=lambda: got.append(next(members)[0].name))

@@ -79,7 +79,6 @@ from archivey.internal.backends.zip_reader import (
     _local_crc_stands_in,
     _max_members_error,
     _unconfirmed_resource_limit,
-    _unverified_data_error,
     _zipcrypto_check_byte,
     _ZipLocator,
 )
@@ -95,7 +94,7 @@ from archivey.internal.base_reader import (
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
-from archivey.internal.password import wrong_password_error
+from archivey.internal.password import unverified_data_error, wrong_password_error
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
@@ -1046,7 +1045,7 @@ class _PassData:
         if self._unconfirmed and _is_candidate_integrity_failure(
             exc, payload_complete=lambda: not self._cut_short
         ):
-            failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+            failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
             failure.__cause__ = exc
             return failure
         return exc
@@ -1338,7 +1337,7 @@ class _PassData:
         if not self.done:
             error = self._finish(raise_mismatch=False)
             if self._unconfirmed and not self.verified:
-                self._failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+                self._failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
             elif encrypted and error is not None:
                 self._failure = error
 
@@ -1348,7 +1347,7 @@ class _PassData:
         error = self._finish(raise_mismatch=False)
         failure: ArchiveyError | None = None
         if self._unconfirmed and not self.verified:
-            failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+            failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
         elif error is not None:
             failure = self._as_read_failure(error) if encrypted else error
         if failure is not None:
@@ -2081,11 +2080,9 @@ class ZipForwardReader(ZipReader):
         member._size_unread = False
 
     def _reindex_name(self, member: ArchiveMember, old_name: str) -> None:
-        listed = self._listed_by_name.get(old_name)
-        if listed is not None and member in listed:
-            listed.remove(member)
-            if not listed:
-                del self._listed_by_name[old_name]
+        # By identity, though an equality scan would also find ``member``: its new
+        # name is already set, so no other entry under ``old_name`` equals it.
+        self._unindex_members(old_name, {id(member)})
         self._index_member_name(member)
 
     # -- data ----------------------------------------------------------------------

@@ -148,6 +148,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
+    unverified_data_error,
     wrong_password_error,
 )
 from archivey.internal.password_confirm import (
@@ -485,27 +486,6 @@ _UNCONFIRMED_PASSWORD_FAILURE = (
 )
 
 
-# Set on the ``EncryptionError`` that says the password may be wrong *or* the member
-# corrupt, so a caller inside the reader can tell it from "no correct password".
-_UNVERIFIED_DATA_MARK = "_archivey_zip_unverified_data"
-
-
-def _unverified_data_error(message: str) -> EncryptionError:
-    """The ``EncryptionError`` for data that failed integrity under an unconfirmed password.
-
-    A plain ``EncryptionError`` to the caller, carrying a mark instead of a subclass
-    (the same reasoning as ``wrong_password_error``). The symlink hook reads the mark,
-    so it does not report a damaged target as a missing password.
-    """
-    error = EncryptionError(message)
-    setattr(error, _UNVERIFIED_DATA_MARK, True)
-    return error
-
-
-def _is_unverified_data_error(error: BaseException) -> bool:
-    return getattr(error, _UNVERIFIED_DATA_MARK, False) is True
-
-
 #: ZIP methods whose codec settings sit inside the member's data: the LZMA properties
 #: (method 14) and the PPMd order and memory (method 98). Under ZipCrypto they are
 #: encrypted, so a wrong password that passes the one-byte check decrypts them to
@@ -603,7 +583,7 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         if _is_candidate_integrity_failure(
             exc, payload_complete=self._payload_complete
         ):
-            raise _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
+            raise unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
         raise exc
 
 
@@ -2932,9 +2912,10 @@ class ZipReader(BaseArchiveReader):
         The parser reads the fixed 30-byte header plus the local name and extra (the
         central extra can differ) and refuses a bad signature, a cut header and an
         offset past ``MAX_DATA_OFFSET``. This refuses a payload that runs into the
-        next local header or the directory: the overlap guard. A local name whose
-        bytes differ from the central directory's is reported
-        (``_report_local_name``), and the member reads by the directory's name.
+        next local header or the directory: the overlap guard. Then, on a payload
+        the guard lets through, a local name whose bytes differ from the central
+        directory's is reported (``_report_local_name``), and the member reads by
+        the directory's name.
         """
         if loc.header_offset >= self._end.cd_start:
             # Every local header comes before the directory, as ``_holds_local_header``
@@ -2949,16 +2930,19 @@ class ZipReader(BaseArchiveReader):
             # The directory after every local header is in the file, so a local header
             # the file cuts short sits at a wrong offset: damage, not a cut archive.
             raise CorruptionError(raw_message_of(exc)) from exc
-        if header.name != loc.name:
-            self._report_local_name(loc, member, header.name)
         # stdlib ZipFile.open's guard, with archivey's own bounds: a member whose
-        # compressed payload extends past the next entry's start is a zip bomb.
+        # compressed payload extends past the next entry's start is a zip bomb. It
+        # comes before the name check: a second directory entry over an earlier
+        # entry's local header almost always names another member, and the overlap
+        # refusal must not report that the read goes ahead by the directory's name.
         length = max(0, loc.compressed_size)
         if header.data_start + length > self._data_bounds().end_for(loc):
             raise CorruptionError(
                 f"Overlapped entries: {quoted(_stored_text(loc.name))} "
                 "(possible zip bomb)"
             )
+        if header.name != loc.name:
+            self._report_local_name(loc, member, header.name)
         return header.data_start, length
 
     def _check_open(self) -> None:
@@ -3461,7 +3445,7 @@ class ZipReader(BaseArchiveReader):
                     exc, payload_complete=payload_complete
                 ):
                     raise
-                raise _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
+                raise unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
             # The verifier sits inside the translation, so a CRC mismatch is reported
             # as the ambiguity it is rather than as plain corruption.
             return _UnconfirmedZipCryptoStream(
@@ -3758,7 +3742,7 @@ class ZipReader(BaseArchiveReader):
         self, member: ArchiveMember, failure: EncryptionError
     ) -> NoReturn:
         """Raise that every candidate failed integrity: wrong password(s) or damage."""
-        ambiguous = _unverified_data_error(
+        ambiguous = unverified_data_error(
             "No password candidate produced integrity-verified data for "
             "this ZIP member; the password(s) may be wrong, or "
             "the encrypted member may be corrupt"
@@ -3894,19 +3878,6 @@ class ZipReader(BaseArchiveReader):
         """How ``_ensure_link_target`` opens a link's data: the member itself here; the
         bytes the pass kept in a forward walk."""
         return lambda: self._open_member(member)
-
-    def _locked_link_target_report(
-        self, member: ArchiveMember, exc: EncryptionError
-    ) -> tuple[str, str]:
-        if not _is_unverified_data_error(exc):
-            return super()._locked_link_target_report(member, exc)
-        # Only ZipCrypto's check byte vouched for the password, and the data then
-        # failed: a wrong password or a damaged member, and nothing here can say which.
-        return "password_or_damage", (
-            f"The symlink target of {quoted(member.name)} failed its integrity "
-            f"check; the password may be wrong or the member may be corrupt. "
-            f"Leaving link_target unset."
-        )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The member carries its own locator (`_raw`), so data access needs no name/id
