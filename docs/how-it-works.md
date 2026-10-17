@@ -13,7 +13,7 @@ against a ZIP keeps working, and keeps its cost, when someone hands it a `.tar.g
 solid 7z.
 
 That aim is why some things must be asked for. Seekable member streams
-(`seekable_members=True`), several open members at once (`concurrent_members=True`) and
+(`seekable_members=True`), several open members at once (`concurrent_operations=True`) and
 reading a pipe (`streaming=True`, which then refuses anything but one forward pass) are
 all declared at open. Some operations stay refused even where one format could allow
 them, so that a program does not depend on a property only that format has. These can

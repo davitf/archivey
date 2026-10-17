@@ -249,7 +249,7 @@ def open_archive(
     format: ArchiveFormat | str | None = None,
     streaming: Literal[False] = False,
     seekable_members: bool = False,
-    concurrent_members: bool = False,
+    concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -263,7 +263,7 @@ def open_archive(
     format: ArchiveFormat | str | None = None,
     streaming: bool,
     seekable_members: bool = False,
-    concurrent_members: bool = False,
+    concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -276,7 +276,7 @@ def open_archive(
     format: ArchiveFormat | str | None = None,
     streaming: bool = False,
     seekable_members: bool = False,
-    concurrent_members: bool = False,
+    concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -294,24 +294,32 @@ def open_archive(
     random-access call on a streaming reader. Every reader is an ``ArchiveReader`` at
     run time; the difference is in the annotations only.
 
-    Member streams are forward-only and single-live by default. Two keyword flags opt
-    into more, each unlocking one specific trap:
+    By default member streams are forward-only, one may be open at a time, and reader
+    operations do not overlap. Two keyword flags opt into more, each unlocking one
+    specific trap:
 
     - ``seekable_members=True`` — ``seek()`` on a member stream from random
       ``open()`` works. Without it, ``seek()`` raises
       ``io.UnsupportedOperation``. A backward seek may re-decompress from the
       start when there is no index or accelerator. A ``stream_members()``
       stream never seeks, with or without this flag.
-    - ``concurrent_members=True`` — multiple member streams may be open at once
-      (coordinated first-touch materialization, then worker fan-out; draining close).
-      Without it, a second overlapping ``open()`` raises ``ArchiveyUsageError``.
+    - ``concurrent_operations=True`` — operations on the reader may overlap, from one
+      thread or several, on every format: random ``open()`` / ``read()`` / ``get()``
+      / ``members()``, iteration, ``stream_members()`` passes and ``extract_all()``.
+      Each works as if it ran on a reader of its own. A single member stream object
+      still has one owner, first-touch materialization is coordinated rather than
+      parallel, and ``close()`` waits for calls in flight. Overlap is correct, not
+      always cheaper. Without it, a second overlapping ``open()``, or a random-access
+      call or another pass beside a running pass, raises ``ArchiveyUsageError``;
+      ``close()`` beside a pass suspended at a yield closes the reader, and resuming
+      the pass raises.
 
     ``open_stream`` uses the same vocabulary for the single-stream case
     (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has
     no counterpart. Declared concurrency does **not** gate solid open-order cost — see
     ``AccessCost`` / ``stream_members()``.
 
-    ``streaming=True`` combined with ``concurrent_members=True`` is rejected
+    ``streaming=True`` combined with ``concurrent_operations=True`` is rejected
     (``ArchiveyUsageError``): a forward-only pass cannot fan out.
 
     ``config`` supplies library tuning knobs (accelerator modes, the diagnostic
@@ -400,10 +408,10 @@ def open_archive(
     check_config(config, call="open_archive(config=…)")
     check_encoding(encoding, call="open_archive(encoding=…)")
 
-    if streaming and concurrent_members:
+    if streaming and concurrent_operations:
         raise _UsageValueError(
             "open_archive(streaming=True) cannot be combined with "
-            "concurrent_members=True: a forward-only pass has one progressive decoder "
+            "concurrent_operations=True: a forward-only pass has one progressive decoder "
             "and cannot fan out concurrent member streams."
         )
 
@@ -413,7 +421,7 @@ def open_archive(
     member_streams = MemberStreams(0)
     if seekable_members:
         member_streams |= MemberStreams.SEEKABLE
-    if concurrent_members:
+    if concurrent_operations:
         member_streams |= MemberStreams.CONCURRENT
 
     passwords = _PasswordCandidates.from_input(password)
@@ -778,7 +786,7 @@ def open_stream(
     … payload (no archive container). ``seekable`` is the same capability
     :func:`open_archive` spells ``seekable_members``; concurrency is not a concept here
     — the call returns exactly one stream — so there is no counterpart to
-    ``concurrent_members``.
+    ``concurrent_operations``.
 
     ``seekable=False`` (the default) returns a forward-only stream: ``seekable()`` is
     ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index or

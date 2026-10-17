@@ -75,7 +75,7 @@ def test_tar_iso_concurrent_open_uses_lock(tmp_path) -> None:
             info.size = len(data)
             t.addfile(info, io.BytesIO(data))
 
-    with open_archive(path, concurrent_members=True, seekable_members=True) as ar:
+    with open_archive(path, concurrent_operations=True, seekable_members=True) as ar:
         s1 = ar.open("a.txt")
         s2 = ar.open("b.txt")
         assert s1.read(2) == b"aa"
