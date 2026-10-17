@@ -289,6 +289,18 @@ so no link is left on disk as a file holding its target. The longer files stay a
 pass wrote them, with no mode applied: a member whose local header names it differently
 stays under the local header's name, since the pass stops before the end-of-pass rename.
 
+The data the pass keeps of short members until the directory says which are links SHALL
+NOT be charged to the listing limits: an archive a file read lists within them SHALL
+list from a pipe too, however many small files it holds, except that a link whose own
+data was dropped (below) is listed without its target. The pass SHALL hold at most
+`max_metadata_bytes` of that data, dropping the longest first; a link whose data was
+dropped SHALL be listed with `link_target` unset and `SYMLINK_TARGET_UNAVAILABLE` with
+reason `"target_data_dropped"`, and the rest of the listing SHALL stand, except under
+`DiagnosticPolicy.STRICT`, which refuses the archive on that integrity code. This
+differs from a file read only for a target at least as long as `max_metadata_bytes` of
+short members' data before it. The archive comment SHALL be weighed against
+`max_metadata_bytes` once the pass reads the end record, as a file read weighs it.
+
 #### Scenario: non-seekable read matrix
 
 | Case | Expected |
@@ -297,6 +309,7 @@ stays under the local header's name, since the pass stops before the end-of-pass
 | Non-seekable ZIP with `streaming=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
 | Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
 | `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
+| A pipe, many small files whose data passes `max_metadata_bytes`, a symlink after them | Lists every member and the link's target, as a file read does |
 | `extract_all()` from a pipe, a Unix symlink member | The link is made at the end of the pass, after the filter runs again on it |
 | `extract_all()` from a pipe that stops before the end of the pass (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the directory, or any other reason) | Every file the pass wrote whose data could be a link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag) is removed; a longer file stays, with no mode applied |
 | Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |

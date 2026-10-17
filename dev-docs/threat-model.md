@@ -328,7 +328,8 @@ Each budget below is a byte, count or rounds budget. None of them bounds time; t
 #### Listing
 
 **Property.** Listing a hostile archive costs at most the listing budget, not what the
-archive declares.
+archive declares; for a ZIP read from a pipe, the listing budget and the bound on the
+data its pass keeps for link targets beside it.
 
 **Mechanism.**
 - `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
@@ -343,7 +344,16 @@ archive declares.
   A ZIP read from a pipe has no directory at open: its forward pass charges
   `max_members` on each local header as it yields the member, and again on the
   directory's entries after the last member, whose text it weighs against
-  `max_metadata_bytes` as it arrives (`zip_forward_reader.py`). A ZIP file whose end
+  `max_metadata_bytes` as it arrives (`zip_forward_reader.py`). Until the directory
+  says which members are links, the pass also keeps the data of every member short
+  enough to be one (4096 bytes decoded, 8 KiB of an unread encrypted member's
+  ciphertext, a reparse buffer's start of longer data). That is files' data, which a
+  file read never holds, so it is bounded separately rather than inside the listing
+  budget: at most `max_metadata_bytes` of it, the longest dropped first
+  (`ZipForwardReader._hold`). A piped listing can therefore hold about twice
+  `max_metadata_bytes`, 128 MiB at the defaults, plus one member's kept data while
+  the drop runs. A link whose data was dropped is listed without its target
+  (`SYMLINK_TARGET_UNAVAILABLE`, `reason="target_data_dropped"`). A ZIP file whose end
   record sits behind more trailing bytes than the end-record search reads is walked
   the same way at `open_archive`, which charges `max_members` on each local header
   before passing its data (`ZipReader._walk_past_members`). When no end record
@@ -430,7 +440,9 @@ archive declares.
   (`reason="target_too_long"`), per the maintainer's ruling that such a target is
   corrupt or malicious. Without the cap, a 400 KB ZIP whose target was 400 MiB of zeros
   peaked at 2,400 MiB inside `members()`. A target resolved after registration is added
-  to the tracker as it arrives, so `max_metadata_bytes` sees it. A Windows reparse
+  to the tracker as it arrives, so `max_metadata_bytes` sees it; the candidate data a
+  ZIP pass from a pipe keeps to find it is bounded separately (the listing bullet
+  above). A Windows reparse
   buffer is read only as far as its own header declares. `read_link_targets=False` stops
   listing from reading these targets at all.
 

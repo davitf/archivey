@@ -18,6 +18,7 @@ reads its directory first.
 
 from __future__ import annotations
 
+import heapq
 import io
 import sys
 import zlib
@@ -144,6 +145,10 @@ _NO_END_BEFORE_EOF = sys.maxsize
 #: the cost of one key derivation, so it bounds only the bytes held until the
 #: directory arrives.
 _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
+
+#: Why a member's kept data was dropped (``ZipForwardReader._hold``): the pass held
+#: ``max_metadata_bytes`` of short members' data, and this member's was the longest.
+_DROPPED = "dropped"
 #: The data a member read with several possible passwords keeps to confirm one on
 #: (``_PassData._confirm_password``): the compressed input a bounded confirm may take
 #: (``PASSWORD_CONFIRM_MAX_INPUT_BYTES``), and room for the encryption header.
@@ -1658,10 +1663,16 @@ class ZipForwardReader(ZipReader):
         # Member id -> its whole data, when short enough to be a link target, or the
         # start a Windows reparse buffer's parse reads of longer data
         # (``_PassData.reparse_prefix``), until the directory says which members are
-        # links. Weighed by the listing tracker.
+        # links. Bounded with the kept ciphertext by ``_hold``, not charged to the
+        # listing: most of it is files' data, which a file read does not keep.
         self._captured: dict[int, bytes] = {}
+        # What ``_captured`` and the kept ciphertext hold, in bytes, and a heap of
+        # (-length, member id) over them, so ``_hold`` drops the longest first.
+        self._kept_bytes = 0
+        self._kept_heap: list[tuple[int, int]] = []
         # Member id -> why its bytes were not kept, when not for their length
-        # (``_PassData.uncaptured``), so a link's missing target says why.
+        # (``_PassData.uncaptured``, or ``_DROPPED`` by ``_hold``), so a link's
+        # missing target says why.
         self._uncaptured: dict[int, str | int | ArchiveyError | _KeptCiphertext] = {}
         # Local header offset -> what the data descriptor after a bit-3 member's data
         # said (CRC, compressed size, size), for the directory to confirm at the end.
@@ -1832,11 +1843,36 @@ class ZipForwardReader(ZipReader):
         assert member._member_id is not None
         if captured is not None:
             self._captured[member._member_id] = captured
-            self._listing_tracker.account_retained_bytes(len(captured), enforce=False)
+            self._hold(member._member_id, len(captured))
         elif (why := current.uncaptured) is not None:
             self._uncaptured[member._member_id] = why
             if isinstance(why, _KeptCiphertext):
-                self._listing_tracker.account_retained_bytes(len(why), enforce=False)
+                self._hold(member._member_id, len(why))
+
+    def _hold(self, member_id: int, length: int) -> None:
+        """Count ``length`` bytes just kept for ``member_id`` against the most the pass
+        keeps for link targets, and drop the longest kept data while over it.
+
+        Every member short enough to be a link keeps its data until the directory says
+        which members are links, so an archive of many small files keeps most of its
+        data. The pass holds at most ``max_metadata_bytes`` of it (none is charged to
+        the listing, which a file read's never holds), on top of what the listing
+        holds. Real link targets are paths, far shorter than most files, so the
+        longest data goes first: a link loses its target only behind
+        ``max_metadata_bytes`` of kept data no longer than its own, and is then listed
+        without one (``_ensure_link_target``).
+        """
+        budget = self._config.listing_limits.max_metadata_bytes
+        if budget is None:
+            return
+        self._kept_bytes += length
+        heap = self._kept_heap
+        heapq.heappush(heap, (-length, member_id))
+        while self._kept_bytes > budget:
+            negative, dropped = heapq.heappop(heap)
+            self._kept_bytes += negative
+            self._captured.pop(dropped, None)
+            self._uncaptured[dropped] = _DROPPED
 
     # -- the directory -------------------------------------------------------------
 
@@ -1876,6 +1912,9 @@ class ZipForwardReader(ZipReader):
             tail = self._walker.read_rest(_tail_bound(limits))
             end = tail.end_record()
         self._end_record = self._end = end
+        # Weighed now that it is known, as a file read weighs it before the first
+        # member.
+        self._account_archive_comment()
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
         by_offset = self._by_offset
@@ -2030,6 +2069,8 @@ class ZipForwardReader(ZipReader):
             for member_id, why in self._uncaptured.items()
             if member_id in links
         }
+        self._kept_heap = []
+        self._kept_bytes = 0
         self._report_unlisted(unlisted)
         for finding in () if damage is not None else walk.findings:
             self._emit_walk_finding(finding)
@@ -2273,6 +2314,35 @@ class ZipForwardReader(ZipReader):
             )
         return self._wrap_member_stream(stream, member.name, size=member.size)
 
+    def _ensure_link_target(self, member: ArchiveMember) -> None:
+        member_id = member._member_id
+        if (
+            member.type is not MemberType.SYMLINK
+            or member.link_target is not None
+            or member_id is None
+            or self._uncaptured.get(member_id) != _DROPPED
+        ):
+            super()._ensure_link_target(member)
+            return
+        # ``_hold`` dropped the data to stay within the bound. The archive is not
+        # damaged and a file read lists the target, so the link is listed without
+        # one and says why, as for any target the read cannot reach; the rest of
+        # the listing stands.
+        budget = self._config.listing_limits.max_metadata_bytes
+        assert budget is not None, "data is dropped only under a budget"
+        self._emit_link_target_unavailable(
+            member,
+            reason="target_data_dropped",
+            message=(
+                f"The symlink target of {quoted(member.name)} was not kept: reading "
+                "from a stream that cannot seek, the pass holds at most "
+                f"max_metadata_bytes={budget} of the data of members short enough "
+                "to be links until the directory says which are, and dropped this "
+                "member's data as the longest; leaving link_target unset."
+            ),
+            target_in_archive=True,
+        )
+
     def _link_target_opener(
         self, member: ArchiveMember
     ) -> Callable[[], AbstractContextManager[ReadableStream]]:
@@ -2327,6 +2397,15 @@ class ZipForwardReader(ZipReader):
         return open_data
 
     # -- what the caller sees ------------------------------------------------------
+
+    def _account_archive_comment(self) -> None:
+        # The walk starts before the end record is read: ``_read_directory`` weighs
+        # the comment once it is. The base call at the start of the walk has to be
+        # suppressed, not passed through with no comment: the tracker latches the
+        # comment as counted on its first call, even for ``None``, so the later one
+        # would weigh nothing.
+        if self._end_record is not None:
+            super()._account_archive_comment()
 
     def _archive_comment(self) -> str | None:
         end = self._end_record

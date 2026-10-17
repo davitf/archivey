@@ -33,6 +33,7 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     EncryptionError,
+    LinkTargetNotFoundError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -43,7 +44,7 @@ from archivey.internal.backends.zip_forward_reader import (
     ZipForwardReader,
 )
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -52,6 +53,7 @@ from tests.sample_archives import (
 )
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 from tests.zip_descriptors import without_descriptor_signatures
+from tests.zipcrypto import build_stored_zipcrypto_zip
 
 
 class _Writer(io.RawIOBase):
@@ -544,6 +546,132 @@ def test_directory_comments_count_toward_max_metadata_bytes() -> None:
     with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
         with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
             reader.members_report()
+
+
+def _small_files_then_link(count: int, size: int, target: str) -> bytes:
+    """``count`` files of ``size`` bytes each, all short enough to be link targets,
+    then a symlink to ``target``."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(count):
+            zf.writestr(f"f{i:03d}.txt", (b"%03d" % i) * (size // 3))
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3
+        info.external_attr = 0o120777 << 16
+        zf.writestr(info, target.encode())
+    return buf.getvalue()
+
+
+def _limited(max_metadata_bytes: int) -> archivey.ArchiveyConfig:
+    return archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=max_metadata_bytes)
+    )
+
+
+@pytest.mark.parametrize("written", ["sized", "streamed"])
+def test_small_files_data_is_not_charged_to_max_metadata_bytes(written: str) -> None:
+    """Every member short enough to be a link keeps its data until the directory
+    says which are links. That data is not listing metadata: a file read keeps none
+    of it, so an archive of many small files lists from a pipe as from a file, and
+    the link after them keeps its target."""
+    data = _small_files_then_link(40, 3000, "f000.txt")
+    if written == "streamed":
+        data = _streamed(data)
+    config = _limited(20_000)
+    with archivey.open_archive(io.BytesIO(data), config=config) as reader:
+        from_file = [(m.name, m.link_target) for m in reader.members()]
+    with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
+        read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
+        from_pipe = [(m.name, m.link_target) for m in reader.members_report().members]
+    assert from_pipe == from_file
+    assert from_pipe[-1] == ("link", "f000.txt")
+    assert read["f039.txt"] == b"039" * 1000
+
+
+def test_kept_ciphertext_is_not_charged_to_max_metadata_bytes() -> None:
+    """Short encrypted members nobody read keep their ciphertext for a link target,
+    under the same bound as plain data, not the listing's."""
+    data = build_stored_zipcrypto_zip(
+        [(b"pw", f"f{i:03d}.bin".encode(), bytes([i]) * 3000) for i in range(40)]
+    )
+    with archivey.open_archive(
+        _pipe(data), streaming=True, config=_limited(20_000)
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        assert len(reader.members_report().members) == 40
+
+
+def test_the_kept_data_drops_the_longest_first() -> None:
+    """The pass holds at most ``max_metadata_bytes`` of short members' data, and drops
+    the longest first: link targets are paths, shorter than most files. Only a target
+    at least as long as the ``max_metadata_bytes`` of data before it is lost so; the
+    link is then listed without it and says why, and the rest of the listing stands,
+    where the file read lists the target."""
+    short = _small_files_then_link(10, 3000, "f000.txt")
+    with archivey.open_archive(
+        _pipe(short), streaming=True, config=_limited(20_000)
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        assert reader.members_report().members[-1].link_target == "f000.txt"
+    target = "d/" * 1750
+    long = _small_files_then_link(10, 3000, target)
+    with archivey.open_archive(io.BytesIO(long), config=_limited(20_000)) as reader:
+        assert reader.members()[-1].link_target == target
+    with archivey.open_archive(
+        _pipe(long), streaming=True, config=_limited(20_000)
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        members = reader.members_report().members
+        assert len(members) == 11
+        link = members[-1]
+        assert (link.name, link.type, link.link_target) == (
+            "link",
+            MemberType.SYMLINK,
+            None,
+        )
+        assert _link_target_reasons(reader) == ["target_data_dropped"]
+        (message,) = [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        assert "max_metadata_bytes=20000" in message
+
+
+def test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind(
+    tmp_path: Path,
+) -> None:
+    """The pass writes the link's data as a file before the directory makes it a
+    link. With the target dropped, the end of the pass takes that file back and
+    fails the link alone, as for any link whose target the read cannot reach."""
+    data = _small_files_then_link(10, 3000, "d/" * 1750)
+    with archivey.open_archive(
+        _pipe(data), streaming=True, config=_limited(20_000)
+    ) as reader:
+        report = reader.extract_all(tmp_path, on_error="continue")
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        f"f{i:03d}.txt" for i in range(10)
+    ]
+    assert (tmp_path / "f009.txt").read_bytes() == b"009" * 1000
+    (link,) = [r for r in report.results if r.member.name == "link"]
+    assert link.status is ExtractionStatus.FAILED
+    assert isinstance(link.error, LinkTargetNotFoundError)
+    assert link.path is None
+
+
+@pytest.mark.parametrize("source", ["pipe", "file"])
+def test_the_archive_comment_counts_toward_max_metadata_bytes(source: str) -> None:
+    """A file read weighs the comment before the first member; the pass weighs it
+    once it reaches the end record."""
+    data = _zip([("a.txt", b"one")], comment=b"c" * 65_000)
+    opened = _pipe(data) if source == "pipe" else io.BytesIO(data)
+    with archivey.open_archive(opened, streaming=True, config=_limited(1000)) as reader:
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            for _ in reader.stream_members():
+                pass
 
 
 @pytest.mark.parametrize(
