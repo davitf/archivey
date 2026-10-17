@@ -6,6 +6,7 @@ import io
 import tarfile
 from pathlib import Path
 from random import Random
+from typing import BinaryIO
 
 import pytest
 
@@ -120,10 +121,115 @@ def test_readinto_goes_through_read() -> None:
     assert bytes(buf) == b"\x00\x00ab\x00\x00"
 
 
-def test_short_stored_data_is_an_eof_error() -> None:
-    stream = SparseStream(io.BytesIO(b"ab"), [0], [4], 8)
+def _inner(stored: bytes, seekable: bool) -> BinaryIO:
+    return io.BytesIO(stored) if seekable else io.BufferedReader(_ForwardOnly(stored))
+
+
+class _RaisesAtEnd(io.RawIOBase):
+    """Bytes, then an error of its own on the read that finds none, as the TAR
+    member views raise ``TruncatedError``."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+        self.raised = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[override]
+        count = self._inner.readinto(b)
+        if len(b) and not count:
+            self.raised += 1
+            raise _CutError(f"the inner stream ended (error {self.raised})")
+        return count
+
+
+class _CutError(Exception):
+    pass
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_a_cut_inside_a_chunk_returns_the_prefix_then_raises(seekable: bool) -> None:
+    """A sized read returns the bytes before the cut, holes included, and the next
+    read raises (ADR 0014). The stream layer raises a builtin; the format reader
+    translates it."""
+    # The map names 6 stored bytes; 4 are there.
+    stream = SparseStream(_inner(b"abcd", seekable), [2, 8], [2, 4], 14)
+    assert stream.read(100) == b"\x00\x00ab\x00\x00\x00\x00cd"
+    assert stream.tell() == 10
     with pytest.raises(EOFError):
-        stream.read()
+        stream.read(1)
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_a_cut_at_a_chunk_start_returns_the_prefix_then_raises(seekable: bool) -> None:
+    """The stored data ends exactly where a chunk starts: the inner read gets no
+    bytes. The bytes already read, and the hole before the chunk, still come first."""
+    stream = SparseStream(_inner(b"abcd", seekable), [0, 10], [4, 4], 20)
+    assert stream.read(20) == b"abcd" + bytes(6)
+    assert stream.tell() == 10
+    with pytest.raises(EOFError, match="none of the 4 bytes"):
+        stream.read(20)
+
+
+def test_a_seek_clears_the_held_error() -> None:
+    """A read that returned the prefix holds the cut's error for the next read. A
+    seek elsewhere drops it: the read after the seek starts again and meets the cut
+    when it reaches it. A seek to where the stream already is keeps it."""
+    stream = SparseStream(_inner(b"abcd", True), [0, 10], [4, 4], 20)
+    assert stream.read(20) == b"abcd" + bytes(6)
+    # A seek elsewhere drops it: the prefix reads again, and the error is held again.
+    assert stream.seek(0) == 0
+    assert stream.read(20) == b"abcd" + bytes(6)
+    assert stream.seek(2) == 2
+    # No stale error fires at a position that never met the cut.
+    assert stream.read(3) == b"cd\x00"
+    assert stream.read(20) == bytes(5)
+    with pytest.raises(EOFError):
+        stream.read(20)
+
+
+def test_a_seek_to_the_same_position_keeps_the_held_error() -> None:
+    """The held error is the one the cut raised, not a second one from reading the
+    inner again."""
+    inner = _RaisesAtEnd(b"ab")
+    stream = SparseStream(io.BufferedReader(inner), [0, 5], [2, 2], 9)
+    assert stream.read(9) == b"ab" + bytes(3)
+    assert stream.seek(stream.tell()) == 5
+    with pytest.raises(_CutError, match=r"error 1\)"):
+        stream.read(1)
+    assert inner.raised == 1
+
+
+def test_an_inner_error_at_a_chunk_start_comes_after_the_prefix() -> None:
+    """An inner that raises its own error at its end, rather than returning no
+    bytes, gets the same order: the prefix, then that same error."""
+    stream = SparseStream(io.BufferedReader(_RaisesAtEnd(b"ab")), [0, 5], [2, 2], 9)
+    assert stream.read(9) == b"ab" + bytes(3)
+    with pytest.raises(_CutError):
+        stream.read(9)
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_a_cut_fails_a_whole_read(seekable: bool) -> None:
+    """A read with no size raises at the cut and returns nothing, as a plain member's
+    does, wherever the cut is."""
+    for stored, offsets, lengths in (
+        (b"ab", [0], [4]),
+        (b"abcd", [0, 10], [4, 4]),
+    ):
+        stream = SparseStream(_inner(stored, seekable), offsets, lengths, 20)
+        with pytest.raises(EOFError):
+            stream.read()
+
+
+def test_a_skip_past_the_stored_data_raises() -> None:
+    """A forward-only stream skips to a chunk by reading; stored data that ends
+    before the chunk raises there."""
+    stream = SparseStream(_inner(b"ab", False), [0, 10], [4, 4], 14)
+    stream.seek(11)
+    with pytest.raises(EOFError):
+        stream.read(1)
 
 
 def test_a_huge_logical_size_costs_nothing_until_a_hole_is_read() -> None:
