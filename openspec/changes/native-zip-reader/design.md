@@ -425,8 +425,13 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   (on Windows a read-only entry is not moved, so the member fails as it does from a
   file). A run that stops before the end of the pass (`abort_on`, `on_error="stop"`, a
   limit) never learns which members it keeps, so a write over a caller's entry is
-  taken back and the entry returns; the members it wrote elsewhere stay, as a stopped
-  run's do. One that stops while the end of the pass settles keeps what it settled.
+  taken back and the entry returns. It never learns which members are links either,
+  and a link the pass wrote holds its target as a file's content, so every file it
+  wrote whose data could be a link's is taken back: one within the 4096-byte target
+  cap, or one that starts with a Windows symlink or junction reparse tag. The longer
+  files it wrote stay, as a stopped run's do, without the modes only the directory
+  gives. One that stops while the end of the pass settles keeps what it settled, and
+  takes back the files of the members it had not settled yet that could be links.
   Two effects outlive the take-back. `abort_on` fires before a write begins, which for
   such a member is before the end decides, so a run can stop for a member that would
   not have been selected; deferring it would mean writing the member it exists to
