@@ -61,3 +61,12 @@ def test_dropping_same_named_members_keeps_the_others_reachable() -> None:
         # Down to one, the entry is the member again.
         reader._drop_listed([a2])
         assert reader._listed_by_name["a"] is a4
+
+
+def test_dropping_every_member_of_a_shared_name_removes_the_entry() -> None:
+    with archivey.open_archive(io.BytesIO(_zip(["a", "b", "a", "a"]))) as reader:
+        members = reader.members()
+        assert isinstance(reader._listed_by_name["a"], list)
+        reader._drop_listed([m for m in members if m.name == "a"])
+        assert "a" not in reader._listed_by_name
+        assert reader._last_by_exact_name("b") is members[1]
