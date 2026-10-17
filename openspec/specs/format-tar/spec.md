@@ -56,7 +56,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | `mode` | The header's `mode`, lower 12 bits |
 | `modified` | The header's `mtime` as timezone-aware UTC |
 | PAX `mtime` | Overrides the header's `mtime`, preserving sub-second precision / timezone information |
-| `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number is ignored) |
+| `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number, or is past 2**32 - 1, the range of `uid_t` and `gid_t`, is ignored and the header's value kept, as GNU tar 1.35 keeps it; GNU tar also reports such an id, and archivey keeps the header's value silently) |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType`. GNU's dumpdir `D` is a `DIRECTORY` whose contents list, structure GNU tar defines and reads, is skipped with no `size` and no report |
 | device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a volume header, an unknown typeflag with no data) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
 | unknown typeflag | A typeflag the reader does not know, that is none of NUL, `0` to `7`, `S`, `D`, `M`, `V` and the extended-header types (for example `9`, `z`, or the obsolete GNU `N`), SHALL be a `MemberType.FILE` of the declared `size` when that `size` is non-zero: it SHALL read through `open()` and `read()` and extract as a regular file, in both access modes, as GNU tar 1.35 extracts it ("Unknown file type '9', extracted as normal file") and 7-Zip 23.01 lists and extracts it. The data area is the structure (design rule DR-25; maintainer ruling 2026-10-17). With a `size` of 0 it SHALL stay `MemberType.OTHER` with no `size`, and extraction skips it. Either way `extra["tar.type"]` is the stored byte, no `extra["special_file_type"]` is set, and `MEMBER_TYPE_UNKNOWN` SHALL be reported once at listing with `UnknownMemberTypeContext` (advisory, so `STRICT` reads the archive). GNU's volume header `V` and multi-volume continuation `M` are known: they stay `OTHER` with their data skipped and are not reported |
@@ -94,10 +94,11 @@ in every format; the record name appears only in the message.
 | Old GNU or v7 header with bytes at offsets 345 to 500 (GNU incremental `tar -G` fills `atime` there) | Not joined to the name: `d/f.txt`, not `15262452373/d/f.txt` |
 | PAX global header, then members with no records of their own | Each member's `extra["tar.pax_headers"]` holds the global records, and a later global header does not change it. Changing it raises `TypeError` |
 | PAX sparse 1.0 map holding a number longer than 20 digits | `CorruptionError` while the header is parsed. GNU tar reads each number into a 20-digit buffer and refuses a longer one; this structural bound keeps a number with no newline from growing one buffer for the rest of the archive |
-| PAX `size`, `uid`, `gid`, `GNU.sparse.size` or `GNU.sparse.realsize` of more significant digits than Python's `int()` reads (4300 by default) | `CorruptionError` while the header is parsed, never the builtin `ValueError` of `int()`. Leading zeros do not count |
+| PAX `size`, `GNU.sparse.size` or `GNU.sparse.realsize` of more than 20 significant digits (thousands included, past what Python's `int()` reads) | `CorruptionError` while the header is parsed, never the builtin `ValueError` of `int()`; the digits are counted before conversion, whatever `sys.get_int_max_str_digits()` is. Leading zeros do not count. A PAX `uid` or `gid` that long is ignored, as in the `uid`/`gid` row |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
 | PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the member attribute it would have filled |
 | PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
+| PAX time in a syntax GNU tar 1.35 refuses (`+1000`, `1e3`, `1_000`, blanks, `.5`, `inf`) | Not a number: the field is `None` and `MEMBER_TIMESTAMP_INVALID` counted. A number is `-?digits(.digits*)?`, as GNU tar reads it |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 
 ### Requirement: Extract TAR hardlinks with a pull-based coordinator
@@ -324,7 +325,10 @@ configuration. The first non-zero byte in that window SHALL emit
 `ARCHIVE_TRAILING_DATA` under ordinary diagnostic disposition, with no escalation of
 its own: a warning by default, `DiagnosticRaisedError` after delivery when the code
 resolves to `RAISE` (as under `DiagnosticPolicy.STRICT`), a count alone under
-`IGNORE`.
+`IGNORE`. The first non-zero byte SHALL end the scan, on a compressed tar too: past
+it the backend cannot tell whether the bytes are still in the stream that holds the
+members (a concatenated `.tar.gz` is a second gzip member, whose checksum covers none
+of them), so it SHALL NOT emit `DIGEST_UNVERIFIABLE` for that stream either way.
 
 The check SHALL run only after a complete two-block null trailer has been confirmed, or
 after the damaged-second-block diagnostic has been emitted. It SHALL NOT run after an
@@ -338,20 +342,34 @@ NOT report trailing data, and SHALL NOT refuse the archive. It is a module const
 a configuration field. On a compressed tar whose codec can carry a whole-stream checksum
 (gzip, bzip2, xz, zstd, lz4, lzip, zlib), a scan that stops at the bound with the stream
 not at its end SHALL emit `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`): that
-checksum was never checked. A tail that fails to decode — on a compressed tar, junk
-after the compressed stream or a missing footer — SHALL end the scan with no error and,
-except on bzip2 and xz (below), no diagnostic: every member was already read whole, and
-that is not trailing tar data. A whole-stream checksum that fails in the scan (gzip
-CRC-32 or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) is not such a
-tail: it covers the members already read, and SHALL raise `CorruptionError`. bzip2 and
-xz check each block, and the last block's check can also be reached in the scan, but
-those codecs report a failed check the same way as junk after the stream. On a
-`.tar.bz2` or `.tar.xz` a tail that fails to decode SHALL therefore emit
-`DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`) instead of ending the scan
-silently. Where that check is reached depends on how far the codec has read ahead
-when the last member's bytes are delivered, not on the archive: when it is reached
-during the member read, the read SHALL raise `CorruptionError` instead. Either way the
-failure SHALL NOT pass silently.
+checksum was never checked. A tail that fails to decode SHALL NOT raise: every member
+was already read whole, and that is not trailing tar data. On a codec with no
+whole-stream checksum it ends the scan silently; on one that can carry a checksum it is
+reported as below. Junk after the compressed stream is the codec's to report
+(`ARCHIVE_TRAILING_DATA`, with the codec's name as `format`). A compressed stream that
+ends before its footer, so that the scan's read is truncated, never reached the checksum
+over the members already read: on a codec that can carry one it SHALL emit
+`DIGEST_UNVERIFIABLE` (`reason="trailing_stream_truncated"`). A whole-stream checksum
+that fails in the scan (gzip CRC-32 or ISIZE, zlib Adler-32, zstd or lz4 content
+checksum, lzip CRC-32) is not such a tail: it covers the members already read, and SHALL
+raise `CorruptionError`. bzip2 and xz check each block, and the last block's check can
+also be reached in the scan, but those codecs report a failed check the same way as junk
+after the stream. On a `.tar.bz2` or `.tar.xz` any other tail that fails to decode may
+be that failed check. On every codec that can carry a whole-stream checksum, a tail that
+fails to decode in any other way (a damaged deflate stream past the trailer, for
+example) SHALL emit `DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`) instead of
+ending the scan silently, and its message SHALL say that whether the checksum over the
+members passed cannot be told, not that it was never reached: the bytes that failed may
+be in the stream that holds the members, or in a further compressed member after it,
+whose predecessor's checksum was already checked. The backend cannot tell the two apart
+(the same reason the scan stops at trailing bytes). When a further member fills a whole
+scan chunk (64 KiB) of output in a read that does not fail, the scan sees those bytes
+and reports `ARCHIVE_TRAILING_DATA` instead; a member that fails before filling that
+read gives up its output, so the scan sees only the failure. Which of the two a caller
+gets therefore depends on how much that member decodes to. Where the bzip2 or xz check
+is reached depends on how far the codec has read ahead when the last member's bytes are
+delivered, not on the archive: when it is reached during the member read, the read SHALL
+raise `CorruptionError` instead. Either way the failure SHALL NOT pass silently.
 
 The code is not a truncation: nothing is truncated, the file is *longer* than the
 listing accounts for.
@@ -372,7 +390,12 @@ listing accounts for.
 | A real ISO opened as TAR | Empty listing plus `ARCHIVE_TRAILING_DATA`: its zeros stop at 32768 | Raises |
 | Missing / short trailer | `ARCHIVE_EOF_MARKER_MISSING`; the scan does not run | Raises on that code |
 | `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
-| `.tar.gz`, junk after the gzip stream or a missing gzip footer | No diagnostic, no error | No diagnostic, no error |
+| `cat a.tar.gz b.tar.gz`, whatever the size of `b.tar` | `ARCHIVE_TRAILING_DATA` only; `a.tar` is listed | `DiagnosticRaisedError` |
+| `.tar.gz`, the deflate stream failing to decode after the trailer | `DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`), or `CorruptionError` from a member read that reaches the failure | Raises |
+| `cat a.tar.gz b.gz`, `b.gz` decoding a few bytes then failing | `DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`, "cannot be told") | Raises on `DIGEST_UNVERIFIABLE` |
+| `cat a.tar.gz b.gz`, `b.gz` decoding 64 KiB or more before failing | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
+| `.tar.gz`, junk after the gzip stream | `ARCHIVE_TRAILING_DATA` (`format` is the codec) | `DiagnosticRaisedError` |
+| `.tar.gz` / `.tar.zst` / `.tar.lz4`, the stream cut inside its footer (the members whole) | `DIGEST_UNVERIFIABLE` (`reason="trailing_stream_truncated"`) | Raises on `DIGEST_UNVERIFIABLE` |
 | `.tar.gz` / `.tar.zst` / `.tar.lz4`, a member byte damaged, stream checksum reached within 1 MiB of the trailer | `CorruptionError` | `CorruptionError` |
 | `.tar.bz2` / `.tar.xz`, the last block's check failing, reached in the trailing scan (within 1 MiB of the trailer), or junk after the stream | `DIGEST_UNVERIFIABLE` | Raises on `DIGEST_UNVERIFIABLE` |
 | `.tar.bz2` / `.tar.xz`, the same failing check reached while the last member is read (decided by the codec's read-ahead, so by member size) | `CorruptionError` from the read | `CorruptionError` from the read |
@@ -419,7 +442,7 @@ reads it.
 | Encoding | Read |
 | --- | --- |
 | v7, POSIX ustar (with `prefix`), old GNU | Header fields; checksum as unsigned or signed sum |
-| Numbers | Octal (NUL- or space-terminated, empty is 0) and base-256 with a first byte of `0x80` or `0xFF` |
+| Numbers | Octal as GNU tar 1.35 reads it: one leading NUL skipped, leading blanks, digits up to the first NUL or blank (bytes after it are not read), no digits is 0; and base-256 with a first byte of `0x80` or `0xFF`. The checksum field is read the same way. `devmajor` and `devminor` are read only for a ustar or GNU character or block device, where one that is not a number leaves the device listed with no device numbers and `MEMBER_HEADER_RECORD_SKIPPED`; a v7 header has no `uname`, `gname` or device numbers |
 | PAX `x` / `X` / `g` | Length-validated records; globals persist, an empty global value deletes the key |
 | GNU `L` / `K` | Long name and long link name |
 | GNU sparse | Old GNU `S` with extension blocks; PAX 0.0, 0.1 and 1.0 |
@@ -439,14 +462,15 @@ archives` to classify. These are headers that do not parse:
 
 | Case | Example |
 | --- | --- |
-| Header block | A bad checksum; a number field that is neither octal nor base-256; a negative size |
+| Header block | A bad checksum; a `mode`, `uid`, `gid`, `size`, `mtime` or checksum field that is neither octal nor base-256 (a byte other than a NUL or a blank right after the digits); a negative size. A device's `devmajor` or `devminor` that is not a number is reported on the member instead (see Numbers) |
 | PAX records | A record length that does not land on its newline |
-| Old GNU sparse | A map number, in the header or an extension block, that is neither octal nor base-256 or is past 2**63 - 1 |
+| Old GNU sparse | A map number, in the header or an extension block, that is neither octal nor base-256 or is past 2**63 - 1; a real size that is negative or past 2**63 - 1 |
 | Header chain | An extended header followed by a block that is not a header |
 
 The walk SHALL raise `TruncatedError` when the stream ends inside a header or a data
-area, or right after an extended header, and `CorruptionError` for a PAX `size` that is
-not a number. An `x`, `X`, `L` or `K` header followed by a zero block SHALL end the
+area, or right after an extended header, and `CorruptionError` for a PAX `size`,
+`GNU.sparse.size` or `GNU.sparse.realsize` that is not a number or is past 2**63 - 1
+(however many digits it has). An `x`, `X`, `L` or `K` header followed by a zero block SHALL end the
 walk as an end-of-archive marker, as GNU tar reads it. A `g` header describes no member,
 so a zero block after it is an ordinary end-of-archive marker.
 
