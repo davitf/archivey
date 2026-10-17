@@ -207,13 +207,20 @@ def _may_land_on_existing(name: str) -> bool:
     top level, as it is written as ``/``; trailing dots and spaces may be stripped.
     Case is ignored, as a case-insensitive filesystem would. The match is loose on
     purpose: a false match only sends the archive through the wrapper, while a missed
-    one lets ``--overwrite`` touch the operator's entry."""
+    one lets ``--overwrite`` touch the operator's entry. A name with more than four
+    such characters always counts, which keeps the match's backtracking bounded."""
     if os.path.lexists(name):
         return True
     if _written_as_stored(name):
         return False
     head = name.split("\\", 1)[0]
     stem = head.rstrip(". ")
+    if sum(1 for ch in stem if ch == "%" or not _written_as_stored(ch)) > 4:
+        # Each such character is an optional run of ``%XX`` in the pattern, and
+        # neighbouring runs make the match backtrack exponentially on an entry that
+        # nearly matches. The archive chooses the name, so beyond a few of them take
+        # the wrapper instead of matching.
+        return True
     pattern = "".join(
         "%(?:25)?"
         if ch == "%"

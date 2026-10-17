@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 import tarfile
+import time
 import zipfile
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -2660,6 +2661,22 @@ def test_may_land_on_existing_matches_the_spelling_extraction_writes(
     assert len(os.listdir(out)) == 1  # the one spelling extraction wrote
     monkeypatch.chdir(out)
     assert _may_land_on_existing(stored)
+
+
+def test_may_land_on_existing_does_not_backtrack_on_a_crafted_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root of many ``<`` against an entry that nearly matches their escapes used to
+    backtrack exponentially; past a few rewritable characters the check now takes the
+    wrapper without matching."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ("%41" * 26 + "Z")).mkdir()
+    started = time.monotonic()
+    assert _may_land_on_existing("<" * 24)
+    assert _may_land_on_existing("<" * 4) is False
+    assert time.monotonic() - started < 5
 
 
 def test_may_land_on_existing_ignores_case(
