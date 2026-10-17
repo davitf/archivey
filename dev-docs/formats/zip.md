@@ -484,9 +484,9 @@ been read. The full design, row by row, is the `native-zip-reader` change's `des
 
 **Where a member's data ends.** A sized local header gives it. With bit 3 set, a member
 the caller reads to its end is decoded to the codec's end marker (DEFLATE, Deflate64,
-bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk finds the
-data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC and
-size match the bytes before it and that a ZIP signature follows, signed or not. When
+bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk finds
+the data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC
+and size match the bytes before it and that a ZIP signature follows, signed or not. When
 none matches whole, one with a single damaged field still ends the member
 (`match_damaged_descriptor`): without its signature, two of its CRC, compressed size and
 uncompressed size agree; with it, its compressed size or two fields; with a damaged
@@ -495,24 +495,27 @@ descriptor of a member the walk ends by its CRC, fails that member alone, by its
 size check or by the directory at the end of the pass, and the members after it are
 read. A scan matched on the size alone (below) has one field to go on and takes no
 damaged descriptor. A bit-3 codec member the pass reads past (nobody read it, or the
-caller stopped early) is decoded no further than the byte past the 4096-byte target cap,
-then the start of a reparse buffer (§2.2.1). A member whose codec ends within that is
-checked as a read to its end is. Past it the walk passes the member by the STORED
-member's scan on its stored bytes, matched on the size and the signature after the
-descriptor, since the CRC covers the decoded data: decoding the rest would cost what no
-limit bounds (a 900-byte bzip2 member decodes to 1 GiB). A descriptor planted in the
-data then ends the member early, and the directory catches it at the end of the pass. An encrypted bit-3 member
-nobody reads is passed the same way on its ciphertext, so no key is needed. A bit-3 LZMA
-member without EOS has no end its codec can find, and its read is
+caller stopped early) is
+decoded no further than the byte past the 4096-byte target cap, then the reparse prefix
+a file read reads (the buffer and one byte, §2.2.1), and one byte past that prefix:
+bit-3 data has no size, so only a decode that returns nothing says it ended there, and
+the two reads stop at the same place. A member whose codec ends within that is checked
+as a read to its end is. Past it the walk passes the member by the STORED member's scan
+on its stored bytes, matched on the size and the signature after the descriptor, since
+the CRC covers the decoded data: decoding the rest would cost what no limit bounds (a
+900-byte bzip2 member decodes to 1 GiB). A descriptor planted in the data then ends the
+member early, and the directory catches it at the end of the pass. An encrypted bit-3
+member nobody reads is passed the same way on its ciphertext, so no key is needed. A
+bit-3 LZMA member without EOS has no end its codec can find, and its read is
 `UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
 its decode, as from a file. A bit-3 codec member whose decode fails or finds no end is
 passed by the same scan on its stored bytes. The scan starts at the bytes the walk kept
-of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into the
-size it matches, so the descriptor is found unless the decode read more than that past
-the data's end; then the scan runs to the end of the stream and the pass ends with its
-error. A bit-3 PPMd member is always decoded in a child process
-(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several password
-candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
+of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into
+the size it matches, so the descriptor is found unless the decode read more than that
+past the data's end; then the scan runs to the end of the stream and the pass ends with
+its error. A bit-3 PPMd member is always decoded in a child process
+(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several
+password candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
 **What the pass yields, and what changes at the end.** Each member is yielded with what
 its local header gives: `mode`, `create_system` and `comment` are `None`, the type is
@@ -574,10 +577,6 @@ directory's refusals the file read is to drop:
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
-  For a reparse point whose decode fails more than one byte past its reparse buffer,
-  the file read's bounded read stops before the damage and gives the target; the pass
-  decodes in larger pieces, loses the piece the error ends, and gives none
-  (`test_zip_pipe_reparse.py::test_a_bit3_reparse_buffer_whose_decode_fails_past_it`).
 - A bit-3 member whose data descriptor has one damaged field fails at the end of the
   pass, as the directory contradicts the descriptor: the file read never reads the
   descriptor, and reads the member when its data is intact.
