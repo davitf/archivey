@@ -2940,9 +2940,10 @@ class ZipReader(BaseArchiveReader):
         The parser reads the fixed 30-byte header plus the local name and extra (the
         central extra can differ) and refuses a bad signature, a cut header and an
         offset past ``MAX_DATA_OFFSET``. This refuses a payload that runs into the
-        next local header or the directory: the overlap guard. A local name whose
-        bytes differ from the central directory's is reported
-        (``_report_local_name``), and the member reads by the directory's name.
+        next local header or the directory: the overlap guard. Then, on a payload
+        the guard lets through, a local name whose bytes differ from the central
+        directory's is reported (``_report_local_name``), and the member reads by
+        the directory's name.
         """
         if loc.header_offset >= self._end.cd_start:
             # Every local header comes before the directory, as ``_holds_local_header``
@@ -2957,16 +2958,19 @@ class ZipReader(BaseArchiveReader):
             # The directory after every local header is in the file, so a local header
             # the file cuts short sits at a wrong offset: damage, not a cut archive.
             raise CorruptionError(raw_message_of(exc)) from exc
-        if header.name != loc.name:
-            self._report_local_name(loc, member, header.name)
         # stdlib ZipFile.open's guard, with archivey's own bounds: a member whose
-        # compressed payload extends past the next entry's start is a zip bomb.
+        # compressed payload extends past the next entry's start is a zip bomb. It
+        # comes before the name check: a second directory entry over an earlier
+        # entry's local header almost always names another member, and the overlap
+        # refusal must not report that the read goes ahead by the directory's name.
         length = max(0, loc.compressed_size)
         if header.data_start + length > self._data_bounds().end_for(loc):
             raise CorruptionError(
                 f"Overlapped entries: {quoted(_stored_text(loc.name))} "
                 "(possible zip bomb)"
             )
+        if header.name != loc.name:
+            self._report_local_name(loc, member, header.name)
         return header.data_start, length
 
     def _check_open(self) -> None:
