@@ -625,7 +625,9 @@ def test_prefixed_path_over_the_limit_is_refused_under_unar_before_copying(
     config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=limit), **_UNAR)
     with open_archive(prefixed, config=config) as archive:
         (note,) = archive.cost.notes
-        assert note.startswith("Reading a compressed member will be refused")
+        assert note.startswith("Reading a member that unar has to read")
+        # A stored encrypted member may still need the program, so it is not promised.
+        assert "such as stored, unencrypted ones, can still be read" in note
         with pytest.raises(ResourceLimitError, match="rar_decompressor to 'unrar'"):
             archive.read("zeros.bin")
     assert temp_artifacts == []

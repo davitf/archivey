@@ -31,7 +31,7 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
-  pass. `concurrent_members=True` makes overlapping streams *correct*; it does not
+  pass. `concurrent_operations=True` makes overlapping streams *correct*; it does not
   make them cheap.
   → [Solid archives](access-and-cost.md#solid-archives-prefer-one-forward-pass)
 - **Don't expect a second pass in streaming mode.** The first of `__iter__` /

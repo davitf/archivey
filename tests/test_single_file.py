@@ -939,7 +939,7 @@ def test_concurrent_open_same_member_interleaved() -> None:
     payload = b"abcdefghijklmnopqrstuvwxyz" * 40
     with open_archive(
         io.BytesIO(gzip.compress(payload)),
-        concurrent_members=True,
+        concurrent_operations=True,
         seekable_members=True,
     ) as ar:
         (member,) = ar.members()
@@ -959,7 +959,7 @@ def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
     path = tmp_path / "data.txt.gz"
     payload = b"reentrant payload " * 50
     path.write_bytes(gzip.compress(payload))
-    with open_archive(path, concurrent_members=True, seekable_members=True) as ar:
+    with open_archive(path, concurrent_operations=True, seekable_members=True) as ar:
         (member,) = ar.members()
         first = ar.open(member)
         assert first.read(8) == payload[:8]

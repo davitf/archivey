@@ -829,7 +829,7 @@ def _measure_row(entry: CorpusEntry, key: str, tmp: Path) -> Row:
         with open_archive(path, password=pw) as reader:
             row.checks.append(_check_seekable_default(reader))
             row.checks.append(_check_concurrent(reader, expected=False))
-        with open_archive(path, password=pw, concurrent_members=True) as reader:
+        with open_archive(path, password=pw, concurrent_operations=True) as reader:
             row.checks.append(_check_concurrent(reader, expected=True))
         row.checks.append(_check_source_pipe(path, entry))
         row.checks.append(_check_lifetime(path, entry, seekable_members=False))
