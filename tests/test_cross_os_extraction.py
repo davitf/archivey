@@ -1493,3 +1493,45 @@ def test_short_name_alias_on_windows(tmp_path: Path) -> None:
     assert two.status is ExtractionStatus.EXTRACTED
     assert two.collided_with == dest / "longfilename.txt"
     assert (dest / "longfilename.txt").read_bytes() == b"2"
+
+
+# --- A name another writer creates first clashes as the existence check would -------
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates the Windows rename error")
+@pytest.mark.parametrize(
+    ("overwrite", "raised"),
+    [
+        (OverwritePolicy.ERROR, ExtractionError),
+        (OverwritePolicy.REPLACE, PermissionError),
+    ],
+)
+def test_rename_onto_a_name_created_after_the_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overwrite: OverwritePolicy,
+    raised: type[BaseException],
+) -> None:
+    """Simulated on POSIX: another writer (a second extraction into the same folder)
+    creates the file between the existence check and the rename, and Windows refuses
+    the rename with access denied. Under ERROR that is the clash the check reports;
+    under any other policy the error is not a clash and goes through as it is."""
+    monkeypatch.setattr(extraction, "_WINDOWS", True)
+    dest = tmp_path / "out"
+    real_replace = os.replace
+
+    def replace(src: str, dst: str) -> None:
+        if os.path.basename(str(src)).startswith(".archivey-tmp-"):
+            Path(dst).write_bytes(b"other writer")
+            raise PermissionError(13, "Access is denied", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    with pytest.raises(raised) as excinfo:
+        open_and_extract(
+            io.BytesIO(_tar([("file", "a.txt", b"ours")])), dest, overwrite=overwrite
+        )
+    if raised is ExtractionError:
+        assert "already exists" in str(excinfo.value)
+    assert (dest / "a.txt").read_bytes() == b"other writer"
+    assert [p.name for p in dest.iterdir()] == ["a.txt"]

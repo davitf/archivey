@@ -4524,7 +4524,24 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, dest_path)
+            try:
+                self._swap_into_place(tmp, dest_path)
+            except PermissionError as exc:
+                # On Windows a rename onto a name another writer created after the
+                # existence check (a second extraction into the same folder) fails
+                # with access denied; POSIX would replace it. Under ERROR that is the
+                # same clash the check reports.
+                if not (
+                    _WINDOWS
+                    and self._overwrite is OverwritePolicy.ERROR
+                    and os.path.lexists(long_path(dest_path))
+                ):
+                    raise
+                raise ExtractionError(
+                    "Destination already exists: "
+                    f"{display_path(self._shown(dest_path))}",
+                    member_name=member.name,
+                ) from exc
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
