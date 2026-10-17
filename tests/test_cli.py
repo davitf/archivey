@@ -2679,16 +2679,47 @@ def test_may_land_on_existing_does_not_backtrack_on_a_crafted_name(
     assert time.monotonic() - started < 5
 
 
-def test_may_land_on_existing_ignores_case(
+def _folds_case(directory: Path) -> bool:
+    probe = directory / "case-probe"
+    probe.touch()
+    try:
+        return (directory / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def test_may_land_on_existing_ignores_case_where_the_filesystem_does(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``top `` is written as ``top``, which a case-insensitive filesystem holds as the
-    operator's ``TOP``; the check counts it on every filesystem."""
+    operator's ``TOP``; a case-sensitive one keeps them apart."""
     from archivey.cli.extract_cmd import _may_land_on_existing
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "TOP").mkdir()
-    assert _may_land_on_existing("top ")
+    assert _may_land_on_existing("top ") is _folds_case(tmp_path)
+
+
+def test_indexed_symlink_root_lands_beside_an_entry_differing_in_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On a case-sensitive filesystem the operator's ``T`` does not collide with the
+    root ``t `` (written as ``t``), so the symlink root extracts into the cwd, live."""
+    if _folds_case(tmp_path):
+        pytest.skip("the filesystem folds case, so T and t collide")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "target.txt").write_bytes(b"TARGET")
+    (tmp_path / "T").write_bytes(b"MINE")
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("t ")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "target.txt")
+    assert main(["x", str(archive)]) == EXIT_OK
+    assert not (tmp_path / "one").exists()
+    assert (tmp_path / "t").read_bytes() == b"TARGET"
+    assert (tmp_path / "T").read_bytes() == b"MINE"
 
 
 def test_indexed_single_root_renames_past_the_operators_entry(

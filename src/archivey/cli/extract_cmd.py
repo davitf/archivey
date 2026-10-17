@@ -205,7 +205,8 @@ def _may_land_on_existing(name: str) -> bool:
     rewritten stands for itself, nothing, or ``%XX`` escapes; a ``%`` stands for itself
     or ``%25``, as it is escaped in a name that has other escapes; a ``\\`` ends the
     top level, as it is written as ``/``; trailing dots and spaces may be stripped.
-    Case is ignored, as a case-insensitive filesystem would. The match is loose on
+    An entry that matches only when case is ignored counts when the cwd folds case
+    (:func:`_cwd_folds_case`). The match is loose on
     purpose: a false match only sends the archive through the wrapper, while a missed
     one lets ``--overwrite`` touch the operator's entry. A name with more than four
     such characters always counts, which keeps the match's backtracking bounded."""
@@ -229,11 +230,23 @@ def _may_land_on_existing(name: str) -> bool:
         else f"(?:{re.escape(ch)}|(?:%[0-9A-Fa-f]{{2}})+)?"
         for ch in stem
     )
-    written = re.compile(f"{pattern}[. ]*", re.IGNORECASE)
+    written = re.compile(f"{pattern}[. ]*")
+    folded = re.compile(f"{pattern}[. ]*", re.IGNORECASE)
     try:
-        return any(written.fullmatch(entry) for entry in os.listdir("."))
+        return any(
+            written.fullmatch(entry)
+            or (folded.fullmatch(entry) and _cwd_folds_case(entry))
+            for entry in os.listdir(".")
+        )
     except OSError:
         return True  # the cwd could not be listed: take the safe route
+
+
+def _cwd_folds_case(entry: str) -> bool:
+    """Whether the cwd entry ``entry`` is also found under its case flipped, as on a
+    case-insensitive filesystem. Errs towards ``True`` when both spellings exist."""
+    flipped = entry.swapcase()
+    return flipped != entry and os.path.lexists(flipped)
 
 
 @dataclass
