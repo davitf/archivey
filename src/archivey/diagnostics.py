@@ -430,7 +430,9 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     the field it would have populated is absent rather than wrong. ``record`` names
     the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
     ``redir``, ``version``; ZIP's Unicode Path extra field, ``unicode_path``, and its
-    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``);
+    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``;
+    a TAR device header's ``device_numbers``, when its devmajor or devminor field is
+    not a number);
     ``record_id`` is its numeric type where the format has one (0x7075 for
     ``unicode_path``, the field's tag for ``unix_owner``), so an unnamed record is
     still identifiable.
