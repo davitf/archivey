@@ -144,11 +144,11 @@ yielded.
   ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.
-- Where a pipe and a file differ, on archives no writer produces: a data descriptor
-  that disagrees with the central directory, a local header the directory contradicts,
-  or two same-named members whose directory order reverses their file order make the
-  member fail at the end of the pass (`CorruptionError`), where a read from a file
-  writes it.
+- Where a pipe and a file differ, on archives no writer produces or damaged ones: a
+  data descriptor that disagrees with the central directory, a local header the
+  directory contradicts, or two same-named members whose directory order reverses their
+  file order make the member fail at the end of the pass (`CorruptionError`), where a
+  read from a file writes it.
 - **A member whose local header disagrees with the central directory on its name, or
   stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
   alike, as `unzip` reads it. The directory's name is used, reported as
@@ -228,9 +228,8 @@ yielded.
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
   not.
 - An end record that disagrees with the central directory is a warning, not an error:
-  an entry count that does not match, an archive comment length past the end of the
-  file, or a directory entry whose name, extra field or comment runs past the
-  directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
+  an entry count that does not match, or an archive comment length past the end of
+  the file. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.STRICT`` raises.
 - Timestamps: DOS base; NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
   Extended Timestamp override when present, the Unix fields read as unzip 6.00 reads
@@ -306,11 +305,17 @@ yielded.
   pass.
 - `concurrent_operations=True` uses a per-reader shared-handle lock (same shape as ISO).
 - **An old-style directory that declares data is reported.** A regular-file header
-  (typeflag NUL or `0`) whose name ends in `/` is a directory, as GNU tar and 7-Zip
-  read it. When its size field is not zero, the directory keeps that `size`,
-  `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction creates the directory and
-  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them.
+  (typeflag NUL, `0` or contiguous `7`) whose name ends in `/` is a directory, as GNU
+  tar reads it; 7-Zip agrees for NUL and `0`. When its size field is not zero, the
+  directory keeps that `size`, `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction
+  creates the directory and skips the blocks as GNU tar does, and `reader.read()` on
+  the directory returns them.
   `DiagnosticPolicy.STRICT` refuses the archive.
+- **A member of an unknown type is a file when it has data.** A header whose type byte
+  archivey does not know (such as `9`) and that declares data is a `FILE` of that size,
+  which reads and extracts like any file, as GNU tar extracts it. One that declares no
+  data is `OTHER`, and extraction skips it. Both are reported with `MEMBER_TYPE_UNKNOWN`,
+  which `STRICT` does not refuse, and `extra["tar.type"]` keeps the byte.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
@@ -371,9 +376,18 @@ yielded.
       byte further out goes unseen; on a compressed tar that 1 MiB is decompressed to
       inspect it. Bytes after the compressed stream itself (after the gzip or xz stream
       ends) are reported the same way, with the codec's name as `format`; see
-      [Single-file compressors](#single-file-compressors). A tail that does not
-      decompress (a missing gzip footer) ends the check quietly rather than failing the
-      listing.
+      [Single-file compressors](#single-file-compressors). A compressed stream cut
+      inside its footer (a missing gzip CRC-32, say) does not fail the listing, since
+      every member was read whole, but its checksum was never checked: that is
+      `DIGEST_UNVERIFIABLE`, which `STRICT` refuses. A stream that fails to decompress
+      past the trailer is `DIGEST_UNVERIFIABLE` too, worded as "whether the checksum
+      passed cannot be told": the failing bytes may be a further compressed member
+      after the one holding the members. The check stops at trailing bytes, and
+      says nothing about the stream's checksum past them: in a concatenated
+      `.tar.gz` they are a second gzip member, and the first one's checksum was
+      already checked. Junk inside the same gzip member can leave that checksum
+      unchecked, so treat `ARCHIVE_TRAILING_DATA` on a compressed tar as "the members
+      may not have been checked" too.
     - Truncation *inside* a member's data always raises `TruncatedError`, whatever the
       policy: in a listing or a pass when the walk reaches the cut, and from a member
       stream on the read that reaches it. A read with a size returns the bytes before the

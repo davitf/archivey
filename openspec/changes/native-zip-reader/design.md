@@ -108,8 +108,10 @@ ZIP64 extra field (`0x0001`) in turn, as stdlib does, reading values in the orde
 APPNOTE gives: a value still all ones after one field is read again from the next (an
 uncompressed size of `0xFFFFFFFF` or 64-bit all ones, a compressed size or header
 offset of `0xFFFFFFFF`), and the disk number is read once, from the first field with
-four bytes left after the other values. It stops at `cd_size` bytes, as stdlib does, and cuts a
-name, extra or comment that runs past that point, which is one of the findings.
+four bytes left after the other values. It stops at `cd_size` bytes, as stdlib does.
+A name, extra or comment that runs past that point is damage, not cut as stdlib cuts
+it, and so are fields that hold the entries after them and a name made shorter
+(`dev-docs/formats/zip.md` §2.2).
 
 The walk takes no limit and no charge callback. An entry's variable fields are three
 16-bit lengths, so the most one entry can make the parser hold is 46 + 3 × 65 535 bytes,
@@ -276,7 +278,7 @@ the directory is then read forward from the same stream with the same entry pars
 | --- | --- |
 | Sizes in the local header (bit 3 clear) | `compressed_size` bytes |
 | Bit 3, a codec with an end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark) | The codec's own end, then the data descriptor: signature optional, 8-byte sizes when the local header has a ZIP64 extra field, else 4-byte. Its CRC and sizes are checked against what was read. A member the pass reads past (nobody read it to its end) is decoded no further than the byte past the link target cap, then the reparse prefix a file read reads (the buffer and one byte) and one byte past it; if its codec has not ended there, the STORED scan below passes it on its stored bytes, matched on the compressed size and the signature after it, since decoding the rest costs what no limit bounds. If the decode fails, the walk's scan finds the descriptor on the stored bytes, with no key, starting at the last 4 MiB the decode read (the walk's put-back window) and counting the bytes before them; the members after it are read unless the decode ran more than that past the data's end |
-| Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for a local header, central header or end record signature (or the end of the stream), and take a descriptor ending right before it whose CRC and compressed size match the bytes since the data start. Its own `PK\x07\x08` is optional (APPNOTE 4.3.9.3; early PKZIP left it out), so both shapes are tried; libarchive finds only the signed one. None matching by the end record (damage, or bytes between the descriptor and the next header): `UnsupportedFeatureError` |
+| Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for a local header, central header or end record signature (or the end of the stream), and take a descriptor ending right before it whose CRC and compressed size match the bytes since the data start. Its own `PK\x07\x08` is optional (APPNOTE 4.3.9.3; early PKZIP left it out), so both shapes are tried; libarchive finds only the signed one. When none matches whole, a descriptor with one damaged field ends the member: without its signature, two of its CRC and two sizes agree; with it, its compressed size or two fields; with a damaged signature, all three. The member then fails its CRC or size check when read, or the directory check at the end of the pass, and the members after it are read (DR-2). None matching by the end record (more damage, or bytes between the descriptor and the next header): `UnsupportedFeatureError` |
 | Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext. The descriptor's CRC covers the plaintext, so the scan matches on the compressed size and the signature after it only; the CRC (ZipCrypto, AE-1) or the HMAC (AES) then checks the plaintext as for any member |
 | Bit 3, LZMA without the EOS bit | The codec cannot find the end, so the member's read is `UnsupportedFeatureError` in this mode, naming the reason. The walk's scan on the stored bytes then passes it as it does a failed decode, under the same 4 MiB window. A seekable source reads it. (PPMd has no flag for a missing end mark: such a member fails its decode, from a file too, and the scan passes it.) |
 | Bit 3, encrypted, any method but STORED, nobody reads it | The STORED scan, on the ciphertext, matching the compressed size and the signature after it: no key is needed to pass the member, and a short one keeps its ciphertext for a link target as a sized one does. A false match in ciphertext takes a planted signature and size (about 2^-64 per position by chance); a crafted one is the planted-prefix case, caught against the directory |
@@ -323,10 +325,13 @@ until the codec stream ends (a `refuse_input_after_end` stream raises
 over": the descriptor itself is input after the codec's end on every valid member),
 then the walk looks for the descriptor in the last 4 MiB it handed out: the
 four bytes of the decoded data's CRC, with a compressed size equal to their own
-position and a ZIP signature after them. A signed descriptor whose CRC differs (the
-data is damaged) is found by its signature and size, and the reader reports the CRC
-mismatch; an unsigned one cannot be told from the data then, and the walk stops with
-`CorruptionError`.
+position and a ZIP signature after them. A descriptor with one damaged field is found
+as the STORED scan finds one, with the decoded CRC and size as the fields it checks
+(`match_damaged_descriptor`): a signed one by its signature and compressed size, an
+unsigned one by two of its three fields. The reader then reports the CRC or size
+mismatch, or the directory contradicts the descriptor at the end of the pass, and the
+members after it are read. Only a descriptor with more damage than that stops the walk,
+with `CorruptionError`.
 
 Because the descriptor dates the end from its own position, bytes between the codec's
 end and the descriptor count into its compressed size. DR-3's check that nothing
@@ -425,8 +430,13 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   (on Windows a read-only entry is not moved, so the member fails as it does from a
   file). A run that stops before the end of the pass (`abort_on`, `on_error="stop"`, a
   limit) never learns which members it keeps, so a write over a caller's entry is
-  taken back and the entry returns; the members it wrote elsewhere stay, as a stopped
-  run's do. One that stops while the end of the pass settles keeps what it settled.
+  taken back and the entry returns. It never learns which members are links either,
+  and a link the pass wrote holds its target as a file's content, so every file it
+  wrote whose data could be a link's is taken back: one within the 4096-byte target
+  cap, or one that starts with a Windows symlink or junction reparse tag. The longer
+  files it wrote stay, as a stopped run's do, without the modes only the directory
+  gives. One that stops while the end of the pass settles keeps what it settled, and
+  takes back the files of the members it had not settled yet that could be links.
   Two effects outlive the take-back. `abort_on` fires before a write begins, which for
   such a member is before the end decides, so a run can stop for a member that would
   not have been selected; deferring it would mean writing the member it exists to
@@ -456,16 +466,18 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   offset was given, the walk scans forward for a local header that the detector's ZIP
   hit validator (`validate_zip_local_header`) accepts, within the same 2 MiB window
   (`SFX_MAX`), and starts there. Nothing found in the window is `CorruptionError`
-  naming the reason. In the seekable read a missed stub costs nothing, because `base`
-  recovers the offsets; the forward walk has no end record to recover them from until
-  the end.
+  naming the reason, unless the stream ends within the window on an end record: then
+  the stub and what follows go to the tail, as for an archive whose members are gone,
+  and an empty archive behind a stub opens as from a file. In the seekable read a
+  missed stub costs nothing, because `base` recovers the offsets; the forward walk
+  has no end record to recover them from until the end.
 - Everything after the last member is kept and parsed by the seekable read's own code:
   bytes before the directory (an APK signing block, for one), the directory, the end
   records, the comment and anything after it. `find_end_record` runs over them, then
   `CentralDirectoryWalk` over the directory the record places, so the pass picks the
   end record a file read picks (a decoy in the comment included), reads exactly the
-  bytes the declared directory size covers, and cuts an entry that runs past them as
-  the file read does, with the same report. What the pass keeps is bounded by the
+  bytes the declared directory size covers, and raises on an entry that runs past them
+  as the file read does. What the pass keeps is bounded by the
   listing limits: each entry's 46-byte header and its text, plus four end-record
   search windows (`_tail_bound` in `zip_forward_reader.py` says what each is for).
   While reading it holds that plus one 64 KiB chunk, and joining the kept chunks at
@@ -486,6 +498,21 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   set (a descriptor counts only when a ZIP signature follows it, which is what stops a
   planted one inside STORED data). Recognising an APK signing block by its own size
   fields would cover the second; it is not done.
+- Bytes after a member that are no local header, before the next member: a gap a
+  writer left, a data descriptor after a member whose sizes are in its header, or the
+  directory and end record of a first archive with a second appended (`cat`). The walk
+  stops there and keeps the rest as the tail. Once the directory has been read, each
+  entry pointing into the kept tail is read from it at that offset, a walk of one
+  local entry each, and yielded before the pass ends; only offsets the directory names
+  are read, so the pass yields nothing there the file read does not list. An entry
+  whose bytes the bound dropped is `ResourceLimitError`, as a directory there is.
+  Every byte each attempt consumes is counted, a member read or a local header that
+  fails to parse, and an entry reached once that count equals the bytes held is
+  `CorruptionError` before it is read: the entries overlap, which no writer lays out
+  and no limit relieves, so the kept bytes are consumed at most twice, not once each.
+  A local header that does not parse fails its entry, with that reason. A bit-3 member
+  before such bytes still ends the pass: its descriptor counts only with a ZIP
+  signature after it (the table above).
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
   Writers put both in the same order; when they differ, `is_current` follows the
@@ -747,7 +774,7 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 | `streaming=True` on a non-seekable source | `StreamNotSeekableError` at open | Read forward (§"Streaming") | The maintainer's request, 2026-10-10 |
 | A ZIP64 archive whose directory is Strong-Encrypted | `CorruptionError` | `UnsupportedFeatureError` | DR-4 |
 | Bytes after the end record and its comment | Nothing reported | `ARCHIVE_TRAILING_DATA` warning; strict refuses; zero padding stays silent. 7-Zip 23.01 warns on the same input, `unzip` says nothing. Examined as TAR's tail is, in both modes: at most 1 MiB past the comment's end, first non-zero byte reported, `expected_marker="zeros_to_eof"` (§"Trailing bytes") | The 2026-10-07 ruling (davi): report trailing data after ZIP, 7z, RAR and ISO, as TAR and the codecs already do. Stage 2 |
-| A ZIP from a pipe whose data descriptor understates a STORED member, or whose directory lists two same-name members in the reverse of their file order | Not readable at all (non-seekable source refused) | That member fails at the end of the pass (`FAILED` under `OnError.CONTINUE`, a raise under `STOP`); the seekable read of the same archive writes it. The only on-disk difference between the two modes | DR-5a: only crafted archives have these shapes, and matching would mean buffering every member (ADR 0010). Stage 3 |
+| A ZIP from a pipe whose data descriptor understates a STORED member, or whose directory lists two same-name members in the reverse of their file order | Not readable at all (non-seekable source refused) | That member fails at the end of the pass (`FAILED` under `OnError.CONTINUE`, a raise under `STOP`); the seekable read of the same archive writes it. Of the shapes no writer produces, the only on-disk difference between the two modes; damage adds one, a bit-3 member whose data descriptor has one damaged field (`dev-docs/formats/zip.md` §2.2.2) | DR-5a: only crafted archives have these shapes, and matching would mean buffering every member (ADR 0010). Stage 3 |
 | A member flagged as a Windows reparse point whose data is not a reparse buffer, in a `stream_members()` pass | Yielded as a SYMLINK with no stream, retyped to FILE after the pass: its content is lost | Typed when the pass reaches it, by reading the bounded reparse header ahead and handing back a stream of the whole member, as 7z already does; `members()` already lists it as FILE. From a pipe the reparse bit arrives with the directory, so such a member is written as a file and stays one, and only a real reparse buffer becomes a link (§"What only the central directory says") | DR-5, DR-1. Stage 3 |
 | An end record whose comment and trailing bytes total exactly 65 536 bytes (a maximal comment and one junk byte), on Python 3.13 and later 3.12 releases | `BadZipFile`, so `CorruptionError` at open | Listed; the junk is trailing data. Where stdlib keeps the older window (3.11, early 3.12) it already reads it | The wider window reads everything either stdlib window reads (§"Layout"). Stage 2 |
 | A damaged ZIP64 end record or locator | `CorruptionError` at open, nothing listed | The classic record's values when none is saturated, with `ARCHIVE_EOF_MARKER_MISSING`; otherwise the local-header walk lists the members, then raises the same `CorruptionError`, as a pipe read does | The maintainer's ruling, 2026-10-14. Stage 3 |
@@ -923,7 +950,7 @@ and `is_current`; for a data-stored link: the target).
 | Parse lazily, member by member | `ListingLimits` see each member as it is read; open does no work proportional to the archive (DR-15b); a damaged entry costs only the entries after it (DR-2) | Parsing the whole directory at open, as stdlib does |
 | Parser returns bytes; the reader decodes | Name decoding is policy (`encoding=`, fallback, diagnostics) that already lives in the reader and is shared in shape with RAR and TAR | Decoding in the parser, which is how stdlib ended up refusing whole archives |
 | Keep stdlib's end-record search and `concat` rule | Prefixed archives and decoy signatures in comments resolve exactly as today (on newer Pythons one more archive opens, below), and the differential test can compare against stdlib | 7-Zip's search, which differs on crafted inputs and would change detection results |
-| Stop the walk at `cd_size`, cutting an overrunning field | Same listing as today; the overrun stays a finding | Reading the field from past the directory, which changes names on crafted input |
+| Stop the walk at `cd_size`; an entry whose fields run past it, or hold the entries after it, is damage | Cutting the field listed a member named after the swallowed entries' bytes and dropped those entries, with only a count warning, where a pipe listed them all (DR-1, DR-5); as damage, both reads list every member from the local headers and raise | Cutting the field at `cd_size` as stdlib does (the earlier choice; superseded by davi's 2026-10-17 ruling, PR 860); reading the field from past the directory, which changes names on crafted input |
 | Apply central-only fields at the end of a forward pass | Matches seekable extraction on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive does (a symlink becomes a file: DR-1); spooling the archive to find the directory first |
 | Positioned reads through a `read_at(offset, n)` callable for the directory walk | The walk is lazy, so it runs between reads of member data on the same handle; a positioned read under the reader's lock leaves the handle where the member stream needs it, and the parser stays free of locking | A `LockedStream` over the handle, which serialises each call but shares one position, so every walk read would need a seek and a read as one locked step, which is `read_at` |
 | The forward walk reads a `BinaryIO` and counts what it consumed | The same shape as `TarWalker` on a forward-only stream; no new reader type | A separate `ForwardReader` class |

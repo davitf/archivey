@@ -433,7 +433,10 @@ None that block. Two are settled by rules, named here so the maintainer can obje
 - **Unknown typeflags stay `OTHER` with their data skipped.** GNU tar extracts an
   unknown typeflag as a regular file with a warning. Keeping today's listing is DR-5
   (no listing change in a rewrite) and the device ruling's "useless as files"; changing
-  it is a separate question with its own fixtures.
+  it is a separate question with its own fixtures. *Superseded 2026-10-17 (maintainer
+  ruling, DR-25): an unknown typeflag with data is a `FILE` of that size, one with none
+  stays `OTHER`, and both report `MEMBER_TYPE_UNKNOWN`; see the `format-tar` spec and
+  `dev-docs/formats/tar.md` §6.*
 - **A rejected mid-archive header stays `CorruptionError` after the members before it.**
   GNU tar resyncs and keeps listing. That is salvage, which `IDEAS.md` plans after
   0.2.0, and DR-21 says to leave it to that change rather than widen this one.

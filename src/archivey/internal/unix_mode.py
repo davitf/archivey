@@ -63,8 +63,8 @@ def special_file_type_from_tar_typeflag(typeflag: bytes) -> SpecialFileType | No
     """The ``extra["special_file_type"]`` value for a TAR typeflag, or ``None``.
 
     Only the character-device, block-device and FIFO typeflags (``3``, ``4``, ``6``)
-    name a special file. The other typeflags tarfile types ``OTHER`` (a GNU dumpdir
-    ``D``, a volume header ``V``, a vendor type) are not special files, so they get no
-    key: the key means "the archive recorded a device, FIFO or socket" in every format.
+    name a special file. The other typeflags (a volume header ``V``, a typeflag the
+    reader does not know) are not special files, so they get no key: the key means
+    "the archive recorded a device, FIFO or socket" in every format.
     """
     return _TAR_SPECIAL_TYPEFLAGS.get(typeflag)

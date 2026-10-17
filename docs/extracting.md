@@ -179,6 +179,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   extracting the link raises `UnsupportedFeatureError` or `PackageNotInstalledError`.
   `DiagnosticPolicy.STRICT` refuses such an archive even when its bytes are intact and
   the only cause is a missing library, as it does for a link whose password is missing.
+  A ZIP read from a pipe has one more such case: the pass keeps the data of members
+  short enough to be links until the central directory says which are, at most
+  `max_metadata_bytes` of it, and drops the longest past that. A link whose data was
+  dropped is listed without a target, reported with `reason="target_data_dropped"`, and
+  fails when extracted.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small
@@ -317,7 +322,9 @@ with archivey.open_archive("untrusted.zip") as reader:
 An abort is immediate: no later member is processed and **no report is returned** — so
 handle the exception, not a return value. Output already written for earlier members
 stays on disk, exactly as with `OnError.STOP`; an abort stops the run, it does not roll
-it back.
+it back. The exception is a ZIP read from a pipe, whose pass stops before the central
+directory says which members are links: it removes the files it wrote that could still
+be links ([A ZIP from a pipe](#a-zip-from-a-pipe)).
 
 `NAME_COLLISION` fires on every collision whatever `OverwritePolicy` does with it —
 replaced, skipped, errored or renamed — because the trigger is the collision, not its
@@ -451,7 +458,15 @@ stored as `docs\r.txt`, sees the stored name during the pass, so that member fai
 file of yours that the pass replaces under `overwrite="replace"` is moved aside and put
 back at the end, unless the member still lands there.
 
-Some things go differently from a pipe, on an archive that is crafted or damaged:
+If the run stops (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the
+directory, or any other reason) before the end of the pass has settled a member, it never learns whether that member is a link, and a link the pass
+wrote is still a file holding its target. So the run removes each such file whose
+content could be a link's: 4096 bytes or less, or starting with the tag of a Windows
+symlink or junction. The longer files stay, with no permissions applied. From a file,
+the same stop keeps every member written before it.
+
+Some things go differently from a pipe. All but the last come only from an archive
+that is crafted or damaged:
 
 - A data descriptor that disagrees with the directory, a local header the directory
   contradicts, two same-named members whose directory order reverses their file order,
@@ -476,6 +491,13 @@ Some things go differently from a pipe, on an archive that is crafted or damaged
   the pass stops there with an error.
 - An LZMA member with no end marker whose sizes come after its data fails with
   `UnsupportedFeatureError` from a pipe; from a file it is written.
+- A symlink that comes after `max_metadata_bytes` of small members' data, each no
+  shorter than its target, fails with `LinkTargetNotFoundError` and is reported with
+  `SYMLINK_TARGET_UNAVAILABLE` (`reason="target_data_dropped"`); from a file it is
+  written. The pass keeps that data until the directory says which members are links,
+  and drops the longest past the limit. Any archive can reach this, though with the
+  default limit it takes about 16 000 files at least as long as the target ahead of
+  the link.
 
 ## Limits
 
@@ -494,7 +516,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   `for member in reader` and `extract_all()`. Trips raise `ResourceLimitError`. A TAR
   extraction, and any extraction from a streaming reader, does not list first: it checks
   the limits as each member arrives in its one pass, so members before the one that
-  crosses a cap are already written when it raises. A `stream_members()` pass that lists
+  crosses a cap are already written when it raises (from a ZIP read from a pipe, less
+  the files that could still be links: [A ZIP from a pipe](#a-zip-from-a-pipe)). A
+  `stream_members()` pass that lists
   as it goes yields the members before the one that crosses a cap, the same way. ZIP,
   7z, RAR and ISO check `max_members` at `open_archive` (on ZIP, as the directory is
   read when its end record understates the count; on a ZIP from a pipe, as each member

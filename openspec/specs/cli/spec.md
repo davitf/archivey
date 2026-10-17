@@ -589,6 +589,34 @@ The worked cases (selection, `-v`, stdin, `--outer` output) are in
 | `archivey cat a.tar.xz --outer a.txt` | Usage error, exit `2` |
 | `archivey cat big.gz \| head -c 5` | Exit `141` |
 
+### Requirement: extract and test --outer work on the compression layer alone
+
+`archivey extract ARCHIVE --outer` SHALL write the source with only its compression
+layer removed, as one file, as `gunzip -k` and `unxz -k` do: the tar of a `.tar.gz` or
+`.tgz` as `data.tar`, the file of a `.gz` under the single-file member name
+(`format-single-file-compressors`). It SHALL open the source as that single compressed
+file, so `-d`, the default destination, `--overwrite`, `--policy`, `--dry-run` and the
+report behave as for any single-file archive. `archivey test ARCHIVE --outer` SHALL read
+the whole decompressed stream, check the codec's end-of-stream check where it has one
+(Brotli and `.Z` have none), as `gzip -t` and `xz -t` do, and report it as one member.
+
+As for `cat --outer`, the layer SHALL be found by content whatever the file is named;
+on a container with no compression layer the run SHALL exit `1` with a message that
+names the format and says to leave out `--outer`; a directory, member patterns or
+`--exclude` SHALL be a usage error. A read-once path SHALL be a usage error that names
+`archivey cat --outer`, since finding the layer reads the start of the pipe.
+
+#### Scenario: outer refusals
+
+The worked cases are in `tests/test_cli_outer.py`.
+
+| Case | Expected |
+| --- | --- |
+| `archivey x data.tgz --outer` | Writes `data.tar` |
+| `archivey t weird.name --outer` on zlib bytes | Found by content; `1 OK` |
+| `archivey t a.tar --outer` | Exit `1`; message names `tar` and says to leave out `--outer` |
+| `archivey x a.tar.gz --outer a.txt` | Usage error, exit `2` |
+
 ### Requirement: an empty path argument is a usage error
 
 The system SHALL refuse an empty string given as the archive argument of any verb, or

@@ -95,6 +95,19 @@ The bytes reach stdout as they are decoded, so some or all of a member whose che
 fails may already have been written when the failure is found. `cat` then prints the error, stops, and exits
 `1`, as `zcat` does. Check the exit code before you trust the output.
 
+### Removing only the compression layer
+
+`archivey x data.tgz --outer` writes `data.tar` and leaves the source in place, as
+`gunzip -k` does; `-d`, `--overwrite` and `--dry-run` work as for any `.gz`.
+`archivey t data.tar.gz --outer` reads the whole decompressed stream and checks the
+compressor's end-of-stream checksum, as `gzip -t` does, without looking inside the
+tar. gzip, xz, lzip, bzip2 and zlib always carry one, zstd and LZ4 only when the writer
+added it, and Brotli and `.Z` never. As with `cat --outer`, the compressor is detected by
+content, so a raw zlib or Brotli stream is found whatever it is named, with no
+`--probe-content`. Both need a file on disk: for a pipe, use `archivey cat - --outer`.
+A ZIP, 7z, RAR, ISO or plain tar has no compression layer, so `--outer` refuses it, and
+it takes no member patterns or `--exclude`.
+
 ### Passwords
 
 `--password` puts the password on the command line, where other users of the machine can

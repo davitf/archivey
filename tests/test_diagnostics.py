@@ -1072,6 +1072,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED,
         # The same Mac archives with a member past 4 GiB; length and CRC are checked.
         DiagnosticCode.MEMBER_SIZE_WRAPPED,
+        # GNU tar extracts an unknown TAR typeflag as a file; the data is delivered.
+        DiagnosticCode.MEMBER_TYPE_UNKNOWN,
     }
 
 
