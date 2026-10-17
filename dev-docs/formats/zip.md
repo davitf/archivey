@@ -248,14 +248,20 @@ directory's bytes alone, so the walk remembers each position a chain steps onto 
 first header, with the answer, and a later chain stops there. Each such header is
 stepped over once per walk, and the reads past the walk's own go through one buffer: a
 directory of crafted chains costs about one more pass over it, however many signatures
-point into them. A signature that is part of a name fails at its first header and
-spends nothing. Two budgets bound the rest: headers remembered, as many as the
-directory could hold, and bytes read, twice the directory. Past either, the walk fails
-closed: an entry holding a signature it can no longer follow is damage, since a swallow
-cannot be ruled out.
-A local header that the file cuts short means the
-directory pointed at the wrong place (the directory follows every local header), so it
-is `CorruptionError` too, never `TruncatedError`.
+point into them. The memo holds at most 4096 positions (about 400 KiB), forgetting those
+the walk has passed, since chains only step forward; a ladder longer than that costs
+steps instead. Most signatures are settled before any following: the header one would
+start steps past the directory's end, or onto bytes the walk holds that start no header.
+A signature that is part of a name fails there and spends nothing. Two budgets bound
+the rest: headers stepped over, as many as the directory could hold, and bytes read,
+twice the directory. Past either, the walk fails closed: an entry holding a signature it
+can no longer follow is damage, since a swallow cannot be ruled out. What stays is time:
+a directory of nothing but signatures lists at about 155 ns a byte, an ordinary one at
+about 5 ns ([threat model](../threat-model.md#no-cpu-or-wall-clock-bound)).
+
+A local header that the file cuts short means the directory pointed at the wrong place
+(the directory follows every local header), so it is `CorruptionError` too, never
+`TruncatedError`.
 
 **"Version needed to extract" decides nothing.** Stdlib refused an archive whose entry
 said it needed more than 6.3; 7-Zip 23.01 reads such a stored member and Info-ZIP

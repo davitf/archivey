@@ -29,6 +29,7 @@ yields every entry before a damaged one.
 
 from __future__ import annotations
 
+import heapq
 import struct
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -846,31 +847,15 @@ class CentralDirectoryWalk:
             extra = data[at : at + extra_len]
             at += extra_len
             comment = data[at : at + comment_len]
-            found = data.find(
-                CENTRAL_HEADER_SIGNATURE, name_at - data_start, entry_end - data_start
+            self._follow_signatures(
+                follower,
+                data,
+                data_start,
+                name_at - data_start,
+                entry_end - data_start,
+                index,
+                base,
             )
-            while found >= 0:
-                swallowed = self._swallowed(
-                    follower, data, data_start, found + data_start, index, base
-                )
-                if swallowed is None:
-                    raise CorruptionError(
-                        f"ZIP central directory entry #{index}'s name, extra field or "
-                        "comment holds a central directory header, and following "
-                        "the headers such signatures chain to has already read or "
-                        "stepped over more than this directory allows for, so "
-                        "archivey cannot rule out that a length field swallowed "
-                        "the entries after it"
-                    )
-                if swallowed:
-                    raise CorruptionError(
-                        f"ZIP central directory entry #{index}'s name, extra field or "
-                        "comment holds the central directory headers after it: a "
-                        "length field swallowed them"
-                    )
-                found = data.find(
-                    CENTRAL_HEADER_SIGNATURE, found + 1, entry_end - data_start
-                )
 
             entry = _central_entry(fields, name, extra, comment, index=index, base=base)
             # An offset deferred to a ZIP64 extra field is not corrected. The first
@@ -942,6 +927,64 @@ class CentralDirectoryWalk:
                 CommentCutShort(end.comment_declared, len(end.comment))
             )
 
+    def _follow_signatures(
+        self,
+        follower: _ChainFollower,
+        data: bytes,
+        data_start: int,
+        lo: int,
+        hi: int,
+        index: int,
+        base: int,
+    ) -> None:
+        """Raise when a central header signature in ``data[lo:hi]``, entry ``index``'s
+        fields, starts entries that entry swallowed (:meth:`_swallowed`)."""
+        sig = CENTRAL_HEADER_SIGNATURE
+        find = data.find
+        starts = data.startswith
+        lengths = _CENTRAL_LENGTHS.unpack_from
+        held = len(data)
+        last_header = held - CENTRAL_HEADER_SIZE
+        cd_end = self._end.cd_size - data_start
+        found = find(sig, lo, hi)
+        while found >= 0:
+            # Most signatures inside a field are part of it: the header they would
+            # start steps to a place no header starts. That is settled here, from
+            # ``data`` and without the follower, which is most of a crafted field's
+            # cost.
+            if found <= last_header:
+                name_len, extra_len, comment_len = lengths(
+                    data, found + _CENTRAL_LENGTHS_AT
+                )
+                step_to = (
+                    found + CENTRAL_HEADER_SIZE + name_len + extra_len + comment_len
+                )
+                if step_to > cd_end or (
+                    step_to < cd_end
+                    and step_to + 4 <= held
+                    and not starts(sig, step_to)
+                ):
+                    found = find(sig, found + 1, hi)
+                    continue
+            swallowed = self._swallowed(
+                follower, data, data_start, found + data_start, index, base
+            )
+            if swallowed is None:
+                raise CorruptionError(
+                    f"ZIP central directory entry #{index}'s name, extra field or "
+                    "comment holds a central directory header, and following the "
+                    "headers such signatures chain to has already read or stepped "
+                    "over more than this directory allows for, so archivey cannot "
+                    "rule out that a length field swallowed the entries after it"
+                )
+            if swallowed:
+                raise CorruptionError(
+                    f"ZIP central directory entry #{index}'s name, extra field or "
+                    "comment holds the central directory headers after it: a "
+                    "length field swallowed them"
+                )
+            found = find(sig, found + 1, hi)
+
     def _swallowed(
         self,
         follower: _ChainFollower,
@@ -962,18 +1005,17 @@ class CentralDirectoryWalk:
         and a comment can hold a whole well-formed entry whose offset points at a local
         header with another name. A count that merely disagrees is
         :class:`EntryCountMismatch`."""
-        count = follower.headers_to_end(data, data_start, pos)
-        if count is None or count < 0:
-            return None if count is None else False
+        found = follower.headers_to_end(data, data_start, pos)
+        if found is None:
+            return None
+        count, head = found
+        if count < 0:
+            return False
         if _count_matches(self._end, index + 1 + count):
             return True
         name_at = self._local_name_at
         if name_at is None:
             return False
-        # The chain just read this header to step over it, so all 46 bytes are in
-        # ``data`` or the follower's buffer.
-        head = follower.header_at(data, data_start, pos)
-        assert head is not None and len(head) == CENTRAL_HEADER_SIZE
         fields = _CENTRAL_HEADER.unpack(head)
         if fields[18] == _U32_MAX:  # deferred to a ZIP64 field: not checked here
             return False
@@ -1020,6 +1062,13 @@ class CentralDirectoryWalk:
         return name_at_offset(offset) == name
 
 
+#: Positions a :class:`_ChainFollower` remembers: about 400 KiB of CPython objects,
+#: under one walk piece. A ladder that every later chain lands on has one rung per
+#: entry it spans, and the first chain remembers them, so a few thousand collapse
+#: any ladder short of that many entries.
+_MEMO_CAP = 4096
+
+
 class _ChainFollower:
     """Follows the central headers that a signature inside an entry's fields chains
     to, for one walk, at a cost linear in the directory's size.
@@ -1032,12 +1081,20 @@ class _ChainFollower:
     over once per walk, and the reads this needs go through one buffer kept across
     follows.
 
+    It holds at most ``_MEMO_CAP`` positions (about 100 bytes each in CPython), so
+    memory stays fixed whatever the directory holds. The walk finds signatures in
+    directory order and chains only step forward, so a position at or before the
+    signature being followed is never asked for again and is forgotten; the room
+    goes to the positions just ahead, which the next chains land on. Chains that
+    need more than the cap ahead to collapse cost steps instead, which the step
+    budget counts.
+
     Two budgets bound what a crafted directory can make it do, and when either runs
     out the walk cannot rule out a swallow and raises:
 
-    - headers stepped over past a first one, and so remembered: as many as the
-      directory could hold (``cd_size // 46``), plus a few. A signature that is part
-      of a name fails at its first header and spends none of it;
+    - headers stepped over past a first one: as many as the directory could hold
+      (``cd_size // 46``), plus a few. A signature that is part of a name fails at
+      its first header and spends none of it;
     - bytes read past the walk's own: twice the directory, plus two pieces.
     """
 
@@ -1048,6 +1105,8 @@ class _ChainFollower:
         #: Headers from a position to the directory's end, or -1 when they do not
         #: chain to it.
         self._known: dict[int, int] = {}
+        #: The remembered positions, smallest first, to forget those the walk passed.
+        self._order: list[int] = []
         self._steps_left = end.cd_size // CENTRAL_HEADER_SIZE + 64
         self._bytes_left = 2 * end.cd_size + 2 * _WALK_CHUNK
         self._buffer = b""
@@ -1073,13 +1132,21 @@ class _ChainFollower:
             self._bytes_left -= len(self._buffer)
         return self._buffer[pos - at : end - at]
 
-    def headers_to_end(self, data: bytes, data_start: int, pos: int) -> int | None:
+    def headers_to_end(
+        self, data: bytes, data_start: int, pos: int
+    ) -> tuple[int, bytes] | None:
         """How many central headers chain from ``pos`` exactly to the directory's end,
-        the one at ``pos`` included; -1 when they do not, ``None`` when a budget runs
-        out first."""
+        the one at ``pos`` included (-1 when they do not), and the fixed header at
+        ``pos``; ``None`` when a budget runs out first."""
         cd_size = self._cd_size
         known = self._known
+        # The walk finds signatures in directory order and a chain only steps
+        # forward, so no later follow reaches a position at or before this one.
+        heap = self._order
+        while heap and heap[0] <= pos:
+            del known[heapq.heappop(heap)]
         path: list[int] = []
+        first = b""
         while True:
             if pos >= cd_size:
                 rest = 0 if pos == cd_size else -1
@@ -1097,15 +1164,19 @@ class _ChainFollower:
                 self._steps_left -= 1
                 if self._steps_left < 0:
                     return None
+            else:
+                first = head
             path.append(pos)
             pos += _central_entry_size(head, 0)
         if not path:
-            return -1
-        # Remember every position past the first, with its own count.
+            return -1, first
+        # Remember the positions past the first, with their own counts, up to the cap.
         total = len(path)
-        for i in range(1, total):
+        room = min(total, 1 + _MEMO_CAP - len(known))
+        for i in range(1, room):
             known[path[i]] = -1 if rest < 0 else total - i + rest
-        return -1 if rest < 0 else total + rest
+            heapq.heappush(heap, path[i])
+        return (-1 if rest < 0 else total + rest), first
 
 
 def _central_entry_size(buffer: bytes, offset: int) -> int:

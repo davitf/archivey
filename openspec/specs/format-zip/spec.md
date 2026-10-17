@@ -454,12 +454,12 @@ An entry's lengths are damaged when:
   the lengths swallowed those entries. A member comment holding a whole well-formed
   entry chains too, but points at another member's local header and lists as it is;
 - its name, extra field or comment holds a central header signature, and following
-  such signatures has already remembered as many headers as the directory could hold
-  or read twice the directory past the walk's own reads, so the walk cannot rule out
-  a swallow. The walk remembers each header a chain steps onto past its first, so
-  following costs about one more pass over the directory however many signatures it
-  holds, and a signature that is part of a name fails at its first header and spends
-  nothing;
+  such signatures has already stepped over as many headers as the directory could
+  hold or read twice the directory past the walk's own reads, so the walk cannot rule
+  out a swallow. The walk remembers the headers a chain steps onto past its first, up
+  to a fixed number ahead of it, so following costs about one more pass over the
+  directory however many signatures it holds, in bounded memory, and a signature that
+  is part of a name fails at its first header and spends nothing;
 - no central header follows it and the local header at its offset holds another name:
   its name length was made shorter.
 

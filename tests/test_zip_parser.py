@@ -310,15 +310,10 @@ def test_a_follow_that_spends_its_budget_fails_closed(
         _parse(_parallel_fakes(300))
 
 
-def test_following_many_deep_chains_reads_the_directory_a_few_times() -> None:
-    """Each member's comment holds a rung, a fake header whose size reaches the next
-    member's rung, and more fakes every 4 KiB whose sizes land on that next rung, so
-    every signature chains through every later member before it fails. Following
-    each from scratch would read the rest of the directory once per signature
-    (quadratic in its size). The bytes the walk reads stay within a few times the
-    directory's size."""
-    count = 50
-    comment_len = 60_000
+def _ladder(count: int, comment_len: int = 60_000) -> bytes:
+    """``count`` members whose comments each hold a rung, a fake header whose size
+    reaches the next member's rung, and more fakes every 4 KiB whose sizes land on
+    that next rung, so every signature chains through every later member."""
     names = [f"m{i:05d}.txt" for i in range(count)]
     entry = CENTRAL_HEADER_SIZE + len(names[0]) + comment_len
 
@@ -339,7 +334,16 @@ def test_following_many_deep_chains_reads_the_directory_a_few_times() -> None:
             info = zipfile.ZipInfo(name)
             info.comment = bytes(comment)
             zf.writestr(info, b"")
-    data = buf.getvalue()
+    return buf.getvalue()
+
+
+def test_following_many_deep_chains_reads_the_directory_a_few_times() -> None:
+    """A ladder (:func:`_ladder`) of 50 members: every signature chains through
+    every later member before it fails. Following each from scratch would read the
+    rest of the directory once per signature (quadratic in its size). The bytes the
+    walk reads stay within a few times the directory's size."""
+    count = 50
+    data = _ladder(count)
     read = 0
     base = _read_at(data)
 
@@ -350,10 +354,57 @@ def test_following_many_deep_chains_reads_the_directory_a_few_times() -> None:
         return piece
 
     end = find_end_record(counting, len(data))
-    assert end.cd_size == count * entry
     read = 0
     assert len(list(CentralDirectoryWalk(counting, end))) == count
     assert read <= 4 * end.cd_size + (4 << 20), read
+
+
+def test_a_follow_that_spends_its_read_budget_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the byte budget spent, a chain that needs bytes past the walk's piece
+    is damage the walk cannot rule out, raised as such."""
+    original = zip_parser._ChainFollower.__init__
+
+    def small(self: zip_parser._ChainFollower, read_at: ReadAt, end: EndRecord) -> None:
+        original(self, read_at, end)
+        self._bytes_left = 0
+
+    monkeypatch.setattr(zip_parser._ChainFollower, "__init__", small)
+    with pytest.raises(CorruptionError, match="cannot rule out"):
+        _parse(_ladder(50))
+
+
+def test_following_chains_remembers_a_bounded_number_of_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each member's comment is a run of 50-byte fakes, each stepping onto the next
+    and the last onto the next member, so every chain runs to the directory's end
+    and every fake is a position a chain steps onto: about 26 000 of them here.
+    The follower remembers at most ``_MEMO_CAP`` at a time, and every entry lists."""
+    count = 20
+    fake = b"PK\x01\x02" + bytes(24) + struct.pack("<3H", 4, 0, 0) + bytes(12) + b"abcd"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(count):
+            info = zipfile.ZipInfo(f"m{i:05d}.txt")
+            info.comment = fake * (65_500 // len(fake))
+            zf.writestr(info, b"")
+    peak = 0
+    original = zip_parser._ChainFollower.headers_to_end
+
+    def watching(
+        self: zip_parser._ChainFollower, data: bytes, data_start: int, pos: int
+    ) -> tuple[int, bytes] | None:
+        nonlocal peak
+        found = original(self, data, data_start, pos)
+        peak = max(peak, len(self._known))
+        return found
+
+    monkeypatch.setattr(zip_parser._ChainFollower, "headers_to_end", watching)
+    _end, entries, _walk = _parse(buf.getvalue())
+    assert len(entries) == count
+    assert 0 < peak <= zip_parser._MEMO_CAP
 
 
 def test_a_swallow_that_leaves_the_count_agreeing_is_damage() -> None:

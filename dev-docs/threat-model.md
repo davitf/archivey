@@ -1070,11 +1070,15 @@ vulnerability. Most are in
 Every limit caps bytes, entries or key-derivation rounds, not time. Worst cases we know:
 a 7z BCJ2 `main` stream made only of branch candidates decodes at 1.8 MB/s in pure
 Python (26 MB/s on a real executable), and LZMA2 compresses that stream to almost
-nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folder
-costs folder size times candidates. A "work per output byte" limit for BCJ2 was
-considered and not added: no other codec has one, and `ExtractionLimits` still bounds
-the amount, only the rate is lower. Callers who need a time bound run archivey in a
-worker they can kill. Public: [known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folder costs
+folder size times candidates; a ZIP central directory whose comments are nothing but
+central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython 3.11),
+where an ordinary directory lists at about 5 ns, because each signature is checked for a
+swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). A "work per output byte"
+limit for BCJ2 was considered and not added: no other codec has one, and
+`ExtractionLimits` still bounds the amount, only the rate is lower. Callers who need a
+time bound run archivey in a worker they can kill. Public:
+[known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
 
 ### A native decoder crash or MemoryError
 
