@@ -18,6 +18,7 @@ from __future__ import annotations
 import gc
 import io
 import struct
+import threading
 import tracemalloc
 import zipfile
 from collections.abc import Callable
@@ -37,6 +38,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import zip_parser
+from archivey.internal.backends.zip_reader import ZipReader
 from archivey.types import ArchiveFormat, HashAlgorithm
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
@@ -881,6 +883,47 @@ def test_member_count_before_any_listing_runs_the_index_pass(
     assert walks == [1, 1]
 
 
+def test_member_count_asked_while_the_index_pass_runs_waits_for_its_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pass records the bounds before the count; a second thread that sees the
+    bounds then waits for the count instead of reading ``None``."""
+    stored = threading.Event()
+    release = threading.Event()
+
+    def get_bounds(self: ZipReader) -> object:
+        return self.__dict__.get("_held_bounds")
+
+    def set_bounds(self: ZipReader, value: object) -> None:
+        self.__dict__["_held_bounds"] = value
+        if value is not None:
+            # The index pass: hold it between its bounds and its count.
+            stored.set()
+            release.wait(5)
+
+    monkeypatch.setattr(
+        ZipReader, "_bounds", property(get_bounds, set_bounds), raising=False
+    )
+    counts: dict[str, int | None] = {}
+    with open_archive(io.BytesIO(_zip())) as reader:
+
+        def count(name: str) -> None:
+            counts[name] = reader.info.member_count
+
+        first = threading.Thread(target=count, args=("first",))
+        first.start()
+        assert stored.wait(5)
+        second = threading.Thread(target=count, args=("second",))
+        second.start()
+        second.join(0.5)
+        # Still waiting for the pass: the window the test is about was reached.
+        assert second.is_alive()
+        release.set()
+        first.join(5)
+        second.join(5)
+    assert counts == {"first": 3, "second": 3}
+
+
 # --- A listed member keeps a locator, not the directory entry -----------------------
 
 
@@ -979,3 +1022,19 @@ def test_a_failure_met_walking_ahead_is_raised_where_the_pass_reaches_it() -> No
                 assert stream is not None
                 read.append((member.name, stream.read()))
     assert read == [(n, n.encode() * 3) for n in _NAMES]
+
+
+def test_decoded_name_field_order_is_pinned() -> None:
+    # The ASCII fast path in _decode_member_name builds _DecodedName positionally
+    # with tuple.__new__, which cannot notice a reordered or added field.
+    from archivey.internal.backends.zip_reader import _DecodedName
+
+    assert _DecodedName._fields == (
+        "text",
+        "raw_name",
+        "alternate_raw_name",
+        "inferred_encoding",
+        "declared_encoding",
+        "unicode_extra_fault",
+        "unicode_path_used",
+    )

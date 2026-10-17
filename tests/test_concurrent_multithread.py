@@ -56,7 +56,7 @@ def _expected(n: int = 8) -> dict[str, bytes]:
 
 def _fan_out_read(path: Path, *, seekable: bool = False) -> dict[str, bytes]:
     with open_archive(
-        path, concurrent_members=True, seekable_members=seekable
+        path, concurrent_operations=True, seekable_members=seekable
     ) as reader:
         members = [m for m in reader.members() if m.is_file]
         barrier = threading.Barrier(len(members))
@@ -132,7 +132,9 @@ def test_multithread_single_file_gz(tmp_path: Path) -> None:
     raw = b"hello-single-file-payload" * 50
     path = tmp_path / "x.gz"
     path.write_bytes(gzip.compress(raw))
-    with open_archive(path, concurrent_members=True, seekable_members=True) as reader:
+    with open_archive(
+        path, concurrent_operations=True, seekable_members=True
+    ) as reader:
         reader.members()
         member = next(m for m in reader.members() if m.is_file)
 
@@ -165,7 +167,7 @@ def test_multithread_iso_open_read(tmp_path: Path) -> None:
 
     expected = {f"F{i}.TXT": f"payload-{i}".encode() * 20 for i in range(4)}
     # ISO member names may normalize; compare by payload set via open-by-member.
-    with open_archive(iso_path, concurrent_members=True) as reader:
+    with open_archive(iso_path, concurrent_operations=True) as reader:
         files = [m for m in reader.members() if m.is_file]
         assert len(files) >= 4
         barrier = threading.Barrier(len(files))
@@ -199,7 +201,7 @@ def test_concurrent_close_shuts_streams_down_once(tmp_path: Path) -> None:
     re-entrant on close would be entered twice.
     """
     path = _make_zip(tmp_path / "a.zip", n=1)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     stream = reader.open("f0.txt")
 
     shutdowns: list[int] = []
@@ -250,7 +252,7 @@ def test_concurrent_close_shuts_streams_down_once(tmp_path: Path) -> None:
 def test_close_closes_every_live_stream(tmp_path: Path) -> None:
     """reader.close() closes all live streams, not just one; new opens fail."""
     path = _make_zip(tmp_path / "a.zip", n=4)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     members = [m for m in reader.members() if m.is_file]
     streams = [reader.open(m.name) for m in members[:2]]
     reader.close()
@@ -274,7 +276,7 @@ def test_multithread_reads_beside_stream_members(
     name = "a.tar.gz" if compressed else "a.tar"
     path = _make_tar(tmp_path / name, compressed=compressed, n=4)
     expected = _expected(4)
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         barrier = threading.Barrier(5)
         errors: list[BaseException] = []
         got: list[dict[str, bytes]] = []
@@ -311,7 +313,7 @@ def test_concurrent_first_touch_open_materializes_once(tmp_path: Path) -> None:
     path = _make_zip(tmp_path / "a.zip", n=8)
     expected = _expected(8)
     names = list(expected)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     scan_calls = {"n": 0}
     original_iter = reader._iter_members
 
@@ -355,7 +357,7 @@ def test_concurrent_first_touch_materialization_failure_wakes_waiters(
 ) -> None:
     """Failed first-touch leaves no partial snapshot; waiters see the error / clean retry."""
     path = _make_zip(tmp_path / "a.zip", n=4)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     original_iter = reader._iter_members
     fail_once = {"armed": True}
     barrier = threading.Barrier(4)
@@ -407,7 +409,7 @@ def test_concurrent_first_touch_materialization_failure_wakes_waiters(
 def test_close_drains_in_flight_workers_then_closes(tmp_path: Path) -> None:
     """close() waits for in-flight open() workers; escaped streams stay readable."""
     path = _make_zip(tmp_path / "a.zip", n=4)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     reader.members()  # publish so open() work is post-materialization
     entered = threading.Event()
     release = threading.Event()
@@ -459,7 +461,7 @@ def test_close_drains_in_flight_workers_then_closes(tmp_path: Path) -> None:
 @pytest.mark.concurrent_reader
 def test_concurrent_double_close_is_idempotent(tmp_path: Path) -> None:
     path = _make_zip(tmp_path / "a.zip", n=2)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     reader.members()
     barrier = threading.Barrier(2)
     errors: list[BaseException] = []
@@ -488,7 +490,7 @@ def test_concurrent_double_close_exception_group_on_dual_failure(
 ) -> None:
     """Simultaneous inner-close + teardown failure surfaces once as ExceptionGroup."""
     path = _make_zip(tmp_path / "a.zip", n=1)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     stream = reader.open("f0.txt")
 
     def boom_close_archive() -> None:
@@ -603,7 +605,7 @@ def test_members_report_if_available_during_concurrent_materialization(
     mid-materialization window is deterministic rather than a timing race.
     """
     path = _make_tar(tmp_path / "a.tar", n=8)  # no upfront index: None until published
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     original_iter = reader._iter_members
     scan_calls = {"n": 0}
     scan_started = threading.Event()
@@ -675,7 +677,7 @@ def test_members_report_if_available_concurrent_on_upfront_index(
     callers must each get a complete, equal list (it reads backend index state that a
     materializing thread is touching at the same time)."""
     path = _make_zip(tmp_path / "a.zip", n=16)
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         barrier = threading.Barrier(9)  # 8 probes + the materializing thread
         results: list[list[str]] = []
         errors: list[BaseException] = []
@@ -716,7 +718,7 @@ def test_members_report_shares_the_worker_slot_with_open(tmp_path: Path) -> None
     ArchiveyUsageError.
     """
     path = _make_zip(tmp_path / "a.zip", n=4)
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         expected = [m.name for m in reader.members()]
         entered = threading.Event()
         release = threading.Event()

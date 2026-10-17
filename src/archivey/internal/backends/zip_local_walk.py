@@ -78,6 +78,8 @@ from archivey.internal.backends.zip_parser import (
     find_end_record,
     local_header_from,
     local_header_variable_length,
+    local_stored_sizes,
+    local_zip64_sizes,
     locate_classic_record,
     read_local_header,
     read_zip64_locator,
@@ -95,7 +97,6 @@ _FLAG_DATA_DESCRIPTOR = 0x08
 _METHOD_STORED = 0
 _ZIP64_EXTRA_TAG = 0x0001
 _ZIP64_RECORD = "ZIP64 end of central directory record"
-_U32_MAX = 0xFFFF_FFFF
 
 # What may follow a member's data descriptor: the next member, the directory, the end
 # records when the directory is empty or missing, or the record PKWARE Strong Encryption
@@ -567,14 +568,18 @@ class _CodecData(MemberData):
         differs (the data is damaged) is found by its signature and size, and the
         caller judges the CRC; an unsigned one cannot be told from the data then.
 
-        The descriptor dates the data's end from its own position, so bytes between
-        the codec's end and the descriptor count into its compressed size: the check
-        a sized member gets, that nothing follows the codec's end (DR-3), is not
-        available here, and such a member reads from a pipe where it fails from a
-        file. A crafted shape only, so DR-5a lets the two reads differ. As with the
-        stored scan, a planted descriptor for a prefix ends the member early, and the
-        walk reads on from inside its data; the central entry's size and CRC catch it
-        at the end of the pass.
+        The descriptor dates the data's end from its own position, so bytes between the
+        codec's end and the descriptor count into its compressed size: the check a sized
+        member gets, that nothing follows the codec's end (DR-3), is not available here,
+        and such a member reads from a pipe where it fails from a file. A crafted shape
+        only, so DR-5a lets the two reads differ. The mirror shape differs the same way:
+        a stream whose last bytes are the descriptor's first ones is cut short at the
+        stated size from a file (``TruncatedError``), and here the descriptor is found
+        inside the bytes the codec used. Refusing it needs every codec to say exactly
+        where its input ended (Deflate64 and PPMd cannot), through the decrypt stages.
+        As with the stored scan, a planted descriptor for a prefix ends the member
+        early, and the walk reads on from inside its data; the central entry's size and
+        CRC catch it at the end of the pass.
         """
         handed = self._kept_len  # where the bytes handed out end in ``buffer``
         base = self.consumed - handed
@@ -957,11 +962,19 @@ class LocalHeaderWalk:
             header=header,
             zip64=_has_zip64_extra(header.extra),
         )
-        if not entry.deferred and header.compressed_size == _U32_MAX:
-            raise CorruptionError(
-                f"ZIP local header #{self._index} defers its compressed size to a "
-                "ZIP64 extra field that does not hold it"
+        if not entry.deferred:
+            # Whether a field supplied each size, not its value: a field can hold all
+            # ones as a real size. With no other source of sizes, a deferral no field
+            # holds is refused rather than read as a size of 4 GiB.
+            compressed, uncompressed = local_zip64_sizes(
+                header.extra, *local_stored_sizes(fixed)
             )
+            if compressed is None or uncompressed is None:
+                which = "compressed" if compressed is None else "uncompressed"
+                raise CorruptionError(
+                    f"ZIP local header #{self._index} defers its {which} size to "
+                    "a ZIP64 extra field that does not hold it"
+                )
         self._index += 1
         return entry
 

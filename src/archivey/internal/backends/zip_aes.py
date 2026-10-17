@@ -77,30 +77,65 @@ class WinZipAesInfo:
         return self.vendor_version == 2
 
 
+_FIELD_HEADER = struct.Struct("<HH")
+_new_tuple = tuple.__new__
+
+
 class ExtraField(NamedTuple):
+    # Also built positionally (split_extra_fields); test_zip_aes pins this order.
     tag: int
     data: bytes
     complete: bool  # False: the declared size ran past the end of the blob
 
 
 def iter_extra_fields(extra: bytes) -> Iterator[ExtraField]:
-    """Yield each field of a ZIP extra-field blob, AES or not.
+    """Yield each field of a ZIP extra-field blob lazily, as
+    :func:`split_extra_fields` returns them.
 
-    It is the one walk every ZIP extra-field parser uses. It lives here rather than
-    in ``zip_reader`` because ``zip_reader`` imports this module, so the reverse
-    import would be a cycle.
+    For callers that stop at the first match (the ZIP64 and AES probes): a blob can
+    hold 16 000 fields, and splitting all of them to find the first costs thousands of
+    times more. ``test_zip_aes`` checks that the two walks agree.
+    """
+    end_of_blob = len(extra)
+    pos = 0
+    while pos + 4 <= end_of_blob:
+        tag, size = _FIELD_HEADER.unpack_from(extra, pos)
+        start = pos + 4
+        pos = start + size
+        yield ExtraField(tag, extra[start:pos], pos <= end_of_blob)
+
+
+def split_extra_fields(extra: bytes) -> tuple[ExtraField, ...]:
+    """Every field of a ZIP extra-field blob, AES or not.
+
+    It is the walk every ZIP extra-field parser that reads all the fields uses;
+    :func:`iter_extra_fields` is its lazy twin for callers that stop early. Both live
+    here rather than in ``zip_reader`` because ``zip_reader`` imports this module, so
+    the reverse import would be a cycle. The listing splits a member's blob once and
+    reads the fields for its name, times, owner and leftovers.
 
     A last field whose declared size runs past the blob comes back with the bytes
     that are there and ``complete`` false; each caller decides what that means (the
     Unicode Path field reports it as malformed). Trailing bytes too short for a header
     are ignored.
     """
+    if not extra:
+        return ()
+    fields: list[ExtraField] = []
+    end_of_blob = len(extra)
     pos = 0
-    while pos + 4 <= len(extra):
-        tag, size = struct.unpack_from("<HH", extra, pos)
-        data = extra[pos + 4 : pos + 4 + size]
-        yield ExtraField(tag, data, len(data) == size)
-        pos += 4 + size
+    while pos + 4 <= end_of_blob:
+        tag, size = _FIELD_HEADER.unpack_from(extra, pos)
+        start = pos + 4
+        pos = start + size
+        # tuple.__new__ directly: the NamedTuple constructor adds a Python call. The
+        # order is ExtraField's, pinned by test_zip_aes.
+        fields.append(
+            _new_tuple(  # pyrefly: ignore[bad-specialization]  # a NamedTuple is a tuple
+                ExtraField, (tag, extra[start:pos], pos <= end_of_blob)
+            )
+        )
+    return tuple(fields)
 
 
 def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:
@@ -131,6 +166,12 @@ def derive_winzip_aes_keys(
     auth_key = derived[key_len : key_len * 2]
     pw_verify = derived[key_len * 2 :]
     return enc_key, auth_key, pw_verify
+
+
+def _mac_mismatch() -> CorruptionError:
+    return CorruptionError(
+        "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
+    )
 
 
 class WinZipAesDecryptStream(ReadOnlyIOStream):
@@ -179,6 +220,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._hmac = hmac.new(auth_key, digestmod=hashlib.sha1)
         self._hashed = 0  # length of the ciphertext prefix the HMAC has taken in
         self._authenticated = False
+        self._mac_failed = False
         self._cipher_len = cipher_len
         # The plaintext length, exactly (CTR adds no bytes). ``source_byte_size`` reads
         # it, so the codec layer's accelerator threshold and source bound see the true
@@ -240,9 +282,9 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._authenticated = True
         expected = self._hmac.digest()[:_HMAC_LEN]
         if not hmac.compare_digest(mac, expected):
-            raise CorruptionError(
-                "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
-            )
+            # Every later read raises too: the last chunk it withheld stays withheld.
+            self._mac_failed = True
+            raise _mac_mismatch()
 
     def read(self, size: int | None = -1) -> bytes:
         if size is None:  # read to EOF, as on any ``io`` stream
@@ -251,6 +293,8 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         # past the end is not a read that reached it: no verdict there.
         if size == 0 or self._overshoot:
             return b""
+        if self._mac_failed:
+            raise _mac_mismatch()
         while size < 0 or len(self._buf) < size:
             if self._cipher_remaining <= 0 and self._authenticated:
                 break
@@ -353,6 +397,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._read = len(read_ahead)
         self._buf = bytearray()
         self._ended = False
+        self._mac_failed = False
 
     def _pull(self) -> None:
         chunk = self._source.read(FORWARD_READ)
@@ -375,9 +420,9 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
 
     def _check_mac(self, mac: bytes) -> None:
         if not hmac.compare_digest(mac, self._hmac.digest()[:_HMAC_LEN]):
-            raise CorruptionError(
-                "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
-            )
+            # Every later read raises too: the last chunk it withheld stays withheld.
+            self._mac_failed = True
+            raise _mac_mismatch()
 
     def readall(self) -> bytes:
         # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.
@@ -417,6 +462,8 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
             )
         if size == 0:
             return b""
+        if self._mac_failed:
+            raise _mac_mismatch()
         while (size < 0 or len(self._buf) < size) and not self._ended:
             self._pull()
         if size < 0:

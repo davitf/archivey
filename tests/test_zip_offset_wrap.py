@@ -79,14 +79,16 @@ class _Sparse(io.RawIOBase):
         return self._pos
 
     def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
-        view = memoryview(b).cast("B")
-        start = self._pos
-        n = max(min(len(view), self._size - start), 0)
-        view[:n] = bytes(n)
-        for at, data in self._segments:
-            lo, hi = max(at, start), min(at + len(data), start + n)
-            if lo < hi:
-                view[lo - start : hi - start] = data[lo - at : hi - at]
+        # Released on return: PyPy frees an unreleased view only at a later
+        # collection, and until then the caller cannot resize ``b``.
+        with memoryview(b) as outer, outer.cast("B") as view:
+            start = self._pos
+            n = max(min(len(view), self._size - start), 0)
+            view[:n] = bytes(n)
+            for at, data in self._segments:
+                lo, hi = max(at, start), min(at + len(data), start + n)
+                if lo < hi:
+                    view[lo - start : hi - start] = data[lo - at : hi - at]
         self._pos += n
         return n
 
@@ -789,6 +791,17 @@ def test_a_finished_pass_settles_a_size_it_left_unknown(forward_only: bool) -> N
     with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
         members = [member for member, _ in reader.stream_members()]
         assert [m.size for m in members] == [100 if forward_only else None]
+        assert members[0].member_state_final is True
+
+
+def test_a_pass_counts_no_size_past_the_target_cap_it_left_unknown() -> None:
+    # Data past the symlink target cap that nobody read is decoded only that far,
+    # so the pass counts no size, and the member lists with ``None`` as from a file.
+    layout = _mac_layout([("p.bin", _padded_mac_member(bytes(5000)))])
+    source = _ForwardOnly(layout.segments, layout.size)
+    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+        members = [member for member, _ in reader.stream_members()]
+        assert [m.size for m in members] == [None]
         assert members[0].member_state_final is True
 
 

@@ -79,7 +79,6 @@ from archivey.internal.backends.zip_reader import (
     _local_crc_stands_in,
     _max_members_error,
     _unconfirmed_resource_limit,
-    _unverified_data_error,
     _zipcrypto_check_byte,
     _ZipLocator,
 )
@@ -95,7 +94,7 @@ from archivey.internal.base_reader import (
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
-from archivey.internal.password import wrong_password_error
+from archivey.internal.password import unverified_data_error, wrong_password_error
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
@@ -392,6 +391,14 @@ class _PassData:
         self._prefix_want: int | None = None
         #: The data has ended and been checked, or the pass has moved past it.
         self.done = False
+        #: The data was decoded to its end and checked (``_finish``). ``done`` without
+        #: it means the decode failed part way, ``abandon`` stopped the pass, or, for
+        #: a bit-3 member, the data runs on past the reparse prefix. The pass decodes
+        #: one byte past the prefix (``_wants_decoded``), so data that ends there is
+        #: checked, and longer data is passed by the scan unchecked
+        #: (``reparse_prefix``), as the file read's bounded read stops at the prefix
+        #: and gives the target.
+        self._checked = False
         #: The walk has moved on: the caller's stream reads nothing more.
         self.passed = False
         #: Set when the caller read up to the end and every check passed.
@@ -420,9 +427,15 @@ class _PassData:
         want = self._prefix_want
         if capture is None or want is None:
             return None
-        ended = self.verified or (
-            not self._deferred() and self._size >= self.entry.header.file_size
-        )
+        if self._deferred():
+            # The file read reads this prefix (the buffer and one byte) and reaches
+            # the end only when the data is no longer. The pass decodes one byte past
+            # the prefix (``_wants_decoded``), since only a decode that returns
+            # nothing tells bit-3 data it has ended; both stop at the same place. A
+            # decode that failed part way was not checked (``_checked``).
+            ended = self.verified or (self._checked and self._size <= want)
+        else:
+            ended = self.verified or self._size >= self.entry.header.file_size
         if ended and not self.verified:
             # Read to its end and failed its check, as the file read's byte past the
             # buffer finds.
@@ -479,8 +492,23 @@ class _PassData:
             return 0
         if self._prefix_want is not None:
             return max(0, self._prefix_want - len(capture))
-        # ``drain`` asks only of data over the cap.
+        if self._deferred():
+            # No size to go by: the data is within the target cap only if it ends
+            # by the byte past it.
+            return max(0, MAX_LINK_TARGET_BYTES + 1 - self._size)
+        # ``drain`` asks a sized member only of data over the cap.
         return max(0, REPARSE_HEADER_BYTES - self._size)
+
+    def _wants_decoded(self) -> int:
+        """How many more decoded bytes ``drain`` takes of bit-3 codec data: what the
+        capture wants, then one byte past a reparse prefix. The prefix is the buffer
+        and one byte, all the file read reads; it checks data no longer than that
+        (``reparse_prefix``). Bit-3 data has no size, so the pass learns that it ended
+        there only from a decode past the prefix that returns nothing."""
+        want = self._wants_prefix()
+        if want or self._capture is None or self._prefix_want is None:
+            return want
+        return max(0, self._prefix_want + 1 - self._size)
 
     def _deferred(self) -> bool:
         return self.entry.deferred
@@ -1017,7 +1045,7 @@ class _PassData:
         if self._unconfirmed and _is_candidate_integrity_failure(
             exc, payload_complete=lambda: not self._cut_short
         ):
-            failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+            failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
             failure.__cause__ = exc
             return failure
         return exc
@@ -1062,6 +1090,7 @@ class _PassData:
         mismatch it did not raise.
         """
         self.done = True
+        self._checked = True
         self._close_decoded()
         header = self.entry.header
         data = self._data
@@ -1168,13 +1197,16 @@ class _PassData:
         target nobody asked for, and asking a password provider for it: the member may
         turn out to be no link, which only a padded codec stream makes this long.
 
-        A bit-3 member is decoded to its end, which is how its decoded data finds it;
-        where that decode fails, the walk's scan finds the end on the stored bytes,
-        with no key (``_scan_past_failed_decode``). An encrypted one, STORED or
-        nobody read it, is not decoded: the scan finds its end on the ciphertext, and
-        its ciphertext is kept as a sized one's is, if it is short enough to be a
-        link's. One the caller opened is decoded to its end with the key it was
-        opened with.
+        A bit-3 STORED member is read to its end, which its scan finds. A bit-3 codec
+        member is decoded no further than the byte past the target cap, then the
+        reparse prefix the file read reads (the buffer and one byte) and one byte past
+        it (``_wants_decoded``). Its codec finds its end only by decoding all of it,
+        which no limit bounds, so where the decode stops short of that end, and where
+        it fails, the walk's scan finds the end on the stored bytes, with no key
+        (``_scan_rest``). An encrypted one, STORED or nobody read
+        it, is not decoded: the scan finds its end on the ciphertext, and its
+        ciphertext is kept as a sized one's is, if it is short enough to be a link's.
+        One the caller opened is decoded with the key it was opened with.
         """
         if self.done:
             return
@@ -1239,15 +1271,28 @@ class _PassData:
                 skip = True
         if not skip and deferred and encrypted and self._failure is not None:
             # The caller's read failed inside the data.
-            skip = self._scan_past_failed_decode()
+            skip = self._scan_rest()
         if not skip:
             try:
-                while self._read_chunk(_DRAIN_CHUNK):
-                    pass
+                if self._runs_on():
+                    # Decoding a bit-3 codec member to its end is the only way its
+                    # codec finds it, at a cost nothing bounds: a bzip2 member of
+                    # 900 bytes decodes to 1 GiB. Only what the capture wants, and
+                    # the byte past it, is decoded (``_wants_decoded``); the scan
+                    # finds where the rest ends.
+                    while (want := self._wants_decoded()) and self._read_chunk(want):
+                        pass
+                    # With bytes still wanted the codec ended first, and the data is
+                    # checked below as a read to its end is.
+                    if not want:
+                        skip = self._scan_rest()
+                else:
+                    while self._read_chunk(_DRAIN_CHUNK):
+                        pass
             except ArchiveyError as exc:
                 failure = self._as_read_failure(exc) if encrypted else exc
                 # Only bit-3 data is decoded to find its end.
-                if not ends_undecoded and not self._scan_past_failed_decode():
+                if not ends_undecoded and not self._scan_rest():
                     # As the member's own read words it.
                     if failure is exc:
                         raise
@@ -1292,7 +1337,7 @@ class _PassData:
         if not self.done:
             error = self._finish(raise_mismatch=False)
             if self._unconfirmed and not self.verified:
-                self._failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+                self._failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
             elif encrypted and error is not None:
                 self._failure = error
 
@@ -1302,20 +1347,22 @@ class _PassData:
         error = self._finish(raise_mismatch=False)
         failure: ArchiveyError | None = None
         if self._unconfirmed and not self.verified:
-            failure = _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
+            failure = unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE)
         elif error is not None:
             failure = self._as_read_failure(error) if encrypted else error
         if failure is not None:
             self._capture = None
             self._failure = failure
 
-    def _scan_past_failed_decode(self) -> bool:
-        """Find the end of a bit-3 codec member whose decode failed by the walk's scan
-        on its stored bytes, so the walk goes on as it does past an encrypted one
-        nobody read; the file read fails the member alone. The data is damaged, or a
-        wrong key that passed its check byte decoded garbage; either way the codec's
-        end is not the data's. The scan starts at the last bytes the walk kept
-        (``LocalHeaderWalk.scan_member_data``). False for STORED data, which the
+    def _scan_rest(self) -> bool:
+        """Find the end of a bit-3 codec member by the walk's scan on its stored bytes,
+        so the walk goes on as it does past an encrypted one nobody read: one whose
+        decode failed, or one decoded as far as the capture wants and no further.
+
+        After a failed decode the file read fails the member alone. The data is
+        damaged, or a wrong key that passed its check byte decoded garbage; either way
+        the codec's end is not the data's. The scan starts at the last bytes the walk
+        kept (``LocalHeaderWalk.scan_member_data``). False for STORED data, which the
         walk already scans."""
         if self._method() == 0:
             return False
@@ -2031,11 +2078,9 @@ class ZipForwardReader(ZipReader):
         member._size_unread = False
 
     def _reindex_name(self, member: ArchiveMember, old_name: str) -> None:
-        listed = self._listed_by_name.get(old_name)
-        if listed is not None and member in listed:
-            listed.remove(member)
-            if not listed:
-                del self._listed_by_name[old_name]
+        # By identity, though an equality scan would also find ``member``: its new
+        # name is already set, so no other entry under ``old_name`` equals it.
+        self._unindex_members(old_name, {id(member)})
         self._index_member_name(member)
 
     # -- data ----------------------------------------------------------------------

@@ -919,13 +919,16 @@ def test_pax_sparse_1_0_map_is_charged_during_the_walk() -> None:
         _walk(data, budget=(4096, 4096))
 
 
-def _pax_1_0_member(major: str, minor: str) -> bytes:
+def _pax_1_0_member(
+    major: str, minor: str, extra: dict[str, str] | None = None
+) -> bytes:
     map_text = _data(b"1\n10\n3\n")
     records = {
         "GNU.sparse.major": major,
         "GNU.sparse.minor": minor,
         "GNU.sparse.name": "real",
         "GNU.sparse.realsize": "20",
+        **(extra or {}),
     }
     return (
         _pax(records)
@@ -945,6 +948,36 @@ def test_pax_sparse_later_versions_read_as_1_0(major: str, minor: str) -> None:
         20,
         3,
     )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"GNU.sparse.size": "20"},
+        {"GNU.sparse.map": "10,3"},
+        {"GNU.sparse.offset": "10", "GNU.sparse.numbytes": "3"},
+    ],
+    ids=["0.0-size", "0.1-map", "0.0-map"],
+)
+def test_pax_sparse_major_chooses_1_0_over_0_x_records(extra: dict[str, str]) -> None:
+    """The major version chooses the encoding, not which records are present: GNU
+    tar 1.35 reads a member with major 1 as 1.0 whatever 0.x records it carries."""
+    (entry,), _ = _walk(_pax_1_0_member("1", "0", extra))
+    assert (entry.sparse_format, entry.size, entry.stored_size) == (
+        SparseFormat.PAX_1_0,
+        20,
+        3,
+    )
+    assert entry.sparse is not None
+    assert list(zip(entry.sparse.offsets, entry.sparse.lengths, strict=True)) == [
+        (10, 3)
+    ]
+
+
+def test_pax_sparse_major_of_many_digits_reads_as_1_0() -> None:
+    """A major past Python's int() digit limit is still a version of 1 or more."""
+    (entry,), _ = _walk(_pax_1_0_member("0" * 5000 + "1", "0"))
+    assert entry.sparse_format is SparseFormat.PAX_1_0
 
 
 @pytest.mark.parametrize("major", ["0", "x", ""])
@@ -1113,3 +1146,53 @@ def test_forward_only_data_stream() -> None:
     with pytest.raises(ValueError):
         stream.read()
     assert walker.open_data(b.span()).read() == b"world"
+
+
+def test_numeric_field_split_matches_the_field_table() -> None:
+    # parse_header_block cuts the numeric fields with one struct unpack; it must cut
+    # the same bytes as the _FIELDS table the error message reads.
+    from archivey.internal.backends import tar_parser
+
+    block = bytes(i % 251 for i in range(BLOCKSIZE))
+    assert tar_parser._split_numbers(block) == tuple(
+        block[start:end] for _, start, end in tar_parser._FIELDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "start", "end"),
+    [
+        ("mode", 100, 108),
+        ("uid", 108, 116),
+        ("gid", 116, 124),
+        ("size", 124, 136),
+        ("mtime", 136, 148),
+        ("devmajor", 329, 337),
+        ("devminor", 337, 345),
+    ],
+)
+def test_each_bad_numeric_field_is_named(field: str, start: int, end: int) -> None:
+    def spoil(h: bytearray) -> None:
+        h[start:end] = b"9" + bytes(end - start - 1)  # 9 is not an octal digit
+
+    parsed = parse_header_block(_block(patch=spoil), 0)
+    assert isinstance(parsed, RejectedBlock)
+    assert parsed.reason == f"the {field} field is not a number"
+
+
+def test_number_cache_is_bounded_and_agrees_with_the_parse() -> None:
+    from archivey.internal.backends import tar_parser
+
+    cache = tar_parser._cached_number
+    cache.cache_clear()
+    maxsize = cache.cache_info().maxsize
+    assert maxsize is not None
+    for i in range(maxsize * 2):
+        mtime = 1_600_000_000 + i
+        block = _block(
+            patch=lambda h, t=mtime: h.__setitem__(slice(136, 148), _octal(t, 12))
+        )
+        parsed = parse_header_block(block, 0)
+        assert isinstance(parsed, HeaderBlock)
+        assert parsed.mtime == mtime
+    assert cache.cache_info().currsize <= maxsize

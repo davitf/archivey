@@ -558,7 +558,7 @@ def test_concurrent_pass_and_members_beside_it_both_refuse_past_the_cap(
     refusal walked."""
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 4_000)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
-    with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
+    with open_archive(tar_path, config=cfg, concurrent_operations=True) as reader:
         seen = 0
         with pytest.raises(ResourceLimitError, match="max_members"):
             for _member, _stream in reader.stream_members():

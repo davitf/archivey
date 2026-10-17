@@ -34,6 +34,7 @@ from archivey.internal.backends.zip_aes import (
     open_winzip_aes_forward,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
+    split_extra_fields,
 )
 from archivey.internal.streams import codecs
 from archivey.internal.streams.streamtools.binaryio import source_byte_size
@@ -621,6 +622,27 @@ def test_iter_extra_fields_edge_shapes() -> None:
     assert list(iter_extra_fields(b"")) == []
 
 
+def test_extra_field_order_is_pinned() -> None:
+    # split_extra_fields builds ExtraField positionally with tuple.__new__, which
+    # cannot notice a reordered or added field.
+    assert ExtraField._fields == ("tag", "data", "complete")
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_lazy_and_eager_extra_field_walks_agree(seed: int) -> None:
+    # iter_extra_fields (lazy, for early-exit probes) and split_extra_fields (eager,
+    # for the listing) are two loops that must read every blob the same way.
+    rng = random.Random(seed)
+    pieces = []
+    for _ in range(rng.randrange(0, 6)):
+        data = rng.randbytes(rng.randrange(0, 12))
+        size = len(data) + rng.choice((0, 0, 0, 1, 5))  # sometimes over-declared
+        pieces.append(struct.pack("<HH", rng.randrange(0x10000), size) + data)
+    blob = b"".join(pieces) + rng.randbytes(rng.randrange(0, 4))
+    for cut in range(len(blob) + 1):
+        assert tuple(iter_extra_fields(blob[:cut])) == split_extra_fields(blob[:cut])
+
+
 def test_aes_stream_guard_runs_before_the_cryptography_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1120,3 +1142,41 @@ def test_forward_open_checks_in_the_sized_open_order(
             password=_PASSWORD,
             hold_back=hold_back,
         )
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("forward", [False, True], ids=["sized", "forward"])
+def test_aes_hmac_mismatch_keeps_withholding_the_last_chunk(forward: bool) -> None:
+    """A read after the mismatch raises again; it never hands out the chunk the
+    failed read withheld, or a clean end."""
+    payload = os.urandom(100_000)
+    enc_key, auth_key = os.urandom(32), os.urandom(32)
+    cipher = aes_ctr_le_encrypt(enc_key, payload)
+    mac = bytes(10)
+    stage: WinZipAesDecryptStream | WinZipAesForwardStream
+    if forward:
+        stage = WinZipAesForwardStream(
+            io.BytesIO(cipher + mac),
+            enc_key=enc_key,
+            auth_key=auth_key,
+            header_len=18,
+            hold_back=None,
+        )
+    else:
+        stage = WinZipAesDecryptStream(
+            io.BytesIO(cipher + mac),
+            enc_key=enc_key,
+            auth_key=auth_key,
+            cipher_len=len(cipher),
+        )
+    out = b""
+    with pytest.raises(CorruptionError, match="HMAC mismatch"):
+        while chunk := stage.read(1 << 16):
+            out += chunk
+    assert payload.startswith(out)
+    assert len(out) < len(payload)
+    for _ in range(2):
+        with pytest.raises(CorruptionError, match="HMAC mismatch"):
+            stage.read(1 << 16)
+    # A zero-length read carries no verdict, as on any ``io`` stream.
+    assert stage.read(0) == b""

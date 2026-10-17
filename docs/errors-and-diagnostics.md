@@ -36,7 +36,7 @@ React to specific cases with the subtypes:
 | [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and comment bytes at open, compressed RAR 1.5-4 comments by declared or packed size, whichever is larger), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)). So does an `unrar` or `unar` process the system kills with SIGKILL while it reads a RAR member |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
-overlapping stream without `concurrent_members=True`, using a closed reader, calling
+overlapping stream without `concurrent_operations=True`, using a closed reader, calling
 `members()` or `open()` on a `streaming=True` reader, and similar misuse raise
 [`ArchiveyUsageError`][archivey.ArchiveyUsageError], which is **not** an `ArchiveyError`
 — so a blanket `except ArchiveyError` never silently swallows a bug. (When an *archive*
