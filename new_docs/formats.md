@@ -30,15 +30,16 @@ images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) an
 | 7z | yes (common codecs) | `[recommended]` for PPMd, Deflate64, Brotli, LZ4, AES, and zstd before Python 3.14 | indexed | solid folders | Native reader; BCJ2 in pure Python |
 | RAR | yes (metadata) | **`unrar` or `rar` binary for compressed data**; `[recommended]` for header crypto and stored encrypted members | native metadata | solid when solid | No write |
 | ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
-| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | — | rewind seek unless indexed later | |
-| `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
-| `.br` | no | `[recommended]` | — | rewind seek | No magic; detected by name |
+| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | one member; the `.tar` form as `.tar.gz` | rewind seek unless indexed later | |
+| `.lz4` / `.tar.lz4` | no | `[recommended]` | one member; the `.tar` form as `.tar.gz` | rewind seek | |
+| `.br` | no | `[recommended]` | one member | rewind seek | No magic; detected by name |
 | `.lz` / `.lzma` / `.zz` | yes | — | one member | seek with `seekable_members=True` | `.lzma` and `.zz` detected by name |
-| `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
+| `.Z` / `.tar.Z` | yes | — | one member; the `.tar` form as `.tar.gz` | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
 **RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`, or `unar`.** No pip extra
-can supply either. Listing and metadata work without them, and so does reading a stored member that
-is not encrypted. Reading compressed data does not. When no usable RARLAB program is found, archivey
+can supply either. Listing and metadata work without them, and so does reading a stored member. A
+stored member that is encrypted reads without them too when it is in one part and `cryptography` is
+installed. Reading compressed data does not. When no usable RARLAB program is found, archivey
 uses `unar` 1.10 or later, with the limits listed under [RAR](#rar), including a password passed on
 its command line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it, or
 `rar_decompressor="none"` to run neither program. `7z` is never used. How to get the binary:
@@ -240,8 +241,10 @@ yielded.
   not.
 - An end record that disagrees with the central directory is a warning, not an error: an entry
   count that does not match, or an archive comment length past the end of the file. The members
-  still list and read. ``ARCHIVE_EOF_MARKER_MISSING`` is reported before the first member is listed,
-  so ``DiagnosticPolicy.STRICT`` raises before any member is yielded.
+  still list and read, and ``ARCHIVE_EOF_MARKER_MISSING`` is reported after the directory's last
+  entry. From a seekable source the listing is complete before any member is handed out, so
+  ``DiagnosticPolicy.STRICT`` raises before the first one. With ``streaming=True``, the pass yields
+  every member and then raises.
 - Timestamps: DOS base; NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
   Extended Timestamp override when present, the Unix fields read as unzip 6.00 reads
   them. macOS `ditto` and Archive Utility write only `0x5855`, so their archives list
@@ -313,7 +316,8 @@ yielded.
   pass.
 - With `concurrent_operations=True`, member reads share one file handle and take turns on it, so
   reads from several threads are safe but not parallel. ISO works the same way.
-- A device or FIFO lists as `MemberType.OTHER` and is not extracted; `extra["special_file_type"]`
+- A device or FIFO lists as `MemberType.OTHER`, and extraction does not create it: its result is
+  `BLOCKED`, and the other members are extracted. `extra["special_file_type"]`
   names the kind, and a device keeps its numbers in `extra["tar.devmajor"]` and
   `extra["tar.devminor"]`. A device number field that is not a number is dropped and
   `MEMBER_HEADER_RECORD_SKIPPED` reports it, as GNU tar lists such a device too.
@@ -364,7 +368,7 @@ yielded.
       runs from the block after the damaged one. This needs at least one member before
       the zero block: a file that is only a zero block and then other bytes is not shown
       to be a TAR archive, and it raises `CorruptionError`.
-    - - A **device or FIFO header that declares data** (typeflag `3`, `4` or `6` with a non-zero
+    - A **device or FIFO header that declares data** (typeflag `3`, `4` or `6` with a non-zero
       size) raises `CorruptionError` at that header, before the end-marker check runs. Such an entry
       has no data, and GNU tar skips the header as damaged. Reading on from the next block, an
       all-zero payload would look like the end of the archive and drop every member after it.
@@ -539,7 +543,7 @@ yielded.
   1.10.8+ds1-10 do (Ubuntu 22.04 to 26.04 among them); `"auto"` then treats `unar` as absent.
   Archivey refuses these reads with `UnsupportedFeatureError` before `unar` runs, because `unar`
   gets them wrong, sometimes with a success exit:
-  - - encrypted, compressed data in a RAR 2.x-4.x archive (a stored, encrypted member in one part is
+  - encrypted, compressed data in a RAR 2.x-4.x archive (a stored, encrypted member in one part is
     still decrypted by archivey), and every member of a solid one that has it (RAR5 encryption is
     read);
   - a password that is not ASCII;
@@ -548,7 +552,7 @@ yielded.
   - in a RAR5 solid archive, a member that comes after an empty file, a directory or a
     link;
   - a member compressed with the RAR 1.5 algorithm;
-  - - an old-style volume set (`.rar`, `.r00`, ...) of more than 901 volumes: `unar` stops at
+  - an old-style volume set (`.rar`, `.r00`, ...) of more than 901 volumes: `unar` stops at
     `.z99`;
   - a multi-volume set with a prefix before the first volume (an SFX stub). A single
     prefixed file is copied to a temporary file first.
@@ -831,10 +835,13 @@ yielded.
   subdirectories, so which name keeps the data is fixed. With `streaming=True`,
   extracting a later name whose first name a filter left out fails, as for a streamed
   tar.
+- Names come from the filesystem, so `encoding=` has no effect, and passing it emits
+  `ENCODING_ARGUMENT_UNUSED`.
 
 ## Single-file compressors
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
+  `encoding=` has no effect, and passing it emits `ENCODING_ARGUMENT_UNUSED`.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
 - **`size` arrives with the first full read** when listing left it `None`: always for `.gz`,
   `.bz2`, `.zz`, `.br`, `.zst`, `.lz4` and `.Z` (a zstd or LZ4 frame's content-size field is not
@@ -1060,10 +1067,12 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   after a declared output drain is rejected; and a bounded walk of self-describing meta-blocks
   rejects a later link that overruns or a declared end with trailing bytes. On a non-seekable stream
   of unknown length those checks are skipped and today's probe behaviour remains. Without a Brotli
-  extension, a probe runs only under `always_probe_content=True`. Its confidence is then `PROBABLE`
-  when the first meta-block is compressed and `GUESS` otherwise, and a later decode failure sets
-  `ArchiveyError.format_unconfirmed` and emits `PROBE_FORMAT_UNCONFIRMED`: the bytes may never have
-  been Brotli, and a prefix of fabricated output may already have been delivered before the error.
+  extension, a probe runs only under `always_probe_content=True`. When the decoded start is a TAR
+  header, the format becomes `tar.br` with confidence `PROBABLE`. Otherwise the confidence is
+  `PROBABLE` when the first meta-block is compressed and `GUESS` when it is not, and a later decode
+  failure sets `ArchiveyError.format_unconfirmed` and emits `PROBE_FORMAT_UNCONFIRMED`: the bytes may
+  never have been Brotli, and a prefix of fabricated output may already have been delivered before
+  the error. A `tar.br` found this way is not flagged.
   With a Brotli extension (`.br`, `.brotli`, `.tar.br`) it is `PROBABLE`.
 - Confidence and evidence are part of `detect_format`, which returns them on `FormatInfo`; the
   [API reference](api.md#detection-budgets) lists what detection may read.

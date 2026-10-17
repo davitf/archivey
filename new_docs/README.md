@@ -8,6 +8,13 @@ this list:
 
 - Every ZIP claim in the tree, once the native ZIP reader is complete: damaged or missing end
   records, and bytes after the archive, are expected to change.
+- Two RAR claims in `formats.md` disagree with the code and wait on a code decision. The RAR
+  section says that when no RARLAB program is found, archivey uses `unar`; the error hint in
+  `src/archivey/internal/backends/rar_unrar.py` says `unar` is not supported as a substitute. And
+  the `unar` refusal list says every member of a solid RAR 2.x-4.x archive with encrypted,
+  compressed data is refused; the code refuses those only in a `stream_members()` pass, while
+  `open()` of a plain member behind an encrypted one still goes to `unar`. Settle each by changing
+  the code or the sentence.
 
 `cli.md`, `formats.md`, `migrating.md`, `philosophy.md`, `how-it-works.md`, `how-it-is-built.md` and
 `acknowledgements.md` aren't linked from `index.md` yet; the site navigation covers them at the
