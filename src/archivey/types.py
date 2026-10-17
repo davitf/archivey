@@ -947,11 +947,12 @@ class ArchiveMember:
     omission, and only the first is an extraction outcome rather than a failure, so the
     backend that knows which it is says so here. Read it through the public
     :attr:`link_target_unrecorded`."""
-    _link_target_damaged: bool = field(default=False, repr=False, compare=False)
-    """Set once this link's target data has failed its integrity check and been reported.
+    _link_target_unreadable: bool = field(default=False, repr=False, compare=False)
+    """Set once reading this link's target data has failed and been reported.
 
-    The fault itself is not kept: opening or extracting the link reads the target again
-    and raises it. This only stops a second report, when a ``stream_members()`` pass
+    The read failed its integrity check, or used a method or codec this install cannot
+    decode. The fault itself is not kept: opening or extracting the link reads the
+    target again and raises it. This only stops a second report, when a ``stream_members()`` pass
     read the target as it reached the link and its listing then resolves links. Not
     part of the public contract."""
 

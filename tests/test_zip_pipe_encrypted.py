@@ -29,6 +29,7 @@ from archivey.exceptions import (
     EncryptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    raw_message_of,
 )
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
@@ -1258,14 +1259,45 @@ def _counted_decrypts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def test_a_link_whose_codec_is_refused_says_so_as_from_a_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Listing keeps the link without a target and says why, from a file and a pipe
+    alike; opening the link raises the refusal (DR-2)."""
     data = _method_6_link()
     calls = _counted_decrypts(monkeypatch)
-    with pytest.raises(UnsupportedFeatureError) as from_file:
-        _link_targets(data, _PASSWORD, pipe=False)
-    with pytest.raises(UnsupportedFeatureError) as from_pipe:
-        _link_targets(data, _PASSWORD, pipe=True)
-    assert str(from_pipe.value) == str(from_file.value)
+    from_file = _link_target_report(data, pipe=False)
+    from_pipe = _link_target_report(data, pipe=True)
+    assert from_pipe == from_file
+    assert from_file[0] == [("link", archivey.MemberType.SYMLINK, None)]
+    assert from_file[1] == ["target_data_unsupported"]
     assert calls == ["link"]
+    with archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader:
+        with pytest.raises(UnsupportedFeatureError) as opened:
+            reader.open(reader.get("link"))
+    assert from_file[2] == [
+        "The symlink target of 'link' could not be read: "
+        f"{raw_message_of(opened.value).rstrip('.')}. Leaving link_target unset."
+    ]
+
+
+def _link_target_report(
+    data: bytes, *, pipe: bool
+) -> tuple[list[object], list[object], list[str]]:
+    """The listing, and the reason and message of each ``SYMLINK_TARGET_UNAVAILABLE``."""
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=pipe, password=_PASSWORD) as reader:  # type: ignore[arg-type]
+        if pipe:
+            for _ in reader.stream_members():
+                pass
+        members = reader.members_report().members
+        diagnostics = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        return (
+            [(m.name, m.type, m.link_target) for m in members],
+            [getattr(d.context, "reason", None) for d in diagnostics],
+            [d.message for d in diagnostics],
+        )
 
 
 def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
@@ -1288,11 +1320,20 @@ def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
             with pytest.raises(UnsupportedFeatureError) as from_pipe:
                 stream.read()
             assert str(from_pipe.value) == str(from_file.value)
-        # The directory makes it a link, and its target raises what the read did,
-        # as the file's listing does.
-        with pytest.raises(UnsupportedFeatureError) as at_end:
-            next(passes)
-        assert str(at_end.value) == str(from_file.value)
+        # The directory makes it a link, and its target is refused as the read
+        # was. The pass ends normally and reports the link without a target, as
+        # the file's listing does (DR-2); it does not open the data again.
+        assert next(passes, None) is None
+        (link,) = reader.members_report().members
+        assert link.type is archivey.MemberType.SYMLINK
+        assert link.link_target is None
+        (diagnostic,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        assert getattr(diagnostic.context, "reason", None) == "target_data_unsupported"
+        assert raw_message_of(from_file.value).rstrip(".") in diagnostic.message
     assert calls == ["link"]
 
 

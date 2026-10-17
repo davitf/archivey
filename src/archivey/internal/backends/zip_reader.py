@@ -3863,9 +3863,10 @@ class ZipReader(BaseArchiveReader):
         # A symlink's target is its (possibly encrypted) file data. A missing/wrong
         # password, or data that fails its check under an unconfirmed ZipCrypto
         # password, leaves link_target unset (following the link later fails with
-        # LinkTargetNotFoundError). A CorruptionError or TruncatedError propagates, and
-        # listing reports the link as damaged (`_report_damaged_link_target`); other
-        # errors surface translated like any member-read error.
+        # LinkTargetNotFoundError). Damage, a method this reader does not decode, or an
+        # optional library the data needs that is not installed propagates, and listing
+        # reports the link targetless (`_report_unreadable_link_target`); open and
+        # extraction raise it.
         self._link_target_from_data(
             member,
             self._link_target_opener(member),

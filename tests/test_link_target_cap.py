@@ -75,6 +75,7 @@ def _sevenzip_with_link(
     *,
     store: bool = False,
     sibling: bytes | None = None,
+    method: str | None = None,
 ) -> bytes:
     """A 7z holding a symlink, ``link``, whose stored target is ``target``.
 
@@ -84,7 +85,8 @@ def _sevenzip_with_link(
     a regular file to ``S_IFLNK``, which is the only thing that differs between the two
     in a 7z archive. Both header CRCs are recomputed so the archive stays valid.
     ``store`` writes the data uncompressed (``-mx0``), so a test can find and damage it.
-    ``sibling`` adds a regular file, ``target.txt``, holding those bytes.
+    ``sibling`` adds a regular file, ``target.txt``, holding those bytes. ``method``
+    is passed to 7-Zip as ``-m0=<method>``.
     """
     tree = tmp_path / "tree"
     tree.mkdir()
@@ -96,7 +98,15 @@ def _sevenzip_with_link(
         names.append("target.txt")
     archive = tmp_path / "link.7z"
     subprocess.run(
-        ["7z", "a", "-mhc=off", *(["-mx0"] if store else []), str(archive), *names],
+        [
+            "7z",
+            "a",
+            "-mhc=off",
+            *(["-mx0"] if store else []),
+            *([f"-m0={method}"] if method else []),
+            str(archive),
+            *names,
+        ],
         cwd=tree,
         check=True,
         capture_output=True,
