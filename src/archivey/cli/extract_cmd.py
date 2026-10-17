@@ -31,6 +31,7 @@ from archivey.cli.common import (
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, escape_path, format_error_detail
+from archivey.cli.logging_config import member_skips_reported_elsewhere
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import ArchiveyConfig, PasswordInput
@@ -1413,16 +1414,17 @@ def run_extract(
 
         try:
             try:
-                report = reader.extract_all(
-                    target,
-                    members=pred,
-                    policy=policy_enum,
-                    overwrite=overwrite_enum,
-                    on_error=on_error,
-                    abort_on=abort_on_enum,
-                    on_progress=on_progress,
-                    dry_run=dry_run,
-                )
+                with member_skips_reported_elsewhere():
+                    report = reader.extract_all(
+                        target,
+                        members=pred,
+                        policy=policy_enum,
+                        overwrite=overwrite_enum,
+                        on_error=on_error,
+                        abort_on=abort_on_enum,
+                        on_progress=on_progress,
+                        dry_run=dry_run,
+                    )
             except BrokenPipeError:
                 # The progress bar's stream lost its reader. That must reach
                 # main(), which exits 141 with no message; the handler below would
