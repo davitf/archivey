@@ -4223,7 +4223,7 @@ def test_log_records_escape_archive_derived_text() -> None:
     ``"Skipping %s %r: %s"``).
     """
     exc = ArchiveyError("Destination already exists: /out/ev\x1b[2Kil\rSPOOF.txt")
-    out = _log_through_cli_handler("Skipping file %r: %s", "ev\x1b[2Kil.txt", exc)
+    out = _log_through_cli_handler("Skipping %s %r: %s", "file", "ev\x1b[2Kil.txt", exc)
     assert "\x1b" not in out  # no raw escape sequence
     assert "\r" not in out.rstrip("\n")  # no carriage-return line rewrite
     assert "\\x1b[2K" in out  # …shown losslessly instead

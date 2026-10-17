@@ -5,7 +5,33 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TextIO
+
+# The library logs this when ``extract_all`` skips a member under CONTINUE (both sites in
+# ``archivey/internal/extraction.py`` point back here). ``extract`` reports the
+# outcome from the returned report instead.
+_MEMBER_SKIP_MESSAGE = "Skipping %s %r: %s"
+
+
+class _MemberSkipHold(logging.Filter):
+    """Hold back the library's member-skip warnings while ``held`` is a list."""
+
+    def __init__(self, handler: logging.Handler) -> None:
+        super().__init__()
+        self.handler = handler
+        self.held: list[logging.LogRecord] | None = None
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.held is not None and record.msg == _MEMBER_SKIP_MESSAGE:
+            self.held.append(record)
+            return False
+        return True
+
+
+# The hold on the handler of the invocation in progress; None outside cli_logging. A
+# context variable, so two invocations on different threads each find their own.
+_hold: ContextVar[_MemberSkipHold | None] = ContextVar("_hold", default=None)
 
 
 @contextmanager
@@ -32,12 +58,49 @@ def cli_logging(*, verbose: bool, err: TextIO) -> Iterator[None]:
     root = logging.getLogger("archivey")
     handler: logging.StreamHandler[TextIO] = logging.StreamHandler(err)
     handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    hold = _MemberSkipHold(handler)
+    handler.addFilter(hold)
     old_level = root.level
     root.addHandler(handler)
     root.setLevel(logging.INFO if verbose else logging.WARNING)
+    token = _hold.set(hold)
     try:
         yield
     finally:
+        _hold.reset(token)
         root.removeHandler(handler)
         root.setLevel(old_level)
         handler.close()
+
+
+@contextmanager
+def member_skips_reported_elsewhere() -> Iterator[None]:
+    """Keep the library's ``Skipping …`` warnings off stderr for a run that reports.
+
+    ``extract`` prints a ``blocked:`` or ``failed:`` line for each ``BLOCKED`` or
+    ``FAILED`` result in the report ``extract_all`` returns, so the warning would report
+    those members twice. The report is what the CLI follows, not the warnings: when a
+    later copy of a duplicate name supersedes an earlier one, the library drops the
+    earlier copy's error with it (random access never tries that copy), and so does
+    the CLI, so a streaming and a random-access run report the same outcomes.
+
+    When the run raises instead, there is no report: the held warnings are written
+    then, before the caller prints why the run stopped. Only the CLI's own handler is
+    held back; handlers an embedding application installed still see every record.
+    """
+    hold = _hold.get()
+    if hold is None or hold.held is not None:
+        yield
+        return
+    hold.held = []
+    try:
+        yield
+    except BaseException:
+        # Release the hold before writing: handle() passes each record back through
+        # this filter, which would otherwise append it to the list being written.
+        held, hold.held = hold.held, None
+        for record in held:
+            hold.handler.handle(record)
+        raise
+    finally:
+        hold.held = None

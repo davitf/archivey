@@ -503,6 +503,9 @@ a failure and MUST NOT assume `1` is the only failure code.
 | `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
+| `archivey extract <archive>` with a blocked or failed member | One line for each `BLOCKED` / `FAILED` result in the report (`blocked:` / `failed:`); the library's `Skipping …` warning is not printed too |
+| `archivey extract <streamed archive>` where a later copy of a name supersedes an earlier copy that failed | The earlier copy's error is dropped with it, as the library's report drops it and as a random-access run never meets it; only the later copy's outcome is reported |
+| `archivey extract --stop-on-error <archive>` that blocks a member, then stops on a failure | No report is returned, so the `WARNING: Skipping …` line for the blocked member is printed before the stop line |
 | Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
 | Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `141`, so a `test` that had not finished verifying does not report success |
 | `archivey --help \| true`, or a usage error whose stderr pipe is closed | No message or traceback; exit `141` (not `0` or `2`) |
