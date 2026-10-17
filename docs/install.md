@@ -33,7 +33,7 @@ member whose name `unrar` cannot be given, but never for a member that needs a p
 `unar` reads fewer RAR archives and takes the password on its command line, where
 other local users can see it; set
 `ArchiveyConfig(rar_decompressor="unrar")` to never use it, or `"none"` to run
-neither program and read only stored members. See [Formats and extras](formats.md#rar).
+neither program and read only stored members (an encrypted one needs `cryptography`). See [Formats and extras](formats.md#rar).
 
 What each install line adds, by what you type. [Formats and extras](formats.md) stays
 the authority on what each format can do:
