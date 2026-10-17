@@ -3368,9 +3368,6 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
-        # This call's report covers only its own extraction-phase events; open-phase
-        # diagnostics stay on reader.diagnostics. A scope, not a watermark: on a
-        # CONCURRENT reader other threads emit into the same collector meanwhile.
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
@@ -3385,6 +3382,9 @@ class BaseArchiveReader(ArchiveReader):
         token = self._state.acquire_pass("extract_all")
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
+            # The report covers only the emits this call makes, on its own thread:
+            # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
+            # reader other threads emit into the same collector meanwhile.
             with self._internal_member_opens(), collector.scoped() as scope:
                 results = coordinator.run(self, dest_path)
         finally:

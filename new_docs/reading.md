@@ -46,8 +46,8 @@ you leave with `break` ends at once on CPython. One kept in a variable, or one a
 holds the archive until you close it, so use it in a `with` block when the loop can stop early:
 `with archive.stream_members() as members:` ends the pass at the end of the block, and `with
 iter(archive) as members:` does the same for a loop over members. With
-[`concurrent_members=True`](#several-members-at-once) they work, from any thread, on every format.
-`extract_all` still can't run while a pass is going.
+[`concurrent_members=True`](#several-members-at-once) they work, from any thread, on every format,
+and so does `extract_all`.
 Streams from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. TAR and ZIP archives and single

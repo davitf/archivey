@@ -263,14 +263,20 @@ class ReaderState:
         """The pass a library-internal scope opened on this thread belongs to.
 
         This thread's own executing pass when it holds one (an ``extract_all()``
-        whose coordinator opens members), else ``_root``. On a ``CONCURRENT``
-        reader ``_root`` may be another thread's pass, which can end while this
-        thread's scope is still open; a child must not be filed under it.
+        whose coordinator opens members). Otherwise, on a ``CONCURRENT`` reader,
+        none: any pass there belongs to another thread and can end while this
+        thread's scope is still open, so a child must not be filed under it. The
+        scope then runs as what it is, a worker call (or no token at all for a
+        link-read scope). On a default reader at most one pass runs, and the
+        generator holding it may be resumed on a thread other than the one that
+        took it, so every scope there goes under ``_root``.
         """
         current = threading.current_thread()
         for token in self._passes_locked():
             if token.thread is current and not token.suspended:
                 return token
+        if self.concurrent:
+            return None
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:

@@ -20,7 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, ArchiveyUsageError, TruncatedError, open_archive
+from archivey import (
+    ArchiveyConfig,
+    ArchiveyUsageError,
+    ExtractionError,
+    TruncatedError,
+    open_archive,
+)
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.reader_state import LifecycleState, ReaderState
 from archivey.reader import ArchiveReader
@@ -359,6 +365,33 @@ def test_extractions_and_calls_at_once(
     assert _extracted(tmp_path / "two", expected) == expected
 
 
+def test_extractions_into_one_folder_clash_as_two_readers_would(
+    tmp_path: Path,
+) -> None:
+    """The reader does not arbitrate between two extractions into one folder.
+
+    A file already there (or one the other extraction wrote first) is an existing
+    destination to each of them, under the overwrite policy each was given.
+    """
+    path = _zip(tmp_path)
+    dest = tmp_path / "same"
+    dest.mkdir()
+    (dest / "c.txt").write_bytes(b"there first")
+    errors: list[BaseException] = []
+
+    def extract() -> None:
+        try:
+            reader.extract_all(dest)
+        except ExtractionError as exc:
+            errors.append(exc)
+
+    with open_archive(path, concurrent_members=True) as reader:
+        _run_together(extract, extract)
+    assert len(errors) == 2
+    assert all("already exists" in str(e) for e in errors)
+    assert (dest / "c.txt").read_bytes() == b"there first"
+
+
 def test_extraction_report_keeps_only_its_own_diagnostics(tmp_path: Path) -> None:
     """A diagnostic one extraction emits stays out of the one running beside it."""
     path = _zip(tmp_path)
@@ -603,6 +636,30 @@ def test_internal_scope_belongs_to_its_own_threads_pass() -> None:
     state.release_pass(extracting)
     assert state._children == set()
     assert state.enter_child_scope("link_reads") is None
+
+
+def test_scope_on_a_thread_without_a_pass_stays_off_other_passes() -> None:
+    """``members()`` on a ``CONCURRENT`` reader holds a worker, not a pass.
+
+    Its link reads must not be filed under a pass another thread holds, which could
+    end while they run and take them out of the bookkeeping.
+    """
+    state = _state()
+    other = _in_thread(lambda: state.acquire_pass("stream_members"))
+    worker = state.acquire_worker("members")
+    assert state.enter_child_scope("link_reads") is None
+    state.begin_internal_opens()
+    try:
+        inner = state.acquire_worker("open")
+    finally:
+        state.end_internal_opens()
+    # A worker of its own, which close() drains, not a child of the other pass.
+    assert inner.kind == "worker"
+    assert inner in state._workers
+    state.release_pass(other)  # type: ignore[arg-type]
+    assert inner in state._workers
+    state.release_worker(inner)
+    state.release_worker(worker)
 
 
 @pytest.mark.parametrize("make", [_tar, _zip])
