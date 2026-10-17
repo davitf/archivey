@@ -1025,24 +1025,43 @@ class TarReader(BaseArchiveReader):
         reads go past the trailer too, so a pipe held open after the tar ends blocks
         here until more bytes or EOF arrive; ``docs/gotchas.md`` says so to callers.
 
-        A tail that fails to *decode* ends the scan quietly. On a compressed tar the
-        bytes past the trailer can be a truncated gzip footer or junk after the
-        compressed stream, and the codec refuses both. Every member was already read
-        whole, and before this scan ran unconditionally such an archive listed without
-        complaint, so a decode failure out here must not turn a good listing into an
-        error. It is not trailing tar data either, so it is not reported as that. The one
+        A tail that fails to *decode* never raises. Every member was already read
+        whole, so a decode failure out here must not turn a good listing into an
+        error, and it is not trailing tar data, so it is not reported as that. The one
         exception is a :class:`_StreamChecksumError`: a codec checksum that covers the
         whole decoded stream (gzip's CRC-32 and ISIZE, zlib's Adler-32, the zstd and lz4
         content checksums, lzip's CRC-32) failed, so the members already read are
         damaged, and that raises. A ``tar -b128`` record pads 64 KiB past the trailer,
         so this scan is often where the checksum is reached.
 
-        bzip2 and xz check each block, and the last block's check can be reached here
-        too, but neither codec reports a failed check differently from junk after the
-        stream. A decode failure on those is therefore ``DIGEST_UNVERIFIABLE``, not
-        silence: the members already read may be damaged, and nothing can say. When the
-        codec had already read to the stream's end during the last member's read, the
-        check fails there instead, as ``CorruptionError`` from that read.
+        A compressed stream that ends early (a cut gzip footer, a cut lz4 end mark and
+        content checksum) is :class:`TruncatedError` here. The checksum that would
+        cover the members was never reached, so on any codec that can carry one this is
+        ``DIGEST_UNVERIFIABLE`` (``reason="trailing_stream_truncated"``). Junk after
+        the compressed stream is reported by the codec itself, as
+        ``ARCHIVE_TRAILING_DATA``.
+
+        Any other decode failure here (a damaged deflate stream past the trailer, say)
+        is ``DIGEST_UNVERIFIABLE`` (``reason="trailing_decode_failed"``) on a codec
+        that can carry a checksum, not silence. It is worded as "cannot be told", not
+        "never reached": the bytes that failed may be in the members' own stream, or
+        in a further compressed member (``cat a.tar.gz b.gz``) whose predecessor's
+        checksum was already checked, and nothing here tells the two apart. A further
+        member that fills a whole scan chunk (``_TRAILING_SCAN_CHUNK``) of output
+        in a read that does not fail is reported as trailing data instead; one that
+        fails before that loses its output with the failing read.
+        bzip2 and xz check each block, and neither reports a failed check differently
+        from junk after the stream, so on those the failure may be that check itself.
+        When the codec had already read to the failure during the last member's read,
+        it fails there instead, as ``CorruptionError`` from that read.
+
+        The first non-zero byte ends the scan, on every codec. Reading on to the
+        stream's checksum would look more thorough, but nothing here says where the
+        listed members' compressed stream ends: in a concatenated ``.tar.gz`` the
+        trailing bytes are a second gzip member, whose checksum covers none of the
+        listed members, while the first member's was already checked on the way in.
+        So past trailing bytes the scan claims nothing about the checksum either way;
+        ``ARCHIVE_TRAILING_DATA`` is the report, and ``STRICT`` refuses it.
 
         When the scan stops at its bound with the compressed stream not yet at its end,
         that checksum was never checked, and ``DIGEST_UNVERIFIABLE`` says so.
@@ -1055,14 +1074,23 @@ class TarReader(BaseArchiveReader):
                 with self._translated_errors(), self._walk_guard():
                     chunk = stream.read(want)
             except _StreamChecksumError:
-                # The codec's whole-stream checksum covers the members already read,
-                # so this is damage to them, not a tail that failed to decode.
+                # Nothing non-zero has come out since the trailer, so the stream this
+                # checksum covers holds the members already read: this is damage to
+                # them, not a tail that failed to decode. (A codec's read-ahead can
+                # also check a short further member whose output this read has not
+                # returned yet; that is attributed to the members too.)
                 raise
+            except TruncatedError:
+                # The compressed stream ends before its footer, so the checksum it
+                # would carry over the members already read was never reached.
+                self._emit_stream_checksum_unverified(
+                    reason="trailing_stream_truncated"
+                )
+                return
             except ReadError:
-                if self._format.stream in _STREAMS_WITH_UNTYPED_CHECKSUM:
-                    self._emit_stream_checksum_unverified(
-                        reason="trailing_decode_failed"
-                    )
+                # In the members' stream or a further one: whether the checksum over
+                # the members passed cannot be told.
+                self._emit_stream_checksum_unverified(reason="trailing_decode_failed")
                 return
             if not chunk:
                 return
@@ -1081,10 +1109,12 @@ class TarReader(BaseArchiveReader):
         """Report a compressed stream whose checksum the trailing scan could not check.
 
         ``reason`` is ``"trailing_scan_limit"`` when the scan stopped at its bound
-        before the stream's end, and ``"trailing_decode_failed"`` when a bzip2 or xz
-        tail failed to decode (see :meth:`_verify_nothing_but_zeros_to_eof`). Only
-        for a codec that can carry such a checksum; the zstd, lz4 and xz ones are
-        optional, so the message says "if it carries one".
+        before the stream's end, ``"trailing_stream_truncated"`` when the compressed
+        stream ended before its footer, and ``"trailing_decode_failed"`` when the
+        tail failed to decode in another way (see
+        :meth:`_verify_nothing_but_zeros_to_eof`). Only for a codec that can carry
+        such a checksum; the zstd, lz4 and xz ones are optional, so the message says
+        "if it carries one".
         """
         stream = self._format.stream
         if stream not in _STREAMS_WITH_CHECKSUM:
@@ -1095,11 +1125,22 @@ class TarReader(BaseArchiveReader):
                 "end-of-archive marker, and the scan stopped there: the stream's "
                 "checksum, if it carries one, was not checked"
             )
-        else:
+        elif reason == "trailing_stream_truncated":
+            what = (
+                "ends before its footer, past the end-of-archive marker: the stream's "
+                "checksum, if it carries one, was never reached"
+            )
+        elif stream in _STREAMS_WITH_UNTYPED_CHECKSUM:
             what = (
                 "fails to decode past the end-of-archive marker: this codec reports a "
                 "failed check the same way as junk after the stream, so whether the "
                 "checksum passed cannot be told"
+            )
+        else:
+            what = (
+                "fails to decode past the end-of-archive marker: the failure may be "
+                "in the stream that holds the members or in a further compressed "
+                "member after it, so whether the checksum passed cannot be told"
             )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.DIGEST_UNVERIFIABLE,

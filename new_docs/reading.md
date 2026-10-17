@@ -99,6 +99,13 @@ the archive's index each time. The exception is a source where each jump to a ne
 costly, such as a member of another archive or a file read over the network. There, streams that
 take turns make the source jump back and forth, and each jump throws away what it had buffered.
 
+With `concurrent_operations=True`, threads can also share the rest of the reader. They can list
+members, iterate, run `stream_members()` passes and `extract_all()` at the same time, and if several
+need the member list at once, one builds it while the others wait. Each member stream still belongs
+to one thread. Opening the archive once per thread is also safe, as long as each thread opens it
+from its own path or file: one file object belongs to one reader. Closing the reader closes the
+streams still open on it, so `close()` may wait for reads in other threads to finish.
+
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off
