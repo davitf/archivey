@@ -651,7 +651,10 @@ def test_two_nested_archives_read_from_threads(mode: str) -> None:
     errors: list[BaseException] = []
     config = _config(mode)
     with archivey.open_archive(
-        io.BytesIO(outer), seekable_members=True, concurrent_members=True, config=config
+        io.BytesIO(outer),
+        seekable_members=True,
+        concurrent_operations=True,
+        config=config,
     ) as reader:
 
         def work(name: str, expected: dict[str, bytes]) -> None:

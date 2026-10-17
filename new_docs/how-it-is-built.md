@@ -11,7 +11,7 @@ Archivey is a work in progress, and so is the process described here.
 The maintainer designed the building blocks and the public API: one opener, one reader and one
 member model for every format; reading as a stream, with a member's bytes decoded as you read them;
 and the modes you choose at open, such as `streaming=True` for a pipe, `seekable_members=True` and
-`concurrent_members=True`. [Philosophy](philosophy.md) explains the thinking behind them.
+`concurrent_operations=True`. [Philosophy](philosophy.md) explains the thinking behind them.
 
 The maintainer also sets the scope, the architecture and the
 [design rules](https://github.com/davitf/archivey/blob/main/dev-docs/design-rules.md) the agents
