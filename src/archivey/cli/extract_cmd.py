@@ -201,25 +201,28 @@ def _may_land_on_existing(name: str) -> bool:
     already there, under its own spelling or one the name policy may write instead.
 
     For a name not written as stored (:func:`_written_as_stored`), each cwd entry is
-    compared with the name after undoing what the policy may do to it: ``%XX`` escapes
-    are turned back into the character or byte they stand for (``%25`` into ``%``), a
-    ``\\`` ends the top level, as it is written as ``/``, and trailing dots and spaces
-    are dropped from both sides. The entry is also compared as it is, for a ``%`` the
-    policy left alone. An entry that matches only when case is ignored counts when the
-    cwd folds case (:func:`_cwd_folds_case`). The comparison is loose on purpose: a
-    false match only sends the archive through the wrapper, while a missed one lets
+    compared with the name after undoing what the policy may do to it. Both sides are
+    taken as the UTF-8 bytes the policy escapes (:func:`_utf8`), the entry's ``%XX``
+    escapes are turned back into the bytes they stand for (``%25`` into ``%``), a ``\\``
+    ends the top level, as it is written as ``/``, and trailing dots and spaces are
+    dropped from both sides. The entry is also compared as it is, for a ``%`` the policy
+    left alone. An entry that matches only when case is ignored counts when the cwd
+    folds case (:func:`_cwd_folds_case`). The comparison is loose on purpose: a false
+    match only sends the archive through the wrapper, while a missed one lets
     ``--overwrite`` touch the operator's entry."""
     if os.path.lexists(name):
         return True
     if _written_as_stored(name):
         return False
-    stem = name.split("\\", 1)[0].rstrip(". ")
+    stem = _canonical(_utf8(name.split("\\", 1)[0])).rstrip(". ")
     try:
         entries = os.listdir(".")
     except OSError:
         return True  # the cwd could not be listed: take the safe route
     for entry in entries:
-        for spelling in {entry.rstrip(". "), _unescaped(entry).rstrip(". ")}:
+        raw = _utf8(entry)
+        for spelling in {_canonical(raw), _canonical(_ESCAPE.sub(_byte, raw))}:
+            spelling = spelling.rstrip(". ")
             if spelling == stem or (
                 spelling.casefold() == stem.casefold() and _cwd_folds_case(entry)
             ):
@@ -230,16 +233,26 @@ def _may_land_on_existing(name: str) -> bool:
 _ESCAPE = re.compile(rb"%([0-9A-Fa-f]{2})")
 
 
-def _unescaped(entry: str) -> str:
-    """``entry`` with each ``%XX`` turned back into its byte, read as UTF-8 with a byte
-    that is not UTF-8 as a surrogate, as the library reads a stored name."""
-    try:
-        raw = entry.encode("utf-8", "surrogateescape")
-    except UnicodeEncodeError:
-        return entry  # a lone surrogate from a Windows listing: nothing to undo
-    return _ESCAPE.sub(lambda m: bytes([int(m[1], 16)]), raw).decode(
-        "utf-8", "surrogateescape"
+def _byte(match: re.Match[bytes]) -> bytes:
+    return bytes([int(match[1], 16)])
+
+
+def _utf8(name: str) -> bytes:
+    """``name`` as the UTF-8 bytes the name policy escapes: a surrogate in
+    U+DC80-U+DCFF stands for the byte it was read from (``surrogateescape``), and any
+    other lone surrogate is encoded as its own three bytes (``surrogatepass``)."""
+    return b"".join(
+        ch.encode(
+            "utf-8",
+            "surrogateescape" if "\udc80" <= ch <= "\udcff" else "surrogatepass",
+        )
+        for ch in name
     )
+
+
+def _canonical(raw: bytes) -> str:
+    """``raw`` read back as a name, so two spellings of the same bytes compare equal."""
+    return raw.decode("utf-8", "surrogateescape")
 
 
 def _cwd_folds_case(entry: str) -> bool:
@@ -331,7 +344,7 @@ def _step_back(side: Path, wrapper: Path) -> Path:
 
 
 class _HoistConflict(Exception):
-    """A collision the hoist does not resolve: any but one ``rename`` settles."""
+    """A collision the hoist does not resolve. Only ``rename`` settles a collision."""
 
     def __init__(self, dest: Path) -> None:
         super().__init__(str(dest))

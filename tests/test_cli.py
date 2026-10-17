@@ -2663,6 +2663,45 @@ def test_may_land_on_existing_matches_the_spelling_extraction_writes(
     assert _may_land_on_existing(stored)
 
 
+@pytest.mark.parametrize("stored", ["hi\ud800", "z\udfff."])
+def test_may_land_on_existing_matches_an_escaped_lone_surrogate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored: str
+) -> None:
+    """A 7z name can hold a lone surrogate, which the policy writes as its UTF-8 bytes
+    escaped (``hi%ED%A0%80``); the check finds that spelling in the cwd."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+    from tests.test_sevenzip_surrogate_names import _surrogate_7z
+
+    out = tmp_path / "out"
+    archive = tmp_path / "n.7z"
+    archive.write_bytes(_surrogate_7z([(stored, b"x")]))
+    assert main(["x", str(archive), "-d", str(out)]) == EXIT_OK
+    assert len(os.listdir(out)) == 1  # the one spelling extraction wrote
+    monkeypatch.chdir(out)
+    assert _may_land_on_existing(stored)
+
+
+@pytest.mark.parametrize("overwrite", ["skip", "replace"])
+def test_indexed_lone_surrogate_root_never_replaces_the_operators_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    from tests.test_sevenzip_surrogate_names import _surrogate_7z
+
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "one.7z"
+    archive.write_bytes(_surrogate_7z([("hi\ud800", b"ARCHIVE")]))
+    mine = "hi%ED%A0%80"
+    (tmp_path / mine).write_bytes(b"MINE")
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "kept in ") == [f"kept in one/: {mine} already exists"]
+    assert (tmp_path / mine).read_bytes() == b"MINE"
+    assert (tmp_path / "one" / mine).read_bytes() == b"ARCHIVE"
+
+
 def test_may_land_on_existing_takes_linear_time_on_a_crafted_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
