@@ -62,11 +62,15 @@ The same tree as a 7z lists in about 290 ms, faster than ZIP: the 7z header stor
 property as one array for all members, so the parse is a few bulk reads rather than one
 record per member, and there is no per-member extra field to split.
 
-TAR lists in about 820 ms, and more than half of it is TAR's own header reading
+TAR listed in about 820 ms, and more than half of it was TAR's own header reading
 (`TarWalker`): a seek and a 512-byte read per header through the shared stream view,
 `parse_header_block` (about a quarter, with `parse_number` about a tenth), and resolving
-the extended headers. Building the member is about 18%. `tarfile` takes about 18 µs per
-member. Reading headers in larger chunks and a cheaper field split are the obvious levers.
+the extended headers. Building the member was about 18%. `tarfile` takes about 18 µs per
+member. Cutting the numeric fields with one `struct` unpack and a bounded cache of their
+values took `parse_header_block` from about 8.5 to 5.5 µs and the listing to about
+720 ms. A 32 KiB read-ahead of headers was tried and dropped: it reads member data twice
+on a plain file, changes which member a truncation is reported against, and the walk
+already reads through a buffered view.
 
 ## Per-member stream open and close
 
