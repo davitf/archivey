@@ -103,6 +103,14 @@ def _hex_lines(seed: bytes, size: int) -> bytes:
     return b"".join(lines)[:size]
 
 
+# Stored encrypted members of sizes on and off the 16-byte AES block, which archivey
+# decrypts itself: the ciphertext is padded to whole blocks and cut back to the size.
+_ENCRYPTION_STORED_SIZES: tuple[_File, ...] = tuple(
+    _File(f"size_{size}.bin", _hex_lines(b"stored_sizes", size))
+    for size in (0, 7, 16, 3000, 3001)
+)
+
+
 # About 100 KB packed per archive under ``-m3``: two members of 100 000 bytes each,
 # both past the 64 KiB confirm prefix.
 _ENCRYPTION_LARGE: tuple[_File, ...] = (
@@ -846,6 +854,12 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         # the checksum alone (``test_rar_header_record_leniency``).
         extra=("-m0", "-ppassword"),
     )
+    build(
+        rar5_bin,
+        "encryption_stored_sizes__.rar",
+        _ENCRYPTION_STORED_SIZES,
+        extra=("-m0", "-ppassword"),
+    )
     _build_unar_drop(rar5_bin, out_dir)
     _build_file_version(
         rar5_bin,
@@ -951,6 +965,32 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         for part in parts:
             print(f"wrote {_shown(part)}")
 
+    # Stored, encrypted and split: each part has its own encryption record, so
+    # archivey does not decrypt it itself, and a program reads it.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "payload.bin").write_bytes(b"ABCDEFGH" * 200)
+        out = out_dir / "tinyvol_enc.rar"
+        _rar_a(
+            rar5_bin,
+            out,
+            ["payload.bin"],
+            cwd=root,
+            extra=("-m0", "-v1200b", "-ppassword"),
+        )
+        part1 = out_dir / "tinyvol_enc.part1.rar"
+        part2 = out_dir / "tinyvol_enc.part2.rar"
+        if (
+            not part1.is_file()
+            or not part2.is_file()
+            or (out_dir / "tinyvol_enc.part3.rar").exists()
+        ):
+            raise RuntimeError("expected tinyvol_enc to span exactly two volumes")
+        if out.is_file():
+            out.unlink()
+        print(f"wrote {_shown(part1)}")
+        print(f"wrote {_shown(part2)}")
+
     _build_missing_last_volume(rar5_bin, out_dir)
 
     # --- RAR4 (needs -ma4) ---
@@ -1044,6 +1084,13 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         rar4_bin,
         "encryption_large_stored__rar4.rar",
         _ENCRYPTION_LARGE_STORED,
+        extra=("-ma4", "-m0", "-ppassword"),
+    )
+
+    build(
+        rar4_bin,
+        "encryption_stored_sizes__rar4.rar",
+        _ENCRYPTION_STORED_SIZES,
         extra=("-ma4", "-m0", "-ppassword"),
     )
 

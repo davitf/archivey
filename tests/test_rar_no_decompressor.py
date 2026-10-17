@@ -66,8 +66,8 @@ def test_stored_nonsolid_members_read(as_stream: bool) -> None:
     ("name", "why"),
     [
         ("basic_solid__.rar", "it is compressed"),
-        ("encryption__.rar", "it is encrypted"),
-        ("encryption_stored__.rar", "it is encrypted"),
+        ("encryption__.rar", "it is compressed"),
+        ("tinyvol_enc.part1.rar", "it is encrypted in a form archivey does not"),
     ],
 )
 def test_other_members_refused_before_any_process(name: str, why: str) -> None:
