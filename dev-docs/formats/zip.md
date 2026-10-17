@@ -604,7 +604,9 @@ directory's refusals the file read is to drop:
 - A data descriptor that understates a STORED member, or a bit-3 codec member the pass
   reads past, and the reversed same-name pair, fail a member the file read writes.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
-  where the file read refuses it (DR-3).
+  where the file read refuses it (DR-3). The walk searches at least 64 KiB
+  (`_DESCRIPTOR_SEARCH_PAST`) past the bytes the codec was handed for the descriptor,
+  whatever the member's size; with more junk than that the pass can end there.
 - The first of several inconclusive password candidates wins (§6).
 - A local header without bit 3 whose size field holds all ones that no ZIP64 field
   holds is refused (`CorruptionError`); the file read takes the sizes from the directory

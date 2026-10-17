@@ -1490,6 +1490,99 @@ def test_a_bit3_ppmd_member_with_no_end_mark_fails_as_from_a_file() -> None:
     assert seen["b.txt"] == b"after"
 
 
+@pytest.mark.parametrize("read", [True, False], ids=["read", "skipped"])
+@pytest.mark.parametrize(
+    "method", [zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED], ids=["deflate", "stored"]
+)
+def test_many_small_bit3_members_pass_about_their_own_bytes(
+    method: int, read: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bit-3 member's end is found only by reading past it, and the walk puts
+    back what it read too far for the next header. Each member reads ahead about
+    its own length, not a whole read size: a thousand tiny members pass a few times
+    the archive's bytes through the walk's source, not a read size each."""
+    out = _Writer()
+    with zipfile.ZipFile(out, "w", method) as zf:
+        for i in range(1000):
+            zf.writestr(f"f{i:04}.txt", f"member {i}\n" * 3)
+    data = bytes(out.data)
+    passed = _count_source_reads(monkeypatch)
+    seen = 0
+    with archivey.open_archive(_pipe(data), streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            if read:
+                assert stream.read() == f"member {int(member.name[1:5])}\n".encode() * 3
+            seen += 1
+    assert seen == 1000
+    assert passed["bytes"] <= 4 * len(data)
+
+
+def test_a_large_bit3_member_reads_ahead_in_growing_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read ahead into a bit-3 member doubles with each full step, so a large
+    member takes tens of reads from the walk's source, not one per first step."""
+    content = random.Random(0).randbytes(5 << 20)
+    out = _Writer()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("big.bin", content)
+    passed = _count_source_reads(monkeypatch)
+    with archivey.open_archive(_pipe(bytes(out.data)), streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == content
+    assert passed["calls"] < 1000
+
+
+def test_a_bit3_stored_member_from_a_pipe_reads_full_counts() -> None:
+    """``read(n)`` returns ``n`` bytes until the member's end, however small the
+    steps the walk reads ahead in: a short read means the data ended."""
+    content = random.Random(1).randbytes(100_000)
+    out = _Writer()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.bin", content)
+    with archivey.open_archive(_pipe(bytes(out.data)), streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            chunks = []
+            while chunk := stream.read(8192):
+                chunks.append(chunk)
+    assert [len(chunk) for chunk in chunks[:-1]] == [8192] * (len(chunks) - 1)
+    assert b"".join(chunks) == content
+
+
+@pytest.mark.parametrize("junk", [300, 2_000, 20_000, 60_000])
+def test_junk_before_a_small_codec_members_descriptor_is_searched(junk: int) -> None:
+    """Junk between a bit-3 codec member's end and its descriptor counts into the
+    member (the file read refuses it). The descriptor search covers at least
+    ``_DESCRIPTOR_SEARCH_PAST`` bytes past what the codec was handed, so how much
+    junk is passed over does not depend on how small the member is."""
+    assert junk + 100 < zip_local_walk._DESCRIPTOR_SEARCH_PAST
+    content = b"a small member before junk\n" * 2
+    first = zlib.compressobj(9, zlib.DEFLATED, -15)
+    body = first.compress(content) + first.flush() + b"\x01" * junk
+    second = zlib.compressobj(9, zlib.DEFLATED, -15)
+    tail = second.compress(b"after") + second.flush()
+    data = _bit3_deflate_zip([("a.txt", body, content), ("b.txt", tail, b"after")])
+    assert _pipe_reads(data) == {"a.txt": content, "b.txt": b"after"}
+
+
+def _count_source_reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Count the calls to the walk's source and the bytes they return."""
+    passed = {"bytes": 0, "calls": 0}
+    source_read = zip_local_walk.ForwardSource.read
+
+    def counting_read(self: zip_local_walk.ForwardSource, n: int) -> bytes:
+        chunk = source_read(self, n)
+        passed["bytes"] += len(chunk)
+        passed["calls"] += 1
+        return chunk
+
+    monkeypatch.setattr(zip_local_walk.ForwardSource, "read", counting_read)
+    return passed
+
+
 def test_a_bit3_codec_stream_that_runs_into_its_descriptor_reads_only_from_a_pipe() -> (
     None
 ):

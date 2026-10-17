@@ -110,7 +110,11 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import open_codec_stream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
-from archivey.internal.streams.streamtools import ReadableStream, read_exact
+from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
+    ReadableStream,
+    read_exact,
+)
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import (
@@ -619,6 +623,10 @@ class _PassData:
             # PPMd holds a sized member's input until it is all in; a bit-3 member
             # has no size to wait for, so it is fed in pieces, in a child process.
             params = replace(params, input_runs_on=True)
+        if deferred:
+            # The data reads ahead in small steps (``MemberData._read_ahead``),
+            # which a ``BufferedReader`` in front of the decoder would fill.
+            source = OneReadEachStream(source)
         return open_codec_stream(
             codec,
             source,
