@@ -35,12 +35,14 @@ from __future__ import annotations
 
 import errno
 import re
+import struct
 import sys
 import zlib
 from array import array
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from typing import BinaryIO, cast
 
 from archivey.exceptions import (
@@ -254,6 +256,25 @@ _FIELDS = (
     ("devmajor", 329, 337),
     ("devminor", 337, 345),
 )
+# The seven numeric fields in _FIELDS order, as raw bytes, in one C call. A test checks
+# that it cuts the same bytes as _FIELDS.
+_split_numbers = struct.Struct("100x8s8s8s12s12s181x8s8s167x").unpack
+# Most numeric fields repeat across an archive (mode, ids, the device numbers, often
+# the times), so a cache hit replaces the strip/translate/int. Bounded, so a hostile
+# archive of distinct values costs a cache miss per field and no more memory. Measured
+# per header against a plain dict lookup: the same within noise.
+_cached_number = lru_cache(maxsize=4096)(parse_number)
+
+
+def _field_named(block: bytes) -> str:
+    """The name of the first numeric field of ``block`` that is not a number, for the
+    rejection message; only called once the parse has failed."""
+    for field, start, end in _FIELDS:
+        try:
+            parse_number(block[start:end])
+        except _BadNumber:
+            return field
+    raise AssertionError("no field failed")  # pragma: no cover
 
 
 def parse_header_block(
@@ -273,16 +294,16 @@ def parse_header_block(
         return RejectedBlock(offset, "the checksum field is not a number")
     if not _checksum_matches(block, stored_sum):
         return RejectedBlock(offset, "bad header checksum")
-    values: dict[str, int] = {}
-    for field, start, end in _FIELDS:
-        try:
-            values[field] = parse_number(block[start:end])
-        except _BadNumber:
-            return RejectedBlock(offset, f"the {field} field is not a number")
-    if values["size"] < 0:
-        return RejectedBlock(offset, f"negative size {values['size']}")
-    if values["size"] > MAX_OFFSET:
-        return RejectedBlock(offset, f"size {values['size']} is past any file's size")
+    try:
+        mode, uid, gid, size, mtime, devmajor, devminor = map(
+            _cached_number, _split_numbers(block)
+        )
+    except _BadNumber:
+        return RejectedBlock(offset, f"the {_field_named(block)} field is not a number")
+    if size < 0:
+        return RejectedBlock(offset, f"negative size {size}")
+    if size > MAX_OFFSET:
+        return RejectedBlock(offset, f"size {size} is past any file's size")
     typeflag = block[156:157]
     magic = block[257:265]
     name = _cut_nul(block[0:100])
@@ -325,7 +346,13 @@ def parse_header_block(
         sparse_slots=sparse_slots,
         sparse_extended=sparse_extended,
         sparse_realsize=sparse_realsize,
-        **values,
+        mode=mode,
+        uid=uid,
+        gid=gid,
+        size=size,
+        mtime=mtime,
+        devmajor=devmajor,
+        devminor=devminor,
     )
 
 
