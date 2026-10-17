@@ -1493,3 +1493,133 @@ def test_short_name_alias_on_windows(tmp_path: Path) -> None:
     assert two.status is ExtractionStatus.EXTRACTED
     assert two.collided_with == dest / "longfilename.txt"
     assert (dest / "longfilename.txt").read_bytes() == b"2"
+
+
+# --- A name another writer creates first clashes as the existence check would -------
+
+
+_OTHER_WRITER = b"other writer"
+
+
+def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Simulate another writer (a second extraction into the same folder) creating
+    ``name`` as a file between the existence check and the landing. Windows refuses the
+    rename of a FILE or HARDLINK with access denied; ``os.symlink`` and ``os.makedirs``
+    refuse a taken name on every OS."""
+    real_replace = os.replace
+    real_makedirs = os.makedirs
+
+    def take(dst: str) -> None:
+        Path(dst).write_bytes(_OTHER_WRITER)
+
+    def replace(src: str, dst: str) -> None:
+        if os.path.basename(str(dst)) == name:
+            take(dst)
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+        real_replace(src, dst)
+
+    def symlink(src: str, dst: str, target_is_directory: bool = False) -> None:
+        take(dst)
+        raise FileExistsError(errno.EEXIST, "File exists", str(dst))
+
+    def makedirs(path: str, mode: int = 0o777, exist_ok: bool = False) -> None:
+        if os.path.basename(str(path)) == name:
+            take(path)
+            raise FileExistsError(errno.EEXIST, "File exists", str(path))
+        real_makedirs(path, mode, exist_ok)
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(os, "symlink", symlink)
+    monkeypatch.setattr(os, "makedirs", makedirs)
+
+
+# What each landing raises when nothing maps it: the other policies.
+_UNMAPPED = {
+    "file": PermissionError,
+    "hard": PermissionError,
+    "sym": FileExistsError,
+    "dir": FileExistsError,
+}
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["file", "hard", pytest.param("sym", marks=_POSIX_SYMLINKS), "dir"],
+)
+@pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.REPLACE])
+def test_landing_on_a_name_taken_after_the_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    overwrite: OverwritePolicy,
+) -> None:
+    """Another writer takes ``b.txt`` between the existence check and the landing.
+    Under ERROR that is the clash the check reports, for every member kind; the other
+    policies do not handle it, and the landing's own error goes out as it is."""
+    dest = tmp_path / "out"
+    _another_writer_takes(monkeypatch, "b.txt")
+    second: tuple[str, str, bytes | str | None] = {
+        "file": ("file", "b.txt", b"ours"),
+        "hard": ("hard", "b.txt", "a.txt"),
+        "sym": ("sym", "b.txt", "a.txt"),
+        "dir": ("dir", "b.txt", None),
+    }[kind]
+    archive = _tar([("file", "a.txt", b"first"), second])
+    raised = ExtractionError if overwrite is OverwritePolicy.ERROR else _UNMAPPED[kind]
+    with pytest.raises(raised) as excinfo:
+        open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+    if raised is ExtractionError:
+        assert "Destination already exists" in str(excinfo.value)
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+@_POSIX_SYMLINKS
+def test_a_symlink_landing_on_a_parked_name_taken_again_is_a_clash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symlink removes the parked copy of its name before it lands, so a name taken
+    after that is another writer's, as for a free name."""
+
+    def symlink(src: str, dst: str, target_is_directory: bool = False) -> None:
+        Path(dst).write_bytes(_OTHER_WRITER)
+        raise FileExistsError(errno.EEXIST, "File exists", str(dst))
+
+    monkeypatch.setattr(os, "symlink", symlink)
+    archive = _tar([("file", "a.txt", b"first"), ("sym", "a.txt", "x")])
+    with pytest.raises(ExtractionError, match="Destination already exists"):
+        open_and_extract(
+            io.BytesIO(archive),
+            tmp_path / "out",
+            streaming=True,
+            overwrite=OverwritePolicy.ERROR,
+        )
+
+
+def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A streaming pass parks the earlier ``a.txt`` and the later one replaces it under
+    any policy. A rename refused there is not the caller's entry in the way, so ERROR
+    does not report it as one: the refusal goes out as it is."""
+    real_replace = os.replace
+    landings = 0
+
+    def replace(src: str, dst: str) -> None:
+        nonlocal landings
+        if os.path.basename(str(dst)) == "a.txt":
+            landings += 1
+            if landings == 2:
+                raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    archive = _tar([("file", "a.txt", b"first"), ("file", "a.txt", b"second")])
+    with pytest.raises(PermissionError):
+        open_and_extract(
+            io.BytesIO(archive),
+            tmp_path / "out",
+            streaming=True,
+            overwrite=OverwritePolicy.ERROR,
+        )
+    assert landings == 2
