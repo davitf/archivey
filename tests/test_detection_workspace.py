@@ -338,7 +338,9 @@ def test_volume_list_of_member_streams_is_not_seeked_to_its_tail(
     half = len(image) // 2
     archive = _zip_of({"a.001": image[:half], "a.002": image[half:]})
     with (
-        open_archive(archive, seekable_members=True, concurrent_members=True) as reader,
+        open_archive(
+            archive, seekable_members=True, concurrent_operations=True
+        ) as reader,
         reader.open("a.001") as first,
         reader.open("a.002") as second,
     ):

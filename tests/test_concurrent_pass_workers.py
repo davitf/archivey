@@ -4,7 +4,7 @@ On a ``CONCURRENT`` reader every pass and listing call shares the reader's one m
 walk, each at its own position, so ``open()``, ``read()``, ``get()``, ``members()``,
 iteration and further ``stream_members()`` passes work beside a pass on every format,
 from the loop body and from other threads. On a reader opened without
-``concurrent_members=True`` they still raise ``ArchiveyUsageError``. ``extract_all()``
+``concurrent_operations=True`` they still raise ``ArchiveyUsageError``. ``extract_all()``
 works beside a pass the same way. The bookkeeping itself is unit-tested at the bottom.
 """
 
@@ -177,7 +177,7 @@ def test_random_calls_inside_the_loop_after_members(
     path = make(tmp_path)
     expected = _expected(path)
     passed: dict[str, bytes] = {}
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         reader.members()
         for member, stream in reader.stream_members():
             # Before the pass's own stream is read, so a random read between the
@@ -197,7 +197,7 @@ def test_random_reads_interleaved_with_the_pass_stream(
     path = make(tmp_path)
     expected = _expected(path)
     passed: dict[str, bytes] = {}
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         reader.members()
         held = {name: reader.open(name) for name in expected}
         got = dict.fromkeys(expected, b"")
@@ -231,7 +231,7 @@ def test_first_pass_needs_no_members_call(
     """
     path = make(tmp_path)
     expected = _expected(path)
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         for _member, _stream in reader.stream_members():
             _random_calls(reader, expected)
             assert next(reader.stream_members(), None) is not None
@@ -268,7 +268,7 @@ def test_passes_side_by_side(tmp_path: Path, make: Callable[[Path], Path]) -> No
     def drain(it):  # noqa: ANN001, ANN202 - test helper
         return {m.name: s.read() for m, s in it if s is not None and m.is_current}
 
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         reader.members()
         first: dict[str, bytes] = {}
         second: dict[str, bytes] = {}
@@ -324,7 +324,7 @@ def test_extraction_inside_the_loop_and_from_another_thread(
     path = make(tmp_path)
     expected = _expected(path)
     passed: dict[str, bytes] = {}
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         for i, (member, stream) in enumerate(reader.stream_members()):
             if i == 0:
                 reader.extract_all(tmp_path / "inside")
@@ -351,7 +351,7 @@ def test_extractions_and_calls_at_once(
             if s is not None and m.is_file and m.is_current
         }
 
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         first, second, passed, read = _run_together(
             lambda: reader.extract_all(tmp_path / "one"),
             lambda: reader.extract_all(tmp_path / "two"),
@@ -385,7 +385,7 @@ def test_extractions_into_one_folder_clash_as_two_readers_would(
         except ExtractionError as exc:
             errors.append(exc)
 
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         _run_together(extract, extract)
     assert len(errors) == 2
     assert all("already exists" in str(e) for e in errors)
@@ -395,7 +395,7 @@ def test_extractions_into_one_folder_clash_as_two_readers_would(
 def test_extraction_report_keeps_only_its_own_diagnostics(tmp_path: Path) -> None:
     """A diagnostic one extraction emits stays out of the one running beside it."""
     path = _zip(tmp_path)
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         selected, everything = _run_together(
             lambda: reader.extract_all(
                 tmp_path / "one", members=["c.txt", "missing.txt"]
@@ -410,7 +410,7 @@ def test_extraction_report_keeps_only_its_own_diagnostics(tmp_path: Path) -> Non
 
 def test_close_winds_down_every_suspended_pass(tmp_path: Path) -> None:
     path = _zip(tmp_path)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     first = reader.stream_members()
     second = reader.stream_members()
     _, first_stream = next(first)
@@ -425,7 +425,7 @@ def test_close_winds_down_every_suspended_pass(tmp_path: Path) -> None:
 
 def test_close_inside_the_loop_after_random_calls(tmp_path: Path) -> None:
     path = _zip(tmp_path)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     it = reader.stream_members()
     next(it)
     held = reader.open("c.txt")
@@ -533,7 +533,7 @@ def test_7z_link_opened_from_another_thread_leaves_the_pass_decoder_alone() -> N
     assert through_links
     passed: dict[str, bytes] = {}
     followed = 0
-    with open_archive(path, concurrent_members=True, config=config) as reader:
+    with open_archive(path, concurrent_operations=True, config=config) as reader:
         reader.members()
         for member, stream in reader.stream_members():
             if member.is_link:
@@ -669,7 +669,7 @@ def test_call_during_the_pass_listing_waits_for_it(
     """A read on another thread while the pass is pulling a member waits for it."""
     path = make(tmp_path)
     expected = _expected(path)
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     listing, release = threading.Event(), threading.Event()
     real_iter = reader._iter_members
 
@@ -734,7 +734,7 @@ def test_listing_ahead_of_a_tar_pass_keeps_its_open_stream(
     """
     path, files = _big_tar(tmp_path, mode, suffix)
     passed: dict[str, bytes] = {}
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             head = stream.read(1000)
@@ -777,7 +777,7 @@ def test_tar_pass_alone_reads_the_archive_once(
     size = path.stat().st_size
     for concurrent in (False, True):
         source = _CountingSource(path.read_bytes())
-        with open_archive(source, concurrent_members=concurrent) as reader:
+        with open_archive(source, concurrent_operations=concurrent) as reader:
             got = {m.name: s.read() for m, s in reader.stream_members() if s}
             rewinds = reader.diagnostics.counts.get(
                 DiagnosticCode.STREAM_REWIND_REDECOMPRESSES, 0
@@ -791,7 +791,7 @@ def test_damaged_tar_pass_ends_with_the_same_error_on_both_readers(
     tmp_path: Path,
 ) -> None:
     """A pass over a cut tar raises the error its own read hit, with or without
-    ``concurrent_members``: the concurrent pass walks as it goes, as the default one
+    ``concurrent_operations``: the concurrent pass walks as it goes, as the default one
     does."""
     path = tmp_path / "cut.tar"
     with tarfile.open(path, "w") as tf:
@@ -802,7 +802,7 @@ def test_damaged_tar_pass_ends_with_the_same_error_on_both_readers(
     path.write_bytes(path.read_bytes()[:20480])
     ends = []
     for concurrent in (False, True):
-        with open_archive(path, concurrent_members=concurrent) as reader:
+        with open_archive(path, concurrent_operations=concurrent) as reader:
             read_errors = []
             with pytest.raises(TruncatedError) as end:
                 for member, stream in reader.stream_members():
@@ -840,7 +840,7 @@ def test_walk_moving_on_right_after_a_read_keeps_the_stream_position(
     """A pull on another thread just after a read through the walk releases the lock
     detaches the stream where that read ended, not where it began."""
     path, files = _big_tar(tmp_path, mode, suffix)
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         lock = _LockWithReleaseHook(reader._walk_lock)  # type: ignore[attr-defined]
         reader._walk_lock = lock  # type: ignore[attr-defined]
         passes = reader.stream_members()
@@ -864,7 +864,7 @@ def test_refused_listing_calls_beside_a_pass_keep_memory_within_the_caps(
 
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 4_000)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
-    with open_archive(tar_path, config=cfg, concurrent_members=True) as reader:
+    with open_archive(tar_path, config=cfg, concurrent_operations=True) as reader:
         seen = 0
         with pytest.raises(ResourceLimitError, match="max_members"):
             for _member, _stream in reader.stream_members():

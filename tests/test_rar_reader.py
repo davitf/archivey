@@ -1391,7 +1391,7 @@ def test_concurrent_stream_materialize_writes_once_and_cleans_up(
     """Two overlapping compressed opens must share one temp copy.
 
     ``_ensure_archive_path`` used to check-then-write with no lock. Under
-    ``concurrent_members=True`` both threads copied, and close only removed
+    ``concurrent_operations=True`` both threads copied, and close only removed
     the winner's path, leaking the other into ``/tmp``.
     """
     created = _rar_temp_artifacts(monkeypatch)
@@ -1412,7 +1412,7 @@ def test_concurrent_stream_materialize_writes_once_and_cleans_up(
 
     source = source_factory()
     try:
-        with open_archive(source, concurrent_members=True) as archive:
+        with open_archive(source, concurrent_operations=True) as archive:
             names = [m.name for m in archive.members() if m.is_file]
             target = names[0]
             errors: list[BaseException] = []

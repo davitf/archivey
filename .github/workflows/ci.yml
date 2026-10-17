@@ -606,6 +606,82 @@ jobs:
           --with pytest --with pyppmd --with inflate64 --with brotli --with rapidgzip
           pytest tests/test_lazy_optional_imports.py -q -o addopts=
 
+  # PyPy trial (allowed to fail). PyPy is not a supported interpreter: this job shows how
+  # far archivey gets on it, so a decision about supporting it rests on results. It
+  # reports and never fails the run (job-level continue-on-error), and its check and test
+  # steps carry continue-on-error too so a failure in one does not hide the later ones.
+  # Dependencies come one at a time rather than through `--extra all`, because several
+  # native packages have no PyPy wheel and one failed build would hide what does install;
+  # the "Install what installs" step writes the outcome per package to the job summary.
+  # The test steps print one line per failure and no tracebacks (--tb=no) so the whole
+  # result fits in the part of the log the GitHub API returns.
+  pypy:
+    name: ${{ matrix.python }} (trial, allowed to fail)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["pypy3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install ${{ matrix.python }}
+        run: |
+          uv python install ${{ matrix.python }}
+          uv run --python ${{ matrix.python }} --no-project python -VV
+      - name: Install 7z, unrar and xorriso
+        run: sudo apt-get update && sudo apt-get install -y p7zip-full unrar xorriso
+      - name: Sync zero-dep core
+        run: uv sync --python ${{ matrix.python }} --no-dev
+      - name: Assert zero-dependency core
+        continue-on-error: true
+        run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
+      - name: Run full suite (core-only)
+        continue-on-error: true
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >
+          uv run --python ${{ matrix.python }} --no-sync
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE --tb=no -p no:warnings
+          -m 'not ppmd_native_stress'
+      - name: Install what installs (runtime extras, then test-only packages)
+        run: |
+          {
+            echo "### ${{ matrix.python }}: optional packages"
+            echo
+            echo "| package | result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for pkg in pyppmd inflate64 brotli lz4 cryptography pycdlib tqdm \
+              backports.zstd rapidgzip \
+              pytest pytest-timeout pytest-xdist hypothesis py7zr rarfile \
+              libarchive-c ncompress urllib3 fsspec pyzstd; do
+            if uv pip install --python .venv "$pkg" > "pip-$pkg.log" 2>&1; then
+              ver=$(uv pip show --python .venv "$pkg" | sed -n 's/^Version: //p')
+              echo "| $pkg | installed $ver |" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| $pkg | FAILED: $(grep -m1 -iE 'error|failed' "pip-$pkg.log" | cut -c1-150 | tr '|' '/') |" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "::group::$pkg install log"; cat "pip-$pkg.log"; echo "::endgroup::"
+            fi
+          done
+      - name: Run full suite (with what installed)
+        continue-on-error: true
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >
+          uv run --python ${{ matrix.python }} --no-sync
+          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE --tb=no -p no:warnings
+          -m 'not ppmd_native_stress'
+
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
   # as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.

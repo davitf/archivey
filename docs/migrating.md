@@ -177,7 +177,7 @@ Worth reading before you migrate a production path:
    `BLOCKED` members. That is the point — but check the
    [`ExtractionReport`](extracting.md) rather than assuming success.
 2. **One live member stream by default.** If you held several `extractfile()` handles
-   open, pass `concurrent_members=True`. See
+   open, pass `concurrent_operations=True`. See
    [supported platforms and threading](support-matrix.md).
 3. **`read()` is all-or-raise.** A truncated member raises instead of returning a short
    body; use a chunked loop if you want the recoverable prefix

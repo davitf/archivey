@@ -147,7 +147,7 @@ call-site gain.
 borrowed. Path parts are sized with `os.stat()` and opened on the first read
 that needs that part, into an LRU of three handles so a caller that
 alternates across a volume boundary (two `SharedView`s under
-`concurrent_members=True`) does not open-and-close on every read. Three is
+`concurrent_operations=True`) does not open-and-close on every read. Three is
 the fd budget, not a working-set size: a fourth live Path volume evicts on
 every miss, so those reads pay `open()`+`close()` again. A 100-part set still
 reads; growing the cache to the volume count would hold one descriptor per

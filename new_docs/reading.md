@@ -2,7 +2,7 @@
 
 With no options, `open_archive` lets you read members in any order, with one member open at a time.
 That suits most programs. Three options change it for the cases where the default is slow or not
-enough: `streaming`, `seekable_members` and `concurrent_members`. Opening an archive also applies a
+enough: `streaming`, `seekable_members` and `concurrent_operations`. Opening an archive also applies a
 few limits, such as how many members it may list, which [Archives you
 trust](extracting.md#archives-you-trust) explains how to raise.
 
@@ -46,7 +46,7 @@ you leave with `break` ends at once on CPython. One kept in a variable, or one a
 holds the archive until you close it, so use it in a `with` block when the loop can stop early:
 `with archive.stream_members() as members:` ends the pass at the end of the block, and `with
 iter(archive) as members:` does the same for a loop over members. With
-[`concurrent_members=True`](#several-members-at-once) they work, from any thread, on every format,
+[`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every format,
 and so does `extract_all`.
 Streams from the pass never seek.
 
@@ -91,13 +91,20 @@ faster.
 
 By default only one member stream can be open at a time, and opening a second while the first is
 still open raises. A thread pool that reads different members at once needs
-`concurrent_members=True`, which can't be combined with `streaming=True`. Each stream is opened the
+`concurrent_operations=True`, which can't be combined with `streaming=True`. Each stream is opened the
 same way `open` always opens one, so on a solid archive it may first decompress the members stored
 before it. The streams share the source and take turns reading compressed data from it, but they
 decompress in parallel. That can be cheaper than opening the archive once per worker, which reads
 the archive's index each time. The exception is a source where each jump to a new position is
 costly, such as a member of another archive or a file read over the network. There, streams that
 take turns make the source jump back and forth, and each jump throws away what it had buffered.
+
+With `concurrent_operations=True`, threads can also share the rest of the reader. They can list
+members, iterate, run `stream_members()` passes and `extract_all()` at the same time, and if several
+need the member list at once, one builds it while the others wait. Each member stream still belongs
+to one thread. Opening the archive once per thread is also safe, as long as each thread opens it
+from its own path or file: one file object belongs to one reader. Closing the reader closes the
+streams still open on it, so `close()` may wait for reads in other threads to finish.
 
 ## Why these aren't on by default
 
@@ -118,4 +125,4 @@ format, and the mistake shows up during development.
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
 | Read from a pipe | `streaming=True` | [TAR, ZIP and single compressed files only](#reading-once) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
-| Read members from several threads | `concurrent_members=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
+| Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |

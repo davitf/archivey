@@ -152,6 +152,7 @@ from archivey.types import (
     MemberSelectorArg,
     MemberStreams,
     MemberType,
+    MissingComponent,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -381,6 +382,17 @@ class ReadBackend(ABC):
     # Human-readable install hint surfaced when the dependency is absent
     # (e.g. "pip install archivey[recommended]").
     INSTALL_HINT: str | None = None
+
+    @classmethod
+    def missing_programs(cls) -> tuple[MissingComponent, ...]:
+        """External programs this backend can use that are not usable here.
+
+        A backend that still opens and lists without them makes its format ``PARTIAL``
+        in the public ``format_availability()`` query. Only that query calls this: a
+        backend may run a program once to identify it, and ``open_archive`` must not
+        pay for that. Empty for backends that run no external program.
+        """
+        return ()
 
     @abstractmethod
     def open_read(
@@ -955,7 +967,7 @@ class BaseArchiveReader(ArchiveReader):
         still MUST NOT hold unsynchronized per-open scratch.
 
         Concurrent ``open`` is supported when the reader declared concurrency
-        (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_members=True)``):
+        (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_operations=True)``):
         first-touch materialization is coordinated
         (wait/share), and after the snapshot is published workers may fan out. Forward-only
         / streaming passes remain single-owner. See ``dev-docs/investigations/parallel-reader.md``.
@@ -3134,7 +3146,7 @@ class BaseArchiveReader(ArchiveReader):
     def open(self, member: str | ArchiveMember) -> ArchiveStream:
         """Open member for reading. Follows symlinks.
 
-        Without ``open_archive(concurrent_members=True)``, at most one member stream may
+        Without ``open_archive(concurrent_operations=True)``, at most one member stream may
         be live. With it, concurrent first-touch materialization is coordinated and
         concurrent ``open`` is supported. Positioning requires
         ``open_archive(seekable_members=True)``.
