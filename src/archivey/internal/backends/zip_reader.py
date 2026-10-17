@@ -149,6 +149,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
+    unverified_data_error,
     wrong_password_error,
 )
 from archivey.internal.password_confirm import (
@@ -486,27 +487,6 @@ _UNCONFIRMED_PASSWORD_FAILURE = (
 )
 
 
-# Set on the ``EncryptionError`` that says the password may be wrong *or* the member
-# corrupt, so a caller inside the reader can tell it from "no correct password".
-_UNVERIFIED_DATA_MARK = "_archivey_zip_unverified_data"
-
-
-def _unverified_data_error(message: str) -> EncryptionError:
-    """The ``EncryptionError`` for data that failed integrity under an unconfirmed password.
-
-    A plain ``EncryptionError`` to the caller, carrying a mark instead of a subclass
-    (the same reasoning as ``wrong_password_error``). The symlink hook reads the mark,
-    so it does not report a damaged target as a missing password.
-    """
-    error = EncryptionError(message)
-    setattr(error, _UNVERIFIED_DATA_MARK, True)
-    return error
-
-
-def _is_unverified_data_error(error: BaseException) -> bool:
-    return getattr(error, _UNVERIFIED_DATA_MARK, False) is True
-
-
 #: ZIP methods whose codec settings sit inside the member's data: the LZMA properties
 #: (method 14) and the PPMd order and memory (method 98). Under ZipCrypto they are
 #: encrypted, so a wrong password that passes the one-byte check decrypts them to
@@ -604,7 +584,7 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         if _is_candidate_integrity_failure(
             exc, payload_complete=self._payload_complete
         ):
-            raise _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
+            raise unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
         raise exc
 
 
@@ -3489,7 +3469,7 @@ class ZipReader(BaseArchiveReader):
                     exc, payload_complete=payload_complete
                 ):
                     raise
-                raise _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
+                raise unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
             # The verifier sits inside the translation, so a CRC mismatch is reported
             # as the ambiguity it is rather than as plain corruption.
             return _UnconfirmedZipCryptoStream(
@@ -3786,7 +3766,7 @@ class ZipReader(BaseArchiveReader):
         self, member: ArchiveMember, failure: EncryptionError
     ) -> NoReturn:
         """Raise that every candidate failed integrity: wrong password(s) or damage."""
-        ambiguous = _unverified_data_error(
+        ambiguous = unverified_data_error(
             "No password candidate produced integrity-verified data for "
             "this ZIP member; the password(s) may be wrong, or "
             "the encrypted member may be corrupt"
@@ -3922,19 +3902,6 @@ class ZipReader(BaseArchiveReader):
         """How ``_ensure_link_target`` opens a link's data: the member itself here; the
         bytes the pass kept in a forward walk."""
         return lambda: self._open_member(member)
-
-    def _locked_link_target_report(
-        self, member: ArchiveMember, exc: EncryptionError
-    ) -> tuple[str, str]:
-        if not _is_unverified_data_error(exc):
-            return super()._locked_link_target_report(member, exc)
-        # Only ZipCrypto's check byte vouched for the password, and the data then
-        # failed: a wrong password or a damaged member, and nothing here can say which.
-        return "password_or_damage", (
-            f"The symlink target of {quoted(member.name)} failed its integrity "
-            f"check; the password may be wrong or the member may be corrupt. "
-            f"Leaving link_target unset."
-        )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The member carries its own locator (`_raw`), so data access needs no name/id
