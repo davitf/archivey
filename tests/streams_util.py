@@ -534,7 +534,8 @@ def assert_non_integer_read_is_type_error(stream: BinaryIO, content: bytes) -> N
             with pytest.raises(TypeError) as excinfo:
                 read(size)
             assert type(excinfo.value) is TypeError, size
-            assert str(excinfo.value) == str(expected.value), size
+            if sys.implementation.name == "cpython":  # PyPy words it differently
+                assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 
     # First on a fresh stream, then after a partial read.
@@ -575,7 +576,8 @@ def assert_oversized_read_is_overflow_error(stream: BinaryIO, content: bytes) ->
             with pytest.raises(OverflowError) as excinfo:
                 stream.read(size)
             assert type(excinfo.value) is OverflowError, size
-            assert str(excinfo.value) == str(expected.value), size
+            if sys.implementation.name == "cpython":  # PyPy words it differently
+                assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 
     # First on a fresh stream, then after a partial read.
