@@ -37,12 +37,14 @@ The member name SHALL be inferred from the source filename:
 | Source filename | Member name |
 | --- | --- |
 | Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst` or `.tlz` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` |
 | Has a filename but no recognized compressor extension | Append `.uncompressed`; do not strip arbitrary extensions |
 | Anonymous stream | `data` |
 
-Combined names such as `.tar.gz` / `.tgz` / `.tar.lzma` / `.tlz` are a
-`format-detection` concern, not single-file member naming.
+Whether `.tar.gz` or `.tgz` opens as a tar is a `format-detection` concern. The naming
+rows above apply when such a source opens as a single compressed file, for example with
+`format=ArchiveFormat.GZ` or a `.tgz` whose content is not a tar.
 
 Raw Deflate and raw LZMA1/LZMA2 (`FORMAT_RAW`) remain container-only; LZMA Alone
 is a framed standalone stream and is in scope here.
@@ -53,6 +55,7 @@ is a framed standalone stream and is in scope here.
 | --- | --- |
 | Open `data.txt.gz` | One file member named `data.txt` |
 | Open `data.txt.lzma` | One file member named `data.txt` |
+| Open `data.tgz` with `format=ArchiveFormat.GZ` | One file member named `data.tar` |
 | Open compressed `mystery.bin` detected by content | One file member named `mystery.bin.uncompressed` |
 | Open `....gz` | One file member named `....gz.uncompressed`, under every extraction policy |
 | Open anonymous non-seekable stream with `streaming=True` | One file member named `data` |

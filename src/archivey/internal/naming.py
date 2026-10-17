@@ -14,7 +14,7 @@ import os
 import posixpath
 import re
 import unicodedata
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Literal
 
 from archivey.diagnostics import (
@@ -25,7 +25,7 @@ from archivey.diagnostics import (
 )
 from archivey.internal.logs import normalization as logger
 from archivey.terminal import quoted
-from archivey.types import MemberType
+from archivey.types import MemberType, StreamFormat
 
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -248,10 +248,25 @@ def _is_usable_stem(stem: str) -> bool:
     return stem.rstrip(". ") != ""
 
 
+# The one-word spellings of a compressed tar. Decompressing one gives a tar, so the
+# single-file name replaces the suffix with ``.tar``, as ``gzip -d`` and ``xz -d`` do
+# (the keys). The tar reader's extension table reads the codecs too (the values), so
+# one map serves detection by name and naming.
+COMPRESSED_TAR_SHORT_SUFFIXES: dict[str, StreamFormat] = {
+    ".tgz": StreamFormat.GZIP,
+    ".tbz2": StreamFormat.BZIP2,
+    ".tbz": StreamFormat.BZIP2,
+    ".txz": StreamFormat.XZ,
+    ".tzst": StreamFormat.ZSTD,
+    ".tlz": StreamFormat.LZIP,
+}
+
+
 def infer_member_name_from_archive(
     archive_name: str | None,
     *,
     strip_suffixes: Collection[str] = (),
+    replace_suffixes: Mapping[str, str] | None = None,
     strip_suffix_re: re.Pattern[str] | None = None,
 ) -> str:
     """Infer a presented member name from the archive source path.
@@ -262,7 +277,8 @@ def infer_member_name_from_archive(
     - No usable archive filename → ``\"data\"``.
     - Basename matches ``strip_suffix_re`` or ends with a ``strip_suffixes`` entry
       (case-insensitive; longest match wins) → remaining stem, when that stem is a
-      usable filename.
+      usable filename. A ``replace_suffixes`` entry matches the same way and appends
+      its replacement to the stem (``.tgz`` → ``.tar``).
     - Otherwise → ``basename + \".uncompressed\"``.
 
     A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a name: extraction
@@ -285,16 +301,20 @@ def infer_member_name_from_archive(
 
     lower = base.lower()
     best: str | None = None
+    best_tail = ""
     best_len = -1
-    for suffix in strip_suffixes:
+    candidates = [(suffix, "") for suffix in strip_suffixes]
+    candidates += (replace_suffixes or {}).items()
+    for suffix, tail in candidates:
         if not suffix:
             continue
         suf = suffix if suffix.startswith(".") else f".{suffix}"
         if lower.endswith(suf.lower()) and len(suf) > best_len and len(base) > len(suf):
             best = base[: -len(suf)]
+            best_tail = tail
             best_len = len(suf)
     if best is not None and _is_usable_stem(best):
-        return best
+        return best + best_tail
 
     return base + ".uncompressed"
 
