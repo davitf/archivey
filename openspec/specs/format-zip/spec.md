@@ -226,16 +226,27 @@ password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").
 
 `stream_members()` SHALL yield each member with what its local header gives: `mode`,
-`create_system` and `comment` are `None`, `uid` and `gid` are `None` even when the
-local extra field carries them, the type is `FILE` or `DIRECTORY` from the
-name (a name ending in `\` is a `DIRECTORY`), and `member_state_final` is `False`
-(`archive-data-model`). Once the directory has been read, before the pass ends, each
-member SHALL be updated in place from its directory entry, matched by offset, as the
-same archive read from a file lists it, and `is_current` SHALL follow the directory
-order; member ids and listing order stay those of the file. A local entry no directory
-entry points to SHALL be dropped from the listing and reported as
-`ARCHIVE_UNLISTED_DATA`. A member flagged as a Windows reparse point whose data is not
-a reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
+`create_system` and `comment` are `None`, `uid` and `gid` are `None` even when the local
+extra field carries them, the type is `FILE` or `DIRECTORY` from the name (a name ending
+in `\` is a `DIRECTORY`), and `member_state_final` is `False` (`archive-data-model`).
+Once the directory has been read, before the pass ends, each member SHALL be updated in
+place from its directory entry, matched by offset, as the same archive read from a file
+lists it, and `is_current` SHALL follow the directory order; member ids and listing
+order stay those of the file. A local entry no directory entry points to SHALL be
+dropped from the listing and reported as `ARCHIVE_UNLISTED_DATA`. The walk SHALL stop at
+the first bytes after a member that are no local header and keep the rest of the stream;
+a directory entry that points into the kept bytes (bytes a writer left between two
+members, or a second archive appended with `cat`) SHALL be read from them at that offset
+and yielded before the pass ends, and no other local header there SHALL be read. One
+whose bytes the listing limits dropped SHALL end the pass with `ResourceLimitError`.
+Every byte each attempt there consumes, a member read or a local header that fails to
+parse, SHALL be counted, and an entry reached once the count equals the bytes the pass
+holds SHALL end the pass with `CorruptionError` before it is read. A local header there
+that does not parse SHALL fail its entry at the end of the pass with the parse error as
+its cause. A stub with no local header within `SFX_MAX`, the stream ending there on an
+end record, SHALL be read as the tail, so an archive with no local header behind a stub
+lists as from a file. A member flagged as a Windows reparse point whose data is not a
+reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
 `FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
 `members_report_if_available()` SHALL return `None` until the directory has been read.
 
@@ -255,14 +266,16 @@ entry already took SHALL end the pass with `CorruptionError`.
 
 The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
 mismatch (a STORED member's, or a descriptor planted in the data of a bit-3 codec member
-the pass reads past) and the reversed pair fail a member the file read writes; bytes between a bit-3
-codec member's end and its descriptor, refused from a file, are counted into the member;
-the first of several inconclusive password candidates wins. It MAY also differ in these:
-a damaged bit-3 codec member can fail with another `CorruptionError` subclass, and ends
-the pass, losing the members after it, if its decode read more than 4 MiB past the
-data's end; a bit-3 codec member whose stream runs on into its descriptor reads, where a
-file read raises `TruncatedError` at the stated compressed size; a bit-3 LZMA member
-without the end-of-stream marker is refused where a file read reads it; in
+the pass reads past) and the reversed pair fail a member the file read writes; bytes
+between a bit-3 codec member's end and its descriptor, refused from a file, are counted
+into the member; the first of several inconclusive password candidates wins. It MAY also
+differ in these: a damaged bit-3 codec member can fail with another `CorruptionError`
+subclass, and ends the pass, losing the members after it, if its decode read more than 4
+MiB past the data's end; a bit-3 codec member whose stream runs on into its descriptor
+reads, where a file read raises `TruncatedError` at the stated compressed size; a bit-3
+LZMA member without the end-of-stream marker is refused where a file read reads it; a
+bit-3 member followed by bytes that are no ZIP record ends the pass
+(`UnsupportedFeatureError` when STORED) where a file read reads it; in
 `extract_all`, a link member the pass wrote as a file keeps the error its data read gave
 (no password: `EncryptionError`, where the file read reports `LinkTargetNotFoundError`);
 and an archive-wide refusal the directory or end record makes is raised by a file read
@@ -276,6 +289,18 @@ so no link is left on disk as a file holding its target. The longer files stay a
 pass wrote them, with no mode applied: a member whose local header names it differently
 stays under the local header's name, since the pass stops before the end-of-pass rename.
 
+The data the pass keeps of short members until the directory says which are links SHALL
+NOT be charged to the listing limits: an archive a file read lists within them SHALL
+list from a pipe too, however many small files it holds, except that a link whose own
+data was dropped (below) is listed without its target. The pass SHALL hold at most
+`max_metadata_bytes` of that data, dropping the longest first; a link whose data was
+dropped SHALL be listed with `link_target` unset and `SYMLINK_TARGET_UNAVAILABLE` with
+reason `"target_data_dropped"`, and the rest of the listing SHALL stand, except under
+`DiagnosticPolicy.STRICT`, which refuses the archive on that integrity code. This
+differs from a file read only for a target at least as long as `max_metadata_bytes` of
+short members' data before it. The archive comment SHALL be weighed against
+`max_metadata_bytes` once the pass reads the end record, as a file read weighs it.
+
 #### Scenario: non-seekable read matrix
 
 | Case | Expected |
@@ -284,6 +309,7 @@ stays under the local header's name, since the pass stops before the end-of-pass
 | Non-seekable ZIP with `streaming=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
 | Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
 | `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
+| A pipe, many small files whose data passes `max_metadata_bytes`, a symlink after them | Lists every member and the link's target, as a file read does |
 | `extract_all()` from a pipe, a Unix symlink member | The link is made at the end of the pass, after the filter runs again on it |
 | `extract_all()` from a pipe that stops before the end of the pass (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the directory, or any other reason) | Every file the pass wrote whose data could be a link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag) is removed; a longer file stays, with no mode applied |
 | Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |
@@ -292,6 +318,11 @@ stays under the local header's name, since the pass stops before the end-of-pass
 | Two same-name members whose directory order reverses their file order | `is_current` from the directory order; `stream_members()` raises nothing |
 | A data descriptor that understates a STORED member, `stream_members()` | `CorruptionError` at the end of the pass |
 | A local entry the directory does not list | Dropped from the listing; `ARCHIVE_UNLISTED_DATA` |
+| Bytes between a sized member and the next | Every member read, as from a file |
+| `cat first.zip second.zip` | The second archive's members, as from a file; the first's yielded, then dropped with `ARCHIVE_UNLISTED_DATA` |
+| A member the directory places in bytes the listing limits dropped | `ResourceLimitError` |
+| Entries placed in the kept bytes whose data or headers overlap, at any listing limits | `CorruptionError` once they have consumed the bytes held |
+| A stub, then an archive with no local header (an empty one), `format=ZIP` | Opens with what the directory lists, as from a file |
 | `reader.info` during the pass, then after it | `member_count` and `comment` `None`, then the directory's |
 
 ### Requirement: Map ZIP member metadata to ArchiveMember

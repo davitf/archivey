@@ -383,7 +383,7 @@ took nothing from in `extra["zip.extra_fields"]`.
 | `uname` / `gname` | — | Always: no ZIP extra field records owner names |
 | `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← PKWARE Unix `0x000d` or Info-ZIP old Unix `0x5855` (access and modification time, UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey. macOS `ditto` and Archive Utility write only `0x5855`, so without it a macOS archive would list naive local DOS times. The Unix fields' times follow unzip 6.00 (measured with `unzip` on crafted local headers, `test_unix_field_times_match_unzip`): ignored in a blob that holds a `0x5455` with data, or after a `0x7855` or `0x7875` (the rule their ids follow), the last one long enough for both times winning. They sit above NTFS, which unzip on Unix does not read. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
 | `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word; directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry, the same on every host OS and Python version. A directory whose `file_size` is not 0 (APPNOTE 4.3.8 forbids it; unzip, 7-Zip and bsdtar create the directory and drop the bytes silently, Go's `archive/zip` refuses the archive) stays a directory, emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes, carries its stored CRC-32 in `hashes` (the central directory's, or the local header's on a listing from local headers) (unless that field is 0, the conventional value for a directory: then no digest, and `DIGEST_UNVERIFIABLE` where the CRC was the only check, unencrypted or ZipCrypto; a WinZip AES entry, AE-1 with a zeroed field or AE-2 which stores 0 by design, is checked by its HMAC instead and reports nothing), and reads through `open()` like a file: `_open_with_link_follow` refuses a directory by data and a tombstone or special entry by type. `file_size == 0` over a body larger than an empty one of its method (`_ZIP_EMPTY_BODY_SIZES`: 0 stored, 2 deflated, 14 bzip2, 19 LZMA) is reported too and not readable; `compress_size == 2` deflated is the Java `jar` tool's empty body and is silent. A Unix FIFO, device or socket mode makes `OTHER` only when `file_size` is 0; with data it is a `FILE` (`zip -FI` stores a named pipe's content so, and unzip, 7-Zip, bsdtar and `zipfile` all write it as a file) with `MEMBER_SPECIAL_FILE_HAS_DATA`, DR-25. Both carry `extra["special_file_type"]` | — |
-| `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
+| `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target); or, from a pipe only, the pass dropped the data to stay within its bound on what it keeps for link targets, with `reason="target_data_dropped"` (§2.2.2) |
 | `compression` | CDH method → `CompressionMethod` | — |
 | `is_encrypted` | general-purpose bit 0, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
 | `hashes["crc32"]` | CDH CRC (the local header's or data descriptor's on a listing from local headers; `_crc_is_digest` says which members carry one), as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
@@ -570,7 +570,42 @@ order stay the file's. A local entry no directory entry points to is dropped and
 as `ARCHIVE_UNLISTED_DATA`. A reparse-flagged member whose data is not a reparse buffer
 stays a file. `max_members` is charged on the local headers as they are yielded and again
 on the directory's entries, whose text is weighed against `max_metadata_bytes` as it
-arrives.
+arrives. The archive comment is weighed once the end record is read.
+
+**What the pass keeps for link targets.** A symlink's target is its data, and only the
+directory says which members are links, so the pass keeps the data of every member short
+enough to be one (`MAX_LINK_TARGET_BYTES`, 4096 bytes decoded), the ciphertext of an
+unread encrypted one (8 KiB), and a Windows reparse buffer's start of longer data
+(§2.2.1). This is files' data, which a file read never keeps, so it is not charged to the
+listing limits: an archive of 20 000 files of 4 KB lists from a pipe as from a file. It
+is bounded on its own (`ZipForwardReader._hold`): the pass holds at most
+`max_metadata_bytes` of it, on top of the listing, and drops the longest first, since a
+link target is a path and shorter than most files. At the directory it keeps only the
+links' data. A link whose data was dropped is listed without its target and reports
+`SYMLINK_TARGET_UNAVAILABLE` with `reason="target_data_dropped"`, naming
+`max_metadata_bytes`; the rest of the listing stands, and `extract_all` takes back the
+file it wrote for the link and fails that member alone.
+
+**Bytes after a member that are no local header.** The walk stops at the first bytes
+after a member that are not a local header and keeps the rest of the stream, as after
+the last member. Bytes a writer left between two members (zeros, junk, a data descriptor
+after a member whose sizes are in its header) and a second archive appended with `cat
+first.zip second.zip` end the walk there (after a bit-3 member they end the pass
+instead, below). Once the directory has been read, each member it places in the kept
+bytes is read from them at the offset it names and yielded before the pass ends, as a
+file read seeks to it. Only the offsets the directory names are read there, so the pass
+yields no member the file read does not list. Of a `cat`, the first archive's members
+are yielded as the walk meets them; the file read lists only the second's, so they are
+dropped and reported as `ARCHIVE_UNLISTED_DATA`. A member the directory places in bytes
+the listing limits dropped ends the pass with `ResourceLimitError`: higher limits keep
+them. Overlapping entries are a different case, malformed input that no limit relieves.
+Every byte an attempt there consumes is counted, a member read or a local header that
+fails to parse, and once the count reaches the bytes held, the next entry ends the pass
+with `CorruptionError` before it is read, so the kept bytes are consumed at most twice,
+not once each. A local header that is there and does not parse fails its entry at the
+end of the pass, with the parse error as the reason. A stub with no local header in the
+scan's 2 MiB window, ending within it on an end record, is read the same way, so an
+empty archive, or one whose members are gone, behind a stub opens as from a file.
 
 **Extraction** writes each member as it arrives and settles at the end of the pass
 (`ExtractionCoordinator._settle_revised_members`): modes and owners applied, a member the
@@ -598,13 +633,16 @@ extraction moves what it wrote.
 
 **Where the pass and a file read differ**, each pinned in
 `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four
-are shapes only crafted archives have (DR-5a); the rest come from damage, or from the
-directory's refusals the file read is to drop:
+are shapes only crafted archives have (DR-5a); the rest come from damage, from the
+directory's refusals the file read is to drop, or, for the last one only, from the bound
+the pass puts on the data it keeps for link targets, which an ordinary archive can reach:
 
 - A data descriptor that understates a STORED member, or a bit-3 codec member the pass
   reads past, and the reversed same-name pair, fail a member the file read writes.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
-  where the file read refuses it (DR-3).
+  where the file read refuses it (DR-3). The walk searches at least 64 KiB
+  (`_DESCRIPTOR_SEARCH_PAST`) past the bytes the codec was handed for the descriptor,
+  whatever the member's size; with more junk than that the pass can end there.
 - The first of several inconclusive password candidates wins (§6).
 - A local header without bit 3 whose size field holds all ones that no ZIP64 field
   holds is refused (`CorruptionError`); the file read takes the sizes from the directory
@@ -637,6 +675,12 @@ directory's refusals the file read is to drop:
   can make this shape; it is the mirror of the junk case above.
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
+- A bit-3 member followed by bytes that are no ZIP record (a gap before the next
+  member) ends the pass: its descriptor counts only when a ZIP signature follows it,
+  which is what stops a descriptor planted inside its data. A STORED one is
+  `UnsupportedFeatureError`, a codec one `CorruptionError`. A file read knows its size
+  and reads every member. After a sized member the same bytes are read past
+  (§"Bytes after a member that are no local header").
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
@@ -654,6 +698,9 @@ directory's refusals the file read is to drop:
   words: a file read checks the bytes there, the pass has passed them. One naming
   bytes the pass's listing limits dropped is a `ResourceLimitError` from a pipe, since
   higher limits keep those bytes.
+- A symlink whose target is behind `max_metadata_bytes` of short members' data no
+  shorter than it is listed without its target (`target_data_dropped`); the file read
+  lists it (§"What the pass keeps for link targets").
 
 ### 2.3 Member data
 
@@ -1181,6 +1228,7 @@ move.
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass; ZipCrypto over Zstd; ZipCrypto seeks; stage output equals stdlib's | `tests/test_zip_multipassword.py` |
 | The STORED CRC pass reads through the same validated local header as the open, so it never runs over a member the open refuses | `tests/test_zip_multipassword.py::test_stored_confirm_reads_through_the_validated_local_header` |
+| From a pipe, short members' data and kept ciphertext are not charged to `max_metadata_bytes`; the longest is dropped first past it, and a dropped link lists targetless with `target_data_dropped` and leaves no file from `extract_all`; the archive comment is weighed at the end record | `tests/test_zip_pipe.py::test_small_files_data_is_not_charged_to_max_metadata_bytes`, `::test_kept_ciphertext_is_not_charged_to_max_metadata_bytes`, `::test_the_kept_data_drops_the_longest_first`, `::test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind`, `::test_the_archive_comment_counts_toward_max_metadata_bytes` |
 | A local name that differs from the directory's, and a central CRC-32 of 0 under a right local one, read from a file and a pipe, strict refusing the name case only; a wrong local CRC-32 and 0 in both still fail; both headers understating the size stays refused | `tests/test_audit_backup_scan.py::test_local_name_in_another_codepage_still_reads` and the tests after it, `tests/test_zip_pipe.py::test_a_name_that_differs_between_the_two_headers_takes_the_directory_name`, `tests/test_zip_pipe_extract.py::test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name`, `tests/test_zip_multipassword.py::test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc` |
 | WinZip AES seeks at every block phase and backward; the HMAC survives seeks, including over bytes a seek skipped and on a `read(n)` ending exactly at the end; a partial read after a seek has no verdict | `tests/test_zip_aes.py::test_aes_decrypt_stream_seeks_at_every_block_phase`, `::test_aes_decrypt_stream_seeks_keep_the_hmac`, `::test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac`, `::test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped`, `::test_aes_decrypt_stream_partial_read_after_seek_has_no_verdict`, `::test_aes_member_seeks`, `tests/test_member_stream_contract.py` (`zip-aes` rows) |
 | A tampered AE-2 DEFLATE member still raises under rapidgzip's own seeks (`AUTO` and `ON`, one password and two) | `tests/test_zip_aes.py::test_aes_hmac_survives_a_seekable_accelerator` |

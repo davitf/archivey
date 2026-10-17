@@ -2824,7 +2824,15 @@ class ExtractionCoordinator:
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
-            self._makedirs(dest_path, transformed)
+            try:
+                self._makedirs(dest_path, transformed)
+            except FileExistsError as exc:
+                # A non-directory took the name after the existence check, as for the
+                # other landings (``_taken_after_check``). Only this call: a parent
+                # that turned into a file is not this member's name being taken.
+                if not self._taken_after_check(dest_path, atomic=False):
+                    raise
+                raise self._already_exists(dest_path, transformed) from exc
             kept_mode: int | None = None
             if callers:
                 # A directory the caller already had, the destination root included
@@ -3533,12 +3541,19 @@ class ExtractionCoordinator:
         # a per-member OnError failure; no copy-the-target fallback. A dry run creates
         # an absolute target that names dest pointing into its scratch copy instead.
         on_disk = self._link_target_on_disk(target)
-        if _DIRECTORY_LINKS:
-            is_dir = self._link_to_directory(dest_path, target, on_disk)
-            os.symlink(on_disk, long_path(dest_path), target_is_directory=is_dir)
-            self._state.link_kinds[dest_path] = (on_disk, is_dir)
-        else:
-            os.symlink(on_disk, long_path(dest_path))
+        try:
+            if _DIRECTORY_LINKS:
+                is_dir = self._link_to_directory(dest_path, target, on_disk)
+                os.symlink(on_disk, long_path(dest_path), target_is_directory=is_dir)
+                self._state.link_kinds[dest_path] = (on_disk, is_dir)
+            else:
+                os.symlink(on_disk, long_path(dest_path))
+        except FileExistsError as exc:
+            # The name was taken after the existence check, as for a FILE or HARDLINK
+            # landing (``_swap_into_place``).
+            if not self._taken_after_check(dest_path, atomic=False):
+                raise
+            raise self._already_exists(dest_path, transformed) from exc
         self._resolutions_changed()
 
         # Re-validate the symlink target AFTER creating it, resolving through the real
@@ -4416,11 +4431,7 @@ class ExtractionCoordinator:
             if member.type == MemberType.DIRECTORY and stat.S_ISDIR(existing):
                 return True
             if self._overwrite is OverwritePolicy.ERROR:
-                raise ExtractionError(
-                    "Destination already exists: "
-                    f"{display_path(self._shown(dest_path))}",
-                    member_name=member.name,
-                )
+                raise self._already_exists(dest_path, member)
             if self._overwrite is OverwritePolicy.SKIP:
                 return False
             if (
@@ -4526,7 +4537,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, dest_path)
+            self._swap_into_place(tmp, dest_path, member)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -4682,14 +4693,41 @@ class ExtractionCoordinator:
                 # Applied before the swap, so the final name never appears with the
                 # source's metadata instead of this member's.
                 self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, new_path)
+            self._swap_into_place(tmp, new_path, member)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
             raise
         self._state.source_paths.setdefault(source_id, []).append(new_path)
 
-    def _swap_into_place(self, tmp: Path, dest: Path) -> None:
+    def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
+        """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the
+        existence check and from a landing that finds the name taken after it."""
+        return ExtractionError(
+            f"Destination already exists: {display_path(self._shown(dest))}",
+            member_name=member.name,
+        )
+
+    def _taken_after_check(self, dest: Path, *, atomic: bool) -> bool:
+        """Whether, under ``OverwritePolicy.ERROR``, ``dest`` is now taken by something
+        that was not there at the existence check: another writer into the same folder,
+        such as a second extraction. Asked by every landing whose creation refuses a
+        taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and the
+        ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
+
+        Under ERROR the check lets a member through only to a free name, to a copy this
+        run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to an existing
+        directory. An atomic landing replaces a parked copy where it stands, so that
+        copy does not count (``_occupied``); the other landings removed it in
+        ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
+        existing directory, so a ``FileExistsError`` there means a non-directory. So
+        anything a landing is refused over appeared after the check. Under the other policies a landing that fails this way is not
+        handled: its error goes out as it is."""
+        if self._overwrite is not OverwritePolicy.ERROR:
+            return False
+        return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
+
+    def _swap_into_place(self, tmp: Path, dest: Path, member: ArchiveMember) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
         of every atomic write (``_write_file_atomic``, ``_place_link``).
 
@@ -4710,9 +4748,20 @@ class ExtractionCoordinator:
         not a failed write. The unlink stays inside the ``_readonly_cleared`` block. On
         Windows that block's exit puts the read-only attribute back on the other names of
         ``dest``'s file, and in the same-file case the temp is one of them, so an unlink
-        after the block would fail."""
+        after the block would fail.
+
+        A rename refused onto an entry that appeared after the existence check is, under
+        ERROR, the clash that check reports, and raises its error
+        (``_taken_after_check``). Windows refuses it with access denied (seen with two
+        extractions into one folder); POSIX refuses it in a sticky directory when someone
+        else owns the entry, and otherwise replaces it."""
         with self._readonly_cleared(dest):
-            os.replace(long_path(tmp), long_path(dest))
+            try:
+                os.replace(long_path(tmp), long_path(dest))
+            except PermissionError as exc:
+                if not self._taken_after_check(dest, atomic=True):
+                    raise
+                raise self._already_exists(dest, member) from exc
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
 

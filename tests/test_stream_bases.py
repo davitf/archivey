@@ -6,11 +6,17 @@ import ast
 import inspect
 import io
 import textwrap
+from pathlib import Path
 from typing import Never, get_type_hints
 
 import pytest
 
-from archivey.internal.streams.streamtools import DelegatingStream, ReadOnlyIOStream
+from archivey.internal.streams.streamtools import (
+    DelegatingStream,
+    OneReadEachStream,
+    ReadOnlyIOStream,
+    ensure_bufferedio,
+)
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -495,6 +501,10 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         zip_local_walk._SizedData,
         zip_local_walk._CodecData,
         zip_local_walk._ScannedData,
+        # The bytes a pipe ZIP pass kept after its members, read forward once by a
+        # walk over a member the directory places there: the stream under the
+        # walk, archive offsets, no table.
+        zip_local_walk._HeldBytes,
         # A pipe ZIP pass's member stream, over the codec stream the pass reads
         # once: forward-only, so nothing seeks it or asks it for a resume offset.
         zip_forward_reader._PassStream,
@@ -855,3 +865,27 @@ def test_delegating_read_none_raises_blocking() -> None:
 
     with pytest.raises(BlockingIOError):
         DelegatingStream(_NonBlockingRead(b"x")).read(4)
+
+
+def test_one_read_each_stream_passes_short_reads_and_answers_mode_and_name(
+    tmp_path: Path,
+) -> None:
+    """``OneReadEachStream`` is buffered, so ``ensure_bufferedio`` keeps it and its
+    source's short reads reach the reader; ``mode`` and ``name`` are not ``None``."""
+
+    class Steps(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:  # type: ignore[override]
+            return b"ab"[: max(n, 0)] if n else b""
+
+    stream = OneReadEachStream(Steps())
+    assert ensure_bufferedio(stream) is stream
+    assert stream.read(100) == b"ab"
+    assert stream.mode == "rb"
+    assert not hasattr(OneReadEachStream(io.BytesIO(b"abc")), "name")
+    path = tmp_path / "named.bin"
+    path.write_bytes(b"abc")
+    with path.open("rb") as named:
+        assert OneReadEachStream(named).name == str(path)

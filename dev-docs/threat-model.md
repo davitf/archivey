@@ -328,7 +328,8 @@ Each budget below is a byte, count or rounds budget. None of them bounds time; t
 #### Listing
 
 **Property.** Listing a hostile archive costs at most the listing budget, not what the
-archive declares.
+archive declares; for a ZIP read from a pipe, the listing budget and the bound on the
+data its pass keeps for link targets beside it.
 
 **Mechanism.**
 - `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
@@ -343,7 +344,16 @@ archive declares.
   A ZIP read from a pipe has no directory at open: its forward pass charges
   `max_members` on each local header as it yields the member, and again on the
   directory's entries after the last member, whose text it weighs against
-  `max_metadata_bytes` as it arrives (`zip_forward_reader.py`). A ZIP file whose end
+  `max_metadata_bytes` as it arrives (`zip_forward_reader.py`). Until the directory
+  says which members are links, the pass also keeps the data of every member short
+  enough to be one (4096 bytes decoded, 8 KiB of an unread encrypted member's
+  ciphertext, a reparse buffer's start of longer data). That is files' data, which a
+  file read never holds, so it is bounded separately rather than inside the listing
+  budget: at most `max_metadata_bytes` of it, the longest dropped first
+  (`ZipForwardReader._hold`). A piped listing can therefore hold about twice
+  `max_metadata_bytes`, 128 MiB at the defaults, plus one member's kept data while
+  the drop runs. A link whose data was dropped is listed without its target
+  (`SYMLINK_TARGET_UNAVAILABLE`, `reason="target_data_dropped"`). A ZIP file whose end
   record sits behind more trailing bytes than the end-record search reads is walked
   the same way at `open_archive`, which charges `max_members` on each local header
   before passing its data (`ZipReader._walk_past_members`). When no end record
@@ -355,7 +365,16 @@ archive declares.
   every member it skips, for the bytes present rather than the size a header declares
   (a member declaring more than the archive holds raises `TruncatedError` at the first
   short read), and that ZIP walk reads through the data of every member whose local
-  header leaves its size to a data descriptor, up to one read of the file.
+  header leaves its size to a data descriptor, up to one read of the file. The pipe
+  pass also reads the entries its directory places in the bytes it kept after the
+  walk stopped (a gap between members, a second archive appended). Every byte each
+  attempt consumes there, a member read or a local header that fails to parse, is
+  counted against the bytes held, and past that the next entry is `CorruptionError`
+  before it is read (entries a writer laid out never overlap), so the attempts
+  consume the kept bytes at most twice, not once per entry. What the pass keeps of
+  an attempt whose local header does not parse is the parse error, without its
+  traceback, about 1 KB per entry, released when the pass completes and held by
+  the reader when it raises (the residual below).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
@@ -421,7 +440,9 @@ archive declares.
   (`reason="target_too_long"`), per the maintainer's ruling that such a target is
   corrupt or malicious. Without the cap, a 400 KB ZIP whose target was 400 MiB of zeros
   peaked at 2,400 MiB inside `members()`. A target resolved after registration is added
-  to the tracker as it arrives, so `max_metadata_bytes` sees it. A Windows reparse
+  to the tracker as it arrives, so `max_metadata_bytes` sees it; the candidate data a
+  ZIP pass from a pipe keeps to find it is bounded separately (the listing bullet
+  above). A Windows reparse
   buffer is read only as far as its own header declares. `read_link_targets=False` stops
   listing from reading these targets at all.
 
@@ -455,7 +476,13 @@ locator per member, so nothing is built at open; an end record declaring more en
 than `max_members` is refused at open, and the walk charges `max_members` in every mode,
 so an end record that understates the count is refused when the walk passes the limit.
 A ZIP read from a pipe charges the count on its local headers and its directory as it
-goes (above), so ZIP has no part in this residual from any source.
+goes (above). The one thing it holds per entry outside `max_metadata_bytes` is the
+parse error of a local header its directory places after the walk's end that does not
+parse, kept without its traceback for that entry's failure: about 1 KB each, bounded by
+`max_members` (measured: 2 000 such entries hold about 1.9 MB more than as many entries
+with no local header). A pass that completes releases them; one that raises leaves them
+on the reader object until it is dropped. ZIP has no other part in this residual from any
+source.
 `max_metadata_bytes` counts retained metadata, not a transient decode buffer discarded
 before any member exists. ISO's counts are a superset of the listing's: the extra
 records of a multi-extent file and the Rock Ridge `rr_moved` scaffolding count as
@@ -1084,10 +1111,13 @@ nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folde
 folder size times candidates; a ZIP central directory whose comments are nothing but
 central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython 3.11),
 where an ordinary directory lists at about 5 ns, because each signature is checked for a
-swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). A "work per output byte"
-limit for BCJ2 was considered and not added: no other codec has one, and
-`ExtractionLimits` still bounds the amount, only the rate is lower. Callers who need a
-time bound run archivey in a worker they can kill. Public:
+swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). A ZIP read from a pipe
+consumes the stream once, and the entries its directory places in the bytes kept after
+its members consume those at most twice more, however many it names there
+([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
+for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
+still bounds the amount, only the rate is lower. Callers who need a time bound run
+archivey in a worker they can kill. Public:
 [known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
 
 ### A native decoder crash or MemoryError

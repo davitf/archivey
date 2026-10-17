@@ -14,6 +14,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import BinaryIO
 
 import pytest
 
@@ -28,6 +29,7 @@ from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.zip_local_walk import (
     DATA_DESCRIPTOR_SIGNATURE,
     DataDescriptor,
+    ForwardTail,
     LocalEntry,
     LocalHeaderWalk,
     MemberData,
@@ -294,6 +296,59 @@ def test_no_local_header_in_the_scan_window_is_corruption() -> None:
     walk = LocalHeaderWalk(_Unseekable(b"\x00" * 1000))
     with pytest.raises(CorruptionError, match="no ZIP local header"):
         walk.next_entry()
+
+
+def test_a_stub_before_an_archive_with_no_local_header_is_kept_whole() -> None:
+    """No local header in the window, but an end record: the stub and the archive
+    go to ``read_rest``, so the end record is found behind the stub as a file read
+    finds it."""
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+    stub = b"MZ" + b"\x00" * 5000
+    walk = LocalHeaderWalk(_Unseekable(stub + buf.getvalue()))
+    assert walk.next_entry() is None
+    end = walk.read_rest(None).end_record()
+    assert end.entries_declared == 0
+
+
+def test_an_end_record_signature_in_a_stub_past_the_window_is_no_archive() -> None:
+    """Only an end record where an archive ending the stream would put it counts: a
+    signature inside a stub that runs past the scan window leaves the error."""
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+    stub = b"MZ" + b"\x00" * 100 + b"PK\x05\x06" + b"\x00" * SFX_MAX
+    walk = LocalHeaderWalk(_Unseekable(stub + buf.getvalue()))
+    with pytest.raises(CorruptionError, match="no ZIP local header"):
+        walk.next_entry()
+
+
+def test_a_tail_hands_back_its_bytes_from_an_offset_only_when_it_holds_them() -> None:
+    whole = ForwardTail(
+        after="after member #0", members_start=0, members_end=10, start=10,
+        data=b"abcdef",
+    )  # fmt: skip
+    assert _read_all(whole.held_from(12)) == b"cdef"
+    assert whole.held_from(9) is None
+    # The head and the last bytes overlap: one run to the end of the stream.
+    joined = ForwardTail(
+        after="", members_start=0, members_end=10, start=13, data=b"defgh",
+        head=b"abcde",
+    )  # fmt: skip
+    assert _read_all(joined.held_from(11)) == b"bcdefgh"
+    # Bytes dropped between them: only the last ones run to the end.
+    cut = ForwardTail(
+        after="", members_start=0, members_end=10, start=20, data=b"xyz", head=b"abc"
+    )
+    assert cut.held_from(11) is None
+    assert _read_all(cut.held_from(21)) == b"yz"
+
+
+def _read_all(stream: BinaryIO | None) -> bytes:
+    assert stream is not None
+    out = b""
+    while chunk := stream.read(2):
+        out += chunk
+    return out
 
 
 def test_bytes_before_the_directory_are_kept_with_it() -> None:
