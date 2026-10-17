@@ -1041,9 +1041,12 @@ def ensure_bufferedio(obj: object) -> io.BufferedIOBase:
     # buffer raises that refusal at read time. The previous call-based probe
     # caught this via BinaryIOWrapper; it was given up so wrap-time cannot
     # skip-decode a pending solid member. Parked as #329 C1.
-    if (
-        isinstance(obj, io.RawIOBase)
-        and type(obj).readinto is not io.RawIOBase.readinto
+    #
+    # getattr, because PyPy's io.RawIOBase has no readinto attribute at all: there
+    # the default lives nowhere, so a subclass without its own readinto has none.
+    if isinstance(obj, io.RawIOBase) and getattr(type(obj), "readinto", None) not in (
+        None,
+        getattr(io.RawIOBase, "readinto", None),
     ):
         raw = obj
     else:
