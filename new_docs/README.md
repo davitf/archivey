@@ -8,9 +8,10 @@ this list:
 
 - Every ZIP claim in the tree, once the native ZIP reader is complete: damaged or missing end
   records, and bytes after the archive, are expected to change.
-- `cli.md` says moving a single folder up out of `photos/` never replaces or deletes anything in the
-  current directory. Today `--overwrite replace` lets the move replace files there, and can replace
-  a file with a folder; a code fix is in progress.
+- `cli.md` says extracting without `-d` never replaces or deletes anything in the current directory.
+  Today `--overwrite replace` can: an archive with an index and one top-level folder extracts
+  straight into the current directory and replaces what's there, and for a TAR the move out of the
+  wrapper folder replaces files with the same name. A code fix is in progress.
 
 `cli.md`, `migrating.md`, `philosophy.md`, `how-it-works.md`, `how-it-is-built.md` and
 `acknowledgements.md` aren't linked from `index.md` yet; the site navigation covers them at the

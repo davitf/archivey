@@ -50,10 +50,10 @@ stops looking for it. The warning printed for each one says why. A member whose 
 checksum at all, such as a Brotli or `.Z` file, passes once it reads to the end without an error.
 
 `--outer` checks only the compression layer, as `gzip -t` does. For a `.tar.gz`, archivey reads the
-whole decompressed tar and checks gzip's own checksum, without looking at the members inside.
-gzip, xz, lzip, bzip2 and zlib always carry that checksum, zstd and LZ4 only when the program that
-wrote the file added one, and Brotli and `.Z` never do. A ZIP, 7z, RAR, ISO or plain tar has no
-compression layer, so `--outer` refuses it.
+whole decompressed tar and checks gzip's own checksum, without looking at the members inside. gzip,
+lzip, bzip2 and zlib always carry that checksum, xz does unless it was written with `--check=none`,
+zstd and LZ4 only when the program that wrote the file added one, and Brotli and `.Z` never do. A
+ZIP, 7z, RAR, ISO or plain tar has no compression layer, so `--outer` refuses it.
 
 ## Extracting
 
@@ -64,11 +64,14 @@ new folder is always new: if something named `photos` is already there, archivey
 To choose the folder yourself, pass `-d out/`, or `-d .` for the current directory.
 
 ??? note "When does a single folder stay inside `photos/`?"
-    Archivey extracts into the new folder first, then moves the single entry up. It never replaces
-    or deletes anything in the current directory to do that. It leaves the entry in `photos/`, and
-    prints why, if something there already has a name the move needs, if the move could change what
-    a link points to (the entry is a symlink, or holds one that leads outside it), or if part of
-    the entry couldn't be listed.
+    Without `-d`, archivey never replaces or deletes anything in the current directory. If a name it
+    needs is already taken, the default `--overwrite rename` gives the new entry a free name, such
+    as `notes (1).txt`; with `error`, `skip` or `replace`, the folder stays in `photos/` instead.
+
+    For an archive that doesn't list its members up front, such as a TAR, archivey extracts into
+    `photos/` first and moves the folder out at the end. It leaves the folder in `photos/`, and
+    prints why, if the move could change what a link points to (the folder is a symlink, or holds
+    one that leads outside it), or if part of it couldn't be listed.
 
 Extraction uses the `strict` policy by default: a member that would land outside the destination,
 or a link that points outside it, is refused and reported, and the rest are still extracted.
@@ -159,7 +162,8 @@ A pipe can only be read once, from start to end, so archivey reads it in a singl
 for TAR (compressed or not), ZIP and single compressed files such as `.gz`. 7z, RAR and ISO
 archives need to jump around in the file, so from a pipe they fail with exit `1` and a message to
 copy the input to a file first. `extract --outer` and `test --outer` also need a file; for a pipe,
-use `archivey cat - --outer`.
+use `archivey cat - --outer`. A redirect from a file, as in `archivey cat - < backup.7z`, isn't a
+pipe, so every format works that way.
 
 ## Exit codes
 
@@ -170,7 +174,7 @@ use `archivey cat - --outer`.
 | `2` | The command line was wrong. |
 | `3` | `extract` finished, with every member written or refused, and at least one refused. |
 | `130` | Interrupted with Ctrl-C. |
-| `141` | The output was closed early, as with `archivey test big.zip \| head -1`. For `test`, that means you don't have the result. |
+| `141` | The output was closed early, as with `archivey test -v big.zip 2>&1 \| head -1`. For `test`, that means you don't have the result. |
 
 ## File names and shared options
 
@@ -187,4 +191,5 @@ such as `-d` or `--exclude`, go after it. Besides `--password` and `-v`, the sha
 - `--probe-content` recognises a raw LZMA, zlib or Brotli stream whatever the file is named. These
   have no signature at their start, so archivey normally knows them only by their extension
   (`.lzma`, `.zz`, `.br` and the like). With this option it tries decoding the start of the file
-  instead. It's off by default because some unrelated files pass the trial.
+  instead. It's off by default because some unrelated files pass the trial. `--outer` always tries
+  decoding, so it doesn't need this option.
