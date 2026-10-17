@@ -1,4 +1,4 @@
-"""Operations on one ``concurrent_members=True`` reader stay independent of each other.
+"""Operations on one ``concurrent_operations=True`` reader stay independent of each other.
 
 Under the flag every call works as if it ran on a reader of its own: what one call
 emits, or a close on another thread, does not show up in a different call's result
@@ -35,7 +35,7 @@ def test_pass_stream_diagnostics_leave_out_another_threads_walk(
             info.size = 3
             tf.addfile(info, io.BytesIO(b"abc"))
     normalized = DiagnosticCode.MEMBER_NAME_NORMALIZED
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         it = reader.stream_members()
         member, stream = next(it)
         assert member.name == "a.txt"
@@ -55,7 +55,7 @@ def test_random_stream_diagnostics_are_its_own(tmp_path: Path) -> None:
             info = tarfile.TarInfo(name)
             info.size = 3
             tf.addfile(info, io.BytesIO(b"abc"))
-    with open_archive(path, concurrent_members=True) as reader:
+    with open_archive(path, concurrent_operations=True) as reader:
         # Opening a.txt walks only as far as a.txt; the walk to ./b.txt, which
         # emits, then happens on another thread while the stream is open.
         with reader.open("a.txt") as stream:
@@ -119,7 +119,7 @@ def test_link_followed_on_several_threads_is_reported_once(tmp_path: Path) -> No
         except Exception as exc:  # noqa: BLE001 - compared with the single-thread error
             errors.append(type(exc))
 
-    with open_archive(path, config=config, concurrent_members=True) as reader:
+    with open_archive(path, config=config, concurrent_operations=True) as reader:
         reader.members()
         _run_together(*([follow] * 4))
         assert reader.diagnostics.counts[unavailable] == alone
@@ -131,7 +131,7 @@ def test_close_waits_for_members_report_if_available(tmp_path: Path) -> None:
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("a.txt", b"a")
-    reader = open_archive(path, concurrent_members=True)
+    reader = open_archive(path, concurrent_operations=True)
     walking = threading.Event()
     release = threading.Event()
     original = reader._ensure_walked  # type: ignore[attr-defined]

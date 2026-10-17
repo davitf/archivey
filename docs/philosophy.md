@@ -40,7 +40,7 @@ Archivey’s defaults are the **cheap, honest path**:
 
 - forward-only member streams, one live stream at a time
 - no seek indexes or accelerators until you ask (`seekable_members=True`)
-- no concurrent opens until you ask (`concurrent_members=True`)
+- no concurrent opens until you ask (`concurrent_operations=True`)
 - random-access open fails fast on a non-seekable source (no silent buffering)
 
 When you need more, you **declare** it. Escape hatches are explicit, not ambient. For
@@ -54,7 +54,7 @@ which one fits which job, and what each costs, see
 | Read each member once, in any order | `open_archive(..., streaming=True)` — random access is refused, so it cannot slip in by accident |
 | Pipes / sockets | `open_archive(..., streaming=True)` — TAR, ZIP and the single-file compressors; ISO, 7z and RAR need a seekable source in either mode |
 | Seek inside a member | `seekable_members=True` |
-| Many open members / workers | `concurrent_members=True` |
+| Many open members / workers | `concurrent_operations=True` |
 | Trusted / unlimited extract | `ExtractionPolicy.TRUSTED`, `ExtractionLimits.UNLIMITED` |
 | Tune limits, strictness, accelerators, the RAR program | `ArchiveyConfig` (`listing_limits`, `decoder_limits`, `spool_limits`, `diagnostic_policy`, `use_rapidgzip`, `rar_decompressor`, …) |
 

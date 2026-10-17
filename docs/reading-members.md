@@ -33,13 +33,13 @@ Two defaults keep the common case cheap, and each can be lifted at open time:
   file.
 - **One stream may be live at a time.** Opening a second while the first is still
   open raises `ArchiveyUsageError` unless you opened with
-  `concurrent_members=True`.
+  `concurrent_operations=True`.
 
 ```python
 with archivey.open_archive(
     "data.zip",
     seekable_members=True,
-    concurrent_members=True,
+    concurrent_operations=True,
 ) as reader:
     ...
 ```
@@ -129,7 +129,7 @@ data = reader.read("payload.bin")  # the pass has ended
 `members.close()` does the same without the block. `iter(reader)` returns a pass too, so
 a member loop can be closed or used in a `with` block the same way, but on this reader
 it holds nothing between members: `for m in reader: reader.open(m)` works. On a reader
-opened with `concurrent_members=True`, `open()`, `read()`, `get()`, `members()` and
+opened with `concurrent_operations=True`, `open()`, `read()`, `get()`, `members()` and
 another `stream_members()` or `extract_all()` all work inside the loop, from any thread,
 on every format. The pass and the calls beside it share one walk of the
 archive's headers, so a pass nobody gets ahead of costs what it costs on a default
