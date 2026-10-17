@@ -5802,8 +5802,8 @@ def test_rar4_stored_password_list_is_judged_without_unrar(
         assert archive.read("large_stored.txt") == _unrar_payload(
             path, "large_stored.txt"
         )
-    # One spawn: the read itself, with the password the native check picked.
-    assert spawns == ["password"]
+    # None: the check and the read itself both decrypt the stored member natively.
+    assert spawns == []
 
 
 @requires_binary("unrar")
