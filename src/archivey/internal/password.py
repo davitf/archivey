@@ -81,8 +81,8 @@ def is_wrong_password(error: BaseException | None) -> TypeGuard[EncryptionError]
     )
 
 
-# Set on an ``EncryptionError`` by :func:`unverified_data_error`, as the wrong-password
-# mark above is.
+# Set on an ``EncryptionError`` by :func:`unverified_data_error` or
+# :func:`mark_unverified_data`, as the wrong-password mark above is.
 _UNVERIFIED_DATA_MARK = "_archivey_unverified_data"
 
 
@@ -101,12 +101,12 @@ def unverified_data_error(message: str) -> EncryptionError:
 
 
 def mark_unverified_data(error: EncryptionError) -> None:
-    """Give an existing ``error`` the :func:`unverified_data_error` mark."""
+    """Mark ``error``: its data failed its check under a password nothing confirmed."""
     setattr(error, _UNVERIFIED_DATA_MARK, True)
 
 
 def is_unverified_data_error(error: BaseException) -> bool:
-    """Whether ``error`` came from :func:`unverified_data_error`."""
+    """Whether ``error`` carries the mark (see :func:`mark_unverified_data`)."""
     return getattr(error, _UNVERIFIED_DATA_MARK, False) is True
 
 
