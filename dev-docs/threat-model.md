@@ -1189,7 +1189,7 @@ budget one level at a time. The caller bounds depth and total size. Public:
 
 `read()` and `open()` return whatever the member decodes to; `ExtractionLimits` apply to
 `extract` only. Chunk untrusted payloads. Public:
-[security.md §Hardening](../docs/security.md#hardening).
+[security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### A probe can fabricate a member
 
@@ -1197,8 +1197,7 @@ When a content probe's identification is wrong (see
 [detection](#detection-is-bounded-and-says-when-it-guessed)), the listing shows one
 fabricated member, a full read raises, and up to 64 KiB of fabricated output may be
 returned before the raise. It is never a silent success, and it carries
-`PROBE_FORMAT_UNCONFIRMED`. Public: [`docs/formats.md`](../docs/formats.md) §Detection
-.
+`PROBE_FORMAT_UNCONFIRMED`. Public: [`docs/formats.md`](../docs/formats.md) §Detection.
 
 ### The unar password is on its command line
 

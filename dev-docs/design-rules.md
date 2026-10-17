@@ -245,7 +245,8 @@ staying silent where a check normally exists and was skipped. Emit
 unchecked although the caller would expect them checked. Example: 7z AES with stored
 data and no CRC, where a wrong password yields garbage
 (`reason="no_integrity_anchor"`). A format or codec that never carries a checksum
-(plain TAR, legacy LZ4) says so once in the user docs (`docs/formats.md`) rather than with a diagnostic on every member.
+(plain TAR, legacy LZ4) says so once in the user docs (`docs/formats.md`) rather
+than with a diagnostic on every member.
 
 **Rulings.**
 - An over-long symlink target is left unset with `SYMLINK_TARGET_UNAVAILABLE`, never

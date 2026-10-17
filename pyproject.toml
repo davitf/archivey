@@ -99,7 +99,7 @@ seekable = [
 # cryptography is version-conditional: its cffi dependency refuses to build on
 # free-threaded 3.13 ("Upgrade to free-threaded 3.14 or newer") and works on 3.14t with
 # the GIL still disabled. That gap is also why `pip install archivey[recommended]` fails
-# on 3.13t — documented in docs/support-matrix.md, not worked around.
+# on 3.13t — documented in docs/install.md, not worked around.
 free-threaded = [
     "pycdlib>=1.16.0",
     "lz4>=4.4.5",

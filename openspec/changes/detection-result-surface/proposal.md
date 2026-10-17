@@ -141,7 +141,7 @@ the only way to have both is to detect twice — and the redesign makes the seco
   rendering, which is exactly where `main` currently drops it. Plus: the field is present for
   `format=` opens and for member streams; a `detection=` result from a different source
   raises; a `detection=` result over a pipe replays without a second read.
-- Docs: `docs/opening-and-listing.md` and `docs/errors-and-diagnostics.md` gain the result and
+- Docs: `docs/opening.md` and `docs/errors-and-diagnostics.md` gain the result and
   the handoff; `docs/cli.md` if `info` output changes shape.
 - Depends on `detection-evidence-ledger`. The `detection=` half additionally depends on
   `detection-prefix-workspace`'s workspace and spool policy for the non-seekable case, and may
