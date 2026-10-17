@@ -176,10 +176,14 @@ avoid tarbombs. When a cheap member index is available without a streaming scan
 **filtered** member set: extract into `./<archive-stem>/` when that set has
 multiple top-level entries; extract into `.` when it already has a single
 top-level directory (no redundant nesting) or the archive is a
-single-file/single-stream archive. When that single top-level entry's name already
-exists in the cwd, the system SHALL instead extract into `./<archive-stem>/` and hoist,
-as below, so the hoist's rules decide what happens to the operator's entry and
-`--overwrite` never replaces it. When no cheap index is available (plain TAR,
+single-file/single-stream archive. When the index gives a single top-level entry whose
+name already exists in the cwd, or whose name extraction may write under another
+spelling (a trailing dot or space, a character Windows refuses, a non-printable
+character), the system SHALL instead extract into `./<archive-stem>/` and hoist, as
+below, so the hoist's rules decide what happens to the operator's entry and
+`--overwrite` never replaces it. A single-file/single-stream archive keeps writing
+into the cwd under `--overwrite`: its one output name comes from the archive name the
+operator typed, and there is no wrapper to hoist out of. When no cheap index is available (plain TAR,
 an archive read from a pipe, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
@@ -197,9 +201,9 @@ check SHALL follow the path one component at a time, through every symlink on th
 so a chain cannot hide a climb; an absolute target always blocks. A path that stays
 inside the entry (`pkg/bin/a -> ../lib/a.so`) means the same thing after the move, and
 does not block it. In each of these cases a line says the content was kept in the
-wrapper and why. When it runs, the hoist SHALL produce the same final layout as
-extracting directly into the cwd: directories merge into existing directories, and
-per-file collisions resolve by the overwrite policy. To move a root whose name differs
+wrapper and why. When it runs, directories merge into existing directories, and under
+`rename` the hoist SHALL produce the same final layout as extracting directly into the
+cwd. To move a root whose name differs
 from the wrapper's, the hoist first renames the wrapper to an aside name
 `<wrapper> (N)/`, and that aside directory SHALL NOT be the entry at the root's
 destination: with nothing at `./foo`, `foo.tar` holding `foo (1)/` (or `FOO (1)/` on a

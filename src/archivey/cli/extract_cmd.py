@@ -147,8 +147,9 @@ def resolve_smart_dest(
 
     - Single-file / raw-stream → cwd.
     - Indexed archive → tops on the **filtered** member set (wrap / cwd). A single
-      top whose name exists in the cwd is extracted into a new wrapper and hoisted,
-      as below, so the operator's entry is never replaced.
+      top whose name exists in the cwd, or that extraction may write under another
+      spelling (:func:`_written_as_stored`), is extracted into a new wrapper and
+      hoisted, as below, so the operator's entry is never replaced.
     - No cheap index (tar, an archive read from a pipe, …) → always a new
       ``./<stem>/``, then :func:`maybe_hoist_single_root` may lift a single
       extracted top entry to cwd.
@@ -165,12 +166,36 @@ def resolve_smart_dest(
     members = [m for m in indexed if pred is None or pred(m)]
     target = smart_dest(archive, format=fmt, members=members)
     tops = _top_level_names(members)
-    if target == Path(".") and any(os.path.lexists(top) for top in tops):
-        # The single root's name is taken in the cwd. Extracting straight into the
-        # cwd would apply ``--overwrite`` to the operator's entries there; the hoist
-        # never replaces or deletes one, so extract into a new wrapper and hoist.
+    if target == Path(".") and any(
+        os.path.lexists(top) or not _written_as_stored(top) for top in tops
+    ):
+        # The single root's name is taken in the cwd, or extraction may write it under
+        # another spelling that is. Extracting straight into the cwd would apply
+        # ``--overwrite`` to the operator's entries there; the hoist never replaces or
+        # deletes one, and judges from what is on disk, so extract into a new wrapper
+        # and hoist.
         return _SmartDestPlan(_enclosing_dir(archive, format=fmt), may_hoist=True)
     return _SmartDestPlan(target, may_hoist=False)
+
+
+# Characters the library's name policy rewrites (escapes or turns into ``/``).
+_REWRITTEN_CHARS = frozenset('<>:"|?*\\')
+
+
+def _written_as_stored(name: str) -> bool:
+    """Whether extraction surely writes the top-level ``name`` under that spelling.
+
+    A conservative stand-in for the library's name policy, which the CLI cannot
+    import: ``False`` for anything that policy may rewrite (a trailing dot or space,
+    a character Windows refuses, a control or other non-printable character, a byte
+    that is not UTF-8). A ``False`` for a name written as stored only costs a wrapper
+    and a hoist; a ``True`` for a rewritten name would let the rewrite land on the
+    operator's entry, so the test errs towards ``False``."""
+    return (
+        name.isprintable()
+        and not name.endswith((".", " "))
+        and _REWRITTEN_CHARS.isdisjoint(name)
+    )
 
 
 @dataclass
@@ -255,8 +280,7 @@ def _step_back(side: Path, wrapper: Path) -> Path:
 
 
 class _HoistConflict(Exception):
-    """A collision the overwrite policy cannot resolve without touching the operator's
-    entry."""
+    """A collision the hoist does not resolve: any but one ``rename`` settles."""
 
     def __init__(self, dest: Path) -> None:
         super().__init__(str(dest))
@@ -347,8 +371,8 @@ def _merge_move(
 ) -> Path:
     """Move ``src`` to ``dest``, merging directories into existing directories. A
     file or symlink collision is resolved only under RENAME, which moves ours to a
-    free name, as extracting directly into ``dest``'s parent does. The hoist never
-    replaces, discards or removes anything of the operator's, so every other policy
+    free name, as extracting directly into ``dest``'s parent does. The hoist neither
+    replaces the operator's entry nor throws away ours, so every other policy
     resolves nothing (:func:`_policy_resolves`). Symlinks are moved as links and
     never descended into (on either side). A collision the policy cannot resolve
     raises :class:`_HoistConflict`; the caller checks the whole merge with
@@ -449,6 +473,9 @@ def _first_clash(
             if clash is not None:
                 return clash
         return None
+    # So under ``rename`` this walk never finds a clash. It still runs: listing the
+    # tree first makes an unlistable directory fail the hoist with nothing moved,
+    # rather than part-way through the merge.
     if _policy_resolves(overwrite):
         return None
     return dest
@@ -640,10 +667,9 @@ def maybe_hoist_single_root(
     :func:`_keep_reason` gives.
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
-    after an always-wrap extract, without a pre-extract metadata pass. The final
-    layout matches extracting directly into the wrapper's parent: directories
-    merge into existing ones and per-file collisions follow the overwrite policy
-    (:func:`_merge_move`). The hoist is a convenience, not a promise: it never
+    after an always-wrap extract, without a pre-extract metadata pass. Directories
+    merge into existing ones, and under ``rename`` the final layout matches
+    extracting directly into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a promise: it never
     replaces or deletes anything in the cwd, so when the merge would meet a collision
     that ``rename`` does not settle (any collision under ``error``, ``skip`` or
     ``replace``, :func:`_policy_resolves`), nothing is moved, a ``kept in`` line

@@ -2565,6 +2565,35 @@ def test_indexed_single_root_never_replaces_the_operators_entry(
     assert (tmp_path / "one" / "top" / "f").read_bytes() == b"ARCHIVE"
 
 
+@pytest.mark.parametrize(
+    ("stored", "mine"),
+    [("top /f", "top/f"), ("c\x02", "c%02")],
+    ids=["trailing-space", "control-character"],
+)
+@pytest.mark.parametrize("overwrite", ["skip", "replace"])
+def test_indexed_single_root_rewritten_onto_the_operators_entry_is_hoisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stored: str,
+    mine: str,
+    overwrite: str,
+) -> None:
+    """The stored root name is free but its written spelling is the operator's entry:
+    it still goes through the wrapper, so the hoist judges from what is on disk."""
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(stored, b"ARCHIVE")
+    (tmp_path / mine).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / mine).write_bytes(b"MINE")
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "kept in ") == [f"kept in one/: {mine} already exists"]
+    assert (tmp_path / mine).read_bytes() == b"MINE"
+    assert (tmp_path / "one" / mine).read_bytes() == b"ARCHIVE"
+
+
 def test_indexed_single_root_renames_past_the_operators_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
