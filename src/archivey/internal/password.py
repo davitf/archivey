@@ -81,6 +81,35 @@ def is_wrong_password(error: BaseException | None) -> TypeGuard[EncryptionError]
     )
 
 
+# Set on an ``EncryptionError`` by :func:`unverified_data_error`, as the wrong-password
+# mark above is.
+_UNVERIFIED_DATA_MARK = "_archivey_unverified_data"
+
+
+def unverified_data_error(message: str) -> EncryptionError:
+    """The ``EncryptionError`` for data that failed integrity under an unconfirmed password.
+
+    Raised where nothing could confirm the password before the data was decrypted
+    (ZipCrypto's one check byte, RAR 2.9-4's absent check), so the password may be
+    wrong or the member damaged. A plain ``EncryptionError`` to the caller; the link
+    target report reads the mark (``password_or_damage``), so it does not report a
+    damaged target as a missing password.
+    """
+    error = EncryptionError(message)
+    setattr(error, _UNVERIFIED_DATA_MARK, True)
+    return error
+
+
+def mark_unverified_data(error: EncryptionError) -> None:
+    """Give an existing ``error`` the :func:`unverified_data_error` mark."""
+    setattr(error, _UNVERIFIED_DATA_MARK, True)
+
+
+def is_unverified_data_error(error: BaseException) -> bool:
+    """Whether ``error`` came from :func:`unverified_data_error`."""
+    return getattr(error, _UNVERIFIED_DATA_MARK, False) is True
+
+
 def _to_bytes(password: str | bytes) -> bytes:
     """``password`` as the bytes every backend consumes.
 

@@ -426,7 +426,8 @@ it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than lea
 | `target_data_encrypted` | the target is encrypted in a form archivey does not decrypt (compressed, split, RAR 2.0's cipher), or `cryptography` is not installed | yes |
 | `target_data_split_across_volumes` | the target is split across volumes and a part was not found (a complete split target is joined and read) | yes |
 | `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
-| `no_target_data` | the member's declared and packed sizes are both zero | no |
+| `no_target_data` | an unencrypted member's declared and packed sizes are both zero | no |
+| `target_empty` | an encrypted member's sizes are both zero: it goes through the decrypting read, which returns no bytes, and the shared empty-target report names it | yes |
 
 The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
 an archive; a lenient one lists the member as a link with no target. The last column is

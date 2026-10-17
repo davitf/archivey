@@ -90,6 +90,7 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.password import is_unverified_data_error
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
 from archivey.internal.reader_state import (
     LiveStreamReservation,
@@ -2373,6 +2374,14 @@ class BaseArchiveReader(ArchiveReader):
         self, member: ArchiveMember, exc: EncryptionError
     ) -> tuple[str, str]:
         """The ``(reason, message)`` for a link target its encryption kept unread."""
+        if is_unverified_data_error(exc):
+            # Nothing confirmed the password before the data failed its check: a wrong
+            # password or a damaged member, and nothing here can say which.
+            return "password_or_damage", (
+                f"The symlink target of {quoted(member.name)} failed its integrity "
+                f"check; the password may be wrong or the member may be corrupt. "
+                f"Leaving link_target unset."
+            )
         return "password_required", (
             f"Cannot read the symlink target of {quoted(member.name)} without the "
             f"correct password; leaving link_target unset."

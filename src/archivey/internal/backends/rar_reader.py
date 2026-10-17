@@ -145,6 +145,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
+    mark_unverified_data,
     wrong_password_error,
 )
 from archivey.internal.password_confirm import (
@@ -650,11 +651,6 @@ _UNDECODABLE_WITH_ANY_CANDIDATE = (
     "This RAR member did not decode with any of the passwords: they may all be "
     "wrong, or the member may be damaged"
 )
-
-
-#: Set on the ``EncryptionError`` of a listing that decrypted a symlink target which
-#: then failed its CRC: a wrong RAR 2.9-4 password and damage look the same.
-_UNVERIFIED_LINK_TARGET_MARK = "_archivey_rar_unverified_link_target"
 
 
 def _undecodable_with_candidate() -> EncryptionError:
@@ -3819,7 +3815,10 @@ class RarReader(BaseArchiveReader):
             # Stored and encrypted: decrypted here as ``open()`` would, so with the
             # password the target lists as it does from a plain archive, and without
             # it the link is reported as locked (``password_required``), as in ZIP and
-            # 7z. The read is capped like any data-stored target.
+            # 7z. The read is capped like any data-stored target. A target with both
+            # sizes zero passes ``_natively_decryptable``, decrypts to no bytes and is
+            # reported by the shared empty-target check (``target_empty``), not by
+            # the ``no_target_data`` arm below.
             self._link_target_from_data(
                 member,
                 lambda: self._open_encrypted_link_target(member, raw),
@@ -4253,7 +4252,7 @@ class RarReader(BaseArchiveReader):
         except EncryptionError as exc:
             # A candidate list judged by the same CRC, every entry failing it.
             if raw_message_of(exc) == _UNDECODABLE_WITH_ANY_CANDIDATE:
-                setattr(exc, _UNVERIFIED_LINK_TARGET_MARK, True)
+                mark_unverified_data(exc)
             raise
         if raw.crc32 is not None and not self._stored_crc_matches(raw, password):
             error = EncryptionError(
@@ -4262,20 +4261,9 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
-            setattr(error, _UNVERIFIED_LINK_TARGET_MARK, True)
+            mark_unverified_data(error)
             raise error
         return self._open_decrypted_stored(member, raw)
-
-    def _locked_link_target_report(
-        self, member: ArchiveMember, exc: EncryptionError
-    ) -> tuple[str, str]:
-        if getattr(exc, _UNVERIFIED_LINK_TARGET_MARK, False) is not True:
-            return super()._locked_link_target_report(member, exc)
-        return "password_or_damage", (
-            f"The symlink target of {quoted(member.name)} failed its integrity "
-            f"check; the password may be wrong or the member may be corrupt. "
-            f"Leaving link_target unset."
-        )
 
     def _open_member_with_program(
         self, member: ArchiveMember, raw: RarMemberInfo
