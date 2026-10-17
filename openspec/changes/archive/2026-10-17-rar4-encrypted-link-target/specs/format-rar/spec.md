@@ -3,7 +3,9 @@
 ### Requirement: Resolve RAR link targets when possible at list time
 
 The system SHALL set `ArchiveMember.link_target` during member registration /
-`_ensure_link_target` whenever the target is available without interactive input:
+`_ensure_link_target` whenever the target is available without interactive input,
+except an encrypted RAR 2.9-4 target (below), which uses the password, and so the
+password provider, that a read of the member would use:
 
 | Variant | Source of `link_target` |
 | --- | --- |

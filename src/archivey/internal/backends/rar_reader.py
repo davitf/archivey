@@ -4243,11 +4243,18 @@ class RarReader(BaseArchiveReader):
 
         RAR 2.9-4 records no password check, so one password goes to the read
         unjudged, and a wrong one decrypts to bytes of the right length. The target
-        is small, so its CRC is checked first: a mismatch is a wrong password or
-        damage, which nothing here can tell apart, and is reported as such
+        is small, so its CRC is checked first: a mismatch, or a candidate list whose
+        every entry fails it, is a wrong password or damage, which nothing here can
+        tell apart, and is reported as such
         (:meth:`_locked_link_target_report`) rather than as a damaged target.
         """
-        password = self._stored_data_password(member, raw)
+        try:
+            password = self._stored_data_password(member, raw)
+        except EncryptionError as exc:
+            # A candidate list judged by the same CRC, every entry failing it.
+            if raw_message_of(exc) == _UNDECODABLE_WITH_ANY_CANDIDATE:
+                setattr(exc, _UNVERIFIED_LINK_TARGET_MARK, True)
+            raise
         if raw.crc32 is not None and not self._stored_crc_matches(raw, password):
             error = EncryptionError(
                 "The decrypted symlink target does not match its CRC32 checksum",

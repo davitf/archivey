@@ -310,9 +310,14 @@ def test_encrypted_rar4_symlink_targets_without_a_password_are_locked() -> None:
 
 
 @requires("cryptography")
-def test_encrypted_rar4_symlink_target_under_a_wrong_password_is_not_damage() -> None:
+@pytest.mark.parametrize(
+    "password", ["wrong", ["wrong", "alsowrong"]], ids=["one", "list"]
+)
+def test_encrypted_rar4_symlink_target_under_a_wrong_password_is_not_damage(
+    password: str | list[str],
+) -> None:
     """No password check: a wrong password fails the CRC, as damage would."""
-    with open_archive(_SYMLINKS_RAR4, config=_NONE, password="wrong") as archive:
+    with open_archive(_SYMLINKS_RAR4, config=_NONE, password=password) as archive:
         assert set(_link_targets(archive).values()) == {None}
         assert _unavailable_reasons(archive) == ["password_or_damage"] * 4
 
