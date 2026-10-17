@@ -1,4 +1,8 @@
-"""``archivey cat``: member contents, or the decompressed outer stream, to stdout."""
+"""``archivey cat``: member contents, or the decompressed outer stream, to stdout.
+
+Also the ``cat`` / ``test`` split on a directory that declares data: ``cat`` skips it,
+``test`` reads it.
+"""
 
 from __future__ import annotations
 
@@ -141,24 +145,42 @@ def test_test_fails_a_directory_whose_data_fails_its_checksum(tmp_path: Path) ->
     assert run.stdout == b"visible"
 
 
-def test_test_skips_a_directory_whose_data_it_cannot_decode(tmp_path: Path) -> None:
-    # Method 77 is not one archivey decodes. The bytes are never extracted, so the
-    # directory is not tested rather than failed, as unzip -t skips it (DR-4).
-    path = tmp_path / "dirdata.zip"
+def _zip_with_method_77(path: Path, member_index: int) -> Path:
+    # Method 77 is not one archivey decodes. Patch it into one entry's local header
+    # (method at offset 8) and central entry (offset 10).
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(zipfile.ZipInfo("d/"), b"hidden data!")
         zf.writestr("d/f.txt", b"visible")
     data = bytearray(path.read_bytes())
-    # The directory is the first entry: its local header's method is at offset 8, and
-    # its central entry's at offset 10 of the first central header.
-    data[8:10] = (77).to_bytes(2, "little")
+    with zipfile.ZipFile(path) as zf:
+        local = zf.infolist()[member_index].header_offset
+    data[local + 8 : local + 10] = (77).to_bytes(2, "little")
     cd = data.index(b"PK\x01\x02")
+    for _ in range(member_index):
+        cd = data.index(b"PK\x01\x02", cd + 4)
     data[cd + 10 : cd + 12] = (77).to_bytes(2, "little")
     path.write_bytes(bytes(data))
+    return path
+
+
+def test_test_skips_a_directory_whose_data_it_cannot_decode(tmp_path: Path) -> None:
+    # The bytes are never extracted, so the directory is not tested rather than
+    # failed, as unzip -t skips it (DR-4).
+    path = _zip_with_method_77(tmp_path / "dirdata.zip", 0)
     run = _Run(["test", str(path)])
     assert run.code == EXIT_FAIL
     assert "skip d/:" in run.stderr
+    assert "compression method 77" in run.stderr
     assert "1 OK, 0 failed, 1 not tested" in run.stderr
+
+
+def test_test_still_fails_a_file_whose_data_it_cannot_decode(tmp_path: Path) -> None:
+    path = _zip_with_method_77(tmp_path / "filedata.zip", 1)
+    run = _Run(["test", str(path)])
+    assert run.code == EXIT_FAIL
+    assert "FAIL d/f.txt:" in run.stderr
+    assert "compression method 77" in run.stderr
+    assert "1 OK, 1 failed" in run.stderr
 
 
 @pytest.mark.parametrize(

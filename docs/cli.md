@@ -166,8 +166,10 @@ encrypted members fail as if no password had been given.
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip
   trailer past the trailing-data scan bound; the warning logged for it says why.
 - `test` reads a directory entry that declares data (`MEMBER_DIRECTORY_DATA_IGNORED`)
-  and fails it on a bad checksum, as `unzip -t` does; `cat` skips it. Data archivey
-  cannot decode is reported as not tested. A ZIP read from a pipe whose directory entry
+  and fails it on a bad checksum, as `unzip -t` does; `cat` skips it. Such a
+  directory's data, where archivey cannot decode it, is reported as not tested; a
+  file's undecodable data, and a directory's data that needs a password, fail as
+  before. A ZIP read from a pipe whose directory entry
   has a data descriptor is the one exception: its size arrives after its data, so the
   bytes are not read, and the entry is left out of the counts.
 - Member names, paths and messages are printed with control characters escaped, so a

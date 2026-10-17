@@ -549,10 +549,14 @@ empty entry; `jar` 21.0.12, measured for this rule, stores directories with both
   `archivey cat` skips it (maintainer, 2026-10-17, TAR/ZIP sweep questions). `unzip -t`
   tests the bytes and fails a bad CRC; `7z t` reports the same archive as OK. archivey
   takes the stricter reading because a lenient one would hide bytes from the integrity
-  command. A body archivey cannot deliver (an unsupported method, a missing codec, RAR's
-  compressed directory data) is not tested rather than failed, as `unzip -t` skips it.
-  Reopen if a real writer routinely stores directory data that `7z t` users rely on
-  passing.
+  command. Reopen if a real writer routinely stores directory data that `7z t` users
+  rely on passing.
+- Agent decision in PR 879's review (2026-10-17), not a maintainer ruling: a directory
+  body archivey cannot decode (an unsupported method, a missing codec, RAR's compressed
+  directory data) is not tested rather than failed, per DR-4 and `unzip -t`, which skips
+  it. A directory body that needs a password stays a failure, as an encrypted file does
+  with no password (`unzip -t` splits here: it skips AES and errors on ZipCrypto).
+  Reopen if the maintainer wants the password case skipped too.
 
 **Reopen if** a real producer writes a directory entry whose data users need on disk, or a
 special-mode entry whose bytes are not the content; then that format needs a named

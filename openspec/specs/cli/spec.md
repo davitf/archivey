@@ -138,16 +138,22 @@ exit nonzero (`1`). `-v` / `--verbose` SHALL surface diagnostics when present.
 the shared verification stage (including CRC32 and Blake2sp where supported). A
 directory member that declares data (`MEMBER_DIRECTORY_DATA_IGNORED`) and for which
 `stream_members()` yields a stream SHALL be read and counted like a file member, so
-damage in its hidden bytes fails the test; `cat` SHALL skip such a directory.
+damage in its hidden bytes fails the test, except that when archivey cannot decode
+such a directory's data (`UnsupportedFeatureError` or `PackageNotInstalledError`),
+`test` SHALL print `skip <name>: <reason>` by default and count it as not tested. A
+file member archivey cannot decode, and a directory whose data needs a password, still
+fail. `cat` SHALL skip such a directory.
 Members with no stored digest SHALL count as OK when fully readable without
 error. `test` MUST NOT require emitting computed content hashes. By default
-`test` SHALL be quiet — printing only failures, the stop notice when the read
-pass ends early, and a one-line summary (`N OK, M failed`) to stderr — and SHALL
+`test` SHALL be quiet — printing only failures, the `skip` lines above, the stop
+notice when the read pass ends early, and a one-line summary (`N OK, M failed`) to stderr — and SHALL
 exit non-zero if any member fails;
 `-v` / `--verbose` SHALL add a per-member OK/FAIL line. When a cheap member
 index is available and the stream ends before every selected file member has
 been counted OK or failed (archive-wide error or solid/poisoned abort), the
-summary SHALL append `, K not tested` where `K` is the untested remainder.
+summary SHALL append `, K not tested` where `K` is the untested remainder. A
+directory skipped as above counts in `K` whether or not an index was available and
+whether or not the pass reached its end.
 When the stream ends on an error right after a member read failed, that member's
 failure SHALL be counted once: `test` SHALL print
 `test stopped; remaining members were not tested`, SHALL print the stream's error

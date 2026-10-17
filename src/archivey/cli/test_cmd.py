@@ -202,10 +202,14 @@ def run_test(
                                 file=err,
                             )
                             continue
-                        # A directory's data archivey cannot deliver is not tested
+                        # A directory's data archivey cannot decode is not tested
                         # rather than failed (DR-4), as `unzip -t` skips it: the
                         # archive extracts in full, since the bytes are never written.
+                        # A body that needs a password is an EncryptionError and stays
+                        # a failure, as for a file. Recorded so that a pass ending on
+                        # this fault gets the stop notice, not a second count.
                         untested_dirs += 1
+                        member_error = exc
                         print(
                             f"skip {escape_member_name(member.name)}: "
                             f"{format_error_detail(exc)}",
