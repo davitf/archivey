@@ -850,7 +850,8 @@ class TarWalker:
 
     ``seekable`` walks skip a member's data with a seek; forward-only walks read
     through it in steps, so the cost is the bytes the archive holds, not the size a
-    header declares. The walker owns the stream position between calls: a caller
+    header declares. Both read the declared span of a link header whose first block
+    is zero (:meth:`_place_link_data`), once and bounded the same way. The walker owns the stream position between calls: a caller
     that reads member data on a seekable stream may move it freely (each call seeks
     back), and on a forward-only stream reads through :meth:`open_data`, whose reads
     the walker counts.
@@ -883,9 +884,10 @@ class TarWalker:
         # A link's skipped span that began with a zero block and held only zeros, as
         # (start, end), until the next header after it is read (_end_at_zero_span).
         self._zero_span: tuple[int, int] | None = None
-        # Forward-only: what follows the zero block the walk ended on, when that block
-        # starts a link's zero span the walk had already read past. Served by
-        # stream_after_end in place of a seek back.
+        # What follows the zero block the walk ended on, when that block starts a
+        # link's zero span the walk had already read past. Served by stream_after_end
+        # in place of a seek back, which on a compressed source decodes the stream
+        # again from its start.
         self._replay: _ReplayStream | None = None
         # The first error next_entry raised: the walk is over, and later calls
         # raise it again.
@@ -1058,6 +1060,9 @@ class TarWalker:
                         f"offset {extended_at}"
                     )
                 if zero_span is not None and offset == zero_span[1]:
+                    # The span's end is this call's first block (_place_link_data
+                    # set _pos to it), so this asks "is this the span just read".
+                    assert offset == start, (offset, start)
                     return self._end_at_zero_span(zero_span, block)
                 kind = TarEndKind.SHORT if block else TarEndKind.ABSENT
                 self.end = TarEnd(kind, offset, observed_bytes=len(block))
@@ -1069,6 +1074,7 @@ class TarWalker:
                     and zero_span is not None
                     and offset == zero_span[1]
                 ):
+                    assert offset == start, (offset, start)
                     return self._end_at_zero_span(zero_span, block)
                 if isinstance(parsed, ZeroBlock):
                     # GNU tar 1.35 lists an archive whose last x or L header comes
@@ -1188,13 +1194,15 @@ class TarWalker:
         if not all_zero:
             return
         if read == rest:
+            # Read whole, so the span needs no presence check: on a compressed source
+            # that check is a seek back.
+            self._unchecked_data_end = None
             self._zero_span = (start, end)
             return
         entry.link_data = LinkData.ENDS_ARCHIVE
         self._unchecked_data_end = None
         self.end = TarEnd(TarEndKind.ZERO_BLOCK, start)
-        if not self._seekable:
-            self._replay = _ReplayStream(read, b"", self._stream)
+        self._replay = self._replay_from(read, b"", start + BLOCKSIZE + read)
 
     def _end_at_zero_span(self, span: tuple[int, int], block: bytes) -> TarEnd:
         """End the walk on the first block of a link's zero span, when the block at
@@ -1207,9 +1215,17 @@ class TarWalker:
         """
         start, end = span
         self.end = TarEnd(TarEndKind.ZERO_BLOCK, start)
-        if not self._seekable:
-            self._replay = _ReplayStream(end - start - BLOCKSIZE, block, self._stream)
+        self._replay = self._replay_from(
+            end - start - BLOCKSIZE, block, end + len(block)
+        )
         return self.end
+
+    def _replay_from(self, zeros: int, head: bytes, resume: int) -> _ReplayStream:
+        """``zeros`` zero bytes and ``head``, the bytes the walk read up to
+        ``resume``, then the stream from ``resume``. The stream is moved there only
+        when the replay reaches it, with a forward seek: a seekable stream may have
+        been moved since."""
+        return _ReplayStream(zeros, head, self._stream, lambda: self._seek(resume))
 
     def _reject(self, offset: int, reason: str) -> TarEnd:
         self.end = TarEnd(TarEndKind.REJECTED, offset, reason=reason)
@@ -1438,14 +1454,21 @@ _SEEK_RANGE_ERRNOS = frozenset((errno.EINVAL, errno.EOVERFLOW))
 
 
 class _ReplayStream:
-    """``zeros`` zero bytes, then ``head``, then the rest of ``stream``: a
-    forward-only walk's view of bytes it had read past, as stream_after_end serves
-    them. The zeros are made as they are read, so a long span costs no memory."""
+    """``zeros`` zero bytes, then ``head``, then the rest of ``stream``: a walk's
+    view of bytes it had read past, as stream_after_end serves them. The zeros are made as they are read, so a long span costs no memory."""
 
-    def __init__(self, zeros: int, head: bytes, stream: BinaryIO) -> None:
+    def __init__(
+        self,
+        zeros: int,
+        head: bytes,
+        stream: BinaryIO,
+        position: Callable[[], None],
+    ) -> None:
         self._zeros = zeros
         self._head = head
         self._stream = stream
+        # Puts the stream where the replayed bytes end, once, before its first read.
+        self._position: Callable[[], None] | None = position
 
     def read(self, size: int = -1, /) -> bytes:
         if size < 0:
@@ -1459,6 +1482,9 @@ class _ReplayStream:
             out += self._head[:take]
             self._head = self._head[take:]
         if len(out) < size:
+            if self._position is not None:
+                self._position()
+                self._position = None
             out += self._stream.read(size - len(out))
         return out
 

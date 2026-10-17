@@ -1471,7 +1471,9 @@ class TarReader(BaseArchiveReader):
         else:
             what = (
                 f"{declares}; a TAR link entry has no data area, so the blocks are "
-                "skipped."
+                "skipped. If they are all zeros and no member header follows them, "
+                "they are read as the end-of-archive marker, as for a link whose "
+                "blocks were never written, and the listing ends there."
             )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
