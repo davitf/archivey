@@ -33,7 +33,6 @@ import hashlib
 import io
 import os
 import shutil
-import stat
 import subprocess
 import tempfile
 import threading
@@ -2873,11 +2872,12 @@ class RarReader(BaseArchiveReader):
         windows_attrs: int | None = None
         if info.mode is not None:
             # RAR5 stores attr as a vint (hostile values can exceed C unsigned long).
-            # Unix: ArchiveMember.mode is the low 12 permission bits (S_IMODE);
-            # mask before the C helper so OverflowError cannot abort listing.
+            # Unix: ArchiveMember.mode is the low 12 permission bits, what
+            # stat.S_IMODE keeps; masked directly, as TAR does, since S_IMODE refuses
+            # a value wider than its C type with OverflowError.
             # Win32: FILE_ATTRIBUTE_* is a 32-bit field.
             if host_os == _RAR_HOST_OS_UNIX:
-                mode = stat.S_IMODE(info.mode & 0o7777)
+                mode = info.mode & 0o7777
             elif host_os == _RAR_HOST_OS_WIN32:
                 windows_attrs = info.mode & 0xFFFFFFFF
 
