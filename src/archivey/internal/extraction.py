@@ -1911,6 +1911,7 @@ class ExtractionCoordinator:
             # The run raises the first and drops the report: no line has a reader.
             return failures
         for index, error in failures:
+            # archivey/cli/logging_config.py matches this format string literally.
             logger.warning(
                 "Skipping %s %r: %s",
                 state.results[index].member.type.value,
@@ -3127,6 +3128,7 @@ class ExtractionCoordinator:
             raise error from exc
         # No diagnostic: the recorded result is the whole record of this outcome (the
         # placement clause in ``diagnostics``).
+        # archivey/cli/logging_config.py matches this format string literally.
         logger.warning("Skipping %s %r: %s", kind, name, error)
 
     def _check_collision_abort(

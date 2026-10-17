@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import logging
 import stat
+import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -78,3 +80,23 @@ def test_other_handlers_still_see_the_skip_warning(
     with caplog.at_level(logging.WARNING, logger="archivey"):
         _extract(src, tmp_path / "out")
     assert any("Skipping" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="name length limits differ")
+def test_a_superseded_copy_s_failure_follows_the_report(tmp_path: Path) -> None:
+    """Two copies of one name, both failing to write: the report keeps the later one.
+
+    Random access never tries the earlier copy, so its error is dropped with it, in the
+    report and on stderr alike. A streamed run reports what a random-access run does.
+    """
+    name = "n" * 300  # longer than any file name the OS allows
+    src = tmp_path / "dup.tar.gz"
+    with tarfile.open(src, "w:gz") as tf:
+        for payload in (b"one\n", b"two\n"):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+    code, err = _extract(src, tmp_path / "out")
+    assert code == EXIT_FAIL, err
+    assert err.count(f"failed: {name}") == 1, err
+    assert "Skipping" not in err
